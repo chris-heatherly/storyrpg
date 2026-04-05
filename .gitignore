@@ -11,6 +11,9 @@
 # Cursor agent transcripts (local only)
 .cursor/
 
+# Auto-commit log
+scripts/.auto-commit.log
+
 # Environment variables / secrets
 .env
 .env.*

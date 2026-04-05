@@ -1,0 +1,1340 @@
+Game Design Document | Confidential
+GAME DESIGN DOCUMENT
+StoryRPG Engine
+AI-Powered Interactive Storytelling Platform
+Version 1.0
+January 2026
+Page 1
+
+Game Design Document | Confidential
+Table of Contents
+1. Executive Summary
+2. Core Concept & Vision
+3. Target Audience
+4. Core Gameplay Loop
+5. RPG Systems
+5.1 Stat Architecture
+5.2 Stat Progression (Hidden System)
+5.3 Fiction-First Resolution
+5.4 Item System
+5.5 Complex Encounter System
+6. Narrative Design & Story Structure
+7. AI Content Generation Pipeline
+7.4 Encounter Image Pipeline
+8. Monetization & Economy
+9. Social Features
+10. User Interface & Experience
+11. Technical Requirements
+12. MVP Scope & Roadmap
+13. Metrics & Analytics
+14. Risk Analysis
+15. Appendices
+16. AI Agent Architecture & Workflow
+16.1 Agent Overview
+16.2 Story Generation Pipeline
+16.3 Image Generation Pipeline
+16.4 Encounter Generation Pipeline
+16.5 Quality Assurance Agents
+Page 2
+
+Game Design Document | Confidential
+16.6 Orchestration & Human-in-the-Loop
+Page 3
+
+Game Design Document | Confidential
+1. Executive Summary
+StoryRPG Engine is a mobile interactive storytelling platform that combines the accessible,
+episodic format of apps like Choices and Episodes with meaningful RPG progression
+mechanics and AI-generated content at scale. By leveraging pre-generated AI stories and
+images, the platform delivers personalized, deeply branching narratives that would be
+prohibitively expensive to produce through traditional methods.
+Core Value Proposition
+• For Players: Experience stories where your choices genuinely matter, your character
+grows across seasons, and the narrative remembers and responds to everything you do.
+• For the Business: AI-generated content enables complex branching structures at a
+fraction of traditional production costs, allowing for higher content volume and deeper
+personalization.
+• Differentiation: Unlike competitors that use linear stories with cosmetic choices,
+StoryRPG Engine delivers true RPG progression where stats, items, and relationships
+create meaningfully different experiences.
+Key Features
+• Multi-genre library supporting romance, fantasy, thriller, sci-fi, horror, and more
+• Hybrid stat system combining social attributes, skills, and relationship meters
+• Soft influence mechanics where stats affect probability of success, not hard locks
+• Functional and cosmetic item systems that unlock scenes and customize appearance
+• Quality-based narrative structure enabling true personalization without combinatorial
+explosion
+• AI pre-generated stories and art with consistent quality and style per series
+Page 4
+
+Game Design Document | Confidential
+2. Core Concept & Vision
+2.1 Vision Statement
+Create the most emotionally rewarding interactive storytelling experience on mobile by
+combining the fiction-first design philosophy with meaningful player progression and AI-enabled
+narrative complexity.
+2.2 Design Pillars
+Fiction-First Design
+Every mechanic exists to serve the narrative. Stats are not abstract numbers but
+representations of who your character is becoming. Items are not inventory management but
+story keys that unlock scenes, solve problems, and deepen relationships. The interface
+disappears into the drama.
+Meaningful Agency
+Choices must change at least one of: outcome (what happens), process (how it happens),
+information (what you learn), relationship (who trusts you), or identity (who you are becoming). If
+none of these change, the choice is removed.
+Earned Progression
+Character growth should feel earned, not purchased. Free players can complete any story;
+premium options enhance the experience but never gate core narrative content.
+Emotional Resonance
+Every season should leave players with a memorable emotional experience. The goal is not just
+entertainment but stories that stay with players after they put down their phones.
+2.3 Competitive Positioning
+Feature Choices/Episodes Telltale Games StoryRPG Engine
+Story Structure Linear with cosmetic Branch-and-bottlene Hybrid QBN with
+choices ck deep branching
+Page 5
+
+Game Design Document | Confidential
+Progression None Episode-to-episode Full RPG with stats,
+flags items, relationships
+Personalization Character Dialogue tone Stats, items,
+appearance only relationships, and
+story paths
+Content Volume High (manual Low (expensive) High (AI-assisted)
+production)
+Art Style Consistent per app 3D cinematic Varied per series
+(AI-generated)
+Monetization Premium choices, One-time purchase Freemium with
+cosmetics progression
+enhancements
+Page 6
+
+Game Design Document | Confidential
+3. Target Audience
+3.1 Primary Demographic
+• Age: 25-45 years old
+• Gender: All genders, with content variety to appeal broadly
+• Gaming Experience: Casual gamers comfortable with mobile interfaces
+• Reading Habits: Enjoys fiction, podcasts, streaming series, or audiobooks
+• Available Time: 10-20 minutes per session, typically commute, lunch, or evening
+wind-down
+3.2 Player Personas
+The Story Seeker
+Primarily motivated by narrative quality and emotional engagement. Values character
+development, plot twists, and meaningful consequences. Less interested in min-maxing stats
+but appreciates when choices feel impactful.
+The Completionist
+Wants to see all content, collect all items, and explore every branch. Motivated by achievement
+systems and unlockables. Will replay stories to see different outcomes and is likely to spend on
+content bundles.
+The Role-Player
+Creates a headcanon for their character and makes choices based on that identity rather than
+optimal outcomes. Values expression choices and relationship dynamics. Deeply invested in
+their avatar and customization options.
+3.3 Accessibility Considerations
+• Adjustable text size and font options
+• Color-blind friendly UI with icon-based indicators
+• Optional audio narration for vision-impaired users
+• Dyslexia-friendly font option
+• Content warnings and skip options for sensitive material
+Page 7
+
+Game Design Document | Confidential
+4. Core Gameplay Loop
+4.1 Session Flow
+A typical 10-15 minute session follows this pattern:
+Phase Duration Player Action System Response
+Entry 30 seconds Open app, select story Load save state, show
+recap
+Engagement 8-12 minutes Read scenes, make Track flags, update stats,
+choices present consequences
+Progression 1-2 minutes View rewards, level ups Award XP, items,
+relationship changes
+Hook 30 seconds Reach cliffhanger Present teaser, encourage
+return
+4.2 Core Loop Diagram
+Read Scene → Make Choice → Experience Consequence → Gain Progression → Unlock New
+Options → Read Scene
+4.3 Choice Density
+• Minimum 1 choice per 90 seconds of reading
+• Maximum 3 minutes between meaningful choices
+• First choice within 60 seconds of episode start
+• Episode-ending choice always significant (relationship, plot, or identity defining)
+4.4 Choice Types
+Type Frequency Impact Example
+Expression 40% Defines personality, minimal Respond sarcastically vs.
+plot impact sincerely
+Relationship 25% Affects trust/romance Comfort your friend vs. give
+meters with NPCs them space
+Strategic 20% Uses stats/items, affects Use Charm to persuade vs.
+immediate outcome use Evidence
+Page 8
+
+Game Design Document | Confidential
+Branching 10% Significantly alters story Accept the job offer vs. stay
+path in your hometown
+Dilemma 5% No right answer, tests Save your mentor vs. save
+player values the civilians
+Page 9
+
+Game Design Document | Confidential
+5. RPG Systems
+5.1 Stat Architecture
+Characters have three interconnected stat categories that persist across a series (not across
+different series). Stats use soft influence mechanics: higher stats increase probability of success
+or unlock additional dialogue options, but never hard-lock content.
+Core Attributes (Universal)
+These six attributes apply to all stories regardless of genre:
+Attribute Description Affects
+Charm Social grace, persuasion, first Persuasion checks, romance
+impressions progression, NPC reactions
+Wit Intelligence, problem-solving, quick Puzzle solutions, detecting lies,
+thinking academic challenges
+Courage Bravery, willingness to take risks Confrontations, dangerous
+choices, standing up for others
+Empathy Emotional intelligence, reading people Relationship depth, detecting
+hidden motives, de-escalation
+Resolve Determination, mental fortitude Resisting manipulation,
+maintaining composure,
+long-term goals
+Resourcefulness Practical skills, improvisation Item crafting, finding solutions,
+survival situations
+Genre-Specific Skills
+Each series introduces 2-4 skills relevant to its genre. Examples:
+Genre Example Skills
+Fantasy Arcane Knowledge, Swordsmanship, Beast Lore, Diplomacy
+Mystery/Thriller Investigation, Deduction, Interrogation, Stealth
+Romance Flirtation, Emotional Vulnerability, Social Awareness,
+Chemistry
+Sci-Fi Engineering, Piloting, Xenobiology, Hacking
+Horror Occult Knowledge, Survival Instinct, Sanity, First Aid
+Page 10
+
+Game Design Document | Confidential
+Relationship Meters
+Each significant NPC has multiple tracked dimensions:
+• Trust: How much they believe in you (affects information sharing, assistance)
+• Affection: Romantic/platonic closeness (affects intimacy scenes, loyalty)
+• Respect: Professional/personal regard (affects their deference to your decisions)
+• Fear: Intimidation level (affects compliance, but damages long-term relationship)
+5.2 Stat Progression (Hidden System)
+Character growth happens organically through story choices and actions. Players never see XP
+bars, level-ups, or point allocation screens. Instead, stats evolve based on how players engage
+with the narrative.
+Internal Progression Triggers
+• Choosing brave actions consistently increases Courage behind the scenes
+• Successfully navigating social situations builds Charm
+• Solving puzzles or noticing details improves Wit
+• Showing compassion and reading emotions develops Empathy
+• Standing firm under pressure strengthens Resolve
+• Finding creative solutions enhances Resourcefulness
+Narrative Stat Surfacing
+Players discover their character's growth through fiction, not numbers:
+• NPCs comment on changes: You seem more confident lately or You've become quite the
+smooth talker
+• Internal monologue reflects growth: A year ago, this would have terrified me. Now I
+barely flinch.
+• New dialogue options appear naturally without stat displays
+• The Character Sheet shows narrative descriptors, not numbers (e.g., Courageous rather
+than Courage: 14)
+5.3 Fiction-First Resolution
+StoryRPG Engine uses fiction-first resolution inspired by Powered by the Apocalypse design.
+The fiction triggers the roll; the roll triggers new fiction. Players never see dice, percentages, or
+success/failure labels.
+Page 11
+
+Game Design Document | Confidential
+Core Philosophy
+• The Fiction Comes First: Mechanics only engage when the narrative demands
+uncertainty. If the fiction establishes you can do something, you do it. Rolls happen when
+outcomes are genuinely uncertain and dramatically interesting.
+• Rolls Create Fiction: The result of a roll is not pass/fail but what happens next. Every
+outcome moves the story forward in a compelling direction.
+• No Visible Math: Players see narrative outcomes, not numbers. The system handles
+probability invisibly.
+Resolution Outcomes (Internal)
+When the system resolves an uncertain action, it determines one of three outcome tiers:
+Tier Internal Roll Narrative Result Player Experience
+Full Success High roll + favorable You achieve your goal The scene plays out
+stats cleanly in your favor with
+affirming imagery and
+dialogue
+Complicated Medium roll or You achieve your goal, You succeed but
+Success mixed stats but with a cost, twist, or something
+new complication changes—a
+relationship shifts, a
+new threat emerges,
+or you sacrifice
+something
+Interesting Low roll + You do not achieve your The scene takes an
+Failure unfavorable stats goal, but the story moves unexpected turn that
+forward compellingly creates new dramatic
+possibilities
+How Stats Influence Outcomes
+Behind the scenes, the system uses player stats to weight probabilities:
+• Base success chance determined by action difficulty (set by narrative designers)
+• Relevant stats shift the probability curve (higher stats = more likely to roll into success
+tiers)
+• Relationship states can provide bonuses (an ally's trust grants advantage)
+• Items can shift outcomes (possessing the right tool guarantees at least complicated
+success)
+Players never see these calculations. They experience the story.
+Page 12
+
+Game Design Document | Confidential
+Example: Fiction-First in Practice
+Traditional RPG approach: [Charm 14] Persuade the guard - 75% success. You roll... Success!
+Fiction-first approach: The guard's eyes narrow. You could try to talk your way past him—you've
+always had a way with words—or find another route. Player chooses to persuade. The scene
+plays out based on internal resolution: either the guard steps aside (success), lets you through
+but remembers your face (complicated), or calls for backup while you slip away (interesting
+failure). The player simply experiences the narrative result.
+5.3 Item System
+Item Categories
+Category Function Acquisition Examples
+Key Items Unlock specific Story progression, Ancient Map, Encrypted USB,
+scenes or choices side quests Love Letter
+Consumables One-time stat boost Purchase, rewards, Confidence Potion (+10 Charm
+or effect crafting for scene)
+Equipment Passive stat Purchase, Lucky Charm (+2 Wit), Power
+bonuses while achievements Suit (+3 Courage)
+equipped
+Cosmetics Appearance Purchase, Evening Gown, Leather Jacket,
+customization, achievements Vintage Watch
+scene variants
+Collectibles Lore items, Exploration, secrets Character Journals, World Lore
+achievement Fragments
+tracking
+Inventory Management
+• Maximum 20 active items (excluding collectibles)
+• Items persist within a series, reset between series
+• Key Items cannot be sold or discarded
+• Equipment slots: Accessory (2), Outfit (1), Special (1)
+5.5 Complex Encounter System
+Complex encounters—combat, chases, heists, debates, rituals, and other multi-beat dramatic
+sequences—use a specialized system that maintains fiction-first principles while delivering
+dynamic, visually rich experiences through pre-generated image sequences.
+Page 13
+
+Game Design Document | Confidential
+Encounter Design Philosophy
+• Cinematic, Not Tactical: Encounters feel like action scenes in a film, not turn-based
+strategy. Players make dramatic choices, not optimal moves.
+• Visually Dynamic: Pre-generated images create the illusion of real-time action.
+Different outcomes trigger different image sequences, making each playthrough feel
+unique.
+• Narratively Integrated: Every encounter serves the story. Combat reveals character.
+Chases raise stakes. The encounter is a story beat, not a minigame.
+Encounter Structure
+Complex encounters are divided into Beats—discrete dramatic moments where the player
+makes a choice and the system resolves the outcome.
+Component Description Example (Combat)
+Setup Establishes the encounter fiction, Three masked figures emerge from the
+stakes, and participants shadows. They're armed.
+Beat 1-N Player choice → Internal You could fight, flee, or try to negotiate
+resolution → Image sequence →
+Narrative outcome
+Escalation Stakes increase each beat; new One of them has a knife to your ally's
+complications emerge throat
+Climax Final beat with highest stakes It's now or never—everything rides on
+this moment
+Resolution Encounter concludes, You've won, but at what cost?
+consequences ripple into story
+The Beat Cycle
+Each beat within an encounter follows this cycle:
+• 1. Situation Image: A pre-generated image shows the current state of the encounter
+(enemy positions, environmental context, ally status).
+• 2. Choice Moment: Player selects from 2-4 dramatically meaningful options. Choices
+are fiction-first: Fight back, Protect your ally, Look for an escape, or Surrender.
+• 3. Internal Resolution: System calculates outcome based on relevant stats, items,
+relationship support, and encounter difficulty. Player never sees this.
+Page 14
+
+Game Design Document | Confidential
+• 4. Outcome Image Sequence: Based on resolution tier (success/complicated/failure), a
+sequence of 2-4 pre-generated images plays showing the action unfold.
+• 5. Narrative Bridge: Text describes the outcome, sets up the next beat or concludes the
+encounter.
+Image Sequence System
+Each choice point in an encounter has multiple pre-generated image sequences ready to trigger
+based on resolution:
+Resolution Image Sequence Visual Characteristics Example
+Tier Type
+Full Success Triumph Sequence Dynamic action, character Your strike connects
+(3-4 images) dominance, enemy perfectly → Enemy
+defeat/retreat staggers → Enemy
+falls → You stand
+victorious
+Complicated Pyrrhic Sequence Success with visible cost, Your strike connects
+Success (3-4 images) mixed emotions, new → Enemy falls BUT
+threat visible ally is wounded →
+You rush to ally →
+New enemy appears
+Interesting Setback Sequence Character struggles, Your strike misses →
+Failure (3-4 images) situation worsens, but Enemy
+new opportunity hints counterattacks →
+You're knocked back
+→ You spot an
+escape route
+Image Generation Requirements
+For each encounter beat with N choices, the AI pipeline must generate:
+• 1 Situation Image (current state before choice)
+• N × 3 Outcome Sequences (one sequence per resolution tier, per choice)
+• Transition Images as needed for beat connections
+Example: A 4-beat encounter with 3 choices per beat requires approximately 40-50 unique
+images.
+Encounter Types and Stat Mappings
+Encounter Type Primary Stats Secondary Stats Key Items
+Page 15
+
+Game Design Document | Confidential
+Combat Courage, genre Resolve, Weapons, armor,
+combat skill Resourcefulness combat
+consumables
+Chase/Escape Resourcefulness, Courage, Wit Vehicles, maps,
+genre agility skill distraction items
+Social Charm, Empathy Wit, Resolve Evidence,
+Confrontation blackmail,
+reputation items
+Investigation Wit, genre Empathy, Tools, access keys,
+investigation skill Resourcefulness informant contacts
+Heist/Infiltration Resourcefulness, Wit, Courage Disguises, tools,
+genre stealth skill insider information
+Survival Resolve, Courage, genre Supplies, shelter
+Resourcefulness survival skill items, signaling
+devices
+Ritual/Magic Genre arcane skill, Wit, Empathy Components, focus
+Resolve items, ancient texts
+Relationship Support in Encounters
+Allies present during encounters can provide support based on relationship state:
+• High Trust: Ally actively assists, providing stat bonuses to relevant actions
+• High Affection: Ally protects you, absorbing complications that would harm you
+• High Respect: Ally follows your lead, enabling coordinated actions
+• Low Relationship: Ally may hesitate, act independently, or even work against you
+These modifiers affect internal resolution but are expressed through fiction—ally dialogue,
+actions shown in images, narrative descriptions.
+Encounter Consequences
+Encounters are not isolated—outcomes ripple through the story:
+• Immediate: Character status changes (injured, exhausted, empowered), item
+gains/losses, NPC status changes
+• Relationship: How you behaved in the encounter affects relationship meters (did you
+protect your ally? abandon them? use them as a distraction?)
+• Narrative: Encounter outcomes can branch the story, lock/unlock future scenes, or
+change NPC availability
+• Stat Growth: Engaging with encounters in specific ways triggers internal stat
+progression (fighting courageously builds Courage)
+Page 16
+
+Game Design Document | Confidential
+Example Encounter: Alley Ambush
+Setup: You're walking home when three figures block your path. Your ally Sam is with you.
+Beat 1 - Opening Gambit:
+• Situation Image: Dark alley, three silhouettes, Sam looking nervous beside you
+• Choices: Stand your ground (Courage) | Try to talk them down (Charm) | Look for
+escape route (Resourcefulness) | Push Sam behind you (Empathy)
+• Resolution Example (Stand your ground - Complicated Success): Images show you
+squaring up → lead attacker hesitates → but one flanks toward Sam
+• Narrative Bridge: They weren't expecting resistance. But while you faced down the
+leader, one of them is moving toward Sam...
+Beat 2 - Escalation:
+• Situation Image: You facing leader, attacker approaching Sam, Sam's frightened
+expression
+• Choices now reflect the new fiction state, building on Beat 1's outcome
+This continues until Resolution, where the encounter concludes and consequences are applied
+to the ongoing narrative.
+Page 17
+
+Game Design Document | Confidential
+6. Narrative Design & Story Structure
+6.1 Fiction-First Principles
+Every design decision is evaluated against the fiction-first philosophy:
+• Diegetic Integration: Stats and items are explained within the story world. Characters
+comment on your growing confidence (Courage) or your new jacket (Cosmetic). Nothing
+feels gamey.
+• Consequence Primacy: Consequences are primarily fictional (who trusts you, what
+scenes unlock) rather than numerical. Stats change, but the emotional weight comes
+from narrative.
+• Character Integrity: The protagonist has a defined core that players shape but do not
+violate. Players choose HOW the character responds, not WHETHER they are
+fundamentally the character.
+6.2 Hybrid Narrative Structure
+StoryRPG Engine uses a hybrid structure combining branch-and-bottleneck with quality-based
+narrative (QBN) elements:
+Season Architecture
+• Season: One complete story arc (15-20 episodes), ending with all character paths
+converging to a shared narrative state
+• Episode: One play session (10-15 minutes), ending on a hook or cliffhanger
+• Scene: One continuous narrative beat, potentially with multiple choice points
+• Storylet: Modular scene unlocked by player state (stats, items, relationships)
+The Convergent Spine
+Each season has a defined starting state and ending state. While players can reach wildly
+different experiences in between, all paths must deliver the character to the same narrative
+position at season end. This enables:
+• Sequel seasons that build on established foundations
+• Complex mid-season branching without exponential growth
+• Meaningful choices that affect HOW you arrive, not WHETHER you arrive
+Storylet System
+Between major plot beats, the system surfaces available storylets based on player state:
+Page 18
+
+Game Design Document | Confidential
+Unlock Type Description Example
+Stat-Gated Requires minimum stat threshold Wit 12+ unlocks conversation with
+the professor
+Item-Gated Requires possession of key item Having the Stolen Ledger unlocks
+confrontation scene
+Relationship-Gated Requires relationship threshold Trust 15+ with Alex unlocks their
+secret backstory
+Time-Gated Only available during specific Episode 5-7: Festival storylet
+episodes available
+Exclusive Only one of several options Romance route locks out other
+available romance storylets
+6.3 Choice Design Framework
+The Stakes Triangle
+Every meaningful choice must communicate at least two of:
+• Desire: What do I want to achieve?
+• Cost: What am I risking or sacrificing?
+• Identity: What does this say about who I am?
+Consequence Budgeting
+Each choice has a pre-determined consequence tier:
+Tier Production Description Frequency
+Cost
+Callback Line Very Low 1-3 altered lines in future scene 60% of choices
+Scene Tint Low Same scene, different emotional 25% of choices
+tone/details
+Branchlet Medium Unique short scene (30-60 10% of choices
+seconds) that merges back
+Structural Branch High Changes episode sequence or 5% of choices
+major outcomes
+6.4 Relationship System
+NPC Depth Tiers
+Page 19
+
+Game Design Document | Confidential
+Tier Tracked Dimensions Content Investment Example
+Core Cast (2-3) All four meters + personal High: dedicated scenes, Love
+storyline romance routes, multiple interests,
+endings rivals,
+mentors
+Supporting (3-5) Trust + Affection only Medium: reactive Friends,
+dialogue, 1-2 dedicated coworkers,
+scenes allies
+Background (5+) Single impression flag Low: flavor text changes Shopkeepers
+, minor
+characters
+Relationship Evolution
+Relationships are not linear progressions but dynamic systems:
+• High Trust + Low Affection = Respected colleague
+• High Affection + Low Respect = Someone who likes you but does not take you seriously
+• High Fear + Low Trust = Compliance without loyalty (unstable)
+• Relationships can deteriorate through neglect or negative actions
+• Some relationships have natural ceilings without specific actions (e.g., romance requires
+vulnerability)
+Page 20
+
+Game Design Document | Confidential
+7. AI Content Generation Pipeline
+7.1 Content Generation Philosophy
+AI generation is a production tool, not a replacement for creative direction. All AI-generated
+content goes through human curation before release. The goal is to enable complexity and
+personalization at scale while maintaining quality standards.
+7.2 Story Generation Pipeline
+Phase 1: Story Bible Creation (Human)
+• Creative directors define premise, themes, character arcs, and emotional beats
+• Define the convergent spine: starting state, key milestones, ending state
+• Establish tone, genre conventions, and content boundaries
+• Create character profiles with voice samples and relationship dynamics
+Phase 2: Scene Generation (AI + Human)
+• AI generates scene variants based on story bible parameters
+• Each scene produced in multiple versions for different stat/relationship states
+• Human editors review, revise, and approve all generated content
+• Quality assurance ensures consistency, pacing, and emotional impact
+Phase 3: Integration (Human)
+• Technical writers implement branching logic and variable tracking
+• Playtesting validates all paths for coherence and quality
+• Final polish pass for dialogue flow and pacing
+7.3 Image Generation Pipeline
+Art Direction Per Series
+Each series establishes a consistent visual style:
+• Style guide defining character designs, color palette, mood
+• Reference images for AI model fine-tuning
+• Character consistency sheets ensuring recognizable cast
+Page 21
+
+Game Design Document | Confidential
+Image Types
+Type Generation Approach Quantity Per Episode
+Character Portraits Fine-tuned model with expression 5-8 per character, reused
+variants
+Scene Illustrations Generated per scene, curated 3-5 per episode
+Background Art Generated and reused across scenes 10-15 per series
+Encounter Situation Generated per encounter beat 1 per beat (4-6 per
+Images encounter)
+Encounter Outcome Generated per choice × resolution tier 30-50 per encounter
+Sequences
+Item Icons Standardized style, batch generated As needed
+UI Elements Consistent across app Standardized set
+7.4 Encounter Image Pipeline
+Complex encounters require the most intensive image generation. Each encounter follows a
+structured pipeline:
+Phase 1: Encounter Storyboarding
+• Narrative designers define encounter beats, choices per beat, and possible outcomes
+• Visual directors create shot lists specifying camera angles, character positions, action
+types
+• Consistency requirements documented (character appearance, environment, lighting
+continuity)
+Phase 2: Batch Generation
+• Situation images generated first to establish visual baseline
+• Outcome sequences generated in batches by resolution tier (all successes, then
+complications, then failures)
+• Character consistency enforced through fine-tuned models and reference images
+Phase 3: Sequence Assembly
+• Images organized into playable sequences
+• Transition timing specified (how long each image displays)
+• Animation hints added (pan direction, zoom, shake effects applied at runtime)
+Page 22
+
+Game Design Document | Confidential
+Phase 4: Quality Review
+• Visual continuity check across sequences
+• Emotional impact validation (does the success feel triumphant? does failure feel
+dramatic?)
+• Consistency with narrative text
+Encounter Image Specifications
+Specification Requirement
+Resolution 1080 × 1920 (portrait) or 1920 × 1080 (landscape for action)
+Format WebP for compression, PNG for transparency needs
+Style Consistency Same fine-tuned model checkpoint per series
+Character Consistency Reference sheet with 5+ angles per character
+Expression Range Minimum 8 expressions per character (neutral, happy, angry,
+scared, determined, hurt, surprised, conflicted)
+Action Poses Library of 10-15 action poses per character type (combat,
+running, falling, etc.)
+Lighting Continuity Consistent light source direction within encounter
+Sequence Timing Default 1.5 seconds per image, adjustable per beat
+7.4 Quality Control
+• Content Review Board: All generated content reviewed by editors before release
+• Consistency Checking: Automated tools flag character/plot inconsistencies
+• Sensitivity Review: Human review for potentially problematic content
+• Player Feedback Loop: Post-release monitoring and correction system
+Page 23
+
+Game Design Document | Confidential
+8. Monetization & Economy
+8.1 Core Philosophy
+Monetization should feel like fantasy fulfillment, not extortion. Free players complete the full
+story; paying players enhance their experience. Premium options should create desire, not guilt.
+8.2 Currency System
+Dual Currency Model
+Currency Acquisition Primary Uses
+Coins (Soft) Episode completion, daily login, Basic consumables, common
+achievements, watching ads cosmetics, replaying episodes
+Gems (Hard) Purchase with real money, rare Premium choices, rare items,
+achievements, special events stat boosts, premium stories
+Currency Pricing (Gems)
+Package Price Gems Bonus
+Starter $0.99 50 None
+Small $4.99 300 +10%
+Medium $9.99 700 +17%
+Large $19.99 1,600 +23%
+Mega $49.99 4,500 +29%
+8.3 Energy System
+Episode Tickets
+• Each episode requires 1 ticket to play
+• Maximum ticket capacity: 5 tickets
+• Regeneration rate: 1 ticket per 3 hours
+• Full refill available via ads (2 per day) or gem purchase
+Ticket Costs
+Action Cost
+Page 24
+
+Game Design Document | Confidential
+Play new episode 1 ticket
+Replay completed episode 0 tickets (free replay)
+Instant refill (gems) 30 gems for 5 tickets
+Watch ad for ticket Free (2 per day limit)
+8.4 Premium Spending Categories
+Premium Choices (15-30 gems each)
+Premium choices within episodes enhance the experience:
+• Romance acceleration: Intimate scene, confession opportunity
+• Power moments: Dramatic confrontation, impressive action
+• Optimal outcomes: Better result from risky situation
+• Bonus content: Extended scene, additional lore
+Rule: Premium choice removes ads for the rest of the episode.
+Items and Equipment (10-100 gems)
+Item Type Price Range Impact
+Consumable boost 10-20 gems +10 to stat for one scene
+Equipment (common) 25-40 gems +1-2 passive stat bonus
+Equipment (rare) 50-75 gems +3-4 passive stat bonus
+Equipment (legendary) 100+ gems +5 bonus + special ability
+Cosmetic outfit 30-60 gems Appearance + unique scene variants
+Premium Stories (300-500 gems or subscription)
+Select stories designated as premium require purchase or subscription to access. These feature
+enhanced production values, deeper branching, or exclusive genres.
+8.5 Subscription Model
+StoryRPG+ Subscription
+Tier Monthly Price Benefits
+Page 25
+
+Game Design Document | Confidential
+StoryRPG+ $9.99/month Unlimited tickets, ad-free, 500 gems/month, all
+premium stories, exclusive subscriber
+cosmetics
+8.6 Ad Integration
+Ad Placements
+• Optional rewarded ads: Watch for tickets (2/day), coins (3/day), small gem bonus (1/day)
+• Interstitial ads: Between episodes for free users (skipped after premium choice)
+• No ads during story scenes (immersion protection)
+Ad-Free Conditions
+• StoryRPG+ subscribers: Always ad-free
+• Premium choice in episode: Ad-free for rest of that episode
+• Individual ad removal: Not offered (subscription only)
+Page 26
+
+Game Design Document | Confidential
+9. Social Features
+9.1 Choice Comparison
+At the end of each episode, players see how their choices compare to the global player base:
+• Percentage breakdown for each major choice
+• Relationship status comparison (e.g., 67% have higher trust with Maya)
+• Stat distribution comparison (e.g., Your Courage is higher than 78% of players)
+9.2 Outcome Sharing
+Share Cards
+Players can generate shareable images showing:
+• Character portrait with current relationship status
+• Key choice moments (Choose your own text: I chose to save the village)
+• Season completion cards with stats and ending achieved
+• Achievement unlocks
+Sharing Platforms
+• Direct share to Instagram, TikTok, Twitter/X, Facebook
+• Copy link for Discord, messaging apps
+• In-app friend sharing (future feature)
+9.3 No Competitive Features
+Design decision: No leaderboards, competitive rankings, or player-vs-player elements.
+StoryRPG Engine is a personal narrative experience, not a competition. This preserves the
+fiction-first philosophy and prevents optimization from overriding roleplay.
+Page 27
+
+Game Design Document | Confidential
+10. User Interface & Experience
+10.1 Design Principles
+• Invisible Interface: UI should disappear during story moments. Minimize chrome,
+maximize narrative immersion.
+• Contextual Surfacing: Show relevant information when needed, hide it otherwise. Stats
+appear during stat checks, not constantly.
+• Emotional Alignment: UI animations and sounds should match story tone. Tense
+scenes get different treatment than romantic ones.
+10.2 Core Screens
+Library
+Browse and select stories. Features genre filtering, progress tracking, and recommendations.
+Story View
+Primary gameplay screen. Scene illustration fills upper portion, dialogue/narration in lower
+portion, choices appear contextually.
+Character Sheet
+View character growth through narrative descriptors (e.g., Courageous, Silver-tongued),
+equipped items with their story significance, inventory organized by type, and relationship
+summary showing how key characters view you. No numerical stats displayed—everything is
+expressed through fiction.
+Relationship Map
+Visual representation of all relationships with current characters. Shows trust, affection, respect,
+fear meters where relevant.
+Shop
+Purchase gems, items, and cosmetics. Context-aware recommendations based on current story
+needs.
+10.3 Choice Presentation
+Page 28
+
+Game Design Document | Confidential
+• Standard Choices: 2-4 options presented as tappable buttons with clear, concise text
+• Stat-Influenced Choices: Options that benefit from high stats are presented with subtle
+narrative framing (e.g., You've always had a way with words... followed by the
+persuasion option). No numbers shown.
+• Item-Enabled Choices: Appear only if item is possessed, presented as natural narrative
+options (e.g., The lockpick in your pocket could make quick work of this...)
+• Premium Choices: Marked with gem icon and cost, positioned to not feel mandatory
+• Timed Choices: Rare, used only when fiction demands urgency. Visual tension builds
+(screen edges darken, subtle pulse), default selection if time expires
+• Encounter Choices: During complex encounters, choices appear over the situation
+image with action-oriented language
+Page 29
+
+Game Design Document | Confidential
+11. Technical Requirements
+11.1 Platforms
+Platform Minimum Requirements Target
+iOS iOS 14.0+, iPhone 8+ iOS 16.0+, iPhone 12+
+Android Android 8.0+, 3GB RAM Android 12.0+, 4GB RAM
+Web Chrome 90+, Firefox 90+, Safari 14+ Modern evergreen browsers
+11.2 Architecture Overview
+Client
+• Cross-platform framework (React Native or Flutter)
+• Local caching for offline reading of downloaded content
+• State management for complex branching logic
+Backend
+• Cloud-based content delivery (AWS/GCP)
+• User account and progress synchronization
+• Analytics and telemetry collection
+• A/B testing infrastructure
+Content Management
+• Headless CMS for story content
+• Version control for story files
+• Localization pipeline support
+11.3 Data Storage
+Per-User Data
+• Account profile and preferences
+• Story progress per series (episode, scene, all flags/stats)
+• Inventory and equipped items
+• Purchase history
+Page 30
+
+Game Design Document | Confidential
+Save System
+• Auto-save at every choice point
+• Cloud sync across devices
+• Single save slot per story (no manual save/load to preserve narrative integrity)
+Page 31
+
+Game Design Document | Confidential
+12. MVP Scope & Roadmap
+12.1 MVP Definition
+Minimum Viable Product includes all core systems with limited content to validate the concept
+and gather player feedback.
+MVP Content Scope
+Element Quantity Notes
+Stories 6 Diverse genres to test audience
+preferences
+Episodes per story 15-20 Comparable to Chapters average
+Total episodes 90-120 Full season per story
+AI art styles 6 One distinct style per story
+MVP Genre Distribution
+• 2 Romance (primary audience driver)
+• 1 Fantasy
+• 1 Mystery/Thriller
+• 1 Supernatural/Horror
+• 1 Contemporary Drama
+MVP Systems
+• Full stat system (6 core attributes + genre skills)
+• Relationship tracking (all four dimensions for core cast)
+• Item system (all categories)
+• Full monetization (gems, coins, tickets, subscription)
+• Ad integration
+• Choice comparison
+• Basic sharing
+12.2 Launch Content Cadence
+Milestone Content Available Timing
+Page 32
+
+Game Design Document | Confidential
+Soft Launch 6 stories, 5 episodes each Month 0
+Week 1-4 +1 episode per story weekly Month 1
+Week 5-8 +1 episode per story weekly Month 2
+Week 9-12 +1 episode per story weekly, season Month 3
+finales
+Post-Launch New stories, Season 2 development Month 4+
+12.3 Roadmap (Post-MVP)
+Phase 2: Expansion (Months 4-6)
+• 4 additional stories
+• Season 2 for top-performing stories
+• Community voting for story themes
+Phase 3: Features (Months 7-12)
+• Multiple save slots (premium feature)
+• Story recommendation engine
+• In-app friend system
+• Creator program (user story submissions)
+Phase 4: Scale (Year 2)
+• Localization (Spanish, Portuguese, German, French)
+• Audio narration option
+• Animated scene transitions
+• IP partnerships
+Page 33
+
+Game Design Document | Confidential
+13. Metrics & Analytics
+13.1 Key Performance Indicators
+Metric Target Measurement
+D1 Retention 40% Users returning day after install
+D7 Retention 20% Users returning 7 days after install
+D30 Retention 10% Users returning 30 days after install
+Session Length 12-18 min Average time per session
+Sessions per DAU 1.5+ Daily engagement depth
+Episode Completion Rate 85%+ Started episodes completed
+Story Completion Rate 50%+ Started stories finished
+ARPU (Monthly) $2.50+ Average revenue per user
+ARPPU (Monthly) $15+ Average revenue per paying user
+Conversion Rate 3-5% Free to paid conversion
+13.2 Engagement Analytics
+Choice Analytics
+• Distribution of choices selected (identify 90%+ skews for rebalancing)
+• Premium choice attach rate by type
+• Stat check success/failure distribution
+• Time spent on choice screens
+Content Analytics
+• Episode-level drop-off points
+• Story completion funnels
+• Branch coverage (what percentage of content is seen)
+• Storylet unlock rates
+Economy Analytics
+• Currency earn/spend ratios
+• Item purchase patterns
+• Subscription conversion triggers
+Page 34
+
+Game Design Document | Confidential
+• Ad engagement rates
+13.3 Feedback Systems
+• In-app rating prompts (after positive moments)
+• Episode feedback (thumbs up/down + optional comment)
+• Bug reporting system
+• Community Discord for qualitative feedback
+Page 35
+
+Game Design Document | Confidential
+14. Risk Analysis
+Risk Likeliho Impact Mitigation
+od
+AI content quality Medium High Robust human review pipeline, clear style
+inconsistency guides, editor training
+Character art Medium Medium Fine-tuned models per series, consistency
+inconsistency checking tools, limited character designs
+Encounter image High Medium Modular encounter templates, reusable
+volume overwhelming action pose libraries, efficient batch
+generation
+Encounter sequences Medium High Variety in camera angles, environmental
+feel repetitive interaction, outcome diversity requirements
+Fiction-first approach Low Medium Strong onboarding, narrative framing of all
+confuses players mechanics, playtesting with target
+audience
+Hidden stats feel Medium Medium Generous probability curves, narrative
+opaque/unfair hints at character growth, interesting failure
+design
+Premium choices feel Low High Strict policy: free path always coherent,
+mandatory premium = enhancement only
+Branching creates plot Medium High QA protocols, automated consistency
+holes checking, convergent spine design
+Low conversion rate Medium High A/B testing monetization, player research,
+value perception optimization
+Content velocity Medium Medium AI pipeline optimization, modular content
+insufficient design, buffer content
+Platform rejection (App Low High Content guidelines compliance,
+Store/Play Store) pre-submission review, appeal preparation
+Page 36
+
+Game Design Document | Confidential
+15. Appendices
+15.1 Glossary
+Term Definition
+Beat A discrete dramatic moment within a complex encounter where
+player makes a choice
+Branchlet Short unique scene that merges back to main path
+Callback Line Dialogue that references a previous player choice
+Complicated Success Resolution outcome where goal is achieved but with cost or new
+complication
+Convergent Spine The fixed narrative structure all paths must rejoin
+Diamond Choice Industry term for premium/monetized choices
+Diegetic Existing within the story world (vs. meta/UI)
+Encounter Complex multi-beat dramatic sequence (combat, chase, heist, etc.)
+Fiction-First Design philosophy where fiction triggers mechanics and mechanics
+create new fiction
+Interesting Failure Resolution outcome where goal is not achieved but story moves
+forward compellingly
+Outcome Sequence Pre-generated image series triggered by encounter resolution
+QBN Quality-Based Narrative - modular scenes gated by player state
+Scene Tint Same scene with different tone based on player state
+Situation Image Image showing current encounter state before player choice
+Soft Influence Stats affect probability invisibly, not hard requirements
+Storylet Self-contained scene module unlocked by conditions
+15.2 Reference Materials
+• Competitive Analysis: Episode, Choices, Chapters, Telltale Games, AdHoc Studio
+• Design References: Emily Short (interactive fiction), Powered by the Apocalypse
+(fiction-first)
+• Technical References: Ink scripting language, Twine prototyping, Unity integration
+15.3 Document History
+Page 37
+
+Game Design Document | Confidential
+Version Date Changes Author
+1.0 January 2026 Initial GDD creation Creative Team
+Page 38
+
+Game Design Document | Confidential
+16. AI Agent Architecture & Workflow
+This section defines the multi-agent AI system responsible for generating StoryRPG Engine
+content at scale. The architecture balances automation with human creative oversight, ensuring
+quality and consistency while enabling the volume needed for complex branching narratives.
+16.1 Agent Overview
+The content generation system consists of specialized AI agents organized into functional
+clusters, coordinated by an orchestration layer with human checkpoints.
+Agent Cluster Map
+Cluster Agents Primary Function
+Creative Direction Story Architect, World Builder, High-level story structure, setting,
+Character Designer and cast definition
+Narrative Scene Writer, Dialogue Episode content, dialogue, choice
+Generation Specialist, Branch Manager architecture
+Encounter Design Encounter Architect, Beat Writer, Complex encounter structure,
+Resolution Designer choices, and outcomes
+Visual Production Art Director, Character Artist, All image generation and visual
+Scene Illustrator, Sequence consistency
+Animator
+Quality Continuity Checker, Tone Content validation and error
+Assurance Validator, Sensitivity Reviewer, detection
+Logic Auditor
+Integration Script Compiler, Variable Tracker, Technical assembly and testing
+Playtest Simulator
+Technology Stack
+Component Recommended Models/Tools Purpose
+Large Language Claude 3.5 Sonnet / GPT-4o / All text generation, logic,
+Model Gemini 1.5 Pro planning
+Image Generation Stable Diffusion XL (fine-tuned) / Scene illustrations, character
+Midjourney API / DALL-E 3 art
+Character IP-Adapter, InstantID, or custom Maintaining character
+Consistency LoRA per series appearance across images
+Page 39
+
+Game Design Document | Confidential
+Orchestration LangGraph / AutoGen / Custom Agent coordination and
+state machine workflow management
+Vector Database Pinecone / Weaviate / ChromaDB Story bible retrieval,
+consistency checking
+Version Control Git-based system with structured Story file management,
+JSON/YAML branching
+Human Review UI Custom web application Approval workflows, editing
+interface
+Page 40
+
+Game Design Document | Confidential
+16.2 Story Generation Pipeline
+The story generation pipeline transforms a creative brief into playable episode content through a
+series of agent handoffs.
+Phase 1: Foundation (Human + AI)
+Human creative directors provide the initial brief. AI agents expand and structure it.
+• Input: Creative brief (genre, themes, tone, target length, unique hooks)
+• Story Architect Agent: Generates the season spine—inciting incident, major plot beats,
+midpoint, climax, resolution. Defines the convergent endpoints each episode must reach.
+• World Builder Agent: Creates setting bible—locations, rules of the world,
+technology/magic systems, social structures, history relevant to plot.
+• Character Designer Agent: Develops core cast profiles—backstory, motivations, voice
+samples, relationship dynamics, arc trajectories, visual description for art generation.
+• Output: Story Bible document (50-100 pages equivalent) stored in vector database for
+retrieval
+• Human Checkpoint: Creative director reviews and approves/revises Story Bible before
+proceeding
+Phase 2: Episode Architecture (AI)
+With approved Story Bible, agents generate episode-level structure.
+• Branch Manager Agent: For each episode, defines the choice architecture—where
+branches occur, what variables they set, how they reconverge. Outputs a visual node
+graph.
+• Scene Writer Agent: Generates scene-by-scene breakdown with dramatic purpose,
+emotional beats, and pacing notes. Identifies which scenes need variants based on
+player state.
+• Variable Tracker Agent: Maintains the master variable registry—all flags, relationship
+states, stat triggers. Ensures no orphaned variables or impossible states.
+• Output: Episode blueprint with node graph, scene list, variable schema
+• Human Checkpoint: Narrative designer reviews structure, approves choice architecture
+Page 41
+
+Game Design Document | Confidential
+Phase 3: Content Generation (AI)
+Agents generate the actual narrative content for each scene and variant.
+• Scene Writer Agent: Writes full scene content including narration, action descriptions,
+and scene-setting. References Story Bible via RAG for consistency.
+• Dialogue Specialist Agent: Generates character dialogue, ensuring voice consistency.
+Produces multiple variants for different relationship states (cold, neutral, warm,
+romantic).
+• Choice Author Agent: Writes choice text and immediate responses. Ensures choices
+are meaningfully different and emotionally clear. Tags each choice with stat influences
+and consequence tier.
+• Output: Complete episode script in structured format (JSON/YAML) with all variants
+• Human Checkpoint: Editor reviews dialogue quality, emotional beats, choice clarity
+Phase 4: Polish & Integration (AI + Human)
+• Continuity Checker Agent: Scans generated content against Story Bible and previous
+episodes for contradictions.
+• Tone Validator Agent: Ensures consistent tone across variants and scenes. Flags
+jarring shifts.
+• Script Compiler Agent: Converts approved content into game engine format. Validates
+all variable references.
+• Output: Production-ready episode file
+• Human Checkpoint: Final read-through, QA playtest
+Page 42
+
+Game Design Document | Confidential
+16.3 Image Generation Pipeline
+Visual content generation runs parallel to narrative generation, with tight integration for
+character and scene consistency.
+Phase 1: Visual Foundation
+• Art Director Agent: Based on Story Bible, defines visual style guide—color palette,
+lighting approach, composition rules, mood boards. Selects or creates base model/LoRA
+for the series.
+• Character Artist Agent: Generates character reference sheets—front, side, 3/4 views,
+expression range (8+ expressions), key poses. These become the consistency anchors.
+• Environment Artist Agent: Creates background art for all major locations. Generates
+day/night and weather variants where needed.
+• Output: Visual Bible—style guide, character sheets, location backgrounds
+• Human Checkpoint: Art director approves visual direction, character designs
+Phase 2: Scene Illustration
+Once episode scripts are approved, scene illustrations are generated.
+• Scene Illustrator Agent: For each scene requiring illustration, generates image based
+on script description. Uses character reference sheets via IP-Adapter or similar for
+consistency.
+• Composition Validator Agent: Checks generated images against composition
+rules—character placement, emotional tone match, readability at mobile resolution.
+• Batch Processor: Generates multiple candidates per scene (3-5), ranks by quality
+metrics, surfaces top options for review.
+• Output: Scene illustrations matched to script
+• Human Checkpoint: Art review for quality, consistency, emotional alignment
+Phase 3: Character Expressions
+• Expression Generator Agent: For dialogue-heavy scenes, generates character
+expression variants matching emotional beats in script (happy, sad, angry, surprised,
+etc.).
+• Consistency Enforcer Agent: Compares generated expressions to character reference
+sheet. Rejects images below similarity threshold. Triggers regeneration with adjusted
+prompts.
+Page 43
+
+Game Design Document | Confidential
+• Output: Expression sprite library per character
+Page 44
+
+Game Design Document | Confidential
+16.4 Encounter Generation Pipeline
+Complex encounters require the most intensive coordination between narrative and visual
+agents.
+Phase 1: Encounter Architecture
+• Encounter Architect Agent: Based on episode blueprint, designs encounter
+structure—number of beats, escalation curve, climax moment, resolution variants.
+Defines which stats are relevant.
+• Beat Writer Agent: For each beat, generates situation description, 2-4 choice options
+with stat mappings, and three resolution outcomes (success, complicated, failure).
+• Consequence Mapper Agent: Defines how each resolution affects subsequent beats.
+Maps relationship changes, status effects, and narrative branches.
+• Output: Encounter blueprint with full beat structure and resolution matrix
+• Human Checkpoint: Narrative designer reviews encounter flow, dramatic pacing
+Phase 2: Encounter Image Generation
+This is the highest-volume image generation task, requiring careful orchestration.
+• Storyboard Agent: Converts beat descriptions into shot-by-shot storyboards—camera
+angle, character positions, action depicted, emotional tone for each image in every
+sequence.
+• Situation Image Generator: For each beat, generates the situation image showing the
+encounter state before player choice.
+• Sequence Generator Agent: For each choice × resolution tier, generates the 3-4 image
+outcome sequence. Maintains visual continuity within sequence.
+• Action Pose Library Agent: Maintains and extends library of character action poses.
+Reuses poses across encounters where appropriate to reduce generation volume.
+• Output: Complete image set for encounter (40-60 images per encounter)
+• Human Checkpoint: Art review for sequence flow, action clarity, emotional impact
+Phase 3: Sequence Assembly
+• Sequence Compiler Agent: Organizes images into playable sequences with timing
+data. Adds pan/zoom hints for runtime animation.
+• Transition Designer Agent: Creates smooth visual transitions between beats. Ensures
+narrative continuity across resolution → next situation.
+Page 45
+
+Game Design Document | Confidential
+• Playback Validator Agent: Simulates encounter playback, checking for visual jarring,
+timing issues, or missing assets.
+• Output: Encounter package ready for integration
+Page 46
+
+Game Design Document | Confidential
+16.5 Quality Assurance Agents
+QA agents run continuously throughout the pipeline, not just at the end.
+Narrative QA Agents
+Agent Function Trigger
+Continuity Checker Compares new content against Story Bible After each scene
+and existing episodes via RAG. Flags generation
+contradictions.
+Character Voice Analyzes dialogue against character voice After dialogue
+Validator samples. Scores consistency, flags generation
+off-voice lines.
+Plot Hole Detector Traces all variable states through branching After episode
+paths. Identifies impossible states or compilation
+unreferenced flags.
+Tone Analyzer Measures emotional tone of scenes. Flags After scene generation
+sudden shifts or inconsistencies with target
+tone.
+Pacing Auditor Analyzes choice density, scene length, and After episode
+tension curve against target metrics. compilation
+Sensitivity Scans for potentially problematic Before human review
+Reviewer content—stereotypes, triggering content,
+unintended implications.
+Visual QA Agents
+Agent Function Trigger
+Character Consistency Compares generated character images to After each character
+Scorer reference sheet. Computes similarity score. image
+Rejects below threshold.
+Expression Accuracy Validates that character expression After expression
+Checker matches the emotional context specified in generation
+script.
+Composition Validator Checks image composition against style After scene
+guide rules—character placement, negative illustration
+space, focal point.
+Sequence Continuity Analyzes image sequences for visual After sequence
+Checker consistency—lighting, character position, generation
+action flow.
+Page 47
+
+Game Design Document | Confidential
+Resolution/Quality Ensures all images meet technical Before asset
+Gate specs—resolution, format, file size. packaging
+Duplicate Detector Identifies overly similar images that might After batch
+feel repetitive to players. generation
+Integration QA Agents
+Agent Function Trigger
+Script Validator Parses compiled scripts for syntax errors, After compilation
+missing references, invalid variable
+operations.
+Asset Linker Verifies all referenced images, sounds, and Before packaging
+data files exist and are correctly linked.
+Playtest Simulator Automated playthrough of all major paths. Before human
+Logs errors, timing issues, dead ends. playtest
+Load Balancer Analyzes asset sizes and loading Before release
+sequences. Flags episodes that exceed
+performance targets.
+Page 48
+
+Game Design Document | Confidential
+16.6 Orchestration & Human-in-the-Loop
+The orchestration layer manages agent coordination, state persistence, and human review
+workflows.
+Orchestration Architecture
+The system uses a state machine architecture where each content piece moves through defined
+stages:
+Stage Status Values Transitions
+Draft generating, generated, failed generated → review, failed →
+regenerate
+Review pending_review, in_review, in_review → approved OR
+revision_requested revision_requested
+Revision revising, revised revised → review
+Approved approved, integrating approved → integrating → integrated
+Published staged, live integrated → staged → live
+Human Review Checkpoints
+Human oversight is required at key decision points. The system cannot progress past these
+without approval.
+Checkpoint Reviewer Role Approval Criteria Rejection Action
+Story Bible Creative Premise compelling, Return to Story Architect
+Director characters viable, world with notes
+coherent
+Episode Narrative Pacing appropriate, Return to Branch Manager
+Structure Designer choices meaningful, with notes
+branches manageable
+Dialogue & Editor Voice consistent, Return to Scene Writer with
+Scenes emotions land, prose specific edits
+quality high
+Visual Style Art Director Style cohesive, Adjust style guide,
+characters appealing, regenerate samples
+mood appropriate
+Page 49
+
+Game Design Document | Confidential
+Character Art Art Director Characters recognizable, Refine prompts, regenerate
+expressions clear, poses with feedback
+dynamic
+Encounter Flow Narrative Beats escalate properly, Return to Encounter
+Designer choices dramatic, Architect with notes
+outcomes satisfying
+Final QA QA Lead No errors, playable, Route to appropriate agent
+emotionally effective for fixes
+Feedback Loop Architecture
+When human reviewers request revisions, structured feedback flows back to agents:
+• Reviewer provides feedback in structured format (category, severity, specific note,
+suggested fix)
+• Feedback Interpreter Agent parses notes into actionable instructions for generation
+agents
+• Relevant agent receives original content + feedback + instruction to revise
+• Agent generates new version, explicitly addressing each feedback point
+• Revision is logged with before/after comparison for learning
+Parallel Processing Strategy
+To maximize throughput, the pipeline supports parallel generation where dependencies allow:
+• Multiple episodes can be in different pipeline stages simultaneously
+• Visual generation begins as soon as character designs are approved (before script
+completion)
+• Scene illustrations and encounter images generate in parallel batches
+• QA agents run asynchronously, flagging issues without blocking generation
+• Human review queues prioritize blocking items to prevent pipeline stalls
+State Persistence & Recovery
+• Checkpointing: Full pipeline state saved after each stage transition. Enables recovery
+from failures without restart.
+• Version History: All generated content versioned. Previous versions retrievable for
+comparison or rollback.
+Page 50
+
+Game Design Document | Confidential
+• Audit Trail: Complete log of agent actions, human decisions, and state transitions for
+debugging and process improvement.
+Page 51
+
+Game Design Document | Confidential
+16.7 Workflow Diagram: Episode Production
+The following represents the end-to-end workflow for producing one episode:
+1. INITIATION
+• Input: Approved Story Bible, previous episode state
+• Branch Manager generates episode choice architecture
+• Human approves structure → triggers parallel paths
+2. PARALLEL TRACK A: NARRATIVE
+• Scene Writer generates all scenes and variants
+• Dialogue Specialist generates character dialogue
+• Choice Author writes choice text and responses
+• Continuity Checker validates against Story Bible
+• Human Editor reviews and approves (or requests revision)
+3. PARALLEL TRACK B: STANDARD VISUALS
+• Scene Illustrator generates scene backgrounds
+• Expression Generator creates dialogue sprites
+• Visual QA validates consistency
+• Art Director reviews and approves
+4. PARALLEL TRACK C: ENCOUNTER VISUALS
+• Encounter Architect designs encounter structure
+• Beat Writer creates beat content
+• Storyboard Agent plans image sequences
+• Situation + Sequence generators produce images
+• Narrative Designer + Art Director review
+5. INTEGRATION
+• All tracks converge when approved
+• Script Compiler assembles final episode package
+• Asset Linker connects scripts to images
+• Playtest Simulator runs automated testing
+• QA Lead performs final review
+Page 52
+
+Game Design Document | Confidential
+6. RELEASE
+• Episode staged to production environment
+• Staged review by product team
+• Release to live
+• Analytics begin tracking player behavior
+16.8 Estimated Production Metrics
+Based on the agent architecture, estimated production capacity and timelines:
+Metric Estimate Notes
+Story Bible generation 2-3 hours AI + 4-8 hours Per series
+human review
+Episode structure 30-60 minutes AI + 1-2 Per episode
+hours human review
+Scene/dialogue 2-4 hours AI + 2-4 hours Per episode (all variants)
+generation human edit
+Standard images per 15-25 images Scenes + expressions
+episode
+Encounter images per 40-60 images If episode contains encounter
+episode
+Image generation time 3-5 hours AI + 2-3 hours Per episode batch
+human review
+Total episode production 2-3 days From structure approval to
+release-ready
+Parallel episode capacity 4-6 episodes With current architecture
+simultaneously
+Weekly release velocity 6-10 episodes Across all active series
+16.9 Continuous Improvement
+The agent system improves over time through structured learning:
+• Feedback Corpus: All human revision feedback stored and analyzed. Common issues
+become prompt improvements or new QA rules.
+Page 53
+
+Game Design Document | Confidential
+• A/B Prompt Testing: Generation agents periodically test prompt variants. Superior
+versions promoted based on approval rates.
+• Player Signal Integration: Post-release player behavior (drop-off points, choice
+distributions) fed back to inform future generation.
+• Model Updates: As base models improve, agents are updated and recalibrated against
+quality benchmarks.
+• Process Retrospectives: Monthly review of pipeline metrics identifies bottlenecks and
+improvement opportunities.
+End of Document
+Page 54

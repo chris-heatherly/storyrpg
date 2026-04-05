@@ -1,0 +1,780 @@
+/**
+ * Source Material Analyzer Agent
+ *
+ * Analyzes novels and long-form source material to:
+ * - Identify story structure, acts, and key plot points
+ * - Estimate how many episodes the story requires
+ * - Create episode-by-episode breakdown
+ * - Map characters, locations, and narrative arcs
+ *
+ * This agent runs BEFORE the main generation pipeline to scope the work.
+ */
+
+import { AgentConfig } from '../config';
+import { BaseAgent, AgentResponse } from './BaseAgent';
+import { slugify } from '../utils/idUtils';
+import {
+  SourceMaterialAnalysis,
+  EpisodeOutline,
+  StoryArc,
+  PlotPoint,
+  EndingMode,
+} from '../../types/sourceAnalysis';
+import {
+  buildAnalysisFromEndingSeeds,
+  normalizeEndingTargets,
+} from '../utils/endingResolver';
+import {
+  BRANCH_AND_BOTTLENECK,
+  STAKES_TRIANGLE,
+  CHOICE_DENSITY_REQUIREMENTS,
+} from '../prompts/storytellingPrinciples';
+
+// Input for the analyzer
+export interface SourceMaterialInput {
+  // The source text to analyze
+  sourceText?: string;
+
+  // Manual prompt or additional instructions
+  userPrompt?: string;
+
+  // Optional metadata
+  title?: string;
+  author?: string;
+
+  // User preferences
+  preferences?: {
+    // Target episode length (scenes per episode)
+    targetScenesPerEpisode?: number; // Default: 6
+    // Target choices per episode
+    targetChoicesPerEpisode?: number; // Default: 3
+    // Pacing preference
+    pacing?: 'tight' | 'moderate' | 'expansive';
+    // Optional override for how the pipeline should target endings downstream
+    endingMode?: EndingMode;
+  };
+}
+
+// Intermediate analysis structure
+interface StoryStructureAnalysis {
+  genre: string;
+  tone: string;
+  themes: string[];
+  setting: {
+    timePeriod: string;
+    location: string;
+    worldDetails: string;
+  };
+  protagonist: {
+    name: string;
+    description: string;
+    arc: string;
+  };
+  majorCharacters: Array<{
+    name: string;
+    role: string;
+    description: string;
+    importance: string;
+  }>;
+  keyLocations: Array<{
+    name: string;
+    description: string;
+    importance: string;
+  }>;
+  directLanguageFragments: {
+    dialogue: string[];
+    prose: string[];
+    terminology: string[];
+  };
+  adaptationGuidance?: {
+    narrativeVoice: string;
+    keyThemesToPreserve: string[];
+    iconicMoments: string[];
+  };
+  storyArcs: Array<{
+    name: string;
+    description: string;
+    chapters: string;
+  }>;
+  majorPlotPoints: Array<{
+    description: string;
+    type: string;
+    importance: string;
+    approximatePosition: string; // "early", "middle", "late", or percentage
+  }>;
+  estimatedScope: {
+    complexity: 'simple' | 'moderate' | 'complex' | 'epic';
+    estimatedEpisodes: number;
+    reasoning: string;
+  };
+  endingAnalysis?: {
+    detectedMode: EndingMode;
+    reasoning: string;
+    explicitEndings: Array<{
+      id?: string;
+      name: string;
+      summary: string;
+      emotionalRegister?: string;
+      themePayoff?: string;
+      stateDrivers?: Array<{
+        type?: string;
+        label?: string;
+        details?: string;
+      }>;
+      targetConditions?: string[];
+    }>;
+  };
+}
+
+interface EpisodeBreakdownResponse {
+  episodes: Array<{
+    episodeNumber: number;
+    title: string;
+    synopsis: string;
+    sourceChapters: string;
+    plotPoints: string[];
+    mainCharacters: string[];
+    locations: string[];
+    narrativeArc: {
+      setup: string;
+      conflict: string;
+      resolution: string;
+    };
+  }>;
+  totalEpisodes: number;
+  breakdownNotes: string;
+}
+
+export class SourceMaterialAnalyzer extends BaseAgent {
+  private defaultScenesPerEpisode = 8; // Increased for more substantial episodes with shorter beats
+  private defaultChoicesPerEpisode = 4; // Increased to ensure choices in at least half of scenes
+
+  constructor(config: AgentConfig) {
+    super('Source Material Analyzer', config);
+    this.includeSystemPrompt = true;
+  }
+
+  protected getAgentSpecificPrompt(): string {
+    return `
+## Your Role: Source Material Analyzer
+
+You are an expert story analyst who breaks down novels and long-form narratives into interactive fiction episodes. Your job is to understand the source material's structure and create a detailed episode-by-episode breakdown.
+
+## IP Research & Direct Language
+If the user provides the name of a book, movie, or other story IP (e.g., "The Great Gatsby", "The Matrix"):
+1. **Identify the IP**: Recognize if the title or prompt refers to a known story.
+2. **Pull Direct Language**: Recall and include specific, iconic dialogue fragments, prose descriptions, and key terminology from the source.
+3. **Analyze Adaptation**: Explain how the original story's linear beats should be converted into interactive moments while maintaining the original's unique "voice".
+
+## Interactive Fiction Constraints
+
+Each episode should:
+- Have 5-8 scenes (bottleneck + branch zones)
+- Include 2-4 meaningful player choices
+- Cover a complete narrative arc (setup → conflict → resolution)
+- Take approximately 15-30 minutes to play
+
+${BRANCH_AND_BOTTLENECK}
+
+${STAKES_TRIANGLE}
+
+## Episode Sizing Guidelines
+
+When breaking down source material:
+- One chapter ≠ one episode (chapters vary too much)
+- Focus on NARRATIVE BEATS, not page count
+- Each episode needs a clear "mini-arc" with stakes
+- Major plot points should land at episode climaxes
+- Character introductions need breathing room
+- Don't rush - players need time to inhabit the story
+
+## Complexity Estimation
+
+- **Simple** (3-5 episodes): Single plotline, few characters, linear progression
+- **Moderate** (6-10 episodes): Multiple subplots, ensemble cast, some branching
+- **Complex** (11-20 episodes): Multiple interwoven arcs, large cast, significant player agency
+- **Epic** (20+ episodes): Saga-level scope, multiple volumes/books worth
+
+## Analysis Process
+
+1. First Pass: Identify overall structure (acts, major arcs)
+2. Second Pass: Map plot points and character beats
+3. Third Pass: Chunk into episode-sized narrative units
+4. Final Pass: Verify each episode has proper stakes and structure
+`;
+  }
+
+  async execute(input: SourceMaterialInput): Promise<AgentResponse<SourceMaterialAnalysis>> {
+    console.log(`[SourceMaterialAnalyzer] Starting analysis of source material...`);
+
+    const targetScenes = input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode;
+    const targetChoices = input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode;
+    const pacing = input.preferences?.pacing || 'moderate';
+
+    try {
+      // Step 1: Analyze overall story structure
+      console.log(`[SourceMaterialAnalyzer] Step 1: Analyzing story structure...`);
+      const structureAnalysis = await this.analyzeStoryStructure(input.sourceText || '', input.title, input.userPrompt);
+
+      console.log(`[SourceMaterialAnalyzer] Found ${structureAnalysis.majorPlotPoints.length} major plot points`);
+      console.log(`[SourceMaterialAnalyzer] Estimated complexity: ${structureAnalysis.estimatedScope.complexity}`);
+      console.log(`[SourceMaterialAnalyzer] Initial estimate: ${structureAnalysis.estimatedScope.estimatedEpisodes} episodes`);
+
+      // Step 2: Create detailed episode breakdown
+      console.log(`[SourceMaterialAnalyzer] Step 2: Creating episode breakdown...`);
+      const episodeBreakdown = await this.createEpisodeBreakdown(
+        input.sourceText || '',
+        structureAnalysis,
+        { targetScenes, targetChoices, pacing },
+        input.userPrompt
+      );
+
+      console.log(`[SourceMaterialAnalyzer] Created ${episodeBreakdown.episodes.length} episode outlines`);
+
+      // Step 3: Assemble final analysis
+      const analysis = this.assembleAnalysis(
+        input,
+        structureAnalysis,
+        episodeBreakdown
+      );
+
+      return {
+        success: true,
+        data: analysis,
+      };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[SourceMaterialAnalyzer] Error:`, errorMsg);
+      return {
+        success: false,
+        error: errorMsg,
+      };
+    }
+  }
+
+  /**
+   * First pass: Analyze overall story structure
+   */
+  private async analyzeStoryStructure(
+    sourceText: string,
+    title?: string,
+    userPrompt?: string
+  ): Promise<StoryStructureAnalysis> {
+    // Truncate source text if too long for single analysis
+    const maxChars = 100000; // ~25k tokens
+    const truncatedText = sourceText.length > maxChars
+      ? sourceText.substring(0, maxChars) + '\n\n[... text truncated for analysis ...]'
+      : sourceText;
+
+    const prompt = `
+Analyze the following source material and extract its story structure.
+
+${title ? `**Title**: ${title}` : ''}
+
+${userPrompt ? `**User Instructions/Prompt**:
+${userPrompt}
+
+` : ''}
+${truncatedText ? `**Source Material**:
+${truncatedText}` : '*(No source material provided, use the User Instructions/Prompt as the only source)*'}
+
+Analyze this text and respond with JSON:
+
+{
+  "genre": "<primary genre>",
+  "tone": "<overall tone: dark, light, dramatic, comedic, etc.>",
+  "themes": ["<theme1>", "<theme2>", ...],
+  "setting": {
+    "timePeriod": "<when the story takes place>",
+    "location": "<where the story takes place>",
+    "worldDetails": "<key world-building elements>"
+  },
+  "protagonist": {
+    "name": "<protagonist name>",
+    "description": "<brief description>",
+    "arc": "<what they learn/how they change>"
+  },
+  "majorCharacters": [
+    DO NOT include the protagonist here — they are already listed above.
+    Only list OTHER characters (NPCs) in this array.
+    {
+      "name": "<name>",
+      "role": "<antagonist/ally/mentor/love_interest/rival/neutral>",
+      "description": "<brief description>",
+      "importance": "<core/supporting/background>"
+    }
+  ],
+  "keyLocations": [
+    {
+      "name": "<location name>",
+      "description": "<brief description>",
+      "importance": "<major/minor/backdrop>"
+    }
+  ],
+  "directLanguageFragments": {
+    "dialogue": ["<iconic dialogue line 1>", "<iconic dialogue line 2>", ...],
+    "prose": ["<notable descriptive sentence 1>", "<notable descriptive sentence 2>", ...],
+    "terminology": ["<unique IP terms>", "<slang/jargon from world>", ...]
+  },
+  "adaptationGuidance": {
+    "narrativeVoice": "<describe the unique authorial voice/style to replicate>",
+    "keyThemesToPreserve": ["<theme 1>", "<theme 2>", ...],
+    "iconicMoments": ["<list must-have moments from source>", ...]
+  },
+  "storyArcs": [
+    {
+      "name": "<arc name>",
+      "description": "<what happens in this arc>",
+      "chapters": "<which chapters/sections this covers>"
+    }
+  ],
+  "majorPlotPoints": [
+    {
+      "description": "<what happens>",
+      "type": "<inciting_incident/rising_action/midpoint/climax/resolution/twist/revelation>",
+      "importance": "<critical/major/minor>",
+      "approximatePosition": "<early/middle/late or percentage>"
+    }
+  ],
+  "estimatedScope": {
+    "complexity": "<simple/moderate/complex/epic>",
+    "estimatedEpisodes": <number>,
+    "reasoning": "<why this estimate>"
+  },
+  "endingAnalysis": {
+    "detectedMode": "<single/multiple based on the source material itself>",
+    "reasoning": "<why the source implies one ending or several materially distinct endings>",
+    "explicitEndings": [
+      {
+        "name": "<ending name>",
+        "summary": "<what this finale looks like>",
+        "emotionalRegister": "<bittersweet/tragic/triumphant/etc>",
+        "themePayoff": "<what theme this ending lands>",
+        "stateDrivers": [
+          {
+            "type": "<relationship/identity/flag/encounter_outcome/faction/theme/choice_pattern/resource>",
+            "label": "<route driver label>",
+            "details": "<why it matters>"
+          }
+        ],
+        "targetConditions": ["<what choices or state unlock this ending>"]
+      }
+    ]
+  }
+}
+
+Be thorough but concise. Focus on elements that matter for interactive fiction adaptation.
+Return ONLY valid JSON.
+`;
+
+    const response = await this.callLLM([{ role: 'user', content: prompt }]);
+    return this.parseJSON<StoryStructureAnalysis>(response);
+  }
+
+  /**
+   * Second pass: Create detailed episode breakdown
+   */
+  private async createEpisodeBreakdown(
+    sourceText: string,
+    structure: StoryStructureAnalysis,
+    preferences: { targetScenes: number; targetChoices: number; pacing: string },
+    userPrompt?: string
+  ): Promise<EpisodeBreakdownResponse> {
+    const estimatedEpisodes = structure.estimatedScope.estimatedEpisodes;
+
+    // For long sources, we may need to chunk the analysis
+    const maxChars = 80000;
+    const truncatedText = sourceText.length > maxChars
+      ? sourceText.substring(0, maxChars) + '\n\n[... text truncated ...]'
+      : sourceText;
+
+    const prompt = `
+Based on the story structure analysis, create a detailed episode-by-episode breakdown.
+
+${userPrompt ? `**User Instructions/Prompt**:
+${userPrompt}
+
+` : ''}
+**Story Structure Summary**:
+- Genre: ${structure.genre}
+- Tone: ${structure.tone}
+- Protagonist: ${structure.protagonist.name} - ${structure.protagonist.arc}
+- Estimated Episodes: ${estimatedEpisodes}
+- Complexity: ${structure.estimatedScope.complexity}
+
+**Story Arcs**:
+${structure.storyArcs.map(arc => `- ${arc.name}: ${arc.description}`).join('\n')}
+
+**Major Plot Points**:
+${structure.majorPlotPoints.map(pp => `- [${pp.type}] ${pp.description} (${pp.approximatePosition})`).join('\n')}
+
+**Episode Guidelines**:
+- Target ${preferences.targetScenes} scenes per episode
+- Target ${preferences.targetChoices} meaningful choices per episode
+- Pacing: ${preferences.pacing}
+- Each episode needs: setup → conflict → resolution
+- Major plot points should be episode climaxes
+- Leave room for player agency
+
+${truncatedText ? `**Source Material Reference**:
+${truncatedText}` : ''}
+
+Create ${estimatedEpisodes} episode outlines. Respond with JSON:
+
+{
+  "episodes": [
+    {
+      "episodeNumber": 1,
+      "title": "<compelling episode title>",
+      "synopsis": "<2-3 sentence synopsis>",
+      "sourceChapters": "<which chapters/sections this covers>",
+      "plotPoints": ["<plot point 1>", "<plot point 2>", ...],
+      "mainCharacters": ["<character names appearing>"],
+      "locations": ["<locations used>"],
+      "narrativeArc": {
+        "setup": "<how episode begins>",
+        "conflict": "<central tension>",
+        "resolution": "<how episode ends - can be cliffhanger>"
+      }
+    }
+  ],
+  "totalEpisodes": ${estimatedEpisodes},
+  "breakdownNotes": "<any important notes about the breakdown>"
+}
+
+IMPORTANT:
+- Don't squeeze the whole story into fewer episodes than it needs
+- Episode 1 should establish the world and protagonist, not rush to action
+- Leave breathing room for character development
+- Final episode should feel like a satisfying conclusion (for now)
+
+Return ONLY valid JSON.
+`;
+
+    const response = await this.callLLM([{ role: 'user', content: prompt }]);
+    return this.parseJSON<EpisodeBreakdownResponse>(response);
+  }
+
+  /**
+   * Assemble the final analysis from all passes
+   */
+  private assembleAnalysis(
+    input: SourceMaterialInput,
+    structure: StoryStructureAnalysis,
+    breakdown: EpisodeBreakdownResponse
+  ): SourceMaterialAnalysis {
+    // Convert episode breakdown to full outlines
+    const episodeOutlines: EpisodeOutline[] = breakdown.episodes.map((ep, idx) => {
+      // Find plot points for this episode
+      const episodePlotPoints: PlotPoint[] = ep.plotPoints.map((pp, ppIdx) => ({
+        id: `ep${ep.episodeNumber}-pp${ppIdx + 1}`,
+        description: pp,
+        type: this.inferPlotPointType(pp, ep.episodeNumber, breakdown.totalEpisodes),
+        importance: 'major' as const,
+        targetEpisode: ep.episodeNumber,
+        charactersInvolved: ep.mainCharacters,
+      }));
+
+      return {
+        episodeNumber: ep.episodeNumber,
+        title: ep.title,
+        synopsis: ep.synopsis,
+        sourceChapters: [ep.sourceChapters],
+        sourceSummary: ep.synopsis,
+        plotPoints: episodePlotPoints,
+        mainCharacters: ep.mainCharacters,
+        supportingCharacters: [],
+        locations: ep.locations,
+        estimatedSceneCount: input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode,
+        estimatedChoiceCount: input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode,
+        narrativeFunction: ep.narrativeArc,
+      };
+    });
+
+    // Convert story arcs with episode ranges
+    const storyArcs: StoryArc[] = structure.storyArcs.map((arc, idx) => ({
+      id: `arc-${idx + 1}`,
+      name: arc.name,
+      description: arc.description,
+      startChapter: arc.chapters,
+      estimatedEpisodeRange: this.estimateArcEpisodeRange(arc, breakdown.totalEpisodes, idx, structure.storyArcs.length),
+    }));
+
+    // Build major characters list with first appearances
+    const majorCharacters = structure.majorCharacters.map((char, idx) => ({
+      id: `char-${slugify(char.name)}`,
+      name: char.name,
+      role: this.normalizeRole(char.role),
+      description: char.description,
+      importance: this.normalizeImportance(char.importance),
+      firstAppearance: this.findFirstAppearance(char.name, breakdown.episodes),
+    }));
+
+    // Build locations list
+    const keyLocations = structure.keyLocations.map((loc, idx) => ({
+      id: `loc-${loc.name.toLowerCase().replace(/\s+/g, '-')}`,
+      name: loc.name,
+      description: loc.description,
+      importance: this.normalizeLocationImportance(loc.importance),
+      firstAppearance: this.findLocationFirstAppearance(loc.name, breakdown.episodes),
+    }));
+
+    // Calculate confidence score based on analysis quality
+    const confidenceScore = this.calculateConfidence(structure, breakdown);
+
+    // Gather any warnings
+    const warnings = this.generateWarnings(structure, breakdown, input);
+    const extractedEndings = normalizeEndingTargets(
+      structure.endingAnalysis?.explicitEndings || [],
+      'explicit',
+      {
+        title: input.title,
+        tone: structure.tone,
+        themes: structure.themes,
+        protagonistName: structure.protagonist.name,
+        protagonistArc: structure.protagonist.arc,
+        storyArcs: structure.storyArcs.map((arc) => ({ name: arc.name, description: arc.description })),
+      },
+    );
+    const detectedEndingMode = structure.endingAnalysis?.detectedMode
+      || (extractedEndings.length > 1 ? 'multiple' : 'single');
+    const endingFields = buildAnalysisFromEndingSeeds(
+      {
+        title: input.title,
+        tone: structure.tone,
+        themes: structure.themes,
+        protagonistName: structure.protagonist.name,
+        protagonistArc: structure.protagonist.arc,
+        storyArcs: structure.storyArcs.map((arc) => ({ name: arc.name, description: arc.description })),
+      },
+      extractedEndings,
+      detectedEndingMode,
+      input.preferences?.endingMode,
+    );
+
+    return {
+      sourceTitle: input.title || 'Untitled',
+      sourceAuthor: input.author,
+      totalWordCount: (input.sourceText || '').trim().length > 0 ? input.sourceText!.split(/\s+/).length : 0,
+
+      genre: structure.genre,
+      tone: structure.tone,
+      themes: structure.themes,
+      setting: structure.setting,
+
+      storyArcs,
+      detectedEndingMode: endingFields.detectedEndingMode,
+      resolvedEndingMode: endingFields.resolvedEndingMode,
+      endingModeReasoning: structure.endingAnalysis?.reasoning,
+      extractedEndings: endingFields.extractedEndings,
+      generatedEndings: endingFields.generatedEndings,
+      resolvedEndings: endingFields.resolvedEndings,
+      episodeBreakdown: episodeOutlines,
+      totalEstimatedEpisodes: breakdown.totalEpisodes,
+
+      protagonist: {
+        id: `char-${slugify(structure.protagonist.name)}`,
+        name: structure.protagonist.name,
+        description: structure.protagonist.description,
+        arc: structure.protagonist.arc,
+      },
+      majorCharacters,
+      keyLocations,
+
+      analysisTimestamp: new Date(),
+      confidenceScore,
+      warnings,
+    };
+  }
+
+  // Helper methods
+  private inferPlotPointType(
+    description: string,
+    episodeNum: number,
+    totalEpisodes: number
+  ): PlotPoint['type'] {
+    const lowerDesc = description.toLowerCase();
+    const position = episodeNum / totalEpisodes;
+
+    if (lowerDesc.includes('discover') || lowerDesc.includes('reveal') || lowerDesc.includes('learn')) {
+      return 'revelation';
+    }
+    if (lowerDesc.includes('twist') || lowerDesc.includes('betray') || lowerDesc.includes('surprise')) {
+      return 'twist';
+    }
+    if (position < 0.15 && (lowerDesc.includes('begin') || lowerDesc.includes('start') || lowerDesc.includes('call'))) {
+      return 'inciting_incident';
+    }
+    if (position > 0.4 && position < 0.6) {
+      return 'midpoint';
+    }
+    if (position > 0.85) {
+      return 'resolution';
+    }
+    if (position > 0.75) {
+      return 'climax';
+    }
+    return 'rising_action';
+  }
+
+  private estimateArcEpisodeRange(
+    arc: { name: string; description: string; chapters: string },
+    totalEpisodes: number,
+    arcIndex: number,
+    totalArcs: number
+  ): { start: number; end: number } {
+    // Distribute arcs roughly evenly across episodes
+    const episodesPerArc = totalEpisodes / totalArcs;
+    const start = Math.max(1, Math.floor(arcIndex * episodesPerArc) + 1);
+    const end = Math.min(totalEpisodes, Math.floor((arcIndex + 1) * episodesPerArc));
+    return { start, end };
+  }
+
+  private normalizeRole(role: string): 'antagonist' | 'ally' | 'mentor' | 'love_interest' | 'rival' | 'neutral' {
+    const lower = role.toLowerCase();
+    if (lower.includes('antag') || lower.includes('villain')) return 'antagonist';
+    if (lower.includes('ally') || lower.includes('friend')) return 'ally';
+    if (lower.includes('mentor') || lower.includes('teacher')) return 'mentor';
+    if (lower.includes('love') || lower.includes('romantic')) return 'love_interest';
+    if (lower.includes('rival')) return 'rival';
+    return 'neutral';
+  }
+
+  private normalizeImportance(importance: string): 'core' | 'supporting' | 'background' {
+    const lower = importance.toLowerCase();
+    if (lower.includes('core') || lower.includes('major') || lower.includes('main')) return 'core';
+    if (lower.includes('support')) return 'supporting';
+    return 'background';
+  }
+
+  private normalizeLocationImportance(importance: string): 'major' | 'minor' | 'backdrop' {
+    const lower = importance.toLowerCase();
+    if (lower.includes('major') || lower.includes('main') || lower.includes('key')) return 'major';
+    if (lower.includes('minor')) return 'minor';
+    return 'backdrop';
+  }
+
+  private findFirstAppearance(
+    characterName: string,
+    episodes: Array<{ mainCharacters: string[]; episodeNumber: number }>
+  ): number {
+    for (const ep of episodes) {
+      if (ep.mainCharacters.some(c => c.toLowerCase().includes(characterName.toLowerCase()))) {
+        return ep.episodeNumber;
+      }
+    }
+    return 1; // Default to first episode
+  }
+
+  private findLocationFirstAppearance(
+    locationName: string,
+    episodes: Array<{ locations: string[]; episodeNumber: number }>
+  ): number {
+    for (const ep of episodes) {
+      if (ep.locations.some(l => l.toLowerCase().includes(locationName.toLowerCase()))) {
+        return ep.episodeNumber;
+      }
+    }
+    return 1;
+  }
+
+  private calculateConfidence(
+    structure: StoryStructureAnalysis,
+    breakdown: EpisodeBreakdownResponse
+  ): number {
+    let score = 70; // Base confidence
+
+    // Boost for complete analysis
+    if (structure.protagonist.name && structure.protagonist.arc) score += 5;
+    if (structure.majorCharacters.length >= 3) score += 5;
+    if (structure.storyArcs.length >= 2) score += 5;
+    if (structure.majorPlotPoints.length >= 5) score += 5;
+
+    // Boost for good episode breakdown
+    if (breakdown.episodes.length === breakdown.totalEpisodes) score += 5;
+    if (breakdown.episodes.every(ep => ep.plotPoints.length >= 2)) score += 5;
+
+    return Math.min(100, score);
+  }
+
+  private generateWarnings(
+    structure: StoryStructureAnalysis,
+    breakdown: EpisodeBreakdownResponse,
+    input: SourceMaterialInput
+  ): string[] {
+    const warnings: string[] = [];
+
+    // Check for potential issues
+    if (breakdown.totalEpisodes > 20) {
+      warnings.push('Epic-length story may require significant generation time');
+    }
+
+    if (structure.majorCharacters.length > 10) {
+      warnings.push('Large cast may be difficult to develop fully in interactive format');
+    }
+
+    if ((input.sourceText || '').length > 200000) {
+      warnings.push('Very long source text - analysis may have missed details in later sections');
+    }
+
+    if (structure.estimatedScope.complexity === 'epic') {
+      warnings.push('Complex source material - consider generating in batches');
+    }
+
+    if ((structure.endingAnalysis?.explicitEndings || []).length === 0) {
+      warnings.push('No explicit ending set found in source analysis; the pipeline may infer or generate finale targets.');
+    }
+
+    return warnings;
+  }
+
+  /**
+   * Quick estimate of episode count without full analysis
+   * Useful for giving user immediate feedback
+   */
+  async quickEstimate(sourceText: string): Promise<{
+    estimatedEpisodes: number;
+    complexity: string;
+    confidence: number;
+  }> {
+    const wordCount = sourceText.split(/\s+/).length;
+
+    // Very rough heuristics based on word count
+    // Average novel: 80,000 words
+    // Target: ~10,000 words of story per episode after compression
+    const baseEstimate = Math.ceil(wordCount / 15000);
+
+    const prompt = `
+Quick analysis: How many interactive fiction episodes would this story require?
+
+Word count: ${wordCount}
+First 5000 characters:
+${sourceText.substring(0, 5000)}
+
+Respond with JSON only:
+{
+  "estimatedEpisodes": <number>,
+  "complexity": "<simple/moderate/complex/epic>",
+  "reasoning": "<one sentence>"
+}
+`;
+
+    try {
+      const response = await this.callLLM([{ role: 'user', content: prompt }]);
+      const result = this.parseJSON<{ estimatedEpisodes: number; complexity: string; reasoning: string }>(response);
+
+      return {
+        estimatedEpisodes: result.estimatedEpisodes,
+        complexity: result.complexity,
+        confidence: 60, // Lower confidence for quick estimate
+      };
+    } catch {
+      // Fallback to heuristic
+      return {
+        estimatedEpisodes: baseEstimate,
+        complexity: baseEstimate > 15 ? 'epic' : baseEstimate > 8 ? 'complex' : 'moderate',
+        confidence: 40,
+      };
+    }
+  }
+}

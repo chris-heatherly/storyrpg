@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "baseUrl": ".",
+    "paths": {
+      "react-native": ["src/ai-agents/server/react-native-shim.ts"],
+      "expo-file-system": ["src/ai-agents/server/expo-file-system-shim.ts"]
+    },
+    "strict": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  }
+}
+

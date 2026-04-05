@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+*.pem
+
+# IDE / Editor
+.idea/
+*.swp
+*.swo
+*~
+
+# Cursor agent transcripts (local only)
+.cursor/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example

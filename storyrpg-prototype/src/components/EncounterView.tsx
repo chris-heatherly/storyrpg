@@ -889,10 +889,12 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       
       console.log('[EncounterView] Terminal outcome:', finalOutcome);
       
-      // Fallback chain: outcome-specific image → current situation image → last known image
+      // Fallback chain: outcome image → situation image → encounter outcome image → last phase image → last known
       const terminalFinalImage = resolveImageUrl(
         outcome.outcomeImage
           || (screenState.type === 'active' ? screenState.situation?.situationImage : undefined)
+          || encounter.outcomes?.[finalOutcome]?.image
+          || encounter.phases?.[encounter.phases.length - 1]?.situationImage
           || lastKnownImageRef.current
       );
       
@@ -1656,7 +1658,8 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
                 style={styles.continueButton} 
                 onPress={() => {
                   const finalOutcome = goalFilled && !threatFilled ? 'victory' : 
-                                       threatFilled && !goalFilled ? 'defeat' : 'escape';
+                                       threatFilled && !goalFilled ? 'defeat' :
+                                       goalFilled && threatFilled ? 'partialVictory' : 'escape';
                   handleEncounterEnd(finalOutcome);
                 }}
               >
@@ -1884,10 +1887,18 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
 
         {/* Content Overlay */}
         <View style={styles.uiOverlay}>
-          <View style={styles.contentContainer}>
+          <ScrollView
+            style={styles.contentScrollView}
+            contentContainerStyle={styles.contentContainer}
+            showsVerticalScrollIndicator={false}
+          >
             <View style={styles.textPanel}>
               <OutcomeHeader tier={labelInfo.tier} context="encounter" text={labelInfo.label} fontSize={28} />
-              <Text style={styles.outcomeText}>{tpl(finalNarrative)}</Text>
+              <NarrativeText
+                text={tpl(finalNarrative)}
+                animate={true}
+                onAnimationComplete={() => {}}
+              />
 
               {terminalCost && (
                 <View style={styles.costPanel}>
@@ -1914,7 +1925,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
               <Text style={styles.continueText}>CONTINUE STORY</Text>
               <ChevronRight size={16} color="white" />
             </TouchableOpacity>
-          </View>
+          </ScrollView>
         </View>
       </View>
     );
@@ -2138,29 +2149,41 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
 
   // Render encounter outcome screen
   if (screenState.type === 'encounter_outcome') {
-    // Image fallback chain: outcome-specific → last image shown → phase image → beat image
+    // Image fallback chain: outcome-specific sequence → complicated sequence → last image → phase image
     const lastPhase = encounter.phases[encounter.phases.length - 1];
     const lastBeat = lastPhase?.beats[lastPhase.beats.length - 1];
-    const finalImage = lastBeat?.outcomeSequences?.[screenState.outcome === 'victory' ? 'success' : 'failure']?.[0] || 
-                       lastBeat?.image || 
-                       lastKnownImageRef.current ||
-                       lastPhase?.situationImage;
+    const outcomeSeqKey = screenState.outcome === 'victory' ? 'success'
+      : screenState.outcome === 'partialVictory' ? 'success'
+      : 'failure';
+    const finalImage = lastBeat?.outcomeSequences?.[outcomeSeqKey]?.[0]
+                       || lastBeat?.outcomeSequences?.['complicated']?.[0]
+                       || lastBeat?.image
+                       || lastKnownImageRef.current
+                       || lastPhase?.situationImage;
 
     // Use encounter-level outcome text if available, otherwise generic fallback
-    const outcomeData = encounter.outcomes?.[screenState.outcome] || encounter.outcomes?.[screenState.outcome === 'victory' ? 'victory' : 'defeat'];
+    const outcomeData = encounter.outcomes?.[screenState.outcome]
+      || (screenState.outcome === 'partialVictory' ? encounter.outcomes?.partialVictory : undefined)
+      || encounter.outcomes?.[screenState.outcome === 'victory' ? 'victory' : 'defeat'];
     const outcomeNarrative = outcomeData?.outcomeText
       || (screenState.outcome === 'victory'
           ? 'You emerged triumphant from this challenge.'
           : screenState.outcome === 'defeat'
           ? 'Things did not go as planned, but the story continues...'
+          : screenState.outcome === 'partialVictory'
+          ? 'You achieved your goal, but not without a price...'
           : 'You managed to get away and live to fight another day.');
 
-    const outcomeLabel = screenState.outcome === 'victory' ? 'VICTORY' : 
-                         screenState.outcome === 'defeat' ? 'DEFEATED' : 'ESCAPED';
-    const legacyTier: 'success' | 'complicated' | 'failure' = screenState.outcome === 'victory' ? 'success' : 
-                       screenState.outcome === 'defeat' ? 'failure' : 'complicated';
-    const outcomeBorderColor = screenState.outcome === 'victory' ? TERMINAL.colors.success : 
-                               screenState.outcome === 'defeat' ? TERMINAL.colors.error : TERMINAL.colors.amber;
+    const legacyLabels: Record<string, { label: string; tier: 'success' | 'complicated' | 'failure'; color: string }> = {
+      victory: { label: 'VICTORY', tier: 'success', color: TERMINAL.colors.success },
+      defeat: { label: 'DEFEATED', tier: 'failure', color: TERMINAL.colors.error },
+      escape: { label: 'ESCAPED', tier: 'complicated', color: TERMINAL.colors.amber },
+      partialVictory: { label: 'PARTIAL VICTORY', tier: 'complicated', color: TERMINAL.colors.amber },
+    };
+    const labelInfo = legacyLabels[screenState.outcome] || legacyLabels.escape;
+    const outcomeLabel = labelInfo.label;
+    const legacyTier = labelInfo.tier;
+    const outcomeBorderColor = labelInfo.color;
 
     return (
       <View style={styles.container}>
@@ -2234,10 +2257,34 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
 
         {/* Content Overlay */}
         <View style={styles.uiOverlay}>
-          <View style={styles.contentContainer}>
+          <ScrollView
+            style={styles.contentScrollView}
+            contentContainerStyle={styles.contentContainer}
+            showsVerticalScrollIndicator={false}
+          >
             <View style={styles.textPanel}>
-              <OutcomeHeader tier={legacyTier} context="encounter" text={outcomeLabel} />
-              <Text style={styles.outcomeText}>{tpl(outcomeNarrative)}</Text>
+              <OutcomeHeader tier={legacyTier} context="encounter" text={outcomeLabel} fontSize={28} />
+              <NarrativeText
+                text={tpl(outcomeNarrative)}
+                animate={true}
+                onAnimationComplete={() => {}}
+              />
+
+              {screenState.outcome === 'partialVictory' && (() => {
+                const legacyCost = outcomeData?.cost || encounter.outcomes?.partialVictory?.cost;
+                if (!legacyCost) return null;
+                return (
+                  <View style={styles.costPanel}>
+                    <Text style={styles.costPanelLabel}>THE COST</Text>
+                    <Text style={styles.costPanelTitle}>{legacyCost.visibleComplication}</Text>
+                    <Text style={styles.costPanelMeta}>{`${legacyCost.severity.toUpperCase()} ${legacyCost.domain.toUpperCase()} COST`}</Text>
+                    <Text style={styles.costPanelBody}>{legacyCost.immediateEffect}</Text>
+                    {!!legacyCost.lingeringEffect && (
+                      <Text style={styles.costPanelLingering}>{legacyCost.lingeringEffect}</Text>
+                    )}
+                  </View>
+                );
+              })()}
 
               {/* Consequence summary (from handleEncounterEnd) */}
               {consequenceFeedback.length > 0 && (
@@ -2249,7 +2296,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
               <Text style={styles.continueText}>CONTINUE STORY</Text>
               <ChevronRight size={16} color="white" />
             </TouchableOpacity>
-          </View>
+          </ScrollView>
         </View>
       </View>
     );

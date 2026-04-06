@@ -1239,20 +1239,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
                 <View style={styles.recapSection}>
                   <Text style={styles.recapSectionTitle}>RELATIONSHIPS CHANGED</Text>
                   {episodeRecap.relationshipChanges.map((item) => {
-                    const badges: AppliedConsequence[] = item.summary
-                      .split(/[.;]/)
-                      .filter(Boolean)
-                      .map((part) => {
-                        const lower = part.trim().toLowerCase();
-                        const isUp = lower.includes('rose');
-                        return {
-                          type: 'relationship' as const,
-                          label: item.npcName,
-                          direction: isUp ? 'up' as const : 'down' as const,
-                          narrativeHint: part.trim(),
-                        };
-                      })
-                      .filter(b => b.narrativeHint.length > 0);
+                    const badges: AppliedConsequence[] = item.changes.map((c) => ({
+                      type: 'relationship' as const,
+                      label: c.dimension,
+                      direction: c.direction,
+                    }));
                     return (
                       <View key={item.npcId} style={styles.recapCard}>
                         <Text style={styles.recapChoiceText}>{item.npcName}</Text>

@@ -29,6 +29,7 @@ export const TERMINAL = {
     cyanDim: '#0891b2',
 
     // Text hierarchy
+    textStrong: '#f1f5f9',
     textBody: '#cbd5e1',
     textLight: '#e2e8f0',
 

@@ -5,7 +5,6 @@
 
 import type { PlayerState, AppliedConsequence } from '../types';
 import type { Consequence } from '../types';
-import { getRelationshipDescription } from '../engine/storyEngine';
 
 export interface EpisodeChoiceRecapItem {
   id: string;
@@ -16,10 +15,16 @@ export interface EpisodeChoiceRecapItem {
   consequences?: AppliedConsequence[];
 }
 
+export interface RelationshipDimensionChange {
+  dimension: string;
+  direction: 'up' | 'down';
+}
+
 export interface EpisodeRelationshipRecapItem {
   npcId: string;
   npcName: string;
   summary: string;
+  changes: RelationshipDimensionChange[];
 }
 
 export interface EpisodeRecapData {
@@ -84,19 +89,22 @@ export function summarizeRelationshipChanges(
     const next = after[npcId];
     if (!prev || !next) continue;
 
-    const lines: string[] = [];
+    const changes: RelationshipDimensionChange[] = [];
     for (const dimension of ['trust', 'affection', 'respect', 'fear'] as const) {
       const delta = next[dimension] - prev[dimension];
       if (delta === 0) continue;
-      const verb = delta > 0 ? 'rose' : 'fell';
-      lines.push(`${dimension.charAt(0).toUpperCase() + dimension.slice(1)} ${verb}; ${formatNpcName(npcId, story)} ${getRelationshipDescription(dimension, next[dimension])}.`);
+      changes.push({
+        dimension: dimension.charAt(0).toUpperCase() + dimension.slice(1),
+        direction: delta > 0 ? 'up' : 'down',
+      });
     }
 
-    if (lines.length > 0) {
+    if (changes.length > 0) {
       items.push({
         npcId,
         npcName: formatNpcName(npcId, story),
-        summary: lines.join(' '),
+        summary: changes.map(c => `${c.dimension} ${c.direction === 'up' ? 'rose' : 'fell'}`).join(', '),
+        changes,
       });
     }
   }

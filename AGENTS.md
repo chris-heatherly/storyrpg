@@ -200,4 +200,4 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/QA_FIXES_SUMMARY.md` | QA fixes and recurring patterns |
 | `docs/visual_storytelling_guide.md` | Visual storytelling design principles |
 | `docs/reference/` | Original reference materials (PDF text extracts) |
-| `storyrpg-prototype/.cursor/skills/` | Cursor agent skills: pipeline debugging, validation, orchestration, image generation, UX design, story structure rules |
+| `.cursor/skills/` | Cursor agent skills: pipeline debugging, validation, orchestration, image generation, UX design, story structure rules |

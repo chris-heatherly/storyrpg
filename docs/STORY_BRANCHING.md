@@ -2,7 +2,7 @@
 
 How StoryRPG creates, manages, and constrains story branches.
 
-**Last Updated:** April 2026
+**Last Updated:** December 2024
 
 ---
 

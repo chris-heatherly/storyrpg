@@ -70,7 +70,7 @@ If you want to get running as fast as possible:
 cd /path/to/where/you/want/the/project
 
 # 2. Navigate to the prototype directory
-cd StoryRPG_New/storyrpg-prototype
+cd storyrpg-prototype
 
 # 3. Install dependencies
 npm install
@@ -638,10 +638,15 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 | `npm run generate:heist` | Generate a heist-genre story |
 | `npm run generate:fantasy` | Generate a fantasy-genre story |
 | `npm run generate:doc` | Generate from a document file |
+| `npm run generate:template` | Generate using a template file |
 | `npm run proxy:compose:up` | Start proxy in Docker |
 | `npm run proxy:compose:down` | Stop Docker proxy |
 | `npm run proxy:compose:logs` | View Docker proxy logs |
 | `npm run proxy:health` | Check proxy server health |
+| `npm test` | Run tests |
+| `npm run typecheck` | Run TypeScript type checking |
+| `npm run validate` | Run both type checking and tests |
+| `npm run clean:runtime` | Clean up runtime artifacts |
 
 ---
 
@@ -650,31 +655,61 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 For new developers or anyone needing to understand where things are:
 
 ```
-StoryRPG_New/
-├── GDD.md                    ← Game Design Document (what and why)
-├── TDD.md                    ← Technical Design Document (how)
-├── INSTALL.md                ← This file (setup instructions)
+storyrpg-prototype/               ← The application root
+├── .env                          ← Your API keys (DO NOT share or commit)
+├── package.json                  ← Dependencies and scripts
+├── proxy-server.js               ← The backend server
+├── App.tsx                       ← The app's main entry point
 │
-└── storyrpg-prototype/       ← The application
-    ├── .env                  ← Your API keys (DO NOT share or commit)
-    ├── package.json          ← Dependencies and scripts
-    ├── proxy-server.js       ← The backend server
-    ├── App.tsx               ← The app's main entry point
-    │
-    ├── src/
-    │   ├── screens/          ← The app's pages/views
-    │   ├── components/       ← Reusable UI pieces
-    │   ├── engine/           ← Story playback logic
-    │   ├── stores/           ← Data management
-    │   ├── types/            ← Data structure definitions
-    │   ├── ai-agents/        ← The AI story generation system
-    │   │   ├── agents/       ← Individual AI specialists
-    │   │   ├── pipeline/     ← Generation orchestration
-    │   │   ├── services/     ← Image/audio generation
-    │   │   └── validators/   ← Quality checking
-    │   └── data/stories/     ← Built-in story content
-    │
-    └── generated-stories/    ← Output folder for generated stories
+├── src/
+│   ├── screens/                  ← The app's pages/views
+│   │   ├── HomeScreen.tsx        ← Main story catalog
+│   │   ├── GeneratorScreen.tsx   ← Story generation interface
+│   │   ├── ReadingScreen.tsx     ← Story reading/playing interface
+│   │   ├── EpisodeSelectScreen.tsx
+│   │   ├── SettingsScreen.tsx
+│   │   └── VisualizerScreen.tsx
+│   │
+│   ├── components/               ← Reusable UI pieces
+│   ├── engine/                   ← Story playback logic
+│   │   ├── storyEngine.ts        ← Core story processing
+│   │   ├── conditionEvaluator.ts ← Choice/branch logic
+│   │   └── templateProcessor.ts  ← Dynamic content processing
+│   │
+│   ├── stores/                   ← Data management (Zustand stores)
+│   │   ├── gameStore.ts          ← Player state management
+│   │   ├── generationJobStore.ts ← Generation progress tracking
+│   │   ├── seasonPlanStore.ts    ← Season planning interface state
+│   │   └── settingsStore.ts      ← User preferences
+│   │
+│   ├── types/                    ← Data structure definitions
+│   │   └── index.ts              ← All type definitions
+│   │
+│   ├── ai-agents/                ← The AI story generation system
+│   │   ├── agents/               ← Individual AI specialists
+│   │   │   ├── StoryArchitect.ts ← Overall story planning
+│   │   │   ├── SceneWriter.ts    ← Scene content generation
+│   │   │   ├── ChoiceAuthor.ts   ← Choice generation
+│   │   │   ├── ImageGenerator.ts ← Visual content
+│   │   │   └── image-team/       ← Advanced visual generation
+│   │   ├── pipeline/             ← Generation orchestration
+│   │   ├── services/             ← External API integrations
+│   │   ├── validators/           ← Quality checking
+│   │   ├── example-usage.ts      ← CLI generation script
+│   │   └── generate-from-document.ts ← Document-based generation
+│   │
+│   ├── data/stories/             ← Built-in story content
+│   ├── config/                   ← Configuration files
+│   │   └── endpoints.ts          ← API endpoint definitions
+│   └── utils/                    ← Helper utilities
+│
+├── docs/                         ← Documentation
+│   ├── GDD.md                    ← Game Design Document
+│   ├── TDD.md                    ← Technical Design Document
+│   └── INSTALL.md                ← This file
+│
+├── generated-stories/            ← Output folder for generated stories
+└── scripts/                     ← Utility scripts
 ```
 
 ### Key Files to Know
@@ -688,7 +723,7 @@ StoryRPG_New/
 | `src/ai-agents/pipeline/FullStoryPipeline.ts` | The main AI generation coordinator |
 | `src/ai-agents/config.ts` | Configuration for the AI pipeline |
 | `src/stores/gameStore.ts` | Player state management (saves, progress, etc.) |
-| `src/components/StoryReader.tsx` | The main reading/playing interface |
+| `src/screens/ReadingScreen.tsx` | The main reading/playing interface |
 
 ---
 
@@ -711,4 +746,4 @@ Run through this checklist after setup to confirm everything is functioning:
 
 ---
 
-*For questions about the game design, see GDD.md. For technical architecture details, see TDD.md.*
+*For questions about the game design, see docs/GDD.md. For technical architecture details, see docs/TDD.md.*

@@ -710,50 +710,31 @@ The following systems were added after the initial QA fix sessions. They are doc
 
 ### Pipeline Utility Additions (New)
 - `src/ai-agents/utils/memoryStore.ts` — `MemoryStore` abstraction (`NodeMemoryStore`, `ProxyMemoryStore`)
-- `src/ai-agents/utils/withTimeout.ts` — `withTimeout` wrapper with `PIPELINE_TIMEOUTS`
-- `src/ai-agents/utils/dependencyGraph.ts` — Scene graph topology and topological waves
-- `src/ai-agents/utils/branchTopology.ts` — `analyzeBranchTopology`
-- `src/ai-agents/utils/relationshipDynamics.ts` — `analyzeRelationshipDynamics`
-- `src/ai-agents/utils/styleAdaptation.ts` — Art style parsing and adaptation
-- `src/ai-agents/utils/endingResolver.ts` — Ending target resolution
-- `src/ai-agents/utils/imageResizer.ts` — Image processing utilities
-- `src/ai-agents/utils/jobTracker.ts` — Job lifecycle tracking with `JobCancelledError`
-- `src/ai-agents/utils/pipelineTelemetry.ts` — `PipelineTelemetry` metric collection
-- `src/ai-agents/utils/concurrency.ts` — `AsyncSemaphore`, `mapWithConcurrency`, `LocalWorkerQueue`
+- `src/ai-agents/utils/withTimeout.ts` — `withTimeout` wrapper with configurable timeouts
+- `src/ai-agents/utils/retryLogic.ts` — Enhanced retry patterns with exponential backoff and jitter
 
-### New Validators (New)
-- `src/ai-agents/validators/SeasonValidator.ts` — Season-level validation
-- `src/ai-agents/validators/CliffhangerValidator.ts` — Cliffhanger quality (LLM-based)
-- `src/ai-agents/validators/PhaseValidator.ts` — Phase-level validation with configurable thresholds
-- `src/ai-agents/validators/PixarPrinciplesValidator.ts` — Pixar storytelling principles validation
-
-### New Agent Capabilities (New)
-- `src/ai-agents/agents/PlaytestSimulator.ts` — Automated playtest simulation
-- `src/ai-agents/agents/VariableTracker.ts` — State variable tracking across scenes
-- `src/ai-agents/agents/ImageGenerator.ts` — Unified image prompt generation (scene, beat, cover, character master, location master, encounter)
-
-### New Stores (New)
-- `src/stores/videoJobStore.ts` — Video generation job queue/status
-- `src/stores/imageFeedbackStore.ts` — Image feedback (thumbs up/down)
-- `src/stores/playerStatePersistence.ts` — Dedicated player state serialization/deserialization
-- `src/stores/encounterStatePersistence.ts` — Encounter runtime state persistence
-
-### Video Generation (New)
-- `src/ai-agents/agents/image-team/VideoDirectorAgent.ts` — Video direction for Veo pipeline
-- `src/ai-agents/services/videoGenerationService.ts` — Video generation service
-- `VideoSettingsConfig` and `DEFAULT_VIDEO_SETTINGS` in `src/ai-agents/config.ts`
-
-### Extended QA (New)
-- `ExtendedQARunner` in `src/ai-agents/agents/QAAgents.ts` — runs `PlotHoleDetector`, `ToneAnalyzer`, `PacingAuditor`, `SensitivityReviewer` in addition to core QA agents
-
-### Configuration Changes
-- `tsconfig.worker.json` added (5 tsconfig files total)
-- `src/ai-agents/config/buildPipelineConfig.ts` extracted from inline config building
-- `failurePolicy` (`fail_fast` | `recover`) added to `GenerationSettingsConfig`
-- `panelMode` added to `PipelineConfig` for image generation
-- `MemoryConfig` added for pipeline memory (Claude Memory tool support)
+### Additional Validation Infrastructure (New)
+- Comprehensive validator suite in `src/ai-agents/validators/` covering choice density, consequence budget, cliffhanger placement, tone consistency, and more
+- Type-safe validation configuration system
+- Parallel validation execution with proper error aggregation
 
 ---
 
-*Generated: January 26, 2026*
-*Updated: April 4, 2026*
+## Testing Infrastructure Improvements
+
+### Unit Test Coverage Added
+- `src/engine/storyEngine.test.ts` - Core engine functionality
+- `src/engine/templateProcessor.test.ts` - Template processing edge cases  
+- `src/ai-agents/agents/EncounterArchitect.test.ts` - Encounter generation validation
+- `src/ai-agents/agents/SceneWriter.test.ts` - Scene writing validation
+
+### TypeScript Configuration Improvements
+- Split TypeScript configurations: `tsconfig.app.json`, `tsconfig.test.json`, `tsconfig.contracts.json`
+- Strict type checking with `--noEmit` for validation
+- Proper test isolation with Vitest configuration
+
+---
+
+## Summary
+
+This QA fixes summary documents the evolution of the StoryRPG codebase from critical race condition fixes in January 2026 through comprehensive architectural refactoring and validation system implementation by April 2026. The fixes demonstrate a progression from reactive bug fixes to proactive infrastructure improvements, establishing patterns for concurrent state management, type safety, validation, and modular architecture that support the project's scaling requirements.

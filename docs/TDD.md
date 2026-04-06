@@ -178,6 +178,15 @@ StoryRPG_New/
 │   ├── GDD.md                          # Game Design Document
 │   ├── TDD.md                          # Technical Design Document (this file)
 │   ├── INSTALL.md                      # Installation Guide
+│   ├── IMAGE_PIPELINE_RUNTIME.md       # Image generation pipeline docs
+│   ├── INCREMENTAL_VALIDATION_PLAN.md  # Validation system docs
+│   ├── MOBILE_REDESIGN.md              # Mobile UX design docs
+│   ├── PARALLEL_GENERATION.md          # Parallel processing docs
+│   ├── QA_FIXES_SUMMARY.md             # Quality assurance improvements
+│   ├── STORY_AGENT_SYSTEM_DETAIL.md    # Agent system details
+│   ├── STORY_BRANCHING.md              # Branching story design
+│   ├── STORY_PIPELINE_PROMPTING.md     # LLM prompting strategies
+│   ├── sample-story.md                 # Sample story reference
 │   ├── visual_storytelling_guide.md    # Visual direction reference
 │   ├── visual_storytelling_quick_reference.md
 │   └── reference/                      # Original reference materials
@@ -189,11 +198,29 @@ StoryRPG_New/
     ├── package.json                    # Dependencies and scripts
     ├── tsconfig.json                   # TypeScript config (client)
     ├── tsconfig.worker.json            # TypeScript config (worker processes)
+    ├── tsconfig.app.json               # App-specific TypeScript config
+    ├── tsconfig.test.json              # Test-specific TypeScript config
+    ├── tsconfig.contracts.json         # Contract validation TypeScript config
     ├── babel.config.js                 # Babel config with path aliases
     ├── metro.config.js                 # Metro bundler config
     ├── app.json                        # Expo app configuration
     ├── docker-compose.proxy.yml        # Docker config for proxy server
     ├── .env                            # Environment variables (API keys)
+    │
+    ├── scripts/                        # Build and utility scripts
+    │   └── clean-runtime-artifacts.mjs # Cleanup script
+    │
+    ├── proxy/                          # Proxy server modules
+    │   ├── cachedJsonStore.js
+    │   ├── catalogRoutes.js
+    │   ├── fileRoutes.js
+    │   ├── generatorSettingsRoutes.js
+    │   ├── modelScanRoutes.js
+    │   ├── refImageRoutes.js
+    │   ├── storyCatalog.js
+    │   ├── storyMutationRoutes.js
+    │   ├── workerJobSync.js
+    │   └── workerProgress.js
     │
     ├── src/
     │   ├── ai-agents/                  # AI Generation Pipeline (~97 files)
@@ -206,12 +233,41 @@ StoryRPG_New/
     │   │   │   ├── ChoiceAuthor.ts     # Choice generation with consequences
     │   │   │   ├── EncounterArchitect.ts # Encounter design
     │   │   │   ├── BranchManager.ts    # Branch/reconvergence management
+    │   │   │   ├── BeatWriter.ts       # Beat writing specialization
+    │   │   │   ├── DialogueSpecialist.ts # Dialogue refinement
+    │   │   │   ├── PlaytestSimulator.ts # AI playtesting
     │   │   │   ├── QAAgents.ts         # Quality assurance agents
+    │   │   │   ├── ResolutionDesigner.ts # Stat check design
+    │   │   │   ├── ScriptCompiler.ts   # Story compilation
+    │   │   │   ├── SeasonArchitect.ts  # Season-level planning
+    │   │   │   ├── SeasonPlannerAgent.ts # Season planning agent
+    │   │   │   ├── SourceMaterialAnalyzer.ts # Source analysis
+    │   │   │   ├── VariableTracker.ts  # Variable tracking
+    │   │   │   ├── ImageGenerator.ts   # Image generation coordination
     │   │   │   └── image-team/         # Image generation agents
     │   │   │       ├── CharacterReferenceSheetAgent.ts
     │   │   │       ├── StoryboardAgent.ts
     │   │   │       ├── VisualIllustratorAgent.ts
-    │   │   │       └── EncounterImageAgent.ts
+    │   │   │       ├── EncounterImageAgent.ts
+    │   │   │       ├── AssetAuditorAgent.ts
+    │   │   │       ├── BodyLanguageValidator.ts
+    │   │   │       ├── CharacterActionLibrary.ts
+    │   │   │       ├── CinematicBeatAnalyzer.ts
+    │   │   │       ├── ColorScriptAgent.ts
+    │   │   │       ├── CompositionValidatorAgent.ts
+    │   │   │       ├── ConsistencyScorerAgent.ts
+    │   │   │       ├── DramaExtractionAgent.ts
+    │   │   │       ├── ExpressionValidator.ts
+    │   │   │       ├── ImageAgentTeam.ts
+    │   │   │       ├── LightingColorSystem.ts
+    │   │   │       ├── LightingColorValidator.ts
+    │   │   │       ├── PoseDiversityValidator.ts
+    │   │   │       ├── TransitionValidator.ts
+    │   │   │       ├── VideoDirectorAgent.ts
+    │   │   │       ├── VisualNarrativeSystem.ts
+    │   │   │       ├── VisualNarrativeValidator.ts
+    │   │   │       ├── VisualStorytellingSystem.ts
+    │   │   │       └── VisualStorytellingValidator.ts
     │   │   │
     │   │   ├── pipeline/               # Pipeline orchestrators
     │   │   │   ├── FullStoryPipeline.ts # Main pipeline coordinator
@@ -220,19 +276,28 @@ StoryRPG_New/
     │   │   │
     │   │   ├── services/               # External service integrations
     │   │   │   ├── imageGenerationService.ts  # Multi-provider image service
-    │   │   │   └── audioGenerationService.ts  # ElevenLabs audio service
+    │   │   │   ├── audioGenerationService.ts  # ElevenLabs audio service
+    │   │   │   └── videoGenerationService.ts  # Video generation service
     │   │   │
     │   │   ├── validators/             # Content validation
     │   │   │   ├── StructuralValidator.ts
     │   │   │   ├── IntegratedBestPracticesValidator.ts
-    │   │   │   └── IncrementalValidationRunner.ts
+    │   │   │   ├── IncrementalValidationRunner.ts
+    │   │   │   ├── BaseValidator.ts
+    │   │   │   ├── CallbackOpportunitiesValidator.ts
+    │   │   │   ├── ChoiceDensityValidator.ts
+    │   │   │   ├── ChoiceDistributionValidator.ts
+    │   │   │   ├── CliffhangerValidator.ts
+    │   │   │   ├── ConsequenceBudgetValidator.ts
+    │   │   │   └── [additional validators...]
     │   │   │
     │   │   ├── converters/             # Data format converters
     │   │   ├── prompts/                # LLM prompt templates
     │   │   ├── utils/                  # Pipeline utilities
     │   │   │   ├── pipelineOutputWriter.ts  # File output management
     │   │   │   ├── llmParsing.ts       # LLM response parsing
-    │   │   │   └── concurrency.ts      # Concurrency management
+    │   │   │   ├── concurrency.ts      # Concurrency management
+    │   │   │   └── memoryStore.ts      # Memory management
     │   │   │
     │   │   ├── server/                 # Server-side execution
     │   │   │   └── worker-runner.ts    # Worker process entry point
@@ -246,7 +311,9 @@ StoryRPG_New/
     │   │   ├── ReadingScreen.tsx       # Story playback
     │   │   ├── GeneratorScreen.tsx     # Generation workflow
     │   │   ├── SettingsScreen.tsx      # Preferences and management
-    │   │   └── VisualizerScreen.tsx    # Story graph visualization
+    │   │   ├── VisualizerScreen.tsx    # Story graph visualization
+    │   │   └── generator/              # Generation screen components
+    │   │       └── useEndingModePlanner.ts
     │   │
     │   ├── components/                 # Reusable UI components
     │   │   ├── StoryReader.tsx         # Core reading interface (~2000 lines)
@@ -262,7 +329,11 @@ StoryRPG_New/
     │   │   ├── generationJobStore.ts   # Generation jobs (Zustand)
     │   │   ├── seasonPlanStore.ts      # Season plans (module store)
     │   │   ├── imageJobStore.ts        # Image job tracking
-    │   │   └── imageFeedbackStore.ts   # Image quality feedback
+    │   │   ├── imageFeedbackStore.ts   # Image quality feedback
+    │   │   ├── videoJobStore.ts        # Video job tracking
+    │   │   ├── appNavigationStore.ts   # Navigation state
+    │   │   ├── encounterStatePersistence.ts # Encounter persistence
+    │   │   └── playerStatePersistence.ts # Player state persistence
     │   │
     │   ├── engine/                     # Game logic engine
     │   │   ├── storyEngine.ts          # Beat processing, choice filtering, routing
@@ -303,6 +374,7 @@ StoryRPG_New/
     │       │   └── {beatId}.alignment.json
     │       └── prompts/                # Saved LLM prompts (debug)
     │
+    ├── pipeline-memories/              # Pipeline memory storage
     ├── .ref-images/                    # Character reference images
     ├── .generation-jobs.json           # Persistent job tracking
     ├── .worker-jobs.json               # Worker job state
@@ -513,689 +585,485 @@ Encounters have their own rich sub-model:
 Encounter
   ├── id, type, name, description
   ├── goalClock (segments, filled, type)
-  ├── threatClock (segments, filled, type)
-  ├── stakes (victory description, defeat description)
-  ├── pixarStakes (odds against, what player loses, obstacles)
-  ├── informationVisibility (fog of war settings)
-  ├── environmentalElements[] (hazards, opportunities)
-  ├── npcStates[] (disposition, tells, reactions)
-  ├── escalationTriggers[]
-  ├── cameraEscalation (per-phase camera preferences)
-  ├── initialVisualState
-  ├── phases[]
-  │    ├── beats[] (EncounterBeat)
-  │    │    ├── setupText, setupTextVariants?
-  │    │    ├── situationImage?
-  │    │    ├── cinematicSetup (camera angle, shot type, mood, etc.)
-  │    │    ├── escalationText? (when threat is high)
-  │    │    └── choices[] (EncounterChoice)
-  │    │         ├── text, approach, primarySkill
-  │    │         ├── outcomes {success, complicated, failure}
-  │    │         │    ├── tier, goalTicks, threatTicks
-  │    │         │    ├── narrativeText, outcomeImage?
-  │    │         │    ├── cinematicDescription
-  │    │         │    ├── consequences?
-  │    │         │    ├── nextSituation? (branching tree)
-  │    │         │    │    ├── setupText, situationImage?
-  │    │         │    │    └── choices[] (EmbeddedEncounterChoice)
-  │    │         │    ├── isTerminal?, encounterOutcome?
-  │    │         │    └── visualStateChanges?
-  │    │         └── skillAdvantage?, conditions?
-  │    └── onSuccess, onFailure (phase transitions)
-  ├── outcomes {victory, partialVictory, defeat, escape}
-  │    ├── nextSceneId, consequences, outcomeText
-  │    └── complication? (partial), recoveryPath? (defeat)
-  └── storylets? {victory, partialVictory, defeat, escape}
-       └── GeneratedStorylet (beats[], consequences, nextSceneId)
+  ├── complications[] (title, description, triggered)
+  ├── npcs[] (npcId, role, motivation, startingState)
+  ├── phases[] (id, title, description, conditions)
+  └── outcomes[] (id, title, conditions, consequences)
 ```
 
-### Consequence Types
+### Identity Profile
 
-The system supports 10 consequence types:
-
-| Type | Description | Parameters |
-|---|---|---|
-| `attribute` | Change a core attribute | attribute, change (±) |
-| `skill` | Change a skill value | skill name, change (±) |
-| `relationship` | Change NPC relationship | npcId, dimension, change (±) |
-| `setFlag` | Set a boolean flag | flag name, true/false |
-| `changeScore` | Increment/decrement a score | score name, change (±) |
-| `setScore` | Set a score to exact value | score name, value |
-| `addTag` | Add an identity tag | tag name |
-| `removeTag` | Remove an identity tag | tag name |
-| `addItem` | Add item to inventory | item details, quantity |
-| `removeItem` | Remove item from inventory | itemId, quantity |
-
-### Condition Types
-
-The system supports 8 atomic condition types plus 3 compound operators:
-
-**Atomic:** attribute, skill, relationship, flag, score, tag, item, identity  
-**Compound:** AND (all must pass), OR (any must pass), NOT (must fail)
+```typescript
+export interface IdentityProfile {
+  mercy_justice: number;          // -100 (mercy) to +100 (justice)
+  idealism_pragmatism: number;    // -100 (idealism) to +100 (pragmatism)
+  cautious_bold: number;          // -100 (cautious) to +100 (bold)
+  loner_leader: number;           // -100 (loner) to +100 (leader)
+  heart_head: number;             // -100 (heart/emotion) to +100 (head/logic)
+  honest_deceptive: number;       // -100 (honest) to +100 (deceptive)
+}
+```
 
 ---
 
 ## 8) State Management
 
-### gameStore (React Context)
+### Client State Architecture
 
-The primary game state store. Manages:
+State is managed through a three-tier system:
 
-- **Active story and episode:** Which story and episode the player is currently in
-- **Player state:** The complete `PlayerState` object (attributes, skills, relationships, flags, scores, tags, identity, inventory, pending consequences)
-- **Encounter runtime:** Clock values, current phase/beat, approach selection, visual state
-- **Branch tracking:** Which scenes the player has visited, convergence point awareness
-- **Navigation state:** Current scene, current beat, scene history
+1. **React Context** (gameStore.ts, settingsStore.ts): For UI state and player game state that needs to be accessible across multiple screens.
+2. **Zustand stores**: For complex state with asynchronous operations (generation jobs, image tracking).
+3. **Module stores**: For specialized data (season plans, worker job synchronization).
 
-**Persistence:** Serialized to AsyncStorage on every state change. On app restart, state is restored from AsyncStorage. Includes quota mitigation (pruning old data if storage is near capacity).
+### Persistence Strategy
 
-**Key operations:**
-- `applyConsequences(consequences[])` — Apply immediate state changes
-- `queueDelayedConsequence(consequence)` — Add to butterfly effect queue
-- `checkAndFireDelayedConsequences()` — Check if any queued consequences should trigger
-- `updateEncounterClocks(goalTicks, threatTicks)` — Update encounter momentum
-- `updateIdentityProfile(consequences[])` — Apply identity shifts
+| Store | Persistence | Frequency |
+|---|---|---|
+| gameStore | AsyncStorage | On every state change |
+| settingsStore | AsyncStorage | On every state change |
+| generationJobStore | Proxy server JSON files | Manual save/restore |
+| imageJobStore | Memory-only | Session-based |
+| seasonPlanStore | Proxy server files | Manual save |
 
-### settingsStore (React Context)
+### Cross-Platform Considerations
 
-Lightweight settings store:
-- Font size (small, medium, large)
-- Generation mode (single, multi, parallel)
-- Developer mode toggle
-- API key overrides
-
-**Persistence:** AsyncStorage with key `@storyrpg_settings`.
-
-### generationJobStore (Zustand)
-
-Tracks generation jobs across the application:
-
-- Job list with status (pending, running, completed, failed, cancelled)
-- Active job progress (current phase, percentage, estimated time remaining)
-- Job metadata (story title, episode count, generation config)
-
-**Persistence:** Dual persistence:
-- AsyncStorage for client-side cache
-- Server sync via `GET/POST /generation-jobs` for durability across refreshes
-
-**Key features:**
-- Stale running detection: Jobs stuck in "running" state beyond a timeout are normalized to "failed"
-- Auto cleanup: Old completed/failed jobs are pruned
-- Heavy field pruning: Large payload fields are stripped before persisting to avoid quota issues
-
-### seasonPlanStore (Module Store with Async Mutex)
-
-Manages season plan data with atomic update semantics:
-- Uses an async mutex to prevent concurrent writes from corrupting plan state
-- Active plan pointer (which season plan is currently being worked on)
-- Episode status tracking (planned, generating, completed)
-
-**Persistence:** AsyncStorage with keys `season-plans` and `active-season-plan`. Implements progressive storage pruning when approaching quota limits.
+The same state management code runs on web, iOS, and Android. AsyncStorage provides the unified persistence interface, while the proxy server handles file system operations that aren't available on mobile platforms.
 
 ---
 
 ## 9) Proxy Server (Control Plane)
 
-### Overview
+### Core Architecture
 
-`proxy-server.js` is a ~2500-line Express server that serves as the central control plane. It handles four major responsibilities:
+The proxy server (`proxy-server.js`) is the central coordination hub. It runs as an Express application on port 3001 and handles:
 
-### 9.1 API Gateway
+1. **API proxying:** All LLM and external API calls are routed through the proxy to avoid CORS issues and centralize error handling.
+2. **Worker management:** Spawning, monitoring, and terminating worker processes.
+3. **File operations:** All filesystem I/O (reading/writing stories, images, audio).
+4. **Job persistence:** Maintaining durable state for long-running generation jobs.
+5. **Static asset serving:** Generated images, audio, and story files.
 
-The proxy forwards API calls to external services, handling CORS, authentication, and error recovery:
+### Module Structure
 
-| Endpoint | Target | Purpose |
+The proxy is organized into modular route handlers:
+
+- **catalogRoutes.js:** Story discovery and catalog management
+- **fileRoutes.js:** File read/write operations
+- **refImageRoutes.js:** Reference image upload and management
+- **storyMutationRoutes.js:** Story modification operations
+- **modelScanRoutes.js:** AI model detection and management
+- **generatorSettingsRoutes.js:** Generation configuration persistence
+- **workerJobSync.js:** Worker process synchronization
+- **workerProgress.js:** Progress estimation and telemetry
+
+### Key Endpoints
+
+| Endpoint | Purpose | Method |
 |---|---|---|
-| `POST /v1/messages` | Anthropic API | LLM text generation (Claude) |
-| `ANY /midapi/*` | MidAPI | Midjourney image generation |
-| `ANY /atlas-cloud-api/*` | Atlas Cloud | Atlas Cloud image generation |
-| `ANY /elevenlabs/*` | ElevenLabs | Voice narration |
-
-The Anthropic proxy includes special handling:
-- Request/response logging in debug mode
-- Timeout management (5-minute default)
-- Error response normalization
-- Rate limit header forwarding
-
-### 9.2 Content Filesystem API
-
-The proxy provides a filesystem API since the web client cannot directly access the local filesystem:
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/list-stories` | GET | List all generated story directories with metadata |
-| `/generated-stories/:dir/:path` | GET | Serve story assets (JSON, images, audio) |
-| `/write-file` | POST | Write a file to the filesystem (used by generation) |
-| `/delete-story` | POST | Delete a generated story directory |
-| `/rename-story` | POST | Rename a story directory |
-| `/install-builtin-story` | POST | Write a built-in story to the filesystem |
-| `/check-builtin-stories` | GET | Check which built-in stories are installed |
-
-### 9.3 Worker Job Management
-
-The proxy manages the lifecycle of worker processes:
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/worker-jobs/start` | POST | Start a new analysis or generation worker |
-| `/worker-jobs/:jobId` | GET | Get worker job status and timeline |
-| `/worker-jobs/:jobId/stream` | GET | Server-Sent Events for real-time progress |
-| `/worker-jobs/:jobId/cancel` | POST | Cancel a running worker |
-| `/worker-jobs/:jobId/export` | GET | Export worker timeline for diagnostics |
-
-**Worker lifecycle management:**
-1. Client calls `/worker-jobs/start` with mode (`analysis` or `generation`) and payload
-2. Proxy persists job metadata to `.worker-jobs.json`
-3. Proxy spawns `worker-runner.ts` as a child process using `ts-node`
-4. Proxy captures worker's stdout events and updates timeline
-5. Proxy monitors worker process health
-6. On completion, proxy marks job as complete and records result path
-7. On failure, proxy records the error in `.worker-dead-letter.json`
-
-### 9.4 Generation Job Persistence
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/generation-jobs` | GET | List all generation jobs |
-| `/generation-jobs` | POST | Create/update a generation job |
-| `/generation-jobs/:jobId` | DELETE | Remove a generation job |
-
-Generation job state is persisted in `.generation-jobs.json` and survives server restarts.
-
-### Reference Image Hosting
-
-For image providers that require publicly accessible reference images (MidAPI/Midjourney), the proxy handles uploading reference images to catbox.moe:
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/upload-ref-image` | POST | Upload a reference image to catbox.moe |
-| `/.ref-images/:filename` | GET | Serve local reference images |
+| `/list-stories` | Discover generated stories | GET |
+| `/story/{id}` | Load specific story data | GET |
+| `/generation-jobs` | List/manage generation jobs | GET/POST/DELETE |
+| `/worker-jobs` | Worker process management | GET/POST |
+| `/write-file` | Write arbitrary files | POST |
+| `/atlas-cloud-api/*` | Atlas Cloud API proxy | POST |
+| `/midapi/*` | MidAPI proxy | POST |
+| `/elevenlabs/*` | ElevenLabs API proxy | POST |
+| `/generated-stories/*` | Static asset serving | GET |
 
 ---
 
 ## 10) AI Agent Pipeline
 
-### Agent Architecture
+### Pipeline Overview
 
-All AI agents inherit from `BaseAgent`, which provides:
+The AI generation pipeline (`src/ai-agents/`) is a multi-agent system that creates complete interactive stories from high-level inputs. The pipeline is orchestrated by `FullStoryPipeline.ts` and executed in worker processes.
 
-- **LLM call abstraction:** Send prompts to Anthropic Claude (or OpenAI/Gemini) with consistent error handling
-- **Retry logic:** Exponential backoff with configurable max retries
-- **Circuit breaker:** Prevents retry storms when the API is consistently failing
-- **Concurrency limiting:** Guards against exceeding per-provider rate limits
-- **Response parsing:** JSON extraction from LLM responses (handles markdown code fences, partial JSON, etc.)
-- **Logging:** Structured agent-level logging with event emission
+### Agent Hierarchy
 
-### Agent Catalog
+```
+FullStoryPipeline (orchestrator)
+  ├── SourceMaterialAnalyzer (optional: analyze source documents)
+  ├── SeasonPlannerAgent (optional: plan multi-episode arcs)
+  ├── WorldBuilder (create world bible and locations)
+  ├── CharacterDesigner (create NPCs with rich profiles)
+  ├── StoryArchitect (design episode structure and scene blueprints)
+  ├── SceneWriter (write prose content for individual scenes)
+  ├── ChoiceAuthor (create player choices with consequences)
+  ├── EncounterArchitect (design complex multi-phase encounters)
+  ├── BranchManager (handle story branching and reconvergence)
+  ├── ImageAgentTeam (coordinate all visual content generation)
+  │   ├── CharacterReferenceSheetAgent
+  │   ├── StoryboardAgent
+  │   ├── VisualIllustratorAgent
+  │   └── EncounterImageAgent
+  ├── VideoDirectorAgent (generate video content)
+  └── QARunner (validate and refine the complete story)
+```
 
-Each agent is a specialist responsible for one aspect of story generation:
+### Agent Communication
 
-| Agent | Input | Output | Purpose |
-|---|---|---|---|
-| **SourceMaterialAnalyzer** | Raw text/document | SourceMaterialAnalysis | Analyze source material for themes, characters, settings |
-| **WorldBuilder** | Analysis + brief | World Bible | Create locations, factions, customs, world rules |
-| **CharacterDesigner** | Analysis + world | Character Bible | Design NPCs with depth, voice, arcs |
-| **StoryArchitect** | Episode plan + characters + world | Episode Blueprint | Design scene structure and encounter placement |
-| **EncounterArchitect** | Blueprint + characters | Encounter structures | Design multi-beat encounter sequences |
-| **SceneWriter** | Blueprint + characters + world | Scene beats/prose | Write narrative prose for each beat |
-| **BeatWriter** | Scene outline + characters | Individual beats | Write specific beat content |
-| **ChoiceAuthor** | Scenes + characters | Choices with consequences | Create choices with conditions, outcomes, routing |
-| **BranchManager** | Scene graph | Branch/convergence plan | Plan branching and reconvergence |
-| **QAAgents** | Generated content | Quality reports | Validate content quality |
-| **CharacterReferenceSheetAgent** | Character descriptions | Reference images | Generate consistent character appearance references |
-| **StoryboardAgent** | Scene descriptions | Storyboard plans | Plan visual sequence for scenes |
-| **VisualIllustratorAgent** | Beat descriptions + refs | Beat images | Generate per-beat illustrations |
-| **EncounterImageAgent** | Encounter descriptions + refs | Encounter images | Generate encounter-specific visuals |
+Agents communicate through:
 
-### LLM Communication
+1. **Shared memory store:** A persistent key-value store (NodeMemoryStore) that survives worker restarts.
+2. **Pipeline context:** Passed through the entire pipeline, containing configuration and accumulated artifacts.
+3. **Event emission:** Structured progress events sent to the proxy server for UI updates.
 
-Agents communicate with LLMs through structured prompts:
+### Memory Management
 
-1. **System prompt:** Establishes the agent's role, constraints, and output format
-2. **User prompt:** Provides the specific task with all necessary context (world data, character data, outline, etc.)
-3. **Response parsing:** The LLM response is parsed as JSON. The parser handles:
-   - Responses wrapped in markdown code fences (` ```json ... ``` `)
-   - Partial JSON (truncated responses)
-   - Non-JSON preamble text before the JSON payload
-   - Malformed JSON with common LLM mistakes (trailing commas, etc.)
+The pipeline uses a sophisticated memory management system:
 
-### Temperature Settings
-
-Different agents use different LLM temperatures to balance creativity vs. consistency:
-
-| Agent Type | Temperature | Rationale |
-|---|---|---|
-| StoryArchitect | 0.7 | More focused for structural/planning work |
-| SceneWriter | 0.85 | More creative for prose writing |
-| ChoiceAuthor | 0.75 | Balanced for meaningful choice creation |
-| Default | 0.8 | General purpose |
+- **Working memory:** Short-term context for individual agent operations
+- **Long-term memory:** Persistent storage of world state, character relationships, plot threads
+- **Memory compaction:** Automatic summarization of old memories to prevent context overflow
+- **Memory retrieval:** Smart context loading based on relevance scoring
 
 ---
 
 ## 11) Pipeline Orchestration Deep Dive
 
-### FullStoryPipeline
+### Episode Generation Flow
 
-The `FullStoryPipeline` is the top-level coordinator. It:
+```mermaid
+graph TD
+    A[Story Request] --> B[World Building]
+    B --> C[Character Design]
+    C --> D[Story Architecture]
+    D --> E[Scene Writing]
+    E --> F[Choice Authoring]
+    F --> G[Encounter Design]
+    G --> H[Image Generation]
+    H --> I[Audio Generation]
+    I --> J[QA Validation]
+    J --> K[Story Compilation]
+```
 
-1. Loads configuration and initializes all agents
-2. Sequences execution phases
-3. Emits progress events for the worker/proxy/client chain
-4. Handles cancellation checks between phases
-5. Manages output directory creation and artifact writing
-6. Coordinates validation runs
+### Parallel Processing
 
-### Execution Modes
+Modern versions of the pipeline support parallel processing:
 
-#### Analysis Mode
+- **Scene-level parallelization:** Multiple scenes within an episode can be written simultaneously
+- **Image generation batching:** Images for an entire episode are generated in parallel batches
+- **Validation pipelining:** QA validation runs concurrently with content generation
 
-1. Receive source text/document + configuration
-2. Run `SourceMaterialAnalyzer` to produce structured analysis
-3. Run season planning to produce a `SeasonBible` with episode outlines
-4. Write analysis result to disk
-5. Return analysis payload to client for review
+### Checkpoint System
 
-#### Generation Mode (Single Episode)
+Long-running pipelines use checkpoints to enable resumability:
 
-1. Receive generation brief (episode plan + config + analysis)
-2. Resolve all generation options (scene counts, choice distributions, image/audio toggles)
-3. **Phase 1 — Foundation:** Run `WorldBuilder` and `CharacterDesigner`
-4. **Phase 2 — Architecture:** Run `StoryArchitect` to create episode blueprint
-5. **Phase 3 — Content:** Run `SceneWriter` + `ChoiceAuthor` + `EncounterArchitect` for each scene
-6. **Phase 4 — Assembly:** Convert generated fragments into canonical `Story` model
-7. **Phase 5 — Structural Validation:** Run `StructuralValidator` with auto-fix for common defects
-8. **Phase 6 — Quality Validation:** Run `IntegratedBestPracticesValidator` (quick + full modes)
-9. **Phase 7 — Media:** Run image generation pipeline, then optional audio generation
-10. **Phase 8 — Persistence:** Write final story JSON, prompts, diagnostics, manifests
+1. **Phase checkpoints:** After each major phase (world building, character design, etc.)
+2. **Episode checkpoints:** After each episode is completed
+3. **Scene checkpoints:** After each scene within an episode
+4. **Error checkpoints:** Automatic saves before risky operations
 
-#### Generation Mode (Multi-Episode)
-
-Wraps single-episode generation in a loop, passing previous-episode summaries to maintain continuity across episodes.
-
-#### Parallel Generation (Experimental)
-
-`ParallelStoryPipeline` supports several parallelism strategies:
-
-| Strategy | Description | Status |
-|---|---|---|
-| Episode | Generate multiple episodes concurrently | Partially implemented |
-| Branch | Generate divergent branches in parallel | Partially implemented |
-| Agent | Run independent agents in parallel within a phase | Limited/fallback |
-| Hybrid | Combine strategies | Partially implemented |
-
-Some strategies currently delegate to sequential internals when strict parallel independence cannot be guaranteed.
-
-### EpisodePipeline
-
-The inner pipeline for generating a single episode:
-
-1. **Foundation phase:** `StoryArchitect` creates the episode blueprint
-2. **Content phase:** Scene-by-scene generation with `SceneWriter` and `ChoiceAuthor`
-3. **Validation phase:** Integrated best-practices + distribution checks
-4. **Assembly phase:** Compile fragments into canonical `Episode` structure
-5. **Dead-end prevention:** Detect and fix scenes with no outgoing paths
-6. **Choice coverage check:** Ensure minimum choice density is met; add fallback choices if needed
+Checkpoints are stored in `.worker-checkpoints.json` and can be used to resume interrupted generation jobs.
 
 ---
 
 ## 12) Worker System
 
-### Worker Entry Point: worker-runner.ts
+### Worker Process Architecture
 
-Workers are spawned by the proxy server as child processes:
+Worker processes are Node.js child processes spawned by the proxy server. They run the TypeScript AI pipeline code through `ts-node` and communicate via structured stdio.
 
-```
-proxy-server.js → child_process.spawn('npx', ['ts-node', '--project', 'tsconfig.worker.json', 'worker-runner.ts'])
-```
+### Worker Communication Protocol
 
-The worker receives its configuration as a JSON payload on stdin.
-
-### Worker Input Payload
-
-```typescript
-{
-  mode: 'analysis' | 'generation';
-  config: PipelineConfig;
-  resultPath: string;          // Where to write the final output
-  // Mode-specific fields:
-  sourceText?: string;         // For analysis mode
-  brief?: GenerationBrief;     // For generation mode
-  checkpoint?: WorkerCheckpoint; // For resuming
-}
+**Proxy → Worker (stdin):**
+```json
+{"type": "start", "jobId": "abc123", "config": {...}}
+{"type": "cancel", "jobId": "abc123"}
+{"type": "checkpoint_request", "jobId": "abc123"}
 ```
 
-### Worker Event Protocol
-
-Workers communicate with the proxy through structured JSON events written to stdout:
-
-```
-{"type": "worker_start", "timestamp": "...", "mode": "generation"}
-{"type": "phase_start", "phase": "world_building", "timestamp": "..."}
-{"type": "agent_start", "agent": "WorldBuilder", "timestamp": "..."}
-{"type": "agent_complete", "agent": "WorldBuilder", "duration_ms": 12345}
-{"type": "phase_complete", "phase": "world_building"}
-{"type": "checkpoint", "data": {...}}
-{"type": "worker_complete", "resultPath": "...", "timestamp": "..."}
+**Worker → Proxy (stdout):**
+```json
+{"type": "progress", "phase": "world_building", "percent": 25}
+{"type": "checkpoint", "data": {...}, "phase": "world_complete"}
+{"type": "error", "message": "LLM timeout", "recoverable": true}
+{"type": "complete", "outputPath": "./generated-stories/story_123/"}
 ```
 
-The proxy captures these events line by line and:
-- Appends them to the worker job's timeline
-- Updates checkpoint data
-- Mirrors status to the generation job store
-- Broadcasts to any connected SSE clients
+### Error Recovery
 
-### Worker Lifecycle States
+The worker system includes robust error recovery:
 
-```
-pending → running → complete
-                  → failed (error or crash)
-                  → cancelled (user-initiated)
-```
-
-### Checkpoint and Resume
-
-At key points during generation, the worker emits checkpoint events containing serialized pipeline state. If the worker crashes or is cancelled, a new worker can be started with the checkpoint to skip already-completed phases.
-
-### Dead Letter Queue
-
-When a worker exits uncleanly (crash, timeout, OOM), the proxy records the failure in `.worker-dead-letter.json` with:
-- Job ID
-- Last known checkpoint
-- Error information
-- Timeline up to failure point
-
-This supports post-failure diagnostics.
+1. **Graceful degradation:** Non-critical failures (image generation errors) don't stop the entire pipeline
+2. **Automatic retry:** Transient failures (API rate limits, network timeouts) trigger automatic retries with exponential backoff
+3. **Checkpoint recovery:** Workers can be restarted from the last successful checkpoint
+4. **Dead letter queue:** Unrecoverable jobs are moved to a dead letter queue for manual inspection
 
 ---
 
 ## 13) Validation Architecture
 
-### Structural Validation
+### Multi-Tier Validation
 
-`StructuralValidator` performs mechanical integrity checks:
+The validation system operates at multiple levels:
 
-- **ID uniqueness:** All IDs across episodes, scenes, beats, choices are unique
-- **Reference validity:** Every `nextSceneId`, `nextBeatId`, `leadsTo` target, and `fallbackSceneId` points to an existing entity
-- **Navigation completeness:** No dead-end scenes (every scene has a way forward)
-- **No infinite loops:** Scene routing doesn't create circular paths
-- **Encounter integrity:** Phases connect properly, outcomes reference valid scenes, clocks are properly initialized
-- **Text sanity:** No empty text fields, text within word count limits, no unresolved template tokens
+1. **Structural validation:** Ensures the generated story conforms to the canonical data model
+2. **Content validation:** Checks for narrative coherence, choice quality, character consistency
+3. **Best practices validation:** Enforces genre conventions and interactive fiction best practices
+4. **Incremental validation:** Continuous validation during generation rather than just at the end
 
-The structural validator includes **auto-fix** capabilities for common defects:
-- Missing `startingBeatId` → set to first beat
-- Missing `startingSceneId` → set to first scene
-- Orphaned beats → removed or reconnected
-- Missing `leadsTo` entries → auto-generated based on scene order
+### Validator Types
 
-### Best-Practices Validation
-
-`IntegratedBestPracticesValidator` checks narrative quality:
-
-| Check | What It Validates | Severity |
+| Validator | Purpose | Phase |
 |---|---|---|
-| **Choice Density** | First choice within ~60s of reading, average gap ≤ 90s | Warning |
-| **NPC Depth** | Core NPCs have 4 relationship dimensions, supporting have 2+ | Warning |
-| **Consequence Budget** | Balanced mix of callbacks, tints, branchlets, branches | Warning |
-| **Stakes Triangle** | Each episode has emotional, practical, and relationship stakes | Error |
-| **Five-Factor Impact** | Major choices impact ≥ 3 of 5 factors (outcome, process, info, relationships, identity) | Error |
-| **Callback Coverage** | Delayed consequences are scheduled and reachable | Warning |
+| StructuralValidator | Data model conformance | Post-generation |
+| ChoiceDensityValidator | Appropriate number of choices per beat | Ongoing |
+| ConsequenceBudgetValidator | Balanced consequence distribution | Ongoing |
+| CallbackOpportunitiesValidator | Narrative coherence across episodes | Post-generation |
+| CliffhangerValidator | Episode ending quality | Episode completion |
+| ChoiceDistributionValidator | Choice type variety | Scene completion |
 
-Validation runs in two modes:
-- **Quick mode:** Fast blocking checks only. Used during generation to catch critical issues.
-- **Full mode:** Comprehensive metrics with categorized issue reports. Used at the end of generation.
+### Validation Configuration
 
-### Incremental Validation
+Validation behavior is configurable through the validation config system:
 
-`IncrementalValidationRunner` runs validation checks progressively during generation, rather than waiting until the end. This catches problems earlier when they're cheaper to fix.
+```typescript
+interface ValidationConfig {
+  enabled: boolean;
+  strictMode: boolean;
+  autoFix: boolean;
+  thresholds: {
+    choiceMin: number;
+    choiceMax: number;
+    consequenceBalance: number;
+    narrativeCoherence: number;
+  };
+}
+```
 
 ---
 
 ## 14) Image Generation System
 
-### ImageGenerationService
+### Multi-Provider Architecture
 
-A multi-provider abstraction layer located at `src/ai-agents/services/imageGenerationService.ts`.
+The image generation system (`src/ai-agents/services/imageGenerationService.ts`) supports multiple providers:
 
-### Supported Providers
+| Provider | Use Case | Quality | Speed | Cost |
+|---|---|---|---|---|
+| Gemini | Default, general purpose | Good | Fast | Low |
+| Atlas Cloud | High quality illustrations | Excellent | Medium | Medium |
+| MidAPI (Midjourney) | Premium artistic content | Exceptional | Slow | High |
 
-#### Nano-Banana (Gemini)
-- **API:** Google Gemini API (models: `gemini-2.5-flash-image`, `gemini-3-pro-image-preview`, `gemini-3.1-flash-image-preview`)
-- **Features:**
-  - Character reference images for consistency (up to 4 per character)
-  - Previous scene image passing for visual continuity
-  - Style reference images for style consistency
-  - Edit mode (modify previous image instead of fresh generation)
-  - Chat mode (multi-turn session retains visual context)
-  - Configurable resolution (512px, 1K, 2K, 4K)
-  - Configurable thinking level (minimal, high)
+### Image Agent Team
 
-#### Atlas Cloud
-- **API:** Atlas Cloud API (proxied through `/atlas-cloud-api`)
-- **Features:** Custom model selection, standard image generation
+The Image Agent Team coordinates visual content generation:
 
-#### MidAPI (Midjourney)
-- **API:** MidAPI service (proxied through `/midapi`)
-- **Features:**
-  - Style reference codes (`--sref`) for consistent aesthetic
-  - Omni reference (`--oref`) for character consistency using reference images
-  - Configurable stylization and omni weights
-  - Async generation with webhook callbacks
-  - Requires reference images to be publicly accessible (uploaded to catbox.moe)
+1. **CharacterReferenceSheetAgent:** Creates consistent character designs and expression sheets
+2. **StoryboardAgent:** Plans visual sequences for key story moments
+3. **VisualIllustratorAgent:** Generates individual scene and beat images
+4. **EncounterImageAgent:** Creates dynamic images for encounters
 
-### Image Generation Flow
+### Visual Consistency System
 
-1. **Prompt construction:** The pipeline builds a detailed image prompt including scene description, character positions, camera angle, mood, lighting, and style directives.
-2. **Reference resolution:** Character reference images are resolved and attached to the request.
-3. **Concurrency control:** Maximum 3 concurrent image generation requests, with 3-second minimum between requests.
-4. **Provider dispatch:** The request is routed to the configured provider.
-5. **Retry logic:** Failed requests are retried with exponential backoff.
-6. **Text detection:** Generated images are checked for unwanted text artifacts. Images with text may be rejected and regenerated (unless the beat explicitly allows diegetic text).
-7. **Caching:** Prompt hashes are tracked to avoid regenerating identical images.
-8. **Output:** Images are saved to `generated-stories/{dir}/images/` with beat-derived filenames.
+- **Reference sheets:** Character designs are established early and used as reference for all subsequent images
+- **Style guides:** Genre-appropriate visual styles are defined and consistently applied
+- **Lighting and color scripts:** Mood and atmosphere are maintained through consistent lighting/color
+- **Composition validation:** Images are validated for narrative clarity and visual coherence
 
-### Character Reference System
+### Image Quality Feedback
 
-For visual consistency, the pipeline generates character reference sheets before scene images:
+The system includes a feedback loop for image quality:
 
-1. `CharacterReferenceSheetAgent` creates prompts for multi-angle character views
-2. Reference images are generated at higher resolution (2K default)
-3. Individual views (front, 3/4, profile) are generated for each major character
-4. These reference images are passed alongside scene prompts to maintain character appearance
+1. Users can rate generated images (1-5 stars)
+2. Feedback is stored in `.image-feedback.json`
+3. The data is used to tune prompt strategies and provider selection
+4. Quality metrics inform automated image acceptance/rejection decisions
 
 ---
 
 ## 15) Audio Generation System
 
-### AudioGenerationService
-
-Located at `src/ai-agents/services/audioGenerationService.ts`.
-
 ### ElevenLabs Integration
 
-- **Text-to-Speech:** Converts beat text to spoken audio
-- **Word alignment:** Returns timestamp data for each word, enabling karaoke-style highlighting
-- **Character voices:** Voice casting service assigns distinct ElevenLabs voice IDs to different characters
-- **Default voices:** Narrator, male, female, child voices available
-- **Batch generation:** Can generate audio for an entire story in one pass
+Audio narration is provided through ElevenLabs' text-to-speech API:
 
-### Audio Storage
+- **Voice selection:** Configurable voice models for different characters/narrators
+- **Batch generation:** Entire episodes can be narrated in batches for efficiency
+- **Audio alignment:** Generated audio is aligned with text beats for synchronized playback
+- **Quality settings:** Configurable quality vs. speed tradeoffs
 
-- MP3 files: `generated-stories/{dir}/audio/{beatId}.mp3`
-- Alignment data: `generated-stories/{dir}/audio/{beatId}.alignment.json`
-- Served via proxy: `GET /generated-stories/{dir}/audio/{beatId}.mp3`
+### Narration Service
 
-### Client-Side Playback
+The client-side narration service (`src/services/narrationService.ts`) handles:
 
-`narrationService.ts` manages audio playback:
-- Play/pause controls
-- Word-by-word highlighting using alignment data
-- Graceful fallback if audio is unavailable
+- **Audio playback:** Web Audio API-based playback with precise timing
+- **Text synchronization:** Highlighting text as it's spoken
+- **Playback controls:** Play, pause, skip, speed adjustment
+- **Caching:** Downloaded audio is cached for offline playback
 
 ---
 
 ## 16) Resolution Engine
 
-Detailed in Section 6 under `resolutionEngine.ts`. Key technical details:
+### Fiction-First Design
 
-### Standard Resolution (Non-Encounter Choices)
+The resolution engine (`src/engine/resolutionEngine.ts`) implements a "fiction-first" approach where:
 
+1. **Hidden rolls:** Players never see dice or numbers - only narrative outcomes
+2. **Graduated success:** Three-tier outcomes (success/complicated/failure) rather than binary pass/fail
+3. **Attribute integration:** Player attributes meaningfully influence outcomes
+4. **Narrative fallbacks:** Every resolution tier has genre-appropriate narrative text
+
+### Resolution Formula
+
+```typescript
+const playerStat = attributes[attribute] + skills[skill] || 0;
+const target = difficulty - ((playerStat - 50) * 0.5);
+const roll = Math.random() * 100;
+
+if (roll <= target - 20) return 'success';
+if (roll <= target + 10) return 'complicated';
+return 'failure';
 ```
-playerStat = attribute[check.attribute] (or 50 if none)
-playerStat = min(100, playerStat + skills[check.skill])
-roll = random(0, 100)
-statModifier = (playerStat - 50) * 0.5  // Range: -25 to +25
-target = difficulty - statModifier
 
-if (roll <= target - 20) → success
-else if (roll <= target + 10) → complicated
-else → failure
-```
+### Encounter Resolution
 
-### Encounter Resolution (Weighted Probability)
+Encounters use a more complex weighted probability system:
 
-```
-BASE = { success: 0.40, complicated: 0.35, failure: 0.25 }
-modifier = ((playerStat - 50) / 50) * 0.15  // Range: -0.15 to +0.15
-
-success = clamp(BASE.success + modifier, 0.10, 0.65)
-failure = clamp(BASE.failure - modifier, 0.05, 0.50)
-complicated = 1.0 - success - failure
-
-// Roll against these weights to determine outcome tier
+```typescript
+const baseWeights = { success: 40, complicated: 35, failure: 25 };
+const statModifier = Math.min(15, Math.max(-15, (playerStat - 50) * 0.3));
 ```
 
 ---
 
 ## 17) Identity Engine
 
-Detailed in Section 6 under `identityEngine.ts`. Key technical details:
+### Six-Dimension System
 
-### Tint Flag Mapping (examples)
+The identity engine (`src/engine/identityEngine.ts`) tracks player personality across six spectrums:
 
+1. **mercy_justice:** How the player resolves moral dilemmas
+2. **idealism_pragmatism:** Approach to problem-solving  
+3. **cautious_bold:** Risk tolerance and leadership style
+4. **loner_leader:** Social interaction preferences
+5. **heart_head:** Decision-making basis (emotion vs. logic)
+6. **honest_deceptive:** Approach to truth and manipulation
+
+### Identity Calculation
+
+Identity shifts are triggered by:
+
+- **Tint flags:** Explicit identity markers in choice consequences (10-15 point shifts)
+- **Tag inference:** Automatic inference from choice tags (5 point shifts)
+- **Action context:** Some actions have different identity implications based on context
+
+### Dominant Traits
+
+Dimensions with absolute values ≥ 25 are considered "dominant" and receive descriptive labels:
+
+```typescript
+const TRAIT_LABELS = {
+  mercy_justice: { negative: 'Merciful', positive: 'Just' },
+  cautious_bold: { negative: 'Cautious', positive: 'Bold' },
+  heart_head: { negative: 'Emotional', positive: 'Analytical' },
+  // etc.
+};
 ```
-'tint:mercy'      → mercy_justice: -15
-'tint:justice'     → mercy_justice: +15
-'tint:boldness'    → cautious_bold: +15
-'tint:compassion'  → mercy_justice: -10, heart_head: -10
-'tint:leadership'  → loner_leader: +15
-'tint:deception'   → honest_deceptive: +15
-```
-
-### Tag Keyword Inference (examples)
-
-```
-Tag contains 'brave'/'bold'   → cautious_bold: +5
-Tag contains 'kind'/'gentle'  → mercy_justice: -5, heart_head: -5
-Tag contains 'honest'         → honest_deceptive: -5
-Tag contains 'leader'         → loner_leader: +5
-```
-
-### Dominant Trait Threshold
-
-A dimension value |value| >= 25 qualifies as a dominant trait. Labels:
-- mercy_justice ≤ -25 → "merciful" | ≥ 25 → "just"
-- idealism_pragmatism ≤ -25 → "idealist" | ≥ 25 → "pragmatist"
-- cautious_bold ≤ -25 → "cautious" | ≥ 25 → "bold"
-- loner_leader ≤ -25 → "lone wolf" | ≥ 25 → "natural leader"
-- heart_head ≤ -25 → "heart-driven" | ≥ 25 → "analytical"
-- honest_deceptive ≤ -25 → "forthright" | ≥ 25 → "cunning"
 
 ---
 
 ## 18) Condition Evaluator
 
-The condition evaluator processes a tree of conditions recursively.
+### Condition Types
 
-### Evaluation Logic
+The condition evaluator (`src/engine/conditionEvaluator.ts`) supports multiple condition types:
 
+- **Attribute conditions:** `{type: 'attribute', attribute: 'courage', operator: '>=', value: 60}`
+- **Skill conditions:** `{type: 'skill', skill: 'sword_fighting', operator: '>', value: 25}`
+- **Relationship conditions:** `{type: 'relationship', npcId: 'marcus', dimension: 'trust', operator: '>=', value: 50}`
+- **Flag conditions:** `{type: 'flag', flag: 'merchant_guild_member', value: true}`
+- **Score conditions:** `{type: 'score', score: 'reputation', operator: '>=', value: 100}`
+- **Tag conditions:** `{type: 'tag', tag: 'noble_born', value: true}`
+- **Identity conditions:** `{type: 'identity', dimension: 'mercy_justice', operator: '<', value: -25}`
+
+### Compound Conditions
+
+Complex logic is supported through compound conditions:
+
+```typescript
+{
+  type: 'AND',
+  conditions: [
+    {type: 'attribute', attribute: 'wit', operator: '>=', value: 70},
+    {type: 'skill', skill: 'diplomacy', operator: '>', value: 30}
+  ]
+}
 ```
-evaluate(condition, playerState):
-  switch condition.type:
-    'attribute' → compare player.attributes[condition.attribute] with condition.value
-    'skill'     → compare player.skills[condition.skill] with condition.value
-    'relationship' → compare player.relationships[npcId][dimension] with value
-    'flag'      → player.flags[condition.flag] === condition.value
-    'score'     → compare player.scores[condition.score] with condition.value
-    'tag'       → player.tags.has(condition.tag) === condition.hasTag
-    'item'      → check if player has item with optional quantity check
-    'identity'  → compare player.identityProfile[dimension] with value
-    'and'       → all sub-conditions must pass
-    'or'        → any sub-condition must pass
-    'not'       → sub-condition must fail
-```
 
-Comparison operators: `==`, `!=`, `>`, `<`, `>=`, `<=`
+### Performance Optimization
+
+The evaluator includes several optimizations:
+
+- **Short-circuit evaluation:** AND conditions stop at the first false; OR conditions stop at the first true
+- **Condition caching:** Results are cached when evaluating the same conditions repeatedly
+- **Lazy evaluation:** Complex conditions are only evaluated when necessary
 
 ---
 
 ## 19) Template Processor
 
-Replaces template tokens in story text with runtime values.
+### Template System
 
-### Token Resolution
+The template processor (`src/engine/templateProcessor.ts`) handles dynamic text substitution:
 
-The template processor handles:
-- Character name: `{{characterName}}` → player's chosen name
-- Pronouns: `{{he/she/they}}`, `{{him/her/them}}`, `{{his/her/their}}`, `{{himself/herself/themselves}}`
-- NPC names: `{{npc:npcId}}` → NPC's display name
-- Flag values: `{{flag:flagName}}` → flag's value
-- Score values: `{{score:scoreName}}` → score's value
+```typescript
+// Basic pronouns
+"{{he/she}}" → "he" | "she" | "they"
+"{{him/her}}" → "him" | "her" | "them"
+"{{his/her}}" → "his" | "her" | "their"
 
-### Text Variant Selection
+// Player references
+"{{characterName}}" → player's chosen name
 
-When a beat has `textVariants`, the engine evaluates each variant's condition in order. The first variant whose condition passes replaces the beat's default text. This allows the same beat to display different prose based on player state.
+// Story-specific templates
+"{{npc.marcus.name}}" → "Marcus"
+"{{item.royal_seal.name}}" → "Royal Seal of Valoria"
+```
 
-### Unresolved Token Handling
+### Error Handling
 
-If an LLM generated a template token the resolver doesn't know (e.g., `{{mysterious_variable}}`), the engine:
-1. Logs a warning with the token name
-2. Replaces the token with the character's name (safe fallback)
-3. Increments an observability counter for monitoring
+Unresolved templates are handled gracefully:
+
+1. **Fallback substitution:** `{{unknown_token}}` becomes the character name
+2. **Observability:** Unresolved tokens are counted and can be monitored
+3. **Debug logging:** In development, unresolved tokens are logged for correction
 
 ---
 
 ## 20) Persistence and Storage
 
-### Client-Side (AsyncStorage)
+### Client-Side Storage
 
-| Key | Content | Purpose |
+| Storage Type | Use Case | Platform Support |
 |---|---|---|
-| `gameStore_playerState` | Serialized PlayerState JSON | Save/resume game progress |
-| `@storyrpg_settings` | Settings JSON | User preferences |
-| `@storyrpg_generation_jobs` | Generation job list JSON | Job tracking |
-| `season-plans` | Season plan data | Season planning |
-| `active-season-plan` | Active plan ID | Season workflow |
-| `@storyrpg_generated_stories` | Story metadata cache | Offline story catalog |
-| `@storyrpg_deleted_stories` | Deleted story IDs | Prevent re-installing deleted built-ins |
-| `@storyrpg_openrouter_api_key` | API key | User-provided API key |
-| `@storyrpg_gemini_api_key` | API key | User-provided image API key |
+| AsyncStorage | Player state, settings, cached stories | Web, iOS, Android |
+| Memory | Temporary UI state, form data | All |
+| IndexedDB | Large cached content (via AsyncStorage) | Web |
+| SQLite | (via AsyncStorage abstraction) | iOS, Android |
 
-**Storage quota management:** Stores implement progressive pruning strategies. When writes fail with quota errors, stores remove oldest/least-important data to free space.
+### Server-Side Storage
 
-### Server-Side (Filesystem)
-
-| File | Content | Purpose |
+| File Type | Location | Purpose |
 |---|---|---|
-| `.generation-jobs.json` | Job definitions and status | Durable job tracking |
-| `.worker-jobs.json` | Worker process metadata | Worker lifecycle tracking |
-| `.worker-checkpoints.json` | Checkpoint serializations | Resume support |
-| `.worker-dead-letter.json` | Failed job records | Post-failure diagnostics |
-| `.image-feedback.json` | User feedback on images | Quality iteration |
-| `generated-stories/*/08-final-story.json` | Complete story data | Story content |
-| `generated-stories/*/images/*.png` | Generated images | Visual assets |
-| `generated-stories/*/audio/*.mp3` | Generated audio | Voice narration |
-| `generated-stories/*/prompts/*.txt` | Saved LLM prompts | Debug/audit trail |
+| Story JSON | `generated-stories/` | Complete story data |
+| Images | `generated-stories/{story}/images/` | Generated artwork |
+| Audio | `generated-stories/{story}/audio/` | Narration files |
+| Reference images | `.ref-images/` | Character reference sheets |
+| Job state | `.generation-jobs.json` | Persistent job tracking |
+| Worker state | `.worker-jobs.json` | Worker process state |
+| Checkpoints | `.worker-checkpoints.json` | Recovery checkpoints |
 
-### Artifact Writing
+### Cross-Platform Considerations
 
-Output writing is treated as a first-class pipeline phase, not an afterthought. `pipelineOutputWriter.ts` handles:
+The same persistence code works across platforms through:
 
-- Creating output directories with slugified names and timestamps
-- Writing intermediate artifacts (world bible, character bible, blueprints)
-- Writing the final story JSON as `08-final-story.json`
-- Writing prompt logs for debugging
-- Writing validation reports
-- Atomic write operations (write to temp, rename to final)
+1. **Abstraction layers:** AsyncStorage provides consistent API across platforms
+2. **URL rewriting:** File paths are dynamically rewritten for web deployment
+3. **Fallback strategies:** Graceful degradation when storage is unavailable
 
 ---
 
@@ -1203,150 +1071,98 @@ Output writing is treated as a first-class pipeline phase, not an afterthought. 
 
 ### Pipeline Events
 
-The pipeline emits structured `PipelineEvent` objects throughout execution:
+The generation pipeline emits structured events for monitoring:
 
-| Event Type | When | Content |
-|---|---|---|
-| `phase_start` | A major pipeline phase begins | Phase name, description |
-| `phase_complete` | A pipeline phase finishes | Phase name, duration |
-| `agent_start` | An AI agent begins work | Agent name |
-| `agent_complete` | An AI agent finishes | Agent name, duration, output summary |
-| `incremental_validation` | Per-scene validation runs | Scene ID, issues found |
-| `validation_aggregated` | Full validation completes | Summary metrics |
-| `warning` | Non-fatal issue detected | Warning message and context |
-| `debug` | Debug information | Arbitrary debug data |
-| `error` | Fatal or near-fatal error | Error details |
-| `checkpoint` | Checkpoint data saved | Serialized pipeline state |
-
-### Event Flow
-
-```
-Pipeline → emits PipelineEvent
-  → Worker captures and wraps as WorkerEvent
-    → Worker writes JSON to stdout
-      → Proxy captures stdout line
-        → Proxy updates worker job timeline
-          → Proxy updates generation job state
-            → Client polls or receives SSE
-              → UI updates progress bars
+```typescript
+interface PipelineEvent {
+  type: 'progress' | 'checkpoint' | 'error' | 'complete';
+  jobId: string;
+  phase?: string;
+  percent?: number;
+  message?: string;
+  data?: any;
+}
 ```
 
-### Observability Metrics
+### Telemetry Collection
 
-The system tracks:
-- LLM call counts and durations per agent
-- Image generation cache hit/miss rates
-- Retry counts per provider
-- Validation issue counts by category
-- Unresolved template token counts
-- Worker process lifecycle events
+Key metrics are collected throughout the system:
+
+- **Generation timing:** Time spent in each pipeline phase
+- **API call metrics:** Request counts, latency, error rates for each provider
+- **Quality metrics:** Image ratings, validation scores, player feedback
+- **Performance metrics:** Memory usage, processing times, error rates
+
+### Event Aggregation
+
+Events are aggregated at multiple levels:
+
+1. **Real-time:** For UI updates and progress indicators
+2. **Session:** For debugging individual generation runs
+3. **Historical:** For performance optimization and quality improvement
 
 ---
 
 ## 22) Configuration System
 
-### Environment Variables
+### Hierarchical Configuration
 
-The primary configuration mechanism is environment variables in the `.env` file:
+Configuration is managed through multiple layers:
 
-#### Required for Story Generation
+1. **Environment variables:** Sensitive data (API keys) and deployment settings
+2. **Configuration files:** Pipeline behavior, validation settings, agent parameters
+3. **Runtime settings:** User preferences, feature flags, debugging options
+4. **Default constants:** Built-in fallbacks for all configuration values
 
-```env
-ANTHROPIC_API_KEY=sk-ant-...       # Anthropic Claude API key
-```
+### Configuration Files
 
-#### Image Generation (at least one if images enabled)
+| File | Purpose | Scope |
+|---|---|---|
+| `.env` | API keys, server settings | Deployment |
+| `src/ai-agents/config.ts` | Pipeline configuration | Generation |
+| `src/constants/pipeline.ts` | Pipeline defaults | Generation |
+| `src/constants/validation.ts` | Validation settings | Quality |
+| `src/config/endpoints.ts` | API endpoints | Runtime |
 
-```env
-EXPO_PUBLIC_GEMINI_API_KEY=...     # Google Gemini API key (for Nano-Banana)
-EXPO_PUBLIC_IMAGE_PROVIDER=nano-banana  # Image provider selection
-EXPO_PUBLIC_IMAGE_GENERATION_ENABLED=true
-```
+### Environment-Specific Settings
 
-Alternative image providers:
-```env
-ATLAS_CLOUD_API_KEY=...            # Atlas Cloud provider
-MIDAPI_TOKEN=...                   # MidAPI (Midjourney) provider
-```
+Configuration adapts to different environments:
 
-#### Audio Generation (Optional)
-
-```env
-ELEVENLABS_API_KEY=...             # ElevenLabs TTS
-```
-
-#### Optional Configuration
-
-```env
-PORT=3001                          # Proxy server port
-EXPO_PUBLIC_LLM_MODEL=claude-sonnet-4-6  # LLM model selection
-EXPO_PUBLIC_LLM_PROVIDER=anthropic # LLM provider
-EXPO_PUBLIC_DEBUG=true             # Enable debug logging
-EXPO_PUBLIC_VALIDATION_MODE=advisory  # Validation mode: strict/advisory/disabled
-PROXY_PUBLIC_URL=https://...       # Public URL for webhook callbacks (ngrok)
-```
-
-### PipelineConfig
-
-The `loadConfig()` function in `src/ai-agents/config.ts` loads environment variables and constructs a `PipelineConfig` object that controls all pipeline behavior:
-
-- Agent configurations (provider, model, API key, max tokens, temperature)
-- Validation configuration (which rules are enabled, severity levels, thresholds)
-- Image generation configuration (provider, API key, strategy, provider-specific tuning)
-- Output directory
-- Debug mode flag
-
-### GenerationSettingsConfig
-
-Fine-grained generation tuning available through the settings UI:
-
-- Scene structure: max scenes per episode, beat counts per scene type
-- Choice distribution targets (% expression, relationship, strategic, dilemma)
-- Branching cap: maximum branching choices per episode
-- Text length limits: max words per beat, max choice words, max dialogue
-- Encounter configuration: minimum encounters per episode by length
-- Validation thresholds: choice density, blocking threshold, warning threshold
-- Concurrency settings: parallel episodes, parallel scenes, max LLM calls in flight
-- Image settings: provider-specific tuning (Gemini resolution, Midjourney stylization, etc.)
+- **Development:** Verbose logging, debug features enabled
+- **Production:** Optimized performance, minimal logging
+- **Testing:** Mock services, deterministic behavior
 
 ---
 
 ## 23) Error Handling and Recovery
 
-### LLM Call Failures
+### Error Classification
 
-| Failure Type | Recovery Strategy |
-|---|---|
-| Network timeout | Retry with exponential backoff (3 retries, 1s/2s/4s) |
-| Rate limit (429) | Wait for `Retry-After` header, then retry |
-| Server error (5xx) | Retry with backoff |
-| Invalid response (no JSON) | Re-parse with fallback strategies, then retry |
-| Circuit breaker open | Fail fast for 30 seconds, then retry |
+Errors are classified by recoverability and scope:
 
-### Image Generation Failures
+| Type | Recoverable | Scope | Handling |
+|---|---|---|---|
+| Network timeout | Yes | Request | Retry with backoff |
+| API rate limit | Yes | Provider | Delay and retry |
+| Invalid LLM response | Partial | Agent | Regenerate with modified prompt |
+| Missing asset | Yes | Content | Generate placeholder or retry |
+| Structural validation failure | Partial | Story | Auto-fix or manual correction |
+| Worker crash | Yes | Pipeline | Restart from checkpoint |
 
-| Failure Type | Recovery Strategy |
-|---|---|
-| Generation timeout | Retry (up to 3 times) |
-| Content policy rejection | Skip image, use placeholder |
-| Provider unavailable | Fall back to placeholder generation |
-| Text in generated image | Regenerate with stronger no-text instruction |
+### Recovery Strategies
 
-### Worker Failures
+1. **Automatic retry:** For transient failures with exponential backoff
+2. **Checkpoint recovery:** Resume long-running jobs from last successful state
+3. **Graceful degradation:** Continue with reduced functionality when possible
+4. **Dead letter queue:** Isolate unrecoverable jobs for manual inspection
 
-| Failure Type | Recovery Strategy |
-|---|---|
-| Worker process crash | Record in dead letter queue; user can retry |
-| Worker timeout | Kill process, mark job as failed |
-| Out of memory | Kill process, mark job as failed |
-| Checkpoint available | User can resume from last checkpoint |
+### Error Reporting
 
-### Storage Quota Failures
+Errors are reported through multiple channels:
 
-| Failure Type | Recovery Strategy |
-|---|---|
-| AsyncStorage quota exceeded | Progressive pruning of oldest data |
-| Filesystem write failure | Log error, attempt write to alternative path |
+- **User-facing messages:** Friendly explanations for common issues
+- **Debug logs:** Detailed technical information for developers
+- **Telemetry events:** Structured error data for monitoring and analysis
 
 ---
 
@@ -1354,127 +1170,123 @@ Fine-grained generation tuning available through the settings UI:
 
 ### API Key Storage
 
-- API keys are stored in the `.env` file (server-side only for Anthropic)
-- Client-accessible keys use the `EXPO_PUBLIC_` prefix (visible in browser, for Gemini image gen)
-- Users can override API keys in the settings screen (stored in AsyncStorage)
+API keys are managed through environment variables and secure storage:
+
+```bash
+# .env file
+ANTHROPIC_API_KEY=your_key_here
+ELEVENLABS_API_KEY=your_key_here
+ATLAS_CLOUD_API_KEY=your_key_here
+MIDAPI_TOKEN=your_key_here
+```
 
 ### Proxy Security
 
-- The proxy server runs on localhost only (not exposed to the internet by default)
-- All external API calls are proxied through the local server
-- No authentication on the proxy itself (local-only access model)
-- Docker deployment option for isolated execution
+The proxy server implements several security measures:
 
-### Important Security Notes
+1. **Local-only binding:** Only accepts connections from localhost by default
+2. **CORS configuration:** Strict CORS policy for production deployments
+3. **Request validation:** All proxied requests are validated before forwarding
+4. **Rate limiting:** Built-in rate limiting to prevent API abuse
 
-- The `.env` file should never be committed to version control
-- `EXPO_PUBLIC_` prefixed keys are embedded in the client bundle and visible in browser dev tools
-- For production deployment, API keys should be managed through a proper secrets management system
+### Client Security
+
+Client-side security considerations:
+
+1. **No API key exposure:** API keys never leave the server environment
+2. **Input sanitization:** All user input is sanitized before processing
+3. **Content validation:** Generated content is validated before display
 
 ---
 
 ## 25) Build and Deployment
 
-### Development Scripts
+### Development Workflow
 
-| Script | Command | Purpose |
+```bash
+# Start the development environment
+npm run dev
+
+# Individual services
+npm run proxy      # Start proxy server only
+npm run web        # Start Expo web only
+npm run android    # Start Android development
+npm run ios        # Start iOS development
+```
+
+### Build Scripts
+
+| Script | Purpose | Environment |
 |---|---|---|
-| `npm run dev` | Kill existing node, start proxy + web | Full development environment |
-| `npm run proxy` | `node proxy-server.js` | Start proxy server only |
-| `npm run web` | `expo start --web` | Start Expo web dev server |
-| `npm start` | `expo start` | Start Expo with platform choice |
-| `npm run android` | `expo start --android` | Start Android dev server |
-| `npm run ios` | `expo start --ios` | Start iOS dev server |
+| `npm run dev` | Full development environment | Development |
+| `npm run proxy` | Proxy server only | Development |
+| `npm run web` | Web client only | Development |
+| `npm run typecheck` | Type checking | All |
+| `npm run test` | Run test suite | All |
+| `npm run validate` | Full validation | CI/CD |
+| `npm run clean:runtime` | Clean generated artifacts | Maintenance |
 
-### Generation Scripts
+### TypeScript Configuration
 
-| Script | Command | Purpose |
-|---|---|---|
-| `npm run generate` | `ts-node src/ai-agents/example-usage.ts` | CLI story generation |
-| `npm run generate:heist` | Same with `STORY_TYPE=heist` | Generate heist story |
-| `npm run generate:fantasy` | Same with `STORY_TYPE=fantasy` | Generate fantasy story |
-| `npm run generate:doc` | `ts-node src/ai-agents/generate-from-document.ts` | Generate from document |
+Multiple TypeScript configurations for different contexts:
 
-### Docker Deployment
+- **tsconfig.app.json:** Client application code
+- **tsconfig.test.json:** Test files
+- **tsconfig.contracts.json:** Type contract validation
+- **tsconfig.worker.json:** Worker process code (Node.js environment)
+
+### Docker Support
+
+Docker configuration for containerized deployment:
 
 ```yaml
 # docker-compose.proxy.yml
 services:
   proxy:
-    image: node:20-bookworm-slim
-    working_dir: /app
-    command: node proxy-server.js
+    build: .
     ports:
       - "3001:3001"
+    environment:
+      - NODE_ENV=production
     volumes:
-      - .:/app
-    env_file:
-      - .env
+      - ./generated-stories:/app/generated-stories
 ```
-
-### Build for Production
-
-```bash
-# Web production build
-npx expo export --platform web
-
-# iOS build
-npx expo build:ios
-
-# Android build
-npx expo build:android
-```
-
-### Node.js Polyfill Configuration
-
-Because the app runs in React Native (which lacks Node.js built-ins), several polyfills are configured:
-
-**Babel aliases** (`babel.config.js`):
-- `fs` → `./src/fs-polyfill` (no-op polyfill)
-- `path` → `path-browserify`
-- `crypto` → `crypto-browserify`
-- `stream` → `stream-browserify`
-- `buffer` → `buffer`
-- `os` → `os-browserify/browser`
-
-**Metro resolver** (`metro.config.js`):
-- Same polyfill mapping for the bundler
-- `sharp` is stubbed out (server-only dependency)
-
-**Worker TypeScript** (`tsconfig.worker.json`):
-- Uses CommonJS modules (not ESM)
-- Has its own path aliases for React Native shims
 
 ---
 
 ## 26) Constraints and Known Limitations
 
-### Runtime Constraints
+### Performance Constraints
 
-- **Web feature completeness depends on proxy availability.** The web client cannot function without the local proxy server running. The proxy handles all file I/O and API proxying.
-- **Large payloads can saturate local storage.** Generated stories with many images and audio files consume significant disk space. AsyncStorage has platform-dependent quotas.
-- **External provider reliability.** LLM and image generation APIs are the primary runtime risk. Rate limits, outages, and quality variance all affect generation.
+1. **Memory usage:** Large stories (20+ episodes) may approach memory limits on mobile devices
+2. **Generation time:** Full story generation can take 45-90 minutes depending on complexity
+3. **Image generation:** High-quality images may take 30-60 seconds per image
+4. **Mobile storage:** Generated stories can be 50-200MB each including images and audio
 
-### Architecture Constraints
+### API Limitations
 
-- **No offline generation.** The generation pipeline requires internet access to reach LLM and image APIs.
-- **Single-machine execution.** Workers run as local child processes. There is no distributed job execution.
-- **No incremental story updates.** Once a story is generated, it cannot be partially re-generated. The entire episode must be regenerated to change any content.
+1. **Anthropic rate limits:** 50 requests/minute for most tiers
+2. **ElevenLabs quotas:** Character limits based on subscription tier
+3. **MidAPI costs:** Premium image generation can be expensive at scale
+4. **Context limits:** LLM context windows limit the size of single generation requests
+
+### Platform Limitations
+
+1. **iOS filesystem access:** Limited ability to inspect generated files on iOS
+2. **Web audio autoplay:** Browser restrictions may prevent automatic audio playback
+3. **Mobile memory:** Complex stories may cause performance issues on older devices
 
 ### Technical Debt
 
-- Parallel generation strategies are partially implemented; some fall back to sequential execution.
-- The proxy server is a single monolithic file (~2500 lines) that would benefit from modularization.
-- Provider-specific configuration is spread across multiple files and could be centralized.
-- Integration test coverage for checkpoint/resume/cancel flows is limited.
+1. **State management complexity:** Multiple state systems create maintenance overhead
+2. **Type safety gaps:** Some dynamic content generation bypasses TypeScript checking
+3. **Error handling inconsistency:** Error handling patterns vary across different system components
+4. **Test coverage:** Pipeline and worker systems have limited automated test coverage
 
-### Performance Considerations
+### Future Improvement Areas
 
-- **Story generation:** 15-60+ minutes per episode depending on scene count, image count, and provider latency.
-- **Image generation:** 3-15 seconds per image depending on provider and resolution.
-- **Audio generation:** 2-5 seconds per beat for narration.
-- **Client rendering:** Story playback is lightweight. The main performance concern is image loading for beat transitions.
-
----
-
-*This document reflects the current implemented technical architecture as of February 26, 2026. All systems described are either fully implemented or have clear architectural foundations in the codebase.*
+1. **Incremental loading:** Large stories should load content on-demand
+2. **Offline support:** Better offline capability for mobile devices
+3. **Performance optimization:** Memory usage optimization for long stories
+4. **Testing infrastructure:** Comprehensive test suite for pipeline components
+5. **Monitoring and observability:** Better production monitoring and alerting

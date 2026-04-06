@@ -425,540 +425,498 @@ Encounter Beat 1: "The guard spots you"
   │   ├── Complicated → "You're locked in a struggle" → new choices
   │   └── Failure → "The guard sounds the alarm" → new choices
   └── Choice B: "Bluff" → success/complicated/failure
-      ├── Success → "The guard waves you through" → new choices
-      ├── Complicated → "Suspicious but distracted" → new choices
-      └── Failure → "He doesn't buy it" → new choices
+      ├── Success → "Guard relaxes his grip" → new choices
+      └── ... (other outcomes)
 ```
 
-### Approach System
-
-The first choice in an encounter sets the player's approach, which influences the tone and available options for the rest of the encounter:
-
-| Approach | Style | Risk Profile |
-|---|---|---|
-| **Aggressive** | Bold, direct action | Higher highs, lower lows |
-| **Cautious** | Careful, methodical | Steady progress, fewer dramatic swings |
-| **Clever** | Unconventional, tricky | Wild variance, unexpected results |
-| **Desperate** | All-or-nothing gambit | Extreme outcomes in both directions |
-| **Adaptive** | Balanced, flexible | Default middle ground |
-
-### Environmental Elements
-
-Each encounter can include dynamic environmental elements — hazards and opportunities that activate based on conditions:
-
-- **Hazards:** Dangers that make things worse (a chandelier about to fall, a spreading fire)
-- **Opportunities:** Advantages that can be exploited (an unsecured window, a distracted guard, a useful tool)
-
-Elements activate based on threat thresholds, goal thresholds, beat numbers, or the player's approach. An activated opportunity might unlock a special choice; an activated hazard might add threat ticks.
-
-### NPC Encounter States
-
-NPCs in encounters have:
-
-- **Disposition:** Confident, wary, desperate, enraged, or calculating — this changes based on encounter progress
-- **Tells:** Observable behaviors that reveal the NPC's state ("Her hand trembles on the sword hilt" = wary). Tells may be hidden until a certain point in the encounter.
-- **Reactions by approach:** Different text for how the NPC responds to aggressive, cautious, or clever approaches
-
-### Escalation Triggers
-
-Automatic complications that fire when conditions are met:
-
-- Threat clock reaches a certain percentage
-- A certain number of beats have passed
-- Multiple consecutive failures
-- Time elapsed
-
-Effects can include narrative complications, threat bonuses, escape options becoming available, or a "point of no return" that locks out certain choices.
+This creates genuine branching within the encounter, while keeping the content manageable for AI generation.
 
 ### Encounter Outcomes
 
-Every encounter has four possible endings:
+Every encounter resolves to one of four major outcomes:
 
-1. **Victory:** The player achieved their goal. Leads to a specific next scene with positive consequences.
-2. **Partial Victory:** The goal was achieved, but with significant complications. Leads to a different scene with mixed consequences.
-3. **Defeat:** The player failed. Leads to a recovery/side-quest scene with negative consequences.
-4. **Escape:** The player fled before resolution. Leads to a scene where they must deal with having retreated.
+1. **Victory:** Player achieved their goal cleanly
+2. **Partial Victory:** Player succeeded, but with complications or costs
+3. **Defeat:** Player failed, but the story continues (often with a dramatic escalation)
+4. **Escape:** Player fled the situation (may carry consequences into later scenes)
 
-Each outcome can trigger a storylet (short aftermath sequence) before returning to the main plot.
-
-### Pixar Stakes
-
-Encounters are designed with "Pixar stakes" — a concept from Pixar's storytelling rules. Each encounter specifies:
-
-- **Initial odds against:** How dire the situation appears (target: 60-70% against the player)
-- **What the player stands to lose:** Concrete, emotionally meaningful stakes
-- **Stacked obstacles:** Multiple challenges that compound the difficulty
-
-This ensures encounters feel dramatically compelling, not mechanically arbitrary.
+The outcome affects which storylet plays next and may influence later story content.
 
 ---
 
 ## 9) Identity and Progression
 
-### The Identity Profile
+### The Six Identity Dimensions
 
-The identity profile is the hidden personality model that emerges from accumulated player choices. It consists of six dimensions, each a spectrum from -100 to +100:
+The player's identity profile emerges naturally from their choices over time. Each dimension is a spectrum from -100 to +100, starting at 0 (neutral). The player never sees these numbers, only their narrative effects.
 
-| Dimension | -100 (Left) | 0 (Neutral) | +100 (Right) |
-|---|---|---|---|
-| **Mercy ↔ Justice** | Deeply merciful, forgives freely | Undecided | Strictly just, holds accountable |
-| **Idealism ↔ Pragmatism** | Idealistic, principled even at cost | Undecided | Pragmatic, results matter most |
-| **Cautious ↔ Bold** | Very cautious, avoids risk | Undecided | Extremely bold, embraces risk |
-| **Loner ↔ Leader** | Prefers working alone | Undecided | Natural leader, inspires others |
-| **Heart ↔ Head** | Emotion-driven decisions | Undecided | Logic-driven decisions |
-| **Honest ↔ Deceptive** | Always truthful | Undecided | Comfortable with deception |
+| Dimension | Description | Narrative Impact |
+|---|---|---|
+| **mercy_justice** | -100 (mercy) to +100 (justice) | Affects dialogue options and NPC reactions around forgiveness vs. punishment |
+| **idealism_pragmatism** | -100 (idealism) to +100 (pragmatism) | Influences available strategies and NPC trust based on principles vs. expediency |
+| **cautious_bold** | -100 (cautious) to +100 (bold) | Gates high-risk options and affects how NPCs view the player's reliability |
+| **loner_leader** | -100 (loner) to +100 (leader) | Determines group dynamic options and leadership opportunities |
+| **heart_head** | -100 (emotion) to +100 (logic) | Shapes available reasoning approaches and NPC emotional connections |
+| **honest_deceptive** | -100 (honest) to +100 (deceptive) | Affects trust-building speed and available manipulation options |
 
-### How Identity Changes
+### Identity-Gated Content
 
-Identity shifts come from two sources:
+When the player's identity profile reaches certain thresholds, new content becomes available:
 
-1. **Tint flags (major shifts, 10-15 points):** Set by dilemma choices. When a player makes a dilemma choice, a tint flag like `tint:mercy` or `tint:justice` is set, which maps to a predetermined identity shift.
-2. **Tags (minor shifts, 5 points):** Set by expression and relationship choices. Tags like "brave" or "cautious" contribute smaller identity shifts through keyword matching.
+- **Dialogue options** that only appear for characters with strong identity traits
+- **Story paths** that require established personality patterns
+- **NPC reactions** that reference the player's accumulated character
+- **Storylet variations** that reflect the player's emerging identity
 
-### Identity Gates
+For example, a player who has established a pattern of mercy (mercy_justice < -40) might unlock a unique dialogue option to spare a final boss, leading to a completely different ending.
 
-Once a player's identity dimension is strong enough (|value| >= 25), they are considered to have a "dominant trait." This can unlock identity-gated content:
+### Progression Through Relationships
 
-- Choices that only appear for merciful characters
-- Dialogue options available only to natural leaders
-- Scenes that play differently based on whether the player is honest or deceptive
+Instead of traditional character levels, StoryRPG tracks progression through deepening relationships with NPCs. Each relationship has four dimensions:
 
-This creates meaningful replay value — a second playthrough with different values unlocks genuinely different content.
+- **Trust:** -100 to +100 (reliability and honesty)
+- **Affection:** -100 to +100 (emotional connection)
+- **Respect:** -100 to +100 (competence and capability)
+- **Fear:** 0 to +100 (intimidation and consequences)
 
-### Progression Philosophy
+These relationships unlock:
+- New conversation topics
+- Ally assistance in encounters
+- Information sharing
+- Story paths that require specific NPC cooperation
+- Romantic or mentorship subplot content
 
-StoryRPG deliberately avoids traditional RPG progression:
+### The Butterfly Effect System
 
-- **No experience points or level-ups.** Progress is measured by story advancement and identity formation.
-- **No visible stat growth.** Attributes change organically through choices, but the player never sees a "+2 Courage" notification.
-- **No loot treadmill.** Items are narratively significant, not power progression.
-- **No grinding.** Every scene advances the story; there is no repeatable content for stat improvement.
+Delayed consequences create a sense that choices have lasting impact beyond their immediate scene. The system tracks:
 
-The reward for playing is discovering who your character becomes and seeing how your choices reshape the narrative.
+- **Scene delays:** Consequences that fire after a specific number of scenes
+- **Episode delays:** Consequences that emerge in later episodes
+- **Conditional triggers:** Consequences that activate when specific conditions are met
+
+Examples:
+- A guard you spared warns you of an ambush three episodes later
+- An enemy you humiliated returns as a recurring antagonist
+- A secret you learned unlocks a dialogue option in the season finale
 
 ---
 
 ## 10) Inventory and Items
 
+### Fiction-First Inventory
+
+The inventory system follows the same fiction-first principle as everything else. Players never see item stats or equipment screens. Instead:
+
+- Items are acquired through story events
+- Item effects are expressed through narrative choices and consequences
+- Equipment changes are described in the prose, never through UI changes
+
 ### Item Categories
 
-| Category | Description | Example |
-|---|---|---|
-| **Key Items** | Plot-critical objects that unlock scenes or choices. Cannot be sold or discarded. | A master key, a coded letter, a royal seal |
-| **Consumables** | One-time-use items that provide stat boosts. | A health potion, a luck charm, a forgery kit |
-| **Equipment** | Passive stat modifiers while equipped. | A reinforced jacket (+5 courage), a diplomat's ring (+5 charm) |
-| **Cosmetics** | Appearance customization or scene flavor. | A distinctive hat, a family signet |
-| **Collectibles** | Lore items and achievement trackers. | A journal entry, a faction badge |
+**Narrative Items:** Objects that exist primarily to gate story content or provide dialogue options. Examples: a love letter, a key, evidence of corruption.
 
-### Equipment Slots
+**Capability Items:** Tools that unlock new choice options or provide advantages in stat checks. Examples: lockpicks (enable stealth options), combat armor (advantage in fight scenes), medical kit (healing dialogue options).
 
-- 2 Accessory slots
-- 1 Outfit slot
-- 1 Special slot
+**Identity Items:** Objects that reflect and reinforce the player's character development. Examples: a family photo (enables empathy choices), a weapon from a fallen friend (unlocks vengeance options).
 
-### Inventory Limits
+**Consumable Items:** Single-use items that provide temporary narrative benefits. Examples: a health potion (one-time advantage), intel document (temporary choice unlock), disguise (temporary social advantage).
 
-- Maximum 20 active items (excluding collectibles)
-- Items persist within a story series, reset between different stories
-- Equipment can guarantee at least a "complicated" outcome on stat checks (cannot guarantee full success)
+### Item Integration
+
+Items integrate seamlessly into the choice system:
+
+- **Gated choices:** Some dialogue options only appear if the player has specific items
+- **Stat bonuses:** Items provide hidden advantages to relevant stat checks
+- **Narrative flavor:** Item descriptions and usage are woven into the prose
+- **Consequence enhancement:** Items can modify the outcomes of player choices
 
 ---
 
 ## 11) NPC and Relationship System
 
-### NPC Depth Tiers
+### NPC Depth and Consistency
 
-NPCs are organized into three tiers based on narrative importance:
+Every significant NPC has:
 
-| Tier | Count per Episode | Relationship Depth | Content Depth |
-|---|---|---|---|
-| **Core** | 2-3 | All 4 dimensions (trust, affection, respect, fear) | Personal storylines, voice profiles, arc potential |
-| **Supporting** | 3-5 | At least 2 dimensions | Distinctive voice, recurring presence |
-| **Background** | 5+ | At least 1 dimension | Brief appearances, world texture |
+- **Motivations:** What they want and why
+- **Voice:** Consistent speech patterns and vocabulary
+- **Relationship state:** Current standing with the player across four dimensions
+- **Memory:** They remember and reference past player choices
+- **Character arc:** Their own development that may parallel or contrast with the player's
 
-### Relationship Dimensions
+### Relationship Mechanics
 
-Each NPC relationship tracks four independent dimensions:
+NPC relationships operate on four independent dimensions:
 
-| Dimension | Range | Meaning |
-|---|---|---|
-| **Trust** | -100 to +100 | How much the NPC believes in and relies on the player |
-| **Affection** | -100 to +100 | How much the NPC likes the player (romantic or platonic) |
-| **Respect** | -100 to +100 | How much the NPC professionally/personally regards the player |
-| **Fear** | 0 to +100 | How intimidated the NPC is by the player |
+**Trust** measures reliability and honesty. High trust NPCs:
+- Share sensitive information
+- Give the benefit of the doubt
+- Offer assistance in dangerous situations
 
-These dimensions interact to create complex social dynamics:
-- High Trust + Low Affection = respected colleague
-- High Fear + Low Trust = compliance without loyalty (unstable)
-- High Affection + High Respect = deep admiration
-- High Fear + Low Respect = resentment waiting to boil over
+**Affection** measures emotional connection. High affection NPCs:
+- Engage in personal conversations
+- Show concern for the player's wellbeing
+- May develop romantic subplot potential
 
-### NPC Character Profiles
+**Respect** measures perceived competence. High respect NPCs:
+- Defer to the player's expertise
+- Seek the player's advice
+- Acknowledge the player's achievements
 
-Each NPC is generated with a rich character profile:
+**Fear** measures intimidation and consequences. High fear NPCs:
+- Comply with demands quickly
+- Avoid confrontation
+- May eventually rebel or betray if fear becomes too high
 
-- **Want/Fear/Flaw trinity:** What they desire, what they dread, and what undermines them
-- **Voice profile:** Vocabulary level, speech patterns, catchphrases, verbal tics
-- **Arc potential:** Where they could grow or fall based on player interaction
-- **Pixar-style depth:** Strong opinions, personal stakes, emotional vulnerability
-- **Skills:** Competencies that create advantages or disadvantages in encounters
+### Relationship Consequences
 
-### Relationship Dynamics
+Relationship changes affect:
 
-Relationships evolve through choices:
-- Direct relationship choices shift specific dimensions
-- Dilemma choices may affect relationships indirectly (helping an enemy's friend affects their trust)
-- Neglect can cause relationships to decay over time
-- Some NPCs may react to the player's identity profile, not just direct actions
+- **Available dialogue options** (high trust unlocks secrets, high fear unlocks threats)
+- **NPC behavior in encounters** (allies assist, enemies target based on fear/respect)
+- **Story branching** (certain paths require specific relationship thresholds)
+- **Ending variations** (finale content varies based on accumulated relationships)
+
+### Social Memory
+
+NPCs remember:
+- Specific choices the player made in previous episodes
+- Patterns of behavior (consistent mercy, repeated aggression, etc.)
+- Identity traits the player has demonstrated
+- Past relationship moments (promises made, trust broken, etc.)
+
+This creates continuity and makes relationships feel consequential across the entire story.
 
 ---
 
 ## 12) Consequence System
 
-### Immediate Consequences
+### Immediate vs. Delayed Consequences
 
-Every choice can trigger immediate state changes:
+StoryRPG uses a two-tier consequence system:
 
-- **Attribute changes:** "+5 courage" for a brave action
-- **Skill changes:** "+3 lockpicking" for practicing the skill
-- **Relationship changes:** "+10 trust with Elena" for keeping a promise
-- **Flag setting:** "betrayed_the_guild = true" for a plot-critical decision
-- **Score changes:** "+1 evidence_collected" for investigation progress
-- **Tag addition/removal:** Adding "known_as_merciful" to the player's tag set
-- **Item addition/removal:** Gaining or losing inventory items
+**Immediate consequences** fire right after a choice is made:
+- Attribute changes
+- Relationship adjustments
+- Flag/score updates
+- Inventory changes
 
-### Delayed Consequences (The Butterfly Effect)
+**Delayed consequences** create the "butterfly effect":
+- Scene-delayed: Fire after N scenes have passed
+- Episode-delayed: Activate in later episodes
+- Conditional: Trigger when specific conditions are met
 
-This is one of StoryRPG's most distinctive features. Some consequences don't fire immediately — they sit in a queue and activate later, creating "butterfly effect" moments.
+### Consequence Types
 
-A delayed consequence has:
-- **The consequence itself:** What state change will occur
-- **A description:** Human-readable note ("The bartender remembers your insult")
-- **A delay:** Either a scene count ("fire after 5 scenes") or an episode count ("fire after 2 episodes")
-- **A trigger condition (optional):** Instead of a timed delay, the consequence fires when a specific condition becomes true
+The system supports multiple consequence types:
 
-**Example:** In Episode 1, the player lies to a merchant. A delayed consequence is queued: "After 2 episodes, if the player enters the market district, the merchant publicly accuses them of dishonesty, reducing their trust with all merchant NPCs by 10."
+- **setAttribute:** Change a player attribute
+- **modifyRelationship:** Adjust NPC relationship dimensions
+- **setFlag/clearFlag:** Set or clear boolean story flags
+- **adjustScore:** Modify integer story scores
+- **addTag/removeTag:** Add or remove identity tags
+- **addItem/removeItem:** Inventory management
+- **setTint:** Add identity tint flags that affect personality profile
 
-This creates the feeling that choices have long-term ripple effects, making the story world feel alive and responsive.
+### Consequence Validation
 
-### Consequence Budget
+During generation, validators ensure:
+- Consequences are proportional to choice impact
+- No single choice creates extreme stat swings
+- Relationship changes feel emotionally appropriate
+- Delayed consequences create satisfying payoffs
+- No consequence breaks story logic or creates dead ends
 
-To prevent either too few or too many consequences per episode, the system uses a consequence budget with four categories:
+### Butterfly Effect Design
 
-| Category | Description | Typical Frequency |
-|---|---|---|
-| **Callback** | Small references to past choices in narrative text | Most common |
-| **Tint** | Identity-shifting consequences from dilemma choices | Every few choices |
-| **Branchlet** | Minor scene variations (different dialogue, different NPC mood) | Several per episode |
-| **Branch** | Major scene routing changes (different scenes entirely) | 1-2 per episode max |
-
-The validation system checks that each episode's consequence budget is balanced.
+Delayed consequences are designed to:
+- Reference specific past choices in their description
+- Feel like natural outgrowths of previous decisions
+- Surprise the player with their timing while feeling inevitable in hindsight
+- Create meaningful story moments rather than just mechanical effects
 
 ---
 
 ## 13) Visual Storytelling
 
-### Image-First Presentation
+### Image Generation Pipeline
 
-Every beat in the story has an associated background image. The visual design is:
+StoryRPG uses a sophisticated AI image pipeline managed by specialized agents:
 
-- **Full-screen canvas:** Images fill the entire screen
-- **Dark gradient overlay:** Ensures text readability over any image
-- **Readability-first text panel:** Text appears in a consistent, comfortable zone
-- **Cinematic transitions:** Image changes are timed to match narrative beats
+- **Visual Illustrator Agent (src/ai-agents/agents/image-team/VisualIllustratorAgent.ts):** Generates scene images using story context
+- **Character Reference Sheet Agent (src/ai-agents/agents/image-team/CharacterReferenceSheetAgent.ts):** Maintains character visual consistency
+- **Cinematic Beat Analyzer (src/ai-agents/agents/image-team/CinematicBeatAnalyzer.ts):** Determines cinematography for each beat
+- **Composition Validator (src/ai-agents/agents/image-team/CompositionValidatorAgent.ts):** Ensures visual quality and readability
+- **Lighting Color System (src/ai-agents/agents/image-team/LightingColorSystem.ts):** Manages mood through lighting and color
 
-### Cinematic Image System
+### Visual Narrative Consistency
 
-The AI generates images with detailed cinematic descriptions including:
+The image system maintains consistency through:
 
-- **Camera angles:** Wide establishing, medium action, close dramatic, low heroic, high vulnerability, Dutch tilt (for chaos), over-shoulder, reaction shot
-- **Shot types:** Establishing, action moment, impact, reaction, consequence, tension hold
-- **Mood:** Anticipation, dynamic action, triumphant, desperate, tense uncertainty, relief, dread
-- **Lighting direction:** Harsh side lighting, soft backlight, dramatic underlighting, etc.
-- **Color palette:** Warm oranges, cold blues, desaturated grays, etc.
-- **Character states:** Pose, expression, and position for each character in frame
-- **Environmental state:** Active props, damage, weather, etc.
+- **Character reference sheets** that define visual appearance across scenes
+- **Color scripting** that uses lighting and palette to support emotional tone
+- **Composition rules** that ensure text readability and visual flow
+- **Style consistency** that maintains a unified aesthetic throughout episodes
 
-### Visual State Continuity
+### Image-Text Synchronization
 
-The encounter system tracks visual state across beats to maintain consistency:
-
-- Character positions (where they are in the scene)
-- Character conditions (wounded, disheveled, armed)
-- Environmental changes (overturned tables, broken windows)
-- Props in play (drawn weapons, held objects)
-- Current lighting state
-
-### Character Reference System
-
-For visual consistency across an entire story, the pipeline generates character reference sheets — multiple-angle views of each major character that serve as visual anchors for all subsequent image generation. These reference images are passed to the image generation AI alongside scene prompts to maintain character appearance consistency.
-
-### Developer Image Tools
-
-For quality iteration (not visible to regular players), developer mode includes:
-
-- Image prompt inspection (see what prompt generated each image)
-- Image feedback submission
-- Image regeneration with adjusted prompts
+Images are generated to specifically support the narrative beat:
+- **Scene establishment:** Wide shots that show location and context
+- **Character moments:** Close-ups that capture emotion and expression
+- **Action sequences:** Dynamic compositions that support encounter tension
+- **Transition beats:** Images that bridge between story moments
 
 ---
 
 ## 14) Audio and Narration
 
-### Design Principle: Enhancement, Not Dependency
+### Optional Voice Narration
 
-Audio is an optional enhancement layer. The game is designed to be fully playable as a silent reading experience. Audio systems are never in the critical path.
+StoryRPG supports AI-generated voice narration for accessibility and immersion:
+- **Narrative prose** is read with neutral, storyteller delivery
+- **Character dialogue** uses distinct voice profiles for different NPCs
+- **Player choice text** is read with appropriate emotional inflection
+- **System text** (UI elements) uses clear, functional delivery
 
-### Narration System
+### Audio Design Philosophy
 
-- **Text-to-speech narration** using ElevenLabs API
-- **Character voice casting:** Each major NPC can have a distinct voice
-- **Word-by-word alignment:** Audio includes timestamp data for karaoke-style word highlighting
-- **Batch pre-generation:** Audio for an entire story can be generated ahead of time
-- **Graceful degradation:** If audio fails to generate or load, the text experience is unaffected
-
-### Audio Settings
-
-- Enable/disable narration
-- Auto-play vs. manual play
-- Voice selection
-- Word highlighting mode (none, word-by-word, sentence-by-sentence)
+Audio serves the fiction-first principle:
+- **Ambient soundscapes** that match scene locations and moods
+- **Character voice consistency** across episodes and seasons
+- **Emotional pacing** that supports the reading rhythm
+- **Accessibility support** for visual impairment or reading difficulties
 
 ---
 
 ## 15) Story Generation Workflow
 
-### Overview
+### Multi-Agent Pipeline
 
-The generation workflow is a multi-stage process where the player acts as creative director:
+Story generation uses a sequential pipeline of specialized agents located in `src/ai-agents/agents/`:
 
-### Stage 1: Source Material Analysis
+1. **Source Material Analyzer (SourceMaterialAnalyzer.ts):** Processes user input and extracts story elements
+2. **World Builder (WorldBuilder.ts):** Creates setting, factions, and rules
+3. **Character Designer (CharacterDesigner.ts):** Develops NPCs with motivations and voice
+4. **Story Architect (StoryArchitect.ts):** Plans overall narrative structure
+5. **Scene Writer (SceneWriter.ts):** Creates individual scene content
+6. **Encounter Architect (EncounterArchitect.ts):** Designs tactical interaction sequences
+7. **Choice Author (ChoiceAuthor.ts):** Writes player choices with consequences
+8. **Beat Writer (BeatWriter.ts):** Creates prose for individual story beats
+9. **Resolution Designer (ResolutionDesigner.ts):** Authors outcome text for stat checks
 
-The player provides source material — this can be:
-- A text document (a novel excerpt, a screenplay, a world-building document)
-- A PDF file
-- A short synopsis or description
-- A genre and brief prompt
+### Quality Assurance Integration
 
-The `SourceMaterialAnalyzer` agent analyzes this input and produces a structured analysis including themes, characters, settings, tone, and potential storylines.
+Multiple QA agents in `src/ai-agents/validators/` validate content:
 
-### Stage 2: Season Planning
+- **Choice Density Validator (ChoiceDensityValidator.ts):** Ensures appropriate choice frequency
+- **Choice Distribution Validator (ChoiceDistributionValidator.ts):** Maintains proper choice type balance
+- **Consequence Budget Validator (ConsequenceBudgetValidator.ts):** Prevents extreme stat swings
+- **Cliffhanger Validator (CliffhangerValidator.ts):** Ensures proper episode endings
 
-Based on the analysis, the system creates a `SeasonBible` — a comprehensive plan for a multi-episode story. The player can:
-- Choose how many episodes to generate (typically 3-12)
-- Review and adjust episode outlines
-- See character arc plans across the season
-- Review subplot scheduling
-- Approve or modify cliffhanger types
+### Generation Job Management
 
-### Stage 3: Generation
-
-With the plan approved, the pipeline generates content episode by episode:
-
-1. **World Building** — Creates a "world bible" with locations, factions, customs, rules
-2. **Character Design** — Builds detailed NPC profiles with Want/Fear/Flaw, voice, and arcs
-3. **Story Architecture** — Creates the episode blueprint with scene order and encounter placement
-4. **Scene Writing** — Generates prose for each beat in each scene
-5. **Choice Authoring** — Creates choices with conditions, consequences, and outcome texts
-6. **Encounter Architecture** — Designs multi-beat encounter sequences
-7. **Assembly and Validation** — Compiles everything into the canonical data model, runs structural and quality checks
-8. **Image Generation** — Creates visual content for each beat
-9. **Audio Generation** — Creates narration for each beat (optional)
-
-### Stage 4: Review and Play
-
-The generated story appears in the story library and can be played immediately. The player can provide feedback, regenerate images, or generate additional episodes.
+Generation jobs are tracked through the `generationJobStore` (src/stores/generationJobStore.ts):
+- **Progress tracking** with estimated completion times
+- **Checkpoint system** for resuming interrupted jobs
+- **Error handling** with automatic retry logic
+- **Resource management** to prevent API overuse
 
 ---
 
 ## 16) Season Planning and Long-Form Content
 
-### The Season Bible
+### Season Structure
 
-For multi-episode stories, the AI generates a season bible that plans the entire arc:
+Multi-episode stories are organized as seasons:
+- **Season planning** outlines 3-8 episodes with connecting arcs
+- **Episode independence** allows each episode to have self-contained satisfaction
+- **Arc continuity** maintains character growth and relationship development
+- **Cliffhanger management** creates anticipation without frustration
 
-- **Central question:** The thematic question the season explores
-- **Three-act structure:** Episodes are assigned to Act 1 (setup), Act 2 (escalation), or Act 3 (resolution)
-- **Tentpole episodes:** Key dramatic episodes that anchor the season
-- **Midseason pivot:** A turning point that redirects the story
-- **Character arcs:** Planned emotional journeys for each major character across the season
-- **Subplots:** Secondary storylines that weave through episodes
-- **Promise ledger:** Questions raised, character trajectories, relationship tensions, and themes introduced — tracked to ensure payoff
-- **Revelation schedule:** When major secrets and twists are revealed
-- **Condensation rules:** If the user selects fewer episodes than the source material suggests, rules for what to cut, merge, or condense
+### Season Planning Agent
 
-### Episode Plans
+The **Season Planner Agent (SeasonPlannerAgent.ts)** handles:
+- **Episode count optimization** based on story scope
+- **Pacing distribution** to balance action, character development, and plot advancement
+- **Branching integration** to ensure player choices matter across episodes
+- **NPC arc planning** to give supporting characters meaningful development
 
-Each episode in the season plan includes:
+### Ending Mode Planning
 
-- Title and logline
-- Act assignment (1, 2, or 3)
-- Story spine position (setup, routine, inciting, consequence, climax, resolution)
-- Must-accomplish beats
-- Planned encounters with type, stakes, and position
-- Cliffhanger type and setup
-- Character focus and arc progressions
-- Active subplots and their beats
-- Promises made and fulfilled
-- Threads from previous and to next episodes
-
-### Cliffhanger Types
-
-Episodes can end with eight types of cliffhangers:
-- **Revelation:** A shocking truth is uncovered
-- **Danger:** The protagonist faces imminent peril
-- **Mystery:** A new puzzle or question is introduced
-- **Betrayal:** Someone trusted turns against the player
-- **Arrival:** An unexpected character or force appears
-- **Departure:** Someone important leaves
-- **Decision:** A major choice is forced upon the player
-- **Transformation:** Something fundamental changes
+The system supports multiple episode ending approaches managed by `useEndingModePlanner.ts`:
+- **Cliffhanger endings** that set up the next episode
+- **Resolution endings** that provide closure while maintaining season momentum
+- **Character endings** that focus on personal growth and relationship development
+- **Revelation endings** that unveil major plot information
 
 ---
 
 ## 17) Quality Assurance Philosophy
 
-### Creative Freedom Inside Hard Guardrails
+### Automated Quality Gates
 
-The AI has creative latitude in prose style, character voice, plot development, and encounter design. But it operates within hard guardrails that prevent broken or incoherent output.
+Every generated story passes through automated quality assurance:
 
-### Hard Guardrails (Structural)
+- **Structural validation:** All scene links work, no orphaned content, proper routing
+- **Choice quality:** Appropriate distribution, meaningful consequences, clear intent
+- **Character consistency:** NPCs maintain voice and motivation across episodes
+- **Pacing analysis:** Proper balance of reading, choices, and encounters
+- **Emotional coherence:** Story beats support overall narrative tone
 
-These are enforced by the `StructuralValidator`:
+### Human-AI Collaboration
 
-- Every ID is unique and properly formatted
-- Every link (choice → scene, beat → beat) points to a real target
-- No navigation dead ends (every path eventually reaches an endpoint)
-- No infinite loops in scene routing
-- Encounter sequencing is valid (phases, beats, outcomes all connected)
-- Text content is non-empty and within word count limits
+The QA system is designed to catch common AI failure modes:
+- **Repetitive phrasing** and overused words
+- **Inconsistent character behavior** across scenes
+- **Unclear choice consequences** that confuse player intent
+- **Pacing problems** like too many or too few interaction points
+- **Narrative drift** where stories lose focus over time
 
-### Hard Guardrails (Quality)
+### Iterative Improvement
 
-These are enforced by the `IntegratedBestPracticesValidator`:
-
-- **Choice density:** Players encounter a choice at least every ~90 seconds of reading. The first choice appears within 60 seconds.
-- **NPC depth:** Core NPCs have all 4 relationship dimensions; supporting NPCs have at least 2.
-- **Consequence budget:** Each episode has a balanced mix of callbacks, tints, branchlets, and branches.
-- **Stakes triangle:** Every episode has clear emotional, practical, and relationship stakes.
-- **Five-factor impact:** Major choices should impact at least 3 of 5 factors (outcome, process, information, relationships, identity).
-- **Callback coverage:** Delayed consequences are scheduled and will eventually fire.
-
-### Soft Guardrails
-
-These are advisory and support human-in-the-loop iteration:
-
-- Developer-mode feedback tools for image quality
-- Prompt inspection for generated prose
-- Manual regeneration of individual images or beats
-- Validation reports surfaced in the generation UI
+Generated content can be refined through:
+- **Regeneration requests** for specific beats or choices
+- **Image feedback system** for visual content improvement
+- **Playtest simulation** to identify choice and pacing issues
+- **Template refinement** based on generation patterns
 
 ---
 
 ## 18) Application Screens and Navigation
 
-### Screen Map
+### Core Screens
 
-The app uses state-based screen navigation (no URL routing). Screens are:
+The application is structured around six main screens located in `src/screens/`:
 
-| Screen | Purpose | Access From |
-|---|---|---|
-| **Home** | Story library and launch point | App start |
-| **Episode Select** | Choose an episode within a story | Selecting a story on Home |
-| **Reading** | The main story playback experience | Selecting an episode |
-| **Generator** | Story generation workflow | Home screen menu |
-| **Settings** | Story management, preferences | Home screen menu |
-| **Visualizer** | Story graph exploration (dev tool) | Settings or dev menu |
+**Home Screen (HomeScreen.tsx)**
+- Story library browser
+- Built-in and generated story access
+- Continue/start episode navigation
+- Settings and generator access
 
-### Home Screen
+**Episode Select Screen (EpisodeSelectScreen.tsx)**
+- Episode list within a selected story
+- Progress tracking and completion status
+- Episode preview and description
+- Continue/replay options
 
-Displays the story catalog — a grid/list of available stories (both built-in and generated). Each story shows its cover image, title, genre, and synopsis. Players can tap a story to view its episodes or access story management options.
+**Reading Screen (ReadingScreen.tsx)**
+- Primary gameplay interface
+- Beat-by-beat story presentation
+- Choice selection and consequence display
+- Image and audio integration
 
-### Episode Select Screen
+**Generator Screen (GeneratorScreen.tsx)**
+- Story generation workflow
+- Source material input and analysis
+- Season planning and customization
+- Job progress and management
 
-Shows all episodes in a story with their cover images, titles, synopses, and lock state (some episodes may require completing previous episodes to unlock). Tap an episode to begin playing.
+**Settings Screen (SettingsScreen.tsx)**
+- Text size and reading preferences
+- Audio and accessibility options
+- Story management (delete, rename)
+- System configuration
 
-### Reading Screen
+**Visualizer Screen (VisualizerScreen.tsx)**
+- Story structure visualization
+- Development and debugging tool
+- Scene flow and choice mapping
+- Quality assurance review
 
-The core gameplay screen. Full-screen image background with text overlay. Displays one beat at a time. Shows choices when available. Handles encounter flow, consequence application, and scene transitions. Includes a pause menu for settings and exit.
+### Navigation Design
 
-### Generator Screen
+The app uses a tab-based navigation system:
+- **Primary tabs** for main functionality (Play, Generate, Settings)
+- **Modal navigation** for story selection and episode flow
+- **Back button handling** that preserves reading state
+- **Deep linking** for direct episode access
 
-The creative workspace for generating new stories. Provides:
-- Source material upload/input
-- Analysis review
-- Season plan configuration
-- Generation progress tracking (per-phase progress bars, estimated time remaining)
-- Generation mode selection (single episode, multi-episode, parallel)
+### Mobile-First Design
 
-### Settings Screen
-
-Story management (delete, rename) and app preferences:
-- Font size adjustment
-- Generation mode toggle
-- Developer mode toggle
-- API key management
-- Story file management
-
-### Visualizer Screen
-
-A developer tool that renders the story as a node graph, showing scenes, connections, branches, and convergence points. Useful for debugging story structure and understanding the narrative flow.
+The interface is optimized for mobile devices:
+- **Touch-friendly controls** with appropriate sizing
+- **Readable typography** across device sizes
+- **Responsive layouts** that work on phones and tablets
+- **Gesture support** for story navigation
 
 ---
 
 ## 19) Built-In Stories
 
-The app ships with four pre-built stories for immediate play:
+### Starter Content
 
-1. **Blades of Valoria** — Fantasy adventure
-2. **Savage Nights in Paradise** — Noir thriller
-3. **Shadows of Ravenmoor** — Dark mystery/horror
-4. **The Velvet Job** — Heist story
+StoryRPG includes several built-in stories to demonstrate the system:
+- **Genre variety:** Fantasy, modern thriller, sci-fi, historical
+- **Length variety:** Single episodes and multi-episode seasons
+- **Complexity showcase:** Simple branching to complex encounter-heavy stories
+- **Quality benchmark:** Hand-authored content that sets quality expectations
 
-These stories demonstrate the full range of systems (encounters, branching, identity, relationships) and serve as quality benchmarks for generated content.
+### Story as Tutorial
+
+Built-in stories serve as implicit tutorials:
+- **Choice system education** through varied choice types
+- **Consequence demonstration** showing delayed and immediate effects
+- **Identity development** examples of how personality emerges
+- **Encounter mechanics** introduction to tactical sequences
 
 ---
 
 ## 20) Scope Boundaries
 
-### Currently In Scope
+### What StoryRPG Does Not Include
 
-- Single-player, local-first interactive fiction
-- AI-generated multi-episode stories with validation
-- Season planning for long-form content
-- Multi-provider image generation (Gemini, Atlas Cloud, MidAPI/Midjourney)
-- Optional voice narration via ElevenLabs
-- Fiction-first encounter system with clocks and branching trees
-- Identity-driven character progression
-- Worker-backed generation with persistence and resumability
-- Web and mobile (iOS/Android) deployment via Expo
+**Open World Generation:** The system creates structured, finite stories, not infinite open-world content.
 
-### Not Currently In Scope
+**Multiplayer Features:** Currently a single-player application focused on personal narrative experience.
 
-- Cloud accounts, user profiles, or multiplayer features
-- Real-time collaborative generation
-- Economy-heavy progression (shops, currency, crafting)
-- Full production analytics pipeline
-- Content marketplace or sharing platform
-- PvP or competitive elements
+**User-Generated Content:** Players do not create content directly; they provide source material for AI generation.
+
+**Real-Time Systems:** No time pressure, energy systems, or daily engagement mechanics.
+
+**Monetization Mechanics:** No in-app purchases, premium content gates, or pay-to-win elements.
+
+**Social Features:** No sharing, rating, or community features around generated content.
+
+### Intentional Constraints
+
+These limitations are design choices that support the core vision:
+- **Focused scope** allows deeper development of core systems
+- **Single-player focus** maximizes narrative immersion
+- **AI-generated content** maintains quality control over user experience
+- **No monetization pressure** keeps design decisions aligned with player experience
 
 ---
 
 ## 21) Design Priorities
 
-### Near-Term
+### Primary Priorities
 
-1. **Increase intent fidelity:** Generated outputs should more reliably reflect the emotional arcs planned in the season bible.
-2. **Improve legibility of consequence:** Players should better feel *why* outcomes happened, without exposing raw mechanics.
-3. **Strengthen long-form continuity:** Episode-to-episode memory and payoff consistency for season-length stories.
-4. **Raise QA confidence while preserving creativity:** Expand validation depth without flattening stylistic diversity.
+1. **Narrative Coherence:** Every system serves story quality and emotional engagement
+2. **Fiction-First Experience:** Players never see mechanics, only story consequences
+3. **Choice Meaningfulness:** Player decisions must have visible, lasting impact
+4. **AI Quality Assurance:** Generated content must feel authored, not random
+5. **Reading Experience:** Interface must disappear to focus on story consumption
 
-### Medium-Term
+### Secondary Priorities
 
-5. **Player character creation flow:** Allow players to configure their character's starting personality and background.
-6. **Enhanced encounter variety:** More encounter types and more sophisticated NPC AI within encounters.
-7. **Improved visual consistency:** Better character reference systems for consistent character appearance across all images.
+1. **Generation Efficiency:** Fast, reliable content creation for user satisfaction
+2. **Content Variety:** Multiple genres and story types to explore system capabilities
+3. **Accessibility:** Support for different reading preferences and abilities
+4. **Development Sustainability:** Architecture that supports long-term iteration
+
+### Design Trade-offs
+
+**Quality over Quantity:** Better to have fewer, higher-quality stories than many mediocre ones.
+
+**Structure over Freedom:** Bounded creativity produces better AI-generated content than pure freedom.
+
+**Depth over Breadth:** Focus on perfecting core systems rather than adding peripheral features.
+
+**Player Experience over Technical Showcase:** Features must serve player enjoyment, not demonstrate technical capability.
 
 ---
 
-*This document reflects the current implemented design architecture and design intent as of the codebase state on February 26, 2026. Features described here are either fully implemented or partially implemented with clear architectural foundations.*
+This design document represents the current vision for StoryRPG as a fiction-first interactive narrative platform powered by structured AI generation. Every system and feature serves the goal of creating meaningful, coherent, emotionally engaging stories that feel authored rather than procedurally generated.
+
+The focus remains on the player experience of reading, choosing, and discovering who their character becomes through the accumulation of meaningful decisions in a reactive narrative world.

@@ -13,54 +13,57 @@ StoryRPG is an interactive fiction app that blends visual-novel storytelling wit
 ```
 StoryRPG_New/                          ← Workspace root (you are here)
 ├── AGENTS.md                          ← This file
-│
 ├── docs/                              ← All project documentation (single location)
-│   ├── GDD.md                         ← Game Design Document (design intent, systems, UX)
-│   ├── TDD.md                         ← Technical Design Document (architecture, data model, subsystems)
-│   ├── INSTALL.md                     ← Setup instructions and env var reference
-│   ├── STORY_BRANCHING.md             ← Story branching mechanics
-│   ├── STORY_PIPELINE_PROMPTING.md    ← Pipeline prompting contracts
-│   ├── STORY_AGENT_SYSTEM_DETAIL.md   ← Deep agent system notes
-│   ├── IMAGE_PIPELINE_RUNTIME.md      ← Image generation runtime behavior
-│   ├── INCREMENTAL_VALIDATION_PLAN.md ← Validation system design
-│   ├── QA_FIXES_SUMMARY.md            ← QA fixes and patterns
-│   ├── MOBILE_REDESIGN.md             ← Mobile-first reader redesign notes
-│   ├── PARALLEL_GENERATION.md         ← Parallel generation status
-│   ├── visual_storytelling_guide.md   ← Visual storytelling design guide
-│   ├── visual_storytelling_quick_reference.md
-│   ├── sample-story.md                ← Example story structure
-│   └── reference/                     ← Original reference materials (PDF text extracts)
-│       ├── Interactive_Storytelling_Complete_Expert_Guide.docx.pdf.txt
-│       └── StoryRPG_Engine_GDD.docx.pdf.txt
+├── scripts/                           ← Workspace maintenance scripts
+└── storyrpg-prototype/                ← The application (all code lives here)
+
+docs/
+├── GDD.md                         ← Game Design Document (design intent, systems, UX)
+├── TDD.md                         ← Technical Design Document (architecture, data model, subsystems)
+├── INSTALL.md                     ← Setup instructions and env var reference
+├── STORY_BRANCHING.md             ← Story branching mechanics
+├── STORY_PIPELINE_PROMPTING.md    ← Pipeline prompting contracts
+├── STORY_AGENT_SYSTEM_DETAIL.md   ← Deep agent system notes
+├── IMAGE_PIPELINE_RUNTIME.md      ← Image generation runtime behavior
+├── INCREMENTAL_VALIDATION_PLAN.md ← Validation system design
+├── QA_FIXES_SUMMARY.md            ← QA fixes and patterns
+├── MOBILE_REDESIGN.md             ← Mobile-first reader redesign notes
+├── PARALLEL_GENERATION.md         ← Parallel generation status
+├── visual_storytelling_guide.md   ← Visual storytelling design guide
+├── visual_storytelling_quick_reference.md
+├── sample-story.md                ← Example story structure
+└── reference/                     ← Original reference materials (PDF text extracts)
+    ├── Interactive_Storytelling_Complete_Expert_Guide.docx.pdf.txt
+    └── StoryRPG_Engine_GDD.docx.pdf.txt
+
+storyrpg-prototype/
+├── App.tsx                        ← Root component: providers, navigation, library
+├── index.ts                       ← Expo entry + Node polyfills for RN
+├── proxy-server.js                ← Express dev server: API proxy, file I/O, job mgmt
+├── proxy/                         ← Modular Express route handlers
+├── package.json                   ← Scripts and dependencies
+├── .env                           ← API keys (never commit)
+├── vercel.json                    ← Vercel static web export config
+├── docker-compose.proxy.yml       ← Docker config for the proxy
 │
-├── storyrpg-prototype/                ← The application (all code lives here)
-│   ├── App.tsx                        ← Root component: providers, navigation, library
-│   ├── index.ts                       ← Expo entry + Node polyfills for RN
-│   ├── proxy-server.js                ← Express dev server: API proxy, file I/O, job mgmt
-│   ├── proxy/                         ← Modular Express route handlers
-│   ├── package.json                   ← Scripts and dependencies
-│   ├── .env                           ← API keys (never commit)
-│   ├── vercel.json                    ← Vercel static web export config
-│   ├── docker-compose.proxy.yml       ← Docker config for the proxy
-│   │
-│   ├── src/
-│   │   ├── screens/                   ← App screens (Home, EpisodeSelect, Reading, Generator, Settings, Visualizer)
-│   │   ├── components/                ← Reusable UI components
-│   │   ├── engine/                    ← Deterministic playback: storyEngine, conditionEvaluator, resolutionEngine, identityEngine, templateProcessor
-│   │   ├── stores/                    ← Zustand stores: gameStore, settingsStore, generationJobStore, seasonPlanStore, etc.
-│   │   ├── types/                     ← Canonical data model (Story, Episode, Scene, Beat, Choice, PlayerState, Encounter, etc.)
-│   │   ├── ai-agents/                 ← AI generation pipeline (see below)
-│   │   ├── config/                    ← endpoints.ts (all URLs), generatorLlmOptions.ts
-│   │   ├── hooks/                     ← React hooks
-│   │   ├── services/                  ← Shared services
-│   │   ├── theme/                     ← Styling constants
-│   │   ├── utils/                     ← Helpers
-│   │   ├── visualizer/                ← Story graph visualization
-│   │   └── data/stories/              ← Built-in story content index
-│   │
-│   ├── generated-stories/             ← Output directory for generated story JSON + images
-│   ├── scripts/                       ← Maintenance scripts (clean artifacts, upload to blob)
-│   └── test/stubs/                    ← Vitest stubs for react-native and async-storage
+├── src/
+│   ├── screens/                   ← App screens (Home, EpisodeSelect, Reading, Generator, Settings, Visualizer)
+│   ├── components/                ← Reusable UI components
+│   ├── engine/                    ← Deterministic playback: storyEngine, conditionEvaluator, resolutionEngine, identityEngine, templateProcessor
+│   ├── stores/                    ← Zustand stores: gameStore, settingsStore, generationJobStore, seasonPlanStore, etc.
+│   ├── types/                     ← Canonical data model (Story, Episode, Scene, Beat, Choice, PlayerState, Encounter, etc.)
+│   ├── ai-agents/                 ← AI generation pipeline (see below)
+│   ├── config/                    ← endpoints.ts (all URLs), generatorLlmOptions.ts
+│   ├── hooks/                     ← React hooks
+│   ├── services/                  ← Shared services
+│   ├── theme/                     ← Styling constants
+│   ├── utils/                     ← Helpers
+│   ├── visualizer/                ← Story graph visualization
+│   └── data/stories/              ← Built-in story content index
+│
+├── generated-stories/             ← Output directory for generated story JSON + images
+├── scripts/                       ← Maintenance scripts (clean artifacts, upload to blob)
+└── test/stubs/                    ← Vitest stubs for react-native and async-storage
 ```
 
 ## Tech Stack
@@ -127,6 +130,11 @@ npm run validate     # Typecheck (3 configs) + run tests
 npm test             # Vitest only
 npm run typecheck    # TypeScript checking across app, test, and contracts configs
 npm run generate     # CLI story generation
+npm run generate:heist    # Generate heist story type
+npm run generate:fantasy  # Generate fantasy story type
+npm run generate:doc      # Generate from document
+npm run generate:template # Generate template from document
+npm run clean:runtime     # Clean runtime artifacts
 ```
 
 ## Environment Variables
@@ -170,7 +178,7 @@ Choices can have: conditions (flag/stat gates), consequences (flag/stat changes)
 - **Endpoints centralized** — All URLs in `src/config/endpoints.ts`. Never hardcode URLs elsewhere.
 - **Fiction-first** — No visible stats/numbers in UI. All mechanics expressed narratively.
 - **Node polyfills** — `fs`/`path`/`process` are shimmed via babel and metro config so pipeline code can run in RN/web bundles.
-- **Typecheck split** — Three tsconfig files: `tsconfig.app.json` (narrow app subset), `tsconfig.test.json`, `tsconfig.contracts.json` (shared types for worker payloads).
+- **Typecheck split** — Five tsconfig files: `tsconfig.app.json` (narrow app subset), `tsconfig.test.json`, `tsconfig.contracts.json` (shared types for worker payloads), `tsconfig.worker.json`, and base `tsconfig.json`.
 - **Tests** — Co-located `*.test.ts` files, run with Vitest in Node env with RN stubs in `test/stubs/`.
 - **Generated content** — `generated-stories/` contains large JSON + image files and dominates repo size. Runtime artifacts (`.generation-jobs.json`, `pipeline-memories/`, `.ref-images/`) are transient.
 - **EXPO_PUBLIC_** prefix — Required for env vars that need to be accessible in the Expo client bundle.

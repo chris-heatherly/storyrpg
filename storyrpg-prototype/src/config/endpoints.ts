@@ -36,6 +36,9 @@ export const PROXY_CONFIG = {
   get elevenLabs() { return `${this.getProxyUrl()}/elevenlabs`; },
   get generationJobs() { return `${this.getProxyUrl()}/generation-jobs`; },
   get workerJobs() { return `${this.getProxyUrl()}/worker-jobs`; },
+  get modelsAvailable() { return `${this.getProxyUrl()}/models/available`; },
+  get modelsScan() { return `${this.getProxyUrl()}/models/scan`; },
+  get generatorSettings() { return `${this.getProxyUrl()}/generator-settings`; },
 };
 
 // ========================================

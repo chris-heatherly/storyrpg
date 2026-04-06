@@ -20,6 +20,8 @@ const { registerCatalogRoutes } = require('./proxy/catalogRoutes');
 const { registerRefImageRoutes } = require('./proxy/refImageRoutes');
 const { registerFileRoutes } = require('./proxy/fileRoutes');
 const { registerStoryMutationRoutes } = require('./proxy/storyMutationRoutes');
+const { registerModelScanRoutes } = require('./proxy/modelScanRoutes');
+const { registerGeneratorSettingsRoutes } = require('./proxy/generatorSettingsRoutes');
 
 // Load environment variables
 require('dotenv').config();
@@ -102,6 +104,8 @@ registerStoryMutationRoutes(app, {
   storiesDir: STORIES_DIR,
   deletedStoriesFile: DELETED_STORIES_FILE,
 });
+registerModelScanRoutes(app);
+registerGeneratorSettingsRoutes(app);
 
 // ============================================
 // GENERATION JOB TRACKING

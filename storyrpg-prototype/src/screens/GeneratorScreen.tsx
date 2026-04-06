@@ -62,7 +62,8 @@ import { SeasonPlannerAgent } from '../ai-agents/agents/SeasonPlannerAgent';
 import { useImageJobStore } from '../stores/imageJobStore';
 import { useGenerationJobStore, PipelineEventData } from '../stores/generationJobStore';
 import { useGeneratorSettings } from '../hooks/useGeneratorSettings';
-import { PROVIDER_MODEL_OPTIONS } from '../config/generatorLlmOptions';
+import { useAvailableModels } from '../hooks/useAvailableModels';
+import { ModelDropdown } from '../components/ModelDropdown';
 import { useGeneratorRunner } from '../hooks/useGeneratorRunner';
 import { useEndingModePlanner } from './generator/useEndingModePlanner';
 import { buildPipelineConfig } from '../ai-agents/config/buildPipelineConfig';
@@ -335,6 +336,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     updateNarrationSetting,
     updateVideoSetting,
   } = useGeneratorSettings();
+  const { models: availableModels, atlasCloudModels, scannedAt: modelsScanDate, loading: modelsScanLoading, refresh: refreshModels } = useAvailableModels();
   const [showMjSettings, setShowMjSettings] = useState(false);
   const [showGeminiSettings, setShowGeminiSettings] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
@@ -343,13 +345,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [showImagesPanel, setShowImagesPanel] = useState(true);
   const [showNarrationPanel, setShowNarrationPanel] = useState(false);
   const [showVideoPanel, setShowVideoPanel] = useState(false);
-
-  const ATLAS_CLOUD_MODELS = [
-    { id: 'bytedance/seedream-v4.5', name: 'Seedream v4.5', price: '$0.038/pic', description: 'Best quality, batch + edit support' },
-    { id: 'bytedance/seedream-v4', name: 'Seedream v4.0', price: '$0.026/pic', description: 'Good quality, lower cost' },
-    { id: 'z-image/turbo', name: 'Z-Image Turbo', price: '$0.01/pic', description: 'Sub-second, great for testing' },
-    { id: 'alibaba/qwen-image/text-to-image-plus', name: 'Qwen-Image Plus', price: '$0.021/pic', description: 'Good text rendering' },
-  ];
 
   // Document mode state
   const [documentPath, setDocumentPath] = useState('');
@@ -781,7 +776,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   );
 
   const selectedLlmModel = (
-    llmModel.trim() || PROVIDER_MODEL_OPTIONS[llmProvider][0]?.value || ''
+    llmModel.trim() || availableModels[llmProvider][0]?.value || ''
   );
 
   const { refreshSeasonPlanForAnalysis, handleEndingModeToggle } = useEndingModePlanner({
@@ -1733,19 +1728,25 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 </View>
 
                 <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>TEXT MODEL</Text>
-                  <View style={styles.modelPickerContainer}>
-                    {PROVIDER_MODEL_OPTIONS[llmProvider].map((opt) => (
-                      <TouchableOpacity
-                        key={opt.value}
-                        style={[styles.modelPickerOption, llmModel === opt.value && styles.modelPickerOptionActive]}
-                        onPress={() => handleLlmModelChange(opt.value)}
-                      >
-                        <Text style={[styles.modelPickerLabel, llmModel === opt.value && styles.modelPickerLabelActive]}>{opt.label}</Text>
-                        <Text style={[styles.modelPickerValue, llmModel === opt.value && styles.modelPickerValueActive]}>{opt.value}</Text>
-                      </TouchableOpacity>
-                    ))}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <Text style={styles.configLabel}>TEXT MODEL</Text>
+                    <TouchableOpacity
+                      onPress={() => refreshModels({ anthropicApiKey: apiKey, geminiApiKey, atlasCloudApiKey: atlasCloudApiKey })}
+                      disabled={modelsScanLoading}
+                      style={{ flexDirection: 'row', alignItems: 'center', opacity: modelsScanLoading ? 0.5 : 1 }}
+                    >
+                      <RefreshCw size={12} color={TERMINAL.colors.cyan} style={modelsScanLoading ? { opacity: 0.5 } : undefined} />
+                      <Text style={{ color: TERMINAL.colors.muted, fontSize: 10, marginLeft: 4 }}>
+                        {modelsScanLoading ? 'SCANNING...' : modelsScanDate ? `SCANNED ${new Date(modelsScanDate).toLocaleDateString()}` : 'SCAN MODELS'}
+                      </Text>
+                    </TouchableOpacity>
                   </View>
+                  <ModelDropdown
+                    options={availableModels[llmProvider].map(o => ({ value: o.value, label: o.label, subtitle: o.value }))}
+                    value={llmModel}
+                    onSelect={handleLlmModelChange}
+                    placeholder="Select model…"
+                  />
                 </View>
 
                 <View style={styles.configItem}>
@@ -1842,18 +1843,12 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       <Text style={[styles.segmentText, imageLlmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
                     </TouchableOpacity>
                   </View>
-                  <View style={styles.modelPickerContainer}>
-                    {PROVIDER_MODEL_OPTIONS[imageLlmProvider].map((opt) => (
-                      <TouchableOpacity
-                        key={opt.value}
-                        style={[styles.modelPickerOption, imageLlmModel === opt.value && styles.modelPickerOptionActive]}
-                        onPress={() => handleImageLlmModelChange(opt.value)}
-                      >
-                        <Text style={[styles.modelPickerLabel, imageLlmModel === opt.value && styles.modelPickerLabelActive]}>{opt.label}</Text>
-                        <Text style={[styles.modelPickerValue, imageLlmModel === opt.value && styles.modelPickerValueActive]}>{opt.value}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+                  <ModelDropdown
+                    options={availableModels[imageLlmProvider].map(o => ({ value: o.value, label: o.label, subtitle: o.value }))}
+                    value={imageLlmModel}
+                    onSelect={handleImageLlmModelChange}
+                    placeholder="Select model…"
+                  />
                 </View>
 
                 <View style={styles.configItem}>
@@ -1907,27 +1902,16 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       {showGeminiSettings && (
                         <View style={styles.disclosureBody}>
                           <View style={{ marginBottom: 16 }}>
-                            <Text style={styles.configLabel}>IMAGE MODEL</Text>
-                            <View style={styles.segmentedControl}>
-                              {([
-                                { key: 'gemini-2.5-flash-image', label: '2.5 FLASH' },
-                                { key: 'gemini-3-pro-image-preview', label: '3 PRO' },
-                                { key: 'gemini-3.1-flash-image-preview', label: '3.1 FLASH' },
-                              ] as const).map(opt => (
-                                <TouchableOpacity
-                                  key={opt.key}
-                                  style={[styles.segment, (geminiSettings.model || DEFAULT_GEMINI_SETTINGS.model) === opt.key && styles.segmentActive]}
-                                  onPress={() => handleGeminiSettingsChange({ model: opt.key })}
-                                >
-                                  <Text style={[styles.segmentText, (geminiSettings.model || DEFAULT_GEMINI_SETTINGS.model) === opt.key && styles.segmentTextActive]}>{opt.label}</Text>
-                                </TouchableOpacity>
-                              ))}
-                            </View>
-                            <Text style={styles.configHint}>
-                              {(geminiSettings.model || DEFAULT_GEMINI_SETTINGS.model) === 'gemini-2.5-flash-image' ? 'Original Nano Banana. Stable, cost-effective.' :
-                               (geminiSettings.model || DEFAULT_GEMINI_SETTINGS.model) === 'gemini-3-pro-image-preview' ? 'Nano Banana Pro. Highest quality, supports thinking.' :
-                               'Nano Banana 2. Pro quality at Flash speed. Recommended.'}
-                            </Text>
+                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>IMAGE MODEL</Text>
+                            <ModelDropdown
+                              options={[
+                                { value: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash', description: 'Original Nano Banana. Stable, cost-effective.' },
+                                { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro', description: 'Nano Banana Pro. Highest quality, supports thinking.' },
+                                { value: 'gemini-3.1-flash-image-preview', label: 'Gemini 3.1 Flash', description: 'Nano Banana 2. Pro quality at Flash speed. Recommended.' },
+                              ]}
+                              value={geminiSettings.model || DEFAULT_GEMINI_SETTINGS.model}
+                              onSelect={(v) => handleGeminiSettingsChange({ model: v })}
+                            />
                           </View>
 
                           <View style={styles.toggleConfigRow}>
@@ -2174,27 +2158,19 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 )}
 
                 {imageProvider === 'atlas-cloud' && (
-                  <>
-                    <View style={styles.configItem}>
-                      <Text style={styles.configLabel}>MODEL</Text>
-                      {ATLAS_CLOUD_MODELS.map((m) => (
-                        <TouchableOpacity
-                          key={m.id}
-                          style={[
-                            styles.providerModelOption,
-                            atlasCloudModel === m.id && styles.providerModelOptionActive,
-                          ]}
-                          onPress={() => handleAtlasCloudModelChange(m.id)}
-                        >
-                          <View style={{ flex: 1 }}>
-                            <Text style={[styles.providerModelName, atlasCloudModel === m.id && { color: TERMINAL.colors.primary }]}>{m.name} <Text style={styles.providerModelPrice}>{m.price}</Text></Text>
-                            <Text style={styles.providerModelDescription}>{m.description}</Text>
-                          </View>
-                          {atlasCloudModel === m.id && <Text style={styles.providerModelCheck}>✓</Text>}
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  </>
+                  <View style={styles.configItem}>
+                    <Text style={[styles.configLabel, { marginBottom: 8 }]}>MODEL</Text>
+                    <ModelDropdown
+                      options={atlasCloudModels.map(m => ({
+                        value: m.value,
+                        label: m.label,
+                        description: m.description || undefined,
+                      }))}
+                      value={atlasCloudModel}
+                      onSelect={handleAtlasCloudModelChange}
+                      placeholder="Select Atlas Cloud model…"
+                    />
+                  </View>
                 )}
 
               </ConfigBucketCard>
@@ -2222,18 +2198,12 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                         <Text style={[styles.segmentText, videoLlmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
                       </TouchableOpacity>
                     </View>
-                    <View style={styles.modelPickerContainer}>
-                      {PROVIDER_MODEL_OPTIONS[videoLlmProvider].map((opt) => (
-                        <TouchableOpacity
-                          key={opt.value}
-                          style={[styles.modelPickerOption, videoLlmModel === opt.value && styles.modelPickerOptionActive]}
-                          onPress={() => handleVideoLlmModelChange(opt.value)}
-                        >
-                          <Text style={[styles.modelPickerLabel, videoLlmModel === opt.value && styles.modelPickerLabelActive]}>{opt.label}</Text>
-                          <Text style={[styles.modelPickerValue, videoLlmModel === opt.value && styles.modelPickerValueActive]}>{opt.value}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
+                    <ModelDropdown
+                      options={availableModels[videoLlmProvider].map(o => ({ value: o.value, label: o.label, subtitle: o.value }))}
+                      value={videoLlmModel}
+                      onSelect={handleVideoLlmModelChange}
+                      placeholder="Select model…"
+                    />
                   </View>
                   {!generationSettings.generateImages && videoSettings.enabled && (
                     <View style={styles.warningCallout}>

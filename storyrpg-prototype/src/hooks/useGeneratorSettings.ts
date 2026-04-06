@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   DEFAULT_GEMINI_SETTINGS,
@@ -8,13 +8,14 @@ import {
   MidjourneySettings,
 } from '../ai-agents/config';
 import { GenerationSettings, DEFAULT_GENERATION_SETTINGS } from '../components/GenerationSettingsPanel';
+import { PROXY_CONFIG } from '../config/endpoints';
 import {
   DEFAULT_LLM_MODELS,
   DEFAULT_LLM_PROVIDER,
+  FALLBACK_MODEL_OPTIONS,
   GenerationMode,
   GeneratorImageProvider,
   GeneratorLlmProvider,
-  PROVIDER_MODEL_OPTIONS,
 } from '../config/generatorLlmOptions';
 
 export interface GeneratorNarrationSettings {
@@ -65,10 +66,7 @@ function isGeneratorLlmProvider(value: string | null | undefined): value is Gene
 
 function resolveModelForProvider(provider: GeneratorLlmProvider, model: string | null | undefined): string {
   const trimmed = model?.trim();
-  const validModels = PROVIDER_MODEL_OPTIONS[provider].map((option) => option.value);
-  if (trimmed && validModels.includes(trimmed)) {
-    return trimmed;
-  }
+  if (trimmed) return trimmed;
   return DEFAULT_LLM_MODELS[provider];
 }
 
@@ -101,6 +99,53 @@ async function saveValue(key: string, value: string | null): Promise<void> {
   await AsyncStorage.setItem(key, value);
 }
 
+interface ProxySettingsShape {
+  llmProvider?: string;
+  llmModel?: string;
+  imageLlmProvider?: string;
+  imageLlmModel?: string;
+  videoLlmProvider?: string;
+  videoLlmModel?: string;
+  generationMode?: string;
+  imageProvider?: string;
+  artStyle?: string;
+  imageStrategy?: string;
+  generationSettings?: GenerationSettings;
+  narrationSettings?: GeneratorNarrationSettings;
+  videoSettings?: GeneratorVideoSettings;
+  geminiSettings?: GeminiSettings;
+  midjourneySettings?: MidjourneySettings;
+  atlasCloudModel?: string;
+}
+
+async function loadProxySettings(): Promise<ProxySettingsShape | null> {
+  try {
+    const resp = await fetch(PROXY_CONFIG.generatorSettings);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
+    return null;
+  }
+}
+
+let patchTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingPatch: Partial<ProxySettingsShape> = {};
+
+function patchProxySettings(patch: Partial<ProxySettingsShape>): void {
+  pendingPatch = { ...pendingPatch, ...patch };
+  if (patchTimer) clearTimeout(patchTimer);
+  patchTimer = setTimeout(() => {
+    const body = { ...pendingPatch };
+    pendingPatch = {};
+    patchTimer = null;
+    fetch(PROXY_CONFIG.generatorSettings, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).catch(err => console.log('[GeneratorSettings] Proxy patch failed:', err.message));
+  }, 500);
+}
+
 export function useGeneratorSettings() {
   const [llmProvider, setLlmProvider] = useState<GeneratorLlmProvider>(DEFAULT_LLM_PROVIDER);
   const [llmModel, setLlmModel] = useState<string>(DEFAULT_LLM_MODELS[DEFAULT_LLM_PROVIDER]);
@@ -124,30 +169,89 @@ export function useGeneratorSettings() {
   const [narrationSettings, setNarrationSettings] = useState<GeneratorNarrationSettings>(getDefaultNarrationSettings());
   const [videoSettings, setVideoSettings] = useState<GeneratorVideoSettings>(getDefaultVideoSettings());
 
+  const proxyLoadedRef = useRef(false);
+
   useEffect(() => {
     let isMounted = true;
 
+    const applyProxySettings = (ps: ProxySettingsShape) => {
+      if (!isMounted) return;
+
+      const p: GeneratorLlmProvider = isGeneratorLlmProvider(ps.llmProvider) ? ps.llmProvider : DEFAULT_LLM_PROVIDER;
+      setLlmProvider(p);
+      setLlmModel(ps.llmModel || DEFAULT_LLM_MODELS[p]);
+
+      const ip: GeneratorLlmProvider = isGeneratorLlmProvider(ps.imageLlmProvider) ? ps.imageLlmProvider : p;
+      setImageLlmProvider(ip);
+      setImageLlmModel(ps.imageLlmModel || DEFAULT_LLM_MODELS[ip]);
+
+      const vp: GeneratorLlmProvider = isGeneratorLlmProvider(ps.videoLlmProvider) ? ps.videoLlmProvider : p;
+      setVideoLlmProvider(vp);
+      setVideoLlmModel(ps.videoLlmModel || DEFAULT_LLM_MODELS[vp]);
+
+      if (ps.generationMode === 'strict' || ps.generationMode === 'advisory' || ps.generationMode === 'disabled') {
+        setGenerationMode(ps.generationMode);
+      }
+      if (ps.imageProvider) {
+        setImageProvider(ps.imageProvider as GeneratorImageProvider);
+      }
+      if (ps.artStyle !== undefined) setArtStyle(ps.artStyle || '');
+      if (ps.imageStrategy) setImageStrategy(ps.imageStrategy as 'selective' | 'all-beats');
+      if (ps.atlasCloudModel) setAtlasCloudModel(ps.atlasCloudModel);
+      if (ps.generationSettings) {
+        setGenerationSettings({ ...DEFAULT_GENERATION_SETTINGS, ...ps.generationSettings });
+      }
+      if (ps.narrationSettings) {
+        setNarrationSettings(prev => ({ ...prev, ...ps.narrationSettings }));
+      }
+      if (ps.videoSettings) {
+        const vs = { ...ps.videoSettings };
+        if (process.env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true') delete (vs as any).enabled;
+        setVideoSettings(prev => ({ ...prev, ...vs }));
+      }
+      if (ps.geminiSettings) {
+        setGeminiSettings({ ...DEFAULT_GEMINI_SETTINGS, ...ps.geminiSettings });
+      }
+      if (ps.midjourneySettings) {
+        setMidjourneySettings({ ...DEFAULT_MIDJOURNEY_SETTINGS, ...ps.midjourneySettings });
+      }
+    };
+
     const loadAllSettings = async () => {
+      // Try proxy (disk) first as source of truth
+      const proxySettings = await loadProxySettings();
+      if (proxySettings && Object.keys(proxySettings).length > 0) {
+        proxyLoadedRef.current = true;
+        applyProxySettings(proxySettings);
+      }
+
       try {
         const storedLlmProvider = await AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmProvider);
         const resolvedProvider: GeneratorLlmProvider =
           storedLlmProvider === 'anthropic' || storedLlmProvider === 'gemini'
             ? storedLlmProvider
             : DEFAULT_LLM_PROVIDER;
-        if (isMounted) {
-          setLlmProvider(resolvedProvider);
+
+        // Only apply AsyncStorage values if proxy didn't provide them
+        if (!proxyLoadedRef.current) {
+          if (isMounted) {
+            setLlmProvider(resolvedProvider);
+          }
+
+          const storedLlmModel = await AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmModel);
+          const resolvedLlmModel = resolveModelForProvider(resolvedProvider, storedLlmModel);
+          if (isMounted) {
+            setLlmModel(resolvedLlmModel);
+          }
+
+          const storedGenerationMode = await AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.generationMode);
+          if (isMounted && (storedGenerationMode === 'strict' || storedGenerationMode === 'advisory' || storedGenerationMode === 'disabled')) {
+            setGenerationMode(storedGenerationMode);
+          }
         }
 
         const storedLlmModel = await AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmModel);
         const resolvedLlmModel = resolveModelForProvider(resolvedProvider, storedLlmModel);
-        if (isMounted) {
-          setLlmModel(resolvedLlmModel);
-        }
-
-        const storedGenerationMode = await AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.generationMode);
-        if (isMounted && (storedGenerationMode === 'strict' || storedGenerationMode === 'advisory' || storedGenerationMode === 'disabled')) {
-          setGenerationMode(storedGenerationMode);
-        }
 
         const [
           storedAnthropicKey,
@@ -191,6 +295,7 @@ export function useGeneratorSettings() {
 
         if (!isMounted) return;
 
+        // API keys always come from AsyncStorage (never stored on proxy for security)
         if (storedAnthropicKey) setApiKey(storedAnthropicKey);
         if (storedGeminiKey || storedLlmGeminiKey) {
           setGeminiApiKey(storedGeminiKey || storedLlmGeminiKey || '');
@@ -198,87 +303,89 @@ export function useGeneratorSettings() {
         if (storedElevenLabsApiKey) {
           setElevenLabsApiKey(storedElevenLabsApiKey);
         }
-
-        const resolvedImageProvider = isGeneratorLlmProvider(storedImageLlmProvider)
-          ? storedImageLlmProvider
-          : resolvedProvider;
-        const resolvedVideoProvider = isGeneratorLlmProvider(storedVideoLlmProvider)
-          ? storedVideoLlmProvider
-          : resolvedProvider;
-
-        setImageLlmProvider(resolvedImageProvider);
-        setImageLlmModel(
-          storedImageLlmModel
-            ? resolveModelForProvider(resolvedImageProvider, storedImageLlmModel)
-            : resolvedImageProvider === resolvedProvider
-              ? resolvedLlmModel
-              : DEFAULT_LLM_MODELS[resolvedImageProvider]
-        );
-        setVideoLlmProvider(resolvedVideoProvider);
-        setVideoLlmModel(
-          storedVideoLlmModel
-            ? resolveModelForProvider(resolvedVideoProvider, storedVideoLlmModel)
-            : resolvedVideoProvider === resolvedProvider
-              ? resolvedLlmModel
-              : DEFAULT_LLM_MODELS[resolvedVideoProvider]
-        );
-
         if (storedAtlasKey) setAtlasCloudApiKey(storedAtlasKey);
-        if (storedAtlasModel) setAtlasCloudModel(storedAtlasModel);
         if (storedMidapiToken) setMidapiToken(storedMidapiToken);
 
-        if (storedGeminiSettings) {
-          try {
-            setGeminiSettings({ ...DEFAULT_GEMINI_SETTINGS, ...JSON.parse(storedGeminiSettings) });
-          } catch (_) {}
+        // Only apply remaining AsyncStorage values if proxy didn't load
+        if (!proxyLoadedRef.current) {
+          const resolvedImageProvider = isGeneratorLlmProvider(storedImageLlmProvider)
+            ? storedImageLlmProvider
+            : resolvedProvider;
+          const resolvedVideoProvider = isGeneratorLlmProvider(storedVideoLlmProvider)
+            ? storedVideoLlmProvider
+            : resolvedProvider;
+
+          setImageLlmProvider(resolvedImageProvider);
+          setImageLlmModel(
+            storedImageLlmModel
+              ? resolveModelForProvider(resolvedImageProvider, storedImageLlmModel)
+              : resolvedImageProvider === resolvedProvider
+                ? resolvedLlmModel
+                : DEFAULT_LLM_MODELS[resolvedImageProvider]
+          );
+          setVideoLlmProvider(resolvedVideoProvider);
+          setVideoLlmModel(
+            storedVideoLlmModel
+              ? resolveModelForProvider(resolvedVideoProvider, storedVideoLlmModel)
+              : resolvedVideoProvider === resolvedProvider
+                ? resolvedLlmModel
+                : DEFAULT_LLM_MODELS[resolvedVideoProvider]
+          );
+
+          if (storedAtlasModel) setAtlasCloudModel(storedAtlasModel);
+
+          if (storedGeminiSettings) {
+            try {
+              setGeminiSettings({ ...DEFAULT_GEMINI_SETTINGS, ...JSON.parse(storedGeminiSettings) });
+            } catch (_) {}
+          }
+
+          if (storedMidjourneySettings) {
+            try {
+              setMidjourneySettings({ ...DEFAULT_MIDJOURNEY_SETTINGS, ...JSON.parse(storedMidjourneySettings) });
+            } catch (_) {}
+          }
+
+          if (storedImageProvider) {
+            const migratedProvider =
+              storedImageProvider === 'useapi'
+                ? 'midapi'
+                : storedImageProvider === 'scenario-gg'
+                  ? 'atlas-cloud'
+                  : storedImageProvider;
+            setImageProvider(migratedProvider as GeneratorImageProvider);
+          }
+
+          if (storedArtStyle) setArtStyle(storedArtStyle);
+
+          if (storedGenerationSettings) {
+            try {
+              setGenerationSettings({ ...DEFAULT_GENERATION_SETTINGS, ...JSON.parse(storedGenerationSettings) });
+            } catch (_) {}
+          }
+
+          if (storedNarrationSettings) {
+            try {
+              const parsedNarrationSettings = JSON.parse(storedNarrationSettings);
+              if (!storedElevenLabsApiKey && typeof parsedNarrationSettings.elevenLabsApiKey === 'string') {
+                setElevenLabsApiKey(parsedNarrationSettings.elevenLabsApiKey);
+              }
+              delete parsedNarrationSettings.elevenLabsApiKey;
+              setNarrationSettings((current) => ({ ...current, ...parsedNarrationSettings }));
+            } catch (_) {}
+          }
+
+          if (storedVideoSettings) {
+            try {
+              const parsedVideoSettings = JSON.parse(storedVideoSettings);
+              const envEnabled = process.env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true';
+              if (envEnabled) delete parsedVideoSettings.enabled;
+              setVideoSettings((current) => ({ ...current, ...parsedVideoSettings }));
+            } catch (_) {}
+          }
         }
-
-        if (storedMidjourneySettings) {
-          try {
-            setMidjourneySettings({ ...DEFAULT_MIDJOURNEY_SETTINGS, ...JSON.parse(storedMidjourneySettings) });
-          } catch (_) {}
-        }
-
-        if (storedImageProvider) {
-          const migratedProvider =
-            storedImageProvider === 'useapi'
-              ? 'midapi'
-              : storedImageProvider === 'scenario-gg'
-                ? 'atlas-cloud'
-                : storedImageProvider;
-          setImageProvider(migratedProvider as GeneratorImageProvider);
-        }
-
-        if (storedArtStyle) setArtStyle(storedArtStyle);
-
-        if (storedGenerationSettings) {
-          try {
-            setGenerationSettings({ ...DEFAULT_GENERATION_SETTINGS, ...JSON.parse(storedGenerationSettings) });
-          } catch (_) {}
-        }
-
-        if (storedNarrationSettings) {
-          try {
-            const parsedNarrationSettings = JSON.parse(storedNarrationSettings);
-            if (!storedElevenLabsApiKey && typeof parsedNarrationSettings.elevenLabsApiKey === 'string') {
-              setElevenLabsApiKey(parsedNarrationSettings.elevenLabsApiKey);
-            }
-            delete parsedNarrationSettings.elevenLabsApiKey;
-            setNarrationSettings((current) => ({ ...current, ...parsedNarrationSettings }));
-          } catch (_) {}
-        }
-
-        if (storedVideoSettings) {
-          try {
-            const parsedVideoSettings = JSON.parse(storedVideoSettings);
-            const envEnabled = process.env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true';
-            if (envEnabled) delete parsedVideoSettings.enabled;
-            setVideoSettings((current) => ({ ...current, ...parsedVideoSettings }));
-          } catch (_) {}
-        }
-
       } catch (error) {
-        console.log('Failed to load generator settings:', error);
+        console.log('Failed to load generator settings from AsyncStorage:', error);
       }
     };
 
@@ -291,15 +398,17 @@ export function useGeneratorSettings() {
 
   const handleLlmProviderChange = useCallback(async (provider: GeneratorLlmProvider) => {
     setLlmProvider(provider);
-    const validModels = PROVIDER_MODEL_OPTIONS[provider].map((option) => option.value);
+    const validModels = FALLBACK_MODEL_OPTIONS[provider].map((option) => option.value);
     const needsReset = !validModels.includes(llmModel.trim());
+    const newModel = needsReset ? DEFAULT_LLM_MODELS[provider] : llmModel;
     if (needsReset) {
-      setLlmModel(DEFAULT_LLM_MODELS[provider]);
+      setLlmModel(newModel);
     }
+    patchProxySettings({ llmProvider: provider, llmModel: newModel });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.llmProvider, provider);
       if (needsReset) {
-        await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.llmModel, DEFAULT_LLM_MODELS[provider]);
+        await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.llmModel, newModel);
       }
     } catch (error) {
       console.log('Failed to save LLM provider:', error);
@@ -308,6 +417,7 @@ export function useGeneratorSettings() {
 
   const handleLlmModelChange = useCallback(async (model: string) => {
     setLlmModel(model);
+    patchProxySettings({ llmModel: model.trim() || undefined });
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.llmModel, model.trim() ? model.trim() : null);
     } catch (error) {
@@ -317,11 +427,12 @@ export function useGeneratorSettings() {
 
   const handleImageLlmProviderChange = useCallback(async (provider: GeneratorLlmProvider) => {
     setImageLlmProvider(provider);
-    const validModels = PROVIDER_MODEL_OPTIONS[provider].map((option) => option.value);
+    const validModels = FALLBACK_MODEL_OPTIONS[provider].map((option) => option.value);
     const nextModel = validModels.includes(imageLlmModel.trim()) ? imageLlmModel : DEFAULT_LLM_MODELS[provider];
     if (nextModel !== imageLlmModel) {
       setImageLlmModel(nextModel);
     }
+    patchProxySettings({ imageLlmProvider: provider, imageLlmModel: nextModel });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.imageLlmProvider, provider);
       if (nextModel !== imageLlmModel) {
@@ -334,6 +445,7 @@ export function useGeneratorSettings() {
 
   const handleImageLlmModelChange = useCallback(async (model: string) => {
     setImageLlmModel(model);
+    patchProxySettings({ imageLlmModel: model.trim() || undefined });
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.imageLlmModel, model.trim() ? model.trim() : null);
     } catch (error) {
@@ -343,11 +455,12 @@ export function useGeneratorSettings() {
 
   const handleVideoLlmProviderChange = useCallback(async (provider: GeneratorLlmProvider) => {
     setVideoLlmProvider(provider);
-    const validModels = PROVIDER_MODEL_OPTIONS[provider].map((option) => option.value);
+    const validModels = FALLBACK_MODEL_OPTIONS[provider].map((option) => option.value);
     const nextModel = validModels.includes(videoLlmModel.trim()) ? videoLlmModel : DEFAULT_LLM_MODELS[provider];
     if (nextModel !== videoLlmModel) {
       setVideoLlmModel(nextModel);
     }
+    patchProxySettings({ videoLlmProvider: provider, videoLlmModel: nextModel });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.videoLlmProvider, provider);
       if (nextModel !== videoLlmModel) {
@@ -360,6 +473,7 @@ export function useGeneratorSettings() {
 
   const handleVideoLlmModelChange = useCallback(async (model: string) => {
     setVideoLlmModel(model);
+    patchProxySettings({ videoLlmModel: model.trim() || undefined });
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.videoLlmModel, model.trim() ? model.trim() : null);
     } catch (error) {
@@ -369,6 +483,7 @@ export function useGeneratorSettings() {
 
   const handleGenerationModeChange = useCallback(async (mode: GenerationMode) => {
     setGenerationMode(mode);
+    patchProxySettings({ generationMode: mode });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.generationMode, mode);
     } catch (error) {
@@ -414,6 +529,7 @@ export function useGeneratorSettings() {
 
   const handleAtlasCloudModelChange = useCallback(async (modelId: string) => {
     setAtlasCloudModel(modelId);
+    patchProxySettings({ atlasCloudModel: modelId });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.atlasCloudModel, modelId);
     } catch (error) {
@@ -433,6 +549,7 @@ export function useGeneratorSettings() {
   const handleGeminiSettingsChange = useCallback(async (newSettings: Partial<GeminiSettings>) => {
     const updated = { ...geminiSettings, ...newSettings };
     setGeminiSettings(updated);
+    patchProxySettings({ geminiSettings: updated });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.geminiSettings, JSON.stringify(updated));
     } catch (error) {
@@ -443,6 +560,7 @@ export function useGeneratorSettings() {
   const handleMidjourneySettingsChange = useCallback(async (newSettings: Partial<MidjourneySettings>) => {
     const updated = { ...midjourneySettings, ...newSettings };
     setMidjourneySettings(updated);
+    patchProxySettings({ midjourneySettings: updated });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.midjourneySettings, JSON.stringify(updated));
     } catch (error) {
@@ -452,6 +570,7 @@ export function useGeneratorSettings() {
 
   const handleImageProviderChange = useCallback(async (provider: GeneratorImageProvider) => {
     setImageProvider(provider);
+    patchProxySettings({ imageProvider: provider });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.imageProvider, provider);
     } catch (error) {
@@ -461,6 +580,7 @@ export function useGeneratorSettings() {
 
   const handleArtStyleChange = useCallback(async (style: string) => {
     setArtStyle(style);
+    patchProxySettings({ artStyle: style || '' });
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.artStyle, style.trim() ? style : null);
     } catch (error) {
@@ -468,8 +588,19 @@ export function useGeneratorSettings() {
     }
   }, []);
 
+  const handleImageStrategyChange = useCallback(async (strategy: 'selective' | 'all-beats') => {
+    setImageStrategy(strategy);
+    patchProxySettings({ imageStrategy: strategy });
+    try {
+      await saveValue(GENERATOR_STORAGE_KEYS.imageStrategy, strategy);
+    } catch (error) {
+      console.log('Failed to save image strategy:', error);
+    }
+  }, []);
+
   const handleGenerationSettingsChange = useCallback(async (settings: GenerationSettings) => {
     setGenerationSettings(settings);
+    patchProxySettings({ generationSettings: settings });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.generationSettings, JSON.stringify(settings));
     } catch (error) {
@@ -483,6 +614,7 @@ export function useGeneratorSettings() {
   ) => {
     const updated = { ...narrationSettings, [key]: value };
     setNarrationSettings(updated);
+    patchProxySettings({ narrationSettings: updated });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.narrationSettings, JSON.stringify(updated));
     } catch (error) {
@@ -496,6 +628,7 @@ export function useGeneratorSettings() {
   ) => {
     const updated = { ...videoSettings, [key]: value };
     setVideoSettings(updated);
+    patchProxySettings({ videoSettings: updated });
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.videoSettings, JSON.stringify(updated));
     } catch (error) {
@@ -542,6 +675,7 @@ export function useGeneratorSettings() {
     handleMidjourneySettingsChange,
     handleImageProviderChange,
     handleArtStyleChange,
+    handleImageStrategyChange,
     handleGenerationSettingsChange,
     updateNarrationSetting,
     updateVideoSetting,

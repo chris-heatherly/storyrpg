@@ -1118,9 +1118,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       return this.generateCompositeReferenceSheet(sheet, imageService, onProgress, undefined, userReferenceImages);
     }
 
-    console.log(`[ImageAgentTeam] Generating ${viewsToGenerate.length} individual view images for: ${sheet.characterName}`);
+    const visualAnchors = sheet.visualAnchors?.join(', ') || '';
+    const colorPalette = sheet.colorPalette?.join(', ') || '';
 
-    const referenceImages: Array<{ data: string; mimeType: string; role: string }> = [];
+    console.log(`[ImageAgentTeam] Generating ${viewsToGenerate.length} individual view images for: ${sheet.characterName}${visualAnchors ? ` (anchors: ${visualAnchors})` : ''}`);
+
+    const referenceImages: Array<{ data: string; mimeType: string; role: string; characterName?: string; viewType?: string; visualAnchors?: string[] }> = [];
     if (userReferenceImages && userReferenceImages.length > 0) {
       for (const refImg of userReferenceImages) {
         referenceImages.push({ data: refImg.data, mimeType: refImg.mimeType, role: 'user-provided-character-reference' });
@@ -1128,17 +1131,25 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     }
 
     const generatedImages = new Map<string, GeneratedImage>();
-    let previousViewImage: { data: string; mimeType: string } | undefined;
+    const completedViews: Array<{ data: string; mimeType: string; viewType: string }> = [];
 
     for (let i = 0; i < viewsToGenerate.length; i++) {
       const view = viewsToGenerate[i];
       onProgress?.(view.viewType, i + 1, viewsToGenerate.length);
 
+      const identityConstraint = visualAnchors
+        ? `\nIDENTITY ANCHORS (must match across all views): ${visualAnchors}.`
+        : '';
+      const paletteConstraint = colorPalette
+        ? ` Color palette: ${colorPalette}.`
+        : '';
+
       const viewPrompt: ImagePrompt = {
         ...view.prompt,
         prompt: `Single character reference image: ${view.prompt.prompt} ` +
           `Plain white background. Even studio lighting. Full body, head to toe. ` +
-          `NO text, NO labels, NO annotations. Character model sheet view.`,
+          `NO text, NO labels, NO annotations. Character model sheet view.` +
+          identityConstraint + paletteConstraint,
         negativePrompt: [
           view.prompt.negativePrompt || '',
           'scenery, environment, background scene, action pose, dramatic lighting, props, text, words, labels, annotations',
@@ -1148,8 +1159,17 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       };
 
       const viewRefs = [...referenceImages];
-      if (previousViewImage) {
-        viewRefs.push({ data: previousViewImage.data, mimeType: previousViewImage.mimeType, role: 'previous-view-consistency' });
+      for (const prev of completedViews) {
+        viewRefs.push({
+          data: prev.data,
+          mimeType: prev.mimeType,
+          role: prev.viewType === 'front'
+            ? 'canonical-front-identity'
+            : 'previous-view-consistency',
+          characterName: sheet.characterName,
+          viewType: prev.viewType,
+          visualAnchors: sheet.visualAnchors,
+        });
       }
 
       const identifier = `ref_${sheet.characterId}_${view.viewType}`;
@@ -1163,10 +1183,10 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       generatedImages.set(view.viewType, result);
 
       if (result.imageData && result.mimeType) {
-        previousViewImage = { data: result.imageData, mimeType: result.mimeType };
+        completedViews.push({ data: result.imageData, mimeType: result.mimeType, viewType: view.viewType });
       }
 
-      console.log(`[ImageAgentTeam] Individual view '${view.viewType}' complete for ${sheet.characterName}`);
+      console.log(`[ImageAgentTeam] Individual view '${view.viewType}' complete for ${sheet.characterName} (${completedViews.length} views accumulated for consistency)`);
     }
 
     const generatedSheet: GeneratedReferenceSheet = {

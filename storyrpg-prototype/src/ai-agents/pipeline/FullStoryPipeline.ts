@@ -6242,25 +6242,20 @@ export class FullStoryPipeline {
   }
 
   /**
-   * Fallback: Generate a single portrait if reference sheet generation fails
+   * Fallback: Generate a single portrait if reference sheet generation fails.
+   * Always allowed even in fail-fast mode — ref sheets are an enhancement,
+   * not a hard requirement, and the portrait fallback is the recovery path.
    */
   private async fallbackToSinglePortrait(
     char: CharacterProfile,
     brief: FullCreativeBrief
   ): Promise<null> {
-    this.throwIfFailFast(
-      `Character reference generation failed for ${char.name}; fail-fast policy blocks portrait fallback`,
-      'reference_sheet',
-      {
-        agent: 'ImageAgentTeam',
-        context: {
-          characterId: char.id,
-          characterName: char.name,
-          failureKind: 'image_step',
-        },
-      }
-    );
     console.warn(`[Pipeline] Falling back to single portrait for ${char.name}`);
+    this.emit({
+      type: 'warning',
+      phase: 'reference_sheet',
+      message: `Character reference generation failed for ${char.name}; attempting portrait fallback`,
+    });
     this.emit({ type: 'agent_start', agent: 'ImageAgentTeam', message: `Generating single portrait for ${char.name} (fallback)...` });
 
     try {

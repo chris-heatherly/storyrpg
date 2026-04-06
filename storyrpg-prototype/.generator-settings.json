@@ -1,5 +1,5 @@
 {
-  "imageProvider": "atlas-cloud",
+  "imageProvider": "nano-banana",
   "imageLlmProvider": "gemini",
   "imageLlmModel": "gemini-3.1-flash-image-preview",
   "videoSettings": {
@@ -55,5 +55,22 @@
     "minEncountersShort": 1,
     "minEncountersMedium": 1,
     "minEncountersLong": 2
+  },
+  "geminiSettings": {
+    "model": "gemini-3.1-flash-image-preview",
+    "maxRefImagesPerCharacter": 4,
+    "includeConsistencyInstruction": true,
+    "includePreviousScene": true,
+    "includeStyleReference": true,
+    "canonicalArtStyle": "",
+    "useEditMode": false,
+    "useChatMode": true,
+    "sceneResolution": "1K",
+    "referenceResolution": "2K",
+    "coverResolution": "2K",
+    "useIndividualCharacterViews": true,
+    "thinkingLevel": "minimal",
+    "referenceThinkingLevel": "high",
+    "usePreviewForValidation": false
   }
 }

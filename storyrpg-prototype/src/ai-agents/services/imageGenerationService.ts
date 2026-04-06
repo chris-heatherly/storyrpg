@@ -1891,8 +1891,22 @@ export class ImageGenerationService {
           // Other references (e.g., previous-view consistency images from individual view pipeline)
           for (const ref of otherRefs) {
             parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.data } });
-            if (ref.role === 'previous-view-consistency') {
-              parts.push({ text: `Previous view of the same character — maintain identical identity, proportions, and coloring.` });
+            if (ref.role === 'canonical-front-identity') {
+              const anchorText = ref.visualAnchors && ref.visualAnchors.length > 0
+                ? ` Key traits to preserve: ${ref.visualAnchors.slice(0, 5).join(', ')}.`
+                : '';
+              parts.push({ text:
+                `CANONICAL FRONT VIEW of this exact character — this is the IDENTITY ANCHOR. ` +
+                `Match this face, hair color, hair style, eye color, skin tone, body type, clothing, ` +
+                `and all distinguishing features EXACTLY. Only the viewing angle should change.${anchorText}`
+              });
+            } else if (ref.role === 'previous-view-consistency') {
+              const viewLabel = ref.viewType ? ` (${ref.viewType} view)` : '';
+              parts.push({ text:
+                `Previous view${viewLabel} of this SAME character — maintain identical identity, ` +
+                `proportions, clothing, hair, skin tone, and coloring. The character must be ` +
+                `unmistakably the same person across all views.`
+              });
             } else {
               const label = ref.characterName
                 ? `Character reference: ${ref.characterName}${ref.viewType ? ` (${ref.viewType} view)` : ''}`
@@ -1918,6 +1932,13 @@ export class ImageGenerationService {
               `must match the identity reference photo(s) provided earlier — NOT any text description above. ` +
               `The text description defines the outfit, pose, and framing. The photo defines the person. ` +
               `Draw THIS SPECIFIC PERSON in the specified art style and clothing.`
+            });
+          } else if (otherRefs.some(r => r.role === 'canonical-front-identity' || r.role === 'previous-view-consistency')) {
+            parts.push({ text:
+              `CRITICAL IDENTITY LOCK: The reference image(s) above show this EXACT character from other angles. ` +
+              `You MUST reproduce the same face, same hair color and style, same eye color, same skin tone, ` +
+              `same body proportions, same clothing and accessories. Only the viewing angle changes. ` +
+              `The character in your output must be unmistakably the same person as in the reference views.`
             });
           }
 
@@ -2288,11 +2309,11 @@ export class ImageGenerationService {
 
   /**
    * Returns true if the current model supports thinkingConfig in the API.
-   * gemini-3.1-flash-image-preview does NOT support thinkingLevel.
+   * As of April 2026, NO image-preview model actually accepts thinkingLevel
+   * despite model metadata claiming "thinking": true.
    */
   private supportsThinking(): boolean {
-    const model = this._geminiSettings.model;
-    return model === 'gemini-3-pro-image-preview';
+    return false;
   }
 
   /**
@@ -2702,25 +2723,46 @@ export class ImageGenerationService {
     return 'http://localhost:3001/atlas-cloud-api';
   }
 
-  private mapAspectRatioToSize(aspectRatio: string): string {
-    const sizeMap: Record<string, string> = {
-      // Atlas Cloud currently requires size >= 3,686,400 total pixels.
-      // Use safer minimum dimensions (short side >= 1440) to avoid Seedream 400s.
-      '9:19.5': '1440*3120',
-      '9:16': '1440*2560',
-      '16:9': '2560*1440',
-      '1:1': '2048*2048',
-      '4:3': '2304*1728',
-      '3:4': '1728*2304',
-      '3:2': '2352*1568',
-      '2:3': '1568*2352',
-      '21:9': '3008*1280',
-      '9:21': '1440*3360',
-    };
-    return this.ensureAtlasMinSize(sizeMap[aspectRatio] || '2048*2048');
+  private isSeedreamModel(model?: string): boolean {
+    const m = model || this.config.atlasCloudModel || '';
+    return m.startsWith('bytedance/seedream-');
   }
 
-  private ensureAtlasMinSize(size: string): string {
+  private mapAspectRatioToSize(aspectRatio: string, model?: string): string {
+    if (this.isSeedreamModel(model)) {
+      const seedreamSizeMap: Record<string, string> = {
+        // Seedream requires size >= 3,686,400 total pixels, short side >= 1440
+        '9:19.5': '1440*3120',
+        '9:16': '1440*2560',
+        '16:9': '2560*1440',
+        '1:1': '2048*2048',
+        '4:3': '2304*1728',
+        '3:4': '1728*2304',
+        '3:2': '2352*1568',
+        '2:3': '1568*2352',
+        '21:9': '3008*1280',
+        '9:21': '1440*3360',
+      };
+      return this.ensureSeedreamMinSize(seedreamSizeMap[aspectRatio] || '2048*2048');
+    }
+
+    // Non-Seedream models: max 2048 per side
+    const standardSizeMap: Record<string, string> = {
+      '9:19.5': '936*2028',
+      '9:16': '1152*2048',
+      '16:9': '2048*1152',
+      '1:1': '1024*1024',
+      '4:3': '1365*1024',
+      '3:4': '1024*1365',
+      '3:2': '1536*1024',
+      '2:3': '1024*1536',
+      '21:9': '2048*878',
+      '9:21': '878*2048',
+    };
+    return standardSizeMap[aspectRatio] || '1024*1024';
+  }
+
+  private ensureSeedreamMinSize(size: string): string {
     const match = /^(\d+)\*(\d+)$/.exec(size.trim());
     if (!match) return '2048*2048';
 
@@ -2730,9 +2772,6 @@ export class ImageGenerationService {
       return '2048*2048';
     }
 
-    // Seedream v4.5 request guardrails observed in live errors:
-    // - total pixels must be >= 3,686,400
-    // - short side should be >= 1440
     const MIN_PIXELS = 3_686_400;
     const MIN_SIDE = 1440;
 
@@ -2831,7 +2870,7 @@ export class ImageGenerationService {
           enable_sync_mode: true,
           enable_base64_output: true,
           output_format: 'png',
-          size: this.mapAspectRatioToSize(prompt.aspectRatio || '1:1'),
+          size: this.mapAspectRatioToSize(prompt.aspectRatio || '1:1', model),
         };
 
         if (hasRefs) {
@@ -2982,7 +3021,7 @@ export class ImageGenerationService {
           enable_sync_mode: true,
           enable_base64_output: true,
           output_format: 'png',
-          size: this.mapAspectRatioToSize(chunk[0].prompt.aspectRatio || '1:1'),
+          size: this.mapAspectRatioToSize(chunk[0].prompt.aspectRatio || '1:1', model),
         };
 
         if (hasRefs) {

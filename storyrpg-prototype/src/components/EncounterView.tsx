@@ -370,7 +370,7 @@ const clockStyles = StyleSheet.create({
 
 interface EncounterViewProps {
   encounter: Encounter;
-  onComplete: (outcome: EncounterOutcome, feedback?: AppliedConsequence[]) => void;
+  onComplete: (outcome: EncounterOutcome, feedback?: AppliedConsequence[], lastImage?: string) => void;
 }
 
 // New simplified state for branching tree encounters
@@ -1252,7 +1252,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         handleEncounterEnd(screenState.outcome === 'success' ? 'victory' : 'defeat');
       }
     } else if (screenState.type === 'encounter_outcome') {
-      onComplete(screenState.outcome, allEncounterFeedbackRef.current);
+      onComplete(screenState.outcome, allEncounterFeedbackRef.current, lastKnownImageRef.current || undefined);
     }
   };
 
@@ -1909,7 +1909,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
 
             <TouchableOpacity 
               style={styles.continueButton} 
-              onPress={() => onComplete(outcome, allEncounterFeedbackRef.current)}
+              onPress={() => onComplete(outcome, allEncounterFeedbackRef.current, lastKnownImageRef.current || undefined)}
             >
               <Text style={styles.continueText}>CONTINUE STORY</Text>
               <ChevronRight size={16} color="white" />

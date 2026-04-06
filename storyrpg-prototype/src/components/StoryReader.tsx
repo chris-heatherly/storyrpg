@@ -323,10 +323,13 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   }, [currentScene?.id, currentBeatId]);
 
   // Handle encounter completion (GDD 6.7 - now with storylet support)
-  const handleEncounterComplete = (outcome: EncounterOutcome, encounterFeedback?: AppliedConsequence[]) => {
+  const handleEncounterComplete = (outcome: EncounterOutcome, encounterFeedback?: AppliedConsequence[], lastImage?: string) => {
     if (!sceneEncounter) return;
     
     console.log('[StoryReader] Encounter completed with outcome:', outcome);
+    if (lastImage) {
+      lastKnownImageRef.current = lastImage;
+    }
     setCompletedEncounters(prev => new Set([...prev, sceneEncounter.id]));
     setShowingEncounter(false);
     
@@ -589,8 +592,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   // Guard: if the scene has no renderable beats and any encounter is already
   // completed, auto-advance rather than showing a blank screen.
+  // Skip when a post-encounter flow is in progress (growth summary, storylet,
+  // or pending navigation) — those flows handle their own transitions.
   useEffect(() => {
     if (!currentScene || !currentEpisode) return;
+    if (showGrowthSummary || activeStorylet || pendingStoryletActivation || pendingDirectNavigation) return;
 
     const encounterDone = !currentScene.encounter || completedEncounters.has(currentScene.encounter.id);
     const hasNarrativeBeats = currentScene.beats && currentScene.beats.length > 0;
@@ -604,7 +610,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         finishEpisode();
       }
     }
-  }, [currentScene?.id, completedEncounters, finishEpisode]);
+  }, [currentScene?.id, completedEncounters, finishEpisode, showGrowthSummary, activeStorylet, pendingStoryletActivation, pendingDirectNavigation]);
 
   // Process current beat when it changes
   useEffect(() => {

@@ -112,6 +112,7 @@ import {
   encounterOutcomeRetryIdentifier,
   encounterSituationRetryIdentifier,
   legacyEncounterSituationRetryIdentifier,
+  sanitizeEncounterIdentifier,
 } from '../encounters/encounterSlotManifest';
 import {
   buildStoryletSlotManifest,
@@ -8433,6 +8434,66 @@ ${clothingRule}
         await persistStoryletRunState(`aggressive-${pass + 1}`);
       }
 
+      // Last-resort recovery: for any slots still missing after all retries,
+      // generate with a drastically simplified prompt, no reference images,
+      // and no QA validation. This ensures every storylet beat gets an image.
+      const recoverySlots = storyletManifest.slots.filter(slot => !sceneStoryletImages.get(slot.outcomeName)?.has(slot.beatId));
+      if (recoverySlots.length > 0) {
+        console.warn(`[Pipeline] ${recoverySlots.length} storylet images still missing for ${sceneId} — running last-resort recovery`);
+        for (const slot of recoverySlots) {
+          const beatImages = getOutcomeBeatImages(slot.outcomeName);
+          if (beatImages.has(slot.beatId)) continue;
+          const beatDesc = this.resolvePlayerTemplates(
+            this.normalizeNarrativeText(slot.beat.text ?? '', `${slot.outcomeName} aftermath`),
+            brief
+          );
+          const tone = slot.storyletTone;
+          const moodHint = toneMoodMap[tone] || 'dramatic aftermath';
+          const artStyle = this.config.artStyle || 'cinematic illustration';
+          const recoveryPromptText = `${artStyle} style. ${moodHint}. ${beatDesc.slice(0, 300)}`;
+          const recoveryPrompt: ImagePrompt = this.sanitizeImagePrompt({
+            prompt: recoveryPromptText,
+            style: artStyle,
+            aspectRatio: '16:9',
+          }, brief);
+          const recoveryId = sanitizeEncounterIdentifier(`storylet-${scopedSceneId}-${slot.outcomeName}-${slot.beatId}-recovery`);
+          try {
+            const result = await withTimeout(this.imageService.generateImage(
+              recoveryPrompt,
+              recoveryId,
+              {
+                sceneId: scopedSceneId,
+                beatId: slot.beatId,
+                type: 'storylet-aftermath',
+                characters: encounterCharacterIds,
+                characterNames: encounterCharacterNames,
+                characterDescriptions: encounterCharacterDescriptions,
+              },
+              undefined,
+            ), PIPELINE_TIMEOUTS.imageGeneration, `storyletRecovery(${recoveryId})`);
+            if (result.imageUrl) {
+              beatImages.set(slot.beatId, result.imageUrl);
+              globalEncounterImageIndex++;
+              storyletPolicy.onSlotSuccess();
+              await markResumeDone(slot.baseIdentifier);
+              console.log(`[Pipeline] Storylet recovery succeeded for ${sceneId}/${slot.outcomeName}/${slot.beatId}`);
+              this.emit({
+                type: 'checkpoint', phase: 'encounter_images',
+                message: `Encounter image ${globalEncounterImageIndex} of ~${totalEncounterImages} complete (recovery)`,
+                data: { imageIndex: globalEncounterImageIndex, totalImages: totalEncounterImages, identifier: recoveryId },
+              });
+            } else {
+              console.error(`[Pipeline] Storylet recovery returned no URL for ${sceneId}/${slot.outcomeName}/${slot.beatId}`);
+            }
+          } catch (recoveryErr) {
+            const msg = recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr);
+            console.error(`[Pipeline] Storylet recovery FAILED for ${sceneId}/${slot.outcomeName}/${slot.beatId}: ${msg}`);
+          }
+          await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
+        }
+        await persistStoryletRunState('recovery');
+      }
+
       const finalMissingKeys = collectMissingStoryletSlotsFromManifest(storyletManifest, sceneStoryletImages);
       if (finalMissingKeys.length > 0) {
         const missingByOutcome = new Map<string, string[]>();
@@ -8443,7 +8504,7 @@ ${clothingRule}
           missingByOutcome.set(slot.outcomeName, existing);
         }
         for (const [outcomeName, beatIds] of missingByOutcome) {
-          const msg = `Storylet ${sceneId}/${outcomeName}: ${beatIds.length} beats still missing images after all retries: ${beatIds.join(', ')}`;
+          const msg = `Storylet ${sceneId}/${outcomeName}: ${beatIds.length} beats still missing images after all retries + recovery: ${beatIds.join(', ')}`;
           console.error(`[Pipeline] STORYLET IMAGE FAILURE: ${msg}`);
           this.emit({ type: 'error', phase: 'encounter_images', message: msg });
           storyletFailures.push(msg);

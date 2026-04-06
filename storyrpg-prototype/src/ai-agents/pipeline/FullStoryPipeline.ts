@@ -6128,7 +6128,11 @@ export class FullStoryPipeline {
                 poseSheetImages,
                 expressionProgress,
                 primaryUserRef,
-                userReferenceImages
+                userReferenceImages,
+                {
+                  visualAnchors: generatedSheet.visualAnchors,
+                  colorPalette: generatedSheet.colorPalette,
+                }
               ),
               PIPELINE_TIMEOUTS.storyboard,
               `ExpressionRefSheet(${char.name})`

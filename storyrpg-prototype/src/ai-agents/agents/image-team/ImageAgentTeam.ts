@@ -1207,6 +1207,9 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
    * @param imageService The image generation service to use
    * @param poseSheetImages Optional pose sheet images to use as reference for consistency
    * @param onProgress Optional callback for progress updates
+   * @param userReferenceImage Optional single user reference
+   * @param userReferenceImages Optional array of user references
+   * @param identityAnchors Visual anchors and color palette from the pose sheet for cross-reference consistency
    */
   async generateExpressionSheetImages(
     sheet: import('./CharacterReferenceSheetAgent').CharacterExpressionSheet,
@@ -1214,10 +1217,14 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     poseSheetImages?: Array<{ data: string; mimeType: string; name: string }>,
     onProgress?: (expressionName: string, index: number, total: number) => void,
     userReferenceImage?: { data: string; mimeType: string },
-    userReferenceImages?: Array<{ data: string; mimeType: string }>
+    userReferenceImages?: Array<{ data: string; mimeType: string }>,
+    identityAnchors?: { visualAnchors?: string[]; colorPalette?: string[] }
   ): Promise<GeneratedExpressionSheet> {
     const refCount = userReferenceImages?.length || (userReferenceImage ? 1 : 0);
-    console.log(`[ImageAgentTeam] Generating ${sheet.expressions.length} expression images for: ${sheet.characterName}${refCount > 0 ? ` (with ${refCount} user reference(s))` : ''}`);
+    const anchorInfo = identityAnchors?.visualAnchors?.length
+      ? ` (identity anchors: ${identityAnchors.visualAnchors.join(', ')})`
+      : '';
+    console.log(`[ImageAgentTeam] Generating ${sheet.expressions.length} expression images for: ${sheet.characterName}${refCount > 0 ? ` (with ${refCount} user reference(s))` : ''}${anchorInfo}`);
     
     const generatedImages = new Map<string, GeneratedImage>();
     const expressions: GeneratedExpressionSheet['expressions'] = [];
@@ -1251,6 +1258,20 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
         return (aIndex === -1 ? preferredOrder.length : aIndex) - (bIndex === -1 ? preferredOrder.length : bIndex);
       });
 
+      // 1. Full-body front view FIRST — this is the canonical identity anchor
+      const frontView = sortedPoseRefs.find((img) => img.name === 'front');
+      if (frontView) {
+        referenceImages.push({
+          data: frontView.data,
+          mimeType: frontView.mimeType,
+          role: 'canonical-front-identity',
+          characterName: sheet.characterName,
+          viewType: 'front',
+          visualAnchors: identityAnchors?.visualAnchors,
+        });
+      }
+
+      // 2. Face crops as supporting close-up references
       const faceAnchorSources = sortedPoseRefs.slice(0, 2);
       for (const img of faceAnchorSources) {
         const cropped = await extractReferenceFaceCrop(img.data, img.mimeType, {
@@ -1262,15 +1283,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           data: cropped.data,
           mimeType: cropped.mimeType,
           role: `character-reference-face-${img.name}`,
-        });
-      }
-
-      const secondaryCanonical = sortedPoseRefs.find((img) => img.name === 'front') || sortedPoseRefs[0];
-      if (secondaryCanonical) {
-        referenceImages.push({
-          data: secondaryCanonical.data,
-          mimeType: secondaryCanonical.mimeType,
-          role: `character-reference-${secondaryCanonical.name}`,
+          characterName: sheet.characterName,
+          visualAnchors: identityAnchors?.visualAnchors,
         });
       }
     }

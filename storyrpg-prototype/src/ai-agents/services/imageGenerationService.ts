@@ -1988,25 +1988,57 @@ export class ImageGenerationService {
             }
           }
 
+          // Collect visual anchors from any canonical ref that carries them
+          const allVisualAnchors: string[] = [];
+          for (const ref of canonicalRefs) {
+            if (ref.visualAnchors) {
+              for (const anchor of ref.visualAnchors) {
+                if (!allVisualAnchors.includes(anchor)) allVisualAnchors.push(anchor);
+              }
+            }
+          }
+          const anchorTraitText = allVisualAnchors.length > 0
+            ? ` DISTINGUISHING FEATURES that MUST appear: ${allVisualAnchors.join(', ')}.`
+            : '';
+
           for (const ref of canonicalRefs) {
             parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.data } });
-            parts.push({ text:
-              ref.role?.startsWith('character-reference-face-')
-                ? 'Primary facial identity reference — match this face EXACTLY: face shape, HAIR COLOR, HAIR STYLE, EYE COLOR, skin tone, nose, mouth, brows, and age. Only change the facial expression. This is the strongest canonical anchor for the expression close-up.'
-                : ref.role?.startsWith('character-reference-')
-                  ? 'Canonical character reference — match HAIR COLOR, HAIR STYLE, EYE COLOR, skin tone, costume, and color palette exactly. Keep output as a face close-up, not a scene or full-body reference.'
-                : `Reference image (${ref.role}) — identity guidance only. Match hair color, eye color, and skin tone.`
-            });
+            if (ref.role === 'canonical-front-identity') {
+              parts.push({ text:
+                `CANONICAL FRONT VIEW — This is the MASTER identity reference for this character. ` +
+                `Match EVERY physical detail from this image: face shape, hair color, hair style, eye color, ` +
+                `skin tone, body build, and ALL distinguishing features (scars, marks, tattoos, piercings, ` +
+                `facial hair, etc.). Your output is a face close-up of THIS exact character — only the ` +
+                `framing and facial expression should differ.${anchorTraitText}`
+              });
+            } else if (ref.role?.startsWith('character-reference-face-')) {
+              parts.push({ text:
+                `Supporting face close-up reference — confirms facial detail at higher zoom. ` +
+                `Match face shape, hair, eyes, skin tone, and ALL distinguishing facial features. ` +
+                `Only change the facial expression.${anchorTraitText}`
+              });
+            } else if (ref.role?.startsWith('character-reference-')) {
+              parts.push({ text:
+                `Canonical character reference — match hair, eyes, skin tone, and ALL distinguishing features exactly. ` +
+                `Keep output as a face close-up.${anchorTraitText}`
+              });
+            } else {
+              parts.push({ text: `Reference image (${ref.role}) — identity guidance. Match hair color, eye color, skin tone, and all distinguishing features.` });
+            }
           }
 
           parts.push({ text: effectivePrompt.prompt });
 
           if (canonicalRefs.length > 0 || userRefs.length > 0) {
-            parts.push({ text:
-              `CRITICAL IDENTITY LOCK: The hair color, hairstyle, eye color, and skin tone in the generated image ` +
-              `MUST exactly match the reference images above. Do NOT invent a different hair color or eye color. ` +
-              `Only the facial expression should change.`
-            });
+            let lockText =
+              `CRITICAL IDENTITY LOCK: The hair color, hairstyle, eye color, skin tone, and ALL distinguishing ` +
+              `features (scars, marks, tattoos, facial hair, etc.) in the generated image MUST exactly match the ` +
+              `reference images above. Do NOT omit any facial features visible in the references. ` +
+              `Only the facial expression should change.`;
+            if (allVisualAnchors.length > 0) {
+              lockText += ` Mandatory traits: ${allVisualAnchors.join(', ')}.`;
+            }
+            parts.push({ text: lockText });
           }
 
           const expressionNegative = [

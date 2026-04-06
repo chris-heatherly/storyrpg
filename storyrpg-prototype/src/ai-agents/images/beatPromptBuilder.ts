@@ -451,11 +451,12 @@ export function overrideShotFromPlan(
       + `. Camera: ${newCamera}`;
   }
 
-  // Panel-specific additions
+  // Panel-specific additions: preserve the narrative illustration style while
+  // noting this is part of a sequential series from the same story moment.
   if (panelIndex !== undefined && totalPanels !== undefined) {
-    const panelDirective = `Panel ${panelIndex + 1} of ${totalPanels}. ` +
-      'Purely visual panel — absolutely no text of any kind except on in-world clothing or signage. ' +
-      'Single continuous image, no sub-panels.';
+    const panelDirective = `Image ${panelIndex + 1} of ${totalPanels} in a sequential story illustration series. ` +
+      'Maintain the SAME art style, color palette, and character rendering as the other images in this series. ' +
+      'Single continuous image, no sub-panels or text overlays.';
     overridden.prompt = `${panelDirective} ${overridden.prompt}`;
     overridden.negativePrompt = (overridden.negativePrompt || '') +
       ', dialog text, narrative text, sound effects, onomatopoeia, speech bubbles';

@@ -433,6 +433,7 @@ export class ImageGenerationService {
       if (role.startsWith('character-reference-face-')) return 110;
       if (role.startsWith('character-reference-')) return 90;
       if (role.includes('style')) return 80;
+      if (role === 'previous-panel-continuity') return 75;
       if (role.includes('expression')) return 70;
       return 50;
     };
@@ -761,7 +762,11 @@ export class ImageGenerationService {
   async generateImageInChat(
     prompt: ImagePrompt,
     identifier: string,
-    referenceImages?: ReferenceImage[]
+    referenceImages?: ReferenceImage[],
+    metadata?: {
+      characterNames?: string[];
+      characterDescriptions?: Array<{ name: string; appearance: string }>;
+    }
   ): Promise<GeneratedImage> {
     if (!this._chatSceneId || this.config.provider !== 'nano-banana') {
       // Fallback to regular generation if no chat session or wrong provider
@@ -772,11 +777,13 @@ export class ImageGenerationService {
     const apiKey = this.config.geminiApiKey || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY;
     if (!apiKey) return this.generateImage(prompt, identifier, { type: 'scene' }, referenceImages);
 
+    const normalizedPrompt = this.injectCharacterIdentity(prompt, metadata?.characterNames, metadata?.characterDescriptions);
+
     const model = this._geminiSettings.model;
     const gemSettings = this._geminiSettings;
     const jobId = `chat-${identifier}-${Date.now()}`;
 
-    this.emit({ type: 'job_added', job: { id: jobId, identifier, prompt: prompt.prompt, status: 'pending' } });
+    this.emit({ type: 'job_added', job: { id: jobId, identifier, prompt: normalizedPrompt.prompt, status: 'pending' } });
 
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
@@ -791,26 +798,35 @@ export class ImageGenerationService {
         // Build the new user turn
         const userParts: any[] = [];
 
-        // Include reference images in the first few turns only (to avoid token bloat)
-        if (this._chatHistory.length <= 4 && referenceImages && referenceImages.length > 0) {
-          for (const ref of referenceImages) {
+        // Always include reference images for character identity consistency.
+        // Early turns get the full set; later turns get a reduced set (face/character
+        // refs only) to manage token budget while preserving identity anchoring.
+        if (referenceImages && referenceImages.length > 0) {
+          const isEarlyTurn = this._chatHistory.length <= 4;
+          const effectiveRefs = isEarlyTurn
+            ? referenceImages
+            : this.prioritizeReferenceImages(referenceImages, Math.min(referenceImages.length, 3));
+          for (const ref of effectiveRefs) {
             userParts.push({ inlineData: { mimeType: ref.mimeType, data: ref.data } });
             const label = ref.characterName
-              ? `Character reference: ${ref.characterName}`
+              ? `Character reference: ${ref.characterName}${ref.viewType ? ` (${ref.viewType})` : ''}`
               : `Reference (${ref.role})`;
             userParts.push({ text: label });
+          }
+          if (!isEarlyTurn) {
+            userParts.push({ text: `Character identity reminder: match the faces, builds, and distinguishing features from the reference images above exactly.` });
           }
         }
 
         // Art style — explicit first-class part for consistency
-        const chatArtStyle = this.resolveArtStyle(prompt.style, identifier);
+        const chatArtStyle = this.resolveArtStyle(normalizedPrompt.style, identifier);
         userParts.push({ text: `Art style: ${chatArtStyle}.` });
 
         // Style reference + previous scene for visual continuity
         this.injectStyleReferenceImages(userParts, gemSettings);
 
-        // The scene prompt
-        const narrativePrompt = this.buildNarrativePrompt(prompt, true);
+        // The scene prompt (uses identity-injected prompt)
+        const narrativePrompt = this.buildNarrativePrompt(normalizedPrompt, true);
         userParts.push({ text: `Generate the next story image:\n\n${narrativePrompt}` });
 
         // Build full contents with history + new turn
@@ -819,7 +835,7 @@ export class ImageGenerationService {
           { role: 'user' as const, parts: userParts }
         ];
 
-        const geminiAspectRatio = this.mapToGeminiAspectRatio(prompt.aspectRatio || '9:16');
+        const geminiAspectRatio = this.mapToGeminiAspectRatio(normalizedPrompt.aspectRatio || '9:16');
         const chatGenConfig: Record<string, unknown> = {
           responseModalities: ['TEXT', 'IMAGE'],
           imageConfig: this.buildImageConfig(geminiAspectRatio, 'scene'),
@@ -884,7 +900,7 @@ export class ImageGenerationService {
 
         this.emit({ type: 'job_updated', id: jobId, updates: { status: 'completed', progress: 100, imageUrl } });
         return {
-          prompt,
+          prompt: normalizedPrompt,
           imageUrl,
           imagePath,
           imageData,
@@ -901,7 +917,7 @@ export class ImageGenerationService {
     }
     // If chat fails, fall back to regular generation
     console.warn(`[ImageGenerationService] Chat mode failed after ${this.maxRetries} attempts, falling back to regular generation`);
-    return this.generateImage(prompt, identifier, { type: 'scene' }, referenceImages);
+    return this.generateImage(normalizedPrompt, identifier, { type: 'scene' }, referenceImages);
   }
 
   public onEvent(listener: (event: ImageJobEvent) => void): () => void {
@@ -2083,7 +2099,11 @@ export class ImageGenerationService {
             
             let label: string;
             const isComposite = ref.viewType === 'composite' || ref.role?.includes('composite');
-            if (ref.characterName) {
+            const isPanelContinuity = ref.role === 'previous-panel-continuity';
+            if (isPanelContinuity) {
+              label = `Image ${imageNumber}: Previous panel in this sequence — match the exact art style, color palette, line weight, and character rendering from this image. This is the same scene from a different angle/moment.`;
+              imageManifest.push(`Image ${imageNumber}: Panel continuity`);
+            } else if (ref.characterName) {
               label = `Image ${imageNumber}: ${ref.characterName}`;
               if (isComposite) {
                 label += ` — CHARACTER REFERENCE SHEET showing this ONE character from multiple angles (front, side, three-quarter). This is a SINGLE character, not multiple characters. Use only for identity matching.`;

@@ -6734,11 +6734,18 @@ ${clothingRule}
         const chatModeEnabled = this.imageService.getGeminiSettings().useChatMode === true;
         if (chatModeEnabled) {
           const artStyle = this.imageService.getGeminiSettings().canonicalArtStyle || this.config.artStyle || 'dramatic cinematic story art';
-          const charNames = [...new Set(enrichedBeats.flatMap(b => b.foregroundCharacters || []))].join(', ');
-          const systemContext = 
+          const sceneCharIds = [...new Set(enrichedBeats.flatMap(b => b.characters || []))];
+          const sceneCharDescs = this.buildCharacterDescriptions(sceneCharIds, characterBible);
+          const charIdentityLines = sceneCharDescs.map(d => `${d.name}: ${d.appearance}`);
+          const charNames = sceneCharDescs.map(d => d.name).join(', ');
+          let systemContext = 
             `You are generating a series of dramatic story images for a scene. ` +
             `Art style (MANDATORY): ${artStyle}. Maintain this exact art style across ALL images in this series. ` +
-            `Characters in this scene: ${charNames || 'see references'}. ` +
+            `Characters in this scene: ${charNames || 'see references'}. `;
+          if (charIdentityLines.length > 0) {
+            systemContext += `CHARACTER VISUAL IDENTITY (use these exact descriptions across ALL images, do NOT contradict): ${charIdentityLines.join('. ')}. `;
+          }
+          systemContext +=
             `CRITICAL: Maintain identical character appearance AND identical art style across ALL images in this series. ` +
             `Every image must look like it belongs in the same art series. Each image should show a different moment in the same scene.`;
           this.imageService.startChatSession(scopedSceneId, systemContext);
@@ -6855,6 +6862,7 @@ ${clothingRule}
             // --- PANEL PATH: generate multiple sub-images for this beat ---
             if (beatPlan?.isPanelBeat && beatPlan.panelShotSequence && beatPlan.panelCount) {
               const panelUrls: string[] = [];
+              let previousPanelImage: { data: string; mimeType: string } | null = null;
               this.emit({ type: 'debug', phase: 'images', message: `Panel beat ${beatId}: generating ${beatPlan.panelCount} panels` });
 
               for (let pIdx = 0; pIdx < beatPlan.panelCount; pIdx++) {
@@ -6870,12 +6878,25 @@ ${clothingRule}
                 const panelLabel = `imageService(${scopedSceneId}:${beatId}:panel-${pIdx})`;
                 const shotCharacterDescriptions = this.buildCharacterDescriptions(shotCharacterIds, characterBible);
 
+                // Build panel-specific references: base refs + previous panel for style continuity
+                const panelRefs = referenceImages.length > 0 ? [...referenceImages] : [];
+                if (previousPanelImage) {
+                  panelRefs.push({
+                    data: previousPanelImage.data,
+                    mimeType: previousPanelImage.mimeType,
+                    role: 'previous-panel-continuity',
+                    characterName: '',
+                    viewType: 'panel',
+                  });
+                }
+
                 let panelResult: GeneratedImage;
                 if (chatModeEnabled && this.imageService.hasChatSession(scopedSceneId)) {
                   panelResult = await withTimeout(this.imageService.generateImageInChat(
                     panelPrompt,
                     panelIdentifier,
-                    referenceImages.length > 0 ? referenceImages : undefined
+                    panelRefs.length > 0 ? panelRefs : undefined,
+                    { characterNames: shotCharacterNames, characterDescriptions: shotCharacterDescriptions }
                   ), PIPELINE_TIMEOUTS.imageGeneration, panelLabel);
                 } else {
                   panelResult = await withTimeout(this.imageService.generateImage(
@@ -6889,8 +6910,27 @@ ${clothingRule}
                       characterNames: shotCharacterNames,
                       characterDescriptions: shotCharacterDescriptions,
                     },
-                    referenceImages.length > 0 ? referenceImages : undefined
+                    panelRefs.length > 0 ? panelRefs : undefined
                   ), PIPELINE_TIMEOUTS.imageGeneration, panelLabel);
+                }
+
+                // Tier 1 validation for panel
+                const panelTier1 = runTier1Checks(panelResult, panelIdentifier);
+                if (!panelTier1.passed && panelTier1.shouldRetry) {
+                  console.warn(`[Pipeline] Panel Tier 1 check failed for ${panelIdentifier}: ${panelTier1.reason}. Retrying once.`);
+                  this.emit({ type: 'warning', phase: 'images', message: `Panel Tier 1 retry for ${beatId} panel ${pIdx}: ${panelTier1.reason}` });
+                  try {
+                    const retryPanelResult = await withTimeout(this.imageService.generateImage(
+                      panelPrompt,
+                      `${panelIdentifier}-retry`,
+                      { sceneId: scopedSceneId, beatId, type: 'scene', characters: shotCharacterIds, regeneration: 1 },
+                      panelRefs.length > 0 ? panelRefs : undefined
+                    ), PIPELINE_TIMEOUTS.imageGeneration, `${panelLabel}-retry`);
+                    const retryTier1 = runTier1Checks(retryPanelResult, `${panelIdentifier}-retry`);
+                    if (retryTier1.passed) {
+                      panelResult = retryPanelResult;
+                    }
+                  } catch { /* retry is best-effort */ }
                 }
 
                 if (panelResult.imageUrl) {
@@ -6918,6 +6958,7 @@ ${clothingRule}
 
                   if (panelResult.imageData && panelResult.mimeType) {
                     lastGeneratedImage = { data: panelResult.imageData, mimeType: panelResult.mimeType };
+                    previousPanelImage = { data: panelResult.imageData, mimeType: panelResult.mimeType };
                   }
                 }
 
@@ -6959,10 +7000,12 @@ ${clothingRule}
             let result: GeneratedImage;
             const imgLabel = `imageService(${scopedSceneId}:${beatId})`;
             if (chatModeEnabled && this.imageService.hasChatSession(scopedSceneId)) {
+              const chatCharacterDescriptions = this.buildCharacterDescriptions(shotCharacterIds, characterBible);
               result = await withTimeout(this.imageService.generateImageInChat(
                 imagePrompt,
                 identifier,
-                referenceImages.length > 0 ? referenceImages : undefined
+                referenceImages.length > 0 ? referenceImages : undefined,
+                { characterNames: shotCharacterNames, characterDescriptions: chatCharacterDescriptions }
               ), PIPELINE_TIMEOUTS.imageGeneration, imgLabel);
             } else {
               const shotCharacterDescriptions = this.buildCharacterDescriptions(shotCharacterIds, characterBible);

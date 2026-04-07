@@ -60,17 +60,53 @@ export const CHARACTER_DEFAULTS = {
   },
 };
 
-// Default skills available for encounters and player state
-export const DEFAULT_SKILLS = [
-  { name: 'athletics', attribute: 'body', description: 'Physical prowess and endurance' },
-  { name: 'stealth', attribute: 'body', description: 'Moving undetected' },
-  { name: 'perception', attribute: 'mind', description: 'Noticing details and danger' },
-  { name: 'persuasion', attribute: 'social', description: 'Convincing others' },
-  { name: 'intimidation', attribute: 'social', description: 'Coercing through fear' },
-  { name: 'deception', attribute: 'social', description: 'Misleading others' },
-  { name: 'investigation', attribute: 'mind', description: 'Finding clues and solving puzzles' },
-  { name: 'survival', attribute: 'body', description: 'Enduring harsh conditions' },
-] as const;
+// Skill definitions: each skill is a weighted blend of core attributes.
+// attributeWeights must sum to 1.0 for each skill.
+import type { SkillDefinition, PlayerAttributes } from '../types';
+
+export const SKILL_DEFINITIONS: Record<string, SkillDefinition> = {
+  athletics:     { name: 'athletics',     description: 'Physical prowess and endurance',
+                   attributeWeights: { courage: 0.5, resolve: 0.3, resourcefulness: 0.2 } },
+  stealth:       { name: 'stealth',       description: 'Moving undetected',
+                   attributeWeights: { wit: 0.4, resourcefulness: 0.4, courage: 0.2 } },
+  perception:    { name: 'perception',    description: 'Noticing details and danger',
+                   attributeWeights: { wit: 0.5, empathy: 0.3, resolve: 0.2 } },
+  persuasion:    { name: 'persuasion',    description: 'Convincing others',
+                   attributeWeights: { charm: 0.5, empathy: 0.3, wit: 0.2 } },
+  intimidation:  { name: 'intimidation',  description: 'Coercing through fear',
+                   attributeWeights: { courage: 0.5, resolve: 0.3, charm: 0.2 } },
+  deception:     { name: 'deception',     description: 'Misleading others',
+                   attributeWeights: { charm: 0.4, wit: 0.4, resourcefulness: 0.2 } },
+  investigation: { name: 'investigation', description: 'Finding clues and solving puzzles',
+                   attributeWeights: { wit: 0.5, resolve: 0.3, empathy: 0.2 } },
+  survival:      { name: 'survival',      description: 'Enduring harsh conditions',
+                   attributeWeights: { resourcefulness: 0.5, resolve: 0.3, courage: 0.2 } },
+};
+
+function dominantAttribute(def: SkillDefinition): string {
+  let best = '';
+  let bestWeight = 0;
+  for (const [attr, w] of Object.entries(def.attributeWeights)) {
+    if ((w ?? 0) > bestWeight) { bestWeight = w ?? 0; best = attr; }
+  }
+  return best;
+}
+
+export const ATTRIBUTE_TO_SKILL: Record<keyof PlayerAttributes, string> = {
+  charm: 'persuasion',
+  wit: 'perception',
+  courage: 'athletics',
+  empathy: 'perception',
+  resolve: 'survival',
+  resourcefulness: 'stealth',
+};
+
+// Backward-compat shim for EncounterArchitect and other consumers
+export const DEFAULT_SKILLS = Object.values(SKILL_DEFINITIONS).map(s => ({
+  name: s.name,
+  attribute: dominantAttribute(s),
+  description: s.description,
+}));
 
 // Progress calculation constants
 export const PROGRESS_CALCULATION = {

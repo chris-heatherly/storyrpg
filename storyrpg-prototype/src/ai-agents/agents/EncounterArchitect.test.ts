@@ -695,3 +695,31 @@ describe('EncounterArchitect tree validation', () => {
     expect(() => (architect as any).validateStructure(normalized, input)).not.toThrow();
   });
 });
+
+// -----------------------------------------------------------------------
+// competenceArc input field
+// -----------------------------------------------------------------------
+
+describe('EncounterArchitect competenceArc', () => {
+  it('system prompt includes competenceArc guidance for failure recovery', () => {
+    const architect = new EncounterArchitect(config);
+    const prompt = (architect as any).getAgentSpecificPrompt();
+    expect(prompt).toContain('competenceArc');
+    expect(prompt).toContain('growth in the recovery choices');
+  });
+
+  it('buildReliablePrompt works with competenceArc on input without error', () => {
+    const architect = new EncounterArchitect(config);
+    const inputWithArc = {
+      ...input,
+      competenceArc: {
+        testsNow: 'persuasion',
+        shortfall: 'low charm',
+        growthPath: 'mentor training with Marcus',
+      },
+    };
+    const prompt = (architect as any).buildReliablePrompt(inputWithArc);
+    expect(typeof prompt).toBe('string');
+    expect(prompt.length).toBeGreaterThan(100);
+  });
+});

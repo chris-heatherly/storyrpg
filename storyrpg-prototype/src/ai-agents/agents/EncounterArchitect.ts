@@ -134,6 +134,13 @@ export interface EncounterArchitectInput {
     significantChoices: string[];
   };
 
+  // Growth context from scene blueprint (when competenceArc is available)
+  competenceArc?: {
+    testsNow?: string;
+    shortfall?: string;
+    growthPath?: string;
+  };
+
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
 }
@@ -861,11 +868,14 @@ Encounters should drive character growth through meaningful skill checks. Follow
 ### Every Situation Must Exercise a Skill
 Each situation in the encounter tree should have at least one choice whose \`primarySkill\` matches a core attribute or skill the story is developing. Players should feel that the encounter is testing and building specific competencies.
 
-### Failure Branches Create Recovery Opportunities
-When a choice leads to failure, the resulting \`nextSituation\` should NOT simply repeat the same check. Instead, reframe the challenge:
+### Failure Branches Create Recovery and Growth Opportunities
+When a choice leads to failure, the resulting \`nextSituation\` should NOT simply repeat the same check. Instead, reframe the challenge AND create a growth opportunity:
 - Offer a different angle on the same problem (failed persuasion → try empathy; failed force → try cunning)
 - Introduce a new element that changes the situation (an ally appears, an opportunity emerges)
 - Scale the stakes — the player can still recover, but the path is narrower
+- Include a skill consequence in the failure recovery path: the character LEARNS from failure (+3 to +5 to a relevant skill)
+- If the scene blueprint has a competenceArc, reference the tested skills and offer growth in the recovery choices
+- Failure is a detour through growth, not a dead end
 
 ### Complicated Outcomes Create the Richest Branching
 The "complicated" tier should produce the most interesting narrative branching. These outcomes should:

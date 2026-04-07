@@ -97,4 +97,82 @@ describe('planningHelpers', () => {
     expect(directives?.incomingBranchEffects?.[0]?.branchName).toBe('Main Branch');
     expect(directives?.consequenceEffects?.[0]?.severity).toBe('high');
   });
+
+  it('includes growthContext when seasonPlan has growthCurve entry for episode', () => {
+    const brief: any = {
+      episode: { number: 2 },
+      seasonPlan: {
+        episodes: [{ episodeNumber: 2, difficultyTier: 'medium' }],
+        consequenceChains: [],
+        crossEpisodeBranches: [],
+        growthCurve: [
+          {
+            episodeNumber: 2,
+            focusSkills: ['persuasion', 'athletics'],
+            developmentScene: 'A training montage in the courtyard',
+            mentorshipOpportunity: {
+              npcId: 'marcus',
+              npcName: 'Marcus',
+              requiredRelationship: { dimension: 'respect', threshold: 60 },
+              attribute: 'courage',
+              narrativeHook: 'Marcus offers to train you',
+            },
+          },
+        ],
+      },
+    };
+    const directives = buildSeasonPlanDirectives(brief);
+    expect(directives?.growthContext).toBeDefined();
+    expect(directives!.growthContext!.focusSkills).toEqual(['persuasion', 'athletics']);
+    expect(directives!.growthContext!.developmentScene).toBe('A training montage in the courtyard');
+    expect(directives!.growthContext!.mentorshipOpportunity?.npcId).toBe('marcus');
+    expect(directives!.growthContext!.mentorshipOpportunity?.attribute).toBe('courage');
+  });
+
+  it('returns growthContext as undefined when no growthCurve exists', () => {
+    const brief: any = {
+      episode: { number: 1 },
+      seasonPlan: {
+        episodes: [{ episodeNumber: 1, difficultyTier: 'easy' }],
+        consequenceChains: [],
+        crossEpisodeBranches: [],
+      },
+    };
+    const directives = buildSeasonPlanDirectives(brief);
+    expect(directives?.growthContext).toBeUndefined();
+  });
+
+  it('returns growthContext as undefined when growthCurve has no matching episode', () => {
+    const brief: any = {
+      episode: { number: 3 },
+      seasonPlan: {
+        episodes: [{ episodeNumber: 3, difficultyTier: 'hard' }],
+        consequenceChains: [],
+        crossEpisodeBranches: [],
+        growthCurve: [
+          { episodeNumber: 1, focusSkills: ['stealth'], developmentScene: 'Sneaking drill' },
+        ],
+      },
+    };
+    const directives = buildSeasonPlanDirectives(brief);
+    expect(directives?.growthContext).toBeUndefined();
+  });
+
+  it('sets mentorshipOpportunity to null when growthCurve entry omits it', () => {
+    const brief: any = {
+      episode: { number: 1 },
+      seasonPlan: {
+        episodes: [{ episodeNumber: 1, difficultyTier: 'easy' }],
+        consequenceChains: [],
+        crossEpisodeBranches: [],
+        growthCurve: [
+          { episodeNumber: 1, focusSkills: ['investigation'], developmentScene: 'Library study' },
+        ],
+      },
+    };
+    const directives = buildSeasonPlanDirectives(brief);
+    expect(directives?.growthContext).toBeDefined();
+    expect(directives!.growthContext!.focusSkills).toEqual(['investigation']);
+    expect(directives!.growthContext!.mentorshipOpportunity).toBeFalsy();
+  });
 });

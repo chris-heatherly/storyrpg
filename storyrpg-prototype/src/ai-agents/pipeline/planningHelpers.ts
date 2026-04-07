@@ -66,6 +66,23 @@ export function buildSeasonPlanDirectives(
     }
   }
 
+  const growthCurveEntry = (plan as Record<string, unknown>).growthCurve
+    ? ((plan as Record<string, unknown>).growthCurve as Array<Record<string, unknown>>)
+        .find((g: Record<string, unknown>) => g.episodeNumber === epNum)
+    : undefined;
+
+  const growthContext = growthCurveEntry ? {
+    focusSkills: (growthCurveEntry.focusSkills as string[]) ?? [],
+    developmentScene: (growthCurveEntry.developmentScene as string) ?? '',
+    mentorshipOpportunity: growthCurveEntry.mentorshipOpportunity as {
+      npcId: string;
+      npcName: string;
+      requiredRelationship: { dimension: string; threshold: number };
+      attribute: string;
+      narrativeHook: string;
+    } | null | undefined,
+  } : undefined;
+
   return {
     endingMode: plan.endingMode,
     resolvedEndings: plan.resolvedEndings,
@@ -76,6 +93,7 @@ export function buildSeasonPlanDirectives(
     flagsToCheck: seasonEp.checksFlags?.length ? seasonEp.checksFlags : undefined,
     consequenceEffects: consequenceEffects.length > 0 ? consequenceEffects : undefined,
     endingRoutes: seasonEp.endingRoutes?.length ? seasonEp.endingRoutes : undefined,
+    growthContext,
   };
 }
 

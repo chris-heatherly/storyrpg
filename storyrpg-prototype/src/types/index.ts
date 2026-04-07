@@ -12,6 +12,13 @@ export interface PlayerAttributes {
   resourcefulness: number; // Problem-solving, adaptability
 }
 
+// Skill definitions: each skill is a weighted blend of core attributes
+export interface SkillDefinition {
+  name: string;
+  description: string;
+  attributeWeights: Partial<Record<keyof PlayerAttributes, number>>; // must sum to 1.0
+}
+
 // Skills are genre-specific (e.g., "hacking", "sword_fighting", "diplomacy")
 export type PlayerSkills = Record<string, number>;
 
@@ -95,6 +102,7 @@ export interface PlayerState {
 
   // Identity profile (accumulated from choices)
   identityProfile: IdentityProfile;
+  previousIdentityProfile?: IdentityProfile;
 
   // Delayed consequences queue (butterfly effect)
   pendingConsequences: DelayedConsequence[];
@@ -385,9 +393,12 @@ export interface Choice {
 
   // Stat check for this choice (fiction-first resolution)
   statCheck?: {
+    skillWeights?: Record<string, number>; // e.g. { persuasion: 0.5, perception: 0.3, deception: 0.2 } — sums to 1.0
+    difficulty: number; // 1-100
+
+    // Legacy fields — converted to skillWeights at resolution time
     attribute?: keyof PlayerAttributes;
     skill?: string;
-    difficulty: number; // 1-100
     retryableAfterChange?: boolean;
   };
 
@@ -1288,6 +1299,7 @@ export interface ResolutionResult {
   target: number;
   margin: number;
   narrativeText: string;
+  weakestContributor?: { skill: string; effective: number; ceiling: number };
 }
 
 // ========================================

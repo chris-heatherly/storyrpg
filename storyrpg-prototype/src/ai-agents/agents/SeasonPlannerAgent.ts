@@ -247,7 +247,18 @@ Track how a single decision ripples through the season.
 - An alliance formed in episode 1 might betray you in episode 4
 - These create the feeling of a living, responsive world
 
-### 4. ENDING TARGETING
+### 4. CHARACTER GROWTH CURVE
+Plan how the protagonist develops across the season. For each episode, specify:
+- **focusSkills**: 2-3 skills thematically relevant to this episode's challenges (from: athletics, stealth, perception, persuasion, intimidation, deception, investigation, survival)
+- **developmentScene**: A scene concept where the player CHOOSES what to practice or study. Each option should grow a different skill. Place 1-2 per episode.
+- **mentorshipOpportunity**: If an NPC's expected relationship is strong enough by this episode, note the NPC and which attribute they can help develop. Mentorship grows ATTRIBUTES (charm, wit, courage, empathy, resolve, resourcefulness).
+
+Growth should follow the difficulty curve:
+- Early episodes: easy challenges, generous development opportunities
+- Mid episodes: harder challenges that expose skill gaps, mentorship opens up
+- Late episodes: tight challenges that reward investment, mentorship pays off in the climax
+
+### 5. ENDING TARGETING
 - In \`single\` mode, all major routes must ultimately point back toward ONE ending target.
 - In \`multiple\` mode, preserve DISTINCT routes and tie them to specific ending IDs.
 - Use \`crossEpisodeBranches.paths[].targetEndingIds\` to show which ending routes a branch serves.
@@ -307,6 +318,26 @@ Return this JSON:
   "difficultyCurve": [
     { "episodeNumber": 1, "difficulty": "introduction", "encounterCount": 1 },
     { "episodeNumber": 2, "difficulty": "rising", "encounterCount": 2 }
+  ],
+  "growthCurve": [
+    {
+      "episodeNumber": 1,
+      "focusSkills": ["persuasion", "perception"],
+      "developmentScene": "After the opening confrontation, a quiet moment to regroup. Options: practice reading people (perception) / rehearse talking points (persuasion) / explore the grounds (investigation)",
+      "mentorshipOpportunity": null
+    },
+    {
+      "episodeNumber": 3,
+      "focusSkills": ["athletics", "intimidation"],
+      "developmentScene": "Training montage before the big confrontation. Options: spar with Marcus (athletics) / practice intimidation (intimidation) / study the layout (stealth)",
+      "mentorshipOpportunity": {
+        "npcId": "marcus",
+        "npcName": "Marcus",
+        "requiredRelationship": { "dimension": "respect", "threshold": 60 },
+        "attribute": "courage",
+        "narrativeHook": "Marcus recognizes the player's hesitation and offers to train them"
+      }
+    }
   ],
   "crossEpisodeBranches": [
     {

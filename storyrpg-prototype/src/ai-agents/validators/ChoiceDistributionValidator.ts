@@ -17,6 +17,7 @@ import {
   buildSuccessResult,
   buildFailureResult,
 } from './BaseValidator';
+import { SKILL_DEFINITIONS } from '../../constants/pipeline';
 
 export interface ChoiceDistributionTargets {
   expression: number;   // Target percentage (0-100)
@@ -254,4 +255,157 @@ export class ChoiceDistributionValidator extends BaseValidator {
         return `Adjust the number of "${type}" choices.`;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Attribute Coverage Scoring
+// ---------------------------------------------------------------------------
+
+export function validateAttributeCoverage(
+  statChecks: Array<{ skillWeights?: Record<string, number>; skill?: string; attribute?: string }>
+): { coverage: Record<string, number>; warnings: string[] } {
+  const attrExercise: Record<string, number> = {
+    charm: 0, wit: 0, courage: 0, empathy: 0, resolve: 0, resourcefulness: 0,
+  };
+  let totalWeight = 0;
+
+  for (const check of statChecks) {
+    const weights: Record<string, number> = {};
+
+    if (check.skillWeights) {
+      Object.assign(weights, check.skillWeights);
+    } else if (check.skill) {
+      weights[check.skill] = 1.0;
+    }
+
+    for (const [skill, skillWeight] of Object.entries(weights)) {
+      const def = SKILL_DEFINITIONS[skill.toLowerCase()];
+      if (!def) continue;
+      for (const [attr, attrWeight] of Object.entries(def.attributeWeights)) {
+        attrExercise[attr] = (attrExercise[attr] ?? 0) + skillWeight * (attrWeight ?? 0);
+      }
+      totalWeight += skillWeight;
+    }
+  }
+
+  const warnings: string[] = [];
+  if (totalWeight > 0) {
+    const normalized: Record<string, number> = {};
+    for (const [attr, val] of Object.entries(attrExercise)) {
+      normalized[attr] = val / totalWeight;
+    }
+
+    const coveredCount = Object.values(normalized).filter(v => v >= 0.10).length;
+    if (coveredCount < 4) {
+      const uncovered = Object.entries(normalized)
+        .filter(([, v]) => v < 0.10)
+        .map(([attr]) => attr);
+      warnings.push(
+        `Only ${coveredCount}/6 attributes get >= 10% exercise. Under-covered: ${uncovered.join(', ')}. ` +
+        `Consider adding challenges that test skills using ${uncovered.slice(0, 2).join(' or ')}.`
+      );
+    }
+    return { coverage: normalized, warnings };
+  }
+
+  return { coverage: attrExercise, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// Growth-Difficulty Sequence Validation
+// ---------------------------------------------------------------------------
+
+interface SceneLike {
+  id: string;
+  name?: string;
+  choicePoint?: {
+    consequenceDomain?: string;
+    type?: string;
+  };
+  competenceArc?: {
+    testsNow?: string;
+    shortfall?: string;
+    growthPath?: string;
+  };
+  encounterDifficulty?: number;
+  leadsTo?: string[];
+}
+
+export function validateGrowthDifficultySequence(
+  scenes: SceneLike[],
+  choices?: Array<{ sceneId: string; statCheck?: { difficulty: number; skillWeights?: Record<string, number> } }>
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+
+  const sceneMap = new Map(scenes.map(s => [s.id, s]));
+
+  function findPredecessors(targetId: string): Set<string> {
+    const preds = new Set<string>();
+    for (const scene of scenes) {
+      if (scene.leadsTo?.includes(targetId)) {
+        preds.add(scene.id);
+        for (const pred of findPredecessors(scene.id)) {
+          preds.add(pred);
+        }
+      }
+    }
+    return preds;
+  }
+
+  function isGrowthScene(s: SceneLike): boolean {
+    return (s.choicePoint?.consequenceDomain === 'resource') ||
+           (!!s.competenceArc?.growthPath);
+  }
+
+  for (const scene of scenes) {
+    const isHard = (scene.encounterDifficulty != null && scene.encounterDifficulty > 50);
+    if (!isHard) continue;
+
+    const predecessors = findPredecessors(scene.id);
+    const hasPrecedingGrowth = [...predecessors].some(predId => {
+      const pred = sceneMap.get(predId);
+      return pred ? isGrowthScene(pred) : false;
+    });
+
+    const hasFailureGrowthBranch = scenes.some(s =>
+      predecessors.has(s.id) && isGrowthScene(s) && s.leadsTo?.some(lt => {
+        const target = sceneMap.get(lt);
+        return target && target.id !== scene.id;
+      })
+    );
+
+    if (!hasPrecedingGrowth && !hasFailureGrowthBranch) {
+      issues.push({
+        severity: 'warning',
+        message: `Scene "${scene.name ?? scene.id}" has a hard check (difficulty > 50) with no preceding growth opportunity and no failure-recovery branch.`,
+        location: `scene:${scene.id}`,
+        suggestion: 'Add a development scene before this encounter or create a failure-recovery branch that routes through growth.',
+      });
+    }
+  }
+
+  if (choices) {
+    for (const choice of choices) {
+      if (!choice.statCheck || choice.statCheck.difficulty <= 50) continue;
+      const scene = sceneMap.get(choice.sceneId);
+      if (!scene) continue;
+
+      const predecessors = findPredecessors(choice.sceneId);
+      const hasPrecedingGrowth = [...predecessors].some(predId => {
+        const pred = sceneMap.get(predId);
+        return pred ? isGrowthScene(pred) : false;
+      });
+
+      if (!hasPrecedingGrowth) {
+        issues.push({
+          severity: 'warning',
+          message: `Choice in scene "${scene.name ?? scene.id}" has difficulty ${choice.statCheck.difficulty} with no preceding growth opportunity.`,
+          location: `scene:${choice.sceneId}`,
+          suggestion: 'Place a development scene earlier in the path, or lower the difficulty.',
+        });
+      }
+    }
+  }
+
+  return issues;
 }

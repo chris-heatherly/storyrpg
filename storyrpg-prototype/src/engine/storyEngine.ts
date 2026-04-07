@@ -11,8 +11,12 @@ import {
   EncounterChoice,
 } from '../types';
 import { evaluateCondition } from './conditionEvaluator';
-import { resolveStatCheck } from './resolutionEngine';
+import { resolveStatCheck, ResolutionTracker, normalizeStatCheck, applyUseBasedGrowth } from './resolutionEngine';
 import { processText, processTemplate } from './templateProcessor';
+
+// Session-scoped fairness tracker for resolution streaks
+const _resolutionTracker = new ResolutionTracker();
+export function getResolutionTracker(): ResolutionTracker { return _resolutionTracker; }
 
 // Observability counter for unresolved template tokens
 let _unresolvedTokenCount = 0;
@@ -335,11 +339,16 @@ export function executeChoice(
 
   // Perform stat check if required
   if (choice.statCheck) {
-    resolution = resolveStatCheck(player, choice.statCheck);
+    resolution = resolveStatCheck(player, choice.statCheck, _resolutionTracker);
+
+    const tier = resolution.tier;
+
+    // Use-based skill growth: bump skills proportional to challenge weights
+    const normalized = normalizeStatCheck(choice.statCheck);
+    applyUseBasedGrowth(player, normalized.skillWeights, tier);
 
     // Inject outcome-tier flags so the payoff beat's textVariants can select
     // the right outcome text at render time. Flags are mutually exclusive.
-    const tier = resolution.tier;
     consequences.push({ type: 'setFlag', flag: '_outcome_success', value: tier === 'success' } as Consequence);
     consequences.push({ type: 'setFlag', flag: '_outcome_partial', value: tier === 'complicated' } as Consequence);
     consequences.push({ type: 'setFlag', flag: '_outcome_failure', value: tier === 'failure' } as Consequence);

@@ -78,6 +78,19 @@ export interface ChoiceAuthorInput {
 
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
+
+  // Growth templates from GrowthConsequenceBuilder (development scenes only)
+  growthTemplates?: {
+    skillOptions: Array<{ skill: string; change: number }>;
+    mentorship?: {
+      attribute: string;
+      change: number;
+      npcId: string;
+      npcName: string;
+      condition: unknown;
+      narrativeHook: string;
+    };
+  };
 }
 
 // Output types
@@ -644,6 +657,21 @@ ${choicePoint.consequenceDomain ? `- **Consequence Domain**: ${choicePoint.conse
 ${choicePoint.reminderPlan ? `- **Reminder Plan**:\n  - Immediate: ${choicePoint.reminderPlan.immediate}\n  - Short-term: ${choicePoint.reminderPlan.shortTerm}${choicePoint.reminderPlan.later ? `\n  - Later: ${choicePoint.reminderPlan.later}` : ''}` : ''}
 ${choicePoint.expectedResidue?.length ? `- **Expected Residue**: ${choicePoint.expectedResidue.join(', ')}` : ''}
 ${choicePoint.competenceArc ? `- **Competence Arc**:\n  - Tests now: ${choicePoint.competenceArc.testsNow}\n  - Shortfall: ${choicePoint.competenceArc.shortfall || 'None'}\n  - Growth path: ${choicePoint.competenceArc.growthPath || 'None'}` : ''}
+${input.growthTemplates ? `
+## Growth Context (Development Scene)
+
+This is a DEVELOPMENT scene. Each choice option should grow a DIFFERENT skill.
+Frame each option as an action ("Spar with Marcus"), not a stat label ("Increase athletics").
+
+Available growth options:
+${input.growthTemplates.skillOptions.map(s => `- ${s.skill}: +${s.change}`).join('\n')}
+${input.growthTemplates.mentorship ? `
+NPC Mentorship available:
+- ${input.growthTemplates.mentorship.npcName} can teach ${input.growthTemplates.mentorship.attribute} (+${input.growthTemplates.mentorship.change})
+- Gate with a relationship condition on the mentorship option
+- Hook: "${input.growthTemplates.mentorship.narrativeHook}"
+- Always include a non-gated alternative
+` : ''}` : ''}
 ${choicePoint.failureBranchPurpose ? `- **Failure Branch Purpose**: ${choicePoint.failureBranchPurpose}` : ''}
 
 ## Characters Present
@@ -694,9 +722,23 @@ Branching choices (those with \`nextSceneId\`) do NOT need a \`tintFlag\`.
 
 ## Stat Check (REQUIRED for relationship, strategic, dilemma)
 
+Each stat check defines a CHALLENGE GEOMETRY — the combination of skills the situation demands.
+Use \`skillWeights\` (must sum to 1.0, use 1-3 skills) instead of a single \`attribute\`.
+
+Available skills: athletics, stealth, perception, persuasion, intimidation, deception, investigation, survival
+
+Examples:
+  Simple:  "statCheck": { "skillWeights": { "persuasion": 1.0 }, "difficulty": 50 }
+  Complex: "statCheck": { "skillWeights": { "persuasion": 0.5, "perception": 0.3, "deception": 0.2 }, "difficulty": 55 }
+
+Think about what the situation DEMANDS:
+  - Talking down an armed suspect: persuasion 0.4, perception 0.3, intimidation 0.3
+  - Sneaking past guards: stealth 0.6, perception 0.3, athletics 0.1
+  - Investigating a crime scene: investigation 0.5, perception 0.3, survival 0.2
+
 - **expression**: NO \`statCheck\`. Never.
-- **relationship**: Add \`statCheck\` with the attribute most relevant to the social dynamic.
-- **strategic** / **dilemma**: Add \`statCheck\` with attribute + difficulty 40–80.
+- **relationship**: Add \`statCheck\` with skillWeights relevant to the social dynamic.
+- **strategic** / **dilemma**: Add \`statCheck\` with skillWeights + difficulty 40–80.
 
 ## Required JSON Structure
 
@@ -866,15 +908,14 @@ CRITICAL REQUIREMENTS:
     if (choiceSet.choiceType === 'strategic' || choiceSet.choiceType === 'dilemma' || choiceSet.choiceType === 'relationship') {
       const hasStatCheck = choiceSet.choices.some(c => c.statCheck);
       if (!hasStatCheck) {
-        const defaultAttr = choiceSet.choiceType === 'relationship' ? 'empathy'
-          : choiceSet.choiceType === 'strategic' ? 'resourcefulness'
-          : 'resolve';
+        const defaultSkill = choiceSet.choiceType === 'relationship' ? 'persuasion'
+          : choiceSet.choiceType === 'strategic' ? 'investigation'
+          : 'survival';
         const defaultDiff = choiceSet.choiceType === 'dilemma' ? 60 : 50;
-        // Assign to the first choice in the set
-        choiceSet.choices[0].statCheck = { attribute: defaultAttr as any, difficulty: defaultDiff };
+        choiceSet.choices[0].statCheck = { skillWeights: { [defaultSkill]: 1.0 }, difficulty: defaultDiff };
         console.warn(
           `[ChoiceAuthor] ${choiceSet.choiceType.toUpperCase()} choice set "${choiceSet.beatId}" ` +
-          `had no statCheck — auto-assigned ${defaultAttr}@${defaultDiff} to choice-0.`
+          `had no statCheck — auto-assigned ${defaultSkill}@${defaultDiff} to choice-0.`
         );
       }
     }

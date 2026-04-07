@@ -11,7 +11,7 @@
  * are the primary inputs. The engine maps them to identity dimension shifts.
  */
 
-import { IdentityProfile, DEFAULT_IDENTITY_PROFILE, Consequence } from '../types';
+import { IdentityProfile, DEFAULT_IDENTITY_PROFILE, Consequence, PlayerAttributes } from '../types';
 
 /**
  * Mapping from tint flag names to identity dimension shifts.
@@ -194,6 +194,40 @@ export function identityMeetsCondition(
  */
 export function createIdentityProfile(): IdentityProfile {
   return { ...DEFAULT_IDENTITY_PROFILE };
+}
+
+// ---------------------------------------------------------------------------
+// Identity-to-Attribute Growth
+// Maps sustained identity trends to attribute growth at episode boundaries.
+// ---------------------------------------------------------------------------
+
+const IDENTITY_TO_ATTRIBUTE: Record<string, { positive: keyof PlayerAttributes; negative: keyof PlayerAttributes }> = {
+  cautious_bold:       { positive: 'courage',         negative: 'wit' },
+  mercy_justice:       { positive: 'resolve',          negative: 'empathy' },
+  heart_head:          { positive: 'wit',              negative: 'empathy' },
+  loner_leader:        { positive: 'charm',            negative: 'resourcefulness' },
+  idealism_pragmatism: { positive: 'resourcefulness',  negative: 'resolve' },
+  honest_deceptive:    { positive: 'charm',            negative: 'courage' },
+};
+
+/**
+ * Compute attribute growth from identity shifts between two profile snapshots.
+ * Called at episode boundaries. Returns a partial attribute map with +1 to +3 bumps.
+ */
+export function computeIdentityGrowth(
+  current: IdentityProfile,
+  previous: IdentityProfile
+): Partial<PlayerAttributes> {
+  const growth: Partial<Record<keyof PlayerAttributes, number>> = {};
+  for (const [dim, mapping] of Object.entries(IDENTITY_TO_ATTRIBUTE)) {
+    const key = dim as keyof IdentityProfile;
+    const shift = current[key] - previous[key];
+    if (Math.abs(shift) >= 10) {
+      const attr = shift > 0 ? mapping.positive : mapping.negative;
+      growth[attr] = (growth[attr] ?? 0) + Math.min(3, Math.floor(Math.abs(shift) / 10));
+    }
+  }
+  return growth;
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -4,12 +4,14 @@ import {
   ResolutionResult,
   ResolutionTier,
 } from '../types';
+import { SKILL_DEFINITIONS, ATTRIBUTE_TO_SKILL } from '../constants/pipeline';
 
 /**
- * Fiction-First Resolution Engine
+ * Fiction-First Resolution Engine — Geometric Overlap Model
  *
- * This system resolves stat checks without showing players any numbers.
- * Instead, outcomes are expressed purely through narrative.
+ * Every challenge defines a shape in skill-space (skillWeights).
+ * The player has their own shape (effective stats per skill, bounded by attributes).
+ * Success = how much the shapes overlap. Randomness = the "bouncing ball."
  *
  * Three tiers of outcomes:
  * - Success: Clear victory, player achieves their goal
@@ -17,78 +19,304 @@ import {
  * - Failure: Interesting failure that moves story forward
  */
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 interface StatCheckParams {
+  skillWeights?: Record<string, number>;
+  difficulty: number;
   attribute?: keyof PlayerAttributes;
   skill?: string;
-  difficulty: number; // 1-100 scale
+  retryableAfterChange?: boolean;
 }
 
-/**
- * Performs a fiction-first resolution check.
- * The result includes the tier and a narrative description,
- * but no visible numbers.
- */
-export function resolveStatCheck(
-  player: PlayerState,
-  check: StatCheckParams
-): ResolutionResult {
-  // Calculate the player's effective stat
-  let playerStat = 50; // Base
+interface NormalizedCheck {
+  skillWeights: Record<string, number>;
+  difficulty: number;
+}
 
-  if (check.attribute) {
-    playerStat = player.attributes[check.attribute];
+// ---------------------------------------------------------------------------
+// ResolutionTracker — session-scoped fairness guardrails
+// ---------------------------------------------------------------------------
+
+export class ResolutionTracker {
+  private consecutiveFailures = 0;
+
+  recordOutcome(tier: ResolutionTier): void {
+    if (tier === 'failure') {
+      this.consecutiveFailures++;
+    } else {
+      this.consecutiveFailures = 0;
+    }
+  }
+
+  getStreakBonus(): number {
+    if (this.consecutiveFailures >= 3) return 25;
+    if (this.consecutiveFailures >= 2) return 15;
+    return 0;
+  }
+
+  getConsecutiveFailures(): number {
+    return this.consecutiveFailures;
+  }
+
+  reset(): void {
+    this.consecutiveFailures = 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// normalizeStatCheck — legacy format conversion
+// ---------------------------------------------------------------------------
+
+export function normalizeStatCheck(check: StatCheckParams): NormalizedCheck {
+  if (check.skillWeights && Object.keys(check.skillWeights).length > 0) {
+    return { skillWeights: check.skillWeights, difficulty: check.difficulty };
   }
 
   if (check.skill) {
-    const skillBonus = player.skills[check.skill] ?? 0;
-    playerStat = Math.min(100, playerStat + skillBonus);
+    return { skillWeights: { [check.skill]: 1.0 }, difficulty: check.difficulty };
   }
 
-  // Add some randomness (hidden from player)
+  if (check.attribute) {
+    const canonicalSkill = ATTRIBUTE_TO_SKILL[check.attribute] ?? 'survival';
+    return { skillWeights: { [canonicalSkill]: 1.0 }, difficulty: check.difficulty };
+  }
+
+  return { skillWeights: { survival: 1.0 }, difficulty: check.difficulty };
+}
+
+// ---------------------------------------------------------------------------
+// computeEffectiveStat — per-skill stat bounded by attribute ceiling
+// ---------------------------------------------------------------------------
+
+export function computeEffectiveStat(player: PlayerState, skillName: string): number {
+  const def = SKILL_DEFINITIONS[skillName.toLowerCase()];
+  if (!def) {
+    return Math.min(100, 50 + (player.skills[skillName] ?? 0));
+  }
+
+  const ceiling = Object.entries(def.attributeWeights)
+    .reduce((sum, [attr, w]) => sum + (player.attributes[attr as keyof PlayerAttributes] ?? 50) * (w ?? 0), 0);
+
+  const trained = player.skills[skillName] ?? Math.round(ceiling * 0.7);
+  return Math.min(trained, ceiling);
+}
+
+/**
+ * Compute the attribute ceiling for a skill (without clamping to trained level).
+ * Used to determine whether a skill is training-bounded vs ceiling-bounded.
+ */
+export function computeSkillCeiling(player: PlayerState, skillName: string): number {
+  const def = SKILL_DEFINITIONS[skillName.toLowerCase()];
+  if (!def) return 100;
+  return Object.entries(def.attributeWeights)
+    .reduce((sum, [attr, w]) => sum + (player.attributes[attr as keyof PlayerAttributes] ?? 50) * (w ?? 0), 0);
+}
+
+// ---------------------------------------------------------------------------
+// computeOverlap — the geometric overlap (weighted coverage score)
+// ---------------------------------------------------------------------------
+
+export function computeOverlap(player: PlayerState, skillWeights: Record<string, number>): number {
+  let coverage = 0;
+  for (const [skill, weight] of Object.entries(skillWeights)) {
+    coverage += computeEffectiveStat(player, skill) * weight;
+  }
+  return coverage;
+}
+
+// ---------------------------------------------------------------------------
+// findWeakestContributor — for failure narrative feedback
+// ---------------------------------------------------------------------------
+
+function findWeakestContributor(
+  player: PlayerState,
+  skillWeights: Record<string, number>
+): { skill: string; effective: number; ceiling: number } | undefined {
+  let weakest: { skill: string; effective: number; ceiling: number } | undefined;
+  let lowestEffective = Infinity;
+
+  for (const [skill] of Object.entries(skillWeights)) {
+    const effective = computeEffectiveStat(player, skill);
+    if (effective < lowestEffective) {
+      lowestEffective = effective;
+      weakest = {
+        skill,
+        effective,
+        ceiling: computeSkillCeiling(player, skill),
+      };
+    }
+  }
+  return weakest;
+}
+
+// ---------------------------------------------------------------------------
+// getDominantAttribute — for narrative flavor
+// ---------------------------------------------------------------------------
+
+function getDominantAttribute(skillWeights: Record<string, number>): string {
+  const attrAccum: Record<string, number> = {};
+
+  for (const [skill, skillWeight] of Object.entries(skillWeights)) {
+    const def = SKILL_DEFINITIONS[skill.toLowerCase()];
+    if (!def) continue;
+    for (const [attr, attrWeight] of Object.entries(def.attributeWeights)) {
+      attrAccum[attr] = (attrAccum[attr] ?? 0) + skillWeight * (attrWeight ?? 0);
+    }
+  }
+
+  let best = 'skill';
+  let bestVal = 0;
+  for (const [attr, val] of Object.entries(attrAccum)) {
+    if (val > bestVal) { bestVal = val; best = attr; }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// resolveStatCheck — the bouncing ball
+// ---------------------------------------------------------------------------
+
+export function resolveStatCheck(
+  player: PlayerState,
+  check: StatCheckParams,
+  tracker?: ResolutionTracker
+): ResolutionResult {
+  const normalized = normalizeStatCheck(check);
+  const coverage = computeOverlap(player, normalized.skillWeights);
+
+  const statModifier = (coverage - 50) * 0.5;
+  let target = normalized.difficulty - statModifier;
+
+  // Fairness: streak compensation
+  if (tracker) {
+    target -= tracker.getStreakBonus();
+  }
+
   const roll = Math.random() * 100;
-
-  // Calculate target based on difficulty and player stat
-  // Higher stat = lower target needed
-  const statModifier = (playerStat - 50) * 0.5; // -25 to +25 modifier
-  const target = check.difficulty - statModifier;
-
-  // Determine tier
   const margin = target - roll;
   let tier: ResolutionTier;
 
   if (roll <= target - 20) {
-    // Clear success (beat target by 20+)
     tier = 'success';
   } else if (roll <= target + 10) {
-    // Complicated success (within 10 of target)
     tier = 'complicated';
   } else {
-    // Failure
     tier = 'failure';
   }
+
+  // Fairness: high-confidence clamping
+  const successChance = Math.max(0, Math.min(100, 100 - (target - 10)));
+  if (successChance > 80 && tier === 'failure') {
+    tier = 'complicated';
+  }
+
+  if (tracker) {
+    tracker.recordOutcome(tier);
+  }
+
+  const weakestContributor = tier === 'failure'
+    ? findWeakestContributor(player, normalized.skillWeights)
+    : undefined;
 
   return {
     tier,
     roll,
     target,
     margin,
-    narrativeText: generateNarrativeText(tier, check),
+    narrativeText: generateNarrativeText(tier, normalized, weakestContributor),
+    weakestContributor,
   };
 }
 
-/**
- * Generates narrative text to describe the result.
- * This is the "fiction-first" part - players only see this text,
- * never the underlying numbers.
- */
+// ---------------------------------------------------------------------------
+// calculateSuccessChance — internal utility (never shown to players)
+// ---------------------------------------------------------------------------
+
+export function calculateSuccessChance(
+  player: PlayerState,
+  check: StatCheckParams
+): number {
+  const normalized = normalizeStatCheck(check);
+  const coverage = computeOverlap(player, normalized.skillWeights);
+
+  const statModifier = (coverage - 50) * 0.5;
+  const effectiveTarget = normalized.difficulty - statModifier;
+
+  return Math.max(0, Math.min(100, 100 - (effectiveTarget - 10)));
+}
+
+// ---------------------------------------------------------------------------
+// computeEncounterWeights — encounter tier weights using effective stat
+// ---------------------------------------------------------------------------
+
+export function computeEncounterWeights(
+  player: PlayerState,
+  primarySkill?: string,
+  effectiveStatBonus: number = 0
+): { success: number; complicated: number; failure: number } {
+  const BASE_SUCCESS = 0.40;
+  const BASE_COMPLICATED = 0.35;
+  const BASE_FAILURE = 0.25;
+
+  if (!primarySkill && effectiveStatBonus === 0) {
+    return { success: BASE_SUCCESS, complicated: BASE_COMPLICATED, failure: BASE_FAILURE };
+  }
+
+  let playerStat = 50;
+
+  if (primarySkill) {
+    playerStat = computeEffectiveStat(player, primarySkill);
+  }
+
+  playerStat = Math.min(100, playerStat + effectiveStatBonus);
+
+  const modifier = ((playerStat - 50) / 50) * 0.15;
+
+  let success = Math.max(0.10, Math.min(0.65, BASE_SUCCESS + modifier));
+  let failure = Math.max(0.05, Math.min(0.50, BASE_FAILURE - modifier));
+  let complicated = 1.0 - success - failure;
+
+  if (complicated < 0.10) {
+    complicated = 0.10;
+    const excess = success + failure + complicated - 1.0;
+    success -= excess / 2;
+    failure -= excess / 2;
+  }
+
+  return { success, complicated, failure };
+}
+
+// ---------------------------------------------------------------------------
+// applyUseBasedGrowth — skill growth from attempting checks
+// ---------------------------------------------------------------------------
+
+export function applyUseBasedGrowth(
+  player: PlayerState,
+  skillWeights: Record<string, number>,
+  tier: ResolutionTier
+): void {
+  const tierMultiplier = tier === 'success' ? 2 : tier === 'complicated' ? 1.5 : 1;
+  for (const [skill, weight] of Object.entries(skillWeights)) {
+    const growth = Math.round(weight * tierMultiplier);
+    if (growth > 0) {
+      player.skills[skill] = (player.skills[skill] ?? 0) + growth;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Narrative text generation — flavor from dominant attribute
+// ---------------------------------------------------------------------------
+
 function generateNarrativeText(
   tier: ResolutionTier,
-  check: StatCheckParams
+  check: NormalizedCheck,
+  weakest?: { skill: string; effective: number; ceiling: number }
 ): string {
-  // These are generic fallbacks. In practice, each choice would have
-  // custom narrative text for each tier defined in the story content.
-
-  const attribute = check.attribute ?? 'skill';
+  const attribute = getDominantAttribute(check.skillWeights);
 
   switch (tier) {
     case 'success':
@@ -96,7 +324,7 @@ function generateNarrativeText(
     case 'complicated':
       return getComplicatedNarrative(attribute);
     case 'failure':
-      return getFailureNarrative(attribute);
+      return getFailureNarrative(attribute, weakest);
   }
 }
 
@@ -186,7 +414,92 @@ function getComplicatedNarrative(attribute: string): string {
   return options[Math.floor(Math.random() * options.length)];
 }
 
-function getFailureNarrative(attribute: string): string {
+function getFailureNarrative(
+  attribute: string,
+  weakest?: { skill: string; effective: number; ceiling: number }
+): string {
+  if (weakest) {
+    const isCeilingBounded = weakest.effective >= weakest.ceiling;
+    if (isCeilingBounded) {
+      return getCeilingBoundedFailure(attribute);
+    }
+    return getTrainingBoundedFailure(attribute);
+  }
+
+  return getGenericFailureNarrative(attribute);
+}
+
+function getTrainingBoundedFailure(attribute: string): string {
+  const narratives: Record<string, string[]> = {
+    charm: [
+      "You've got the instincts for it, but the words won't come smoothly. More practice would help.",
+      "The approach was right, but your delivery faltered. You need more experience with this.",
+    ],
+    wit: [
+      "You can feel the answer hovering just out of reach. With more practice, you'd have it.",
+      "Your mind races but can't quite connect the dots. Training would sharpen this.",
+    ],
+    courage: [
+      "You know what needs to be done, but your body won't cooperate. More preparation is needed.",
+      "The spirit is willing, but the technique isn't there yet.",
+    ],
+    empathy: [
+      "You sense what they're feeling but can't quite find the right response. Practice would help.",
+      "Your heart is in the right place, but you stumble over the approach.",
+    ],
+    resolve: [
+      "You try to hold firm, but you haven't built the endurance for this. Not yet.",
+      "Your determination is there, but the foundation isn't strong enough.",
+    ],
+    resourcefulness: [
+      "You see possibilities but can't quite pull them together. More hands-on experience would help.",
+      "The tools are there, but your technique needs work.",
+    ],
+    skill: [
+      "You've got the instincts for it, but you haven't practiced enough.",
+      "With more training, this would have gone differently.",
+    ],
+  };
+  const options = narratives[attribute] ?? narratives.skill;
+  return options[Math.floor(Math.random() * options.length)];
+}
+
+function getCeilingBoundedFailure(attribute: string): string {
+  const narratives: Record<string, string[]> = {
+    charm: [
+      "Your technique is sound, but something deeper holds you back. A fundamental shift is needed.",
+      "You do everything right, yet it's not enough. The limitation isn't in your approach.",
+    ],
+    wit: [
+      "You've mastered the method, but hit a wall only deeper understanding can break through.",
+      "Your training has taken you as far as it can. Something more fundamental needs to change.",
+    ],
+    courage: [
+      "Your skill is there, but an inner barrier holds you back. This needs more than practice.",
+      "Technique alone won't solve this. Something deeper needs to grow.",
+    ],
+    empathy: [
+      "You know the right moves, but true connection requires something practice can't teach.",
+      "The approach is correct, but something fundamental is limiting you.",
+    ],
+    resolve: [
+      "Your technique is sound, but something deeper holds you back.",
+      "You've plateaued. Breaking through requires growth from within.",
+    ],
+    resourcefulness: [
+      "You've exhausted what technique alone can do. A deeper shift is needed.",
+      "Practice has taken you as far as it can. The next step requires inner growth.",
+    ],
+    skill: [
+      "Your technique is sound, but something deeper holds you back.",
+      "You've hit a ceiling that only fundamental growth can break through.",
+    ],
+  };
+  const options = narratives[attribute] ?? narratives.skill;
+  return options[Math.floor(Math.random() * options.length)];
+}
+
+function getGenericFailureNarrative(attribute: string): string {
   const narratives: Record<string, string[]> = {
     charm: [
       "Your words fall flat, met with cold disinterest.",
@@ -227,90 +540,4 @@ function getFailureNarrative(attribute: string): string {
 
   const options = narratives[attribute] ?? narratives.skill;
   return options[Math.floor(Math.random() * options.length)];
-}
-
-/**
- * Utility to calculate success chance (for internal use only, never shown to players)
- */
-export function calculateSuccessChance(
-  player: PlayerState,
-  check: StatCheckParams
-): number {
-  let playerStat = 50;
-
-  if (check.attribute) {
-    playerStat = player.attributes[check.attribute];
-  }
-
-  if (check.skill) {
-    const skillBonus = player.skills[check.skill] ?? 0;
-    playerStat = Math.min(100, playerStat + skillBonus);
-  }
-
-  const statModifier = (playerStat - 50) * 0.5;
-  const effectiveTarget = check.difficulty - statModifier;
-
-  // Chance to get at least complicated success
-  return Math.max(0, Math.min(100, 100 - (effectiveTarget - 10)));
-}
-
-/**
- * Compute outcome tier weights for encounter choices, factoring in player stats.
- *
- * If the choice has a primarySkill that maps to a player attribute or skill,
- * the weights shift: higher skill → more success, lower → more failure.
- * The shift is subtle (fiction-first) — the player never sees numbers.
- *
- * Returns { success, complicated, failure } that sum to 1.0.
- */
-export function computeEncounterWeights(
-  player: PlayerState,
-  primarySkill?: string,
-  effectiveStatBonus: number = 0
-): { success: number; complicated: number; failure: number } {
-  // Base weights when player has no particular advantage
-  const BASE_SUCCESS = 0.40;
-  const BASE_COMPLICATED = 0.35;
-  const BASE_FAILURE = 0.25;
-
-  if (!primarySkill && effectiveStatBonus === 0) {
-    return { success: BASE_SUCCESS, complicated: BASE_COMPLICATED, failure: BASE_FAILURE };
-  }
-
-  // Look up the skill as an attribute first, then as a skill bonus
-  const attributeNames = ['charm', 'wit', 'courage', 'empathy', 'resolve', 'resourcefulness'];
-  let playerStat = 50; // Neutral baseline
-
-  if (primarySkill) {
-    const normalizedSkill = primarySkill.toLowerCase().trim();
-
-    if (attributeNames.includes(normalizedSkill)) {
-      playerStat = player.attributes[normalizedSkill as keyof PlayerAttributes] ?? 50;
-    } else {
-      // Check skills map
-      const skillValue = player.skills[normalizedSkill] ?? player.skills[primarySkill] ?? 0;
-      playerStat = Math.min(100, 50 + skillValue);
-    }
-  }
-
-  // Apply stat bonus from pre-encounter state payoff (capped to prevent trivialisation)
-  playerStat = Math.min(100, playerStat + effectiveStatBonus);
-
-  // Compute modifier: -0.15 to +0.15 based on stat (50 = neutral)
-  const modifier = ((playerStat - 50) / 50) * 0.15;
-
-  // Shift weights: higher stat → more success, less failure
-  let success = Math.max(0.10, Math.min(0.65, BASE_SUCCESS + modifier));
-  let failure = Math.max(0.05, Math.min(0.50, BASE_FAILURE - modifier));
-  let complicated = 1.0 - success - failure;
-
-  // Safety clamp
-  if (complicated < 0.10) {
-    complicated = 0.10;
-    const excess = success + failure + complicated - 1.0;
-    success -= excess / 2;
-    failure -= excess / 2;
-  }
-
-  return { success, complicated, failure };
 }

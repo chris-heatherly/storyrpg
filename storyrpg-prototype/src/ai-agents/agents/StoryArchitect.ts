@@ -99,6 +99,17 @@ export interface StoryArchitectInput {
       role: 'opens' | 'reinforces' | 'threatens' | 'locks';
       description: string;
     }>;
+    growthContext?: {
+      focusSkills: string[];
+      developmentScene: string;
+      mentorshipOpportunity?: {
+        npcId: string;
+        npcName: string;
+        requiredRelationship: { dimension: string; threshold: number };
+        attribute: string;
+        narrativeHook: string;
+      } | null;
+    };
   };
 
   // Pipeline memory context (optimization hints from prior runs, Claude only)
@@ -1091,6 +1102,31 @@ If you don't include enough choice points, the story will be rejected as non-int
         section += `- (${effect.severity}): ${effect.description}\n`;
       }
       section += '\n';
+    }
+
+    if (directives.growthContext) {
+      const gc = directives.growthContext;
+      section += '### GROWTH PLAN FOR THIS EPISODE\n';
+      section += `Focus skills: ${gc.focusSkills.join(', ')}\n`;
+      section += `Development scene concept: ${gc.developmentScene}\n`;
+      if (gc.mentorshipOpportunity) {
+        const m = gc.mentorshipOpportunity;
+        section += `Mentorship: ${m.npcName} can teach ${m.attribute} if ${m.requiredRelationship.dimension} >= ${m.requiredRelationship.threshold}\n`;
+        section += `Narrative hook: ${m.narrativeHook}\n`;
+      } else {
+        section += 'No mentorship opportunity this episode.\n';
+      }
+      section += '\n';
+      section += 'Include 1-2 DEVELOPMENT SCENES (purpose: transition, choicePoint.type: strategic,\n';
+      section += 'choicePoint.consequenceDomain: resource) with competenceArc filled to link growth\n';
+      section += 'to upcoming challenges. Place development scenes BEFORE hard checks.\n\n';
+      section += 'For every hard check (difficulty > 50), plan a FAILURE-RECOVERY BRANCH:\n';
+      section += 'failure -> recovery/growth scene -> softer re-approach or alternative -> reconverge.\n';
+      section += 'Failure is never a dead end. It is a detour through growth.\n\n';
+      if (gc.mentorshipOpportunity) {
+        section += 'Include a MENTORSHIP SCENE where the NPC offers training gated by relationship.\n';
+        section += 'Always provide a non-gated alternative so the scene works for all players.\n\n';
+      }
     }
 
     return section;

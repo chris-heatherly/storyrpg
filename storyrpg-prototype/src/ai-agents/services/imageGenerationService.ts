@@ -2848,8 +2848,10 @@ export class ImageGenerationService {
     if (
       msg.includes('atlas cloud api error: 400') ||
       msg.includes('atlas cloud api error: 401') ||
+      msg.includes('atlas cloud api error: 402') ||
       msg.includes('atlas cloud api error: 403') ||
-      msg.includes('atlas cloud api error: 404')
+      msg.includes('atlas cloud api error: 404') ||
+      msg.includes('insufficient balance')
     ) {
       return 'permanent';
     }

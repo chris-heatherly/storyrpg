@@ -184,7 +184,7 @@ Do not use markdown code blocks around the JSON.
   /**
    * Call the LLM with the given messages (with retry for transient errors)
    */
-  protected async callLLM(messages: AgentMessage[], retries: number = 2, options?: { useMemory?: boolean; signal?: AbortSignal }): Promise<string> {
+  protected async callLLM(messages: AgentMessage[], retries: number = 4, options?: { useMemory?: boolean; signal?: AbortSignal }): Promise<string> {
     const existingSystemMessage = messages.find((m) => m.role === 'system');
     const otherMessages = messages.filter((m) => m.role !== 'system');
 
@@ -282,7 +282,8 @@ Do not use markdown code blocks around the JSON.
           msg.includes('502') || // Bad gateway
           msg.includes('503') || // Service unavailable
           msg.includes('rate limit') ||
-          msg.includes('overloaded')
+          msg.includes('overloaded') ||
+          msg.includes('high demand')
         );
         
         if (!isRetryable || attempt === retries) {
@@ -299,9 +300,10 @@ Do not use markdown code blocks around the JSON.
           }
         }
         
-        // Normal exponential backoff — longer ceiling for 5xx/connection errors
+        // Normal exponential backoff — longer ceiling for 5xx/connection and demand errors
         const is5xx = msg.includes('500') || msg.includes('503') || msg.includes('502') || msg.includes('fetch failed');
-        const maxDelay = is5xx ? 30000 : 10000;
+        const isDemand = msg.includes('high demand') || msg.includes('rate limit') || msg.includes('overloaded') || msg.includes('529');
+        const maxDelay = (is5xx || isDemand) ? 30000 : 10000;
         const baseDelay = Math.min(1000 * Math.pow(2, attempt), maxDelay);
         const jitterRatio = BaseAgent._guardrails.backoffJitterRatio;
         const jitterMultiplier = 1 + ((Math.random() * 2 - 1) * jitterRatio);

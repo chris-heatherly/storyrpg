@@ -620,162 +620,205 @@ Before approving any generated image, verify:
 
 **Composition**
 - [ ] Primary focal point is NOT dead-center
-- [ ] Critical content is in upper two-thirds of 9:16 zone
+- [ ] Critical content is in upper two-thirds of 9:16 safe zone
 - [ ] Lower third is suitable for UI overlay
-- [ ] Atmospheric extension (if visible) is non-essential
+- [ ] No essential elements outside 9:16 safe zone
 
-**Camera Work**
-- [ ] Shot type matches story beat requirements
-- [ ] Camera angle supports emotional register
-- [ ] Angle is NOT defaulting to eye-level without reason
+**Story Beat Clarity**
+- [ ] Image illustrates the specific story beat (not just character portrait)
+- [ ] Emotional register is visually clear
+- [ ] Character action/staging supports narrative moment
+- [ ] If multiple characters are present, all are visible and their relationship is clear
 
-**Character Staging**
-- [ ] Pose has clear line of action (not static/neutral)
-- [ ] Body language matches emotional beat
-- [ ] Character is NOT just "standing and looking at camera"
-- [ ] Gesture supports narrative moment
+**Visual Variety**
+- [ ] Shot type differs from previous image
+- [ ] Camera angle creates visual interest
+- [ ] Body language is dynamic, not static
+- [ ] Composition uses different focal points than previous image
 
-**Visual Emphasis**
-- [ ] Clear focal hierarchy—viewer knows where to look first
-- [ ] Appropriate depth of field for emphasis
-- [ ] Lighting supports mood and focal point
+**Technical Quality**
+- [ ] Character faces are clear and well-lit in critical content zone
+- [ ] Line of action is strong and emotionally appropriate
+- [ ] Environmental framing supports, doesn't compete with, focal elements
+- [ ] Lighting enhances rather than obscures story beat
 
 ### Sequence Validation
 
-When reviewing image sequences, verify:
+For every 3-5 consecutive images, verify:
 
-**Variety**
-- [ ] Shot distances vary across sequence (no consecutive same-type)
-- [ ] Camera angles vary (no repeated eye-level monotony)
-- [ ] Character staging varies (poses differ image to image)
-- [ ] Compositional structure varies (focal point moves)
+**Rhythm and Pacing**
+- [ ] Shot types follow a deliberate pattern (wide→medium→close, etc.)
+- [ ] No repeated compositions or staging
+- [ ] Visual emphasis matches narrative importance
+- [ ] Emotional beats build or release appropriately
 
-**Rhythm**
-- [ ] Emotional intensity builds and releases appropriately
-- [ ] Peak moments receive close-up emphasis
-- [ ] Establishing shots provide context where needed
-- [ ] Transitions feel natural, not jarring
+**Character Consistency**
+- [ ] Character appearance remains consistent
+- [ ] Clothing, props, and environmental details maintain continuity
+- [ ] Character emotional arcs are visually supported across sequence
+- [ ] Spatial relationships between characters make sense
 
-**Consistency**
-- [ ] Character appearance consistent across sequence
-- [ ] Lighting logic consistent (same scene = same light direction)
-- [ ] Spatial relationships maintained appropriately
-
----
-
-## Part 12: The Visual Vocabulary Quick Reference
-
-### Shot Types (Distance)
-| Abbreviation | Name | Frame | Use For |
-|--------------|------|-------|---------|
-| ELS | Extreme Long Shot | Environment dominant | Establishing, scale |
-| LS | Long Shot | Full body + environment | Context, arrival |
-| MLS | Medium Long Shot | Knees up | Action + context |
-| MS | Medium Shot | Waist up | Dialogue, interaction |
-| MCU | Medium Close-Up | Chest up | Emotional dialogue |
-| CU | Close-Up | Face fills frame | Peak emotion |
-| ECU | Extreme Close-Up | Part of face/detail | Crucial moment |
-
-### Camera Angles (Vertical)
-| Angle | Viewer Position | Subject Appears | Use For |
-|-------|-----------------|-----------------|---------|
-| Bird's Eye | Directly above | Map-like | Tactics, overview |
-| High Angle | Looking down | Small, vulnerable | Defeat, judgment |
-| Eye Level | Equal height | Neutral | Baseline (vary from this) |
-| Low Angle | Looking up | Powerful, imposing | Triumph, threat |
-| Worm's Eye | From ground | Monumental | Peak drama |
-
-### Dutch Angle Intensity
-| Degrees | Effect | Use For |
-|---------|--------|---------|
-| 5-15° | Subtle unease | Something is off |
-| 15-30° | Clear tension | Instability, concern |
-| 30-45° | Extreme disorientation | Crisis, psychological break |
-
-### Body Language Quick Reference
-| Emotion | Posture | Spine | Weight | Arms/Hands |
-|---------|---------|-------|--------|------------|
-| Confident | Expanded | Straight/back | Planted | Open, gesturing |
-| Vulnerable | Contracted | Curved forward | Unstable | Protective, hidden |
-| Aggressive | Forward | Forward lean | On balls of feet | Clenched, reaching |
-| Fearful | Retreating | Away | On back foot | Defensive |
-| Intimate | Open | Toward other | Relaxed | Reaching, touching |
+**Mobile Optimization**
+- [ ] Entire sequence reads clearly on mobile screen
+- [ ] UI overlay zone is consistently preserved
+- [ ] Critical content remains legible at mobile resolution
+- [ ] Atmospheric extension provides appropriate mood without distraction
 
 ---
 
-## Appendix A: Story Beat to Visual Treatment Matrix
+## Part 12: Common Mistakes and Solutions
 
-| Story Beat | Shot Type | Angle | Staging | Lighting |
-|------------|-----------|-------|---------|----------|
-| Revelation | CU/MCU | Eye-level/low | Frozen reaction | Dramatic side |
-| Romance | MCU two-shot | Eye-level | Close, open | Warm, soft |
-| Confrontation | MS varied | Low/high split | Squared off | High contrast |
-| Victory | LS/MLS | Low angle | Expanded | Bright, warm |
-| Defeat | MS/CU | High angle | Contracted | Muted, flat |
-| Suspense | Varied | Dutch | Tense, partial | Deep shadows |
-| Discovery | LS→CU | Low on discovery | Open, reaching | Reveal lighting |
-| Intimacy | MCU | Eye-level | Close, mirrored | Soft, natural |
-| Decision | CU/ECU | Eye-level/low | Still, focused | Dramatic single-source |
-| Action | MLS/CU | Dynamic, varied | Mid-motion | High contrast |
+### The "Single Character Portrait" Problem
 
----
+**Mistake**: Generating images that show only one character when multiple are in the scene.
 
-## Appendix B: The "Never Do" List
+**Why it happens**: AI defaults to simpler compositions with fewer elements.
 
-These visual choices should be avoided or minimized:
+**Solution**: Always specify "two-shot" or "three characters visible" when multiple characters are present. Describe their spatial and emotional relationship explicitly.
 
-1. **Never** place the character dead-center facing directly at camera without narrative reason
-2. **Never** use eye-level angle for three or more consecutive images
-3. **Never** repeat the same shot type in consecutive images
-4. **Never** use neutral, symmetrical "standing" pose for emotional beats
-5. **Never** place critical content in the lower third of the 9:16 zone
-6. **Never** use Dutch angle without clear narrative justification
-7. **Never** lose character's face in shadow during emotional peaks
-8. **Never** use extreme close-up for mundane moments (save for peaks)
-9. **Never** flatten depth—always maintain foreground/background separation
-10. **Never** forget that every image is a story beat, not a character portrait
+**Good prompt example**: "Two-shot medium close-up: [CHARACTER A] and [CHARACTER B] in heated conversation, positioned at three-quarter angles facing each other, bodies leaning slightly forward showing engagement, with visible tension in their proximities."
 
----
+### The "Standing Center-Frame" Trap
 
-## Appendix C: Integration with StoryRPG Encounter System
+**Mistake**: Characters positioned dead-center, standing straight, facing the camera.
 
-### Encounter Beat to Visual Treatment Mapping
+**Why it happens**: Lack of specific staging direction allows AI to default to portrait mode.
 
-For the StoryRPG encounter system, map beat types to visual treatments:
+**Solution**: Always specify shot angle, character position relative to frame, and body orientation.
 
-**Combat Beats**
-- Opening: Wide establishing shot, showing all parties and terrain
-- Escalation: Medium shots with increasing low angles
-- Impact: Close-ups at moment of strike
-- Consequence: Reaction shots, aftermath staging
+**Good prompt example**: "Medium shot from low angle: [CHARACTER] positioned in left third of frame, body turned at three-quarter angle, leaning forward with determination, right hand reaching toward something off-screen."
 
-**Social Beats**
-- Initial: Two-shot establishing relationship distance
-- Development: Alternating singles, moving closer
-- Peak: Close-ups for emotional climax
-- Resolution: Two-shot showing changed dynamic
+### The "Neutral Expression" Issue
 
-**Discovery Beats**
-- Setup: Medium shot showing investigation
-- Clue: ECU on discovered detail
-- Realization: CU on character processing
-- Implication: Pull back to show context
+**Mistake**: Characters with ambiguous or expressionless faces that don't convey the story beat.
 
-### Image Generation Priority Ordering
+**Why it happens**: Emotional direction is implied but not explicitly stated.
 
-When generating encounter sequences, prioritize variety over efficiency:
+**Solution**: Describe both the emotion and the physical manifestation of that emotion.
 
-1. Determine story beats in sequence
-2. Assign shot types using rhythm patterns
-3. Assign camera angles avoiding repetition
-4. Define staging based on emotional requirements
-5. Apply mobile composition constraints
-6. Validate against quality checklist
+**Good prompt example**: "Close-up: [CHARACTER] showing shock and betrayal, eyes widened in disbelief, mouth slightly open, eyebrows raised, body pulling back slightly as if physically recoiling from the revelation."
+
+### The "Environmental Afterthought" Problem
+
+**Mistake**: Characters clearly posed against generic or inappropriate backgrounds.
+
+**Why it happens**: Environment is described separately from character action.
+
+**Solution**: Integrate environment into the action and emotion of the scene.
+
+**Good prompt example**: "Medium long shot: [CHARACTER] crouching beside a crackling campfire, the warm orange glow illuminating their concerned expression as they study a torn map, surrounded by the vast darkness of the wilderness that emphasizes their isolation and vulnerability."
 
 ---
 
-*This document should be referenced by all image generation agents in the StoryRPG Engine pipeline to ensure visual storytelling excellence and eliminate the "standing portrait" monotony problem.*
+## Part 13: Advanced Techniques
 
-**Document Version**: 1.0
-**Created**: January 2026
-**For**: StoryRPG Engine AI Agent Architecture
+### Atmospheric Storytelling
+
+Use environmental elements to reinforce narrative beats:
+
+**Weather as Emotion**:
+- Rain during moments of sadness or cleansing
+- Harsh sunlight during confrontations or revelations
+- Fog during mystery or uncertainty
+- Clear skies during resolution or hope
+
+**Architecture as Power**:
+- Low ceilings during oppressive moments
+- Vast spaces during moments of insignificance or wonder
+- Confined spaces during tension or intimacy
+- Doorways and thresholds during transitions
+
+**Color Temperature as Mood**:
+- Warm light (golden, orange) for comfort, nostalgia, romance
+- Cool light (blue, cyan) for alienation, technology, sadness
+- High contrast for drama and conflict
+- Monochromatic for focus or bleakness
+
+### Symbolic Composition
+
+**Diagonal Lines**: Energy, movement, instability
+**Horizontal Lines**: Peace, stability, rest
+**Vertical Lines**: Strength, authority, growth
+**Curved Lines**: Grace, elegance, natural harmony
+**Jagged Lines**: Tension, danger, chaos
+
+**Size Relationships**:
+- Small character, large environment: Insignificance, wonder, challenge
+- Large character, small environment: Power, dominance, control
+- Equal proportions: Balance, equality, neutrality
+
+### Advanced Camera Movements (Implied)
+
+While static images can't show movement, they can imply camera motion:
+
+**Push-In Effect**: Tight framing with environmental edges cropped suggests moving closer to subject
+
+**Pull-Back Effect**: Wide framing with character small in environment suggests revealing broader context
+
+**Pan Effect**: Characters positioned at frame edges suggest camera following motion
+
+**Tilt Effect**: Dutch angles suggest camera adjusting to show instability
+
+---
+
+## Part 14: Integration with StoryRPG Engine
+
+### Working with the Image Generation Pipeline
+
+This guide integrates with the StoryRPG Engine's AI-driven image generation system, specifically informing:
+
+- **EncounterImageAgent**: Primary agent responsible for scene illustrations
+- **VisualIllustratorAgent**: Specialist for character and object rendering  
+- **StoryboardAgent**: Sequence planning and visual rhythm
+- **CompositionValidatorAgent**: Quality assurance for mobile composition
+- **ConsistencyScorerAgent**: Character and environmental continuity
+
+### Prompt Enhancement Integration
+
+The visual principles in this guide are encoded in `src/ai-agents/prompts/visualPrinciples.ts` and automatically integrated into image generation prompts to ensure:
+
+- Mobile-first composition (9:19.5 full-bleed with 9:16 safe zone)
+- Shot type and camera angle variety
+- Character staging that serves story beats
+- Environmental integration with narrative moments
+
+### Quality Validation
+
+Generated images are automatically evaluated against these standards through the validator system, checking for:
+
+- Composition adherence to mobile framework
+- Visual variety across sequences  
+- Character staging appropriateness for story beat
+- Technical quality of critical content zones
+
+---
+
+## Conclusion
+
+Visual storytelling in StoryRPG Engine demands the same narrative sophistication as the interactive stories themselves. Every image must earn its place by advancing the story, revealing character, building tension, or providing resolution.
+
+The techniques in this guide—from basic shot types to advanced atmospheric storytelling—provide a systematic approach to eliminating visual monotony and creating images that are true story beats rather than mere illustrations.
+
+Remember: **In interactive storytelling, the image is not decoration. It is narrative structure made visible.**
+
+---
+
+## Quick Reference Summary
+
+**Core Principle**: Every image is a story beat, not a portrait
+
+**Mobile Framework**: 9:19.5 canvas, 9:16 safe zone, critical content in upper 2/3
+
+**Shot Types**: ELS, LS, MLS, MS, MCU, CU, ECU - each serves specific narrative functions
+
+**Camera Angles**: Bird's eye, high, eye-level, low, worm's eye, plus Dutch for unease
+
+**Character Staging**: Strong line of action, dynamic poses, relationship-driven positioning
+
+**Visual Rhythm**: Never repeat shot type/angle/staging in consecutive images
+
+**Beat-to-Visual Mapping**: Match visual treatment to specific narrative moments
+
+**Quality Standards**: Composition + Story Clarity + Visual Variety + Technical Quality
+
+For implementation details and prompt templates, see companion document: `docs/visual_storytelling_quick_reference.md`

@@ -10,6 +10,24 @@
 
 Before generating, ask: What is the EMOTION? What is the DRAMATIC QUESTION? What should the viewer FEEL?
 
+Images must illustrate the STORY BEAT — physical action (what's happening), emotion (what they're feeling), and relationship dynamics (tension, intimacy, conflict, connection between characters).
+
+**AVOID the "Single Character Portrait" trap:**
+❌ Only ONE character shown when multiple are in the scene
+❌ Character standing center-frame with no clear action  
+❌ Character posing rather than DOING, FEELING, or RELATING
+❌ Missing characters who are part of the scene
+❌ No visible interaction between characters who are together
+❌ Neutral/ambiguous body language
+❌ Same composition as previous image
+
+**INSTEAD, every image MUST show:**
+✅ ALL characters present in the beat, visibly interacting
+✅ A clear BEAT — physical action, emotion, and/or relationship dynamics
+✅ Characters' spatial and emotional relationship (close, distant, facing, turned away)
+✅ Body language that conveys both action AND emotion
+✅ The environment as a participant, not just a backdrop
+
 ---
 
 ## THE ANTI-DEFAULT CHECKLIST
@@ -32,7 +50,7 @@ When prompting for images, AVOID the default trap:
 
 ---
 
-## MOBILE COMPOSITION TEMPLATE
+## MOBILE COMPOSITION TEMPLATE (9:19.5 FULL-BLEED)
 
 Add to EVERY image prompt:
 

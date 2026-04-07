@@ -64,7 +64,7 @@ export const EXTERNAL_APIS = {
   // Atlas Cloud API (via proxy)
   atlasCloud: {
     get generateImage() { return `${PROXY_CONFIG.atlasCloudApi}/generateImage`; },
-    get getResult() { return `${PROXY_CONFIG.atlasCloudApi}/getResult`; },
+    prediction(id: string) { return `${PROXY_CONFIG.atlasCloudApi}/prediction/${id}`; },
   },
   
   // Midjourney via MidAPI (via proxy)

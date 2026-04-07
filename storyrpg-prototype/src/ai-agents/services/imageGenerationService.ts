@@ -2851,9 +2851,23 @@ export class ImageGenerationService {
       msg.includes('atlas cloud api error: 402') ||
       msg.includes('atlas cloud api error: 403') ||
       msg.includes('atlas cloud api error: 404') ||
-      msg.includes('insufficient balance')
+      msg.includes('atlas cloud poll error: 401') ||
+      msg.includes('atlas cloud poll error: 403') ||
+      msg.includes('insufficient balance') ||
+      msg.includes('content policy') ||
+      msg.includes('safety filter')
     ) {
       return 'permanent';
+    }
+    if (
+      msg.includes('prediction timed out') ||
+      msg.includes('atlas cloud api error: 504') ||
+      msg.includes('atlas cloud api error: 502') ||
+      msg.includes('atlas cloud api error: 503') ||
+      msg.includes('atlas cloud poll error: 5') ||
+      msg.includes('atlas cloud generation failed')
+    ) {
+      return 'transient';
     }
     return ImageGenerationService.classifyError(error) === 'permanent' ? 'permanent' : 'transient';
   }
@@ -2866,6 +2880,88 @@ export class ImageGenerationService {
       return payload.data.outputs.filter((o: unknown) => typeof o === 'string');
     }
     return [];
+  }
+
+  /**
+   * Poll an Atlas Cloud prediction until it completes, fails, or times out.
+   * Used for async image generation where the submit call returns a prediction ID.
+   */
+  private async pollAtlasPrediction(
+    predictionId: string,
+    apiKey: string,
+    baseUrl: string,
+    jobId: string,
+    maxWaitMs: number = 300000
+  ): Promise<any> {
+    const startTime = Date.now();
+    let pollInterval = 3000;
+    const maxPollInterval = 10000;
+
+    while (Date.now() - startTime < maxWaitMs) {
+      await this.delay(pollInterval);
+
+      const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+      this.emit({
+        type: 'job_updated',
+        id: jobId,
+        updates: { progress: Math.min(75, 20 + Math.floor(elapsedSec / 2)), message: `Generating image (${elapsedSec}s)...` },
+      });
+
+      console.log(`[ImageGenerationService] Polling Atlas Cloud prediction ${predictionId} (${elapsedSec}s elapsed)`);
+
+      const response = await fetch(`${baseUrl}/prediction/${predictionId}`, {
+        method: 'GET',
+        headers: { 'x-atlas-cloud-key': apiKey },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        if (response.status >= 500) {
+          console.warn(`[ImageGenerationService] Poll got ${response.status}, will retry: ${errorText.slice(0, 200)}`);
+          pollInterval = Math.min(pollInterval * 1.5, maxPollInterval);
+          continue;
+        }
+        throw new Error(`Atlas Cloud poll error: ${response.status} - ${errorText}`);
+      }
+
+      const result = await response.json();
+      const status = result?.data?.status || result?.status;
+
+      if (status === 'completed' || status === 'succeeded') {
+        console.log(`[ImageGenerationService] Atlas Cloud prediction ${predictionId} completed after ${elapsedSec}s`);
+        return result;
+      }
+
+      if (status === 'failed') {
+        const errorMsg = result?.data?.error || result?.error || 'Generation failed';
+        throw new Error(`Atlas Cloud generation failed: ${errorMsg}`);
+      }
+
+      pollInterval = Math.min(pollInterval * 1.3, maxPollInterval);
+    }
+
+    throw new Error(`Atlas Cloud prediction timed out after ${Math.round(maxWaitMs / 1000)}s`);
+  }
+
+  /**
+   * Resolve an Atlas Cloud output — download if URL, or detect MIME from base64.
+   */
+  private async resolveAtlasOutput(output: string): Promise<{ base64Data: string; mimeType: string; extension: string }> {
+    if (output.startsWith('http://') || output.startsWith('https://')) {
+      console.log(`[ImageGenerationService] Downloading Atlas Cloud image from URL...`);
+      const response = await fetch(output);
+      if (!response.ok) {
+        throw new Error(`Failed to download Atlas Cloud image: ${response.status}`);
+      }
+      const contentType = response.headers.get('content-type') || 'image/png';
+      const arrayBuffer = await response.arrayBuffer();
+      const base64Data = Buffer.from(arrayBuffer).toString('base64');
+      const extension = contentType.includes('jpeg') || contentType.includes('jpg') ? 'jpg'
+        : contentType.includes('webp') ? 'webp'
+        : 'png';
+      return { base64Data, mimeType: contentType, extension };
+    }
+    return detectImageMimeType(output);
   }
 
   /**
@@ -2921,8 +3017,6 @@ export class ImageGenerationService {
         const body: Record<string, any> = {
           model,
           prompt: fullPrompt,
-          enable_sync_mode: true,
-          enable_base64_output: true,
           output_format: 'png',
           size: this.mapAspectRatioToSize(prompt.aspectRatio || '1:1', model),
         };
@@ -2932,7 +3026,7 @@ export class ImageGenerationService {
             .map(ref => `data:${ref.mimeType};base64,${ref.data}`);
         }
 
-        console.log(`[ImageGenerationService] Atlas Cloud: Generating with model ${model} (attempt ${attempt})`);
+        console.log(`[ImageGenerationService] Atlas Cloud: Submitting async generation with model ${model} (attempt ${attempt})`);
 
         const response = await fetch(`${baseUrl}/generateImage`, {
           method: 'POST',
@@ -2948,24 +3042,45 @@ export class ImageGenerationService {
           throw new Error(`Atlas Cloud API error: ${response.status} - ${errorText}`);
         }
 
-        const data = await response.json();
-        this.emit({ type: 'job_updated', id: jobId, updates: { progress: 80, message: 'Processing image...' } });
+        const submitData = await response.json();
 
-        const output = this.extractAtlasOutputs(data)[0];
-        if (!output) {
-          const apiMsg = data?.message || data?.error || data?.data?.error;
-          throw new Error(apiMsg ? `No image output returned from Atlas Cloud: ${apiMsg}` : 'No image output returned from Atlas Cloud');
+        const inlineOutput = this.extractAtlasOutputs(submitData)[0];
+        if (inlineOutput) {
+          this.emit({ type: 'job_updated', id: jobId, updates: { progress: 80, message: 'Processing image...' } });
+          const detected = await this.resolveAtlasOutput(inlineOutput);
+          const imagePath = this.joinPath(this.outputDir, `${identifier}.${detected.extension}`);
+          await this.writeFile(imagePath, detected.base64Data, true);
+          const resultImageUrl = this.toImageHttpUrl(imagePath, detected.mimeType, detected.base64Data);
+          const result = { prompt, imagePath, imageUrl: resultImageUrl, imageData: detected.base64Data, mimeType: detected.mimeType, metadata: { format: detected.extension, provider: 'atlas-cloud', model } };
+          this.emit({ type: 'job_updated', id: jobId, updates: { status: 'completed', progress: 100, imageUrl: resultImageUrl, endTime: Date.now() } });
+          return result;
         }
 
-        const detected = detectImageMimeType(output);
-        const imageData = detected.base64Data;
-        const mimeType = detected.mimeType;
+        const predictionId = submitData?.data?.id || submitData?.id;
+        if (!predictionId) {
+          const apiMsg = submitData?.message || submitData?.error || submitData?.data?.error;
+          throw new Error(apiMsg ? `Atlas Cloud: no prediction ID or outputs: ${apiMsg}` : 'Atlas Cloud: no prediction ID or outputs in response');
+        }
+
+        console.log(`[ImageGenerationService] Atlas Cloud prediction submitted: ${predictionId}`);
+        this.emit({ type: 'job_updated', id: jobId, updates: { progress: 15, message: 'Image queued, polling for result...' } });
+
+        const pollResult = await this.pollAtlasPrediction(predictionId, apiKey, baseUrl, jobId);
+        const output = this.extractAtlasOutputs(pollResult)[0];
+
+        if (!output) {
+          const apiMsg = pollResult?.message || pollResult?.error || pollResult?.data?.error;
+          throw new Error(apiMsg ? `No image output after polling Atlas Cloud: ${apiMsg}` : 'No image output after polling Atlas Cloud');
+        }
+
+        this.emit({ type: 'job_updated', id: jobId, updates: { progress: 85, message: 'Downloading generated image...' } });
+        const detected = await this.resolveAtlasOutput(output);
         const imagePath = this.joinPath(this.outputDir, `${identifier}.${detected.extension}`);
-        await this.writeFile(imagePath, imageData, true);
+        await this.writeFile(imagePath, detected.base64Data, true);
 
-        const resultImageUrl = this.toImageHttpUrl(imagePath, mimeType, imageData);
+        const resultImageUrl = this.toImageHttpUrl(imagePath, detected.mimeType, detected.base64Data);
 
-        const result = { prompt, imagePath, imageUrl: resultImageUrl, imageData, mimeType, metadata: { format: detected.extension, provider: 'atlas-cloud', model } };
+        const result = { prompt, imagePath, imageUrl: resultImageUrl, imageData: detected.base64Data, mimeType: detected.mimeType, metadata: { format: detected.extension, provider: 'atlas-cloud', model } };
         this.emit({ type: 'job_updated', id: jobId, updates: { status: 'completed', progress: 100, imageUrl: resultImageUrl, endTime: Date.now() } });
         return result;
 
@@ -3072,8 +3187,6 @@ export class ImageGenerationService {
           model,
           prompt: combinedPrompt,
           max_images: chunk.length,
-          enable_sync_mode: true,
-          enable_base64_output: true,
           output_format: 'png',
           size: this.mapAspectRatioToSize(chunk[0].prompt.aspectRatio || '1:1', model),
         };
@@ -3083,7 +3196,7 @@ export class ImageGenerationService {
             .map(ref => `data:${ref.mimeType};base64,${ref.data}`);
         }
 
-        console.log(`[ImageGenerationService] Atlas Cloud batch: ${chunk.length} images with model ${model}`);
+        console.log(`[ImageGenerationService] Atlas Cloud batch: ${chunk.length} images with model ${model} (async)`);
         this.emit({ type: 'job_updated', id: batchJobId, updates: { status: 'processing', progress: 10 } });
 
         const response = await fetch(`${baseUrl}/generateImage`, {
@@ -3100,8 +3213,21 @@ export class ImageGenerationService {
           throw new Error(`Atlas Cloud batch API error: ${response.status} - ${errorText}`);
         }
 
-        const data = await response.json();
-        const outputs: string[] = this.extractAtlasOutputs(data);
+        const submitData = await response.json();
+        let outputs: string[];
+
+        const inlineOutputs = this.extractAtlasOutputs(submitData);
+        if (inlineOutputs.length > 0) {
+          outputs = inlineOutputs;
+        } else {
+          const predictionId = submitData?.data?.id || submitData?.id;
+          if (!predictionId) {
+            throw new Error('Atlas Cloud batch: no prediction ID or outputs in response');
+          }
+          console.log(`[ImageGenerationService] Atlas Cloud batch prediction submitted: ${predictionId}`);
+          const pollResult = await this.pollAtlasPrediction(predictionId, apiKey, baseUrl, batchJobId);
+          outputs = this.extractAtlasOutputs(pollResult);
+        }
 
         this.emit({ type: 'job_updated', id: batchJobId, updates: { progress: 80, message: 'Saving batch images...' } });
 
@@ -3112,20 +3238,18 @@ export class ImageGenerationService {
             continue;
           }
 
-          const detected = detectImageMimeType(output);
-          const imageData = detected.base64Data;
-          const mimeType = detected.mimeType;
+          const detected = await this.resolveAtlasOutput(output);
           const imagePath = this.joinPath(this.outputDir, `${chunk[i].identifier}.${detected.extension}`);
-          await this.writeFile(imagePath, imageData, true);
+          await this.writeFile(imagePath, detected.base64Data, true);
 
-          const resultImageUrl = this.toImageHttpUrl(imagePath, mimeType, imageData);
+          const resultImageUrl = this.toImageHttpUrl(imagePath, detected.mimeType, detected.base64Data);
 
           allResults.push({
             prompt: chunk[i].prompt,
             imagePath,
             imageUrl: resultImageUrl,
-            imageData,
-            mimeType,
+            imageData: detected.base64Data,
+            mimeType: detected.mimeType,
             metadata: { format: detected.extension, provider: 'atlas-cloud', model },
           });
         }

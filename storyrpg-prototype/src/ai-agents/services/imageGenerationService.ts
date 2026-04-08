@@ -622,7 +622,135 @@ export class ImageGenerationService {
       prompt.keyBodyLanguage,
       prompt.emotionalCore,
     ].filter(Boolean);
-    return `${sections.join(' ')} Avoid: text overlay, captions, multi-panel composition.`;
+    return `${sections.join(' ')} STYLE CONSISTENCY: Every image in this story uses the exact same art style described above. Maintain identical rendering technique, line weight, color saturation, and shading approach across all images. Avoid: text overlay, captions, multi-panel composition.`;
+  }
+
+  /**
+   * Structured prompt for Nano Banana models via Atlas Cloud /edit endpoint.
+   * Mirrors the Gemini direct prompt architecture: art style first, narrative
+   * prompt as primary content, labeled reference image descriptions matching
+   * the body.images array order, character identity lock, style consistency.
+   */
+  private buildAtlasNanoBananaPrompt(
+    prompt: ImagePrompt,
+    identifier: string | undefined,
+    referenceImages: ReferenceImage[],
+  ): string {
+    const resolvedStyle = this.resolveArtStyle(prompt.style, identifier);
+    const settingNotes = this.getSettingAdaptationNotes(prompt, identifier);
+    const isReferenceLike = this.isReferenceLikeImage(undefined, identifier);
+    const isExpressionLike = this.isExpressionLikeImage(undefined, identifier);
+    const sections: string[] = [];
+
+    sections.push(`ART STYLE (MANDATORY): ${resolvedStyle}. Maintain this exact art style throughout the entire image.`);
+
+    if (settingNotes.length > 0) {
+      sections.push(`SETTING ADAPTATION (same style, not a style switch): ${settingNotes.join(' ')}`);
+    }
+
+    if (!isReferenceLike && !isExpressionLike) {
+      const microParts: string[] = [];
+      if (prompt.keyExpression) microParts.push(prompt.keyExpression);
+      if (prompt.keyGesture) microParts.push(prompt.keyGesture);
+      if (prompt.keyBodyLanguage) microParts.push(prompt.keyBodyLanguage);
+      if (microParts.length > 0) {
+        sections.push(`CHARACTER ACTING: ${microParts.join('. ')}.`);
+      }
+    }
+
+    if (prompt.visualNarrative) {
+      sections.push(`THE STORY MOMENT: ${prompt.visualNarrative}`);
+    } else if (prompt.emotionalCore) {
+      sections.push(`The moment: ${prompt.emotionalCore}`);
+    }
+
+    sections.push(prompt.prompt);
+
+    if (prompt.composition) {
+      sections.push(prompt.composition);
+    }
+
+    if (referenceImages.length > 0) {
+      const charRefs = referenceImages.filter(r => r.characterName);
+      const styleRefs = referenceImages.filter(r => r.role === 'style-reference');
+      const prevScene = referenceImages.filter(r => r.role === 'previous-scene-reference');
+      const otherRefs = referenceImages.filter(r => !r.characterName && r.role !== 'style-reference' && r.role !== 'previous-scene-reference');
+
+      let imageIdx = 1;
+
+      for (const ref of styleRefs) {
+        sections.push(`Image ${imageIdx}: Style consistency reference — approximate guide for color temperature, rendering density, and composition feel. The ART STYLE text above is authoritative; follow its description over any visual differences in this reference.`);
+        imageIdx++;
+      }
+
+      for (const ref of prevScene) {
+        sections.push(`Image ${imageIdx}: Previous scene — maintain visual continuity with this image.`);
+        imageIdx++;
+      }
+
+      const charNames: string[] = [];
+      for (const ref of charRefs) {
+        const isComposite = ref.viewType === 'composite' || ref.role?.includes('composite');
+        let label = `Image ${imageIdx}: ${ref.characterName}`;
+        if (isComposite) {
+          label += ` — CHARACTER REFERENCE SHEET showing this ONE character from multiple angles. Use only for identity matching.`;
+        } else if (ref.viewType && ref.viewType !== 'front') {
+          label += ` (${ref.viewType} view)`;
+        }
+        if (ref.visualAnchors && ref.visualAnchors.length > 0) {
+          label += ` Key traits: ${ref.visualAnchors.slice(0, 5).join(', ')}`;
+        }
+        sections.push(label);
+        if (ref.characterName && !charNames.includes(ref.characterName)) {
+          charNames.push(ref.characterName);
+        }
+        imageIdx++;
+      }
+
+      for (const ref of otherRefs) {
+        sections.push(`Image ${imageIdx}: Reference (${ref.role})`);
+        imageIdx++;
+      }
+
+      if (charRefs.length > 0 && !isReferenceLike) {
+        const anchorsByChar = new Map<string, string[]>();
+        for (const ref of charRefs) {
+          if (ref.characterName && ref.visualAnchors?.length) {
+            const existing = anchorsByChar.get(ref.characterName) || [];
+            for (const a of ref.visualAnchors) {
+              if (!existing.includes(a)) existing.push(a);
+            }
+            anchorsByChar.set(ref.characterName, existing);
+          }
+        }
+
+        let identityText = `CHARACTER IDENTITY: Render the characters using the faces, builds, and distinguishing features from the reference images above.`;
+        if (anchorsByChar.size > 0) {
+          const anchorLines = Array.from(anchorsByChar.entries())
+            .map(([name, anchors]) => `${name}: ${anchors.slice(0, 3).join(', ')}`)
+            .join('. ');
+          identityText += ` Key identity traits — ${anchorLines}.`;
+        }
+        identityText += ` Preserve identity but show dynamic poses appropriate to the scene action. Each character appears EXACTLY ONCE.`;
+        sections.push(identityText);
+      }
+    }
+
+    sections.push(`STYLE REMINDER: Maintain "${resolvedStyle}" consistently. Every image in this story uses the exact same art style.`);
+
+    sections.push(
+      'OUTPUT: Single continuous image, one unified scene, one camera angle. ' +
+      'No triptych, collage, montage, panels, split-screen, or multi-image composition. ' +
+      'No text overlays, captions, or labels.'
+    );
+
+    if (prompt.negativePrompt) {
+      sections.push(`Avoid: ${prompt.negativePrompt}`);
+    } else {
+      sections.push('Avoid: text overlay, captions, multi-panel composition, duplicate characters.');
+    }
+
+    return sections.join('\n\n');
   }
 
   private buildMidjourneyPrompt(
@@ -694,14 +822,72 @@ export class ImageGenerationService {
     if (referenceImages?.length) {
       refs.push(...referenceImages);
     }
-    return refs.slice(0, this.seedreamCapabilities.maxRefImages);
+    return refs.slice(0, this.modelCapabilities.maxRefImages);
+  }
+
+  private static readonly ATLAS_UPLOAD_PAYLOAD_THRESHOLD = 10 * 1024 * 1024; // 10 MB
+
+  /**
+   * Upload a base64 image to Atlas Cloud via the uploadMedia proxy route,
+   * returning a URL that can be passed in the `images` array instead of
+   * a large inline data URL. Falls back to the data URL if upload fails.
+   */
+  private async uploadAtlasMedia(
+    base64Data: string,
+    mimeType: string,
+    apiKey: string,
+  ): Promise<string> {
+    try {
+      const baseUrl = this.getAtlasCloudProxyUrl();
+      const response = await fetch(`${baseUrl}/uploadMedia`, {
+        method: 'POST',
+        headers: {
+          'x-atlas-cloud-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ base64Data, mimeType }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const url = data?.data?.download_url || data?.download_url;
+        if (url) return url;
+      }
+    } catch (err) {
+      console.warn('[ImageGenerationService] Atlas uploadMedia failed, using inline data URL:', (err as Error).message);
+    }
+    return `data:${mimeType};base64,${base64Data}`;
+  }
+
+  /**
+   * Convert reference images to Atlas Cloud `body.images` entries.
+   * When the total payload exceeds 10 MB, attempts to pre-upload via
+   * uploadMedia so the request body stays small.
+   */
+  async prepareAtlasImageRefs(
+    refs: ReferenceImage[],
+    apiKey: string,
+  ): Promise<string[]> {
+    const totalBytes = refs.reduce((sum, r) => sum + (r.data?.length || 0), 0);
+    const useUpload = totalBytes > ImageGenerationService.ATLAS_UPLOAD_PAYLOAD_THRESHOLD;
+
+    if (useUpload) {
+      console.log(`[ImageGenerationService] Atlas refs payload ~${(totalBytes / 1024 / 1024).toFixed(1)} MB — pre-uploading via uploadMedia`);
+      const urls: string[] = [];
+      for (const ref of refs) {
+        urls.push(await this.uploadAtlasMedia(ref.data, ref.mimeType, apiKey));
+      }
+      return urls;
+    }
+
+    return refs.map(ref => `data:${ref.mimeType};base64,${ref.data}`);
   }
 
   private injectStyleReferenceImages(parts: any[], gemSettings: any, imageNumber?: number): number {
     let num = imageNumber || parts.length;
     if (gemSettings.includeStyleReference && this._geminiStyleReference) {
       parts.push({ inlineData: { mimeType: this._geminiStyleReference.mimeType, data: this._geminiStyleReference.data } });
-      parts.push({ text: `Style reference — match the color palette, line weight, and rendering style of this image exactly. Beat-specific lighting shifts are allowed but the base aesthetic must be consistent.` });
+      parts.push({ text: `Style consistency reference — approximate guide for color temperature, rendering density, and composition feel. The ART STYLE text directive above is authoritative; follow its description over any visual differences in this reference.` });
       num++;
     }
     if (gemSettings.includePreviousScene && this._geminiPreviousScene) {
@@ -1879,7 +2065,7 @@ export class ImageGenerationService {
           // 3. Cross-character style anchor (if a previous character ref sheet was generated)
           if (this._referenceSheetStyleAnchor) {
             parts.push({ inlineData: { mimeType: this._referenceSheetStyleAnchor.mimeType, data: this._referenceSheetStyleAnchor.data } });
-            parts.push({ text: `Style reference for character design consistency — match the rendering style, line weight, and color treatment of this image exactly. Do NOT copy the character identity.` });
+            parts.push({ text: `Style consistency reference from a previously generated character in this story. Approximate guide for rendering density and color palette. The ART STYLE text directive above is authoritative for the actual visual style. Do NOT copy the character identity.` });
           }
 
           // 4. Pass user-provided reference images with strong identity-matching instruction
@@ -1986,7 +2172,7 @@ export class ImageGenerationService {
 
           if (this._referenceSheetStyleAnchor) {
             parts.push({ inlineData: { mimeType: this._referenceSheetStyleAnchor.mimeType, data: this._referenceSheetStyleAnchor.data } });
-            parts.push({ text: `Style reference for character-design consistency only. Match rendering style, line weight, and color treatment exactly.` });
+            parts.push({ text: `Style consistency reference from a previously generated character in this story. Approximate guide for rendering density and color palette. The ART STYLE text directive above is authoritative for the actual visual style.` });
           }
 
           const userRefs = hasRefs ? effectiveRefs!.filter(r => r.role?.includes('user-provided')) : [];
@@ -2125,7 +2311,7 @@ export class ImageGenerationService {
           // 4. Style reference (for visual consistency across episode)
           if (gemSettings.includeStyleReference && this._geminiStyleReference) {
             parts.push({ inlineData: { mimeType: this._geminiStyleReference.mimeType, data: this._geminiStyleReference.data } });
-            parts.push({ text: `Image ${imageNumber}: Style reference — match the color palette, line weight, and rendering style of this image exactly. Beat-specific lighting shifts are allowed but the base aesthetic must be consistent.` });
+            parts.push({ text: `Image ${imageNumber}: Style consistency reference — approximate guide for color temperature, rendering density, and composition feel. The ART STYLE text directive above is authoritative; follow its description over any visual differences in this reference.` });
             imageManifest.push(`Image ${imageNumber}: Style reference`);
             imageNumber++;
           }
@@ -2754,17 +2940,28 @@ export class ImageGenerationService {
     }
   }
 
-  // === Atlas Cloud Seedream capability detection ===
+  // === Atlas Cloud model capability detection ===
 
-  private get seedreamCapabilities() {
+  private get modelCapabilities() {
     const model = this.config.atlasCloudModel || '';
-    const isSeedream = this.config.provider === 'atlas-cloud' && model.startsWith('bytedance/seedream-');
+    const isNanoBanana2 = model.startsWith('google/nano-banana-2');
+    const isNanoBananaPro = model.startsWith('google/nano-banana-pro');
+    const isNanoBananaStd = model.startsWith('google/nano-banana/');
+    const isNanoBanana = isNanoBanana2 || isNanoBananaPro || isNanoBananaStd;
+    const isSeedream = model.startsWith('bytedance/seedream-');
+    const isSeedream5 = model.startsWith('bytedance/seedream-v5');
+
     return {
+      supportsEditRefs: isSeedream || isNanoBanana,
+      maxRefImages: isNanoBanana2 ? 14 : isNanoBananaPro ? 10 : isSeedream ? 10 : isNanoBananaStd ? 10 : 0,
       supportsBatch: isSeedream,
-      supportsEditRefs: isSeedream,
       supportsBatchEdit: isSeedream,
-      maxBatchSize: 14,
-      maxRefImages: 10,
+      maxBatchSize: isSeedream5 ? 15 : isSeedream ? 14 : 1,
+      supportsCharConsistency: isNanoBanana,
+      maxConsistentChars: isNanoBanana2 ? 5 : isNanoBananaPro ? 5 : 0,
+      supportsRichPrompt: isNanoBanana,
+      isNanoBanana,
+      isSeedream,
     };
   }
 
@@ -2780,10 +2977,29 @@ export class ImageGenerationService {
     return m.startsWith('bytedance/seedream-');
   }
 
+  private isSeedream5Model(model?: string): boolean {
+    const m = model || this.config.atlasCloudModel || '';
+    return m.startsWith('bytedance/seedream-v5');
+  }
+
   private mapAspectRatioToSize(aspectRatio: string, model?: string): string {
+    if (this.isSeedream5Model(model)) {
+      const seedream5PresetMap: Record<string, string> = {
+        '1:1': 'square_hd',
+        '16:9': 'landscape_16_9',
+        '9:16': 'portrait_16_9',
+        '4:3': 'landscape_4_3',
+        '3:4': 'portrait_4_3',
+        '3:2': 'landscape_4_3',
+        '2:3': 'portrait_4_3',
+        '21:9': 'landscape_16_9',
+        '9:21': 'portrait_16_9',
+      };
+      return seedream5PresetMap[aspectRatio] || 'auto_2K';
+    }
+
     if (this.isSeedreamModel(model)) {
       const seedreamSizeMap: Record<string, string> = {
-        // Seedream requires size >= 3,686,400 total pixels, short side >= 1440
         '9:19.5': '1440*3120',
         '9:16': '1440*2560',
         '16:9': '2560*1440',
@@ -2798,7 +3014,6 @@ export class ImageGenerationService {
       return this.ensureSeedreamMinSize(seedreamSizeMap[aspectRatio] || '2048*2048');
     }
 
-    // Non-Seedream models: max 2048 per side
     const standardSizeMap: Record<string, string> = {
       '9:19.5': '936*2028',
       '9:16': '1152*2048',
@@ -2967,17 +3182,26 @@ export class ImageGenerationService {
   /**
    * Resolve the Atlas Cloud model string, auto-routing to the appropriate
    * Seedream variant when references or batch are requested.
-   * Non-Seedream models are returned as-is.
+   * Nano Banana family routes to /edit when refs present, /text-to-image otherwise.
+   * Other models are returned as-is.
    */
   private resolveAtlasCloudModel(opts?: { hasRefs?: boolean; isBatch?: boolean }): string {
     const baseModel = this.config.atlasCloudModel || 'bytedance/seedream-v4.5';
-    if (!baseModel.startsWith('bytedance/seedream-')) return baseModel;
 
-    const stem = baseModel.replace(/\/(sequential|edit-sequential|edit)$/, '');
-    if (opts?.hasRefs && opts?.isBatch) return `${stem}/edit-sequential`;
-    if (opts?.hasRefs) return `${stem}/edit`;
-    if (opts?.isBatch) return `${stem}/sequential`;
-    return stem;
+    if (baseModel.startsWith('google/nano-banana')) {
+      const stem = baseModel.replace(/\/(text-to-image|edit)$/, '');
+      return opts?.hasRefs ? `${stem}/edit` : `${stem}/text-to-image`;
+    }
+
+    if (baseModel.startsWith('bytedance/seedream-')) {
+      const stem = baseModel.replace(/\/(sequential|edit-sequential|edit)$/, '');
+      if (opts?.hasRefs && opts?.isBatch) return `${stem}/edit-sequential`;
+      if (opts?.hasRefs) return `${stem}/edit`;
+      if (opts?.isBatch) return `${stem}/sequential`;
+      return stem;
+    }
+
+    return baseModel;
   }
 
   private async generateWithAtlasCloud(
@@ -2996,7 +3220,8 @@ export class ImageGenerationService {
 
     const baseUrl = this.getAtlasCloudProxyUrl();
     const atlasReferenceImages = this.collectAtlasReferenceImages(referenceImages);
-    const hasRefs = this.seedreamCapabilities.supportsEditRefs && atlasReferenceImages.length > 0;
+    const caps = this.modelCapabilities;
+    const hasRefs = caps.supportsEditRefs && atlasReferenceImages.length > 0;
     const model = this.resolveAtlasCloudModel({ hasRefs: !!hasRefs });
 
     let lastError: Error | null = null;
@@ -3012,21 +3237,28 @@ export class ImageGenerationService {
 
         this.emit({ type: 'job_updated', id: jobId, updates: { status: 'processing', attempts: attempt, progress: 10 } });
 
-        const fullPrompt = this.buildAtlasCloudPrompt(prompt, identifier);
+        const fullPrompt = caps.supportsRichPrompt
+          ? this.buildAtlasNanoBananaPrompt(prompt, identifier, atlasReferenceImages)
+          : this.buildAtlasCloudPrompt(prompt, identifier);
 
         const body: Record<string, any> = {
           model,
           prompt: fullPrompt,
           output_format: 'png',
-          size: this.mapAspectRatioToSize(prompt.aspectRatio || '1:1', model),
         };
 
-        if (hasRefs) {
-          body.images = atlasReferenceImages
-            .map(ref => `data:${ref.mimeType};base64,${ref.data}`);
+        if (caps.isNanoBanana) {
+          body.aspect_ratio = prompt.aspectRatio || '1:1';
+          body.resolution = '1k';
+        } else {
+          body.size = this.mapAspectRatioToSize(prompt.aspectRatio || '1:1', model);
         }
 
-        console.log(`[ImageGenerationService] Atlas Cloud: Submitting async generation with model ${model} (attempt ${attempt})`);
+        if (hasRefs) {
+          body.images = await this.prepareAtlasImageRefs(atlasReferenceImages, apiKey);
+        }
+
+        console.log(`[ImageGenerationService] Atlas Cloud: Submitting async generation with model ${model} (attempt ${attempt}, refs: ${atlasReferenceImages.length})`);
 
         const response = await fetch(`${baseUrl}/generateImage`, {
           method: 'POST',
@@ -3134,7 +3366,7 @@ export class ImageGenerationService {
   ): Promise<GeneratedImage[]> {
     if (prompts.length === 0) return [];
 
-    const caps = this.seedreamCapabilities;
+    const caps = this.modelCapabilities;
     const hasRefs = referenceImages && referenceImages.length > 0;
     const canBatch = hasRefs ? caps.supportsBatchEdit : caps.supportsBatch;
 
@@ -3192,8 +3424,8 @@ export class ImageGenerationService {
         };
 
         if (hasRefs) {
-          body.images = referenceImages!.slice(0, caps.maxRefImages)
-            .map(ref => `data:${ref.mimeType};base64,${ref.data}`);
+          const batchRefs = this.collectAtlasReferenceImages(referenceImages);
+          body.images = await this.prepareAtlasImageRefs(batchRefs, apiKey);
         }
 
         console.log(`[ImageGenerationService] Atlas Cloud batch: ${chunk.length} images with model ${model} (async)`);

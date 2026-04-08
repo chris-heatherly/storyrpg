@@ -159,9 +159,10 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
       midapiToken: input.midapiToken.trim() || undefined,
       panelMode: input.panelMode || 'single',
       midjourney: normalizedImageProvider === 'midapi' ? input.midjourneySettings : undefined,
-      gemini: normalizedImageProvider === 'nano-banana'
-        ? { ...input.geminiSettings, canonicalArtStyle: input.artStyle.trim() || '' }
-        : undefined,
+      gemini: {
+        ...(normalizedImageProvider === 'nano-banana' ? input.geminiSettings : {}),
+        canonicalArtStyle: input.artStyle.trim() || '',
+      },
     },
     generation: {
       failurePolicy: input.generationSettings.failFastMode ? 'fail_fast' : 'recover',

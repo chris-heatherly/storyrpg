@@ -7,16 +7,17 @@ import {
 } from '../config/generatorLlmOptions';
 
 const FALLBACK_ATLAS_MODELS: ModelOption[] = [
-  { value: 'bytedance/seedream-v5.0-lite', label: 'Seedream v5.0 Lite', description: 'Latest ByteDance model. Enhanced quality, typography, poster design.' },
-  { value: 'google/nano-banana-2/text-to-image', label: 'Nano Banana 2', description: 'Google lightweight image gen. Fast, high quality from text prompts.' },
-  { value: 'openai/gpt-image-1.5/text-to-image', label: 'GPT Image 1.5', description: 'OpenAI fast text-to-image. Photorealistic, concept art, stylized.' },
+  { value: 'google/nano-banana-2/text-to-image', label: 'Nano Banana 2', description: '14 ref images, 5-char consistency, 4K, auto /edit routing. Best for StoryRPG.' },
+  { value: 'google/nano-banana-pro/text-to-image', label: 'Nano Banana Pro', description: '10 ref images, 5-char consistency, native 2K/4K. Premium quality.' },
+  { value: 'bytedance/seedream-v5.0-lite', label: 'Seedream v5.0 Lite', description: 'Visual CoT, 14 ref images, batch up to 15, 4K.' },
+  { value: 'bytedance/seedream-v4.5', label: 'Seedream v4.5', description: 'High quality, batch + edit, 10 ref images.' },
+  { value: 'openai/gpt-image-1.5/text-to-image', label: 'GPT Image 1.5', description: 'OpenAI fast text-to-image. Photorealistic, concept art. Text only.' },
   { value: 'qwen/qwen-image-2.0/text-to-image', label: 'Qwen Image 2.0', description: 'Alibaba enhanced image quality and prompt understanding.' },
   { value: 'qwen/qwen-image-2.0-pro/text-to-image', label: 'Qwen Image 2.0 Pro', description: 'Professional-grade. Superior quality, advanced prompt understanding.' },
   { value: 'alibaba/wan-2.7/text-to-image', label: 'Wan-2.7', description: 'Fast iteration, strong prompt fidelity.' },
   { value: 'alibaba/wan-2.7-pro/text-to-image', label: 'Wan-2.7 Pro', description: 'Higher fidelity, 4K-ready workflows.' },
-  { value: 'bytedance/seedream-v4.5', label: 'Seedream v4.5', description: 'High quality, batch + edit support.' },
   { value: 'bytedance/seedream-v4', label: 'Seedream v4.0', description: 'Good quality, lower cost.' },
-  { value: 'z-image/turbo', label: 'Z-Image Turbo', description: 'Sub-second generation, great for testing.' },
+  { value: 'z-image/turbo', label: 'Z-Image Turbo', description: 'Sub-second generation, great for testing. Text only.' },
   { value: 'alibaba/qwen-image/text-to-image-plus', label: 'Qwen-Image Plus', description: 'Good text rendering in images.' },
 ];
 

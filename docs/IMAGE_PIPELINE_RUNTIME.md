@@ -202,7 +202,6 @@ A video generation pipeline is available via `VideoDirectorAgent`:
 - `src/ai-agents/agents/image-team/VideoDirectorAgent.ts` — video direction for Veo pipeline (`execute`, `generateVideoDirection`, `generateBatchDirections`)
 - `src/ai-agents/services/videoGenerationService.ts` — `VideoGenerationService` with config for Veo models
 - `src/stores/videoJobStore.ts` — Zustand store for video generation job queue/status
-- `src/components/VideoJobPanel.tsx` — UI for video job status
 
 Video settings are configured via `VideoSettingsConfig` and `DEFAULT_VIDEO_SETTINGS` in `src/ai-agents/config.ts`, supporting Veo-oriented models with duration, resolution, aspect ratio, strategy, and concurrency options.
 

@@ -710,31 +710,13 @@ The following systems were added after the initial QA fix sessions. They are doc
 
 ### Pipeline Utility Additions (New)
 - `src/ai-agents/utils/memoryStore.ts` — `MemoryStore` abstraction (`NodeMemoryStore`, `ProxyMemoryStore`)
-- `src/ai-agents/utils/withTimeout.ts` — `withTimeout` wrapper with configurable timeouts
-- `src/ai-agents/utils/retryLogic.ts` — Enhanced retry patterns with exponential backoff and jitter
+- `src/ai-agents/utils/withTimeout.ts` — `withTimeout` wrapper with configurable delays
+- `src/ai-agents/utils/retry.ts` — Retry utilities with exponential backoff
 
-### Additional Validation Infrastructure (New)
-- Comprehensive validator suite in `src/ai-agents/validators/` covering choice density, consequence budget, cliffhanger placement, tone consistency, and more
-- Type-safe validation configuration system
-- Parallel validation execution with proper error aggregation
-
----
-
-## Testing Infrastructure Improvements
-
-### Unit Test Coverage Added
-- `src/engine/storyEngine.test.ts` - Core engine functionality
-- `src/engine/templateProcessor.test.ts` - Template processing edge cases  
-- `src/ai-agents/agents/EncounterArchitect.test.ts` - Encounter generation validation
-- `src/ai-agents/agents/SceneWriter.test.ts` - Scene writing validation
-
-### TypeScript Configuration Improvements
-- Split TypeScript configurations: `tsconfig.app.json`, `tsconfig.test.json`, `tsconfig.contracts.json`
-- Strict type checking with `--noEmit` for validation
-- Proper test isolation with Vitest configuration
+### Parallel Generation Support (New)
+- `src/ai-agents/pipeline/parallel/` — Infrastructure for parallel episode generation
+- Support for batch processing and resource management across concurrent pipelines
 
 ---
 
-## Summary
-
-This QA fixes summary documents the evolution of the StoryRPG codebase from critical race condition fixes in January 2026 through comprehensive architectural refactoring and validation system implementation by April 2026. The fixes demonstrate a progression from reactive bug fixes to proactive infrastructure improvements, establishing patterns for concurrent state management, type safety, validation, and modular architecture that support the project's scaling requirements.
+**Note:** This document will be updated as new QA sessions identify and resolve additional technical debt items. The patterns established here should be used as reference for future fixes.

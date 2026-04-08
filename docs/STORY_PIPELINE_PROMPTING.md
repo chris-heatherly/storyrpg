@@ -689,116 +689,116 @@ CRITICAL RULES:
 
 ### System prompt addition
 
-`WorldBuilder.getAgentSpecificPrompt()` is injected in full. It defines the World Builder role, emergent worldbuilding, environmental storytelling, consistent rule systems, sensory immersion, faction design, and consistency rules.
+```text
+## Your Role: World Builder
+
+You establish the story's world, atmosphere, and foundational setting details. You create the environment where all narrative action will take place.
+
+## Focus Areas
+
+### Physical World
+- Geography, architecture, technology level
+- Key locations with specific atmospheric details
+- Environmental hazards or advantages
+- Weather, time of day, seasonal considerations
+
+### Social World
+- Political structures, social hierarchies
+- Economic systems, trade, resources
+- Cultural norms, traditions, taboos
+- Laws, enforcement, justice systems
+
+### Supernatural/Fantastical Elements
+- Magic systems, supernatural rules
+- Creatures, monsters, non-human entities
+- Divine/cosmic forces, religions
+- Unexplained phenomena
+
+### Atmospheric Foundation
+- Overall mood and tone
+- Sensory details (sounds, smells, textures)
+- Visual style and aesthetic
+- Emotional undercurrents
+
+## Consistency Rules
+- Establish clear cause-and-effect rules for fantastical elements
+- Create believable limitations and costs
+- Ensure the world serves the story's themes
+- Leave room for future expansion while being specific enough to feel real
+```
 
 ### User prompt
 
 ```text
-Create a comprehensive world bible for the following story:
+Build the foundational world for this interactive story.
 
-## Story Context
-- **Title**: ${input.storyContext.title}
-- **Genre**: ${input.storyContext.genre}
-- **Tone**: ${input.storyContext.tone}
-- **Synopsis**: ${input.storyContext.synopsis}
-${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}
+## Source Analysis
+**Title**: ${analysis.sourceTitle || 'Original Story'}
+**Genre**: ${analysis.genre}
+**Tone**: ${analysis.tone}
+**Setting**: ${JSON.stringify(analysis.setting, null, 2)}
+**Themes**: ${analysis.themes?.join(', ') || 'Not specified'}
 
-## World Foundation
-- **Premise**: ${input.worldPremise}
-- **Time Period**: ${input.timePeriod}
-- **Technology Level**: ${input.technologyLevel}
-${input.magicSystem ? `- **Magic System**: ${input.magicSystem}` : ''}
+## Episode Breakdown Context
+Total Episodes: ${seasonPlan.totalEpisodes}
+Key Locations Across Season: ${[...new Set(seasonPlan.episodes.flatMap(ep => ep.locations))].join(', ')}
 
-## Locations
-${locationList}
+## World Building Requirements
 
-## Established Lore (Must Maintain Consistency)
-${existingLore}
-${input.rawDocument ? `
-## Original Source Document (Reference for Additional Context)
-Use this document to extract any additional world details, locations, characters, or lore that might be helpful:
+Create a rich, immersive world foundation that supports ${seasonPlan.totalEpisodes} episodes of interactive storytelling.
 
-${input.rawDocument.substring(0, 3000)}${input.rawDocument.length > 3000 ? '\n... (truncated)' : ''}
-` : ''}
-## Requirements
+Focus on:
+1. **Core locations** that will appear in multiple episodes
+2. **Atmospheric details** that establish mood and tone
+3. **World rules** (social, physical, magical) that create interesting choices
+4. **Cultural context** that informs character behavior and conflicts
+5. **Sensory environment** that makes the world feel alive
 
-Create a WorldBible JSON object. Keep descriptions CONCISE but evocative (1-2 sentences each, not paragraphs).
+Return JSON with this structure:
 
 {
-  "worldRules": ["rule 1", "rule 2"],
-  "taboos": ["taboo 1"],
-  "majorEvents": [{"name": "Event", "description": "brief", "yearsAgo": "50", "impact": "brief"}],
-  "locations": [...],
-  "factions": [...],
-  "customs": ["custom 1"],
-  "beliefs": ["belief 1"],
-  "tensions": ["tension 1"],
-  "doNotForget": ["fact 1"]
+  "worldName": "<name or identifying title for this world>",
+  "coreTheme": "<central thematic focus that drives world design>",
+  "locations": [
+    {
+      "name": "<location name>",
+      "description": "<rich atmospheric description>",
+      "importance": "<primary/secondary/background>",
+      "atmosphere": "<mood, sensory details, emotional resonance>",
+      "keyFeatures": ["<notable feature 1>", "<notable feature 2>"],
+      "socialContext": "<who gathers here, what happens here>",
+      "potentialConflicts": ["<conflict type 1>", "<conflict type 2>"]
+    }
+  ],
+  "worldRules": {
+    "physical": ["<rule 1>", "<rule 2>"],
+    "social": ["<rule 1>", "<rule 2>"],
+    "supernatural": ["<rule 1>", "<rule 2>"],
+    "economic": ["<rule 1>", "<rule 2>"]
+  },
+  "culturalElements": {
+    "traditions": ["<tradition 1>", "<tradition 2>"],
+    "taboos": ["<taboo 1>", "<taboo 2>"],
+    "values": ["<value 1>", "<value 2>"],
+    "conflicts": ["<source of tension 1>", "<source of tension 2>"]
+  },
+  "atmosphere": {
+    "visualStyle": "<overall aesthetic and visual mood>",
+    "soundscape": "<ambient sounds, music style, acoustic character>",
+    "tactileElements": "<textures, temperatures, physical sensations>",
+    "olfactoryElements": "<smells that define the world>",
+    "emotionalUndercurrent": "<the feelings this world evokes>"
+  },
+  "storyOpportunities": [
+    "<way the world creates interesting choices>",
+    "<way the world supports the themes>",
+    "<way the world enables meaningful consequences>"
+  ]
 }
 
-CRITICAL REQUIREMENTS:
-1. ${locationInstructions}
-2. Each location "fullDescription" must be 80-200 characters (2-3 sentences, NOT paragraphs)
-3. Each location needs "sensoryDetails" with all 5 senses
-4. Create exactly 3 locations and 2 factions (no more)
-5. Keep ALL text concise - quality over quantity
-6. IDs must be strings: "location-1", "faction-1", etc.
-
-Respond with ONLY valid JSON, no markdown, no extra text.
+Make every detail serve the story. Create a world that feels lived-in and generates natural conflicts.
+Return ONLY valid JSON.
 ```
-
-### Retry prompt: missing locations
-
-If requested locations are missing, the pipeline sends:
-
-```text
-You previously created a world bible but missed some locations. Please create ONLY these specific locations.
-
-## Story Context
-- **Title**: ${input.storyContext.title}
-- **Genre**: ${input.storyContext.genre}
-- **Tone**: ${input.storyContext.tone}
-
-## MISSING LOCATIONS TO CREATE (REQUIRED)
-${locationList}
-
-## CRITICAL: You MUST create ALL ${missingLocations.length} locations listed above.
-Each location MUST have its "id" set to EXACTLY one of: ${locationIds}
-
-Return ONLY a JSON object with a "locations" array containing these ${missingLocations.length} locations:
-{ ...schema... }
-
-IMPORTANT: Return EXACTLY ${missingLocations.length} locations with IDs matching: ${locationIds}
-```
-
-### Revision prompt: quality issues
-
-If quality checks fail:
-
-~~~text
-You previously created a world bible, but there are quality issues that need improvement.
-
-## Original World Bible
-```json
-${JSON.stringify(originalBible, null, 2)}
-```
-
-## Issues to Fix
-${issueList}
-
-## Story Context
-- **Title**: ${input.storyContext.title}
-- **Genre**: ${input.storyContext.genre}
-- **Tone**: ${input.storyContext.tone}
-
-## How to Fix
-... location / faction / world-rule fix instructions ...
-
-## Requirements
-Return a REVISED WorldBible JSON that fixes all the issues above.
-Keep all existing content but improve the flagged areas.
-Return ONLY valid JSON, no markdown, no extra text.
-~~~
 
 ## Stage 2: Character Design
 
@@ -808,78 +808,158 @@ Return ONLY valid JSON, no markdown, no extra text.
 
 ### System prompt addition
 
-`CharacterDesigner.getAgentSpecificPrompt()` is injected in full. It defines want/fear/flaw, voice distinction, relationship dynamics, voice-profile rules, sample dialogue requirements, and quality checks.
+```text
+## Your Role: Character Designer
+
+You create compelling, multi-dimensional characters that drive interactive storytelling. Every character must feel real, serve the narrative, and create meaningful choice opportunities.
+
+## Character Design Principles
+
+### Relationship Dynamics
+All NPCs are defined primarily by their relationship to the protagonist:
+- **Trust**: How much they believe the protagonist
+- **Affection**: How much they like the protagonist  
+- **Respect**: How much they admire the protagonist
+- **Fear**: How intimidated they are by the protagonist
+
+Different character types require different relationship depths:
+- **Core NPCs**: All 4 dimensions (antagonists, major allies)
+- **Supporting NPCs**: 2+ dimensions (quest givers, recurring characters)
+- **Background NPCs**: 1+ dimension (shopkeepers, one-scene characters)
+
+### Character Agency
+Every character should:
+- Want something specific and achievable
+- Be actively pursuing that goal
+- Have reasons that make sense to them
+- Create opportunities for player choice
+- React meaningfully to player decisions
+
+### Conflict Generation
+Characters drive story through:
+- **Opposing goals**: What they want conflicts with what others want
+- **Moral contradictions**: Their methods or values clash with others
+- **Competing loyalties**: They're torn between different allegiances
+- **Hidden information**: They know things that create tension
+- **Resource competition**: They need the same things others need
+
+### Voice & Personality
+Each character needs:
+- Distinct speaking patterns and vocabulary
+- Consistent personality traits and quirks
+- Clear values and moral boundaries
+- Recognizable emotional patterns
+- Specific cultural or social background markers
+```
 
 ### User prompt
 
 ```text
-Create character profiles for this story. Keep descriptions CONCISE (1-2 sentences each).
+Design the complete cast of characters for this interactive story.
 
 ## Story Context
-- **Title**: ${input.storyContext.title}
-- **Genre**: ${input.storyContext.genre}
-- **Tone**: ${input.storyContext.tone}
-- **Themes**: ${input.storyContext.themes.join(', ')}
-${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}
+**Title**: ${worldBuilding.worldName}
+**Theme**: ${worldBuilding.coreTheme}  
+**Genre**: ${analysis.genre}
+**Tone**: ${analysis.tone}
+
+## Source Material Characters
+${analysis.majorCharacters?.map(char => `- **${char.name}** (${char.role}): ${char.description}`).join('\n') || 'None specified'}
+
+## Protagonist Context
+**Name**: ${analysis.protagonist.name}
+**Description**: ${analysis.protagonist.description}
+**Character Arc**: ${analysis.protagonist.arc}
+
+## Episode Requirements
+The story spans ${seasonPlan.totalEpisodes} episodes. Characters need to support:
+${seasonPlan.episodes.map(ep => `- Episode ${ep.episodeNumber}: ${ep.title} (${ep.characters.join(', ')})`).join('\n')}
 
 ## World Context
-${input.worldContext}
-${input.rawDocument ? `
-## Original Source Document (Reference for Additional Context)
-Use this to extract character details, personalities, relationships, or backstory mentioned in the original document:
+**Key Locations**: ${worldBuilding.locations.map(loc => loc.name).join(', ')}
+**Cultural Values**: ${worldBuilding.culturalElements.values.join(', ')}
+**Central Conflicts**: ${worldBuilding.culturalElements.conflicts.join(', ')}
 
-${input.rawDocument.substring(0, 3000)}${input.rawDocument.length > 3000 ? '\n... (truncated)' : ''}
-` : ''}${input.memoryContext ? `
-## Pipeline Memory (Insights from Prior Generations)
-${input.memoryContext}
-` : ''}
-## Characters to Create (MUST use these exact IDs: ${characterIds})
-${characterList}
+## Character Design Task
 
-## Required JSON Structure
-{ ...schema from `CharacterDesigner.buildPrompt()`... }
+Create a full cast that enables rich interactive storytelling across all episodes.
 
-CRITICAL REQUIREMENTS:
-1. Each character "id" MUST be EXACTLY one of: ${characterIds}
-2. Each character MUST have "pronouns" set to exactly one of: "he/him", "she/her", or "they/them"
-3. Each character MUST have want, fear, and flaw filled in
-4. Each voiceProfile MUST have at least 2 greetingExamples and 3 signatureLines
-5. MUST include "voiceDistinctions" at the top level (not nested)
-6. Keep ALL descriptions concise - one sentence each
-7. Return ONLY valid JSON, no markdown, no extra text
+Requirements:
+1. **Core NPCs** (2-4 characters): Drive major plot threads, appear in multiple episodes
+2. **Supporting NPCs** (4-6 characters): Enable key scenes, provide specialist knowledge/services  
+3. **Background NPCs** (3-5 characters): Populate the world, provide color and context
+
+For each character, consider:
+- How they create choices for the protagonist
+- What information or capabilities they control  
+- How their goals intersect with or oppose the protagonist's journey
+- What relationship dynamics they enable
+
+Return JSON with this structure:
+
+{
+  "cast": [
+    {
+      "name": "<character name>",
+      "importance": "<core/supporting/background>",
+      "role": "<antagonist/ally/mentor/love_interest/rival/neutral/specialist>",
+      "description": "<physical appearance and general demeanor>",
+      "personality": {
+        "traits": ["<trait 1>", "<trait 2>", "<trait 3>"],
+        "values": ["<core value 1>", "<core value 2>"],
+        "quirks": ["<behavioral quirk>", "<speech pattern>"],
+        "fears": ["<what they're afraid of>"],
+        "desires": ["<what they want most>"]
+      },
+      "relationships": {
+        "trust": <0-100>,
+        "affection": <0-100>, 
+        "respect": <0-100>,
+        "fear": <0-100>
+      },
+      "background": {
+        "occupation": "<what they do>",
+        "origin": "<where they're from>",
+        "secrets": ["<hidden information they possess>"],
+        "connections": ["<other characters they know>"],
+        "resources": ["<what they control or can access>"]
+      },
+      "storyFunction": {
+        "primaryGoal": "<what they're trying to achieve>",
+        "conflictSources": ["<how they create tension>"],
+        "choiceOpportunities": ["<types of choices they enable>"],
+        "informationProvided": ["<what they can reveal>"],
+        "episodeAppearances": [<episode numbers where they appear>]
+      },
+      "voice": {
+        "speakingStyle": "<how they talk>",
+        "vocabulary": "<word choices, formality level>", 
+        "emotionalRange": "<how they express feelings>",
+        "culturalMarkers": "<background indicators in speech>"
+      }
+    }
+  ],
+  "relationshipWeb": {
+    "alliances": ["<character A + character B>"],
+    "rivalries": ["<character C vs character D>"],
+    "secrets": ["<who knows what about whom>"],
+    "dependencies": ["<who needs whom for what>"]
+  },
+  "characterArcs": [
+    {
+      "character": "<character name>",
+      "startingState": "<how they begin>",
+      "potentialEndings": ["<possible conclusion 1>", "<possible conclusion 2>"],
+      "keyTransformationMoments": ["<episode X decision point>"]
+    }
+  ]
+}
+
+Focus on creating characters that generate meaningful choices and enable rich relationship dynamics.
+Return ONLY valid JSON.
 ```
 
-### Revision prompt
-
-If quality checks fail:
-
-~~~text
-You previously created a character bible, but there are quality issues that need improvement.
-
-## Original Character Bible
-```json
-${JSON.stringify(originalBible, null, 2)}
-```
-
-## Issues to Fix
-${issueList}
-
-## Story Context
-- **Title**: ${input.storyContext.title}
-- **Genre**: ${input.storyContext.genre}
-- **Tone**: ${input.storyContext.tone}
-- **Themes**: ${input.storyContext.themes.join(', ')}
-
-## How to Fix
-... WANT/FEAR/FLAW, VOICE PROFILE, RELATIONSHIP, ARC POTENTIAL instructions ...
-
-## Requirements
-Return a REVISED CharacterBible JSON that fixes all the issues above.
-Keep all existing content but improve the flagged areas.
-Return ONLY valid JSON, no markdown, no extra text.
-~~~
-
-## Stage 3: Episode Architecture
+## Stage 3: Story Architecture
 
 ### Agent
 
@@ -887,800 +967,128 @@ Return ONLY valid JSON, no markdown, no extra text.
 
 ### System prompt addition
 
-`StoryArchitect.getAgentSpecificPrompt()` is injected in full. It is encounter-first, branch-and-bottleneck, and choice-density oriented.
+```text
+## Your Role: Story Architect
+
+You design the complete narrative structure for a single episode, creating the backbone that all other agents will build upon. You are the MASTER PLANNER who determines scene flow, choice points, encounter placement, and story beats.
+
+## Episode Architecture Principles
+
+### Scene Flow Design
+Each episode follows the branch-and-bottleneck pattern:
+- **Bottleneck scenes**: Key story moments all players experience
+- **Branch zones**: Areas where player choices create divergent paths  
+- **Convergence points**: Where different paths come back together
+- **Encounter anchors**: Major interactive sequences that define the episode
+
+### Your Core Responsibilities
+
+1. **Scene Blueprint**: Design 5-8 scenes with clear purposes and connections
+2. **Choice Architecture**: Plan meaningful decisions with appropriate consequences  
+3. **Encounter Integration**: Position encounters as dramatic anchors
+4. **Pacing Control**: Balance narrative exposition with interactive moments
+5. **State Management**: Track flags, scores, and tags that matter
+6. **Consequence Design**: Plan how choices ripple through the episode and beyond
+
+### Encounter Focus
+Every episode MUST have 1-2 encounters that serve as dramatic anchors:
+- **Encounter scenes** are the ACTION sequences - combat, chases, social confrontations, stealth, puzzles
+- They represent the episode's highest tension and most meaningful choices
+- Everything else builds toward or flows from these encounters
+- Encounter outcomes should create meaningful branches
+
+### Choice Quality Standards
+Every choice must pass the Stakes Triangle test:
+- **WANT**: Clear goal or desire driving the choice
+- **COST**: Meaningful sacrifice, risk, or tradeoff  
+- **IDENTITY**: Reveals or shapes who the protagonist is
+
+Apply Choice Geometry framework:
+- **Flavor choices**: Personalization, no major consequences
+- **Branching choices**: Lead to different experiences, moderate cost
+- **Blind choices**: Hidden consequences, use sparingly
+- **Moral dilemmas**: No clearly right answer, high impact
+
+### State Architecture
+Design episode-level state changes:
+- **Flags**: Boolean states for important conditions
+- **Scores**: Numerical tracking for relationships, resources, reputation
+- **Tags**: Collections for skills, knowledge, affiliations
+```
 
 ### User prompt
 
 ```text
-Create an episode blueprint for the following story.
+Architect the complete narrative structure for Episode ${episodeNumber}.
+
+## Episode Context
+**Title**: ${episode.title}
+**Synopsis**: ${episode.synopsis}
+**Story Arc**: ${episode.storyArc}
+**Previous Episode State**: ${previousEpisodeState || 'None (first episode)'}
+
+## Season Context
+**Total Episodes**: ${seasonPlan.totalEpisodes}
+**Season Arc**: ${seasonPlan.storyArcs.find(arc => arc.episodes.includes(episodeNumber))?.name || 'Standalone'}
+**Cross-Episode Branches**: ${seasonPlan.crossEpisodeBranches.filter(branch => branch.impactsEpisodes.includes(episodeNumber)).map(branch => branch.description).join('; ') || 'None'}
+
+## Available Resources
+**World**: ${worldBuilding.worldName} - ${worldBuilding.coreTheme}
+**Primary Locations**: ${worldBuilding.locations.filter(loc => loc.importance === 'primary').map(loc => loc.name).join(', ')}
+**Available Characters**: ${characterDesigns.cast.map(char => `${char.name} (${char.role})`).join(', ')}
+
+## Season Plan Requirements
+${seasonPlan.episodes.find(ep => ep.episodeNumber === episodeNumber) ? `
+**Required Encounters**: ${seasonPlan.episodeEncounters.find(enc => enc.episodeNumber === episodeNumber)?.encounters.map(e => `${e.type} (${e.description})`).join(', ') || 'None specified'}
+**Expected Characters**: ${seasonPlan.episodes.find(ep => ep.episodeNumber === episodeNumber)?.characters?.join(', ') || 'None specified'}
+**Key Plot Points**: ${seasonPlan.episodes.find(ep => ep.episodeNumber === episodeNumber)?.plotPoints?.join('; ') || 'None specified'}
+` : 'No specific requirements from season plan'}
+
+## Architecture Task
+
+Design the complete scene-by-scene structure for this episode.
+
+**Critical Requirements**:
+1. Include 1-2 encounter scenes as dramatic anchors
+2. Create 3-5 meaningful choice points across the episode
+3. Ensure first choice appears within 90 seconds of reading
+4. Average gap between choices should not exceed 120 seconds
+5. Each choice must pass the Stakes Triangle test (Want + Cost + Identity)
+6. Design consequence flows that matter within and beyond this episode
+
+Return JSON with this structure:
 
-## DESIGN PROCESS — FOLLOW IN ORDER
-
-**Before writing any scene, complete these steps mentally:**
-
-1. **ENCOUNTER FIRST**: Identify the single most dramatically charged moment this episode can contain. This is your encounter. It goes into the blueprint as a scene with `isEncounter: true`. It is the episode's climax.
-2. **WHAT DOES THE PLAYER NEED?** Before reaching the encounter, what must the player know, feel, and care about for the encounter's choices to hit hard? List the relationships, information, and emotional stakes the prior scenes must establish.
-3. **DESIGN THE BUILDUP**: Create 2–4 scenes that escalate toward the encounter. Each one must earn its place by giving the player something they need for the encounter. Fill in `encounterBuildup` on every non-encounter scene.
-4. **DESIGN THE AFTERMATH**: 1–2 scenes after the encounter that play out the consequences.
-5. **THEN** write the full JSON blueprint.
-
-Do NOT adapt the source material rigidly. Invent or heighten confrontations, crises, and conflicts to maximise drama. A quiet scene in the source can become an intense encounter if the themes support it.
-
-## Story Context
-- **Title**: ${input.storyTitle}
-- **Genre**: ${input.genre}
-- **Synopsis**: ${input.synopsis}
-- **Tone**: ${input.tone}
-${input.userPrompt ? `- **User Instructions/Prompt**: ${input.userPrompt}\n` : ''}
-
-## Episode Details
-- **Episode ${input.episodeNumber}**: "${input.episodeTitle}"
-- **Episode Synopsis**: ${input.episodeSynopsis}
-${input.previousEpisodeSummary ? `- **Previous Episode**: ${input.previousEpisodeSummary}` : ''}
-
-## Characters
-**Protagonist**: ${input.protagonistDescription}
-
-**Available NPCs**:
-${npcList}
-
-## World Context
-${input.worldContext}
-
-**Current Location**: ${input.currentLocation}
-${input.memoryContext ? `
-## Pipeline Memory (Insights from Prior Generations)
-${input.memoryContext}
-` : ''}
-## Requirements
-- Maximum scene count (cap): Up to ${input.targetSceneCount} scenes—generate fewer if the story doesn't need more
-- Major choice points: ${input.majorChoiceCount} significant decisions
-- Use branch-and-bottleneck structure
-- Every major choice needs WANT, COST, and IDENTITY stakes
-${this.buildSeasonPlanDirectivesSection(input)}
-
-## Required JSON Structure
-{ ...full schema from `StoryArchitect.buildPrompt()`... }
-
-CRITICAL REQUIREMENTS:
-... scene requirements, encounter requirements, choice density requirements, linking requirements ...
-
-If you don't include enough choice points, the story will be rejected as non-interactive.
-```
-
-### Retry augmentation
-
-If blueprint validation fails on choice density, `StoryArchitect.execute()` retries and appends this exact text to the original user prompt:
-
-```text
-⚠️ PREVIOUS ATTEMPT FAILED - ENSURE SUFFICIENT CHOICE POINTS:
-- The first scene MUST have a choicePoint
-- At least ${Math.ceil(input.targetSceneCount * 0.5)} out of up to ${input.targetSceneCount} scenes must have choicePoint
-- Include choicePoint with type, stakes (want/cost/identity), and description for each choice scene
-```
-
-It also adds an assistant prefill:
-
-```text
-{"episodeId":
-```
-
-## Stage 3.5: Branch Analysis
-
-### Agent
-
-`BranchManager`
-
-### System prompt addition
-
-`BranchManager.getAgentSpecificPrompt()` is injected in full. It defines bottlenecks, reconvergence, state tracking, and branch validation responsibilities.
-
-### User prompt
-
-```text
-Analyze the branch structure for the following episode:
-
-## Story Context
-- **Title**: ${input.storyContext.title}
-- **Genre**: ${input.storyContext.genre}
-- **Tone**: ${input.storyContext.tone}
-
-## Episode
-- **ID**: ${input.episodeId}
-- **Title**: ${input.episodeTitle}
-- **Starting Scene**: ${input.startingSceneId}
-- **Bottleneck Scenes**: [${input.bottleneckScenes.join(', ')}]
-
-## Scene Graph
-${scenesList}
-
-## Available State Variables
-**Flags**:
-${flagsList || 'None defined'}
-
-**Scores**:
-${scoresList || 'None defined'}
-
-**Tags**:
-${tagsList || 'None defined'}
-
-## Required JSON Structure
-{ ...schema from `BranchManager.buildPrompt()`... }
-
-CRITICAL REQUIREMENTS:
-1. Identify ALL distinct paths through the episode
-2. Identify ALL reconvergence points where branches meet
-3. Track ALL state changes and where they're used
-4. Report ALL validation issues (dead ends, unreachable scenes, etc.)
-5. Provide actionable recommendations
-6. Return ONLY valid JSON, no markdown, no extra text
-```
-
-## Stage 4A: Scene Writing
-
-### Agent
-
-`SceneWriter`
-
-### System prompt addition
-
-`SceneWriter.getAgentSpecificPrompt()` is injected in full. It contains beat-size caps, text-variant rules, template-variable rules, choice-point enforcement, and the required visual contract for every beat.
-
-Runtime enforcement note:
-
-- the prompt still asks for up to `targetBeatCount` beats
-- but the runtime now guards choice scenes after prompting so an underspecified one-beat response cannot silently collapse into only a choice beat plus generated payoff beats
-- this protects downstream choice generation, image generation, and final assembly from degenerate scene shapes
-
-### User prompt
-
-```text
-Write the scene content for the following scene blueprint:
-
-${sourceContextStr}
-
-## Story Context
-- **Title**: ${input.storyContext.title}
-- **Genre**: ${input.storyContext.genre}
-- **Tone**: ${input.storyContext.tone}
-- **World**: ${input.storyContext.worldContext}
-${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}
-
-## Scene Blueprint
-- **Scene ID**: ${input.sceneBlueprint.id}
-- **Name**: ${input.sceneBlueprint.name}
-- **Description**: ${input.sceneBlueprint.description}
-- **Location**: ${input.sceneBlueprint.location}
-- **Mood**: ${input.sceneBlueprint.mood}
-- **Purpose**: ${input.sceneBlueprint.purpose}
-- **Narrative Function**: ${input.sceneBlueprint.narrativeFunction}
-
-### Expert Design Template
-- **Dramatic Question**: ${input.sceneBlueprint.dramaticQuestion}
-- **Want vs Need**: ${input.sceneBlueprint.wantVsNeed}
-- **Conflict Engine**: ${input.sceneBlueprint.conflictEngine}
-
-### Key Beats to Hit
-${input.sceneBlueprint.keyBeats.map(b => `- ${b}`).join('\n')}
-
-${input.sceneBlueprint.choicePoint ? `
-### Choice Point
-- **Type**: ${input.sceneBlueprint.choicePoint.type}
-- **Description**: ${input.sceneBlueprint.choicePoint.description}
-- **Stakes**:
-  - Want: ${input.sceneBlueprint.choicePoint.stakes.want}
-  - Cost: ${input.sceneBlueprint.choicePoint.stakes.cost}
-  - Identity: ${input.sceneBlueprint.choicePoint.stakes.identity}
-` : ''}
-
-## Characters
-... protagonist and scene NPC blocks ...
-
-## Relevant State Context
-${flagContext}
-
-${input.episodeEncounterContext ? `
-## ENCOUNTER BUILDUP (CRITICAL — This scene is building toward the episode's climax)
-... encounter buildup block ...
-` : ''}
-
-## Requirements
-- Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
-- ${input.dialogueHeavy ? 'This is dialogue-heavy - focus on conversation' : 'Balance description with any dialogue'}
-${input.previousSceneSummary ? `- Previous scene context: ${input.previousSceneSummary}` : ''}
-${input.sceneBlueprint.choicePoint ? '- Mark the final beat as isChoicePoint: true for the Choice Author to add options' : ''}
-${input.incomingChoiceContext ? `
-## CHOICE PAYOFF (CRITICAL — the player CHOSE this)
-This scene is entered because the player chose: "${input.incomingChoiceContext}"
-The FIRST beat MUST visually and textually pay off this choice. Do not delay, hedge, or skip the payoff.
-... exact payoff instructions from `SceneWriter.buildPrompt()` ...
-` : ''}
-
-Create the scene content following the SceneContent schema. Include:
-1. Engaging narrative prose for each beat
-2. Distinct character voices in dialogue
-3. Sensory details and atmosphere
-4. Natural flow between beats
-5. textVariants where state should affect content
-6. Full beat visual contract fields (visualMoment, primaryAction, emotionalRead, relationshipDynamic, mustShowDetail) for every beat
-
-Respond with valid JSON matching the SceneContent type.
-```
-
-### Revision prompt
-
-If issues are found:
-
-```text
-You previously generated scene content that has some issues that need fixing.
-
-## Original Content
-${JSON.stringify(originalContent, null, 2)}
-
-## Issues to Fix
-${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n\n')}
-
-## Instructions
-Please revise the content to fix these issues. Return the COMPLETE revised scene content as valid JSON.
-
-Key requirements:
-- Each beat must stay under cap: 4 sentences, ${TEXT_LIMITS.maxBeatWordCount} words (climax: ${TEXT_LIMITS.maxClimaxBeatWordCount}, key: ${TEXT_LIMITS.maxKeyStoryBeatWordCount})
-- If a beat is too long, split it into multiple beats
-- Maintain the narrative flow when splitting
-- Keep beat IDs logical (beat-1, beat-2, etc.)
-- Update nextBeatId references to maintain the chain
-- If splitting the last beat, ensure the final beat has no nextBeatId (it ends the scene or leads to choices)
-
-Return ONLY valid JSON matching the SceneContent schema.
-```
-
-## Stage 4B: Choice Authoring
-
-### Agent
-
-`ChoiceAuthor`
-
-### System prompt addition
-
-`ChoiceAuthor.getAgentSpecificPrompt()` is injected in full. It includes stakes triangle, choice geometry, five-factor test, choice-type rules, branching rules, identity conditions, delayed consequences, and formatting requirements.
-
-### User prompt
-
-```text
-Create player choices for the following decision point:
-
-${sourceContextStr}
-
-## Story Context
-- **Title**: ${input.storyContext.title}
-- **Genre**: ${input.storyContext.genre}
-- **Tone**: ${input.storyContext.tone}
-${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}
-
-## Scene Context
-- **Scene**: ${input.sceneBlueprint.name}
-- **Location**: ${input.sceneBlueprint.location}
-- **Mood**: ${input.sceneBlueprint.mood}
-
-## The Moment
-This beat leads up to the choice:
-
-"${input.beatText}"
-
-## Choice Point Design
-- **Type**: ${choicePoint.type}
-- **Description**: ${choicePoint.description}
-- **Stakes**:
-  - Want: ${choicePoint.stakes.want}
-  - Cost: ${choicePoint.stakes.cost}
-  - Identity: ${choicePoint.stakes.identity}
-- **Option Hints**: ${choicePoint.optionHints.join(', ')}
-
-## Characters Present
-... protagonist and NPCs ...
-
-## Available Next Scenes
-${nextSceneList}
-
-## Available State for Consequences
-**Flags**:
-${flagList || 'None defined'}
-
-**Scores**:
-${scoreList || 'None defined'}
-
-## Requirements
-- Create ${input.optionCount} distinct choices
-- Each choice must have the complete Stakes Triangle
-- Include appropriate consequences for each choice
-- Link choices to next scenes where appropriate
-- Use conditions if any options should be locked
-
-## Outcome Texts (REQUIRED for every choice)
-... exact success / partial / failure instructions ...
-
-## Reaction Text (REQUIRED for non-branching choices)
-... exact reaction instructions ...
-
-## Tint Flag (for non-branching choices)
-... exact tint instructions ...
-
-## Stat Check (REQUIRED for relationship, strategic, dilemma)
-... exact stat-check rules ...
-
-## Required JSON Structure
-{ ...schema from `ChoiceAuthor.buildPrompt()`... }
-
-CRITICAL REQUIREMENTS:
-1. Create exactly ${input.optionCount} unique, meaningful choices
-2. The "overallStakes" field is REQUIRED with want, cost, and identity filled in
-3. Each choice needs stakesAnnotation with want, cost, and identity
-4. Include appropriate consequences (flags, scores, relationships)
-5. ${choicePoint.branches ? 'This is a BRANCHING choice point — set nextSceneId on each choice to one of the available next scenes' : 'Only include nextSceneId if this choice should route to a different scene (expression choices must NOT have nextSceneId)'}
-6. Every choice MUST have outcomeTexts (success, partial, failure) — original prose, not the choice text
-7. Non-branching choices MUST have reactionText and tintFlag
-8. relationship/strategic/dilemma choices MUST have statCheck
-9. Return ONLY valid JSON, no markdown, no extra text
-```
-
-### Revision prompt
-
-If stakes/five-factor quality validation flags issues:
-
-~~~text
-You previously generated choices for a ${choicePoint.type} decision point, but there are quality issues that need to be fixed.
-
-## Original Choice Set
-```json
-${JSON.stringify(originalChoiceSet, null, 2)}
-```
-
-## Issues to Fix
-${issueList}
-
-## How to Fix
-... stakes and five-factor instructions ...
-
-## Story Context
-- **Scene**: ${input.sceneBlueprint.name}
-- **Location**: ${input.sceneBlueprint.location}
-- **Choice Type**: ${choicePoint.type}
-- **Stakes**:
-  - Want: ${choicePoint.stakes.want}
-  - Cost: ${choicePoint.stakes.cost}
-  - Identity: ${choicePoint.stakes.identity}
-
-## Requirements
-Return a REVISED ChoiceSet JSON that fixes all the issues above.
-Keep the same basic structure but improve:
-1. Stakes descriptions (want, cost, identity) - make them more specific and meaningful
-2. Consequences - ensure they create real impact on the 5 factors
-3. Choice text - ensure it reveals intent and character
-
-Return ONLY valid JSON, no markdown, no extra text.
-~~~
-
-### Pipeline-triggered regeneration override
-
-If incremental stakes validation fails after choice generation, the pipeline re-calls `ChoiceAuthor` and appends this exact sentence into `storyContext.userPrompt`:
-
-```text
-IMPORTANT - Fix these stakes issues: ${currentStakesResult.issues.map(i => i.issue).join('; ')}
-```
-
-## Stage 4C: Encounter Design
-
-### Agent
-
-`EncounterArchitect`
-
-### System prompt addition
-
-`EncounterArchitect.getAgentSpecificPrompt()` is injected in full. It is the most prescriptive system prompt in the narrative pipeline: branching-tree encounters, action→reaction flow, outcome-image logic, storylets, prior-state payoff, skill-driven branching, and Pixar-style odds-against rules.
-
-### User prompt
-
-The main prompt is `EncounterArchitect.buildPrompt(input)`. It includes:
-
-- story context
-- scene context
-- encounter details
-- protagonist and NPC canonical appearance blocks
-- skills
-- prior-state payoff context
-- a very large required JSON schema
-- strict branching-tree rules
-
-Its opening text is:
-
-```text
-Design a COMPLETE encounter structure for the following scene:
-
-## Story Context
-- **Title**: ${input.storyContext.title}
-- **Genre**: ${input.storyContext.genre}
-- **Tone**: ${input.storyContext.tone}
-${input.storyContext.userPrompt ? `- **User Instructions**: ${input.storyContext.userPrompt}\n` : ''}
-
-## Scene Context
-- **Scene ID**: ${input.sceneId}
-- **Scene Name**: ${input.sceneName}
-- **Description**: ${input.sceneDescription}
-- **Mood**: ${input.sceneMood}
-
-## Encounter Details
-- **Type**: ${input.encounterType}
-- **Description**: ${input.encounterDescription}
-- **Difficulty**: ${input.difficulty} (target ${difficultyOdds[input.difficulty]}% initial odds against player)
-- **Target Beat Count**: ${input.targetBeatCount}
-```
-
-And its closing hard rules are:
-
-```text
-## CRITICAL REQUIREMENTS FOR BRANCHING TREES
-
-1. **BRANCHING IS MANDATORY**: Each outcome (success/complicated/failure) MUST lead to a DIFFERENT nextSituation with DIFFERENT choices
-2. **ACTION RESULT VISUALS**: The narrativeText and cinematicDescription show THE RESULT of the player's action (sword hitting/missing, plea accepted/rejected)
-3. **DEPTH LIMIT**: Generate 2-3 layers of choices. Every situation at every depth MUST have at least 3 choices.
-4. **NO nextBeatId**: Do NOT use nextBeatId. Use nextSituation with embedded choices instead.
-5. **TERMINAL OUTCOMES**: When goal/threat clocks would fill, mark outcome as terminal with appropriate encounterOutcome
-6. **CONSEQUENCES DIFFER**: Success branches should trend toward victory, failure branches toward defeat - but not linearly
-7. **THREE-APPROACH MANDATE**: Each set of 3+ choices should cover distinct approaches — one aggressive/direct, one cautious/methodical, one clever/unconventional. This ensures the player always has meaningfully different paths, not just variations on the same tactic.
-7. First beat choices MUST include `impliedApproach` field
-8. ALL THREE STORYLETS (victory, defeat, escape) MUST be defined
-9. Text length: setupText ~30-50 words, narrativeText ~30-60 words
-10. Return ONLY valid JSON, no markdown
-```
-
-### Retry prompt: error feedback
-
-Attempt 2 sends the original prompt, then an assistant message containing the prior failed output prefix, then this user message:
-
-```text
-Your previous response had a problem: ${lastError}
-
-Please try again. Remember:
-- The "beats" array MUST contain at least 2 beat objects
-- Beat 1 should be a "setup" phase beat with choices
-- Beat 2+ should progress toward a "resolution" phase with terminal outcomes
-- Return ONLY valid JSON, no markdown code blocks, no prose before/after
-- The entire response must be a single JSON object
-```
-
-### Retry prompt: simplified fallback
-
-Final retry uses `buildSimplifiedPrompt(input)`, beginning with:
-
-```text
-Generate a SIMPLE 2-beat encounter for the following scene. This is a simplified request — focus on producing valid, complete JSON.
-
-## Scene
-- Scene ID: ${input.sceneId}
-- Scene Name: ${input.sceneName}
-- Description: ${input.sceneDescription}
-- Type: ${input.encounterType}
-- Difficulty: ${input.difficulty}
-- Story: ${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})
-- Protagonist: ${protagonist} (${input.protagonistInfo.pronouns})
-- Key NPC: ${antagonist}
-```
-
-## Encounter Prompting Contract Notes
-
-Prompting alone is no longer trusted to guarantee encounter image coverage.
-
-After prompting:
-
-- encounter image generation traverses the runtime encounter tree instead of assuming a flat `encounter.beats` array
-- completeness checks recursively verify setup images, outcome images, nested next-situation images, and storylet aftermath images
-- encounter image failures can now stop the pipeline instead of being logged and ignored
-
-So the live contract is:
-
-1. prompts must author a coherent encounter tree with durable visual contracts
-2. runtime conversion must preserve that tree into `phases[].beats`
-3. image generation and completeness gates validate the converted runtime tree, not just the authored source object
-
-## Stage 4.5: Quick Validation
-
-`IntegratedBestPracticesValidator.runQuickValidation()` is mostly heuristic.
-
-LLM prompts are **not** used here.
-
-Quick validation checks:
-
-- NPC depth
-- stakes presence
-- five-factor heuristic
-- choice density
-
-## Stage 5A: Best-Practices Validation
-
-### LLM-backed validators
-
-- `StakesTriangleValidator`
-- `FiveFactorValidator`
-
-### StakesTriangleValidator system prompt
-
-```text
-You are an expert interactive fiction analyst evaluating choice stakes quality.
-
-${STAKES_TRIANGLE}
-
-Evaluate each component of the Stakes Triangle on a scale of 0-100:
-- 0-30: Missing or extremely weak
-- 31-60: Present but unclear or generic
-- 61-80: Good, specific, engaging
-- 81-100: Excellent, memorable, perfectly crafted
-
-Always respond with valid JSON matching the required schema.
-```
-
-### StakesTriangleValidator user prompt
-
-```text
-Analyze the stakes quality for this ${input.choiceType} choice:
-
-**Choice Text**: "${input.choiceText}"
-
-**Stated Stakes**:
-- WANT: ${input.want || '(not provided)'}
-- COST: ${input.cost || '(not provided)'}
-- IDENTITY: ${input.identity || '(not provided)'}
-
-**Context**: ${input.context}
-
-Respond with JSON:
 {
-  "wantScore": <0-100>,
-  "wantAnalysis": "<brief analysis of the WANT component>",
-  "costScore": <0-100>,
-  "costAnalysis": "<brief analysis of the COST component>",
-  "identityScore": <0-100>,
-  "identityAnalysis": "<brief analysis of the IDENTITY component>",
-  "overallAssessment": "<1-2 sentence overall assessment>",
-  "suggestions": ["<improvement suggestion 1>", "<improvement suggestion 2>"]
-}
-```
-
-### FiveFactorValidator system prompt
-
-```text
-You are an expert interactive fiction analyst evaluating choice impact across five factors.
-
-## Five-Factor Test
-
-Every meaningful choice should affect at least one of these factors:
-
-1. **OUTCOME**: Does this choice change WHAT happens in the story?
-   - Different scenes, events, or endings
-   - Changed character fates
-   - Different story beats
-
-2. **PROCESS**: Does this choice change HOW things happen?
-   - Different approaches to problems
-   - Changed difficulty or method
-   - Alternative paths to same goal
-
-3. **INFORMATION**: Does this choice change what the player LEARNS?
-   - Revealed secrets or lore
-   - Character backstory
-   - World information
-
-4. **RELATIONSHIP**: Does this choice change character BONDS?
-   - Trust, affection, respect, fear with NPCs
-   - Alliance formations
-   - Betrayals or loyalty
-
-5. **IDENTITY**: Does this choice change WHO the protagonist is becoming?
-   - Character development
-   - Moral alignment
-   - Personality expression
-
-Analyze each factor and determine if the choice meaningfully affects it.
-Always respond with valid JSON.
-```
-
-### FiveFactorValidator user prompt
-
-```text
-Analyze the five-factor impact for this ${input.choiceType} choice:
-
-**Choice Text**: "${input.choiceText}"
-
-**Explicit Consequences**:
-${consequenceSummary}
-
-**Context**: ${input.context}
-
-For each factor, determine if this choice meaningfully affects it.
-A choice can have implicit impact even without explicit consequences.
-
-Respond with JSON:
-{
-  "outcome": { "affected": true/false, "explanation": "<why>" },
-  "process": { "affected": true/false, "explanation": "<why>" },
-  "information": { "affected": true/false, "explanation": "<why>" },
-  "relationship": { "affected": true/false, "explanation": "<why>" },
-  "identity": { "affected": true/false, "explanation": "<why>" },
-  "overallAssessment": "<summary>",
-  "suggestions": ["<how to increase impact>"]
-}
-```
-
-## Stage 5B: QA Runner
-
-### Important implementation detail
-
-`ContinuityChecker`, `VoiceValidator`, and `StakesAnalyzer` define `getAgentSpecificPrompt()`, but they do **not** set `includeSystemPrompt = true`.
-
-That means their current runtime LLM calls send:
-
-- **no injected BaseAgent system prompt**
-- **no shared storytelling prompt**
-- **only the user prompt built in `buildPrompt()`**
-
-This is important if you are trying to reason about actual prompts-on-the-wire versus intended prompts.
-
-### ContinuityChecker user prompt
-
-```text
-Check the following content for continuity issues:
-
-## Scene Content
-${scenesSummary}
-
-## Known State
-### Flags
-${flagsList || 'None defined'}
-
-### Established Facts
-${factsList || 'None established'}
-
-### Character Knowledge
-${...}
-
-## Timeline
-${...}
-
-## Your Task
-
-Analyze this content for:
-1. Contradictions between scenes or within scenes
-2. Characters knowing things they shouldn't
-3. Timeline impossibilities
-4. State references without proper setup
-5. Missing cause-effect relationships
-
-Provide a ContinuityReport with:
-- Overall consistency score (0-100)
-- All issues found with severity, location, and suggested fixes
-- List of passed checks (things you verified are consistent)
-- Recommendations for improving consistency
-
-Respond with valid JSON matching the ContinuityReport type.
-```
-
-### VoiceValidator user prompt
-
-```text
-Validate character voices in the following content:
-
-## Character Voice Profiles
-${profileSummary}
-
-## Dialogue to Validate
-${dialogueSummary}
-
-## Your Task
-
-For each character with dialogue:
-1. Compare their lines to their voice profile
-2. Check for vocabulary, tic, and formality consistency
-3. Identify any lines that sound "off"
-4. Score overall voice consistency
-
-Also evaluate:
-- How distinct are the characters from each other?
-- Could you identify speakers without tags?
-- Are there any voice "collisions"?
-
-Provide a VoiceReport with:
-- Overall voice quality score
-- Per-character scores with strengths and weaknesses
-- Specific issues with suggested corrections
-- Voice distinction score
-- Recommendations for improvement
-
-Respond with valid JSON matching the VoiceReport type.
-```
-
-### StakesAnalyzer user prompt
-
-```text
-Analyze the stakes and quality of the following choices:
-
-## Story Context
-- **Themes**: ${input.storyThemes.join(', ')}
-- **Target Tone**: ${input.targetTone}
-
-## Scene Context
-${sceneContext}
-
-## Choices to Analyze
-${choicesSummary}
-
-## Your Task
-
-For each choice set:
-1. Evaluate the Stakes Triangle (Want, Cost, Identity)
-2. Check for false choices or obvious "right answers"
-3. Assess whether stakes match the choice type
-4. Score overall choice quality
-
-Also evaluate:
-- Stakes progression through the episode
-- Variety of choice types
-- Quality of any moral dilemmas
-- Overall engagement potential
-
-Provide a StakesReport with:
-- Overall stakes score
-- Per-choice-set detailed analysis
-- Aggregate metrics (false choices, dilemma quality, variety)
-- Specific issues with suggestions
-- Strengths to maintain
-- Recommendations for improvement
-
-Respond with valid JSON matching the StakesReport type.
-```
-
-## Non-LLM Narrative Checks
-
-These stages do not send prompts to an LLM:
-
-- `NPCDepthValidator`
-- `ChoiceDensityValidator`
-- `CallbackOpportunitiesValidator`
-- incremental voice validator
-- incremental sensitivity checker
-- incremental continuity checker
-- incremental encounter validation
-
-## Story-Adjacent Agents Not On The Main Narrative Prompt Path
-
-These agents exist but are not part of the main `worker-runner → FullStoryPipeline` narrative text-generation path documented above:
-
-- `SeasonArchitect` — season-level arc planning (alternative to `SeasonPlannerAgent`)
-- `DialogueSpecialist` — dialogue variant generation per relationship state
-- `ResolutionDesigner` — stat check calibration
-- `BeatWriter` — beat-level content generation (alternative to `SceneWriter`)
-- `ScriptCompiler` — final script assembly
-- `PlaytestSimulator` — automated playtest simulation
-- `VariableTracker` — state variable tracking across scenes
-
-### Image and Video Agents (Separate Prompt Paths)
-
-These agents have their own prompt assembly logic documented in `docs/IMAGE_PIPELINE_RUNTIME.md`:
-
-- `ImageAgentTeam` — orchestrator for all image generation
-- `StoryboardAgent` — shot rhythm and visual planning
-- `VisualIllustratorAgent` — beat illustration prompts
-- `EncounterImageAgent` — cinematic encounter image prompts
-- `CharacterReferenceSheetAgent` — character reference/expression sheets
-- `ColorScriptAgent` — color script and thumbnail generation
-- `VideoDirectorAgent` — video direction for Veo pipeline
-- `ConsistencyScorerAgent` — image/reference consistency scoring
-- `DramaExtractionAgent` — dramatic structure extraction for images
-- Various QA validators: `CompositionValidatorAgent`, `TransitionValidator`, `PoseDiversityValidator`, `ExpressionValidator`, `BodyLanguageValidator`, `LightingColorValidator`, `VisualNarrativeValidator`, `VisualStorytellingValidator`, `AssetAuditorAgent`
-
-## PartialVictory Cost Prompting
-
-`partialVictory` is now prompted as `objective achieved, but price visible`, not just a bittersweet label.
-
-- `SceneBlueprint.encounterPartialVictoryCost` can seed the intended domain, severity, payer, immediate effect, and visible complication.
-- `EncounterArchitect` can author `cost` on terminal partial-victory outcomes and on the partial-victory storylet itself.
-- `encounterConverter` migrates older prose-only partial victories into a structured fallback cost so already-generated stories remain usable.
-- Encounter visual contracts should include `visibleCost` whenever the outcome is `partialVictory`, so image prompts can differentiate it from clean victory.
+  "episodeNumber": ${episodeNumber},
+  "title": "${episode.title}",
+  "overallStructure": {
+    "totalScenes": <number>,
+    "encounterScenes": [<scene numbers>],
+    "majorChoicePoints": [<scene numbers>],
+    "bottleneckScenes": [<scene numbers>],
+    "branchingZones": [
+      {
+        "startScene": <number>,
+        "endScene": <number>,
+        "description": "<what varies in this zone>"
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "sceneNumber": <number>,
+      "title": "<scene title>",
+      "type": "<narrative/encounter/choice_point/resolution>",
+      "purpose": "<what this scene accomplishes>",
+      "location": "<where this takes place>",
+      "characters": ["<character names present>"],
+      "estimatedDuration": "<reading time in seconds>",
+      "keyBeats": [
+        "<story beat 1>",
+        "<story beat 2>",
+        "<story beat 3>"
+      ],
+      "choicePoint": {
+        "present": <true/false>,
+        "choiceType": "<flavor/branching/blind/moral_dilemma>",
+        "stakesTri

@@ -608,140 +608,111 @@ Includes verb conjugation for pronoun substitution and unresolved token fallback
 
 | Level | Impact |
 |---|---|
-| `error` | Blocking issues that must be fixed |
-| `warning` | Quality concerns that should be addressed |
-| `suggestion` | Minor improvements that could enhance quality |
-
-### 13.3 Incremental Validation
-
-Validators can run incrementally after each scene/choice to catch issues early rather than waiting for full episode completion.
+| `error` | Blocks generation |
+| `warning` | Triggers retry/revision |
+| `info` | For monitoring only |
 
 ---
 
 ## 14. State Management
 
-### 14.1 React Context + Zustand
-
-The app uses a hybrid state management approach:
-- **gameStore** (React Context) — Player state, story data, episode progress
-- **settingsStore** (Zustand) — User preferences, API keys, generation settings
-- **Other stores** — Navigation, generation jobs, image jobs, video jobs
-
-### 14.2 Persistence
-
-Player state persists to AsyncStorage via:
-- `src/stores/playerStatePersistence.ts`
-- `src/stores/encounterStatePersistence.ts`
-
-### 14.3 Store Files
+### 14.1 Stores
 
 | Store | File | Purpose |
 |---|---|---|
-| `gameStore` | `src/stores/gameStore.ts` | Player state, story content |
-| `settingsStore` | `src/stores/settingsStore.ts` | User preferences |
-| `generationJobStore` | `src/stores/generationJobStore.ts` | Story generation tracking |
-| `imageJobStore` | `src/stores/imageJobStore.ts` | Image generation tracking |
-| `videoJobStore` | `src/stores/videoJobStore.ts` | Video generation tracking |
-| `seasonPlanStore` | `src/stores/seasonPlanStore.ts` | Season planning |
-| `imageFeedbackStore` | `src/stores/imageFeedbackStore.ts` | Image feedback collection |
-| `appNavigationStore` | `src/stores/appNavigationStore.ts` | Navigation state |
+| **gameStore** | `src/stores/gameStore.ts` | React Context for live gameplay state |
+| **settingsStore** | `src/stores/settingsStore.ts` | Zustand for app preferences |
+| **appNavigationStore** | `src/stores/appNavigationStore.ts` | UI navigation state |
+| **generationJobStore** | `src/stores/generationJobStore.ts` | Generation pipeline status |
+| **imageJobStore** | `src/stores/imageJobStore.ts` | Image generation tracking |
+| **videoJobStore** | `src/stores/videoJobStore.ts` | Video generation tracking |
+| **seasonPlanStore** | `src/stores/seasonPlanStore.ts` | Season planning data |
+| **imageFeedbackStore** | `src/stores/imageFeedbackStore.ts` | Image quality feedback |
+
+### 14.2 Persistence
+
+| Module | File | Purpose |
+|---|---|---|
+| **playerStatePersistence** | `src/stores/playerStatePersistence.ts` | Player state save/load |
+| **encounterStatePersistence** | `src/stores/encounterStatePersistence.ts` | Encounter state save/load |
 
 ---
 
 ## 15. Cross-Episode Continuity
 
-### 15.1 Episode Summaries
+### 15.1 Episode Memory System
 
-Each completed episode generates a summary that feeds into subsequent episodes, maintaining narrative consistency and character development.
+- **Episode summaries** generated after completion
+- **Character relationship arcs** tracked across episodes
+- **Flag propagation** from episode to episode
+- **Consequence chains** that span multiple episodes
 
-### 15.2 Flag Propagation
+### 15.2 Season Planning
 
-Flags set in earlier episodes can be referenced in later episodes for callback opportunities and branching logic.
-
-### 15.3 Relationship Evolution
-
-NPC relationships evolve across episodes based on player choices and story events.
+The `SeasonArchitect` and `SeasonPlannerAgent` plan multi-episode arcs including:
+- **Ending modes**: Multiple possible story conclusions
+- **Branch effects**: Cross-episode consequence chains
+- **Character development**: Growth arcs across episodes
+- **Flag orchestration**: Setup/payoff across episodes
 
 ---
 
 ## 16. Configuration Reference
 
-### 16.1 Generation Settings
+### 16.1 GenerationSettingsConfig
 
-```typescript
-interface GenerationSettingsConfig {
-  // Pipeline behavior
-  maxParallelEpisodes: number;          // Default: 2
-  maxParallelScenes: number;            // Default: 2
-  dependencyMode: 'sequential' | 'independent'; // Default: 'sequential'
-  failurePolicy: 'fail_fast' | 'recover';      // Default: 'fail_fast'
-  
-  // LLM limits
-  llmMaxGlobalInFlight: number;         // Default: 4
-  llmMaxPerProviderInFlight: number;    // Default: 2
-  
-  // Content limits
-  maxChoiceWords: number;               // Default: varies
-  minChoices: number;                   // Default: varies
-  maxChoices: number;                   // Default: varies
-  targetSceneCount: number;             // Episode scene cap
-  targetBeatCount: number;              // Scene beat cap
-}
-```
+| Setting | Default | Purpose |
+|---|---|---|
+| `maxParallelEpisodes` | 2 | Episode generation concurrency |
+| `maxParallelScenes` | 2 | Scene generation concurrency |
+| `llmMaxGlobalInFlight` | 4 | Global LLM request limit |
+| `llmMaxPerProviderInFlight` | 2 | Per-provider LLM request limit |
+| `failurePolicy` | `fail_fast` | How to handle generation failures |
+| `dependencyMode` | `sequential` | Episode dependency handling |
 
-### 16.2 Agent Configuration
+### 16.2 AgentConfig
 
-```typescript
-interface AgentConfig {
-  provider: 'anthropic' | 'openai' | 'gemini';
-  model: string;
-  apiKey: string;
-  maxTokens: number;
-  temperature: number;
-}
-```
+| Setting | Purpose |
+|---|---|
+| `provider` | LLM provider selection |
+| `model` | Model name |
+| `apiKey` | API authentication |
+| `maxTokens` | Response length limit |
+| `temperature` | Creative randomness |
 
 ---
 
 ## 17. File Reference
 
-### 17.1 Key Source Directories
+### 17.1 Key Directories
 
-```
-src/
-├── ai-agents/
-│   ├── agents/            # All AI agent implementations
-│   ├── validators/        # Quality validation agents
-│   ├── pipeline/          # Generation pipeline orchestration
-│   ├── prompts/           # System prompts and storytelling principles
-│   ├── types/             # LLM input/output types
-│   ├── utils/             # Pipeline utilities and helpers
-│   └── converters/        # Type conversion utilities
-├── engine/                # Runtime story engine
-├── stores/                # State management
-├── screens/               # UI screens
-└── types/                 # TypeScript type definitions
-```
+| Directory | Purpose |
+|---|---|
+| `src/screens/` | React Native screen components |
+| `src/stores/` | State management (Zustand, React Context) |
+| `src/engine/` | Core game engine (story, resolution, conditions) |
+| `src/ai-agents/` | AI pipeline and agents |
+| `src/types/` | TypeScript type definitions |
+| `docs/` | Documentation |
 
-### 17.2 Package Dependencies
+### 17.2 Critical Files
 
-| Package | Version | Purpose |
-|---|---|---|
-| `expo` | ~54.0.31 | React Native framework |
-| `react` | 19.1.0 | UI library |
-| `react-native` | 0.81.5 | Native platform |
-| `zustand` | ^5.0.10 | State management |
-| `typescript` | ~5.9.2 | Type safety |
-| `vitest` | ^4.0.18 | Testing framework |
+| File | Purpose |
+|---|---|
+| `src/ai-agents/agents/BaseAgent.ts` | Base class for all AI agents |
+| `src/engine/storyEngine.ts` | Core story runtime |
+| `src/engine/resolutionEngine.ts` | Stat check resolution |
+| `src/engine/conditionEvaluator.ts` | Condition evaluation |
+| `src/stores/gameStore.ts` | Main game state |
+| `src/ai-agents/prompts/storytellingPrinciples.ts` | Core narrative rules |
 
-### 17.3 Available Scripts
+### 17.3 Package.json Scripts
 
-| Script | Command | Purpose |
-|---|---|---|
-| `npm run web` | `expo start --web` | Web development |
-| `npm run android` | `expo start --android` | Android development |
-| `npm run ios` | `expo start --ios` | iOS development |
-| `npm run generate` | `npx ts-node --esm src/ai-agents/example-usage.ts` | Generate story |
-| `npm run typecheck` | Various TypeScript checks | Type validation |
-| `npm test` | `vitest run` | Run tests |
-| `npm run proxy` | `node proxy-server.js` | CORS proxy for web |
+| Script | Purpose |
+|---|---|
+| `npm run dev` | Start development server (proxy + web) |
+| `npm run web` | Start Expo web |
+| `npm run proxy` | Start LLM proxy server |
+| `npm run generate` | Run story generation |
+| `npm run validate` | Type checking and tests |
+| `npm test` | Run test suite |

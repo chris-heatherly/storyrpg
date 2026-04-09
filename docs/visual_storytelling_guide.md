@@ -621,146 +621,95 @@ Before approving any generated image, verify:
 **Composition**
 - [ ] Primary focal point is NOT dead-center
 - [ ] Critical content is in upper two-thirds of 9:16 safe zone
-- [ ] Lower third suitable for UI text overlay
-- [ ] Image reads clearly on mobile screen (test at actual size)
+- [ ] Lower third suitable for UI overlay (no faces or key objects)
+- [ ] 9:19.5 full-bleed atmospheric extension present but non-essential
 
-**Visual Storytelling**
-- [ ] Image clearly conveys the narrative beat (action, emotion, relationship)
-- [ ] Shot type matches emotional intensity of the moment
-- [ ] Camera angle supports story/character psychology
-- [ ] Body language is dynamic and purposeful, not static
+**Story Beat Clarity**
+- [ ] Image shows clear ACTION (what's happening physically)
+- [ ] Character emotion is legible and appropriate to beat
+- [ ] Relationship dynamics visible (if multiple characters)
+- [ ] Body language supports narrative moment
 
-**Sequence Consistency**
-- [ ] Shot type differs from previous image
-- [ ] Camera angle varies from previous image
-- [ ] Character staging is not repeated from previous image
-- [ ] Visual rhythm supports pacing needs
+**Technical Execution**
+- [ ] Shot type serves narrative function
+- [ ] Camera angle creates appropriate psychological effect
+- [ ] Character staging shows strong line of action
+- [ ] Visual emphasis directs attention correctly
 
-**Character & World**
-- [ ] Character appearance consistent with established reference
-- [ ] Environmental details support world-building
-- [ ] Lighting/color matches scene mood and time of day
-- [ ] All characters present in the beat are visible and interacting
+**Sequence Variety**
+- [ ] Different shot distance from previous image
+- [ ] Different camera angle from previous 2 images
+- [ ] Different character staging approach
+- [ ] Contributes to visual rhythm of sequence
 
-### Sequence-Level Validation
+### Episode-Wide Validation
 
-After generating a full encounter sequence:
+For complete episodes (40-60 images):
 
 **Visual Variety**
-- [ ] Shot types rotate through full spectrum (ELS to ECU)
-- [ ] Camera angles vary regularly (avoid 3+ consecutive eye-level)
-- [ ] Character staging shows different poses/relationships
-- [ ] Composition focal points move around frame
+- [ ] All shot types represented across episode
+- [ ] Camera angles systematically rotated
+- [ ] No more than 2 consecutive eye-level shots
+- [ ] Dutch angles used sparingly (max 3 per episode)
 
-**Narrative Flow**
-- [ ] Opening images establish context and characters
-- [ ] Peak emotional moments use closer shots
-- [ ] Resolution/transition images support story progression
-- [ ] Cliffhanger endings use appropriate visual tension
+**Story Beat Progression**
+- [ ] Key emotional moments use appropriate shot types
+- [ ] Climactic beats receive close-up emphasis
+- [ ] Tension builds through shot sequence
+- [ ] Resolution shots provide visual breathing room
 
-**Technical Quality**
-- [ ] All images maintain 9:19.5 aspect ratio with proper safe zones
-- [ ] Critical content never falls in UI overlay zone
-- [ ] Image quality suitable for mobile display
-- [ ] Color consistency across sequence
-
-### Common Issues and Solutions
-
-**Problem**: Characters appear static or portrait-like
-**Solution**: Add specific action verbs and emotional direction to prompts
-
-**Problem**: Consecutive images too similar
-**Solution**: Implement shot/angle rotation system before generation
-
-**Problem**: Critical content obscured by UI
-**Solution**: Review mobile composition framework, adjust focal positioning
-
-**Problem**: Poor legibility on mobile screens
-**Solution**: Increase contrast, simplify composition, enlarge key elements
-
-**Problem**: Inconsistent character appearance
-**Solution**: Maintain detailed character reference sheet, include key descriptors in all prompts
+**Character Consistency**
+- [ ] Character appearance maintained across shots
+- [ ] Costume and design details consistent
+- [ ] Lighting style cohesive throughout episode
+- [ ] Environmental continuity preserved
 
 ---
 
-## Part 12: Advanced Techniques
+## Part 12: Anti-Pattern Gallery
 
-### Environmental Storytelling
+### Common Failures to Avoid
 
-The setting should actively participate in the narrative, not merely provide backdrop:
+**The "Everyone Standing" Problem**
+- Characters arranged in a line
+- Everyone facing camera
+- Static, portrait-like poses
+- No interaction or relationship evident
 
-**Weather as Mood**:
-- Rain for melancholy or renewal
-- Fog for uncertainty or mystery
-- Bright sun for hope or harsh truth
-- Storm clouds for approaching conflict
-- Snow for isolation or purity
+**The "Talking Heads" Syndrome**
+- All shots at same distance
+- Repeated eye-level angle
+- Characters centered in frame
+- No visual variety between beats
 
-**Architecture as Psychology**:
-- High ceilings for grandeur or insignificance
-- Cramped spaces for intimacy or claustrophobia
-- Broken/ruined elements for decay or past trauma
-- Pristine environments for artificiality or perfection
-- Organic shapes for nature/growth vs. geometric for control/civilization
+**The "Action Figure" Effect**
+- Characters look posed rather than active
+- Symmetric, balanced poses
+- No line of action evident
+- Gesture without purpose or emotion
 
-**Color as Narrative**:
-- Warm tones (reds, oranges, yellows) for comfort, passion, aggression
-- Cool tones (blues, greens, purples) for calm, sadness, magic
-- Desaturated colors for flashbacks, despair, or neutrality
-- High saturation for intense emotion or fantasy elements
-- Monochromatic schemes for unified mood or otherworldly feel
+**The "Dead Center" Composition**
+- Primary subject exactly centered
+- No visual tension or dynamism
+- Predictable focal point placement
+- Amateur snapshot feeling
 
-### Symbolic Visual Elements
-
-Integrate visual metaphors that reinforce narrative themes:
-
-**Light and Shadow**:
-- Light from above: divine intervention, hope, truth revealed
-- Light from below: unnatural threat, interrogation, monster reveal
-- Side lighting: dramatic conflict, moral ambiguity
-- Backlighting: mystery, romance, departure
-- Multiple light sources: confusion, conflict, complexity
-
-**Perspective and Scale**:
-- Character small in frame: insignificance, being overwhelmed
-- Character large in frame: power, importance, threat
-- Low horizon: character dominance over environment
-- High horizon: environment dominance over character
-
-**Depth and Focus**:
-- Shallow depth of field: isolation, focus, intimacy
-- Deep focus: environmental awareness, no hiding place
-- Rack focus: shifting attention, revelation, distraction
-
-### Cinematic Transitions
-
-Consider how each image connects to the next:
-
-**Match Cut Elements**:
-- Similar shapes or compositions across images
-- Color or lighting continuity
-- Gesture or movement continuation
-
-**Contrast Cuts**:
-- Dramatic lighting change for mood shift
-- Scale change for emphasis shift
-- Color temperature change for time/emotional shift
-
-**Parallel Action**:
-- Multiple characters in similar but separate situations
-- Matching poses/staging showing connection or contrast
-- Environmental echoes between locations
+**The "Zoom and Crop" Mentality**
+- Same staging, different distances
+- No consideration of shot type's narrative function
+- Missing opportunity for angle variety
+- Mechanical rather than artistic approach
 
 ---
 
 ## Conclusion
 
-Visual storytelling in interactive fiction requires the same rigor as live-action filmmaking, adapted for the unique constraints and opportunities of mobile presentation. This guide provides the systematic framework necessary to elevate AI-generated imagery from static illustrations to dynamic narrative beats.
+Visual storytelling in interactive narrative requires systematic attention to composition, character staging, shot variety, and emotional clarity. By following these guidelines, AI-generated images will move beyond simple illustration to become active participants in the storytelling process.
 
-The core principle remains: **Every image is a story beat, not a portrait.** When this principle guides every generation decision—from shot selection to character staging to mobile composition—the result is visual storytelling that matches the sophistication of the written narrative, creating a truly immersive experience for StoryRPG players.
+Remember: **Every image is a story beat, not a portrait.** Each visual must advance the narrative through deliberate choices that serve the emotional and dramatic needs of the moment while maintaining the technical requirements of mobile presentation.
 
-Remember: readers don't remember individual perfect images—they remember visual sequences that made them feel something. Focus on creating emotional impact through purposeful variety, and the technical excellence will follow.
+The difference between good and great visual storytelling lies not in technical perfection but in understanding that every compositional choice—from shot distance to camera angle to character staging—is a narrative decision that shapes how players experience the story.
 
 ---
 
-**For implementation questions or technique clarification, refer to the Visual Storytelling Quick Reference Guide or consult with the Image Generation Agent Team.**
+**Reference Implementation**: See `src/ai-agents/prompts/visualPrinciples.ts` for the core principles extracted into AI agent prompt templates.

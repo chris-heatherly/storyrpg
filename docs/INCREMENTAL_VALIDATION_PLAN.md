@@ -53,9 +53,9 @@ The implementation includes the following components:
 
 - **IncrementalVoiceValidator**: Checks character voice consistency per scene using heuristics for vocabulary level, formality, and verbal tics
 - **IncrementalStakesValidator**: Validates choice sets for false choices, stakes quality, and choice clarity
-- **IncrementalSensitivityChecker**: Flags content rating concerns using keyword patterns for violence, language, and substance use
+- **IncrementalSensitivityChecker**: Flags content rating concerns using keyword patterns for violence, language, sexual content, substance use, discrimination, and trauma
 - **IncrementalContinuityChecker**: Tracks and validates flag/score references to prevent undefined state errors
-- **IncrementalEncounterValidator**: Validates encounter structure for completeness and proper victory/defeat paths
+- **IncrementalEncounterValidator**: Validates encounter structure for completeness and proper victory/defeat/partial victory paths
 
 #### Configuration
 
@@ -88,6 +88,14 @@ if (result.regenerationRequested === 'scene') {
   // Regenerate just the choices
 }
 ```
+
+#### Return Types
+
+- **IncrementalVoiceResult**: Contains pass/fail status, score (0-100), issues array, regeneration recommendation, and dialogue count
+- **IncrementalStakesResult**: Contains pass/fail status, score, issues array, regeneration recommendation, and false choice detection
+- **IncrementalSensitivityResult**: Contains flags by category (violence, language, sexual, substance, discrimination, trauma), rating implications, and severity levels
+- **IncrementalContinuityResult**: Contains issues array for undefined references and state tracking
+- **IncrementalEncounterResult**: Contains structure validation, beat counts, and victory/defeat path verification
 
 ---
 

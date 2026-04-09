@@ -30,7 +30,7 @@
 3. **Visual check**: You should see:
    - Full-screen image/background (or placeholder with "IMAGE AREA" text)
    - Text in bottom portion with dark semi-transparent background
-   - Menu button in top-left corner only
+   - Menu button (hamburger icon ☰) in top-left corner only
    - No header bar
 
 ## If Changes Don't Appear

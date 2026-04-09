@@ -282,7 +282,7 @@ Within an encounter, choices form a branching tree:
 
 - Each action outcome (success/complicated/failure) leads to a **different** `nextSituation`
 - Trees go 2–3 layers deep before reaching terminal outcomes
-- Terminal outcomes map to `encounterOutcome: 'victory' | 'defeat' | 'escape' | 'partial_victory'`
+- Terminal outcomes map to `encounterOutcome: 'victory' | 'defeat' | 'escape' | 'partialVictory'`
 - The encounter outcome triggers the appropriate storylet
 
 ### Runtime Encounter Shape
@@ -300,7 +300,7 @@ interface Encounter {
 }
 ```
 
-The live runtime path uses `encounter.phases[].beats`. Legacy `encounter.beats` is only supported as a compatibility fallback in shared helpers.
+The live runtime path uses `encounter.phases[].beats`. Legacy `encounter.beats` is only supported as a compatibility fallback in `src/engine/storyEngine.ts`.
 
 ### Dual Clock System
 

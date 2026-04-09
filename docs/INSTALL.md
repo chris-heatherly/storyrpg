@@ -721,7 +721,7 @@ storyrpg-prototype/               ← The application root
 | `src/types/index.ts` | All the data structure definitions (the "contract" between generation and playback) |
 | `src/engine/storyEngine.ts` | The core logic that processes story data into the player experience |
 | `src/ai-agents/pipeline/FullStoryPipeline.ts` | The main AI generation coordinator |
-| `src/ai-agents/config.ts` | Configuration for the AI pipeline |
+| `src/ai-agents/agents/config.ts` | Configuration for the AI pipeline |
 | `src/stores/gameStore.ts` | Player state management (saves, progress, etc.) |
 | `src/screens/ReadingScreen.tsx` | The main reading/playing interface |
 

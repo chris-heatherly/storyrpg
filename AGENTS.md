@@ -70,15 +70,15 @@ storyrpg-prototype/
 
 | Layer | Technology |
 |---|---|
-| UI / Runtime | Expo ~54, React 19.1, React Native 0.81, react-native-web |
-| Language | TypeScript ~5.9 |
-| State | Zustand (navigation, jobs, settings) + React Context (game session state) |
+| UI / Runtime | Expo ~54.0.31, React 19.1.0, React Native 0.81.5, react-native-web ~0.21.0 |
+| Language | TypeScript ~5.9.2 |
+| State | Zustand ^5.0.10 (navigation, jobs, settings) + React Context (game session state) |
 | Persistence | AsyncStorage (client), JSON on filesystem (stories), optional Vercel Blob |
 | Backend | Express proxy (`proxy-server.js`) — local dev only, not a deployed backend |
 | AI Text | Anthropic Claude (via proxy), with OpenRouter / Gemini alternatives |
 | AI Images | Gemini (default via nano-banana MCP), Atlas Cloud, Midjourney/MidAPI |
 | AI Audio | ElevenLabs TTS (optional) |
-| Testing | Vitest (Node env with RN stubs) |
+| Testing | Vitest ^4.0.18 (Node env with RN stubs) |
 | Web Deploy | Vercel (static Expo web export) |
 
 ## Architecture Overview

@@ -710,13 +710,4 @@ The following systems were added after the initial QA fix sessions. They are doc
 
 ### Pipeline Utility Additions (New)
 - `src/ai-agents/utils/memoryStore.ts` — `MemoryStore` abstraction (`NodeMemoryStore`, `ProxyMemoryStore`)
-- `src/ai-agents/utils/withTimeout.ts` — `withTimeout` wrapper with configurable delays
-- `src/ai-agents/utils/retry.ts` — Retry utilities with exponential backoff
-
-### Parallel Generation Support (New)
-- `src/ai-agents/pipeline/parallel/` — Infrastructure for parallel episode generation
-- Support for batch processing and resource management across concurrent pipelines
-
----
-
-**Note:** This document will be updated as new QA sessions identify and resolve additional technical debt items. The patterns established here should be used as reference for future fixes.
+- `src/ai-agents/utils/withTimeout.ts` — `withTimeout` wrapper with configurable delays for AI agent operations

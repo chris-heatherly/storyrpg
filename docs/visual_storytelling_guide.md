@@ -621,95 +621,175 @@ Before approving any generated image, verify:
 **Composition**
 - [ ] Primary focal point is NOT dead-center
 - [ ] Critical content is in upper two-thirds of 9:16 safe zone
-- [ ] Lower third suitable for UI overlay (no faces or key objects)
-- [ ] 9:19.5 full-bleed atmospheric extension present but non-essential
+- [ ] Lower third suitable for UI text overlay
+- [ ] Atmospheric extension beyond 9:16 exists but doesn't compete
 
-**Story Beat Clarity**
-- [ ] Image shows clear ACTION (what's happening physically)
-- [ ] Character emotion is legible and appropriate to beat
-- [ ] Relationship dynamics visible (if multiple characters)
-- [ ] Body language supports narrative moment
+**Visual Storytelling**
+- [ ] Clear story beat visible (action, emotion, relationship)
+- [ ] All characters present in beat are shown
+- [ ] Body language conveys emotional state and intent
+- [ ] Shot type matches story beat intensity
+- [ ] Camera angle supports the character/emotional dynamic
+- [ ] Different from previous image(s) in sequence
 
-**Technical Execution**
-- [ ] Shot type serves narrative function
-- [ ] Camera angle creates appropriate psychological effect
-- [ ] Character staging shows strong line of action
-- [ ] Visual emphasis directs attention correctly
+**Technical Requirements**
+- [ ] 9:19.5 canvas dimensions
+- [ ] Appropriate resolution for mobile display
+- [ ] Key visual elements readable at mobile size
+- [ ] No critical text or detail in atmospheric extension zones
 
-**Sequence Variety**
-- [ ] Different shot distance from previous image
-- [ ] Different camera angle from previous 2 images
-- [ ] Different character staging approach
-- [ ] Contributes to visual rhythm of sequence
+### Sequence-Level Validation
 
-### Episode-Wide Validation
-
-For complete episodes (40-60 images):
+For complete encounter sequences:
 
 **Visual Variety**
-- [ ] All shot types represented across episode
-- [ ] Camera angles systematically rotated
-- [ ] No more than 2 consecutive eye-level shots
-- [ ] Dutch angles used sparingly (max 3 per episode)
+- [ ] No repeated shot types in consecutive images
+- [ ] Multiple camera angles represented
+- [ ] Range of character staging approaches
+- [ ] Variety in emotional register/intensity
+- [ ] Alternating focal distances for rhythm
 
-**Story Beat Progression**
-- [ ] Key emotional moments use appropriate shot types
-- [ ] Climactic beats receive close-up emphasis
-- [ ] Tension builds through shot sequence
-- [ ] Resolution shots provide visual breathing room
+**Narrative Flow**
+- [ ] Visual progression supports story pacing
+- [ ] Peak moments get peak visual treatment (CU/ECU)
+- [ ] Quiet moments get appropriate intimate staging
+- [ ] Action sequences have clear visual geography
+- [ ] Character relationship evolution visible through staging
 
-**Character Consistency**
-- [ ] Character appearance maintained across shots
-- [ ] Costume and design details consistent
-- [ ] Lighting style cohesive throughout episode
-- [ ] Environmental continuity preserved
+### Common Rejection Criteria
 
----
+**Immediate Rejection**:
+- Standing character facing camera with neutral expression
+- Critical content below upper two-thirds line
+- Identical shot type to previous image
+- Missing characters who are part of the scene
+- Ambiguous body language that doesn't serve story beat
 
-## Part 12: Anti-Pattern Gallery
-
-### Common Failures to Avoid
-
-**The "Everyone Standing" Problem**
-- Characters arranged in a line
-- Everyone facing camera
-- Static, portrait-like poses
-- No interaction or relationship evident
-
-**The "Talking Heads" Syndrome**
-- All shots at same distance
-- Repeated eye-level angle
-- Characters centered in frame
-- No visual variety between beats
-
-**The "Action Figure" Effect**
-- Characters look posed rather than active
-- Symmetric, balanced poses
-- No line of action evident
-- Gesture without purpose or emotion
-
-**The "Dead Center" Composition**
-- Primary subject exactly centered
-- No visual tension or dynamism
-- Predictable focal point placement
-- Amateur snapshot feeling
-
-**The "Zoom and Crop" Mentality**
-- Same staging, different distances
-- No consideration of shot type's narrative function
-- Missing opportunity for angle variety
-- Mechanical rather than artistic approach
+**Revision Required**:
+- Off-center composition that doesn't improve storytelling
+- Dutch angle without narrative justification
+- Close-up on non-critical story moment
+- Long shot on intimate/emotional peak
+- Lighting that doesn't support mood/beat
 
 ---
 
-## Conclusion
+## Part 12: Advanced Techniques
 
-Visual storytelling in interactive narrative requires systematic attention to composition, character staging, shot variety, and emotional clarity. By following these guidelines, AI-generated images will move beyond simple illustration to become active participants in the storytelling process.
+### Depth of Field as Narrative Tool
 
-Remember: **Every image is a story beat, not a portrait.** Each visual must advance the narrative through deliberate choices that serve the emotional and dramatic needs of the moment while maintaining the technical requirements of mobile presentation.
+**Shallow Depth of Field (Character Sharp, Background Blurred)**:
+- Isolates character emotionally
+- Emphasizes internal state over environment
+- Creates intimacy with viewer
+- Use for: revelation moments, decision points, emotional climax
 
-The difference between good and great visual storytelling lies not in technical perfection but in understanding that every compositional choice—from shot distance to camera angle to character staging—is a narrative decision that shapes how players experience the story.
+**Deep Depth of Field (Everything Sharp)**:
+- Shows character in full context
+- Emphasizes relationship to environment or others
+- Creates documentary or objective feeling
+- Use for: establishing shots, action sequences, confrontations
+
+**Rack Focus (Focus Shift Within Frame)**:
+- Directs attention sequentially
+- Shows relationship between elements
+- Creates dynamic storytelling within single image
+- Use for: cause and effect, revelation of hidden elements
+
+### Color as Emotional Language
+
+**Warm Palette (Reds, Oranges, Yellows)**:
+- Emotional heat: love, anger, energy, comfort
+- Use for: romantic scenes, conflict, triumph, home/safety
+
+**Cool Palette (Blues, Greens, Purples)**:
+- Emotional distance: calm, sadness, mystery, isolation
+- Use for: contemplation, loss, magic, uncertainty
+
+**Desaturated/Monochromatic**:
+- Emotional numbness: depression, flashback, death, limbo
+- Use for: aftermath, memory, supernatural, despair
+
+**High Contrast/Saturated**:
+- Emotional intensity: excitement, fantasy, heightened reality
+- Use for: action, magic, climax, surreal moments
+
+### Environmental Storytelling
+
+The setting should actively participate in the narrative:
+
+**Weather as Emotion**:
+- Storm: conflict, chaos, emotional turbulence
+- Fog: mystery, confusion, liminal states
+- Sunset: ending, transition, reflection
+- Clear sky: hope, clarity, new beginning
+
+**Architecture as Character State**:
+- Cramped spaces: pressure, claustrophobia, intimacy
+- Vast spaces: freedom, isolation, possibility, overwhelm
+- Ruins: past failure, loss, decay
+- New construction: hope, progress, growth
+
+**Time of Day as Story Beat**:
+- Dawn: new beginning, hope, birth
+- Midday: clarity, action, confrontation
+- Dusk: transition, reflection, romance
+- Night: mystery, danger, intimacy, sleep
 
 ---
 
-**Reference Implementation**: See `src/ai-agents/prompts/visualPrinciples.ts` for the core principles extracted into AI agent prompt templates.
+## Appendix A: Emergency Visual Variety Generator
+
+When facing consecutive similar images, force variety with:
+
+1. **Shot Distance**: If last was MS, make next LS or CU
+2. **Angle**: If last was eye-level, use high or low
+3. **Character Staging**: If last was front-facing, use profile or three-quarter
+4. **Focal Point**: If last was centered, use rule-of-thirds positioning
+5. **Environment Role**: If last was background, make environment active participant
+
+### The "Break Glass" Compositions
+
+For emergency visual refresh:
+
+- **Extreme Close-Up on Eyes**: Maximum intimacy, works for any emotional beat
+- **Bird's Eye View**: Complete perspective shift, works for any scene
+- **Silhouette Against Light**: Dramatic reset, works for transitions
+- **Over-Shoulder to Unseen Character**: Instant relationship dynamic
+- **Hand in Foreground, Face Behind**: Immediate depth and mystery
+
+---
+
+## Appendix B: Genre-Specific Adaptations
+
+### Fantasy Settings
+
+- Emphasize magical lighting sources (crystals, spells, enchanted objects)
+- Use environmental magic as compositional element (floating objects, energy fields)
+- Leverage costume detail for character staging enhancement
+- Consider non-human proportions for camera angle impact
+
+### Modern/Contemporary Settings
+
+- Use architectural environments for framing
+- Leverage artificial lighting for mood (neon, streetlights, screens)
+- Consider technology as narrative participant (phones, screens, vehicles)
+- Urban environments provide natural depth layering
+
+### Historical Settings
+
+- Period-accurate staging and gesture vocabulary
+- Natural lighting sources only (fire, candles, daylight)
+- Costume as character expression tool
+- Environmental authenticity supports immersion
+
+### Horror/Thriller
+
+- Aggressive use of Dutch angle
+- High contrast lighting with deep shadows
+- Partial character reveals and cropping
+- Environmental threat emphasis
+
+---
+
+This guide establishes the foundation for creating visually dynamic, narratively purposeful images that serve StoryRPG's interactive storytelling mission. Every image should be a story beat that could not occur at any other moment in the narrative—specific, emotional, and cinematically compelling.

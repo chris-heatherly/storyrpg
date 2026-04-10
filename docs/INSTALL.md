@@ -359,6 +359,9 @@ npm run generate:fantasy
 
 # Generate from a document
 npm run generate:doc -- --input /path/to/your/document.txt
+
+# Generate using a template file
+npm run generate:template -- --input /path/to/your/template.txt
 ```
 
 Generated stories appear in the `generated-stories/` directory and will show up in the app's story catalog on next refresh.

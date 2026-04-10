@@ -70,7 +70,7 @@ storyrpg-prototype/
 
 | Layer | Technology |
 |---|---|
-| UI / Runtime | Expo ~54.0.31, React 19.1.0, React Native 0.81.5, react-native-web ~0.21.0 |
+| UI / Runtime | Expo ~54.0.31, React 19.1.0, React Native 0.81.5, react-native-web ^0.21.0 |
 | Language | TypeScript ~5.9.2 |
 | State | Zustand ^5.0.10 (navigation, jobs, settings) + React Context (game session state) |
 | Persistence | AsyncStorage (client), JSON on filesystem (stories), optional Vercel Blob |
@@ -146,7 +146,7 @@ Defined in `storyrpg-prototype/.env`. Key variables:
 | `ANTHROPIC_API_KEY` | Text generation (required for story generation) |
 | `EXPO_PUBLIC_GEMINI_API_KEY` | Image generation (default provider) |
 | `ELEVENLABS_API_KEY` | Voice narration (optional) |
-| `EXPO_PUBLIC_IMAGE_PROVIDER` | `nano-banana` (Gemini), `atlas-cloud`, or `midapi` |
+| `EXPO_PUBLIC_IMAGE_PROVIDER` | Image provider selection |
 | `EXPO_PUBLIC_PROXY_URL` | Override proxy URL (default: `http://localhost:3001`) |
 | `PORT` | Proxy server port (default: 3001) |
 

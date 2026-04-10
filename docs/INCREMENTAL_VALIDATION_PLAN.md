@@ -91,11 +91,11 @@ if (result.regenerationRequested === 'scene') {
 
 #### Return Types
 
-- **IncrementalVoiceResult**: Contains pass/fail status, score (0-100), issues array, regeneration recommendation, and dialogue count
-- **IncrementalStakesResult**: Contains pass/fail status, score, issues array, regeneration recommendation, and false choice detection
-- **IncrementalSensitivityResult**: Contains flags by category (violence, language, sexual, substance, discrimination, trauma), rating implications, and severity levels
-- **IncrementalContinuityResult**: Contains issues array for undefined references and state tracking
-- **IncrementalEncounterResult**: Contains structure validation, beat counts, and victory/defeat path verification
+- **IncrementalVoiceResult**: Contains passed boolean, score (0-100), issues array, shouldRegenerate boolean, and checkedDialogueCount
+- **IncrementalStakesResult**: Contains passed boolean, score, issues array, shouldRegenerate boolean, and hasFalseChoices detection
+- **IncrementalSensitivityResult**: Contains passed boolean, flags by category (violence, language, sexual, substance, discrimination, trauma), ratingImplication, and highestSeverity levels
+- **IncrementalContinuityResult**: Contains passed boolean, issues array for undefined references, trackedFlags, and trackedScores
+- **IncrementalEncounterResult**: Contains passed boolean, issues array, beatCount, and hasVictoryPath/hasPartialVictoryPath/hasDefeatPath verification
 
 ---
 

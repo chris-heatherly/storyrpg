@@ -107,7 +107,7 @@ Always respond with valid JSON that matches the requested schema.
 | **Beat Writer** | `BeatWriter.ts` | Beat-level content generation | 0.85 |
 | **Choice Author** | `ChoiceAuthor.ts` | Player choices, consequences, stat checks, branching routing | 0.75 |
 | **Branch Manager** | `BranchManager.ts` | Branch analysis, reconvergence validation, state tracking | 0.7 |
-| **Encounter Architect** | `EncounterArchitect.ts` | Encounter structure, skill challenges, decision trees, storylets (phased execution via `executePhased`) | 0.75 |
+| **Encounter Architect** | `EncounterArchitect.ts` | Encounter structure, skill challenges, decision trees, storylets | 0.75 |
 | **Resolution Designer** | `ResolutionDesigner.ts` | Stat check design, difficulty calibration | 0.7 |
 | **World Builder** | `WorldBuilder.ts` | World bible, locations, cultures, history | 0.8 |
 | **Character Designer** | `CharacterDesigner.ts` | NPC profiles, want/fear/flaw, voice, relationships | 0.8 |
@@ -226,7 +226,7 @@ Each episode goes through its own sub-pipeline:
 
 1. **Blueprint Phase**: Story Architect creates the `EpisodeBlueprint` with branch structure, choice points, and encounter placement.
 2. **Content Phase**: Scene Writer generates beat-level prose. Choice Author creates choices. Incremental validators check quality after each scene/choice.
-3. **Encounter Phase**: Encounter Architect designs the encounter's internal structure — phases, approaches, decision trees, and storylets. Now supports phased execution via `executePhased` (runPhase1–runPhase4).
+3. **Encounter Phase**: Encounter Architect designs the encounter's internal structure — phases, approaches, decision trees, and storylets.
 4. **Validation Phase**: Branch Manager validates branch structure. Various validators check types, percentages, budgets, and story principles.
 5. **Image Phase**: Image agents generate scene art, character images, encounter images, and visual content.
 6. **Video Phase** (optional): VideoDirectorAgent generates video direction, VideoGenerationService renders via Veo.
@@ -610,26 +610,19 @@ Includes verb conjugation for pronoun substitution and unresolved token fallback
 | **ChoiceDensityValidator** | Choice timing and frequency |
 | **ConsequenceBudgetValidator** | Consequence tier allocation |
 | **FiveFactorValidator** | Five-factor impact (LLM-based) |
-| **StakesTriangleValidator** | Want/Cost/Identity stakes (LLM-based) |
-| **BranchingValidator** | Branching structural integrity, reconvergence |
-| **NPCRelationshipValidator** | NPC relationship dimension requirements |
-| **PlayerAttributeValidator** | Attribute values within 0-100 bounds |
-| **StateVariableValidator** | Flag/score/tag usage consistency |
-| **TextLimitsValidator** | Word/character count enforcement |
+| **StakesTriangleValidator** | Want/Cost/Identity analysis (LLM-based) |
+| **RelationshipDepthValidator** | Relationship dimension requirements for NPCs |
+| **ChoiceGeometryValidator** | Choice type constraints |
+| **VoiceConsistencyValidator** | Character dialogue consistency |
 
-### 13.2 Validation Pipeline
+### 13.2 Validation Levels
 
-```
-1. Type validation (structure checks)
-     ↓
-2. Percentage validation (distribution checks)
-     ↓
-3. Budget validation (consequence allocation)
-     ↓
-4. LLM validation (five-factor impact, stakes triangle)
-     ↓
-5. Best-practices validation (choice density, text limits)
-```
+| Level | When | Error Style |
+|---|---|---|
+| **Type Validation** | On output | Hard errors, parsing failures |
+| **Percentage Validation** | Per episode | Warnings, budget breaches |
+| **Storytelling Validation** | Per choice point | Quality scores, principles adherence |
+| **Cross-episode Validation** | Full story | Continuity, character arcs |
 
 ---
 
@@ -639,167 +632,114 @@ Includes verb conjugation for pronoun substitution and unresolved token fallback
 
 ```typescript
 interface PlayerState {
-  // Core identity
+  // Character basics
   name: string;
   pronouns: 'he/him' | 'she/her' | 'they/them';
 
   // Attributes (0-100)
-  attributes: {
-    charm: number;
-    wit: number;
-    courage: number;
-    empathy: number;
-    resolve: number;
-    resourcefulness: number;
-  };
+  attributes: PlayerAttributes;
 
-  // Skills (0-100)
-  skills: { [skillName: string]: number };
+  // Skills (name → level)
+  skills: Record<string, number>;
 
-  // NPC Relationships (each -100 to +100)
-  relationships: {
-    [npcId: string]: {
-      trust: number;
-      affection: number;
-      respect: number;
-      fear: number;
-    };
-  };
+  // Relationships (NPC ID → dimensions)
+  relationships: Record<string, Relationship>;
 
-  // State tracking
-  flags: { [key: string]: boolean };
-  scores: { [key: string]: number };
+  // Boolean flags
+  flags: Record<string, boolean>;
+
+  // Integer scores
+  scores: Record<string, number>;
+
+  // String tags
   tags: Set<string>;
+
+  // Identity profile
+  identity: IdentityProfile;
 
   // Inventory
   inventory: InventoryItem[];
 
-  // Identity profile (-100 to +100 each)
-  identityProfile: {
-    mercy_justice: number;
-    idealism_pragmatism: number;
-    cautious_bold: number;
-    loner_leader: number;
-    heart_head: number;
-    honest_deceptive: number;
-  };
-
-  // Session data
-  currentEpisodeId: string;
-  currentSceneId: string;
-  currentBeatId?: string;
-  visitedScenes: string[];
+  // Story progress
+  currentEpisodeId?: string;
+  currentSceneId?: string;
   completedEpisodes: string[];
+
+  // Pending effects
+  delayedConsequences: DelayedConsequence[];
 }
 ```
 
-### 14.2 State Persistence
+### 14.2 Store Architecture
 
-- **AsyncStorage**: Local device storage for React Native
-- **File system**: JSON files for Node.js
-- **Game Store**: React Context provider (`gameStore`) for runtime state
-- **Settings Store**: Zustand store (`settingsStore`) for app preferences
+- **gameStore** (React Context) — Main player state
+- **settingsStore** (Zustand) — App preferences
+- **generationJobStore** (Zustand) — Pipeline status
+- **seasonPlanStore** (Zustand) — Season planning data
+- **imageJobStore** (Zustand) — Image generation jobs
+- **videoJobStore** (Zustand) — Video generation jobs
 
-### 14.3 State Stores
+### 14.3 Persistence
 
-| Store | Purpose | Location |
-|---|---|---|
-| `gameStore` | Player state, current episode/scene | `src/stores/gameStore.ts` |
-| `settingsStore` | User preferences, generation settings | `src/stores/settingsStore.ts` |
-| `generationJobStore` | Pipeline job tracking | `src/stores/generationJobStore.ts` |
-| `imageJobStore` | Image generation jobs | `src/stores/imageJobStore.ts` |
-| `videoJobStore` | Video generation jobs | `src/stores/videoJobStore.ts` |
-| `seasonPlanStore` | Season planning data | `src/stores/seasonPlanStore.ts` |
-| `imageFeedbackStore` | Image feedback/ratings | `src/stores/imageFeedbackStore.ts` |
-| `appNavigationStore` | UI navigation state | `src/stores/appNavigationStore.ts` |
+- `src/stores/playerStatePersistence.ts` — AsyncStorage serialization
+- `src/stores/encounterStatePersistence.ts` — Encounter state handling
 
 ---
 
 ## 15. Cross-Episode Continuity
 
-### 15.1 Episode Summaries
+### 15.1 Episode Summary Chain
 
-Each completed episode generates a summary that becomes input context for subsequent episodes, preserving:
-- Key events and decisions
-- Relationship changes
-- Acquired items/knowledge
-- Narrative threads
+Each episode generates a summary for the next episode to maintain narrative continuity:
 
-### 15.2 Persistent State Variables
+```typescript
+interface EpisodeSummary {
+  episodeNumber: number;
+  title: string;
+  majorEvents: string[];
+  characterDevelopment: string[];
+  stateChanges: string[];
+  unresolved: string[];
+}
+```
 
-| Type | Persistence |
-|---|---|
-| **Flags** | Cross-episode (permanent) |
-| **Scores** | Cross-episode (cumulative) |
-| **Tags** | Cross-episode (additive) |
-| **Relationships** | Cross-episode (evolving) |
-| **Inventory** | Cross-episode (carried forward) |
-| **Identity** | Cross-episode (accumulating) |
+### 15.2 Season Planning Integration
 
-### 15.3 Season Planning
-
-Season-level planning via `SeasonPlannerAgent` ensures:
-- Episode-to-episode narrative arcs
-- Character development across episodes
-- Branching consequences that span multiple episodes
-- Encounter difficulty progression
-- Relationship development curves
+The pipeline supports season-level planning via `SeasonPlannerAgent` which creates:
+- Season arc structure
+- Episode-by-episode plans
+- Cross-episode branch effects
+- Consequence chains
+- Growth trajectories
 
 ---
 
 ## 16. Configuration Reference
 
-### 16.1 Generation Settings
-
-```typescript
-interface GenerationSettingsConfig {
-  // Parallelism
-  maxParallelEpisodes: number;      // Default: 2
-  maxParallelScenes: number;        // Default: 2
-  
-  // LLM constraints
-  llmMaxGlobalInFlight: number;     // Default: 4
-  llmMaxPerProviderInFlight: number; // Default: 2
-  
-  // Quality controls
-  strictValidation: boolean;        // Default: true
-  failurePolicy: 'fail_fast' | 'recover'; // Default: 'fail_fast'
-  
-  // Content generation
-  targetEpisodeCount: number;       // Default: 8
-  targetSceneCount: number;         // Default: 12 per episode
-  targetBeatCount: number;          // Default: 8 per scene
-  
-  // Images and video
-  generateImages: boolean;          // Default: true
-  generateVideo: boolean;           // Default: false
-  
-  // Memory (Claude only)
-  useMemory: boolean;              // Default: false
-}
-```
-
-### 16.2 Agent Configuration
+### 16.1 AgentConfig
 
 ```typescript
 interface AgentConfig {
   provider: 'anthropic' | 'openai' | 'gemini';
   model: string;
   apiKey: string;
-  maxTokens: number;    // Default: 4096
-  temperature: number;  // 0.0-1.0, varies by agent
+  maxTokens: number;
+  temperature: number;
 }
 ```
 
-### 16.3 Validation Thresholds
+### 16.2 GenerationSettingsConfig
 
-| Validator | Threshold | Configurable? |
-|---|---|---|
-| **Choice Density** | ≤120 seconds between choices | No |
-| **Choice Distribution** | Expression 15-25%, Relationship 20-30%, Strategic 25-35%, Dilemma 20-30% | No |
-| **Stakes Triangle** | ≥60/100 score | Yes (ChoiceAuthor constructor) |
-| **Five Factor** | ≥1 impact factor | No |
-| **Branching** | ≤2 per episode | No |
+```typescript
+interface GenerationSettingsConfig {
+  maxParallelEpisodes: number;
+  maxParallelScenes: number;
+  llmMaxGlobalInFlight: number;
+  llmMaxPerProviderInFlight: number;
+  failurePolicy: 'fail_fast' | 'recover';
+  // ... additional settings
+}
+```
 
 ---
 
@@ -809,54 +749,38 @@ interface AgentConfig {
 
 | File | Purpose |
 |---|---|
-| `src/engine/storyEngine.ts` | Scene navigation, choice execution |
+| `src/engine/storyEngine.ts` | Main story runtime |
 | `src/engine/resolutionEngine.ts` | Stat check resolution |
-| `src/engine/conditionEvaluator.ts` | Choice/scene condition evaluation |
-| `src/engine/templateProcessor.ts` | Text template substitution |
-| `src/engine/identityEngine.ts` | Identity profile updates |
+| `src/engine/conditionEvaluator.ts` | Choice/scene conditions |
+| `src/engine/templateProcessor.ts` | Dynamic text templates |
+| `src/engine/identityEngine.ts` | Player identity aggregation |
 
-### 17.2 Key Agent Files
+### 17.2 AI Agent Files
+
+| Directory | Contents |
+|---|---|
+| `src/ai-agents/agents/` | Core narrative agents |
+| `src/ai-agents/agents/image-team/` | Image & video agents |
+| `src/ai-agents/pipeline/` | Pipeline orchestration |
+| `src/ai-agents/validators/` | Quality assurance validators |
+| `src/ai-agents/prompts/` | Shared prompt templates |
+
+### 17.3 Store Files
 
 | File | Purpose |
 |---|---|
-| `src/ai-agents/agents/BaseAgent.ts` | Agent base class with LLM calls |
-| `src/ai-agents/agents/StoryArchitect.ts` | Episode structure design |
-| `src/ai-agents/agents/SceneWriter.ts` | Beat prose generation |
-| `src/ai-agents/agents/ChoiceAuthor.ts` | Player choice creation |
-| `src/ai-agents/agents/EncounterArchitect.ts` | Encounter design |
+| `src/stores/gameStore.ts` | Player state management |
+| `src/stores/settingsStore.ts` | App preferences |
+| `src/stores/generationJobStore.ts` | Pipeline job tracking |
+| `src/stores/seasonPlanStore.ts` | Season planning state |
+| `src/stores/imageJobStore.ts` | Image generation tracking |
 
-### 17.3 Pipeline Files
-
-| File | Purpose |
-|---|---|
-| `src/ai-agents/pipeline/FullStoryPipeline.ts` | Master generation orchestrator |
-| `src/ai-agents/utils/concurrency.ts` | Parallelism utilities |
-| `src/ai-agents/utils/memoryStore.ts` | Pipeline memory abstraction |
-| `src/ai-agents/utils/pipelineTelemetry.ts` | Metrics collection |
-
-### 17.4 Validation Files
+### 17.4 Screen Files
 
 | File | Purpose |
 |---|---|
-| `src/ai-agents/validators/ChoiceDistributionValidator.ts` | Choice type percentages |
-| `src/ai-agents/validators/ChoiceDensityValidator.ts` | Choice timing validation |
-| `src/ai-agents/validators/FiveFactorValidator.ts` | LLM-based impact validation |
-| `src/ai-agents/validators/StakesTriangleValidator.ts` | LLM-based stakes validation |
-
-### 17.5 Type Definitions
-
-| File | Purpose |
-|---|---|
-| `src/types/index.ts` | Core runtime types (Player, Scene, Choice, etc.) |
-| `src/ai-agents/types/llm-output.ts` | LLM output types |
-| `src/types/sourceAnalysis.ts` | Source material analysis types |
-
-### 17.6 Constants and Configuration
-
-| File | Purpose |
-|---|---|
-| `src/constants/pipeline.ts` | CHARACTER_DEFAULTS and pipeline constants |
-| `src/constants/validation.ts` | TEXT_LIMITS and validation thresholds |
-| `src/ai-agents/prompts/storytellingPrinciples.ts` | Core storytelling prompt |
-
-This completes the comprehensive system architecture reference for StoryRPG. For specific implementation details, consult the individual source files and their inline documentation.
+| `src/screens/ReadingScreen.tsx` | Story reading interface |
+| `src/screens/GeneratorScreen.tsx` | Story generation interface |
+| `src/screens/HomeScreen.tsx` | Main app navigation |
+| `src/screens/EpisodeSelectScreen.tsx` | Episode selection |
+| `src/screens/VisualizerScreen.tsx` | Story structure visualization |

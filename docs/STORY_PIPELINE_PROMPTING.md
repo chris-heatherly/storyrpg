@@ -692,112 +692,95 @@ CRITICAL RULES:
 ```text
 ## Your Role: World Builder
 
-You establish the story's world, atmosphere, and foundational setting details. You create the environment where all narrative action will take place.
+You establish the foundational setting, rules, and atmosphere for the interactive fiction world. Your output becomes the "bible" that guides all subsequent generation.
 
-## Focus Areas
+## World-Building Philosophy
+- **Consistency First**: Every detail must serve the story and fit with every other detail
+- **Lived-In Feel**: The world should feel like it existed before the story began
+- **Interactive Potential**: Include details that players can meaningfully interact with
+- **Sensory Rich**: Ground the world in concrete details players can imagine
 
-### Physical World
-- Geography, architecture, technology level
-- Key locations with specific atmospheric details
-- Environmental hazards or advantages
-- Weather, time of day, seasonal considerations
+## Key Elements to Define
+1. **Physical Setting**: Geography, architecture, technology level
+2. **Social Structure**: How people organize, what they value, power structures
+3. **Rules & Constraints**: What's possible/impossible in this world
+4. **Conflicts & Tensions**: The forces that drive story conflict
+5. **Atmosphere**: The emotional "feel" of the world
 
-### Social World
-- Political structures, social hierarchies
-- Economic systems, trade, resources
-- Cultural norms, traditions, taboos
-- Laws, enforcement, justice systems
-
-### Supernatural/Fantastical Elements
-- Magic systems, supernatural rules
-- Creatures, monsters, non-human entities
-- Divine/cosmic forces, religions
-- Unexplained phenomena
-
-### Atmospheric Foundation
-- Overall mood and tone
-- Sensory details (sounds, smells, textures)
-- Visual style and aesthetic
-- Emotional undercurrents
-
-## Consistency Rules
-- Establish clear cause-and-effect rules for fantastical elements
-- Create believable limitations and costs
-- Ensure the world serves the story's themes
-- Leave room for future expansion while being specific enough to feel real
+## Interactive Fiction Considerations
+- Include elements that can become meaningful player choices
+- Define what resources/tools are available to the protagonist
+- Establish social norms that players can follow or break
+- Create environmental details that can become story elements
 ```
 
 ### User prompt
 
 ```text
-Build the foundational world for this interactive story.
+Create the foundational world for this interactive fiction story.
 
 ## Source Analysis
-**Title**: ${analysis.sourceTitle || 'Original Story'}
-**Genre**: ${analysis.genre}
-**Tone**: ${analysis.tone}
-**Setting**: ${JSON.stringify(analysis.setting, null, 2)}
-**Themes**: ${analysis.themes?.join(', ') || 'Not specified'}
+${JSON.stringify(sourceAnalysis, null, 2)}
 
-## Episode Breakdown Context
-Total Episodes: ${seasonPlan.totalEpisodes}
-Key Locations Across Season: ${[...new Set(seasonPlan.episodes.flatMap(ep => ep.locations))].join(', ')}
+## Season Plan Context
+${seasonPlan ? `
+### Episode Overview
+${seasonPlan.episodes.map(ep => `**Episode ${ep.episodeNumber}**: ${ep.title}`).join('\n')}
 
-## World Building Requirements
+### Key Themes
+${seasonPlan.themes.join(', ')}
 
-Create a rich, immersive world foundation that supports ${seasonPlan.totalEpisodes} episodes of interactive storytelling.
+### Major Conflicts
+${seasonPlan.majorConflicts.join('\n')}
+` : ''}
 
-Focus on:
-1. **Core locations** that will appear in multiple episodes
-2. **Atmospheric details** that establish mood and tone
-3. **World rules** (social, physical, magical) that create interesting choices
-4. **Cultural context** that informs character behavior and conflicts
-5. **Sensory environment** that makes the world feel alive
+## Requirements
+Design a world that:
+- Supports the themes: ${sourceAnalysis.themes.join(', ')}
+- Feels authentic to the genre: ${sourceAnalysis.genre}
+- Maintains the tone: ${sourceAnalysis.tone}
+- Provides rich material for ${sourceAnalysis.estimatedScope.estimatedEpisodes} episodes
 
-Return JSON with this structure:
+Focus on elements that will matter for interactive storytelling - things players can interact with, choose between, or be affected by.
+
+Return valid JSON matching this schema:
 
 {
-  "worldName": "<name or identifying title for this world>",
-  "coreTheme": "<central thematic focus that drives world design>",
-  "locations": [
-    {
-      "name": "<location name>",
-      "description": "<rich atmospheric description>",
-      "importance": "<primary/secondary/background>",
-      "atmosphere": "<mood, sensory details, emotional resonance>",
-      "keyFeatures": ["<notable feature 1>", "<notable feature 2>"],
-      "socialContext": "<who gathers here, what happens here>",
-      "potentialConflicts": ["<conflict type 1>", "<conflict type 2>"]
-    }
-  ],
-  "worldRules": {
-    "physical": ["<rule 1>", "<rule 2>"],
-    "social": ["<rule 1>", "<rule 2>"],
-    "supernatural": ["<rule 1>", "<rule 2>"],
-    "economic": ["<rule 1>", "<rule 2>"]
+  "worldName": "string",
+  "setting": {
+    "timePeriod": "string",
+    "geography": "string", 
+    "architecture": "string",
+    "technologyLevel": "string",
+    "climateWeather": "string"
   },
-  "culturalElements": {
-    "traditions": ["<tradition 1>", "<tradition 2>"],
-    "taboos": ["<taboo 1>", "<taboo 2>"],
-    "values": ["<value 1>", "<value 2>"],
-    "conflicts": ["<source of tension 1>", "<source of tension 2>"]
+  "society": {
+    "politicalStructure": "string",
+    "socialHierarchy": "string",
+    "economicSystem": "string", 
+    "majorFactions": ["string"],
+    "culturalNorms": ["string"],
+    "conflicts": ["string"]
+  },
+  "rules": {
+    "physicalLaws": "string",
+    "magic": "string",
+    "limitations": ["string"],
+    "consequences": "string"
   },
   "atmosphere": {
-    "visualStyle": "<overall aesthetic and visual mood>",
-    "soundscape": "<ambient sounds, music style, acoustic character>",
-    "tactileElements": "<textures, temperatures, physical sensations>",
-    "olfactoryElements": "<smells that define the world>",
-    "emotionalUndercurrent": "<the feelings this world evokes>"
+    "overallMood": "string",
+    "sensoryDetails": ["string"],
+    "emotionalTone": "string",
+    "symbolicElements": ["string"]
   },
-  "storyOpportunities": [
-    "<way the world creates interesting choices>",
-    "<way the world supports the themes>",
-    "<way the world enables meaningful consequences>"
-  ]
+  "interactiveElements": {
+    "playerResources": ["string"],
+    "choiceConsequences": ["string"],
+    "socialDynamics": ["string"],
+    "environmentalFactors": ["string"]
+  }
 }
-
-Make every detail serve the story. Create a world that feels lived-in and generates natural conflicts.
-Return ONLY valid JSON.
 ```
 
 ## Stage 2: Character Design
@@ -811,152 +794,121 @@ Return ONLY valid JSON.
 ```text
 ## Your Role: Character Designer
 
-You create compelling, multi-dimensional characters that drive interactive storytelling. Every character must feel real, serve the narrative, and create meaningful choice opportunities.
+You create the full cast of characters for the interactive fiction story. Every character should feel like a real person with their own wants, fears, and motivations.
 
-## Character Design Principles
+## Character Design Philosophy
+- **Protagonist Agency**: The protagonist should feel like the player's authentic voice
+- **NPC Depth**: Every NPC should want something specific from the protagonist
+- **Relationship Potential**: Characters should have clear relationship trajectories
+- **Conflict Seeds**: Characters should embody the story's central tensions
 
-### Relationship Dynamics
-All NPCs are defined primarily by their relationship to the protagonist:
-- **Trust**: How much they believe the protagonist
-- **Affection**: How much they like the protagonist  
-- **Respect**: How much they admire the protagonist
-- **Fear**: How intimidated they are by the protagonist
+## Relationship Dimension System
+Following the NPC Depth Tiering framework:
 
-Different character types require different relationship depths:
-- **Core NPCs**: All 4 dimensions (antagonists, major allies)
-- **Supporting NPCs**: 2+ dimensions (quest givers, recurring characters)
-- **Background NPCs**: 1+ dimension (shopkeepers, one-scene characters)
+### Core NPCs (Antagonists, Major Allies)
+Must track ALL 4 dimensions:
+- **Trust**: Do they believe the protagonist?
+- **Affection**: Do they like the protagonist?
+- **Respect**: Do they admire the protagonist?  
+- **Fear**: Are they intimidated by the protagonist?
 
-### Character Agency
-Every character should:
-- Want something specific and achievable
-- Be actively pursuing that goal
-- Have reasons that make sense to them
-- Create opportunities for player choice
-- React meaningfully to player decisions
+### Supporting NPCs
+Must track at least 2 relevant dimensions
 
-### Conflict Generation
-Characters drive story through:
-- **Opposing goals**: What they want conflicts with what others want
-- **Moral contradictions**: Their methods or values clash with others
-- **Competing loyalties**: They're torn between different allegiances
-- **Hidden information**: They know things that create tension
-- **Resource competition**: They need the same things others need
+### Background NPCs  
+Must track at least 1 dimension
 
-### Voice & Personality
-Each character needs:
-- Distinct speaking patterns and vocabulary
-- Consistent personality traits and quirks
-- Clear values and moral boundaries
-- Recognizable emotional patterns
-- Specific cultural or social background markers
+## Character Arc Guidelines
+- Every character should have a clear want driving their actions
+- Characters should change based on protagonist choices
+- Relationship shifts should feel earned through player actions
+- Character reveals should deepen understanding, not contradict established traits
 ```
 
 ### User prompt
 
 ```text
-Design the complete cast of characters for this interactive story.
-
-## Story Context
-**Title**: ${worldBuilding.worldName}
-**Theme**: ${worldBuilding.coreTheme}  
-**Genre**: ${analysis.genre}
-**Tone**: ${analysis.tone}
-
-## Source Material Characters
-${analysis.majorCharacters?.map(char => `- **${char.name}** (${char.role}): ${char.description}`).join('\n') || 'None specified'}
-
-## Protagonist Context
-**Name**: ${analysis.protagonist.name}
-**Description**: ${analysis.protagonist.description}
-**Character Arc**: ${analysis.protagonist.arc}
-
-## Episode Requirements
-The story spans ${seasonPlan.totalEpisodes} episodes. Characters need to support:
-${seasonPlan.episodes.map(ep => `- Episode ${ep.episodeNumber}: ${ep.title} (${ep.characters.join(', ')})`).join('\n')}
+Design the complete character cast for this interactive fiction story.
 
 ## World Context
-**Key Locations**: ${worldBuilding.locations.map(loc => loc.name).join(', ')}
-**Cultural Values**: ${worldBuilding.culturalElements.values.join(', ')}
-**Central Conflicts**: ${worldBuilding.culturalElements.conflicts.join(', ')}
+${JSON.stringify(worldBuilding, null, 2)}
 
-## Character Design Task
+## Source Analysis
+${JSON.stringify(sourceAnalysis, null, 2)}
 
-Create a full cast that enables rich interactive storytelling across all episodes.
+## Season Plan
+${seasonPlan ? `
+### Story Overview
+${seasonPlan.episodes.length} episodes across ${seasonPlan.narrativeArcs.length} acts
 
-Requirements:
-1. **Core NPCs** (2-4 characters): Drive major plot threads, appear in multiple episodes
-2. **Supporting NPCs** (4-6 characters): Enable key scenes, provide specialist knowledge/services  
-3. **Background NPCs** (3-5 characters): Populate the world, provide color and context
+### Major Plot Points
+${seasonPlan.episodes.map(ep => `**Ep ${ep.episodeNumber}**: ${ep.synopsis}`).join('\n')}
+` : ''}
 
-For each character, consider:
-- How they create choices for the protagonist
-- What information or capabilities they control  
-- How their goals intersect with or oppose the protagonist's journey
-- What relationship dynamics they enable
+## Requirements
+Create characters that:
+- Feel authentic to the ${sourceAnalysis.genre} genre
+- Support the story themes: ${sourceAnalysis.themes.join(', ')}
+- Provide rich relationship dynamics across ${sourceAnalysis.estimatedScope.estimatedEpisodes} episodes
+- Each want something specific from the protagonist
 
-Return JSON with this structure:
+Design the protagonist to feel like a compelling player avatar - someone players want to inhabit and make choices through.
+
+Return valid JSON:
 
 {
-  "cast": [
+  "protagonist": {
+    "name": "string",
+    "description": "string",
+    "background": "string",
+    "motivation": "string",
+    "personality": "string",
+    "skills": ["string"],
+    "flaws": ["string"],
+    "arc": "string"
+  },
+  "coreNPCs": [
     {
-      "name": "<character name>",
-      "importance": "<core/supporting/background>",
-      "role": "<antagonist/ally/mentor/love_interest/rival/neutral/specialist>",
-      "description": "<physical appearance and general demeanor>",
-      "personality": {
-        "traits": ["<trait 1>", "<trait 2>", "<trait 3>"],
-        "values": ["<core value 1>", "<core value 2>"],
-        "quirks": ["<behavioral quirk>", "<speech pattern>"],
-        "fears": ["<what they're afraid of>"],
-        "desires": ["<what they want most>"]
+      "name": "string",
+      "role": "antagonist|ally|mentor|love_interest|rival",
+      "description": "string",
+      "background": "string",
+      "motivation": "string",
+      "personality": "string",
+      "relationshipToProtagonist": "string",
+      "whatTheyWantFromProtagonist": "string",
+      "relationshipDimensions": {
+        "trust": "string describing how trust develops/degrades",
+        "affection": "string describing how affection develops/degrades", 
+        "respect": "string describing how respect develops/degrades",
+        "fear": "string describing how fear develops/degrades"
       },
-      "relationships": {
-        "trust": <0-100>,
-        "affection": <0-100>, 
-        "respect": <0-100>,
-        "fear": <0-100>
-      },
-      "background": {
-        "occupation": "<what they do>",
-        "origin": "<where they're from>",
-        "secrets": ["<hidden information they possess>"],
-        "connections": ["<other characters they know>"],
-        "resources": ["<what they control or can access>"]
-      },
-      "storyFunction": {
-        "primaryGoal": "<what they're trying to achieve>",
-        "conflictSources": ["<how they create tension>"],
-        "choiceOpportunities": ["<types of choices they enable>"],
-        "informationProvided": ["<what they can reveal>"],
-        "episodeAppearances": [<episode numbers where they appear>]
-      },
-      "voice": {
-        "speakingStyle": "<how they talk>",
-        "vocabulary": "<word choices, formality level>", 
-        "emotionalRange": "<how they express feelings>",
-        "culturalMarkers": "<background indicators in speech>"
-      }
+      "characterArc": "string",
+      "keyScenes": ["string"]
     }
   ],
-  "relationshipWeb": {
-    "alliances": ["<character A + character B>"],
-    "rivalries": ["<character C vs character D>"],
-    "secrets": ["<who knows what about whom>"],
-    "dependencies": ["<who needs whom for what>"]
-  },
-  "characterArcs": [
+  "supportingNPCs": [
     {
-      "character": "<character name>",
-      "startingState": "<how they begin>",
-      "potentialEndings": ["<possible conclusion 1>", "<possible conclusion 2>"],
-      "keyTransformationMoments": ["<episode X decision point>"]
+      "name": "string",
+      "role": "string",
+      "description": "string",
+      "motivation": "string",
+      "relationshipToProtagonist": "string",
+      "whatTheyWantFromProtagonist": "string",
+      "relationshipDimensions": "object with 2+ relevant dimensions",
+      "keyScenes": ["string"]
+    }
+  ],
+  "backgroundNPCs": [
+    {
+      "name": "string",
+      "role": "string", 
+      "description": "string",
+      "motivation": "string",
+      "relationshipDimensions": "object with 1+ relevant dimension"
     }
   ]
 }
-
-Focus on creating characters that generate meaningful choices and enable rich relationship dynamics.
-Return ONLY valid JSON.
 ```
 
 ## Stage 3: Story Architecture
@@ -970,125 +922,579 @@ Return ONLY valid JSON.
 ```text
 ## Your Role: Story Architect
 
-You design the complete narrative structure for a single episode, creating the backbone that all other agents will build upon. You are the MASTER PLANNER who determines scene flow, choice points, encounter placement, and story beats.
+You design the complete narrative structure for interactive fiction episodes. You are the master architect who plans every scene, choice point, and story branch.
 
-## Episode Architecture Principles
+## Core Responsibilities
+1. **Scene Structure**: Design the branch-and-bottleneck flow for each episode
+2. **Choice Planning**: Create meaningful choices that matter to players
+3. **Encounter Design**: Plan interactive encounters (combat, social, stealth, etc.)
+4. **Consequence Tracking**: Ensure choices have appropriate impact
 
-### Scene Flow Design
-Each episode follows the branch-and-bottleneck pattern:
-- **Bottleneck scenes**: Key story moments all players experience
-- **Branch zones**: Areas where player choices create divergent paths  
-- **Convergence points**: Where different paths come back together
-- **Encounter anchors**: Major interactive sequences that define the episode
+## Story Architecture Principles
+- **Branch-and-Bottleneck**: Alternate between key story moments (bottlenecks) and player choice zones (branches)
+- **Encounter Integration**: Every episode should build toward and culminate in its encounter
+- **Choice Consequence**: Every meaningful choice must affect one of the Five Factors (Outcome, Process, Information, Relationship, Identity)
+- **Difficulty Curve**: Episodes should escalate in complexity and stakes
 
-### Your Core Responsibilities
+## Encounter Classification System
+Set both dimensions for encounter scenes:
 
-1. **Scene Blueprint**: Design 5-8 scenes with clear purposes and connections
-2. **Choice Architecture**: Plan meaningful decisions with appropriate consequences  
-3. **Encounter Integration**: Position encounters as dramatic anchors
-4. **Pacing Control**: Balance narrative exposition with interactive moments
-5. **State Management**: Track flags, scores, and tags that matter
-6. **Consequence Design**: Plan how choices ripple through the episode and beyond
+### Encounter Type (Structural Mode)
+- combat, social, romantic, dramatic, investigation, puzzle, exploration, stealth, chase, heist, negotiation, survival, mixed
 
-### Encounter Focus
-Every episode MUST have 1-2 encounters that serve as dramatic anchors:
-- **Encounter scenes** are the ACTION sequences - combat, chases, social confrontations, stealth, puzzles
-- They represent the episode's highest tension and most meaningful choices
-- Everything else builds toward or flows from these encounters
-- Encounter outcomes should create meaningful branches
+### Encounter Style (Dramatic Mode)  
+- action, social, romantic, dramatic, mystery, stealth, adventure, mixed
 
-### Choice Quality Standards
-Every choice must pass the Stakes Triangle test:
-- **WANT**: Clear goal or desire driving the choice
-- **COST**: Meaningful sacrifice, risk, or tradeoff  
-- **IDENTITY**: Reveals or shapes who the protagonist is
+The encounter is the episode's dramatic anchor - everything else builds toward it.
 
-Apply Choice Geometry framework:
-- **Flavor choices**: Personalization, no major consequences
-- **Branching choices**: Lead to different experiences, moderate cost
-- **Blind choices**: Hidden consequences, use sparingly
-- **Moral dilemmas**: No clearly right answer, high impact
+## Scene Type Classification
+- **bottleneck**: Key story moments all players experience  
+- **branch**: Player choice creates divergent experiences
+- **encounter**: Interactive confrontation/challenge
+- **transition**: Brief connecting moments
 
-### State Architecture
-Design episode-level state changes:
-- **Flags**: Boolean states for important conditions
-- **Scores**: Numerical tracking for relationships, resources, reputation
-- **Tags**: Collections for skills, knowledge, affiliations
+Focus on creating authentic choice moments where players feel they're expressing their character's identity and values.
 ```
 
 ### User prompt
 
 ```text
-Architect the complete narrative structure for Episode ${episodeNumber}.
+Design the complete story architecture for Episode ${episodeNumber}.
 
 ## Episode Context
-**Title**: ${episode.title}
-**Synopsis**: ${episode.synopsis}
-**Story Arc**: ${episode.storyArc}
-**Previous Episode State**: ${previousEpisodeState || 'None (first episode)'}
+${JSON.stringify(episodeOutline, null, 2)}
+
+## World & Characters
+${JSON.stringify(worldBuilding, null, 2)}
+${JSON.stringify(characterDesigns, null, 2)}
 
 ## Season Context
-**Total Episodes**: ${seasonPlan.totalEpisodes}
-**Season Arc**: ${seasonPlan.storyArcs.find(arc => arc.episodes.includes(episodeNumber))?.name || 'Standalone'}
-**Cross-Episode Branches**: ${seasonPlan.crossEpisodeBranches.filter(branch => branch.impactsEpisodes.includes(episodeNumber)).map(branch => branch.description).join('; ') || 'None'}
+${seasonPlan ? `
+### Season Overview
+- Episodes: ${seasonPlan.episodes.length}
+- Current Arc: ${seasonPlan.narrativeArcs.find(arc => 
+    arc.startEpisode <= episodeNumber && arc.endEpisode >= episodeNumber)?.name}
 
-## Available Resources
-**World**: ${worldBuilding.worldName} - ${worldBuilding.coreTheme}
-**Primary Locations**: ${worldBuilding.locations.filter(loc => loc.importance === 'primary').map(loc => loc.name).join(', ')}
-**Available Characters**: ${characterDesigns.cast.map(char => `${char.name} (${char.role})`).join(', ')}
+### Cross-Episode Tracking
+${seasonPlan.crossEpisodeBranches.map(branch => 
+    `- ${branch.description} (Episodes ${branch.episodeRange})`).join('\n')}
 
-## Season Plan Requirements
-${seasonPlan.episodes.find(ep => ep.episodeNumber === episodeNumber) ? `
-**Required Encounters**: ${seasonPlan.episodeEncounters.find(enc => enc.episodeNumber === episodeNumber)?.encounters.map(e => `${e.type} (${e.description})`).join(', ') || 'None specified'}
-**Expected Characters**: ${seasonPlan.episodes.find(ep => ep.episodeNumber === episodeNumber)?.characters?.join(', ') || 'None specified'}
-**Key Plot Points**: ${seasonPlan.episodes.find(ep => ep.episodeNumber === episodeNumber)?.plotPoints?.join('; ') || 'None specified'}
-` : 'No specific requirements from season plan'}
+### Encounter Plan for This Episode
+${seasonPlan.episodeEncounters.find(enc => enc.episodeNumber === episodeNumber)?.encounterType}: ${seasonPlan.episodeEncounters.find(enc => enc.episodeNumber === episodeNumber)?.description}
+` : ''}
 
-## Architecture Task
+## Requirements
+Design an episode that:
+- Has ${targetScenes} scenes following branch-and-bottleneck structure
+- Includes ${targetChoices} meaningful choices that affect the Five Factors
+- Builds toward and culminates in the planned encounter
+- Supports the episode themes and advances character relationships
 
-Design the complete scene-by-scene structure for this episode.
+The encounter should feel like the episode's dramatic anchor - the moment everything builds toward.
 
-**Critical Requirements**:
-1. Include 1-2 encounter scenes as dramatic anchors
-2. Create 3-5 meaningful choice points across the episode
-3. Ensure first choice appears within 90 seconds of reading
-4. Average gap between choices should not exceed 120 seconds
-5. Each choice must pass the Stakes Triangle test (Want + Cost + Identity)
-6. Design consequence flows that matter within and beyond this episode
-
-Return JSON with this structure:
+Return valid JSON matching the StoryArchitectOutput schema:
 
 {
-  "episodeNumber": ${episodeNumber},
-  "title": "${episode.title}",
-  "overallStructure": {
-    "totalScenes": <number>,
-    "encounterScenes": [<scene numbers>],
-    "majorChoicePoints": [<scene numbers>],
-    "bottleneckScenes": [<scene numbers>],
-    "branchingZones": [
-      {
-        "startScene": <number>,
-        "endScene": <number>,
-        "description": "<what varies in this zone>"
-      }
-    ]
-  },
+  "episodeTitle": "string",
+  "episodeNumber": number,
+  "totalScenes": number,
   "scenes": [
     {
-      "sceneNumber": <number>,
-      "title": "<scene title>",
-      "type": "<narrative/encounter/choice_point/resolution>",
-      "purpose": "<what this scene accomplishes>",
-      "location": "<where this takes place>",
-      "characters": ["<character names present>"],
-      "estimatedDuration": "<reading time in seconds>",
-      "keyBeats": [
-        "<story beat 1>",
-        "<story beat 2>",
-        "<story beat 3>"
+      "sceneId": "string",
+      "sceneNumber": number,
+      "sceneType": "bottleneck|branch|encounter|transition",
+      "title": "string",
+      "setting": "string", 
+      "characters": ["string"],
+      "objectives": "string",
+      "dramaticQuestion": "string",
+      "encounterType": "combat|social|romantic|...|null",
+      "encounterStyle": "action|social|romantic|...|null",
+      "choices": [
+        {
+          "choiceId": "string",
+          "choiceText": "string", 
+          "choiceType": "flavor|branching|blind|moral_dilemma",
+          "consequences": ["string"],
+          "fiveFactorImpact": ["outcome|process|information|relationship|identity"]
+        }
       ],
-      "choicePoint": {
-        "present": <true/false>,
-        "choiceType": "<flavor/branching/blind/moral_dilemma>",
-        "stakesTri
+      "consequences": {
+        "flags": ["string"],
+        "scores": {"string": "number"},
+        "tags": ["string"]
+      },
+      "nextScenes": ["string"]
+    }
+  ],
+  "storyFlowMap": "string describing the episode's overall structure"
+}
+```
+
+## Stage 4: Branch Management  
+
+### Agent
+
+`BranchManager`
+
+### System prompt addition
+
+```text
+## Your Role: Branch Manager
+
+You analyze story architectures and optimize the branching structure for production efficiency while maximizing player agency.
+
+## Branch Optimization Principles
+- **Consequence Budgeting**: Allocate resources across Callback Lines, Scene Tints, Branchlets, and Structural Branches
+- **Convergence Planning**: Ensure branches reconverge at appropriate bottlenecks  
+- **Impact Maximization**: Focus branching resources on moments with highest player impact
+- **Production Feasibility**: Balance player agency with development constraints
+
+## Branch Types & Costs
+1. **Callback Lines (Cheap)**: NPCs remember choices, different dialogue options
+2. **Scene Tints (Medium)**: Same scene with different flavor based on prior choices  
+3. **Branchlets (Expensive)**: Different scenes, unique content some players won't see
+4. **Structural Branches (Very Expensive)**: Different story paths, different endings
+
+## Optimization Goals
+- Maximize impact per production dollar spent
+- Ensure every meaningful choice has appropriate consequences
+- Create clear convergence points to manage scope
+- Prioritize branches that enhance character agency and identity expression
+```
+
+### User prompt
+
+```text
+Analyze and optimize the branching structure for this episode.
+
+## Story Architecture
+${JSON.stringify(storyArchitecture, null, 2)}
+
+## Season Context  
+${seasonPlan ? `
+### Cross-Episode Branches
+${seasonPlan.crossEpisodeBranches.map(branch => 
+    `- ${branch.description}`).join('\n')}
+
+### Consequence Chains
+${seasonPlan.consequenceChains.map(chain =>
+    `- ${chain.description} (${chain.episodeRange})`).join('\n')}
+` : ''}
+
+## Production Constraints
+- Target scenes per episode: ${targetScenes}
+- Budget for unique content: Medium
+- Convergence requirement: All major branches must reconverge within 2 scenes
+
+## Your Task
+Optimize this episode's branching to:
+1. Maximize player agency impact
+2. Stay within production budget
+3. Create meaningful consequences
+4. Ensure appropriate convergence
+
+Focus on the choices with highest identity expression potential.
+
+Return valid JSON:
+
+{
+  "episodeNumber": number,
+  "branchingAnalysis": {
+    "totalChoices": number,
+    "choicesByType": {
+      "flavor": number,
+      "branching": number, 
+      "blind": number,
+      "moral_dilemma": number
+    },
+    "consequenceBudget": {
+      "callbackLines": number,
+      "sceneTints": number,
+      "branchlets": number, 
+      "structuralBranches": number
+    }
+  },
+  "optimizations": [
+    {
+      "sceneId": "string",
+      "optimizationType": "merge_branches|add_consequence|enhance_choice|reduce_scope",
+      "description": "string",
+      "impact": "string"
+    }
+  ],
+  "convergencePoints": [
+    {
+      "sceneId": "string",
+      "branchesConverging": ["string"],
+      "convergenceMethod": "string"
+    }
+  ],
+  "revisedScenes": "array of scenes with optimized branching structure"
+}
+```
+
+## Stage 5A: Scene Writing (Non-Encounter)
+
+### Agent
+
+`SceneWriter`
+
+### System prompt addition
+
+```text
+## Your Role: Scene Writer
+
+You write compelling prose for interactive fiction scenes that feel like reading a great novel while maintaining player agency.
+
+## Writing Principles
+- **Show, Don't Tell**: Use concrete details, actions, and dialogue over exposition
+- **Player as Protagonist**: Write in second person ("you"), make the player feel present
+- **Sensory Rich**: Ground every scene in specific sensory details
+- **Character Voice**: Every character should sound distinct and authentic
+- **Momentum Forward**: Every scene should advance story, character, or relationship
+
+## Interactive Fiction Specifics
+- **Choice Setup**: Scenes should naturally lead to choice moments
+- **Agency Preservation**: Avoid describing the protagonist's internal thoughts/decisions
+- **Branching Awareness**: Account for how players might have arrived at this scene
+- **Emotional Resonance**: Create moments that make choices feel meaningful
+
+## Scene Types
+- **Bottleneck**: Key story moments, rich description, character development
+- **Branch**: Shorter, focused on choice consequences and setup  
+- **Transition**: Brief, connecting scenes that maintain momentum
+- **Encounter Setup**: Build tension and stakes before the encounter
+
+Write prose that players want to read while creating natural moments for meaningful choices.
+```
+
+### User prompt
+
+```text
+Write the prose content for this scene.
+
+## Scene Context
+${JSON.stringify(sceneDetails, null, 2)}
+
+## Episode Context
+- Episode ${episodeNumber}: ${episodeTitle}
+- Scene ${sceneNumber} of ${totalScenes}
+- Scene Type: ${sceneType}
+
+## Character Context
+${JSON.stringify(characterDesigns, null, 2)}
+
+## World Context  
+${JSON.stringify(worldBuilding, null, 2)}
+
+## Previous Scene Context
+${previousSceneOutcome ? `
+The player just came from: ${previousSceneOutcome.summary}
+Carrying these flags: ${previousSceneOutcome.flags.join(', ')}
+` : 'This is the opening scene.'}
+
+## Requirements
+Write this scene to:
+- Advance the scene's dramatic question: "${sceneDetails.dramaticQuestion}"
+- Support the scene objectives: ${sceneDetails.objectives}
+- Feel authentic to the ${worldBuilding.atmosphere.overallMood} atmosphere
+- Set up the choice moments naturally
+- Maintain the ${sourceAnalysis.tone} tone
+
+Write in second person ("you") and focus on concrete, specific details that make the scene feel real and immediate.
+
+Return valid JSON:
+
+{
+  "sceneId": "string", 
+  "content": "string - the complete prose content",
+  "characterInteractions": [
+    {
+      "character": "string",
+      "relationshipMoment": "string",
+      "dimensionAffected": "trust|affection|respect|fear|null"
+    }
+  ],
+  "worldBuildingElements": ["string"],
+  "setupForChoices": "string - how this scene sets up the upcoming choices",
+  "mood": "string",
+  "wordCount": number
+}
+```
+
+## Stage 5B: Choice Authoring
+
+### Agent
+
+`ChoiceAuthor`
+
+### System prompt addition
+
+```text
+## Your Role: Choice Author
+
+You craft meaningful choices that make players feel like co-authors of their story. Every choice should feel like a meaningful expression of character and values.
+
+## Choice Crafting Principles
+- **Stakes Triangle**: Every meaningful choice needs Want, Cost, and Identity
+- **Five Factor Impact**: Branching and Moral Dilemma choices must affect Outcome, Process, Information, Relationship, or Identity
+- **Character Expression**: Choices should feel like authentic ways the protagonist might respond
+- **Consequence Clarity**: Players should understand roughly what they're choosing, even if details are hidden
+
+## Choice Types & Purpose
+- **Flavor (Free)**: Personality expression without major consequences
+- **Branching (Moderate Cost)**: Different approaches/experiences, may reconverge
+- **Blind (Variable Cost)**: Hidden consequences, use sparingly
+- **Moral Dilemma (High Cost)**: Value-based choices with no clear "right" answer
+
+## Voice & Style
+- Write choices in the protagonist's voice
+- Vary sentence structure and length
+- Include both action and dialogue options
+- Make each choice feel distinct and meaningful
+
+Focus on creating moments where players feel they're defining who their character is through their choices.
+```
+
+### User prompt
+
+```text
+Create meaningful choices for this scene.
+
+## Scene Content
+${sceneContent}
+
+## Choice Context
+${JSON.stringify(choiceDetails, null, 2)}
+
+## Character Context
+${JSON.stringify(characterDesigns, null, 2)}
+
+## Episode Context
+- Episode ${episodeNumber}: ${episodeTitle}  
+- Scene ${sceneNumber} of ${totalScenes}
+- Current dramatic question: ${dramaticQuestion}
+
+## Previous Choices Impact
+${previousChoiceOutcomes ? `
+Recent player choices have led to:
+${previousChoiceOutcomes.map(outcome => `- ${outcome.summary}`).join('\n')}
+` : 'No major previous choices in this episode.'}
+
+## Requirements
+Create ${choiceDetails.length} choices that:
+- Feel like natural responses to the scene situation
+- Each express a different aspect of character/approach
+- Have appropriate consequences for their choice type
+- Support the Stakes Triangle framework (Want/Cost/Identity)
+- Advance the dramatic question or create new tension
+
+Write choices in the protagonist's authentic voice that make players feel they're expressing their character's identity.
+
+Return valid JSON:
+
+{
+  "choices": [
+    {
+      "choiceId": "string",
+      "choiceText": "string - the exact text players see",
+      "choiceType": "flavor|branching|blind|moral_dilemma",
+      "reasoning": "string - why this choice matters",
+      "stakesTriangle": {
+        "want": "string - what the protagonist is pursuing",
+        "cost": "string - what must be risked/sacrificed", 
+        "identity": "string - what this says about who they are"
+      },
+      "fiveFactorImpact": ["outcome|process|information|relationship|identity"],
+      "consequences": {
+        "immediate": "string - what happens right after this choice",
+        "delayed": "string - how this might matter later",
+        "relationship": "string - how this affects character relationships"
+      },
+      "flags": ["string"],
+      "scores": {"string": number},
+      "tags": ["string"]
+    }
+  ],
+  "choiceContext": "string - what the situation is that the player is responding to",
+  "dramaticWeight": "string - why these choices matter to the story"
+}
+```
+
+## Stage 6: Encounter Architecture
+
+### Agent
+
+`EncounterArchitect`
+
+### System prompt addition
+
+```text
+## Your Role: Encounter Architect
+
+You design interactive encounters - the dramatic confrontations that serve as episode climaxes. Encounters are structured sequences where every choice carries weight and consequence.
+
+## Encounter Design Philosophy
+- **Dramatic Anchor**: The encounter IS the episode's dramatic climax
+- **Earned Choices**: Encounter choices should reference what was built up earlier in the episode
+- **Multiple Solutions**: Provide victory, defeat, and escape paths that feel meaningfully different
+- **Visual Contracts**: Every choice outcome must include specific visual guidance for artists
+
+## Encounter Types & Styles
+Set both for every encounter:
+
+### Encounter Type (Structural)
+combat, social, romantic, dramatic, investigation, puzzle, exploration, stealth, chase, heist, negotiation, survival, mixed
+
+### Encounter Style (Dramatic)  
+action, social, romantic, dramatic, mystery, stealth, adventure, mixed
+
+## Phase-Based Structure
+Design encounters as phases with escalating tension:
+1. **Setup Phase**: Establish the situation and stakes
+2. **Escalation Phase**: Choices that change the dynamic
+3. **Climax Phase**: The decisive moment  
+4. **Resolution Phase**: Immediate consequences play out
+
+## Visual Contract Requirements
+Every choice outcome MUST include:
+- **moment**: What specific instant is being illustrated
+- **action**: What physical action is happening
+- **emotion**: The emotional state/reaction visible
+- **relationship**: The dynamic between characters (tension, trust, conflict, etc.)
+- **mustShow**: Specific details that must be visible
+- **actingIntent**: The body language/expression that conveys the story beat
+```
+
+### User prompt
+
+```text
+Design the complete interactive encounter for this episode.
+
+## Encounter Context
+${JSON.stringify(encounterDetails, null, 2)}
+
+## Episode Buildup
+${JSON.stringify(episodeScenes, null, 2)}
+
+## Character Context
+${JSON.stringify(characterDesigns, null, 2)}
+
+## Season Context
+${seasonPlan ? `
+### Encounter Plan
+${seasonPlan.episodeEncounters.find(enc => enc.episodeNumber === episodeNumber)?.description}
+
+### Required Buildup
+${seasonPlan.episodeEncounters.find(enc => enc.episodeNumber === episodeNumber)?.encounterBuildup}
+
+### Difficulty Curve
+Episode ${episodeNumber} of ${seasonPlan.episodes.length} - ${
+  episodeNumber <= 2 ? 'Introduction' :
+  episodeNumber <= Math.floor(seasonPlan.episodes.length * 0.7) ? 'Rising Action' :
+  episodeNumber === seasonPlan.episodes.length ? 'Finale' : 'Climax'
+}
+` : ''}
+
+## Requirements
+Design an encounter that:
+- Feels like the episode's dramatic anchor and payoff
+- References the relationships/information/stakes established earlier
+- Provides meaningful victory/defeat/escape paths
+- Escalates appropriately for episode ${episodeNumber}
+- Includes complete visual contracts for every choice outcome
+
+The encounter should feel earned - like the culmination of everything that came before.
+
+Return valid JSON matching the EncounterStructure schema:
+
+{
+  "encounterId": "string",
+  "encounterType": "combat|social|romantic|dramatic|investigation|puzzle|exploration|stealth|chase|heist|negotiation|survival|mixed",
+  "encounterStyle": "action|social|romantic|dramatic|mystery|stealth|adventure|mixed", 
+  "title": "string",
+  "setup": {
+    "description": "string",
+    "stakes": "string",
+    "visualContract": {
+      "moment": "string",
+      "action": "string", 
+      "emotion": "string",
+      "relationship": "string",
+      "mustShow": "string",
+      "actingIntent": "string"
+    }
+  },
+  "phases": [
+    {
+      "phaseId": "string",
+      "phaseType": "setup|escalation|climax|resolution",
+      "description": "string",
+      "beats": [
+        {
+          "beatId": "string",
+          "content": "string",
+          "choices": [
+            {
+              "choiceId": "string",
+              "choiceText": "string",
+              "choiceType": "flavor|branching|blind|moral_dilemma",
+              "outcome": {
+                "description": "string",
+                "consequenceType": "victory|defeat|escape|complications",
+                "nextSituation": "string or null",
+                "visualContract": {
+                  "moment": "string",
+                  "action": "string",
+                  "emotion": "string", 
+                  "relationship": "string",
+                  "mustShow": "string",
+                  "actingIntent": "string"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "possibleOutcomes": [
+    {
+      "outcomeType": "victory|defeat|escape",
+      "description": "string",
+      "flags": ["string"],
+      "scores": {"string": number},
+      "storyImpact": "string"
+    }
+  ]
+}
+```
+
+## Stage 7: Validation Agents
+
+After the core generation, several LLM-backed validators run QA passes:
+
+### `StakesTriangleValidator`
+
+Ensures meaningful choices have proper Want/Cost/Identity structure.
+
+### `FiveFactorValidator`  
+
+Verifies branching and moral dilemma choices affect at least one of the five factors.
+
+### `ContinuityChecker`
+
+Validates character consistency, world rules adherence, and narrative logic.
+
+### `VoiceValidator`
+
+Ensures each character has a distinct voice and the overall prose quality is high.
+
+### `StakesAnalyzer`
+
+Reviews the episode's overall dramatic structure and choice consequences.
+
+Each validator receives the relevant generated content and returns validation results with specific feedback for any issues found.
+
+The validation system allows for iterative improvement of generated content before finalization.

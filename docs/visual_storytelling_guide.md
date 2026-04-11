@@ -621,175 +621,55 @@ Before approving any generated image, verify:
 **Composition**
 - [ ] Primary focal point is NOT dead-center
 - [ ] Critical content is in upper two-thirds of 9:16 safe zone
-- [ ] Lower third suitable for UI text overlay
-- [ ] Atmospheric extension beyond 9:16 exists but doesn't compete
+- [ ] Lower third is suitable for UI overlay
+- [ ] Image maintains clear visual hierarchy
 
-**Visual Storytelling**
-- [ ] Clear story beat visible (action, emotion, relationship)
-- [ ] All characters present in beat are shown
-- [ ] Body language conveys emotional state and intent
-- [ ] Shot type matches story beat intensity
-- [ ] Camera angle supports the character/emotional dynamic
-- [ ] Different from previous image(s) in sequence
+**Shot Variety**
+- [ ] Shot distance varies from previous image
+- [ ] Camera angle differs from last 2-3 images
+- [ ] Staging is not repetitive
 
-**Technical Requirements**
-- [ ] 9:19.5 canvas dimensions
-- [ ] Appropriate resolution for mobile display
-- [ ] Key visual elements readable at mobile size
-- [ ] No critical text or detail in atmospheric extension zones
+**Character Presentation**
+- [ ] ALL characters present in scene are visible and interacting
+- [ ] Body language conveys clear emotional state
+- [ ] Line of action is dynamic, not static
+- [ ] Facial expressions are legible and appropriate
+
+**Narrative Support**
+- [ ] Image illustrates the specific story beat
+- [ ] Emotional register matches narrative moment
+- [ ] Relationship dynamics are visually clear
+- [ ] Environment supports rather than distracts
 
 ### Sequence-Level Validation
 
-For complete encounter sequences:
+For every 4-6 image sequence:
 
-**Visual Variety**
-- [ ] No repeated shot types in consecutive images
-- [ ] Multiple camera angles represented
-- [ ] Range of character staging approaches
-- [ ] Variety in emotional register/intensity
-- [ ] Alternating focal distances for rhythm
+**Visual Rhythm**
+- [ ] No more than 2 consecutive similar shots
+- [ ] Emotional peaks have appropriate visual treatment
+- [ ] Sequence has establishing, development, and resolution beats
 
-**Narrative Flow**
-- [ ] Visual progression supports story pacing
-- [ ] Peak moments get peak visual treatment (CU/ECU)
-- [ ] Quiet moments get appropriate intimate staging
-- [ ] Action sequences have clear visual geography
-- [ ] Character relationship evolution visible through staging
+**Character Development**
+- [ ] Character emotional journey is visible across images
+- [ ] Relationship dynamics evolve visually
+- [ ] Physical positioning reflects story progression
 
-### Common Rejection Criteria
-
-**Immediate Rejection**:
-- Standing character facing camera with neutral expression
-- Critical content below upper two-thirds line
-- Identical shot type to previous image
-- Missing characters who are part of the scene
-- Ambiguous body language that doesn't serve story beat
-
-**Revision Required**:
-- Off-center composition that doesn't improve storytelling
-- Dutch angle without narrative justification
-- Close-up on non-critical story moment
-- Long shot on intimate/emotional peak
-- Lighting that doesn't support mood/beat
+**Mobile Optimization**
+- [ ] All images respect safe zone architecture
+- [ ] Visual flow works in mobile scroll context
+- [ ] UI overlay zones remain uncluttered
 
 ---
 
-## Part 12: Advanced Techniques
+## Conclusion: The Image as Story Infrastructure
 
-### Depth of Field as Narrative Tool
+Visual storytelling in AI-generated interactive fiction is not decoration—it is story infrastructure. Each image choice either reinforces the narrative's emotional impact and character development, or undermines it through monotony and visual clichés.
 
-**Shallow Depth of Field (Character Sharp, Background Blurred)**:
-- Isolates character emotionally
-- Emphasizes internal state over environment
-- Creates intimacy with viewer
-- Use for: revelation moments, decision points, emotional climax
+The principles in this guide provide a systematic approach to transforming the AI's default "standing portrait" output into dynamic, emotionally resonant visual storytelling. By varying shot types, camera angles, character staging, and compositional emphasis, we create visual sequences that enhance rather than merely illustrate the story.
 
-**Deep Depth of Field (Everything Sharp)**:
-- Shows character in full context
-- Emphasizes relationship to environment or others
-- Creates documentary or objective feeling
-- Use for: establishing shots, action sequences, confrontations
-
-**Rack Focus (Focus Shift Within Frame)**:
-- Directs attention sequentially
-- Shows relationship between elements
-- Creates dynamic storytelling within single image
-- Use for: cause and effect, revelation of hidden elements
-
-### Color as Emotional Language
-
-**Warm Palette (Reds, Oranges, Yellows)**:
-- Emotional heat: love, anger, energy, comfort
-- Use for: romantic scenes, conflict, triumph, home/safety
-
-**Cool Palette (Blues, Greens, Purples)**:
-- Emotional distance: calm, sadness, mystery, isolation
-- Use for: contemplation, loss, magic, uncertainty
-
-**Desaturated/Monochromatic**:
-- Emotional numbness: depression, flashback, death, limbo
-- Use for: aftermath, memory, supernatural, despair
-
-**High Contrast/Saturated**:
-- Emotional intensity: excitement, fantasy, heightened reality
-- Use for: action, magic, climax, surreal moments
-
-### Environmental Storytelling
-
-The setting should actively participate in the narrative:
-
-**Weather as Emotion**:
-- Storm: conflict, chaos, emotional turbulence
-- Fog: mystery, confusion, liminal states
-- Sunset: ending, transition, reflection
-- Clear sky: hope, clarity, new beginning
-
-**Architecture as Character State**:
-- Cramped spaces: pressure, claustrophobia, intimacy
-- Vast spaces: freedom, isolation, possibility, overwhelm
-- Ruins: past failure, loss, decay
-- New construction: hope, progress, growth
-
-**Time of Day as Story Beat**:
-- Dawn: new beginning, hope, birth
-- Midday: clarity, action, confrontation
-- Dusk: transition, reflection, romance
-- Night: mystery, danger, intimacy, sleep
+Remember: In the mobile-first, swipe-driven context of StoryRPG, players move through images quickly. Each frame must earn its narrative space by contributing meaningfully to character development, emotional engagement, and story momentum. Make every image a story beat, not just a portrait.
 
 ---
 
-## Appendix A: Emergency Visual Variety Generator
-
-When facing consecutive similar images, force variety with:
-
-1. **Shot Distance**: If last was MS, make next LS or CU
-2. **Angle**: If last was eye-level, use high or low
-3. **Character Staging**: If last was front-facing, use profile or three-quarter
-4. **Focal Point**: If last was centered, use rule-of-thirds positioning
-5. **Environment Role**: If last was background, make environment active participant
-
-### The "Break Glass" Compositions
-
-For emergency visual refresh:
-
-- **Extreme Close-Up on Eyes**: Maximum intimacy, works for any emotional beat
-- **Bird's Eye View**: Complete perspective shift, works for any scene
-- **Silhouette Against Light**: Dramatic reset, works for transitions
-- **Over-Shoulder to Unseen Character**: Instant relationship dynamic
-- **Hand in Foreground, Face Behind**: Immediate depth and mystery
-
----
-
-## Appendix B: Genre-Specific Adaptations
-
-### Fantasy Settings
-
-- Emphasize magical lighting sources (crystals, spells, enchanted objects)
-- Use environmental magic as compositional element (floating objects, energy fields)
-- Leverage costume detail for character staging enhancement
-- Consider non-human proportions for camera angle impact
-
-### Modern/Contemporary Settings
-
-- Use architectural environments for framing
-- Leverage artificial lighting for mood (neon, streetlights, screens)
-- Consider technology as narrative participant (phones, screens, vehicles)
-- Urban environments provide natural depth layering
-
-### Historical Settings
-
-- Period-accurate staging and gesture vocabulary
-- Natural lighting sources only (fire, candles, daylight)
-- Costume as character expression tool
-- Environmental authenticity supports immersion
-
-### Horror/Thriller
-
-- Aggressive use of Dutch angle
-- High contrast lighting with deep shadows
-- Partial character reveals and cropping
-- Environmental threat emphasis
-
----
-
-This guide establishes the foundation for creating visually dynamic, narratively purposeful images that serve StoryRPG's interactive storytelling mission. Every image should be a story beat that could not occur at any other moment in the narrative—specific, emotional, and cinematically compelling.
+*This document serves as the foundation for all visual elements in the StoryRPG Engine pipeline, implemented through the EncounterImageAgent, VisualStorytellingValidator, and related image generation systems.*

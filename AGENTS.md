@@ -148,6 +148,10 @@ Defined in `storyrpg-prototype/.env`. Key variables:
 | `ELEVENLABS_API_KEY` | Voice narration (optional) |
 | `EXPO_PUBLIC_IMAGE_PROVIDER` | Image provider selection |
 | `EXPO_PUBLIC_PROXY_URL` | Override proxy URL (default: `http://localhost:3001`) |
+| `EXPO_PUBLIC_LLM_MODEL` | LLM model selection |
+| `EXPO_PUBLIC_LLM_PROVIDER` | LLM provider selection |
+| `EXPO_PUBLIC_VIDEO_GENERATION_ENABLED` | Enable video generation features |
+| `EXPO_PUBLIC_USE_SERVER_WORKER` | Use server-side worker for generation |
 | `PORT` | Proxy server port (default: 3001) |
 
 Full reference in `docs/INSTALL.md` section 10.

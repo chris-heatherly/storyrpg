@@ -35,7 +35,7 @@
 
 ## If Changes Don't Appear
 
-1. **Restart Metro bundler**: Stop and restart `npm run web`
+1. **Restart Expo**: Stop and restart `npm run web`
 2. **Clear browser cache**: Hard refresh or clear cache
 3. **Check console errors**: Look for any JavaScript errors
 4. **Verify file saved**: Check that `ReadingScreen.tsx` has the new code

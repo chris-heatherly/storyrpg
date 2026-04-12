@@ -401,7 +401,7 @@ When branches merge at a bottleneck:
 
 ## 9. Runtime Branch Tracking
 
-The game store (`src/stores/gameStore.ts`, React Context) tracks the player's branch history during play.
+The game store (`src/stores/gameStore.ts`) tracks the player's branch history during play.
 
 ### What's Tracked
 

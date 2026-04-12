@@ -50,7 +50,7 @@ storyrpg-prototype/
 │   ├── screens/                   ← App screens (Home, EpisodeSelect, Reading, Generator, Settings, Visualizer)
 │   ├── components/                ← Reusable UI components
 │   ├── engine/                    ← Deterministic playback: storyEngine, conditionEvaluator, resolutionEngine, identityEngine, templateProcessor
-│   ├── stores/                    ← Zustand stores: gameStore, settingsStore, generationJobStore, seasonPlanStore, etc.
+│   ├── stores/                    ← Zustand stores: gameStore, settingsStore, generationJobStore, seasonPlanStore, imageFeedbackStore, imageJobStore, videoJobStore, appNavigationStore, etc.
 │   ├── types/                     ← Canonical data model (Story, Episode, Scene, Beat, Choice, PlayerState, Encounter, etc.)
 │   ├── ai-agents/                 ← AI generation pipeline (see below)
 │   ├── config/                    ← endpoints.ts (all URLs), generatorLlmOptions.ts
@@ -76,7 +76,7 @@ storyrpg-prototype/
 | Persistence | AsyncStorage (client), JSON on filesystem (stories), optional Vercel Blob |
 | Backend | Express proxy (`proxy-server.js`) — local dev only, not a deployed backend |
 | AI Text | Anthropic Claude (via proxy), with OpenRouter / Gemini alternatives |
-| AI Images | Gemini (default via nano-banana MCP), Atlas Cloud, Midjourney/MidAPI |
+| AI Images | Gemini (default), Atlas Cloud, Midjourney/MidAPI |
 | AI Audio | ElevenLabs TTS (optional) |
 | Testing | Vitest ^4.0.18 (Node env with RN stubs) |
 | Web Deploy | Vercel (static Expo web export) |

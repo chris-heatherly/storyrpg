@@ -621,55 +621,97 @@ Before approving any generated image, verify:
 **Composition**
 - [ ] Primary focal point is NOT dead-center
 - [ ] Critical content is in upper two-thirds of 9:16 safe zone
-- [ ] Lower third is suitable for UI overlay
-- [ ] Image maintains clear visual hierarchy
+- [ ] Character faces visible and prominent in critical zone
+- [ ] Lower third suitable for UI overlay (ground, shadows, ambient only)
+- [ ] Uses rule of thirds power positions effectively
 
 **Shot Variety**
-- [ ] Shot distance varies from previous image
-- [ ] Camera angle differs from last 2-3 images
-- [ ] Staging is not repetitive
+- [ ] Shot type differs from previous image
+- [ ] Camera angle differs from previous image  
+- [ ] Character staging shows clear variation from previous image
+- [ ] Avoids three consecutive images with same shot distance
 
-**Character Presentation**
-- [ ] ALL characters present in scene are visible and interacting
-- [ ] Body language conveys clear emotional state
-- [ ] Line of action is dynamic, not static
-- [ ] Facial expressions are legible and appropriate
+**Character Staging**
+- [ ] Clear line of action (dynamic poses, not static standing)
+- [ ] Body language matches emotional beat
+- [ ] All characters present in the beat are visible and interacting
+- [ ] Spatial relationships convey character dynamics
 
-**Narrative Support**
-- [ ] Image illustrates the specific story beat
+**Visual Storytelling**
+- [ ] Image illustrates the story beat (action + emotion + relationship)
 - [ ] Emotional register matches narrative moment
-- [ ] Relationship dynamics are visually clear
-- [ ] Environment supports rather than distracts
+- [ ] Environment participates in the story, not just backdrop
+- [ ] Focal hierarchy directs attention appropriately
 
 ### Sequence-Level Validation
 
-For every 4-6 image sequence:
+For every 3-5 image sequence, verify:
 
 **Visual Rhythm**
-- [ ] No more than 2 consecutive similar shots
-- [ ] Emotional peaks have appropriate visual treatment
-- [ ] Sequence has establishing, development, and resolution beats
-
-**Character Development**
-- [ ] Character emotional journey is visible across images
-- [ ] Relationship dynamics evolve visually
-- [ ] Physical positioning reflects story progression
+- [ ] No repeated shot types in sequence
+- [ ] Angle variety across sequence (not all eye-level)
+- [ ] Staging diversity (front, profile, over-shoulder, etc.)
+- [ ] Escalation or de-escalation follows narrative arc
 
 **Mobile Optimization**
-- [ ] All images respect safe zone architecture
-- [ ] Visual flow works in mobile scroll context
-- [ ] UI overlay zones remain uncluttered
+- [ ] Critical content consistently in upper safe zone
+- [ ] UI overlay area never blocks important elements
+- [ ] Visual flow works in vertical format
+- [ ] Text overlay areas remain clear and consistent
+
+**Story Coherence**
+- [ ] Sequence tells complete mini-story
+- [ ] Character arcs visible through visual progression
+- [ ] Environmental continuity maintained
+- [ ] Emotional journey clearly tracked
 
 ---
 
-## Conclusion: The Image as Story Infrastructure
+## Part 12: Implementation for AI Agents
 
-Visual storytelling in AI-generated interactive fiction is not decoration—it is story infrastructure. Each image choice either reinforces the narrative's emotional impact and character development, or undermines it through monotony and visual clichés.
+### Integration Points
 
-The principles in this guide provide a systematic approach to transforming the AI's default "standing portrait" output into dynamic, emotionally resonant visual storytelling. By varying shot types, camera angles, character staging, and compositional emphasis, we create visual sequences that enhance rather than merely illustrate the story.
+This visual storytelling framework integrates with the StoryRPG AI agent system at multiple points:
 
-Remember: In the mobile-first, swipe-driven context of StoryRPG, players move through images quickly. Each frame must earn its narrative space by contributing meaningfully to character development, emotional engagement, and story momentum. Make every image a story beat, not just a portrait.
+**EncounterImageAgent** (`src/ai-agents/agents/image-team/EncounterImageAgent.ts`):
+- Applies shot type and angle selection based on story beats
+- Enforces mobile composition requirements
+- Implements visual rhythm across encounter sequences
+
+**VisualStorytellingSystem** (`src/ai-agents/agents/image-team/VisualStorytellingSystem.ts`):
+- Coordinates visual principles across all image generation
+- Maintains visual consistency and variety
+- Validates adherence to storytelling standards
+
+**CinematicBeatAnalyzer** (`src/ai-agents/agents/image-team/CinematicBeatAnalyzer.ts`):
+- Maps story beats to appropriate visual treatments
+- Analyzes emotional register and relationship dynamics
+- Recommends shot types and staging approaches
+
+### Prompt Integration
+
+All AI image generation prompts must incorporate elements from:
+
+- Core Visual Principles (`src/ai-agents/prompts/visualPrinciples.ts`)
+- Mobile Composition Framework
+- Shot Type and Camera Angle Systems
+- Body Language and Staging Guidelines
+
+### Quality Validation
+
+The validation system uses this guide to:
+
+- Verify composition adherence to mobile requirements
+- Check visual variety across sequences
+- Validate emotional and narrative accuracy
+- Ensure technical quality standards
 
 ---
 
-*This document serves as the foundation for all visual elements in the StoryRPG Engine pipeline, implemented through the EncounterImageAgent, VisualStorytellingValidator, and related image generation systems.*
+## Conclusion
+
+Visual storytelling in interactive fiction requires deliberate craft. This guide provides the systematic framework needed to generate images that enhance rather than merely illustrate narrative beats.
+
+The goal is not just visual beauty, but visual meaning—every composition choice should serve the story's emotional and dramatic needs while optimizing for the mobile experience.
+
+By following these principles, AI-generated images become active participants in storytelling rather than passive decoration, creating a more immersive and emotionally resonant experience for players.

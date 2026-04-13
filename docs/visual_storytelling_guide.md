@@ -621,97 +621,118 @@ Before approving any generated image, verify:
 **Composition**
 - [ ] Primary focal point is NOT dead-center
 - [ ] Critical content is in upper two-thirds of 9:16 safe zone
-- [ ] Character faces visible and prominent in critical zone
-- [ ] Lower third suitable for UI overlay (ground, shadows, ambient only)
-- [ ] Uses rule of thirds power positions effectively
+- [ ] Lower third is UI-friendly (ground/shadows only)
+- [ ] Atmospheric extension doesn't compete with core content
+- [ ] Clear visual hierarchy established
 
 **Shot Variety**
 - [ ] Shot type differs from previous image
-- [ ] Camera angle differs from previous image  
-- [ ] Character staging shows clear variation from previous image
-- [ ] Avoids three consecutive images with same shot distance
+- [ ] Camera angle provides appropriate psychological effect
+- [ ] Distance supports the emotional beat being conveyed
+- [ ] Not repeating exact staging from recent images
 
-**Character Staging**
-- [ ] Clear line of action (dynamic poses, not static standing)
-- [ ] Body language matches emotional beat
-- [ ] All characters present in the beat are visible and interacting
-- [ ] Spatial relationships convey character dynamics
+**Character Work**
+- [ ] Clear line of action in each character
+- [ ] Body language supports emotional beat
+- [ ] If multiple characters, spatial relationship conveys story
+- [ ] Faces are visible and expressive when appropriate
+- [ ] Staging is dynamic, not static portrait-like
 
-**Visual Storytelling**
-- [ ] Image illustrates the story beat (action + emotion + relationship)
+**Beat Clarity**
+- [ ] Image clearly conveys the intended story beat
 - [ ] Emotional register matches narrative moment
-- [ ] Environment participates in the story, not just backdrop
-- [ ] Focal hierarchy directs attention appropriately
+- [ ] Action is readable at mobile size
+- [ ] Relationship dynamics are visually apparent
 
-### Sequence-Level Validation
+### Sequence Validation
 
-For every 3-5 image sequence, verify:
+Across a series of images, check for:
 
 **Visual Rhythm**
-- [ ] No repeated shot types in sequence
-- [ ] Angle variety across sequence (not all eye-level)
-- [ ] Staging diversity (front, profile, over-shoulder, etc.)
-- [ ] Escalation or de-escalation follows narrative arc
+- [ ] No three consecutive images at same shot distance
+- [ ] Camera angles create appropriate psychological flow
+- [ ] Pacing alternates between close/wide as narrative demands
+- [ ] Peak emotional moments get appropriate visual emphasis
 
-**Mobile Optimization**
-- [ ] Critical content consistently in upper safe zone
-- [ ] UI overlay area never blocks important elements
-- [ ] Visual flow works in vertical format
-- [ ] Text overlay areas remain clear and consistent
-
-**Story Coherence**
-- [ ] Sequence tells complete mini-story
-- [ ] Character arcs visible through visual progression
-- [ ] Environmental continuity maintained
-- [ ] Emotional journey clearly tracked
+**Character Consistency**
+- [ ] Characters remain recognizable across angles/distances
+- [ ] Costume/appearance details maintained
+- [ ] Character positioning reflects story progression
+- [ ] Relationship dynamics evolve visually across sequence
 
 ---
 
-## Part 12: Implementation for AI Agents
+## Part 12: Advanced Techniques
 
-### Integration Points
+### Environmental Storytelling
 
-This visual storytelling framework integrates with the StoryRPG AI agent system at multiple points:
+The setting should participate in the narrative, not just provide backdrop:
 
-**EncounterImageAgent** (`src/ai-agents/agents/image-team/EncounterImageAgent.ts`):
-- Applies shot type and angle selection based on story beats
-- Enforces mobile composition requirements
-- Implements visual rhythm across encounter sequences
+**Weather as Emotion**:
+- Storms during conflict
+- Clear skies for hope/resolution
+- Fog/mist for uncertainty
+- Bright sun for triumph
 
-**VisualStorytellingSystem** (`src/ai-agents/agents/image-team/VisualStorytellingSystem.ts`):
-- Coordinates visual principles across all image generation
-- Maintains visual consistency and variety
-- Validates adherence to storytelling standards
+**Architecture as Character**:
+- Cramped spaces for tension
+- Open spaces for freedom or isolation
+- Vertical elements for power dynamics
+- Curved vs. angular for different emotional registers
 
-**CinematicBeatAnalyzer** (`src/ai-agents/agents/image-team/CinematicBeatAnalyzer.ts`):
-- Maps story beats to appropriate visual treatments
-- Analyzes emotional register and relationship dynamics
-- Recommends shot types and staging approaches
+**Props as Story Elements**:
+- Objects that characters interact with meaningfully
+- Environmental details that support the beat
+- Lighting sources that create mood
+- Colors that reinforce emotional state
 
-### Prompt Integration
+### Advanced Lighting Concepts
 
-All AI image generation prompts must incorporate elements from:
+**Three-Point Lighting Adapted for AI**:
+- **Key Light**: Primary illumination, creates mood
+- **Fill Light**: Softens shadows, controls contrast
+- **Rim Light**: Separates subject from background, adds drama
 
-- Core Visual Principles (`src/ai-agents/prompts/visualPrinciples.ts`)
-- Mobile Composition Framework
-- Shot Type and Camera Angle Systems
-- Body Language and Staging Guidelines
+**Emotional Lighting Patterns**:
+- **High Key**: Bright, minimal shadows, optimistic
+- **Low Key**: Dark, dramatic shadows, tension/mystery
+- **Side Lighting**: Creates dimension, reveals texture
+- **Back Lighting**: Separates planes, creates mystery/romance
+- **Top Lighting**: Creates drama, can be ominous
+- **Under Lighting**: Unnatural, threatening, supernatural
 
-### Quality Validation
+### Color Psychology for Mobile
 
-The validation system uses this guide to:
+**Warm Colors (Red, Orange, Yellow)**:
+- Create intimacy and energy
+- Advance toward viewer
+- Good for emotional peaks
+- Effective in limited mobile color space
 
-- Verify composition adherence to mobile requirements
-- Check visual variety across sequences
-- Validate emotional and narrative accuracy
-- Ensure technical quality standards
+**Cool Colors (Blue, Green, Purple)**:
+- Create distance and calm
+- Recede from viewer  
+- Good for contemplative moments
+- Help establish depth on small screens
+
+**Monochromatic Schemes**:
+- Create unity and focus
+- Reduce visual noise on mobile
+- Allow texture and composition to dominate
+- Effective for dramatic emphasis
 
 ---
 
-## Conclusion
+## Conclusion: Implementation Philosophy
 
-Visual storytelling in interactive fiction requires deliberate craft. This guide provides the systematic framework needed to generate images that enhance rather than merely illustrate narrative beats.
+This guide provides a systematic framework for creating visually dynamic, emotionally resonant images that serve the story. The key principles to remember:
 
-The goal is not just visual beauty, but visual meaning—every composition choice should serve the story's emotional and dramatic needs while optimizing for the mobile experience.
+1. **Every image is a story beat**: It must convey action, emotion, and relationship
+2. **Mobile constraints are creative opportunities**: Use them to focus narrative content
+3. **Visual variety prevents monotony**: Systematic variation in shots, angles, and staging
+4. **Character staging tells the story**: Body language and spatial relationships carry meaning
+5. **Technical precision serves emotional truth**: Use the framework to support, not replace, storytelling instinct
 
-By following these principles, AI-generated images become active participants in storytelling rather than passive decoration, creating a more immersive and emotionally resonant experience for players.
+The goal is not to follow these rules mechanically, but to internalize them as tools for visual storytelling that enhances the player's emotional journey through the story. Every image should make the story more vivid, more emotionally resonant, and more memorable.
+
+When in doubt, return to the core question: "What story beat is this image telling, and how can its visual treatment best serve that narrative purpose?"

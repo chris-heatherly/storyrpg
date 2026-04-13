@@ -50,11 +50,13 @@ The platform is built as a React Native/Expo app with LLM integration via Anthro
 │  gameStore (React Context) · settingsStore (Zustand)  │
 │  appNavigationStore · generationJobStore             │
 │  imageJobStore · videoJobStore · seasonPlanStore      │
-│  imageFeedbackStore · AsyncStorage persistence        │
+│  imageFeedbackStore · encounterStatePersistence       │
+│  playerStatePersistence · AsyncStorage persistence    │
 ├──────────────────────────────────────────────────────┤
 │                Engine Layer                           │
 │  storyEngine · resolutionEngine · conditionEvaluator │
 │  templateProcessor · identityEngine                  │
+│  growthConsequenceBuilder                           │
 ├──────────────────────────────────────────────────────┤
 │              Generation Layer                         │
 │  FullStoryPipeline · EpisodePipeline                 │
@@ -613,23 +615,22 @@ Includes verb conjugation for pronoun substitution and unresolved token fallback
 | **StakesTriangleValidator** | Want/Cost/Identity analysis (LLM-based) |
 | **RelationshipDepthValidator** | Relationship dimension requirements for NPCs |
 
-### 13.2 Validation System Architecture
+### 13.2 Quality Gates
 
-The validation system operates at multiple levels:
+The validation framework implements tiered quality gates:
 
-1. **Schema validation**: JSON schema checks for structural integrity
-2. **Business rule validation**: Story-specific constraint checking
-3. **Quality validation**: LLM-powered narrative quality assessment
-4. **Incremental validation**: Real-time checking during generation
+1. **Quick Validation** — Fast structural checks (types, counts, rules)
+2. **Core Validation** — Medium-depth semantic validation
+3. **Extended Validation** — Deep LLM-based content analysis
 
-### 13.3 Validation Configuration
+### 13.3 Validation Errors
 
 ```typescript
-interface ValidationConfig {
-  enabled: boolean;
-  strictMode: boolean;           // Fail on warnings vs errors only
-  skipLlmValidation?: boolean;   // Skip expensive LLM-based validators
-  customRules?: ValidationRule[];
+interface ValidationError {
+  type: 'error' | 'warning' | 'info';
+  code: string;
+  message: string;
+  context?: Record<string, unknown>;
 }
 ```
 
@@ -637,70 +638,28 @@ interface ValidationConfig {
 
 ## 14. State Management
 
-### 14.1 Player State Architecture
+### 14.1 React Stores
 
-The player state consists of multiple layers:
-
-```typescript
-interface PlayerState {
-  // Core identity
-  name: string;
-  pronouns: 'he/him' | 'she/her' | 'they/them';
-  
-  // Attributes (0–100)
-  attributes: PlayerAttributes;
-  
-  // Skills (dynamic, 0–100)
-  skills: Record<string, number>;
-  
-  // Relationships (per NPC, per dimension, -100 to +100)
-  relationships: Record<string, Relationship>;
-  
-  // State flags (booleans for conditions)
-  flags: Record<string, boolean>;
-  
-  // Numeric scores (for thresholds)
-  scores: Record<string, number>;
-  
-  // String tags (for complex conditions)
-  tags: Set<string>;
-  
-  // Identity profile (-100 to +100 per dimension)
-  identity: IdentityProfile;
-  
-  // Inventory (if used)
-  inventory?: InventoryItem[];
-  
-  // Progress tracking
-  currentEpisode: number;
-  currentScene: string;
-  currentBeat?: string;
-  
-  // History
-  choiceHistory: ChoiceRecord[];
-  completedScenes: string[];
-  delayedConsequences: DelayedConsequence[];
-}
-```
-
-### 14.2 State Persistence
-
-- **gameStore**: React Context provider for in-memory state
-- **playerStatePersistence**: AsyncStorage interface for persistent save/load
-- **encounterStatePersistence**: Specialized encounter state handling
-
-### 14.3 State Stores
-
-| Store | File | Purpose |
+| Store | Type | Purpose |
 |---|---|---|
-| **gameStore** | `src/stores/gameStore.ts` | Main player state, current story |
-| **settingsStore** | `src/stores/settingsStore.ts` | User preferences (Zustand) |
-| **appNavigationStore** | `src/stores/appNavigationStore.ts` | UI navigation state |
-| **generationJobStore** | `src/stores/generationJobStore.ts` | Story generation progress |
-| **imageJobStore** | `src/stores/imageJobStore.ts` | Image generation tracking |
-| **videoJobStore** | `src/stores/videoJobStore.ts` | Video generation tracking |
-| **seasonPlanStore** | `src/stores/seasonPlanStore.ts` | Season planning cache |
-| **imageFeedbackStore** | `src/stores/imageFeedbackStore.ts` | Image feedback/rating system |
+| `gameStore` | Context | Core game state (episodes, player, current scene) |
+| `settingsStore` | Zustand | User preferences, generation settings |
+| `appNavigationStore` | Zustand | Navigation state, screen routing |
+| `generationJobStore` | Zustand | Pipeline progress tracking |
+| `imageJobStore` | Zustand | Image generation tracking |
+| `videoJobStore` | Zustand | Video generation tracking |
+| `seasonPlanStore` | Zustand | Season planning state |
+| `imageFeedbackStore` | Zustand | Image QA feedback |
+
+### 14.2 Persistence
+
+- **AsyncStorage**: Primary persistence layer for React Native
+- **encounterStatePersistence**: Encounter-specific state management (`src/stores/encounterStatePersistence.ts`)
+- **playerStatePersistence**: Player state persistence (`src/stores/playerStatePersistence.ts`)
+
+### 14.3 Growth Consequence Builder
+
+The `growthConsequenceBuilder` (`src/engine/growthConsequenceBuilder.ts`) handles character progression mechanics, working with mentorship systems and skill development.
 
 ---
 
@@ -708,25 +667,17 @@ interface PlayerState {
 
 ### 15.1 Episode Summary System
 
-Each episode generates:
-- **Player summary**: Key player choices and their consequences
-- **World summary**: Changes to the world state
-- **Relationship summary**: NPC relationship changes
-- **Flag summary**: Important flags set for future reference
+Each episode generates a summary for the next episode's context, preserving:
+- Major choices and their consequences
+- Relationship state changes
+- Flag and score modifications
+- Character growth moments
 
-### 15.2 Continuity Tracking
+### 15.2 Memory Management
 
-The system maintains continuity through:
-- **Callback lines**: NPCs reference past player actions
-- **Consequence chains**: Actions in early episodes affect later ones
-- **Flag inheritance**: Episode-to-episode state propagation
-- **Relationship evolution**: NPC attitudes change based on history
-
-### 15.3 Memory Systems
-
-- **Pipeline memory**: Claude Memory tool for agent context retention
-- **Player memory**: In-game character memory of events
-- **World memory**: Persistent world state changes
+- **Memory store abstractions**: Support for different memory backends
+- **Character memory**: Persistent NPC relationship tracking
+- **Pipeline memory**: Cross-generation optimization hints
 
 ---
 
@@ -734,141 +685,54 @@ The system maintains continuity through:
 
 ### 16.1 Generation Settings
 
-```typescript
-interface GenerationSettingsConfig {
-  // LLM Configuration
-  llmProvider: 'anthropic' | 'openai' | 'gemini';
-  llmModel: string;
-  llmMaxTokens: number;
-  llmTemperature: number;
-  llmMaxGlobalInFlight: number;
-  llmMaxPerProviderInFlight: number;
-  
-  // Pipeline Behavior
-  maxParallelEpisodes: number;
-  maxParallelScenes: number;
-  failurePolicy: 'fail_fast' | 'recover';
-  
-  // Content Constraints
-  targetSceneCount: number;
-  targetBeatCount: number;
-  majorChoiceCount: number;
-  
-  // Quality Settings
-  enableQualityValidation: boolean;
-  enableExtendedQA: boolean;
-  strictValidation: boolean;
-  
-  // Image/Video
-  generateImages: boolean;
-  generateVideo: boolean;
-  imageQuality: 'fast' | 'balanced' | 'high';
-  
-  // Memory
-  enableMemory: boolean;
-  memoryProvider?: 'claude' | 'local';
-}
-```
+Key configuration options in `GenerationSettingsConfig`:
+- `maxParallelEpisodes`: Episode generation concurrency (default: 2)
+- `maxParallelScenes`: Scene generation concurrency (default: 2)
+- `llmMaxGlobalInFlight`: Global LLM call limit (default: 4)
+- `llmMaxPerProviderInFlight`: Per-provider LLM call limit (default: 2)
+- `failurePolicy`: How to handle failures ('fail_fast' | 'recover')
 
-### 16.2 Agent Configuration
+### 16.2 Text Limits
 
-```typescript
-interface AgentConfig {
-  provider: 'anthropic' | 'openai' | 'gemini';
-  model: string;
-  apiKey: string;
-  maxTokens: number;
-  temperature: number;
-  baseUrl?: string;  // For proxied requests
-}
-```
-
-### 16.3 Pipeline Configuration
-
-```typescript
-interface PipelineConfig {
-  agentConfig: AgentConfig;
-  generationSettings: GenerationSettingsConfig;
-  validationConfig: ValidationConfig;
-  memoryConfig?: MemoryConfig;
-  timeoutConfig?: TimeoutConfig;
-  telemetryConfig?: TelemetryConfig;
-}
-```
+Configured in `src/constants/validation.ts` as `TEXT_LIMITS` with defaults from `src/ai-agents/utils/textEnforcer.ts`:
+- Beat text limits, choice text limits, consequence text limits
+- Word count and character count boundaries
 
 ---
 
 ## 17. File Reference
 
-### 17.1 Core Engine Files
+### 17.1 Key Directories
 
-| File | Purpose |
-|---|---|
-| `src/engine/storyEngine.ts` | Main story runtime engine |
-| `src/engine/resolutionEngine.ts` | Stat check resolution |
-| `src/engine/conditionEvaluator.ts` | Condition evaluation |
-| `src/engine/templateProcessor.ts` | Text templating |
-| `src/engine/identityEngine.ts` | Identity tracking |
+```
+src/
+├── ai-agents/              # AI generation system
+│   ├── agents/            # Individual agent implementations
+│   ├── pipeline/          # Generation pipeline orchestration
+│   ├── utils/            # AI utilities and helpers
+│   └── validators/       # Content validation
+├── engine/               # Story runtime engine
+├── screens/              # React Native UI screens
+├── stores/              # State management
+├── types/               # TypeScript definitions
+└── constants/           # Configuration constants
+```
 
-### 17.2 AI Agent Files
+### 17.2 Entry Points
 
-| Directory | Contents |
-|---|---|
-| `src/ai-agents/agents/` | Core narrative agents |
-| `src/ai-agents/agents/image-team/` | Image generation agents |
-| `src/ai-agents/pipeline/` | Pipeline orchestration |
-| `src/ai-agents/validators/` | Validation agents |
-| `src/ai-agents/prompts/` | Prompt libraries |
-| `src/ai-agents/utils/` | Shared utilities |
+- `src/ai-agents/example-usage.ts` — CLI story generation
+- `src/ai-agents/generate-from-document.ts` — Document-based generation
+- `src/engine/index.ts` — Engine exports (note: `identityEngine` not included)
 
-### 17.3 Type Definitions
+### 17.3 Test Files
 
-| File | Purpose |
-|---|---|
-| `src/types/index.ts` | Core game types |
-| `src/types/sourceAnalysis.ts` | IP adaptation types |
-| `src/ai-agents/types/llm-output.ts` | LLM response types |
-| `src/ai-agents/types/encounterDraft.ts` | Encounter generation types |
-
-### 17.4 Configuration Files
-
-| File | Purpose |
-|---|---|
-| `src/ai-agents/config.ts` | Agent configuration |
-| `src/constants/pipeline.ts` | Pipeline constants |
-| `src/constants/validation.ts` | Validation constraints |
-
-### 17.5 UI Screens
-
-| File | Purpose |
-|---|---|
-| `src/screens/ReadingScreen.tsx` | Main story reading interface |
-| `src/screens/GeneratorScreen.tsx` | Story generation interface |
-| `src/screens/HomeScreen.tsx` | Home/menu screen |
-| `src/screens/SettingsScreen.tsx` | User settings |
-| `src/screens/EpisodeSelectScreen.tsx` | Episode selection |
-| `src/screens/VisualizerScreen.tsx` | Story visualization |
-
-### 17.6 State Management
-
-| File | Purpose |
-|---|---|
-| `src/stores/gameStore.ts` | Main game state (React Context) |
-| `src/stores/settingsStore.ts` | User settings (Zustand) |
-| `src/stores/*Store.ts` | Various specialized stores |
-
-### 17.7 Testing Files
-
-| Pattern | Purpose |
-|---|---|
-| `**/*.test.ts` | Unit tests (Vitest) |
-| `**/*.test.tsx` | Component tests |
-
-### 17.8 Documentation
-
-| File | Purpose |
-|---|---|
-| `docs/GDD.md` | Game Design Document |
-| `docs/TDD.md` | Technical Design Document |
-| `docs/STORY_BRANCHING.md` | Branching system guide |
-| `docs/visual_storytelling_guide.md` | Visual storytelling reference |
+Major test coverage includes:
+- `src/engine/conditionEvaluator.test.ts`
+- `src/engine/resolutionEngine.test.ts`
+- `src/engine/storyEngine.test.ts`
+- `src/engine/templateProcessor.test.ts`
+- `src/ai-agents/agents/ChoiceAuthor.test.ts`
+- `src/ai-agents/agents/EncounterArchitect.test.ts`
+- `src/ai-agents/agents/GrowthCritics.test.ts`
+- `src/ai-agents/agents/SceneWriter.test.ts`
+- `src/ai-agents/agents/StoryArchitect.test.ts`

@@ -1,5 +1,5 @@
 {
-  "scannedAt": 1775658226804,
+  "scannedAt": 1776180423755,
   "providers": {
     "anthropic": [
       {
@@ -103,6 +103,11 @@
         "value": "gemma-3-12b-it",
         "label": "Gemma 3 12B",
         "description": null
+      },
+      {
+        "value": "gemini-robotics-er-1.6-preview",
+        "label": "Gemini Robotics-ER 1.6 Preview",
+        "description": "Gemini Robotics-ER 1.6 Preview"
       },
       {
         "value": "gemini-robotics-er-1.5-preview",
@@ -222,22 +227,34 @@
     ],
     "atlasCloud": [
       {
-        "value": "bytedance/seedream-v5.0-lite",
-        "label": "Seedream v5.0 Lite",
-        "price": "$0.032/pic",
-        "description": "Latest ByteDance model. Enhanced quality, typography, poster design."
-      },
-      {
         "value": "google/nano-banana-2/text-to-image",
         "label": "Nano Banana 2",
-        "price": "$0.013/pic",
-        "description": "Google lightweight image gen. Fast, high quality from text prompts."
+        "price": "$0.072/pic",
+        "description": "Google NB2. 14 ref images, 5-char consistency, 4K, auto /edit routing. Best for StoryRPG."
+      },
+      {
+        "value": "google/nano-banana-pro/text-to-image",
+        "label": "Nano Banana Pro",
+        "price": "$0.14/pic",
+        "description": "Google NB Pro. 10 ref images, 5-char consistency, native 2K/4K. Premium quality."
+      },
+      {
+        "value": "bytedance/seedream-v5.0-lite",
+        "label": "Seedream v5.0 Lite",
+        "price": "$0.035/pic",
+        "description": "ByteDance latest. Visual CoT, 14 ref images, batch up to 15, 4K."
+      },
+      {
+        "value": "bytedance/seedream-v4.5",
+        "label": "Seedream v4.5",
+        "price": "$0.038/pic",
+        "description": "High quality, batch + edit support, 10 ref images."
       },
       {
         "value": "openai/gpt-image-1.5/text-to-image",
         "label": "GPT Image 1.5",
         "price": "$0.008/pic",
-        "description": "OpenAI fast text-to-image. Photorealistic, concept art, stylized."
+        "description": "OpenAI fast text-to-image. Photorealistic, concept art, stylized. Text only."
       },
       {
         "value": "qwen/qwen-image-2.0/text-to-image",
@@ -264,12 +281,6 @@
         "description": "Higher fidelity, 4K-ready workflows."
       },
       {
-        "value": "bytedance/seedream-v4.5",
-        "label": "Seedream v4.5",
-        "price": "$0.038/pic",
-        "description": "High quality, batch + edit support."
-      },
-      {
         "value": "bytedance/seedream-v4",
         "label": "Seedream v4.0",
         "price": "$0.026/pic",
@@ -279,7 +290,7 @@
         "value": "z-image/turbo",
         "label": "Z-Image Turbo",
         "price": "$0.01/pic",
-        "description": "Sub-second generation, great for testing."
+        "description": "Sub-second generation, great for testing. Text only."
       },
       {
         "value": "alibaba/qwen-image/text-to-image-plus",

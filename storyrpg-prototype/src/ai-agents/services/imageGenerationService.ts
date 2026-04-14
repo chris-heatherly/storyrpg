@@ -3244,18 +3244,20 @@ export class ImageGenerationService {
         const body: Record<string, any> = {
           model,
           prompt: fullPrompt,
-          output_format: 'png',
         };
 
-        if (caps.isNanoBanana) {
+        if (caps.isNanoBanana && hasRefs) {
+          body.images = await this.prepareAtlasImageRefs(atlasReferenceImages, apiKey);
+        } else if (caps.isNanoBanana) {
           body.aspect_ratio = prompt.aspectRatio || '1:1';
           body.resolution = '1k';
+          body.output_format = 'png';
         } else {
           body.size = this.mapAspectRatioToSize(prompt.aspectRatio || '1:1', model);
-        }
-
-        if (hasRefs) {
-          body.images = await this.prepareAtlasImageRefs(atlasReferenceImages, apiKey);
+          body.output_format = 'png';
+          if (hasRefs) {
+            body.images = await this.prepareAtlasImageRefs(atlasReferenceImages, apiKey);
+          }
         }
 
         console.log(`[ImageGenerationService] Atlas Cloud: Submitting async generation with model ${model} (attempt ${attempt}, refs: ${atlasReferenceImages.length})`);
@@ -3419,13 +3421,22 @@ export class ImageGenerationService {
           model,
           prompt: combinedPrompt,
           max_images: chunk.length,
-          output_format: 'png',
-          size: this.mapAspectRatioToSize(chunk[0].prompt.aspectRatio || '1:1', model),
         };
 
-        if (hasRefs) {
+        if (caps.isNanoBanana && hasRefs) {
           const batchRefs = this.collectAtlasReferenceImages(referenceImages);
           body.images = await this.prepareAtlasImageRefs(batchRefs, apiKey);
+        } else if (caps.isNanoBanana) {
+          body.aspect_ratio = chunk[0].prompt.aspectRatio || '1:1';
+          body.resolution = '1k';
+          body.output_format = 'png';
+        } else {
+          body.size = this.mapAspectRatioToSize(chunk[0].prompt.aspectRatio || '1:1', model);
+          body.output_format = 'png';
+          if (hasRefs) {
+            const batchRefs = this.collectAtlasReferenceImages(referenceImages);
+            body.images = await this.prepareAtlasImageRefs(batchRefs, apiKey);
+          }
         }
 
         console.log(`[ImageGenerationService] Atlas Cloud batch: ${chunk.length} images with model ${model} (async)`);

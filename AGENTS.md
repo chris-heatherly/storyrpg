@@ -63,7 +63,12 @@ storyrpg-prototype/
 │
 ├── generated-stories/             ← Output directory for generated story JSON + images
 ├── scripts/                       ← Maintenance scripts (clean artifacts, upload to blob)
-└── test/stubs/                    ← Vitest stubs for react-native and async-storage
+├── test/stubs/                    ← Vitest stubs for react-native and async-storage
+├── tsconfig.app.json              ← TypeScript config for app subset
+├── tsconfig.test.json             ← TypeScript config for tests
+├── tsconfig.contracts.json        ← TypeScript config for shared worker types
+├── tsconfig.worker.json           ← TypeScript config for worker process
+└── tsconfig.json                  ← Base TypeScript config
 ```
 
 ## Tech Stack

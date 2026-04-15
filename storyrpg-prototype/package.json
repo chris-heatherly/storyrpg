@@ -24,7 +24,10 @@
     "generate:heist": "STORY_TYPE=heist npx ts-node --esm src/ai-agents/example-usage.ts",
     "generate:fantasy": "STORY_TYPE=fantasy npx ts-node --esm src/ai-agents/example-usage.ts",
     "generate:doc": "npx ts-node --esm src/ai-agents/generate-from-document.ts",
-    "generate:template": "npx ts-node --esm src/ai-agents/generate-from-document.ts --template"
+    "generate:template": "npx ts-node --esm src/ai-agents/generate-from-document.ts --template",
+    "validate:assets": "npx ts-node --esm scripts/validate-assets.ts",
+    "test:e2e": "npx playwright test",
+    "test:e2e:story": "npx playwright test --grep"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^2.2.0",

@@ -209,6 +209,10 @@ export interface ValidationRuleConfig {
 export interface ValidationConfig {
   enabled: boolean;
   mode: 'strict' | 'advisory' | 'disabled';
+  /** Run HTTP HEAD checks against every image URL after assembly (default: true) */
+  assetHttpCheck?: boolean;
+  /** Treat asset HTTP failures as a hard pipeline error (default: false) */
+  assetHttpCheckFailFast?: boolean;
   rules: {
     stakesTriangle: ValidationRuleConfig;
     fiveFactor: ValidationRuleConfig;

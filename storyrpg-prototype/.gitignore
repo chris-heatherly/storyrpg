@@ -58,3 +58,9 @@ generated-stories/
 
 # Pipeline runtime artifacts
 pipeline-memories/
+
+# E2E test artifacts
+test/e2e/screenshots/
+test/e2e/report/
+test-results/
+playwright-report/

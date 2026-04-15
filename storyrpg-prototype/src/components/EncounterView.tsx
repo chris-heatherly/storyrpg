@@ -405,6 +405,26 @@ type EncounterScreenState =
   | { type: 'phase_outcome'; phaseId: string; outcome: 'success' | 'failure'; imageIndex: number }
   | { type: 'encounter_outcome'; outcome: EncounterOutcome };
 
+/**
+ * Resolve encounter outcome tier. When window.__QA_FORCE_TIER is set
+ * (by Playwright E2E tests), that tier is used deterministically instead
+ * of the random roll. This lets automated QA test all outcome paths.
+ */
+function resolveOutcomeTier(
+  weights: { success: number; complicated: number; failure: number },
+): 'success' | 'complicated' | 'failure' {
+  if (typeof window !== 'undefined') {
+    const forced = (window as any).__QA_FORCE_TIER as string | undefined;
+    if (forced === 'success' || forced === 'complicated' || forced === 'failure') {
+      return forced;
+    }
+  }
+  const rand = Math.random();
+  if (rand < weights.success) return 'success';
+  if (rand < weights.success + weights.complicated) return 'complicated';
+  return 'failure';
+}
+
 // Helper to detect if encounter uses new branching tree format
 function isTreeBasedEncounter(encounter: Encounter): boolean {
   const firstPhase = encounter.phases?.[0];
@@ -814,16 +834,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     // Determine outcome tier based on player stats (fiction-first - weighted by relevant skills)
     const statBonus = resolveStatBonus(choice, player);
     const weights = computeEncounterWeights(player, choice.primarySkill, statBonus);
-    
-    const rand = Math.random();
-    let tier: 'success' | 'complicated' | 'failure';
-    if (rand < weights.success) {
-      tier = 'success';
-    } else if (rand < weights.success + weights.complicated) {
-      tier = 'complicated';
-    } else {
-      tier = 'failure';
-    }
+    const tier = resolveOutcomeTier(weights);
     
     console.log('[EncounterView] Outcome tier:', tier, statBonus > 0 ? `(+${statBonus} stat bonus applied)` : '');
     
@@ -986,16 +997,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     // Determine outcome tier based on player stats (fiction-first - weighted by relevant skills)
     const statBonus = resolveStatBonus(choice as EncounterChoice, player);
     const weights = computeEncounterWeights(player, choice.primarySkill, statBonus);
-    
-    const rand = Math.random();
-    let outcome: 'success' | 'complicated' | 'failure';
-    if (rand < weights.success) {
-      outcome = 'success';
-    } else if (rand < weights.success + weights.complicated) {
-      outcome = 'complicated';
-    } else {
-      outcome = 'failure';
-    }
+    const outcome = resolveOutcomeTier(weights);
 
     console.log('[EncounterView] Outcome tier:', outcome, statBonus > 0 ? `(+${statBonus} stat bonus applied)` : '');
 
@@ -1329,15 +1331,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     // Determine outcome tier based on player stats
     const statBonus = resolveStatBonus(choice as EmbeddedEncounterChoice, player);
     const weights = computeEncounterWeights(player, choice.primarySkill, statBonus);
-    const rand = Math.random();
-    let outcome: 'success' | 'complicated' | 'failure';
-    if (rand < weights.success) {
-      outcome = 'success';
-    } else if (rand < weights.success + weights.complicated) {
-      outcome = 'complicated';
-    } else {
-      outcome = 'failure';
-    }
+    const outcome = resolveOutcomeTier(weights);
     
     console.log('[EncounterView] Outcome tier:', outcome, statBonus > 0 ? `(+${statBonus} stat bonus applied)` : '');
     

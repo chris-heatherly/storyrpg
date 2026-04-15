@@ -126,6 +126,7 @@ import { EncounterProviderPolicy } from '../encounters/encounterProviderPolicy';
 import { AssetRegistry } from '../images/assetRegistry';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { validateRegistryCoverage } from '../images/coverageValidator';
+import { walkStoryAssets, formatAssetWalkReport } from '../validators/storyAssetWalker';
 import { buildReferencePack } from '../images/referencePackBuilder';
 import { buildStoryImageSlotManifest } from '../images/storyImageSlotManifest';
 import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
@@ -2271,6 +2272,35 @@ export class FullStoryPipeline {
           this.emit({ type: 'warning', phase: 'completeness_gate', message: `${missingBeatImages.length} beat images assigned scene background fallbacks.` });
         } else {
           console.log(`[Pipeline] PRE-GENERATION COMPLETENESS: 100% image coverage — all beats and encounters have images.`);
+        }
+      }
+
+      // === ASSET HTTP VERIFICATION (Tier 1 QA) ===
+      if (story && this.config.validation?.assetHttpCheck !== false) {
+        try {
+          const assetReport = await walkStoryAssets(story, {
+            httpTimeoutMs: 5000,
+            concurrency: 20,
+          });
+          console.log(`[Pipeline] ${formatAssetWalkReport(assetReport)}`);
+          if (assetReport.missing + assetReport.broken + assetReport.unreachable > 0) {
+            const failCount = assetReport.missing + assetReport.broken + assetReport.unreachable;
+            this.emit({
+              type: 'warning',
+              phase: 'asset_verification',
+              message: `Asset HTTP check: ${failCount} image(s) failed verification (${assetReport.missing} missing, ${assetReport.broken} broken, ${assetReport.unreachable} unreachable)`,
+            });
+            if (this.config.validation?.assetHttpCheckFailFast) {
+              throw new PipelineError(
+                `Asset HTTP verification failed: ${failCount} image(s) not reachable`,
+                'completeness_gate',
+                { context: { failCount, missing: assetReport.missing, broken: assetReport.broken, unreachable: assetReport.unreachable } }
+              );
+            }
+          }
+        } catch (err) {
+          if (err instanceof PipelineError) throw err;
+          console.warn('[Pipeline] Asset HTTP verification failed (non-fatal):', (err as Error).message);
         }
       }
 

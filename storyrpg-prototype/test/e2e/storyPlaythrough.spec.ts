@@ -18,9 +18,13 @@
  *   E2E_STORY          Story title substring to select (default: first story)
  *   E2E_MAX_BEATS      Max beats to play through per scene (default: 100)
  *   E2E_ENCOUNTER_TIER Force encounter tier: success|complicated|failure
+ *   E2E_CHOICE_PATH    JSON array of 0-based choice indices for each decision point
+ *   E2E_RESULT_FILE    Output filename for results JSON (default: latest.json)
  */
 
 import { test, expect, type Page, type ConsoleMessage } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -30,6 +34,10 @@ const MAX_BEATS = parseInt(process.env.E2E_MAX_BEATS || '100', 10);
 const TARGET_STORY = process.env.E2E_STORY || '';
 const FORCE_TIER = process.env.E2E_ENCOUNTER_TIER || '';
 const TRANSITION_WAIT = 1200; // ms to wait after clicking for animations
+const CHOICE_PATH: number[] = (() => {
+  try { return JSON.parse(process.env.E2E_CHOICE_PATH || '[]'); } catch { return []; }
+})();
+const RESULT_FILE = process.env.E2E_RESULT_FILE || 'latest.json';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -294,11 +302,17 @@ test.describe('Story Playthrough QA', () => {
   let imageIssues: ImageIssue[] = [];
   let consoleErrors: string[] = [];
   let networkFailures: string[] = [];
+  let visitedScreens: string[] = [];
+  let visitedChoiceLabels: string[] = [];
+  let decisionCounter = 0;
 
   test('Full story playthrough with image verification', async ({ page }) => {
     imageIssues = [];
     consoleErrors = [];
     networkFailures = [];
+    visitedScreens = [];
+    visitedChoiceLabels = [];
+    decisionCounter = 0;
 
     // Collect console errors related to images
     page.on('console', (msg: ConsoleMessage) => {
@@ -401,6 +415,8 @@ test.describe('Story Playthrough QA', () => {
       const currentScreen = await detectScreen(page);
       const currentText = (await getVisibleText(page)).substring(0, 200);
 
+      visitedScreens.push(`${beatCount}:${currentScreen}`);
+
       if (beatCount % 5 === 1 || currentScreen !== 'beat') {
         console.log(`[E2E] Beat ${beatCount}: screen=${currentScreen}, text="${currentText.substring(0, 60)}..."`);
       }
@@ -469,21 +485,34 @@ test.describe('Story Playthrough QA', () => {
 
         case 'choices': {
           console.log(`[E2E] Choices detected at beat ${beatCount}`);
-          // Click a choice (not the CONTINUE button — pick an actual choice)
           const buttons = page.locator('[tabindex="0"]');
           const count = await buttons.count();
-          let clickedChoice = false;
+
+          // Collect eligible choice buttons (skip menu/CONTINUE)
+          const eligibleButtons: { index: number; text: string }[] = [];
           for (let i = 0; i < count; i++) {
             const btn = buttons.nth(i);
             const btnText = (await btn.textContent().catch(() => '') || '').trim();
             if (btnText === '☰' || btnText === 'CONTINUE' || btnText === 'CONTINUE STORY') continue;
             const box = await btn.boundingBox().catch(() => null);
             if (!box || box.width < 50) continue;
-            console.log(`[E2E]   Picking choice: "${btnText.substring(0, 60)}"`);
-            await btn.click();
+            eligibleButtons.push({ index: i, text: btnText });
+          }
+
+          let clickedChoice = false;
+          if (eligibleButtons.length > 0) {
+            // Use CHOICE_PATH to determine which choice to pick, falling back to 0
+            const desiredIdx = CHOICE_PATH.length > decisionCounter
+              ? CHOICE_PATH[decisionCounter] % eligibleButtons.length
+              : 0;
+            decisionCounter++;
+
+            const chosen = eligibleButtons[desiredIdx] || eligibleButtons[0];
+            console.log(`[E2E]   Picking choice ${desiredIdx}/${eligibleButtons.length}: "${chosen.text.substring(0, 60)}"`);
+            visitedChoiceLabels.push(chosen.text.substring(0, 80));
+            await buttons.nth(chosen.index).click();
             await page.waitForTimeout(TRANSITION_WAIT);
             clickedChoice = true;
-            break;
           }
           if (!clickedChoice) await tryClickContinue(page);
           break;
@@ -636,6 +665,28 @@ test.describe('Story Playthrough QA', () => {
         console.log(`  ${fail}`);
       }
     }
+
+    // Write machine-readable results JSON for pipeline integration
+    const resultsDir = path.resolve(__dirname, 'results');
+    fs.mkdirSync(resultsDir, { recursive: true });
+    const resultsPayload = {
+      timestamp: new Date().toISOString(),
+      storyTitle: TARGET_STORY || '(first story)',
+      encounterTier: FORCE_TIER || '(random)',
+      choicePath: CHOICE_PATH,
+      beatCount,
+      imageIssues,
+      consoleErrors,
+      networkFailures,
+      visitedScreens,
+      visitedChoiceLabels,
+      decisionsMade: decisionCounter,
+      passed: imageIssues.length === 0 && networkFailures.length === 0,
+    };
+    fs.writeFileSync(
+      path.join(resultsDir, RESULT_FILE),
+      JSON.stringify(resultsPayload, null, 2),
+    );
 
     // Assertions
     expect(imageIssues, 'No broken images should be found during playthrough').toHaveLength(0);

@@ -239,7 +239,7 @@ function getTimestamp(): string {
 /**
  * Ensure the output directory exists
  */
-async function ensureDirectory(path: string): Promise<void> {
+export async function ensureDirectory(path: string): Promise<void> {
   if (isWebRuntime()) {
     // On web, we'll handle this differently (download or IndexedDB)
     return;

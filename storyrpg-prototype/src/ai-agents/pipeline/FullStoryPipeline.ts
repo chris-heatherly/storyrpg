@@ -85,6 +85,7 @@ import {
 import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './EpisodePipeline';
 import {
   createOutputDirectory,
+  ensureDirectory,
   savePipelineOutputs,
   savePipelineErrorLog,
   saveEarlyDiagnostic,
@@ -95,6 +96,7 @@ import {
   loadEncounterResumeStateSync,
   saveBeatResumeState,
   loadBeatResumeStateSync,
+  BeatResumeStateV1,
   updateOutputManifest,
   OutputManifest,
 } from '../utils/pipelineOutputWriter';
@@ -127,6 +129,8 @@ import { AssetRegistry } from '../images/assetRegistry';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { validateRegistryCoverage } from '../images/coverageValidator';
 import { walkStoryAssets, formatAssetWalkReport } from '../validators/storyAssetWalker';
+import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
+import { remediateImageIssues, resaveFinalStory } from '../validators/qaRemediation';
 import { buildReferencePack } from '../images/referencePackBuilder';
 import { buildStoryImageSlotManifest } from '../images/storyImageSlotManifest';
 import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
@@ -988,6 +992,8 @@ export class FullStoryPipeline {
         return 'scene_content';
       case 'Final Story':
         return 'final_story';
+      case 'Output Directory':
+        return 'output_directory';
       default:
         return null;
     }
@@ -1993,7 +1999,17 @@ export class FullStoryPipeline {
       let audioDiagnostics: AudioGenerationDiagnostic[] = [];
       
       try {
-        outputDirectory = await createOutputDirectory(brief.story.title);
+        const resumedOutputDir = this.getResumeOutput<{ outputDirectory: string }>(
+          resumeCheckpoint, 'output_directory'
+        )?.outputDirectory;
+        if (resumedOutputDir) {
+          outputDirectory = resumedOutputDir;
+          await ensureDirectory(outputDirectory);
+          console.log(`[Pipeline] Resumed output directory: ${outputDirectory}`);
+        } else {
+          outputDirectory = await createOutputDirectory(brief.story.title);
+        }
+        this.addCheckpoint('Output Directory', { outputDirectory }, false);
         this.resetAssetRegistry(idSlugify(brief.story.title));
         await saveEarlyDiagnostic(outputDirectory, `episode-${brief.episode.number}-blueprint.json`, episodeBlueprint);
 
@@ -2015,7 +2031,7 @@ export class FullStoryPipeline {
           imageResults = await this.imageWorkerQueue.run(() =>
             this.measurePhase(
               'episode_image_generation',
-              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, brief, worldBible, characterBible)
+              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, brief, worldBible, characterBible, outputDirectory)
             )
           );
           
@@ -2046,8 +2062,9 @@ export class FullStoryPipeline {
                 {
                   agent: 'EncounterImageAgent',
                   context: {
+                    outputDirectory,
                     encounterCount: encounters.size,
-                    failureKind: 'image_step',
+                    failureKind: 'image_generation',
                   },
                   originalError: encImgError instanceof Error ? encImgError : undefined,
                 }
@@ -2079,14 +2096,33 @@ export class FullStoryPipeline {
         if (imgError instanceof PipelineError) {
           throw imgError;
         }
-        // Non-quota image failures remain non-blocking.
         const imgErrorMsg = imgError instanceof Error ? imgError.message : String(imgError);
-        console.warn(`[Pipeline] Image generation failed: ${imgErrorMsg}`);
+        console.error(`[Pipeline] Image generation failed: ${imgErrorMsg}`);
         this.emit({
-          type: 'warning',
+          type: 'error',
           phase: 'images',
-          message: `Image generation failed (non-blocking): ${imgErrorMsg}`,
+          message: `Image generation failed: ${imgErrorMsg}`,
         });
+        if (outputDirectory) {
+          try {
+            await savePipelineErrorLog(outputDirectory, [{
+              timestamp: new Date().toISOString(),
+              phase: 'images',
+              message: imgErrorMsg,
+            }]);
+          } catch { /* best-effort save */ }
+        }
+        throw new PipelineError(
+          `Image generation failed: ${imgErrorMsg}`,
+          'images',
+          {
+            context: {
+              outputDirectory,
+              failureKind: 'image_generation',
+            },
+            originalError: imgError instanceof Error ? imgError : undefined,
+          }
+        );
       }
 
       // === PHASE 5.7: VIDEO GENERATION (optional) ===
@@ -2152,35 +2188,10 @@ export class FullStoryPipeline {
       );
       story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
 
-      // === STORYLET / ENCOUNTER IMAGE GAP WARNING (non-fatal) ===
-      // Missing encounter or storylet images are logged but no longer halt the
-      // pipeline. The gaps are already persisted in the run-state files and
-      // AssetRegistry for targeted retry on re-run.
-      if (encounterImageResults?.storyletFailures?.length) {
-        const failMsg = encounterImageResults.storyletFailures.join('; ');
-        console.warn(`[Pipeline] Encounter/storylet image gaps (non-fatal, continuing): ${failMsg}`);
-        this.emit({ type: 'warning', phase: 'encounter_images', message: `Image gaps (continuing): ${failMsg}` });
-      }
-
       // === PRE-GENERATION COMPLETENESS GATE ===
-      // Scan the assembled story for any missing images. Encounter images are
-      // mandatory with no fallback. Beat images can fall back to scene backgrounds.
+      // Strict: ANY missing image halts the pipeline. No silent fallbacks.
       if (story) {
         const registryCoverage = validateRegistryCoverage(story, this.assetRegistry);
-        const missingEncounterImages: string[] = [];
-        const missingBeatImages: string[] = [];
-        for (const episode of story.episodes || []) {
-          for (const scene of episode.scenes || []) {
-            for (const beat of scene.beats || []) {
-              if (!beat.image) {
-                missingBeatImages.push(`beat:${scene.id}::${beat.id}`);
-              }
-            }
-            if (scene.encounter) {
-              missingEncounterImages.push(...collectMissingEncounterImageKeys(scene.id, scene.encounter));
-            }
-          }
-        }
 
         if (registryCoverage.missingRequiredCoverageKeys.length > 0) {
           console.error(
@@ -2191,87 +2202,84 @@ export class FullStoryPipeline {
             'completeness_gate',
             {
               context: {
+                outputDirectory,
                 missingCount: registryCoverage.missingRequiredCoverageKeys.length,
                 missingImages: registryCoverage.missingRequiredCoverageKeys.slice(0, 50),
-                failureKind: 'registry_coverage',
+                failureKind: 'image_completeness',
               },
             }
           );
         }
 
-        // Encounter images: hard failure, no fallback
-        if (missingEncounterImages.length > 0) {
-          console.error(`[Pipeline] COMPLETENESS GATE: ${missingEncounterImages.length} ENCOUNTER images missing (mandatory):`);
-          for (const m of missingEncounterImages.slice(0, 20)) {
-            console.error(`[Pipeline]   - ${m}`);
-          }
-          throw new PipelineError(
-            `Encounter image completeness gate failed: ${missingEncounterImages.length} encounter images missing after assembly`,
-            'completeness_gate',
-            {
-              context: {
-                missingCount: missingEncounterImages.length,
-                missingImages: missingEncounterImages.slice(0, 50),
-                failureKind: 'encounter_image_mandatory',
-              },
-            }
-          );
-        }
+        const missingImages: { category: string; key: string }[] = [];
 
-        // Beat images: scene background fallback is acceptable
-        if (missingBeatImages.length > 0) {
-          console.warn(`[Pipeline] PRE-GENERATION COMPLETENESS: ${missingBeatImages.length} beat images missing after assembly:`);
-          for (const m of missingBeatImages.slice(0, 20)) {
-            console.warn(`[Pipeline]   - ${m}`);
-          }
-          this.throwIfFailFast(
-            `Pre-generation completeness gate: ${missingBeatImages.length} beat images missing`,
-            'completeness_gate',
-            {
-              context: {
-                missingCount: missingBeatImages.length,
-                missingImages: missingBeatImages.slice(0, 50),
-                failureKind: 'image_step',
-              },
+        if (!story.coverImage) missingImages.push({ category: 'cover', key: 'story-cover' });
+
+        for (const episode of story.episodes || []) {
+          if (!episode.coverImage) missingImages.push({ category: 'cover', key: `episode:${episode.id}` });
+
+          for (const scene of episode.scenes || []) {
+            if (!scene.backgroundImage) {
+              missingImages.push({ category: 'scene-bg', key: `scene:${scene.id}` });
             }
-          );
-          for (const episode of story.episodes || []) {
-            for (const scene of episode.scenes || []) {
-              const sceneBackground = scene.backgroundImage;
-              if (sceneBackground) {
-                for (const beat of scene.beats || []) {
+
+            for (const beat of scene.beats || []) {
+              if (!beat.image) {
+                missingImages.push({ category: 'beat', key: `beat:${scene.id}::${beat.id}` });
+              }
+            }
+
+            if (scene.encounter) {
+              const missingEncKeys = collectMissingEncounterImageKeys(scene.id, scene.encounter);
+              for (const k of missingEncKeys) {
+                missingImages.push({ category: 'encounter', key: k });
+              }
+
+              for (const [outcomeName, storylet] of Object.entries((scene.encounter as any).storylets || {})) {
+                const sl = storylet as any;
+                for (const beat of sl?.beats || []) {
                   if (!beat.image) {
-                    beat.image = sceneBackground;
-                    console.log(`[Pipeline] Assigned scene background as fallback for beat ${beat.id} in ${scene.id}`);
+                    missingImages.push({ category: 'storylet', key: `storylet:${scene.id}::${outcomeName}::${beat.id}` });
                   }
                 }
               }
             }
           }
-          const stillMissing: string[] = [];
-          for (const episode of story.episodes || []) {
-            for (const scene of episode.scenes || []) {
-              for (const beat of scene.beats || []) {
-                if (!beat.image) stillMissing.push(`beat:${scene.id}::${beat.id}`);
-              }
+        }
+
+        if (missingImages.length > 0) {
+          const byCategory: Record<string, { category: string; key: string }[]> = {};
+          for (const m of missingImages) {
+            if (!byCategory[m.category]) byCategory[m.category] = [];
+            byCategory[m.category].push(m);
+          }
+          const summary = Object.entries(byCategory)
+            .map(([cat, items]) => `${items.length} ${cat}`)
+            .join(', ');
+
+          console.error(`[Pipeline] COMPLETENESS GATE FAILED: ${missingImages.length} images missing (${summary})`);
+          for (const [cat, items] of Object.entries(byCategory)) {
+            for (const item of items.slice(0, 10)) {
+              console.error(`[Pipeline]   [${cat}] ${item.key}`);
             }
           }
-          if (stillMissing.length > 0) {
-            throw new PipelineError(
-              `Pre-generation completeness gate failed: ${stillMissing.length} beat images remain after fallback`,
-              'completeness_gate',
-              {
-                context: {
-                  missingCount: stillMissing.length,
-                  missingImages: stillMissing.slice(0, 50),
-                  failureKind: 'image_step',
-                },
-              }
-            );
-          }
-          this.emit({ type: 'warning', phase: 'completeness_gate', message: `${missingBeatImages.length} beat images assigned scene background fallbacks.` });
+
+          throw new PipelineError(
+            `Image completeness gate failed: ${missingImages.length} images missing (${summary})`,
+            'completeness_gate',
+            {
+              context: {
+                outputDirectory,
+                totalMissing: missingImages.length,
+                byCategory: Object.fromEntries(
+                  Object.entries(byCategory).map(([cat, items]) => [cat, items.map(i => i.key).slice(0, 20)])
+                ),
+                failureKind: 'image_completeness',
+              },
+            }
+          );
         } else {
-          console.log(`[Pipeline] PRE-GENERATION COMPLETENESS: 100% image coverage — all beats and encounters have images.`);
+          console.log(`[Pipeline] PRE-GENERATION COMPLETENESS: 100% image coverage — all image types verified.`);
         }
       }
 
@@ -2566,6 +2574,139 @@ export class FullStoryPipeline {
               },
             });
           }
+        }
+      }
+
+      // === PHASE 8: BROWSER QA (Playwright playthrough) ===
+      if (story && outputDirectory && this.config.validation?.playwrightQA !== false) {
+        const tiers = this.config.validation?.playwrightQAEncounterTiers || ['success', 'failure'];
+        const maxRetries = this.config.validation?.playwrightQAMaxRetries ?? 1;
+        const storyTitle = brief.story.title || '';
+
+        this.emit({ type: 'phase_start', phase: 'browser_qa', message: 'Phase 8: Running browser playthrough QA...' });
+
+        let qaAttempt = 0;
+        let lastQAResult: PlaywrightQAResult | null = null;
+
+        while (qaAttempt <= maxRetries) {
+          const tier = tiers[qaAttempt % tiers.length];
+          try {
+            this.emit({
+              type: 'progress',
+              phase: 'browser_qa',
+              message: `Browser QA pass ${qaAttempt + 1}/${maxRetries + 1} (encounter tier: ${tier})`,
+            });
+
+            lastQAResult = await runPlaywrightQA({
+              storyTitle,
+              encounterTier: tier,
+              maxBeats: 200,
+              timeoutMs: 300_000,
+            });
+
+            if (lastQAResult.skipped) {
+              this.emit({
+                type: 'warning',
+                phase: 'browser_qa',
+                message: `Browser QA skipped: ${lastQAResult.skipReason}`,
+              });
+              break;
+            }
+
+            console.log(`[Pipeline] Browser QA pass ${qaAttempt + 1}: ${lastQAResult.totalBeats} beats, ` +
+              `${lastQAResult.imageIssues.length} image issues, ${lastQAResult.networkFailures.length} network failures`);
+
+            if (lastQAResult.passed) {
+              this.emit({
+                type: 'phase_complete',
+                phase: 'browser_qa',
+                message: `Browser QA passed — ${lastQAResult.totalBeats} beats, 0 issues (tier: ${tier})`,
+              });
+              break;
+            }
+
+            // Issues found — attempt remediation if we have retries left
+            const issueCount = lastQAResult.imageIssues.length + lastQAResult.networkFailures.length;
+            this.emit({
+              type: 'warning',
+              phase: 'browser_qa',
+              message: `Browser QA found ${issueCount} issue(s) on pass ${qaAttempt + 1}`,
+            });
+
+            if (qaAttempt < maxRetries) {
+              this.emit({
+                type: 'progress',
+                phase: 'browser_qa',
+                message: `Remediating ${issueCount} issue(s)...`,
+              });
+
+              try {
+                const remediation = await remediateImageIssues(
+                  lastQAResult.imageIssues,
+                  lastQAResult.networkFailures,
+                  story,
+                  this.imageService,
+                  this.assetRegistry,
+                  outputDirectory,
+                );
+
+                const regenCount = remediation.fixes.filter(f => f.action === 'regenerated').length;
+                const skipCount = remediation.fixes.filter(f => f.action === 'skipped').length;
+
+                console.log(`[Pipeline] QA Remediation: ${regenCount} regenerated, ${skipCount} skipped`);
+                for (const fix of remediation.fixes) {
+                  console.log(`[Pipeline]   ${fix.action}: ${fix.identifier || fix.issueScreen} — ${fix.reason || fix.newUrl || ''}`);
+                }
+
+                if (remediation.hasChanges) {
+                  // Re-assemble and re-save
+                  story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
+                  story.outputDir = outputDirectory;
+                  resaveFinalStory(story, outputDirectory);
+                  this.emit({
+                    type: 'progress',
+                    phase: 'browser_qa',
+                    message: `Remediated ${regenCount} image(s), re-saved story. Re-testing...`,
+                  });
+                } else {
+                  this.emit({
+                    type: 'warning',
+                    phase: 'browser_qa',
+                    message: 'No fixable issues found during remediation — skipping retest',
+                  });
+                  break;
+                }
+              } catch (remErr) {
+                console.warn('[Pipeline] QA remediation error (non-fatal):', (remErr as Error).message);
+                this.emit({
+                  type: 'warning',
+                  phase: 'browser_qa',
+                  message: `Remediation failed: ${(remErr as Error).message}`,
+                });
+                break;
+              }
+            }
+          } catch (qaErr) {
+            console.warn('[Pipeline] Browser QA error (non-fatal):', (qaErr as Error).message);
+            this.emit({
+              type: 'warning',
+              phase: 'browser_qa',
+              message: `Browser QA failed: ${(qaErr as Error).message}`,
+            });
+            break;
+          }
+
+          qaAttempt++;
+        }
+
+        // Final report (non-fatal — never fail the pipeline from QA)
+        if (lastQAResult && !lastQAResult.passed && !lastQAResult.skipped) {
+          const remaining = lastQAResult.imageIssues.length + lastQAResult.networkFailures.length;
+          this.emit({
+            type: 'warning',
+            phase: 'browser_qa',
+            message: `Browser QA completed with ${remaining} unresolved issue(s) after ${qaAttempt} attempt(s)`,
+          });
         }
       }
 
@@ -5055,8 +5196,19 @@ export class FullStoryPipeline {
       }
       this.emitPhaseProgress('foundation', 2, 2, 'foundation:steps', 'Character foundation complete');
 
-      // 2.5. Create output directory EARLY so images go to the right place
-      const outputDirectory = await createOutputDirectory(baseBrief.story.title);
+      // 2.5. Create output directory EARLY so images go to the right place (or resume existing one)
+      const resumedOutputDir = this.getResumeOutput<{ outputDirectory: string }>(
+        resumeCheckpoint, 'output_directory'
+      )?.outputDirectory;
+      let outputDirectory: string;
+      if (resumedOutputDir) {
+        outputDirectory = resumedOutputDir;
+        await ensureDirectory(outputDirectory);
+        console.log(`[Pipeline] Resumed output directory: ${outputDirectory}`);
+      } else {
+        outputDirectory = await createOutputDirectory(baseBrief.story.title);
+      }
+      this.addCheckpoint('Output Directory', { outputDirectory }, false);
       
       // Initialize AssetRegistry with JSONL persistence for durable image tracking
       const registryJsonlPath = (outputDirectory.endsWith('/') ? outputDirectory : outputDirectory + '/') + '08-asset-registry.jsonl';
@@ -5425,20 +5577,30 @@ export class FullStoryPipeline {
         dependencyScheduler: { ...this.dependencySchedulerStats },
       };
 
-      // If storylet images failed, halt the pipeline AFTER saving. The partial story
-      // with encounter tree images is on disk. Stop here to avoid wasting credits.
+      // If storylet images failed, save diagnostics then halt the pipeline.
       if (allStoryletFailures.length > 0) {
         const failMsg = allStoryletFailures.join('; ');
-        console.warn(`[Pipeline] Encounter/storylet image gaps across episodes (non-fatal): ${failMsg}`);
-        this.emit({ type: 'warning', phase: 'encounter_images', message: `Image gaps across episodes (continuing): ${failMsg}` });
+        console.error(`[Pipeline] Encounter/storylet image gaps across episodes: ${failMsg}`);
+        this.emit({ type: 'error', phase: 'encounter_images', message: `Image gaps across episodes: ${failMsg}` });
         try {
           await savePipelineErrorLog(outputDirectory, allStoryletFailures.map(f => ({
             timestamp: new Date().toISOString(),
             phase: 'encounter_images',
             message: f,
-            severity: 'warning',
           })));
-        } catch { /* non-fatal */ }
+        } catch { /* best-effort save */ }
+        throw new PipelineError(
+          `Storylet image gaps: ${allStoryletFailures.length} storylet images missing across episodes`,
+          'encounter_images',
+          {
+            context: {
+              outputDirectory,
+              failureKind: 'image_completeness',
+              totalMissing: allStoryletFailures.length,
+              failures: allStoryletFailures.slice(0, 30),
+            },
+          }
+        );
       }
 
       // Mark job as completed
@@ -5571,7 +5733,7 @@ export class FullStoryPipeline {
           imageResults = await this.imageWorkerQueue.run(() =>
             this.measurePhase(
               `episode_${i}_images`,
-              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible)
+              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible, outputDirectory)
             )
           );
         } catch (imgError) {
@@ -5584,9 +5746,33 @@ export class FullStoryPipeline {
               originalError: imgError instanceof Error ? imgError : undefined,
             });
           }
+          if (imgError instanceof PipelineError) {
+            throw imgError;
+          }
           const imgMsg = imgError instanceof Error ? imgError.message : String(imgError);
-          console.error(`[Pipeline] Episode ${i} beat image generation failed (non-fatal): ${imgMsg}`);
-          this.emit({ type: 'warning', phase: `images_ep_${i}`, message: `Beat image generation failed (continuing without images): ${imgMsg}` });
+          console.error(`[Pipeline] Episode ${i} beat image generation failed: ${imgMsg}`);
+          this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Beat image generation failed: ${imgMsg}` });
+          try {
+            await savePipelineErrorLog(outputDirectory, [{
+              timestamp: new Date().toISOString(),
+              phase: `images_ep_${i}`,
+              message: imgMsg,
+              episodeNumber: i,
+            }]);
+          } catch { /* best-effort save */ }
+          throw new PipelineError(
+            `Episode ${i} beat image generation failed: ${imgMsg}`,
+            `images_ep_${i}`,
+            {
+              agent: 'ImageAgentTeam',
+              context: {
+                outputDirectory,
+                episode: i,
+                failureKind: 'image_generation',
+              },
+              originalError: imgError instanceof Error ? imgError : undefined,
+            }
+          );
         }
 
         if (encounters.size > 0) {
@@ -5628,7 +5814,7 @@ export class FullStoryPipeline {
             this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Encounter image generation failed for episode ${i}: ${encImgMsg}` });
             throw new PipelineError(`Episode ${i} encounter image generation failed: ${encImgMsg}`, `images_ep_${i}`, {
               agent: 'EncounterImageAgent',
-              context: { episode: i, encounterCount: encounters.size, failureKind: 'image_step' },
+              context: { outputDirectory, episode: i, encounterCount: encounters.size, failureKind: 'image_generation' },
               originalError: encImgError instanceof Error ? encImgError : undefined,
             });
           }
@@ -6572,7 +6758,8 @@ ${clothingRule}
     choiceSets: ChoiceSet[],
     brief: FullCreativeBrief,
     worldBible: WorldBible,
-    characterBible: CharacterBible
+    characterBible: CharacterBible,
+    outputDirectory?: string
   ): Promise<{ beatImages: Map<string, string>; sceneImages: Map<string, string> }> {
     const beatImages = new Map<string, string>();
     const sceneImages = new Map<string, string>();
@@ -6754,6 +6941,26 @@ ${clothingRule}
           continue;
         }
 
+        // Beat resume state: load completed beat IDs for this scene from disk
+        const sceneSlug = idSlugify(scene.sceneId);
+        const beatResumeLoaded = outputDirectory ? loadBeatResumeStateSync(outputDirectory, sceneSlug) : null;
+        const beatResumeSet = new Set<string>(beatResumeLoaded?.completedIdentifiers ?? []);
+        const beatResumeImageMap: Record<string, string> = { ...(beatResumeLoaded?.beatImageMap ?? {}) };
+        const persistBeatResume = async (): Promise<void> => {
+          if (!outputDirectory) return;
+          await saveBeatResumeState(outputDirectory, sceneSlug, {
+            version: 1,
+            sceneId: scene.sceneId,
+            scopedSceneId,
+            completedIdentifiers: [...beatResumeSet],
+            beatImageMap: beatResumeImageMap,
+            generatedAt: new Date().toISOString(),
+          });
+        };
+        if (beatResumeLoaded && beatResumeSet.size > 0) {
+          console.log(`[Pipeline] Beat resume: loaded ${beatResumeSet.size} completed beats for scene ${scene.sceneId}`);
+        }
+
         // Determine scene mood from mood progression
         const sceneMood = scene.moodProgression.length > 0 
           ? scene.moodProgression[0] 
@@ -6822,6 +7029,16 @@ ${clothingRule}
             const beatMapKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beatId);
             beatImages.set(beatMapKey, existingRecord.latestUrl);
             if (beatIdx === 0) sceneImages.set(scopedSceneId, existingRecord.latestUrl);
+            globalImageIndex++;
+            continue;
+          }
+
+          // Disk-based beat resume: check if this beat was completed in a prior run
+          if (beatResumeSet.has(identifier) && beatResumeImageMap[identifier]) {
+            console.log(`[Pipeline] Beat resume: reusing existing image for ${beatId} from disk resume state`);
+            const beatMapKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beatId);
+            beatImages.set(beatMapKey, beatResumeImageMap[identifier]);
+            if (beatIdx === 0) sceneImages.set(scopedSceneId, beatResumeImageMap[identifier]);
             globalImageIndex++;
             continue;
           }
@@ -7020,6 +7237,10 @@ ${clothingRule}
                   }
                   this.assetRegistry.markSuccess(heroSlotId, { imageUrl: panelUrls[0] } as GeneratedImage);
                 } catch { /* non-fatal */ }
+
+                beatResumeSet.add(identifier);
+                beatResumeImageMap[identifier] = panelUrls[0];
+                persistBeatResume().catch(() => {});
               }
 
               if (!styleReferenceStored && lastGeneratedImage) {
@@ -7131,6 +7352,10 @@ ${clothingRule}
                 styleReferenceStored = true;
                 this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from scene ${scene.sceneId}` });
               }
+
+              beatResumeSet.add(identifier);
+              beatResumeImageMap[identifier] = result.imageUrl;
+              persistBeatResume().catch(() => {});
 
               await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
             }

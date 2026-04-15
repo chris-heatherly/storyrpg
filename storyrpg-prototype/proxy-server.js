@@ -933,10 +933,15 @@ function startWorkerProcess(workerJob, payload) {
             failureContext,
             finishedAt: new Date().toISOString(),
           });
-          updateCheckpoint(workerJob.id, {
+          const checkpointPatch = {
             lastEvent: evt,
             failureContext,
-          });
+          };
+          const failOutputDir = evt.context?.outputDirectory || failureContext.context?.outputDirectory;
+          if (failOutputDir) {
+            checkpointPatch.resumeContext = { outputDirectory: failOutputDir };
+          }
+          updateCheckpoint(workerJob.id, checkpointPatch);
           syncGenerationMirrorFromWorker(loadWorkerJobs().find((j) => j.id === workerJob.id) || currentJob);
         } else if (evt.type === 'step_complete') {
           let persistedOutput = evt.output || true;
@@ -1339,8 +1344,27 @@ app.post('/worker-jobs/:jobId/resume', (req, res) => {
   const outputsPatch = body.outputsPatch && typeof body.outputsPatch === 'object' ? body.outputsPatch : {};
   const patchedPayload = hydrateWorkerConfigApiKeys(mergeJsonLike(basePayload, payloadPatch));
   const patchedOutputs = mergeJsonLike(hydratedCheckpoint?.outputs || {}, outputsPatch);
+
+  // Inject outputDirectory from prior run into checkpoint outputs so the pipeline
+  // can find it via getResumeOutput('output_directory') and reuse the same folder.
+  const priorOutputDir = resumeContext.outputDirectory
+    || hydratedCheckpoint?.failureContext?.context?.outputDirectory;
+  if (priorOutputDir && !patchedOutputs.output_directory) {
+    patchedOutputs.output_directory = { outputDirectory: priorOutputDir };
+  }
+
+  const resumeSteps = { ...(hydratedCheckpoint?.steps || {}) };
+  if (priorOutputDir && !resumeSteps.output_directory) {
+    resumeSteps.output_directory = {
+      stepId: 'output_directory',
+      status: 'completed',
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
   const resumeCheckpoint = {
     ...(hydratedCheckpoint || {}),
+    steps: resumeSteps,
     outputs: patchedOutputs,
   };
 
@@ -1383,6 +1407,7 @@ app.post('/worker-jobs/:jobId/resume', (req, res) => {
       resumedAt: new Date().toISOString(),
       changedInputs: Object.keys(payloadPatch),
       changedOutputs: Object.keys(outputsPatch),
+      ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),
     },
   });
 

@@ -1566,6 +1566,31 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             <Text style={styles.failureValue}>{blockedAction}</Text>
             <Text style={styles.failureLabel}>ERROR</Text>
             <Text style={styles.failureMessage}>{String(failure.message || historyJob?.error || error || 'Unknown failure')}</Text>
+            {(failure.failureKind === 'image_completeness' || failure.failureKind === 'image_generation') && failure.context?.byCategory && (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.failureLabel}>MISSING IMAGES BY CATEGORY</Text>
+                {Object.entries(failure.context.byCategory as Record<string, string[]>).map(([category, keys]) => (
+                  <View key={category} style={{ marginTop: 6, marginLeft: 8 }}>
+                    <Text style={[styles.failureValue, { marginBottom: 2 }]}>
+                      {category.toUpperCase()} ({keys.length})
+                    </Text>
+                    {keys.slice(0, 10).map((key: string) => (
+                      <Text key={key} style={[styles.failureMessage, { fontSize: 11, marginLeft: 8, marginTop: 1 }]}>
+                        {key}
+                      </Text>
+                    ))}
+                    {keys.length > 10 && (
+                      <Text style={[styles.failureMessage, { fontSize: 11, marginLeft: 8, fontStyle: 'italic' }]}>
+                        ...and {keys.length - 10} more
+                      </Text>
+                    )}
+                  </View>
+                ))}
+                <Text style={[styles.failureMessage, { marginTop: 8 }]}>
+                  Resume will re-generate only the {failure.context.totalMissing || 'missing'} images.
+                </Text>
+              </View>
+            )}
           </View>
         )}
 

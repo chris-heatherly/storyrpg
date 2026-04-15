@@ -888,6 +888,13 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       }
       
       console.log('[EncounterView] Terminal outcome:', finalOutcome);
+      console.log('[EncounterView] Terminal image candidates:', {
+        outcomeImage: outcome.outcomeImage || '(none)',
+        situationImage: (screenState.type === 'active' ? screenState.situation?.situationImage : undefined) || '(none)',
+        encounterOutcomeImage: encounter.outcomes?.[finalOutcome]?.image || '(none)',
+        lastPhaseSituationImage: encounter.phases?.[encounter.phases.length - 1]?.situationImage || '(none)',
+        lastKnownImage: lastKnownImageRef.current || '(none)',
+      });
       
       // Fallback chain: outcome image → situation image → encounter outcome image → last phase image → last known
       const terminalFinalImage = resolveImageUrl(
@@ -897,6 +904,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           || encounter.phases?.[encounter.phases.length - 1]?.situationImage
           || lastKnownImageRef.current
       );
+      console.log('[EncounterView] Terminal final image resolved:', terminalFinalImage || '(none)');
       
       transitionTo(() => {
         setScreenState({
@@ -1839,8 +1847,11 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
               source={{ uri: terminalImage }}
               style={styles.fullBleedImage}
               resizeMode="cover"
+              onLoad={() => console.log(`[EncounterView] Terminal image loaded: ${terminalImage}`)}
+              onError={(e) => console.warn(`[EncounterView] Terminal image FAILED: ${terminalImage}`, e.nativeEvent)}
             />
           ) : (
+            (() => { console.warn('[EncounterView] Terminal screen has NO image — showing placeholder'); return null; })(),
             <View style={styles.placeholderBackground} />
           )}
           <View style={styles.gradientOverlay} />
@@ -2147,8 +2158,9 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     );
   }
 
-  // Render encounter outcome screen
+  // Render encounter outcome screen (legacy non-tree path)
   if (screenState.type === 'encounter_outcome') {
+    console.log('[EncounterView] Rendering encounter_outcome screen for:', screenState.outcome);
     // Image fallback chain: outcome-specific sequence → complicated sequence → last image → phase image
     const lastPhase = encounter.phases[encounter.phases.length - 1];
     const lastBeat = lastPhase?.beats[lastPhase.beats.length - 1];

@@ -485,6 +485,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
       if (pendingStoryletActivation) {
         const { storylet, startBeatId, nextSceneId } = pendingStoryletActivation;
+        console.log(`[StoryReader] Activating storylet "${storylet.name}" (${storylet.beats.length} beats), startBeat="${startBeatId}", images: [${storylet.beats.map(b => b.id + '=' + (b.image ? 'YES' : 'NO')).join(', ')}]`);
         setActiveStorylet(storylet);
         setStoryletBeatId(startBeatId);
         setStoryletNextSceneId(nextSceneId);
@@ -1359,6 +1360,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         || (currentScene?.backgroundImage && !currentScene.backgroundImage.endsWith('.txt')
             ? currentScene.backgroundImage
             : undefined);
+      console.log(`[StoryReader] Storylet image: beat.image="${currentStoryletBeat.image || '(none)'}", resolved="${storyletImageUrl || '(none)'}"`);
 
       return (
         <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
@@ -1369,8 +1371,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
                 source={{ uri: storyletImageUrl }}
                 style={styles.fullBleedImage}
                 resizeMode="cover"
+                onLoad={() => console.log(`[StoryReader] Storylet image loaded: ${storyletImageUrl}`)}
+                onError={(e) => console.warn(`[StoryReader] Storylet image FAILED: ${storyletImageUrl}`, e.nativeEvent)}
               />
             ) : (
+              (() => { console.warn('[StoryReader] Storylet beat has NO image — showing placeholder'); return null; })(),
               <View style={styles.placeholderBackground} />
             )}
             <View style={styles.gradientOverlay} />

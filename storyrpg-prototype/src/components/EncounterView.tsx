@@ -722,22 +722,13 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   const imageOpacity = useRef(new Animated.Value(1)).current;
   const scrollViewRef = useRef<ScrollView>(null);
 
-  // On web, when transitionTo() changes screenState, React unmounts the old
-  // Animated.View and mounts a new one. The new view may miss the imageOpacity
-  // animation that was started in transitionTo's callback (before mount).
-  // This effect ensures the image fades in after the new screen renders.
-  useEffect(() => {
-    if (Platform.OS === 'web' && screenState.type !== 'loading') {
-      const id = requestAnimationFrame(() => {
-        Animated.timing(imageOpacity, {
-          toValue: 1,
-          duration: TIMING.slow,
-          useNativeDriver: false,
-        }).start();
-      });
-      return () => cancelAnimationFrame(id);
-    }
-  }, [screenState.type]);
+  // On web, RN Web's <Image> uses CSS transitions for a fade-in effect:
+  // it sets opacity:0 on the <img> then transitions to 1 on load. But when
+  // the image loads inside a container that has opacity:0 (from transitionTo's
+  // animation), browsers skip/suppress the CSS transition. The <img> stays at
+  // opacity:0 even after the parent becomes visible. Track whether we need to
+  // force-disable the Image fade on web for certain screens.
+  const webDisableImageFade = Platform.OS === 'web';
 
   // Get current phase - handle all screen states that have phaseId
   const getPhaseId = (): string => {
@@ -1530,7 +1521,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           {displayImage ? (
             <Image
               source={{ uri: displayImage }}
-              style={styles.fullBleedImage}
+              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
               resizeMode="cover"
               onLoad={() => console.log(`[EncounterView] Image loaded: ${displayImage}`)}
               onError={(e) => console.warn(`[EncounterView] Image failed to load: ${displayImage}`, e.nativeEvent)}
@@ -1751,7 +1742,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           {resolvedOutcomeImage ? (
             <Image
               source={{ uri: resolvedOutcomeImage }}
-              style={styles.fullBleedImage}
+              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
               resizeMode="cover"
             />
           ) : (
@@ -1856,7 +1847,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           {terminalImage ? (
             <Image
               source={{ uri: terminalImage }}
-              style={styles.fullBleedImage}
+              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
               resizeMode="cover"
               onLoad={() => console.log(`[EncounterView] Terminal image loaded: ${terminalImage}`)}
               onError={(e) => console.warn(`[EncounterView] Terminal image FAILED: ${terminalImage}`, e.nativeEvent)}
@@ -2038,7 +2029,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           {currentImage ? (
             <Image
               source={{ uri: currentImage }}
-              style={styles.fullBleedImage}
+              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
               resizeMode="cover"
             />
           ) : (
@@ -2138,7 +2129,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           {currentImage ? (
             <Image
               source={{ uri: currentImage }}
-              style={styles.fullBleedImage}
+              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
               resizeMode="cover"
             />
           ) : (
@@ -2230,7 +2221,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           {finalImage ? (
             <Image
               source={{ uri: finalImage }}
-              style={styles.fullBleedImage}
+              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
               resizeMode="cover"
             />
           ) : (
@@ -2452,7 +2443,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         {currentImage ? (
           <Image
             source={{ uri: currentImage }}
-            style={styles.fullBleedImage}
+            style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
             resizeMode="cover"
             onLoad={() => console.log(`[EncounterView] Image loaded: ${currentImage}`)}
             onError={(e) => {

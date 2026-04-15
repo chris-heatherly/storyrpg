@@ -45,6 +45,7 @@ export const ReadingShell: React.FC<ReadingShellProps> = ({
 
   const imageStyle = [
     styles.fullBleedImage,
+    Platform.OS === 'web' && { opacity: 1 },
   ];
 
   return (

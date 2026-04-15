@@ -1369,7 +1369,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
             {storyletImageUrl ? (
               <Image
                 source={{ uri: storyletImageUrl }}
-                style={styles.fullBleedImage}
+                style={[styles.fullBleedImage, Platform.OS === 'web' && { opacity: 1 }] as any}
                 resizeMode="cover"
                 onLoad={() => console.log(`[StoryReader] Storylet image loaded: ${storyletImageUrl}`)}
                 onError={(e) => console.warn(`[StoryReader] Storylet image FAILED: ${storyletImageUrl}`, e.nativeEvent)}
@@ -1649,7 +1649,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
               uri: imageUrl,
               headers: { 'Accept': 'image/*' }
             }} 
-            style={styles.fullBleedImage}
+            style={[styles.fullBleedImage, Platform.OS === 'web' && { opacity: 1 }] as any}
             resizeMode="cover"
             crossOrigin="anonymous"
             onLoad={() => debugLog(`[StoryReader] Image loaded: ${imageUrl}`)}

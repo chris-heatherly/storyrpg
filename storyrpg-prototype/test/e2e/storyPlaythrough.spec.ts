@@ -513,7 +513,6 @@ test.describe('Story Playthrough QA', () => {
             const info: any[] = [];
             for (const img of imgs) {
               const rect = img.getBoundingClientRect();
-              // Walk up to check parent opacity
               let el: Element | null = img;
               let effectiveOpacity = 1;
               while (el) {

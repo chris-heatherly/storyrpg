@@ -722,6 +722,23 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   const imageOpacity = useRef(new Animated.Value(1)).current;
   const scrollViewRef = useRef<ScrollView>(null);
 
+  // On web, when transitionTo() changes screenState, React unmounts the old
+  // Animated.View and mounts a new one. The new view may miss the imageOpacity
+  // animation that was started in transitionTo's callback (before mount).
+  // This effect ensures the image fades in after the new screen renders.
+  useEffect(() => {
+    if (Platform.OS === 'web' && screenState.type !== 'loading') {
+      const id = requestAnimationFrame(() => {
+        Animated.timing(imageOpacity, {
+          toValue: 1,
+          duration: TIMING.slow,
+          useNativeDriver: false,
+        }).start();
+      });
+      return () => cancelAnimationFrame(id);
+    }
+  }, [screenState.type]);
+
   // Get current phase - handle all screen states that have phaseId
   const getPhaseId = (): string => {
     switch (screenState.type) {

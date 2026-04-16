@@ -2579,29 +2579,33 @@ export class FullStoryPipeline {
 
       // === PHASE 8: BROWSER QA (Playwright playthrough) ===
       if (story && outputDirectory && this.config.validation?.playwrightQA !== false) {
-        const tiers = this.config.validation?.playwrightQAEncounterTiers || ['success', 'failure'];
         const maxRetries = this.config.validation?.playwrightQAMaxRetries ?? 1;
         const storyTitle = brief.story.title || '';
 
-        this.emit({ type: 'phase_start', phase: 'browser_qa', message: 'Phase 8: Running browser playthrough QA...' });
+        this.emit({ type: 'phase_start', phase: 'browser_qa', message: 'Phase 8: Running full-coverage browser QA...' });
 
         let qaAttempt = 0;
         let lastQAResult: PlaywrightQAResult | null = null;
 
         while (qaAttempt <= maxRetries) {
-          const tier = tiers[qaAttempt % tiers.length];
           try {
             this.emit({
               type: 'progress',
               phase: 'browser_qa',
-              message: `Browser QA pass ${qaAttempt + 1}/${maxRetries + 1} (encounter tier: ${tier})`,
+              message: qaAttempt === 0
+                ? 'Analyzing story paths and launching parallel browser playthroughs...'
+                : `Re-testing after remediation (attempt ${qaAttempt + 1}/${maxRetries + 1})...`,
             });
 
-            lastQAResult = await runPlaywrightQA({
+            lastQAResult = await runPlaywrightQAMultiPath({
               storyTitle,
-              encounterTier: tier,
+              story,
               maxBeats: 200,
               timeoutMs: 300_000,
+              maxParallel: 3,
+              onProgress: (msg) => {
+                this.emit({ type: 'progress', phase: 'browser_qa', message: msg });
+              },
             });
 
             if (lastQAResult.skipped) {
@@ -2613,14 +2617,19 @@ export class FullStoryPipeline {
               break;
             }
 
-            console.log(`[Pipeline] Browser QA pass ${qaAttempt + 1}: ${lastQAResult.totalBeats} beats, ` +
+            const coverage = lastQAResult.coverageReport;
+            const pathSummary = coverage
+              ? `${coverage.completedPaths}/${coverage.totalPaths} paths, ${coverage.totalChoicesMade} choices exercised`
+              : `${lastQAResult.totalBeats} beats`;
+
+            console.log(`[Pipeline] Browser QA pass ${qaAttempt + 1}: ${pathSummary}, ` +
               `${lastQAResult.imageIssues.length} image issues, ${lastQAResult.networkFailures.length} network failures`);
 
             if (lastQAResult.passed) {
               this.emit({
                 type: 'phase_complete',
                 phase: 'browser_qa',
-                message: `Browser QA passed — ${lastQAResult.totalBeats} beats, 0 issues (tier: ${tier})`,
+                message: `Browser QA passed — ${pathSummary}, 0 issues`,
               });
               break;
             }
@@ -2630,7 +2639,7 @@ export class FullStoryPipeline {
             this.emit({
               type: 'warning',
               phase: 'browser_qa',
-              message: `Browser QA found ${issueCount} issue(s) on pass ${qaAttempt + 1}`,
+              message: `Browser QA found ${issueCount} issue(s) across ${pathSummary}`,
             });
 
             if (qaAttempt < maxRetries) {
@@ -2659,7 +2668,6 @@ export class FullStoryPipeline {
                 }
 
                 if (remediation.hasChanges) {
-                  // Re-assemble and re-save
                   story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
                   story.outputDir = outputDirectory;
                   resaveFinalStory(story, outputDirectory);
@@ -2699,7 +2707,6 @@ export class FullStoryPipeline {
           qaAttempt++;
         }
 
-        // Final report (non-fatal — never fail the pipeline from QA)
         if (lastQAResult && !lastQAResult.passed && !lastQAResult.skipped) {
           const remaining = lastQAResult.imageIssues.length + lastQAResult.networkFailures.length;
           this.emit({

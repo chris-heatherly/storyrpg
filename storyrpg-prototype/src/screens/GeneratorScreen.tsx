@@ -79,7 +79,8 @@ import {
   OutputManifest,
   SourceAnalysisResult,
 } from '../ai-agents/pipeline/FullStoryPipeline';
-import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
+import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, DEFAULT_STABLE_DIFFUSION_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
+import { STABLE_DIFFUSION_UI_ENABLED } from '../config/generatorLlmOptions';
 import { EndingMode, SourceMaterialAnalysis, StoryEndingTarget } from '../types/sourceAnalysis';
 import { Story } from '../types';
 import {
@@ -309,6 +310,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     midapiToken,
     midjourneySettings,
     geminiSettings,
+    stableDiffusionSettings,
     imageProvider,
     artStyle,
     imageStrategy,
@@ -331,6 +333,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     handleMidapiTokenChange,
     handleGeminiSettingsChange,
     handleMidjourneySettingsChange,
+    handleStableDiffusionSettingsChange,
     handleImageProviderChange,
     handleArtStyleChange,
     handleGenerationSettingsChange,
@@ -340,6 +343,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const { models: availableModels, atlasCloudModels, scannedAt: modelsScanDate, loading: modelsScanLoading, refresh: refreshModels } = useAvailableModels();
   const [showMjSettings, setShowMjSettings] = useState(false);
   const [showGeminiSettings, setShowGeminiSettings] = useState(false);
+  const [showSdSettings, setShowSdSettings] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [showStoryPanel, setShowStoryPanel] = useState(true);
@@ -856,6 +860,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     artStyle,
     geminiSettings,
     midjourneySettings,
+    stableDiffusionSettings,
     generationSettings,
     generationMode,
     narrationSettings,
@@ -1879,6 +1884,11 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     <TouchableOpacity style={[styles.segment, imageProvider === 'atlas-cloud' && styles.segmentActive]} onPress={() => handleImageProviderChange('atlas-cloud')}>
                       <Text style={[styles.segmentText, imageProvider === 'atlas-cloud' && styles.segmentTextActive]}>ATLAS</Text>
                     </TouchableOpacity>
+                    {STABLE_DIFFUSION_UI_ENABLED && (
+                      <TouchableOpacity style={[styles.segment, imageProvider === 'stable-diffusion' && styles.segmentActive]} onPress={() => handleImageProviderChange('stable-diffusion')}>
+                        <Text style={[styles.segmentText, imageProvider === 'stable-diffusion' && styles.segmentTextActive]}>SD</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </View>
 
@@ -2192,6 +2202,138 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       onSelect={handleAtlasCloudModelChange}
                       placeholder="Select Atlas Cloud model…"
                     />
+                  </View>
+                )}
+
+                {STABLE_DIFFUSION_UI_ENABLED && imageProvider === 'stable-diffusion' && (
+                  <View style={styles.configItem}>
+                    <TouchableOpacity
+                      style={styles.inlineDisclosure}
+                      onPress={() => setShowSdSettings(!showSdSettings)}
+                    >
+                      <Settings size={16} color={TERMINAL.colors.cyan} style={{ marginRight: 8 }} />
+                      <Text style={[styles.configLabel, { color: TERMINAL.colors.cyan }]}>STABLE DIFFUSION PARAMETERS</Text>
+                      <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showSdSettings ? '90deg' : '0deg' }] }} />
+                    </TouchableOpacity>
+                    {showSdSettings && (
+                      <View style={styles.disclosureBody}>
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>BASE URL</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={stableDiffusionSettings.baseUrl || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ baseUrl: v })}
+                              placeholder="http://localhost:7860 or proxy /sd-api"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                          <Text style={styles.configHint}>Points at Automatic1111/Forge WebUI (or the proxy mount).</Text>
+                        </View>
+
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>API KEY (OPTIONAL)</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={stableDiffusionSettings.apiKey || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ apiKey: v })}
+                              placeholder="Bearer token for remote/secured backends"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              secureTextEntry
+                              autoCapitalize="none"
+                            />
+                          </View>
+                        </View>
+
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>DEFAULT MODEL</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={stableDiffusionSettings.defaultModel || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultModel: v })}
+                              placeholder="e.g. sdxl-base-1.0 or checkpoint filename"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                          <Text style={styles.configHint}>Matches a checkpoint name returned by /sdapi/v1/sd-models.</Text>
+                        </View>
+
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>SAMPLER</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={stableDiffusionSettings.defaultSampler || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultSampler: v })}
+                              placeholder={DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultSampler}
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                        </View>
+
+                        <View style={{ marginBottom: 16, flexDirection: 'row', gap: 12 }}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>STEPS</Text>
+                            <View style={styles.inputWrapper}>
+                              <TextInput
+                                style={styles.input}
+                                value={String(stableDiffusionSettings.defaultSteps ?? '')}
+                                onChangeText={(v) => {
+                                  const n = parseInt(v, 10);
+                                  handleStableDiffusionSettingsChange({ defaultSteps: Number.isFinite(n) ? n : undefined });
+                                }}
+                                keyboardType="number-pad"
+                                placeholder={String(DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultSteps)}
+                                placeholderTextColor={TERMINAL.colors.muted}
+                              />
+                            </View>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>CFG</Text>
+                            <View style={styles.inputWrapper}>
+                              <TextInput
+                                style={styles.input}
+                                value={String(stableDiffusionSettings.defaultCfg ?? '')}
+                                onChangeText={(v) => {
+                                  const n = parseFloat(v);
+                                  handleStableDiffusionSettingsChange({ defaultCfg: Number.isFinite(n) ? n : undefined });
+                                }}
+                                keyboardType="decimal-pad"
+                                placeholder={String(DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultCfg)}
+                                placeholderTextColor={TERMINAL.colors.muted}
+                              />
+                            </View>
+                          </View>
+                        </View>
+
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>NEGATIVE PROMPT</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={[styles.input, { height: 80 }]}
+                              multiline
+                              value={stableDiffusionSettings.defaultNegativePrompt || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultNegativePrompt: v })}
+                              placeholder={DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultNegativePrompt}
+                              placeholderTextColor={TERMINAL.colors.muted}
+                            />
+                          </View>
+                        </View>
+
+                        <TouchableOpacity
+                          style={styles.inlineResetButton}
+                          onPress={() => handleStableDiffusionSettingsChange({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS })}
+                        >
+                          <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
+                          <Text style={styles.inlineResetButtonText}>RESET TO DEFAULTS</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
                   </View>
                 )}
 

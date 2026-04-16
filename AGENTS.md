@@ -82,7 +82,7 @@ storyrpg-prototype/
 | Persistence | AsyncStorage (client), JSON on filesystem (stories), optional Vercel Blob |
 | Backend | Express proxy (`proxy-server.js`) — local dev only, not a deployed backend |
 | AI Text | Anthropic Claude (via proxy), with OpenRouter / Gemini alternatives |
-| AI Images | Gemini (default), Atlas Cloud, Midjourney/MidAPI |
+| AI Images | Gemini (default), Atlas Cloud, Midjourney/MidAPI, Stable Diffusion (self-hosted AUTOMATIC1111/Forge via swappable adapter) |
 | AI Audio | ElevenLabs TTS (optional) |
 | Testing | Vitest ^4.0.18 (Node env with RN stubs), Playwright (E2E testing) |
 | Web Deploy | Vercel (static Expo web export) |
@@ -157,7 +157,12 @@ Defined in `storyrpg-prototype/.env`. Key variables:
 | `ANTHROPIC_API_KEY` | Text generation (required for story generation) |
 | `EXPO_PUBLIC_GEMINI_API_KEY` | Image generation (default provider) |
 | `ELEVENLABS_API_KEY` | Voice narration (optional) |
-| `EXPO_PUBLIC_IMAGE_PROVIDER` | Image provider selection |
+| `EXPO_PUBLIC_IMAGE_PROVIDER` | Image provider selection (`nano-banana`, `atlas-cloud`, `midapi`, `stable-diffusion`) |
+| `EXPO_PUBLIC_SD_ENABLED` | Show the Stable Diffusion option + settings panel in the Generator UI |
+| `STABLE_DIFFUSION_BASE_URL` | Base URL of a self-hosted A1111/Forge WebUI (e.g. `http://localhost:7860`) |
+| `STABLE_DIFFUSION_API_KEY` | Optional bearer token forwarded to the SD WebUI |
+| `STABLE_DIFFUSION_BACKEND` | SD adapter backend (only `a1111` is implemented today) |
+| `STABLE_DIFFUSION_DEFAULT_MODEL` | Default SD checkpoint when a request doesn't specify one |
 | `EXPO_PUBLIC_PROXY_URL` | Override proxy URL (default: `http://localhost:3001`) |
 | `EXPO_PUBLIC_LLM_MODEL` | LLM model selection |
 | `EXPO_PUBLIC_LLM_PROVIDER` | LLM provider selection |

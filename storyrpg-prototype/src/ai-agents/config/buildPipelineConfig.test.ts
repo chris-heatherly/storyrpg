@@ -177,4 +177,97 @@ describe('buildPipelineConfig', () => {
     expect(config.imageGen?.midjourney?.srefCode).toBe('12345');
     expect(config.imageGen?.midjourney?.sceneStylization).toBe(650);
   });
+
+  it('forwards stable-diffusion settings and defaults the backend to a1111', () => {
+    const config = buildPipelineConfig({
+      llmProvider: 'anthropic',
+      llmModel: 'claude-sonnet-4-20250514',
+      imageLlmProvider: 'anthropic',
+      imageLlmModel: '',
+      videoLlmProvider: 'anthropic',
+      videoLlmModel: '',
+      apiKey: 'anthropic-key',
+      geminiApiKey: '',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: 'bytedance/seedream-v4.5',
+      midapiToken: '',
+      imageProvider: 'stable-diffusion',
+      imageStrategy: 'all-beats',
+      artStyle: 'noir ink wash',
+      geminiSettings: {} as any,
+      midjourneySettings: {} as any,
+      stableDiffusionSettings: {
+        baseUrl: 'http://localhost:7860',
+        defaultModel: 'sdxl-base-1.0',
+        defaultSteps: 32,
+        styleLoras: [{ name: 'studio_ghibli', weight: 0.8 }],
+      } as any,
+      generationSettings,
+      generationMode: 'advisory',
+      narrationSettings: {
+        enabled: false,
+        autoPlay: false,
+        preGenerateAudio: false,
+        voiceId: '',
+        highlightMode: 'word',
+      },
+      videoSettings: {
+        enabled: false,
+        model: 'veo-3.1-fast-generate-preview',
+        durationSeconds: 6,
+        resolution: '1080p',
+        aspectRatio: '9:16',
+        strategy: 'selective',
+      },
+    });
+
+    expect(config.imageGen?.provider).toBe('stable-diffusion');
+    expect(config.imageGen?.stableDiffusion?.baseUrl).toBe('http://localhost:7860');
+    expect(config.imageGen?.stableDiffusion?.defaultModel).toBe('sdxl-base-1.0');
+    expect(config.imageGen?.stableDiffusion?.backend).toBe('a1111');
+    expect(config.imageGen?.stableDiffusion?.defaultSteps).toBe(32);
+    expect(config.imageGen?.stableDiffusion?.styleLoras?.[0].name).toBe('studio_ghibli');
+  });
+
+  it('omits stable-diffusion config when provider is not SD and no overrides given', () => {
+    const config = buildPipelineConfig({
+      llmProvider: 'anthropic',
+      llmModel: 'claude-sonnet-4-20250514',
+      imageLlmProvider: 'anthropic',
+      imageLlmModel: '',
+      videoLlmProvider: 'anthropic',
+      videoLlmModel: '',
+      apiKey: 'anthropic-key',
+      geminiApiKey: 'gemini-key',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: 'bytedance/seedream-v4.5',
+      midapiToken: '',
+      imageProvider: 'nano-banana',
+      imageStrategy: 'all-beats',
+      artStyle: '',
+      geminiSettings: {} as any,
+      midjourneySettings: {} as any,
+      generationSettings,
+      generationMode: 'advisory',
+      narrationSettings: {
+        enabled: false,
+        autoPlay: false,
+        preGenerateAudio: false,
+        voiceId: '',
+        highlightMode: 'word',
+      },
+      videoSettings: {
+        enabled: false,
+        model: 'veo-3.1-fast-generate-preview',
+        durationSeconds: 6,
+        resolution: '1080p',
+        aspectRatio: '9:16',
+        strategy: 'selective',
+      },
+    });
+
+    expect(config.imageGen?.stableDiffusion).toBeUndefined();
+  });
 });

@@ -270,6 +270,35 @@ EXPO_PUBLIC_IMAGE_PROVIDER=midapi
 MIDAPI_TOKEN=your-midapi-token-here
 ```
 
+**Stable Diffusion (self-hosted AUTOMATIC1111 / Forge WebUI):**
+
+StoryRPG talks to a Stable Diffusion WebUI via the proxy's `/sd-api/*` route; no third-party key is required unless your WebUI is fronted by one.
+
+1. Install [AUTOMATIC1111 `stable-diffusion-webui`](https://github.com/AUTOMATIC1111/stable-diffusion-webui) or a compatible fork (Forge, reForge).
+2. Launch it with the API enabled so StoryRPG can call it. Typical dev flags:
+   - `./webui.sh --api --listen --port 7860 --cors-allow-origins=*`
+3. (Recommended) Install the `sd-webui-controlnet` extension and place:
+   - Depth, canny, or reference-only ControlNet models under `models/ControlNet/`
+   - Any IP-Adapter (FaceID) models you want to use for character identity
+   - Style / character LoRAs under `models/Lora/`
+4. Confirm the WebUI responds with a model list: `curl http://localhost:7860/sdapi/v1/sd-models`.
+
+Then add this to `storyrpg-prototype/.env`:
+
+```env
+EXPO_PUBLIC_IMAGE_PROVIDER=stable-diffusion
+EXPO_PUBLIC_SD_ENABLED=true
+STABLE_DIFFUSION_BASE_URL=http://localhost:7860
+# Optional — only if you front the WebUI with an auth proxy:
+# STABLE_DIFFUSION_API_KEY=your-token-here
+# Optional — non-default backends throw until implemented (default: a1111):
+# STABLE_DIFFUSION_BACKEND=a1111
+# Optional — seed checkpoint passed on requests that don't override it:
+# STABLE_DIFFUSION_DEFAULT_MODEL=sdxl-base-1.0
+```
+
+With `EXPO_PUBLIC_SD_ENABLED=true` the Generator screen exposes an `SD` segment and a parameters panel where you can override base URL, model, sampler, steps, CFG, and negative prompt per session. ControlNet models / IP-Adapter model names, per-character LoRA mappings, and style LoRAs are part of `StableDiffusionSettings` and can be edited via the UI or passed programmatically in `PipelineConfig.imageGen.stableDiffusion`. See `docs/IMAGE_PIPELINE_RUNTIME.md` (Provider Notes → `stable-diffusion`) for the full feature matrix.
+
 ---
 
 ## 5) Running the Application
@@ -574,7 +603,7 @@ EXPO_PUBLIC_GEMINI_API_KEY=AIza...
 # Enable/disable image generation (true/false)
 EXPO_PUBLIC_IMAGE_GENERATION_ENABLED=true
 
-# Image provider: 'nano-banana' (Gemini), 'atlas-cloud', 'midapi'
+# Image provider: 'nano-banana' (Gemini), 'atlas-cloud', 'midapi', 'stable-diffusion'
 EXPO_PUBLIC_IMAGE_PROVIDER=nano-banana
 
 # Gemini model for images
@@ -586,6 +615,13 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 
 # MidAPI/Midjourney (alternative provider)
 # MIDAPI_TOKEN=...
+
+# Stable Diffusion (self-hosted AUTOMATIC1111 / Forge WebUI)
+# EXPO_PUBLIC_SD_ENABLED=true                # show the SD option + settings panel in the Generator UI
+# STABLE_DIFFUSION_BASE_URL=http://localhost:7860
+# STABLE_DIFFUSION_API_KEY=                  # optional bearer token; sent as x-stable-diffusion-token
+# STABLE_DIFFUSION_BACKEND=a1111             # only 'a1111' is currently implemented
+# STABLE_DIFFUSION_DEFAULT_MODEL=sdxl-base-1.0
 
 # ===================================================================
 # AUDIO / NARRATION (Optional)

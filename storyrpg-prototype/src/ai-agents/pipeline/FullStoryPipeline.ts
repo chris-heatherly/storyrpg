@@ -619,6 +619,7 @@ export class FullStoryPipeline {
       geminiApiKey: this.config.imageGen?.geminiApiKey || this.config.imageGen?.apiKey,
       midjourneySettings: this.config.imageGen?.midjourney || this.config.midjourneySettings,
       geminiSettings: this.config.imageGen?.gemini || this.config.geminiSettings,
+      stableDiffusionSettings: this.config.imageGen?.stableDiffusion,
       failurePolicy: this.getFailurePolicy(),
     });
     

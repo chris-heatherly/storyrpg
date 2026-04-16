@@ -257,9 +257,47 @@ Notes:
 - local character refs still cannot be passed as native Midjourney reference URLs in this path
 - identity is therefore reinforced through reference-sheet generation, textual identity anchors, and `--sref`
 
-### `dall-e` / `stable-diffusion`
+### `dall-e`
 
-These remain placeholder providers in the current runtime and should not be treated as production-ready image backends.
+Remains a placeholder provider in the current runtime and should not be treated as a production-ready image backend.
+
+### `stable-diffusion`
+
+Runs through a swappable adapter so we can target different SD hosts without touching `ImageGenerationService`. Today only the AUTOMATIC1111 / Forge WebUI backend is implemented (`A1111Adapter`); the adapter factory accepts `a1111`, `comfy`, `replicate`, `stability`, and `fal` but throws a clear error for anything except `a1111`.
+
+Runtime features in use:
+
+- text-to-image and image-to-image dispatch (init image is auto-promoted from any reference tagged `purpose: 'img2img-init'` or heuristically from `previous-panel-continuity` refs)
+- inline LoRA tags (`<lora:name:weight>`) from both prompt-level LoRAs and the settings-level style / per-character LoRA registry (prompt wins on duplicates, weights clamped to `[-2, 2]`)
+- ControlNet stack via the `sd-webui-controlnet` extension (`alwayson_scripts.controlnet.args[]`):
+  - depth auto-wired from references tagged `purpose: 'controlnet-depth'` or any environment / scene-master ref when `controlNetModels.depth` is configured
+  - canny / reference-only wired the same way from their respective purposes
+  - explicit prompt-level `ImagePromptControlNet[]` always take precedence
+- IP-Adapter (face identity) wired from references tagged `purpose: 'ip-adapter'`, or any `character-reference-face` ref when `ipAdapterModel` is configured
+- deterministic seed registry (`SeedRegistry`) inside `ImageGenerationService` — caller metadata (`sceneId`, `characterName` / `characterId`) hashes into a stable 32-bit seed so the same shot reproduces across runs; `prompt.seed` always overrides
+- preflight canary via `GET /sdapi/v1/sd-models` (service branch `preflightImageProvider('stable-diffusion')`)
+- optional img2img mask (`purpose: 'inpaint-mask'`) for inpainting flows
+- editImage uses the adapter's `edit()` (img2img) path and folds the base image into references with `purpose: 'img2img-init'`
+
+Wiring surface:
+
+- proxy mount: `/sd-api/*` forwards to `STABLE_DIFFUSION_BASE_URL` with optional bearer auth (`x-stable-diffusion-token`)
+- env vars: `STABLE_DIFFUSION_BASE_URL`, `STABLE_DIFFUSION_API_KEY`, `STABLE_DIFFUSION_BACKEND`, `STABLE_DIFFUSION_DEFAULT_MODEL`, `EXPO_PUBLIC_SD_ENABLED` (gates the UI segment)
+- settings object: `PipelineConfig.imageGen.stableDiffusion` (`StableDiffusionSettings` in `src/ai-agents/config.ts`)
+- UI: the GeneratorScreen exposes an `SD` segment plus a Stable Diffusion parameters disclosure (base URL, model, sampler, steps, CFG, negative prompt) when `EXPO_PUBLIC_SD_ENABLED=true`
+
+#### Consistency Feature Matrix (SD)
+
+| Consistency Anchor          | Source                                                        | SD Lever                   |
+|-----------------------------|---------------------------------------------------------------|----------------------------|
+| Global art style            | `StableDiffusionSettings.styleLoras`                          | Inline `<lora:...>` tag    |
+| Per-character identity (LoRA)| `StableDiffusionSettings.characterLoraByName[name]`          | Inline `<lora:...>` tag    |
+| Per-character identity (face)| `character-reference-face` ref + `settings.ipAdapterModel`   | IP-Adapter via ControlNet  |
+| Environment / layout        | `scene-master-environment` ref + `controlNetModels.depth`     | ControlNet depth           |
+| Silhouette / pose           | ref with `purpose: 'controlnet-canny'`                        | ControlNet canny           |
+| Previous-panel continuity   | `previous-panel-continuity` ref                               | img2img init image         |
+| Deterministic reproducibility| seed registry (scene, character, character-in-scene scopes)  | `seed` parameter           |
+| Negative stack              | `StableDiffusionSettings.defaultNegativePrompt` + per-prompt  | `negative_prompt`          |
 
 ## PartialVictory Cost Visuals
 

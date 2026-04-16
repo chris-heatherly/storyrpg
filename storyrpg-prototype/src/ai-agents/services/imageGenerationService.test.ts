@@ -38,6 +38,42 @@ describe('ImageGenerationService.classifyError', () => {
   });
 });
 
+describe('ImageGenerationService stable-diffusion wiring', () => {
+  it('returns a preflight failure when SD is selected without a baseUrl', async () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'stable-diffusion',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+    const result = await service.preflightImageProvider(false);
+    expect(result.provider).toBe('stable-diffusion');
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/baseUrl/i);
+  });
+
+  it('applyDeterministicSeed pins a stable seed when prompt omits one', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'stable-diffusion',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+    const prompt: any = { prompt: 'hero' };
+    const a = service.applyDeterministicSeed(prompt, 'scene-1-beat-1', {
+      sceneId: 'scene-1',
+      characterName: 'hero',
+    });
+    const b = service.applyDeterministicSeed(prompt, 'scene-1-beat-1', {
+      sceneId: 'scene-1',
+      characterName: 'hero',
+    });
+    expect(typeof a.seed).toBe('number');
+    expect(a.seed).toBe(b.seed);
+    // Explicit seed on prompt should win
+    const forced = service.applyDeterministicSeed({ ...prompt, seed: 42 }, 'x', {});
+    expect(forced.seed).toBe(42);
+  });
+});
+
 describe('ImageGenerationService prompt cache hashing', () => {
   it('separates deep encounter branches by choice path and base slot identity', () => {
     const service = new ImageGenerationService({

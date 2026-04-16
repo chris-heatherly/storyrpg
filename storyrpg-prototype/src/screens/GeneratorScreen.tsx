@@ -16,11 +16,13 @@ import {
   SafeAreaView,
   TextInput,
   Platform,
-  Modal,
   ActivityIndicator,
   Switch,
   Image,
+  Modal,
+  Pressable,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import {
   ChevronRight,
   ChevronDown,
@@ -45,6 +47,9 @@ import {
   BookOpen,
   ImageIcon,
   Film,
+  Play,
+  Library,
+  PauseCircle,
 } from 'lucide-react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
@@ -53,6 +58,10 @@ import { PipelineProgress } from '../components/PipelineProgress';
 import { CheckpointReview } from '../components/CheckpointReview';
 import { ImageJobPanel } from '../components/ImageJobPanel';
 import { VideoJobPanel } from '../components/VideoJobPanel';
+import { StepIndicator, deriveWizardStep } from './generator/StepIndicator';
+import { AdvancedSettingsSheet } from './generator/AdvancedSettingsSheet';
+import { ProgressStep } from './generator/steps/ProgressStep';
+import { CompleteStep } from './generator/steps/CompleteStep';
 import { GenerationSettingsPanel, GenerationSettings } from '../components/GenerationSettingsPanel';
 import { EpisodeSelector } from '../components/EpisodeSelector';
 import { useSettingsStore } from '../stores/settingsStore';
@@ -60,6 +69,7 @@ import { seasonPlanStore } from '../stores/seasonPlanStore';
 import { SeasonPlan, EpisodeRecommendation } from '../types/seasonPlan';
 import { SeasonPlannerAgent } from '../ai-agents/agents/SeasonPlannerAgent';
 import { useImageJobStore } from '../stores/imageJobStore';
+import { useVideoJobStore } from '../stores/videoJobStore';
 import { useGenerationJobStore, PipelineEventData } from '../stores/generationJobStore';
 import { useGeneratorSettings } from '../hooks/useGeneratorSettings';
 import { useAvailableModels } from '../hooks/useAvailableModels';
@@ -111,7 +121,7 @@ interface CheckpointData {
   requiresApproval: boolean;
 }
 
-type GeneratorState = 'idle' | 'config' | 'analyzing' | 'analysis_complete' | 'running' | 'checkpoint' | 'complete' | 'error';
+type GeneratorState = 'idle' | 'config' | 'analyzing' | 'analysis_complete' | 'running' | 'checkpoint' | 'complete' | 'cancelled' | 'error';
 type GenerationMode = 'strict' | 'advisory' | 'disabled';
 
 type AnalysisCharacterTarget = {
@@ -251,6 +261,17 @@ const ConfigBucketCard: React.FC<ConfigBucketCardProps> = ({
 interface GeneratorScreenProps {
   onBack: () => void;
   onStoryGenerated?: (story: Story) => void;
+  /**
+   * Called when the user clicks "Play now" on the completion screen. The host
+   * app should add the story to the library, initialize it in the game store,
+   * and navigate to the reading surface.
+   */
+  onPlayStory?: (story: Story) => void | Promise<void>;
+  /**
+   * Called when the user clicks "View in library" on the completion screen.
+   * The host app should navigate to the story library (usually Home).
+   */
+  onViewLibrary?: () => void;
   resumeJobId?: string; // If provided, resume viewing this job's progress
   onCancelExternalPipeline?: () => void;
 }
@@ -266,7 +287,7 @@ type FailureWorkspaceState = {
   error: string | null;
 };
 
-export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStoryGenerated, resumeJobId, onCancelExternalPipeline }) => {
+export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStoryGenerated, onPlayStory, onViewLibrary, resumeJobId, onCancelExternalPipeline }) => {
   const [state, setState] = useState<GeneratorState>('idle');
   const [events, setEvents] = useState<PipelineEvent[]>([]);
   const [currentPhase, setCurrentPhase] = useState<string | undefined>();
@@ -346,11 +367,24 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [showSdSettings, setShowSdSettings] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  // Keep STORY open by default (the required prompt/doc lives inside); start
+  // all other optional buckets collapsed so the primary CTA is reachable
+  // without a long scroll. The full wizard refactor (Tranche B) replaces this
+  // with an explicit step indicator.
   const [showStoryPanel, setShowStoryPanel] = useState(true);
-  const [showImagesPanel, setShowImagesPanel] = useState(true);
+  const [showImagesPanel, setShowImagesPanel] = useState(false);
   const [showNarrationPanel, setShowNarrationPanel] = useState(false);
   const [showVideoPanel, setShowVideoPanel] = useState(false);
   const [confirmCancelGeneration, setConfirmCancelGeneration] = useState(false);
+  const [showJobsSheet, setShowJobsSheet] = useState(false);
+
+  // Surface background image/video jobs in a header pill + bottom sheet rather
+  // than mounting the full panels at the bottom of the generator scroll. The
+  // pill is only rendered when jobs exist.
+  const imageJobCount = useImageJobStore((s) => Object.keys(s.jobs).length);
+  const videoJobCount = useVideoJobStore((s) => Object.keys(s.jobs).length);
+  const totalBackgroundJobs = imageJobCount + videoJobCount;
+  const hasBackgroundJobs = totalBackgroundJobs > 0;
 
   // Document mode state
   const [documentPath, setDocumentPath] = useState('');
@@ -1446,7 +1480,24 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   
   const exportStory = () => {
     if (!generatedStory || !generatedCode) return;
-    Alert.alert('Export Ready', `Story: ${generatedStory.title}\n\n${formatStoryStats(generatedStory)}\n\nFile: ${getStoryFileName(generatedStory)}`, [{ text: 'Copy Code', onPress: () => console.log(generatedCode) }, { text: 'OK' }]);
+    const code = generatedCode;
+    const copyToClipboard = async () => {
+      try {
+        await Clipboard.setStringAsync(code);
+        Alert.alert('Copied', 'Story TypeScript code copied to clipboard.');
+      } catch (copyErr) {
+        console.warn('[GeneratorScreen] Failed to copy story code:', copyErr);
+        Alert.alert('Copy Failed', 'Could not copy to clipboard. Try again or export manually.');
+      }
+    };
+    Alert.alert(
+      'Export Ready',
+      `Story: ${generatedStory.title}\n\n${formatStoryStats(generatedStory)}\n\nFile: ${getStoryFileName(generatedStory)}`,
+      [
+        { text: 'Copy Code', onPress: () => { void copyToClipboard(); } },
+        { text: 'OK' },
+      ],
+    );
   };
 
   const resetGenerator = () => {
@@ -1493,8 +1544,12 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         },
       });
     }
-    setState('error');
-    setError('Generation cancelled by user. You may restart from the beginning.');
+    // Route intentional cancels to a dedicated 'cancelled' state so the UI
+    // doesn't conflate user stops with actual pipeline failures (which would
+    // surface the failure-workspace triage UI). The error string is cleared to
+    // prevent any stale failure messaging.
+    setState('cancelled');
+    setError(null);
     pipelineRef.current = null;
   };
 
@@ -1681,8 +1736,37 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           <Text style={styles.headerButtonText}>BACK</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>AI GENERATOR</Text>
-        <View style={{ width: 60 }} />
+        {hasBackgroundJobs ? (
+          <TouchableOpacity
+            style={styles.jobsPill}
+            onPress={() => setShowJobsSheet(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`Open background jobs (${totalBackgroundJobs})`}
+          >
+            <Layers size={12} color={TERMINAL.colors.amber} />
+            <Text style={styles.jobsPillText}>JOBS</Text>
+            <View style={styles.jobsPillBadge}>
+              <Text style={styles.jobsPillBadgeText}>{totalBackgroundJobs}</Text>
+            </View>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.headerSpacer} />
+        )}
       </View>
+      {/*
+        Wizard-style step indicator. Rendered once the user has progressed
+        past the hero `idle` landing so we don't pre-announce the wizard
+        before the user has engaged. The indicator reads the existing
+        `state` machine directly — we don't introduce a new source of
+        truth for the current step.
+      */}
+      {state !== 'idle' && !isViewingHistory && (
+        <StepIndicator
+          currentStep={deriveWizardStep(state)}
+          completed={state === 'complete'}
+          errored={state === 'error'}
+        />
+      )}
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false} contentContainerStyle={styles.contentPadding}>
         <View style={styles.statusBar}>
           <Cpu size={14} color={TERMINAL.colors.muted} />
@@ -1823,23 +1907,25 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   </Text>
                 </View>
 
+                {/*
+                  Advanced story settings now open in the AdvancedSettingsSheet
+                  instead of expanding inline inside the Story bucket. This
+                  removes one level of nested disclosure — the previous flow
+                  forced the user through Story bucket -> inline disclosure ->
+                  six more collapsible sections to reach advanced controls.
+                */}
                 <View style={styles.configItem}>
                   <TouchableOpacity
                     style={styles.inlineDisclosure}
-                    onPress={() => setShowAdvancedSettings(!showAdvancedSettings)}
+                    onPress={() => setShowAdvancedSettings(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open advanced story settings"
                   >
                     <Settings size={16} color={TERMINAL.colors.primary} style={{ marginRight: 8 }} />
                     <Text style={styles.configLabel}>ADVANCED STORY SETTINGS</Text>
-                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showAdvancedSettings ? '90deg' : '0deg' }] }} />
+                    <Text style={styles.advancedSettingsHint}>OPEN</Text>
+                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 8 }} />
                   </TouchableOpacity>
-                  {showAdvancedSettings && (
-                    <View style={styles.disclosureBody}>
-                      <GenerationSettingsPanel
-                        settings={generationSettings}
-                        onChange={handleGenerationSettingsChange}
-                      />
-                    </View>
-                  )}
                 </View>
               </ConfigBucketCard>
 
@@ -2799,26 +2885,86 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 )}
               </View>
             )}
-            <View style={styles.configActions}>{(!documentBrief && !userPrompt.trim()) ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={styles.executeButton} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>INITIATE GENERATION</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
+            <View style={styles.configActions}>{!hasSourceInput ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={styles.executeButton} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>INITIATE GENERATION</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
           </View>
         )}
         {(state === 'running' || state === 'checkpoint') && (
           <View style={styles.runningSection}>
-            <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} />
-            <View style={styles.runningActions}>
-              <TouchableOpacity style={styles.cancelButton} onPress={cancelGeneration}>
-                <StopCircle size={18} color={TERMINAL.colors.error} />
-                <Text style={styles.cancelButtonText}>STOP GENERATION</Text>
-              </TouchableOpacity>
-            </View>
+            <ProgressStep>
+              <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} />
+              <View style={styles.runningActions}>
+                <TouchableOpacity style={styles.cancelButton} onPress={cancelGeneration}>
+                  <StopCircle size={18} color={TERMINAL.colors.error} />
+                  <Text style={styles.cancelButtonText}>STOP GENERATION</Text>
+                </TouchableOpacity>
+              </View>
+            </ProgressStep>
           </View>
         )}
         {state === 'checkpoint' && currentCheckpoint && (<View style={styles.checkpointSection}><CheckpointReview checkpoint={currentCheckpoint} onApprove={handleCheckpointApprove} onReject={handleCheckpointReject} /></View>)}
         {state === 'complete' && generatedStory && !isViewingHistory && (
           <View style={styles.completeSection}>
-            <View style={styles.successHeader}><CheckCircle2 size={48} color={TERMINAL.colors.primary} /><Text style={styles.completeTitle}>SYNTHESIS COMPLETE</Text><Text style={styles.completeSubtitle}>NARRATIVE READY FOR DEPLOYMENT</Text></View>
-            <View style={styles.storySummaryCard}><View style={styles.summaryRow}><Text style={styles.summaryLabel}>TITLE</Text><Text style={styles.summaryValue}>{(generatedStory.title || 'Untitled').toUpperCase()}</Text></View><View style={styles.summaryRow}><Text style={styles.summaryLabel}>EPISODES</Text><Text style={styles.summaryValue}>{generatedStory.episodes.length}</Text></View><View style={styles.summaryRow}><Text style={styles.summaryLabel}>SCENES</Text><Text style={styles.summaryValue}>{generatedStory.episodes.reduce((acc, ep) => acc + ep.scenes.length, 0)}</Text></View></View>
-            <View style={styles.completeActions}><TouchableOpacity style={styles.executeButton} onPress={exportStory}><Download size={18} color="white" /><Text style={styles.executeButtonText}>EXPORT STORY DATA</Text></TouchableOpacity><TouchableOpacity style={styles.secondaryActionButton} onPress={resetGenerator}><RefreshCw size={18} color={TERMINAL.colors.primary} /><Text style={styles.secondaryActionButtonText}>NEW GENERATION</Text></TouchableOpacity></View>
+            <CompleteStep>
+              <View style={styles.successHeader}>
+                <CheckCircle2 size={48} color={TERMINAL.colors.primary} />
+                <Text style={styles.completeTitle}>SYNTHESIS COMPLETE</Text>
+                <Text style={styles.completeSubtitle}>NARRATIVE READY FOR DEPLOYMENT</Text>
+              </View>
+              <View style={styles.storySummaryCard}>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>TITLE</Text>
+                <Text style={styles.summaryValue}>{(generatedStory.title || 'Untitled').toUpperCase()}</Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>EPISODES</Text>
+                <Text style={styles.summaryValue}>{generatedStory.episodes.length}</Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>SCENES</Text>
+                <Text style={styles.summaryValue}>{generatedStory.episodes.reduce((acc, ep) => acc + ep.scenes.length, 0)}</Text>
+              </View>
+            </View>
+            <View style={styles.completeActions}>
+              {onPlayStory && (
+                <TouchableOpacity style={styles.executeButton} onPress={() => { void onPlayStory(generatedStory); }}>
+                  <Play size={18} color="white" />
+                  <Text style={styles.executeButtonText}>PLAY NOW</Text>
+                </TouchableOpacity>
+              )}
+              {onViewLibrary && (
+                <TouchableOpacity style={styles.secondaryActionButton} onPress={onViewLibrary}>
+                  <Library size={18} color={TERMINAL.colors.primary} />
+                  <Text style={styles.secondaryActionButtonText}>VIEW IN LIBRARY</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={styles.secondaryActionButton} onPress={resetGenerator}>
+                <RefreshCw size={18} color={TERMINAL.colors.primary} />
+                <Text style={styles.secondaryActionButtonText}>GENERATE ANOTHER</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.textButton} onPress={exportStory}>
+                <Text style={styles.textButtonText}>EXPORT STORY DATA</Text>
+              </TouchableOpacity>
+            </View>
+            </CompleteStep>
+          </View>
+        )}
+        {state === 'cancelled' && !isViewingHistory && (
+          <View style={styles.cancelledSection}>
+            <View style={styles.cancelledHeader}>
+              <PauseCircle size={40} color={TERMINAL.colors.amber} />
+              <Text style={styles.cancelledTitle}>GENERATION CANCELLED</Text>
+              <Text style={styles.cancelledSubtitle}>Pipeline stopped cleanly. Your inputs are preserved.</Text>
+            </View>
+            <View style={styles.cancelledActions}>
+              <TouchableOpacity style={styles.executeButton} onPress={() => setState('config')}>
+                <Settings size={18} color="white" />
+                <Text style={styles.executeButtonText}>BACK TO CONFIG</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.secondaryActionButton} onPress={resetGenerator}>
+                <RefreshCw size={18} color={TERMINAL.colors.primary} />
+                <Text style={styles.secondaryActionButtonText}>START OVER</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
         {state === 'error' && !isViewingHistory && (
@@ -2897,8 +3043,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             </View>
           </View>
         )}
-        <ImageJobPanel />
-        <VideoJobPanel />
       </ScrollView>
 
       <ConfirmDialog
@@ -2912,6 +3056,67 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         onCancel={() => setConfirmCancelGeneration(false)}
         testID="generator-cancel-dialog"
       />
+
+      <AdvancedSettingsSheet
+        visible={showAdvancedSettings}
+        settings={generationSettings}
+        onChange={handleGenerationSettingsChange}
+        onClose={() => setShowAdvancedSettings(false)}
+      />
+
+      {/*
+        Background jobs bottom sheet. Surfaces the full ImageJobPanel /
+        VideoJobPanel UIs on demand without forcing them to live at the
+        bottom of the generator scroll. Modal is unmounted when the sheet
+        is closed, so the panels do not render (and their internal
+        animations / polling don't run) unless requested.
+      */}
+      <Modal
+        visible={showJobsSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowJobsSheet(false)}
+      >
+        <View style={styles.jobsSheetOverlay}>
+          <Pressable
+            style={styles.jobsSheetBackdrop}
+            onPress={() => setShowJobsSheet(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close background jobs sheet"
+          />
+          <View style={styles.jobsSheet}>
+            <View style={styles.jobsSheetHandle} />
+            <View style={styles.jobsSheetHeader}>
+              <View style={styles.jobsSheetTitleRow}>
+                <Layers size={16} color={TERMINAL.colors.amber} />
+                <Text style={styles.jobsSheetTitle}>BACKGROUND JOBS</Text>
+                <View style={styles.jobsPillBadge}>
+                  <Text style={styles.jobsPillBadgeText}>{totalBackgroundJobs}</Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={styles.jobsSheetClose}
+                onPress={() => setShowJobsSheet(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close background jobs"
+              >
+                <Text style={styles.jobsSheetCloseText}>CLOSE</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              style={styles.jobsSheetBody}
+              contentContainerStyle={styles.jobsSheetBodyContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {imageJobCount > 0 && <ImageJobPanel />}
+              {videoJobCount > 0 && <VideoJobPanel />}
+              {!hasBackgroundJobs && (
+                <Text style={styles.jobsSheetEmpty}>NO ACTIVE JOBS</Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -2920,17 +3125,126 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: TERMINAL.colors.bg },
   header: { height: 64, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
   headerTitle: { fontSize: 14, fontWeight: '900', color: 'white', letterSpacing: 2 },
+  headerSpacer: { width: 60 },
+  jobsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+  },
+  jobsPillText: {
+    color: TERMINAL.colors.amber,
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+  },
+  jobsPillBadge: {
+    minWidth: 18,
+    paddingHorizontal: 6,
+    height: 18,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: TERMINAL.colors.amber,
+  },
+  jobsPillBadgeText: {
+    color: TERMINAL.colors.bg,
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  jobsSheetOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  jobsSheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  jobsSheet: {
+    maxHeight: '85%',
+    backgroundColor: TERMINAL.colors.bg,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    paddingTop: 8,
+  },
+  jobsSheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    marginBottom: 8,
+  },
+  jobsSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  jobsSheetTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  jobsSheetTitle: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+  },
+  jobsSheetClose: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  jobsSheetCloseText: {
+    color: TERMINAL.colors.muted,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  jobsSheetBody: {
+    flexGrow: 0,
+  },
+  jobsSheetBodyContent: {
+    padding: 16,
+    gap: 12,
+    paddingBottom: 32,
+  },
+  jobsSheetEmpty: {
+    textAlign: 'center',
+    color: TERMINAL.colors.muted,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+    paddingVertical: 40,
+  },
   headerIconButton: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8 },
   headerButtonText: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   content: { flex: 1 },
   contentPadding: { padding: 20, paddingBottom: 40 },
-  statusBar: { flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: '#16191f', borderRadius: 12, marginBottom: 24, gap: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  statusBar: { flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 12, marginBottom: 24, gap: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   statusLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   statusValue: { fontSize: 10, fontWeight: '900', letterSpacing: 1 },
-  status_idle: { color: TERMINAL.colors.muted }, status_config: { color: TERMINAL.colors.cyan }, status_analyzing: { color: TERMINAL.colors.amber }, status_analysis_complete: { color: TERMINAL.colors.primary }, status_running: { color: TERMINAL.colors.amber }, status_checkpoint: { color: TERMINAL.colors.cyan }, status_complete: { color: TERMINAL.colors.primary }, status_error: { color: TERMINAL.colors.error }, status_history: { color: TERMINAL.colors.cyan },
+  status_idle: { color: TERMINAL.colors.muted }, status_config: { color: TERMINAL.colors.cyan }, status_analyzing: { color: TERMINAL.colors.amber }, status_analysis_complete: { color: TERMINAL.colors.primary }, status_running: { color: TERMINAL.colors.amber }, status_checkpoint: { color: TERMINAL.colors.cyan }, status_complete: { color: TERMINAL.colors.primary }, status_cancelled: { color: TERMINAL.colors.amber }, status_error: { color: TERMINAL.colors.error }, status_history: { color: TERMINAL.colors.cyan },
   section: { marginBottom: 32 }, sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 }, sectionTitle: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.primary, letterSpacing: 1 },
   configIntro: { fontSize: 11, color: TERMINAL.colors.muted, lineHeight: 18, marginTop: -4, marginBottom: 18, fontWeight: '600' },
-  heroCard: { backgroundColor: '#16191f', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', alignItems: 'center' },
+  heroCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', alignItems: 'center' },
   heroText: { fontSize: 14, fontWeight: '900', color: 'white', textAlign: 'center', lineHeight: 22, marginBottom: 24, letterSpacing: 0.5 },
   pipelineGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 12, marginBottom: 30 },
   pipelineGridItem: { width: 60, height: 70, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 12, alignItems: 'center', justifyContent: 'center', gap: 4 },
@@ -2938,7 +3252,7 @@ const styles = StyleSheet.create({
   primaryActionButton: { backgroundColor: TERMINAL.colors.primary, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 24, paddingVertical: 16, borderRadius: 16, gap: 12, width: '100%', justifyContent: 'center' },
   primaryActionButtonText: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 1 },
   configGroup: { gap: 18, marginBottom: 30 },
-  setupStepCard: { backgroundColor: '#16191f', borderRadius: 22, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', gap: 16 },
+  setupStepCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 22, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', gap: 16 },
   setupStepHeader: { flexDirection: 'row', gap: 14, alignItems: 'flex-start' },
   bucketCardHeader: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
   bucketCardHeaderMain: { flex: 1, gap: 10 },
@@ -2961,6 +3275,13 @@ const styles = StyleSheet.create({
   configLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.amber, letterSpacing: 1, marginLeft: 4 },
   configHint: { fontSize: 9, color: TERMINAL.colors.muted, marginLeft: 4, marginTop: 4, fontWeight: '600' },
   inlineDisclosure: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  advancedSettingsHint: {
+    marginLeft: 'auto',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1,
+    color: TERMINAL.colors.primary,
+  },
   disclosureBody: { marginTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 12 },
   disclosureScroll: { marginTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 12, maxHeight: 420 },
   configGroupIntro: { color: TERMINAL.colors.muted, fontSize: 10, marginBottom: 16, letterSpacing: 1 },
@@ -2992,20 +3313,20 @@ const styles = StyleSheet.create({
   setupChecklistLabel: { fontSize: 8, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1, marginBottom: 6 },
   setupChecklistValue: { fontSize: 11, fontWeight: '900', color: 'white', letterSpacing: 0.5 },
   setupChecklistValueReady: { color: TERMINAL.colors.primary },
-  inputWrapper: { backgroundColor: '#16191f', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 16 },
+  inputWrapper: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 16 },
   input: { height: 50, color: 'white', fontSize: 14, fontWeight: '700' },
-  segmentedControl: { flexDirection: 'row', backgroundColor: '#16191f', borderRadius: 14, padding: 4, gap: 4 },
+  segmentedControl: { flexDirection: 'row', backgroundColor: TERMINAL.colors.bgLight, borderRadius: 14, padding: 4, gap: 4 },
   segment: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: 10 },
   segmentActive: { backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   segmentText: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 }, segmentTextActive: { color: 'white' },
-  modelPickerContainer: { backgroundColor: '#16191f', borderRadius: 14, padding: 4, gap: 2 },
+  modelPickerContainer: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 14, padding: 4, gap: 2 },
   modelPickerOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 14, borderRadius: 10 },
   modelPickerOptionActive: { backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   modelPickerLabel: { fontSize: 11, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 0.5 },
   modelPickerLabelActive: { color: 'white' },
   modelPickerValue: { fontSize: 9, fontWeight: '700', color: 'rgba(255,255,255,0.15)', letterSpacing: 0.3 },
   modelPickerValueActive: { color: TERMINAL.colors.muted },
-  filePicker: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#16191f', borderRadius: 20, padding: 16, borderWidth: 2, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.1)', gap: 16 },
+  filePicker: { flexDirection: 'row', alignItems: 'center', backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 16, borderWidth: 2, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.1)', gap: 16 },
   filePickerActive: { borderStyle: 'solid', borderColor: TERMINAL.colors.primary, backgroundColor: 'rgba(59, 130, 246, 0.05)' },
   fileIconBox: { width: 44, height: 44, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   fileInfo: { flex: 1 }, fileName: { fontSize: 12, fontWeight: '900', color: 'white', marginBottom: 4 }, fileMeta: { fontSize: 9, color: TERMINAL.colors.muted, fontWeight: '700' },
@@ -3017,13 +3338,13 @@ const styles = StyleSheet.create({
   executeButtonText: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 1 },
   textButton: { paddingVertical: 12, alignItems: 'center' }, textButtonText: { fontSize: 11, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   configActions: { gap: 12 },
-  analysisGroup: { gap: 20, marginBottom: 30 }, titleCard: { backgroundColor: '#16191f', borderRadius: 20, padding: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  analysisGroup: { gap: 20, marginBottom: 30 }, titleCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   analysisMeta: { fontSize: 10, color: TERMINAL.colors.muted, fontWeight: '700', marginTop: 10 }, statsGrid: { flexDirection: 'row', gap: 12 },
-  statItem: { flex: 1, backgroundColor: '#16191f', borderRadius: 16, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  statItem: { flex: 1, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   statLabel: { fontSize: 8, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1, marginBottom: 4 }, statValue: { fontSize: 18, fontWeight: '900', color: 'white' },
   subHeader: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 2, marginTop: 10 },
   // Analysis card styles
-  analysisCard: { backgroundColor: '#16191f', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  analysisCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   analysisCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   analysisCardTitle: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   // Themes
@@ -3083,18 +3404,23 @@ const styles = StyleSheet.create({
   locationList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   locationItem: { backgroundColor: 'rgba(255,255,255,0.05)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 },
   locationName: { fontSize: 9, fontWeight: '700', color: TERMINAL.colors.muted, letterSpacing: 0.5 },
-  outlineList: { maxHeight: 250, backgroundColor: '#16191f', borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', overflow: 'hidden' },
+  outlineList: { maxHeight: 250, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', overflow: 'hidden' },
   outlineItem: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.03)', gap: 16 },
   outlineNumber: { width: 28, height: 28, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   outlineNumberText: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.cyan }, outlineInfo: { flex: 1 },
   outlineTitle: { fontSize: 12, fontWeight: '900', color: 'white', marginBottom: 4, letterSpacing: 0.5 }, outlineSynopsis: { fontSize: 10, color: TERMINAL.colors.muted, lineHeight: 16, fontWeight: '600' },
-  generationConfig: { backgroundColor: '#16191f', borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: TERMINAL.colors.primary },
+  generationConfig: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: TERMINAL.colors.primary },
   counter: { flexDirection: 'row', alignItems: 'center', marginTop: 16, gap: 30 },
   counterBtn: { width: 44, height: 44, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   counterBtnText: { fontSize: 24, color: 'white', fontWeight: '300' }, counterVal: { fontSize: 32, fontWeight: '900', color: TERMINAL.colors.primary },
   completeSection: { alignItems: 'center', paddingVertical: 20 }, successHeader: { alignItems: 'center', marginBottom: 30 },
   completeTitle: { fontSize: 20, fontWeight: '900', color: 'white', letterSpacing: 2, marginTop: 20, marginBottom: 8 }, completeSubtitle: { fontSize: 11, fontWeight: '700', color: TERMINAL.colors.primary, letterSpacing: 1 },
-  storySummaryCard: { width: '100%', backgroundColor: '#16191f', borderRadius: 24, padding: 24, gap: 16, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  cancelledSection: { alignItems: 'center', paddingVertical: 40, gap: 24 },
+  cancelledHeader: { alignItems: 'center', gap: 12 },
+  cancelledTitle: { fontSize: 16, fontWeight: '900', color: TERMINAL.colors.amber, letterSpacing: 2, marginTop: 12 },
+  cancelledSubtitle: { fontSize: 12, color: TERMINAL.colors.muted, textAlign: 'center', lineHeight: 18, fontWeight: '600', paddingHorizontal: 20 },
+  cancelledActions: { width: '100%', gap: 12 },
+  storySummaryCard: { width: '100%', backgroundColor: TERMINAL.colors.bgLight, borderRadius: 24, padding: 24, gap: 16, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, summaryLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 }, summaryValue: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 0.5 },
   completeActions: { width: '100%', gap: 12 }, secondaryActionButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 18, borderRadius: 20, borderWidth: 1, borderColor: TERMINAL.colors.primary, gap: 12 },
   secondaryActionButtonText: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.primary, letterSpacing: 1 },
@@ -3102,7 +3428,7 @@ const styles = StyleSheet.create({
   errorTitle: { fontSize: 18, fontWeight: '900', color: TERMINAL.colors.error, letterSpacing: 2, marginTop: 16 },
   errorDetail: { fontSize: 12, color: TERMINAL.colors.muted, textAlign: 'center', lineHeight: 20, paddingHorizontal: 20, marginBottom: 30, fontWeight: '600' },
   errorActions: { width: '100%', gap: 12 },
-  progressPlaceholder: { backgroundColor: '#16191f', borderRadius: 24, padding: 4, marginTop: 10 },
+  progressPlaceholder: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 24, padding: 4, marginTop: 10 },
   errorCard: { backgroundColor: 'rgba(239, 68, 68, 0.05)', borderRadius: 20, padding: 24, borderWidth: 1, borderColor: 'rgba(239, 68, 68, 0.2)', alignItems: 'center', gap: 16 },
   errorText: { fontSize: 12, color: TERMINAL.colors.error, fontWeight: '700', textAlign: 'center', letterSpacing: 0.5 },
   runningSection: { paddingVertical: 10, gap: 16 }, checkpointSection: { paddingVertical: 10 },
@@ -3166,7 +3492,7 @@ const styles = StyleSheet.create({
   },
   historyStatItem: {
     flex: 1,
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 16,
     padding: 16,
     alignItems: 'center',
@@ -3203,7 +3529,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   historyProgressSection: {
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 24,
     padding: 4,
   },
@@ -3215,7 +3541,7 @@ const styles = StyleSheet.create({
   configError: { fontSize: 9, color: TERMINAL.colors.error, marginLeft: 4, marginTop: 4, fontWeight: '600' },
   // Model picker button
   modelPickerButton: {
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
@@ -3238,46 +3564,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginLeft: 10,
   },
-  // Modal styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'flex-end',
-  },
-  modelPickerModal: {
-    backgroundColor: '#1e2229',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    maxHeight: '80%',
-    paddingBottom: 20,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-  },
-  modalTitle: {
-    fontSize: 14,
-    fontWeight: '900',
-    color: 'white',
-    letterSpacing: 1,
-  },
-  modalCloseBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalCloseBtnText: {
-    color: TERMINAL.colors.muted,
-    fontSize: 16,
-    fontWeight: '700',
-  },
+  // Loading state (used by the season plan loading indicator). Modal-specific
+  // styles (modelPickerModal, modalHeader, modalTitle, etc.) previously lived
+  // here but were dead code tied to an earlier inline model-picker
+  // implementation; they have been removed along with the Modal import.
   loadingContainer: {
     padding: 60,
     alignItems: 'center',
@@ -3289,77 +3579,9 @@ const styles = StyleSheet.create({
     color: TERMINAL.colors.muted,
     letterSpacing: 1,
   },
-  errorContainer: {
-    padding: 40,
-    alignItems: 'center',
-    gap: 16,
-  },
-  errorMessage: {
-    fontSize: 12,
-    color: TERMINAL.colors.error,
-    textAlign: 'center',
-    fontWeight: '600',
-  },
-  modelList: {
-    maxHeight: 400,
-  },
-  modelItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.03)',
-    gap: 12,
-  },
-  modelItemSelected: {
-    backgroundColor: 'rgba(59,130,246,0.1)',
-  },
-  modelThumbnail: {
-    width: 48,
-    height: 48,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  modelInfo: {
-    flex: 1,
-  },
-  modelName: {
-    fontSize: 13,
-    fontWeight: '900',
-    color: 'white',
-    marginBottom: 2,
-  },
-  modelNameSelected: {
-    color: TERMINAL.colors.primary,
-  },
-  modelType: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: TERMINAL.colors.cyan,
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  modelDesc: {
-    fontSize: 10,
-    color: TERMINAL.colors.muted,
-    lineHeight: 14,
-    fontWeight: '600',
-  },
-  modalFooter: {
-    padding: 16,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-  },
-  modalFooterText: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: TERMINAL.colors.muted,
-    letterSpacing: 1,
-  },
   failureWorkspaceCard: {
     marginTop: 16,
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: 'rgba(239,68,68,0.22)',

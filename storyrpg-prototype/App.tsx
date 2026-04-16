@@ -231,12 +231,32 @@ function AppContent() {
   };
 
   const handleBackFromGenerator = () => {
-    closeGeneratorRoute('settings');
+    // closeGenerator() without an argument defaults to the recorded launch
+    // origin (home or settings), so Back returns the user where they came from.
+    closeGeneratorRoute();
   };
 
   const handleStoryGenerated = (story: Story) => {
     if (!story || !story.id || !story.title) return;
     upsertStory(story);
+  };
+
+  // Called when the user clicks "Play now" on the generator's complete screen.
+  // Initializes the generated story in the game store and navigates to reading.
+  const handlePlayGeneratedStory = async (story: Story) => {
+    if (!story || !story.id) return;
+    upsertStory(story);
+    const full = await loadFullStory(story.id);
+    const target = full || story;
+    const protagonist = resolveProtagonist(target);
+    initializeStory(target, protagonist.name, protagonist.pronouns);
+    closeGeneratorRoute('episodes');
+  };
+
+  // Called when the user clicks "View in library" — route back to home so the
+  // story card is visible in the main library.
+  const handleViewLibrary = () => {
+    closeGeneratorRoute('home');
   };
 
   const handleDeleteStory = async (storyId: string) => {
@@ -474,6 +494,8 @@ function AppContent() {
         <GeneratorScreen
           onBack={handleBackFromGenerator}
           onStoryGenerated={handleStoryGenerated}
+          onPlayStory={handlePlayGeneratedStory}
+          onViewLibrary={handleViewLibrary}
           resumeJobId={resumeJobId}
           onCancelExternalPipeline={() => {
             if (videoPipelineRef.current) {

@@ -26,7 +26,6 @@ import {
   ChevronRight,
   RotateCcw,
   Save,
-  MessageSquare,
   Zap,
   FileText,
 } from 'lucide-react-native';
@@ -467,12 +466,11 @@ const CHOICE_AND_ENCOUNTER_FIELDS: SettingFieldConfig[] = [
   { type: 'number', key: 'minEncountersLong', label: 'Long Episode Encounters', description: 'Minimum encounters for 8+ scene episodes.', min: 0, max: 5 },
 ];
 
-const CHARACTER_ASSET_FIELDS: SettingFieldConfig[] = [
-  { type: 'toggle', key: 'generateCharacterRefs', label: 'Generate Character Sheets', description: 'Create baseline character reference sheets.' },
-  { type: 'toggle', key: 'generateExpressionSheets', label: 'Generate Expression Sheets', description: 'Create alternate emotion and expression references.' },
-  { type: 'toggle', key: 'generateBodyVocabulary', label: 'Generate Body Vocabulary', description: 'Generate pose and silhouette references for characters.' },
-  { type: 'toggle', key: 'preGenerateAudio', label: 'Pre-generate Audio', description: 'Prepare narration assets during generation.' },
-];
+// NOTE: Character asset toggles (generateCharacterRefs, generateExpressionSheets,
+// generateBodyVocabulary) are owned by the IMAGES bucket in GeneratorScreen, and
+// preGenerateAudio is owned by the NARRATION bucket. They were previously
+// duplicated here under an "ASSETS AND CHARACTER SUPPORT" section and have been
+// removed to keep a single source of truth.
 
 const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
   {
@@ -531,13 +529,6 @@ const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
         </View>
       );
     },
-  },
-  {
-    id: 'assets',
-    title: 'ASSETS AND CHARACTER SUPPORT',
-    icon: <MessageSquare size={16} color={TERMINAL.colors.primary} />,
-    description: 'Optional supporting assets for stronger presentation and continuity.',
-    fields: CHARACTER_ASSET_FIELDS,
   },
 ];
 

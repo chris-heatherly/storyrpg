@@ -1,7 +1,7 @@
 {
-  "imageProvider": "atlas-cloud",
-  "imageLlmProvider": "anthropic",
-  "imageLlmModel": "claude-sonnet-4-20250514",
+  "imageProvider": "nano-banana",
+  "imageLlmProvider": "gemini",
+  "imageLlmModel": "gemini-2.5-pro",
   "videoSettings": {
     "enabled": false,
     "model": "veo-3.1-generate-preview",

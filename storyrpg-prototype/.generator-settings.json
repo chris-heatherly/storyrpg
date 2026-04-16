@@ -13,7 +13,7 @@
   "llmProvider": "anthropic",
   "llmModel": "claude-sonnet-4-20250514",
   "atlasCloudModel": "google/nano-banana-2/text-to-image",
-  "artStyle": "The OVA (Original Video Animation) style of the 1980s and 1990s occupies a legendary space in animation history, acting as the high-water mark for hand-drawn technical density. The core of this aesthetic is the modeling of light:  High-spec: The brightest point of light (often a pure white \"glint\"). Base color: The local color of the object. Soft shadow: A transitional mid-tone. Deep shadow: The darkest area, often used to define muscle or mechanical crevices. Reflected light: A subtle secondary light source on the shadow side to give the object a 3D \"pop.\"  Mechanical Hyper-Detail with every bolt, hydraulic line, and scratched metal plate visible. \"Dirty\" shading and line-weight variation to make machines feel like heavy, greasy industrial equipment rather than clean digital assets.  Organic Line Work with hand drawn cell feeling. \"Organic\" line weights—lines that naturally taper or thicken—gives characters a sense of weight and physical presence.  Atmospheric Special Effects with cel layering and airbrushing to create glows, smoke, and debris. \"Crunchy,\" high-contrast look where explosions feel visceral and lighting feels moody and cinematic.  \"Cyberpunk\" or \"Grimdark\" Grit and Realism. Skins have texture, hair has individual strands catching the light, and backgrounds painted with a level of realism that blurred the line between animation and fine art.",
+  "artStyle": "dark fantasy anime",
   "generationSettings": {
     "targetSceneCount": 6,
     "majorChoiceCount": 3,

@@ -3,9 +3,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   DEFAULT_GEMINI_SETTINGS,
   DEFAULT_MIDJOURNEY_SETTINGS,
+  DEFAULT_STABLE_DIFFUSION_SETTINGS,
   DEFAULT_VIDEO_SETTINGS,
   GeminiSettings,
   MidjourneySettings,
+  StableDiffusionSettings,
 } from '../ai-agents/config';
 import { GenerationSettings, DEFAULT_GENERATION_SETTINGS } from '../components/GenerationSettingsPanel';
 import { PROXY_CONFIG } from '../config/endpoints';
@@ -58,6 +60,7 @@ export const GENERATOR_STORAGE_KEYS = {
   midjourneySettings: '@storyrpg_midjourney_settings',
   geminiSettings: '@storyrpg_gemini_settings',
   videoSettings: '@storyrpg_video_settings',
+  stableDiffusionSettings: '@storyrpg_stable_diffusion_settings',
 } as const;
 
 function isGeneratorLlmProvider(value: string | null | undefined): value is GeneratorLlmProvider {
@@ -115,6 +118,7 @@ interface ProxySettingsShape {
   videoSettings?: GeneratorVideoSettings;
   geminiSettings?: GeminiSettings;
   midjourneySettings?: MidjourneySettings;
+  stableDiffusionSettings?: StableDiffusionSettings;
   atlasCloudModel?: string;
 }
 
@@ -161,6 +165,7 @@ export function useGeneratorSettings() {
   const [midapiToken, setMidapiToken] = useState('');
   const [midjourneySettings, setMidjourneySettings] = useState<MidjourneySettings>({ ...DEFAULT_MIDJOURNEY_SETTINGS });
   const [geminiSettings, setGeminiSettings] = useState<GeminiSettings>({ ...DEFAULT_GEMINI_SETTINGS });
+  const [stableDiffusionSettings, setStableDiffusionSettings] = useState<StableDiffusionSettings>({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS });
   const [imageProvider, setImageProvider] = useState<GeneratorImageProvider>('nano-banana');
   const [artStyle, setArtStyle] = useState('');
   const [imageStrategy, setImageStrategy] = useState<'selective' | 'all-beats'>('all-beats');
@@ -214,6 +219,9 @@ export function useGeneratorSettings() {
       }
       if (ps.midjourneySettings) {
         setMidjourneySettings({ ...DEFAULT_MIDJOURNEY_SETTINGS, ...ps.midjourneySettings });
+      }
+      if (ps.stableDiffusionSettings) {
+        setStableDiffusionSettings({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS, ...ps.stableDiffusionSettings });
       }
     };
 
@@ -272,6 +280,7 @@ export function useGeneratorSettings() {
           storedGenerationSettings,
           storedNarrationSettings,
           storedVideoSettings,
+          storedStableDiffusionSettings,
         ] = await Promise.all([
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.anthropicApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmGeminiApiKey),
@@ -291,6 +300,7 @@ export function useGeneratorSettings() {
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.generationSettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.narrationSettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.videoSettings),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.stableDiffusionSettings),
         ]);
 
         if (!isMounted) return;
@@ -381,6 +391,12 @@ export function useGeneratorSettings() {
               const envEnabled = process.env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true';
               if (envEnabled) delete parsedVideoSettings.enabled;
               setVideoSettings((current) => ({ ...current, ...parsedVideoSettings }));
+            } catch (_) {}
+          }
+
+          if (storedStableDiffusionSettings) {
+            try {
+              setStableDiffusionSettings({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS, ...JSON.parse(storedStableDiffusionSettings) });
             } catch (_) {}
           }
         }
@@ -568,6 +584,17 @@ export function useGeneratorSettings() {
     }
   }, [midjourneySettings]);
 
+  const handleStableDiffusionSettingsChange = useCallback(async (newSettings: Partial<StableDiffusionSettings>) => {
+    const updated = { ...stableDiffusionSettings, ...newSettings };
+    setStableDiffusionSettings(updated);
+    patchProxySettings({ stableDiffusionSettings: updated });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.stableDiffusionSettings, JSON.stringify(updated));
+    } catch (error) {
+      console.log('Failed to save Stable Diffusion settings:', error);
+    }
+  }, [stableDiffusionSettings]);
+
   const handleImageProviderChange = useCallback(async (provider: GeneratorImageProvider) => {
     setImageProvider(provider);
     patchProxySettings({ imageProvider: provider });
@@ -651,6 +678,7 @@ export function useGeneratorSettings() {
     midapiToken,
     midjourneySettings,
     geminiSettings,
+    stableDiffusionSettings,
     imageProvider,
     artStyle,
     imageStrategy,
@@ -673,6 +701,7 @@ export function useGeneratorSettings() {
     handleMidapiTokenChange,
     handleGeminiSettingsChange,
     handleMidjourneySettingsChange,
+    handleStableDiffusionSettingsChange,
     handleImageProviderChange,
     handleArtStyleChange,
     handleImageStrategyChange,

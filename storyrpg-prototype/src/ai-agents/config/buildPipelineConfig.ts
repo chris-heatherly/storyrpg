@@ -3,6 +3,7 @@ import {
   VideoSettingsConfig,
   GeminiSettings,
   MidjourneySettings,
+  StableDiffusionSettings,
   ImageProvider,
 } from '../config';
 import type { GenerationSettings } from '../../components/GenerationSettingsPanel';
@@ -36,6 +37,7 @@ export interface BuildPipelineConfigInput {
   artStyle: string;
   geminiSettings: GeminiSettings;
   midjourneySettings: MidjourneySettings;
+  stableDiffusionSettings?: StableDiffusionSettings;
   generationSettings: GenerationSettings;
   generationMode: GenerationMode;
   narrationSettings: GeneratorNarrationSettings;
@@ -75,6 +77,25 @@ function getScopedLlmModel(
 function normalizeImageProvider(provider: GeneratorImageProvider | 'useapi'): ImageProvider {
   if (provider === 'useapi') return 'midapi';
   return provider;
+}
+
+function resolveStableDiffusionSettings(
+  provider: ImageProvider,
+  overrides: StableDiffusionSettings | undefined,
+): StableDiffusionSettings | undefined {
+  if (provider !== 'stable-diffusion' && !overrides) return undefined;
+  const env = typeof process !== 'undefined' ? process.env : ({} as any);
+  const baseUrl = (overrides?.baseUrl || env.STABLE_DIFFUSION_BASE_URL || env.EXPO_PUBLIC_STABLE_DIFFUSION_BASE_URL || '').trim();
+  const apiKey = (overrides?.apiKey || env.STABLE_DIFFUSION_API_KEY || env.EXPO_PUBLIC_STABLE_DIFFUSION_API_KEY || '').trim();
+  const defaultModel = (overrides?.defaultModel || env.STABLE_DIFFUSION_DEFAULT_MODEL || env.EXPO_PUBLIC_STABLE_DIFFUSION_DEFAULT_MODEL || '').trim();
+  const backend = (overrides?.backend || (env.STABLE_DIFFUSION_BACKEND as any) || 'a1111') as StableDiffusionSettings['backend'];
+  return {
+    ...overrides,
+    baseUrl: baseUrl || overrides?.baseUrl,
+    apiKey: apiKey || overrides?.apiKey,
+    defaultModel: defaultModel || overrides?.defaultModel,
+    backend,
+  };
 }
 
 export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineConfig {
@@ -163,6 +184,7 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
         ...(normalizedImageProvider === 'nano-banana' ? input.geminiSettings : {}),
         canonicalArtStyle: input.artStyle.trim() || '',
       },
+      stableDiffusion: resolveStableDiffusionSettings(normalizedImageProvider, input.stableDiffusionSettings),
     },
     generation: {
       failurePolicy: input.generationSettings.failFastMode ? 'fail_fast' : 'recover',

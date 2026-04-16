@@ -7,10 +7,14 @@
 
 import * as ExpoFileSystem from 'expo-file-system';
 import { ImagePrompt, GeneratedImage } from '../agents/ImageGenerator';
-import { GeminiSettings, DEFAULT_GEMINI_SETTINGS, MidjourneySettings, DEFAULT_MIDJOURNEY_SETTINGS, ImageProvider } from '../config';
+import { GeminiSettings, DEFAULT_GEMINI_SETTINGS, MidjourneySettings, DEFAULT_MIDJOURNEY_SETTINGS, ImageProvider, StableDiffusionSettings } from '../config';
+import type { SDReferencePurpose } from '../agents/ImageGenerator';
 import { budgetCanonicalPrompt } from '../images/promptComposer';
 import { ProviderPolicy } from '../images/providerPolicy';
 import type { ImageSlotFamily } from '../images/slotTypes';
+import { createStableDiffusionAdapter } from './stable-diffusion/factory';
+import type { StableDiffusionAdapter } from './stable-diffusion/StableDiffusionAdapter';
+import { SeedRegistry, type SeedKey } from './stable-diffusion/seedRegistry';
 import { isNativeRuntime, isWebRuntime } from '../../utils/runtimeEnv';
 import { selectStyleAdaptation } from '../utils/styleAdaptation';
 import { ENCOUNTER_VISUAL_PRINCIPLES_COMPACT, STORY_BEAT_VISUAL_PRINCIPLES_COMPACT, getBeatStagingDirection } from '../prompts';
@@ -52,6 +56,7 @@ export interface ImageGenerationConfig {
   // Provider-specific settings
   geminiSettings?: GeminiSettings;
   midjourneySettings?: MidjourneySettings;
+  stableDiffusionSettings?: StableDiffusionSettings;
   failurePolicy?: 'fail_fast' | 'recover';
 }
 
@@ -154,6 +159,12 @@ export interface ReferenceImage {
   viewType?: string;
   /** Key visual traits to call out (e.g. ["scar on left cheek", "silver hair"]) */
   visualAnchors?: string[];
+  /**
+   * Optional purpose tag consumed by the Stable Diffusion adapter. Non-SD
+   * providers ignore this field entirely — this stays additive for
+   * Gemini / Atlas / MidAPI consumers.
+   */
+  purpose?: SDReferencePurpose;
 }
 
 /**
@@ -231,6 +242,12 @@ export class ImageGenerationService {
   // Gemini continuity state
   private _geminiSettings: Required<GeminiSettings> = { ...DEFAULT_GEMINI_SETTINGS };
   private _midjourneySettings: Required<MidjourneySettings> = { ...DEFAULT_MIDJOURNEY_SETTINGS };
+  private _stableDiffusionSettings: StableDiffusionSettings | undefined;
+  // Lazily-instantiated Stable Diffusion adapter. Created on first use so
+  // non-SD pipelines don't pay the cost (and so backend selection can change
+  // after construction via `updateStableDiffusionSettings`).
+  private _sdAdapter: StableDiffusionAdapter | null = null;
+  private _sdSeedRegistry: SeedRegistry = new SeedRegistry('image-gen-service');
   private _geminiStyleReference: { data: string; mimeType: string } | null = null;
   private _geminiPreviousScene: { data: string; mimeType: string } | null = null;
   private _referenceSheetStyleAnchor: { data: string; mimeType: string } | null = null;
@@ -293,7 +310,79 @@ export class ImageGenerationService {
       ...DEFAULT_MIDJOURNEY_SETTINGS,
       ...config.midjourneySettings,
     };
+    this._stableDiffusionSettings = config.stableDiffusionSettings;
     this.ensureDirectory(this.outputDir);
+  }
+
+  public getStableDiffusionSettings(): StableDiffusionSettings | undefined {
+    return this._stableDiffusionSettings;
+  }
+
+  public updateStableDiffusionSettings(settings: StableDiffusionSettings | undefined): void {
+    this._stableDiffusionSettings = settings;
+    // Invalidate cached adapter so next call picks up the new backend.
+    this._sdAdapter = null;
+  }
+
+  private getSDAdapter(): StableDiffusionAdapter {
+    if (!this._sdAdapter) {
+      this._sdAdapter = createStableDiffusionAdapter(this._stableDiffusionSettings);
+    }
+    return this._sdAdapter;
+  }
+
+  private getSDWriteHelpers() {
+    return {
+      outputDir: this.outputDir,
+      writeFile: (p: string, content: string | Buffer, isBase64?: boolean) => this.writeFile(p, content, isBase64),
+      joinPath: (base: string, ...parts: string[]) => this.joinPath(base, ...parts),
+      toImageHttpUrl: (p: string, mime: string, data: string) => this.toImageHttpUrl(p, mime, data),
+    };
+  }
+
+  /**
+   * Decide a deterministic seed for an SD request when the caller hasn't
+   * pinned one. Precedence:
+   *  1. `prompt.seed` (caller explicitly chose).
+   *  2. character-in-scene seed (best continuity for beat panels).
+   *  3. scene seed (for scene masters / establishing shots).
+   *  4. character seed (character portraits with no scene context).
+   *  5. anchor seed derived from `identifier` (last-resort determinism).
+   *
+   * Force-regenerate requests deliberately skip caching so users can reroll
+   * by clearing the registry entry (or explicitly passing a new seed).
+   */
+  public applyDeterministicSeed(
+    prompt: ImagePrompt,
+    identifier: string,
+    metadata?: Record<string, any>,
+  ): ImagePrompt {
+    if (typeof prompt.seed === 'number') return prompt;
+    const sceneId = (metadata?.sceneId as string) || undefined;
+    const characterName = (metadata?.characterName as string) || (metadata?.characterId as string) || undefined;
+
+    let key: SeedKey;
+    if (sceneId && characterName) {
+      key = { scope: 'characterInScene', sceneId, characterId: characterName };
+    } else if (sceneId) {
+      key = { scope: 'scene', sceneId };
+    } else if (characterName) {
+      key = { scope: 'character', characterId: characterName };
+    } else {
+      key = { scope: 'anchor', raw: identifier };
+    }
+    const seed = this._sdSeedRegistry.get(key);
+    return { ...prompt, seed };
+  }
+
+  /** Allow callers (e.g. regen flows) to pin/override a seed for a key. */
+  public pinStableDiffusionSeed(key: SeedKey, seed: number): void {
+    this._sdSeedRegistry.set(key, seed);
+  }
+
+  /** Allow callers to reset deterministic seeds (e.g. "Reroll all" UX). */
+  public clearStableDiffusionSeeds(): void {
+    this._sdSeedRegistry.clear();
   }
 
   private isFailFastEnabled(): boolean {
@@ -595,6 +684,24 @@ export class ImageGenerationService {
     if (provider === 'midapi') {
       if (!this.config.useapiToken && !this.config.midapiToken) return done(false, 'missing MidAPI token');
       return done(true, forceCanary ? 'midapi preflight uses token validation only' : undefined);
+    }
+    if (provider === 'stable-diffusion') {
+      const settings = this._stableDiffusionSettings;
+      if (!settings || !settings.baseUrl) return done(false, 'missing Stable Diffusion baseUrl');
+      if (!forceCanary) return done(true);
+      try {
+        const adapter = this.getSDAdapter();
+        const result = await adapter.preflight(settings);
+        return {
+          ok: result.ok,
+          provider,
+          reason: result.reason,
+          latencyMs: Date.now() - startedAt,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return done(false, `Stable Diffusion preflight error: ${msg}`);
+      }
     }
     return done(true);
   }
@@ -1624,7 +1731,7 @@ export class ImageGenerationService {
           result = await this.generateWithUseapi(normalizedPrompt, identifier, jobId, metadata, referenceImages);
           break;
         case 'dall-e': result = await this.generateWithDallE(normalizedPrompt, identifier, jobId); break;
-        case 'stable-diffusion': result = await this.generateWithStableDiffusion(normalizedPrompt, identifier, jobId); break;
+        case 'stable-diffusion': result = await this.generateWithStableDiffusion(normalizedPrompt, identifier, jobId, referenceImages, metadata); break;
         default:
           if (this.isFailFastEnabled()) {
             throw new Error(`Image provider "${String(this.config.provider || 'placeholder')}" is not available in fail-fast mode`);
@@ -1859,8 +1966,52 @@ export class ImageGenerationService {
     referenceImages?: ReferenceImage[]
   ): Promise<GeneratedImage> {
     if (!this.config.enabled) return { prompt, imagePath: undefined, imageUrl: undefined };
-    if (this.config.provider !== 'nano-banana') {
-      console.warn('[ImageGenerationService] editImage only supported for nano-banana provider, falling back to generateImage');
+
+    const provider = this.normalizeProvider(this.config.provider);
+
+    // Stable Diffusion supports native img2img via its adapter — route there
+    // first so we don't lose the base image by falling through to generateImage.
+    if (provider === 'stable-diffusion') {
+      const settings = this._stableDiffusionSettings;
+      if (settings?.baseUrl) {
+        const adapter = this.getSDAdapter();
+        if (typeof adapter.edit === 'function') {
+          try {
+            return await adapter.edit(
+              {
+                prompt,
+                identifier,
+                jobId: `edit-${identifier}-${Date.now()}`,
+                settings,
+                referenceImages,
+                baseImage,
+              },
+              this.getSDWriteHelpers(),
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[ImageGenerationService] Stable Diffusion editImage failed for "${identifier}": ${msg}`);
+            if (this.isFailFastEnabled()) throw err;
+          }
+        } else if (this.isFailFastEnabled()) {
+          throw new Error(`Stable Diffusion adapter "${adapter.id}" does not support editImage`);
+        }
+      } else if (this.isFailFastEnabled()) {
+        throw new Error('Stable Diffusion editImage requires STABLE_DIFFUSION_BASE_URL');
+      }
+      // Fallback: treat as fresh generation with the base image passed as init reference.
+      const initRef: ReferenceImage = {
+        data: baseImage.data,
+        mimeType: baseImage.mimeType,
+        role: 'img2img-init',
+        purpose: 'init',
+      };
+      const combinedRefs = [initRef, ...(referenceImages || [])];
+      return this.generateImage(prompt, identifier, { type: 'scene' }, combinedRefs);
+    }
+
+    if (provider !== 'nano-banana') {
+      console.warn('[ImageGenerationService] editImage only supported for nano-banana and stable-diffusion providers, falling back to generateImage');
       return this.generateImage(prompt, identifier, { type: 'scene' }, referenceImages);
     }
 
@@ -3926,11 +4077,37 @@ export class ImageGenerationService {
     return this.generatePlaceholder(prompt, identifier, jobId);
   }
 
-  private async generateWithStableDiffusion(prompt: ImagePrompt, identifier: string, jobId: string): Promise<GeneratedImage> {
-    if (this.isFailFastEnabled()) {
-      throw new Error('Stable Diffusion image generation is not implemented for fail-fast mode');
+  private async generateWithStableDiffusion(
+    prompt: ImagePrompt,
+    identifier: string,
+    jobId: string,
+    referenceImages?: ReferenceImage[],
+    metadata?: Record<string, any>,
+  ): Promise<GeneratedImage> {
+    const settings = this._stableDiffusionSettings;
+    if (!settings || !settings.baseUrl) {
+      const msg = 'Stable Diffusion is selected but no baseUrl is configured. Set STABLE_DIFFUSION_BASE_URL or update settings.';
+      if (this.isFailFastEnabled()) throw new Error(msg);
+      console.warn(`[ImageGenerationService] ${msg} — falling back to placeholder for "${identifier}"`);
+      return this.generatePlaceholder(prompt, identifier, jobId);
     }
-    return this.generatePlaceholder(prompt, identifier, jobId);
+
+    const adapter = this.getSDAdapter();
+    const promptWithSeed = this.applyDeterministicSeed(prompt, identifier, metadata);
+    try {
+      const result = await adapter.generate(
+        { prompt: promptWithSeed, identifier, jobId, metadata, referenceImages, settings },
+        this.getSDWriteHelpers(),
+      );
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (this.isFailFastEnabled()) {
+        throw new Error(`Stable Diffusion generation failed (${adapter.id}): ${msg}`);
+      }
+      console.error(`[ImageGenerationService] Stable Diffusion generation failed for "${identifier}" via ${adapter.id}: ${msg}`);
+      return this.generatePlaceholder(prompt, identifier, jobId);
+    }
   }
 
   private async generatePlaceholder(prompt: ImagePrompt, identifier: string, jobId: string): Promise<GeneratedImage> {

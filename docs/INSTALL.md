@@ -1,7 +1,7 @@
 # StoryRPG - Installation and Setup Guide
 
-**Version:** 1.0  
-**Last Updated:** February 26, 2026  
+**Version:** 1.1  
+**Last Updated:** April 2026  
 **Audience:** Anyone setting up StoryRPG on a new machine
 
 ---
@@ -39,6 +39,7 @@
 | **Docker** | Containerized proxy server | If you prefer Docker over running Node.js directly |
 | **Xcode** | iOS development | Only for building native iOS app |
 | **Android Studio** | Android development | Only for building native Android app |
+| **Playwright Chromium** | Tier-2 browser playthrough QA | Install with `npx playwright install chromium` before `npm run test:e2e` or before running the in-pipeline browser QA phase |
 
 ### Required API Keys
 
@@ -625,6 +626,19 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 
 # Validation mode: 'strict', 'advisory', 'disabled'
 # EXPO_PUBLIC_VALIDATION_MODE=advisory
+
+# ===================================================================
+# PLAYWRIGHT / END-TO-END QA
+# ===================================================================
+# These variables are consumed by test/e2e/storyPlaythrough.spec.ts and
+# by the in-pipeline Tier-2 browser QA runner. Defaults are usually fine.
+
+# E2E_BASE_URL=http://localhost:8081     # App URL Playwright targets
+# E2E_STORY="Story Title"                 # Story title substring to select
+# E2E_MAX_BEATS=100                       # Max beats to play through per scene
+# E2E_ENCOUNTER_TIER=success              # Force tier: success | complicated | failure
+# E2E_CHOICE_PATH=[0,1,0]                 # JSON array of 0-based choice indices
+# E2E_RESULT_FILE=latest.json             # Output filename for results JSON
 ```
 
 ### npm Scripts Reference
@@ -646,9 +660,12 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 | `npm run proxy:compose:down` | Stop Docker proxy |
 | `npm run proxy:compose:logs` | View Docker proxy logs |
 | `npm run proxy:health` | Check proxy server health |
-| `npm test` | Run tests |
-| `npm run typecheck` | Run TypeScript type checking |
+| `npm test` | Run Vitest unit tests |
+| `npm run typecheck` | Run TypeScript type checking (app, test, contracts configs) |
 | `npm run validate` | Run both type checking and tests |
+| `npm run test:e2e` | Run Playwright E2E playthrough tests (proxy + web must be running) |
+| `npm run test:e2e:story` | Run E2E tests filtered by title, e.g. `npm run test:e2e:story -- "Blade Runner"` |
+| `npm run validate:assets` | Standalone Tier-1 asset HTTP verification over a generated story directory |
 | `npm run clean:runtime` | Clean up runtime artifacts |
 
 ---

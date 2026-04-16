@@ -1,7 +1,7 @@
 # StoryRPG - Technical Design Document
 
-**Version:** 3.0 (Comprehensive Reference Edition)  
-**Last Updated:** February 26, 2026  
+**Version:** 3.1 (Comprehensive Reference Edition)  
+**Last Updated:** April 2026  
 **Status:** Active Development
 
 ---
@@ -95,6 +95,8 @@ The user starts generation from the client app. The client calls the proxy serve
 | tsconfig-paths | ^4.2.0 | Path alias resolution |
 | babel-preset-expo | ^54.0.9 | Babel compilation for Expo |
 | Metro | (bundled with Expo) | JavaScript bundler |
+| Vitest | ^4.0.18 | Unit testing (Node env with RN stubs) |
+| Playwright | ^1.59.1 | End-to-end browser tests and Tier 2 in-pipeline story QA |
 
 ### External APIs
 
@@ -208,14 +210,23 @@ StoryRPG_New/
     ├── .env                            # Environment variables (API keys)
     │
     ├── scripts/                        # Build and utility scripts
-    │   └── clean-runtime-artifacts.mjs # Cleanup script
+    │   ├── clean-runtime-artifacts.mjs # Cleanup script
+    │   ├── upload-stories-to-blob.ts   # Upload story outputs to Vercel Blob
+    │   └── validate-assets.ts          # Standalone asset HTTP verifier (Tier 1 QA CLI)
+    │
+    ├── test/
+    │   ├── e2e/
+    │   │   └── storyPlaythrough.spec.ts # Playwright browser playthrough test (Tier 2 QA)
+    │   └── stubs/                      # Vitest stubs for react-native and async-storage
+    │
+    ├── playwright.config.ts            # Playwright config (port 8081, chromium, 5 min timeouts)
     │
     ├── proxy/                          # Proxy server modules
     │   ├── cachedJsonStore.js
     │   ├── catalogRoutes.js
     │   ├── fileRoutes.js
-    │   ├── generatorSettingsRoutes.js
-    │   ├── modelScanRoutes.js
+    │   ├── generatorSettingsRoutes.js  # Persist/restore full generator UI settings
+    │   ├── modelScanRoutes.js          # Discover available LLM/image models (24h cache)
     │   ├── refImageRoutes.js
     │   ├── storyCatalog.js
     │   ├── storyMutationRoutes.js
@@ -243,6 +254,8 @@ StoryRPG_New/
     │   │   │   ├── SeasonPlannerAgent.ts # Season planning agent
     │   │   │   ├── SourceMaterialAnalyzer.ts # Source analysis
     │   │   │   ├── VariableTracker.ts  # Variable tracking
+    │   │   │   ├── BlueprintGrowthCritic.ts  # Phase 3.5 growth-arc critic on blueprints
+    │   │   │   ├── GrowthNarrativeCritic.ts  # Phase 4.5 growth-narrative critic on prose
     │   │   │   ├── ImageGenerator.ts   # Image generation coordination
     │   │   │   └── image-team/         # Image generation agents
     │   │   │       ├── CharacterReferenceSheetAgent.ts
@@ -282,13 +295,17 @@ StoryRPG_New/
     │   │   ├── validators/             # Content validation
     │   │   │   ├── StructuralValidator.ts
     │   │   │   ├── IntegratedBestPracticesValidator.ts
-    │   │   │   ├── IncrementalValidationRunner.ts
+    │   │   │   ├── IncrementalValidators.ts      # Per-scene voice/stakes/continuity/sensitivity
     │   │   │   ├── BaseValidator.ts
     │   │   │   ├── CallbackOpportunitiesValidator.ts
     │   │   │   ├── ChoiceDensityValidator.ts
     │   │   │   ├── ChoiceDistributionValidator.ts
     │   │   │   ├── CliffhangerValidator.ts
     │   │   │   ├── ConsequenceBudgetValidator.ts
+    │   │   │   ├── storyAssetWalker.ts           # Tier 1 QA: HTTP-verify every image URL
+    │   │   │   ├── storyPathAnalyzer.ts          # Coverage planner for multi-path browser runs
+    │   │   │   ├── playwrightQARunner.ts         # Tier 2 QA: spawn Playwright, parse results
+    │   │   │   ├── qaRemediation.ts              # Auto-fix broken images flagged by Tier 2
     │   │   │   └── [additional validators...]
     │   │   │
     │   │   ├── converters/             # Data format converters
@@ -317,11 +334,23 @@ StoryRPG_New/
     │   │
     │   ├── components/                 # Reusable UI components
     │   │   ├── StoryReader.tsx         # Core reading interface (~2000 lines)
+    │   │   ├── ReadingShell.tsx        # Shared reader chrome (header, choices, continue)
     │   │   ├── EncounterView.tsx       # Encounter playback
     │   │   ├── ChoiceButton.tsx        # Choice rendering
+    │   │   ├── ContinueButton.tsx      # Canonical CONTINUE / CONCLUDE ENCOUNTER button
+    │   │   ├── ModelDropdown.tsx       # Provider+model selection (uses useAvailableModels)
     │   │   ├── NarrativeText.tsx       # Text display with formatting
     │   │   ├── PipelineProgress.tsx    # Generation progress UI
-    │   │   └── StoryBrowser.tsx        # Story catalog browser
+    │   │   ├── StoryBrowser.tsx        # Story catalog browser
+    │   │   ├── ui/                     # Shared primitives (design system)
+    │   │   │   ├── ScreenHeader.tsx        # Eyebrow + title + back button
+    │   │   │   ├── SectionCard.tsx         # Bordered card with header/description
+    │   │   │   ├── SegmentedControl.tsx    # Segmented value picker
+    │   │   │   ├── Toggle.tsx              # Animated switch with helper text
+    │   │   │   └── ConfirmDialog.tsx       # Modal confirm dialog
+    │   │   └── settings/               # Settings screen building blocks
+    │   │       ├── SettingsSections.tsx    # Section components (display, jobs, library, ...)
+    │   │       └── SettingsModals.tsx      # Cancel/delete/rename modals
     │   │
     │   ├── stores/                     # State management
     │   │   ├── gameStore.ts            # Player/game state (React Context)
@@ -340,7 +369,8 @@ StoryRPG_New/
     │   │   ├── resolutionEngine.ts     # Fiction-first stat check resolution
     │   │   ├── identityEngine.ts       # Identity profile management
     │   │   ├── conditionEvaluator.ts   # Condition tree evaluation
-    │   │   └── templateProcessor.ts    # Text template variable substitution
+    │   │   ├── templateProcessor.ts    # Text template variable substitution
+    │   │   └── growthConsequenceBuilder.ts  # Builds growth/skill consequences for choices
     │   │
     │   ├── services/                   # Client-side services
     │   │   ├── narrationService.ts     # Audio narration playback
@@ -359,9 +389,16 @@ StoryRPG_New/
     │   │   └── theVelvetJob.ts
     │   │
     │   ├── theme/                      # Visual theme constants
+    │   │   ├── terminal.ts             # Terminal color palette and shared styles
+    │   │   └── copy.ts                 # Canonical reader UI copy (CONTINUE, eyebrows, ...)
     │   ├── constants/                  # Application constants
     │   ├── config/                     # Runtime configuration
-    │   │   └── endpoints.ts            # API endpoint resolution
+    │   │   ├── endpoints.ts            # API endpoint resolution
+    │   │   ├── generatorLlmOptions.ts  # Generator-screen LLM model catalog
+    │   │   └── version.ts              # App version label (auto-read from package.json)
+    │   ├── hooks/                      # React hooks
+    │   │   ├── useAvailableModels.ts   # Fetch & cache available LLM/image models
+    │   │   └── useGeneratorSettings.ts # Load/save generator settings via proxy
     │   ├── visualizer/                 # Graph visualization components
     │   └── utils/                      # General utilities
     │
@@ -688,8 +725,10 @@ FullStoryPipeline (orchestrator)
   ├── WorldBuilder (create world bible and locations)
   ├── CharacterDesigner (create NPCs with rich profiles)
   ├── StoryArchitect (design episode structure and scene blueprints)
+  ├── BlueprintGrowthCritic (Phase 3.5 — growth-arc check on the blueprint)
   ├── SceneWriter (write prose content for individual scenes)
   ├── ChoiceAuthor (create player choices with consequences)
+  ├── GrowthNarrativeCritic (Phase 4.5 — growth-arc check on generated prose)
   ├── EncounterArchitect (design complex multi-phase encounters)
   ├── BranchManager (handle story branching and reconvergence)
   ├── ImageAgentTeam (coordinate all visual content generation)
@@ -698,7 +737,10 @@ FullStoryPipeline (orchestrator)
   │   ├── VisualIllustratorAgent
   │   └── EncounterImageAgent
   ├── VideoDirectorAgent (generate video content)
-  └── QARunner (validate and refine the complete story)
+  ├── QARunner (LLM QA: continuity, voice, stakes, tone, pacing, sensitivity)
+  ├── storyAssetWalker (Tier 1 QA: HTTP-verify every image URL)
+  ├── playwrightQARunner (Tier 2 QA: multi-path browser playthrough)
+  └── qaRemediation (auto-fix broken images and re-save the story)
 ```
 
 ### Agent Communication
@@ -729,13 +771,19 @@ graph TD
     A[Story Request] --> B[World Building]
     B --> C[Character Design]
     C --> D[Story Architecture]
-    D --> E[Scene Writing]
+    D --> D2[Blueprint Growth Critic]
+    D2 --> E[Scene Writing]
     E --> F[Choice Authoring]
-    F --> G[Encounter Design]
+    F --> F2[Growth Narrative Critic]
+    F2 --> G[Encounter Design]
     G --> H[Image Generation]
     H --> I[Audio Generation]
-    I --> J[QA Validation]
-    J --> K[Story Compilation]
+    I --> J[LLM QA Validation]
+    J --> K[Assembly + Tier 1 Asset HTTP QA]
+    K --> L[Save Outputs]
+    L --> M[Tier 2 Browser Playthrough QA]
+    M -- issues --> N[QA Remediation + Re-save]
+    N --> M
 ```
 
 ### Parallel Processing
@@ -797,39 +845,65 @@ The worker system includes robust error recovery:
 
 ### Multi-Tier Validation
 
-The validation system operates at multiple levels:
+The validation system operates at multiple levels and — for the final playthrough QA — even launches a real browser to exercise the generated story:
 
-1. **Structural validation:** Ensures the generated story conforms to the canonical data model
-2. **Content validation:** Checks for narrative coherence, choice quality, character consistency
-3. **Best practices validation:** Enforces genre conventions and interactive fiction best practices
-4. **Incremental validation:** Continuous validation during generation rather than just at the end
+1. **Structural validation:** Ensures the generated story conforms to the canonical data model.
+2. **Content validation:** Checks narrative coherence, choice quality, character consistency.
+3. **Best practices validation:** Enforces genre conventions and interactive fiction best practices.
+4. **Incremental (per-scene) validation:** Runs during generation (see `IncrementalValidators.ts` — voice, stakes, continuity, sensitivity).
+5. **Tier 1 (asset HTTP) QA:** After assembly, every image URL in the story is HTTP-checked concurrently before the pipeline claims success.
+6. **Tier 2 (browser playthrough) QA:** Playwright drives the actual reader UI across every choice path and flags broken images, placeholders, console errors, and network failures — then auto-remediates and retests.
 
 ### Validator Types
 
 | Validator | Purpose | Phase |
 |---|---|---|
-| StructuralValidator | Data model conformance | Post-generation |
-| ChoiceDensityValidator | Appropriate number of choices per beat | Ongoing |
-| ConsequenceBudgetValidator | Balanced consequence distribution | Ongoing |
-| CallbackOpportunitiesValidator | Narrative coherence across episodes | Post-generation |
-| CliffhangerValidator | Episode ending quality | Episode completion |
-| ChoiceDistributionValidator | Choice type variety | Scene completion |
+| `StructuralValidator` | Data model conformance | Post-generation |
+| `ChoiceDensityValidator` | Appropriate number of choices per beat | Ongoing |
+| `ConsequenceBudgetValidator` | Balanced consequence distribution | Ongoing |
+| `CallbackOpportunitiesValidator` | Narrative coherence across episodes | Post-generation |
+| `CliffhangerValidator` | Episode ending quality | Episode completion |
+| `ChoiceDistributionValidator` | Choice type variety | Scene completion |
+| `IncrementalValidators` | Voice / stakes / continuity / sensitivity / encounter structure | Per scene |
+| `BlueprintGrowthCritic` (agent) | Growth-arc legibility in Phase-3 blueprints | Phase 3.5 |
+| `GrowthNarrativeCritic` (agent) | Growth-arc legibility in generated prose | Phase 4.5 |
+| `storyAssetWalker.walkStoryAssets()` | HTTP `HEAD`/`GET` every image slot in the story | Post-assembly (Tier 1) |
+| `playwrightQARunner.runPlaywrightQAMultiPath()` | Multi-path browser playthrough coverage | Post-save (Tier 2) |
+| `qaRemediation.remediateImageIssues()` | Re-generate broken images and patch story JSON | Between Tier-2 retries |
+
+### Two-Tier Final QA
+
+After the pipeline finishes writing `08-final-story.json`, two deterministic QA passes run back-to-back:
+
+**Tier 1 — Asset HTTP verification**
+- `walkStoryAssets()` recursively visits every image slot (story/episode/scene covers, beat images and panels, encounter phase/beat/outcome/situation images, storylet beats, NPC portraits) and issues a `HEAD` request (falling back to ranged `GET`).
+- The report is logged as `formatAssetWalkReport(...)`. If `validation.assetHttpCheckFailFast` is enabled, missing/broken/unreachable images raise a `PipelineError` of kind `completeness_gate`.
+
+**Tier 2 — Browser playthrough**
+- `storyPathAnalyzer.computeCoveragePlan()` analyses the scene DAG and produces the minimum set of choice paths that visit every scene and choice at least once.
+- `runPlaywrightQAMultiPath()` spawns the Playwright test (`test/e2e/storyPlaythrough.spec.ts`) once per path (up to `maxParallel`, default 3), passing the choice indices via `E2E_CHOICE_PATH`. Each run records broken images, placeholder frames, console errors, network failures, and coverage.
+- If any issue is fixable, `qaRemediation.remediateImageIssues()` looks up the original image prompt, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` writes `08-final-story.json` atop the old one. The pipeline then re-runs Tier 2 up to `validation.playwrightQAMaxRetries` times.
+- Tier 2 gracefully skips itself if the proxy/app is not reachable, so CLI-only generations never fail because of a missing UI.
 
 ### Validation Configuration
 
-Validation behavior is configurable through the validation config system:
+Validation behaviour is configured via `ValidationConfig` (`src/types/validation.ts`):
 
 ```typescript
 interface ValidationConfig {
   enabled: boolean;
-  strictMode: boolean;
-  autoFix: boolean;
-  thresholds: {
-    choiceMin: number;
-    choiceMax: number;
-    consequenceBalance: number;
-    narrativeCoherence: number;
-  };
+  mode: 'strict' | 'advisory' | 'disabled';
+  /** Tier 1 — HTTP-check every image URL after assembly. Default: true */
+  assetHttpCheck?: boolean;
+  /** Treat Tier 1 failures as a hard error. Default: false */
+  assetHttpCheckFailFast?: boolean;
+  /** Tier 2 — run Playwright playthrough QA. Default: true (auto-skips if proxy/app offline) */
+  playwrightQA?: boolean;
+  /** Max Tier-2 remediation+retest cycles. Default: 1 */
+  playwrightQAMaxRetries?: number;
+  /** Encounter tiers to exercise during Tier-2 retries. Default: ['success','failure'] */
+  playwrightQAEncounterTiers?: ('success' | 'complicated' | 'failure')[];
+  rules: { /* stakesTriangle, fiveFactor, choiceDensity, consequenceBudget, npcDepth */ };
 }
 ```
 
@@ -1218,13 +1292,20 @@ npm run ios        # Start iOS development
 
 | Script | Purpose | Environment |
 |---|---|---|
-| `npm run dev` | Full development environment | Development |
+| `npm run dev` | Full development environment (proxy + web) | Development |
 | `npm run proxy` | Proxy server only | Development |
 | `npm run web` | Web client only | Development |
-| `npm run typecheck` | Type checking | All |
-| `npm run test` | Run test suite | All |
-| `npm run validate` | Full validation | CI/CD |
+| `npm run typecheck` | Type checking across app, test, and contracts configs | All |
+| `npm test` | Run Vitest test suite | All |
+| `npm run validate` | `typecheck` + `test` | CI/CD |
+| `npm run test:e2e` | Run Playwright E2E tests (Tier 2 QA harness) | CI/CD |
+| `npm run test:e2e:story` | Run Playwright tests filtered by `--grep` | Ad-hoc |
+| `npm run validate:assets` | Standalone Tier 1 asset HTTP verification | Maintenance |
+| `npm run generate` | CLI story generation | Generation |
+| `npm run generate:heist`, `generate:fantasy` | Genre-specific CLI generation | Generation |
+| `npm run generate:doc`, `generate:template` | Document-driven generation | Generation |
 | `npm run clean:runtime` | Clean generated artifacts | Maintenance |
+| `npm run proxy:health` | Health-check the running proxy server | CI/CD |
 
 ### TypeScript Configuration
 

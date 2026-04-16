@@ -18,6 +18,7 @@ const { estimateWorkerProgress } = require('./proxy/workerProgress');
 const { createSyncGenerationMirrorFromWorker } = require('./proxy/workerJobSync');
 const { registerCatalogRoutes } = require('./proxy/catalogRoutes');
 const { registerRefImageRoutes } = require('./proxy/refImageRoutes');
+const { registerStableDiffusionRoutes } = require('./proxy/stableDiffusionRoutes');
 const { registerFileRoutes } = require('./proxy/fileRoutes');
 const { registerStoryMutationRoutes } = require('./proxy/storyMutationRoutes');
 const { registerModelScanRoutes } = require('./proxy/modelScanRoutes');
@@ -93,6 +94,7 @@ registerCatalogRoutes(app, {
   createFullStoryResponse,
 });
 registerRefImageRoutes(app, { refImagesDir: REF_IMAGES_DIR, port: PORT });
+registerStableDiffusionRoutes(app);
 registerFileRoutes(app, {
   rootDir: __dirname,
   storiesDir: STORIES_DIR,

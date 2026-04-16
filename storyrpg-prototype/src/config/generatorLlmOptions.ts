@@ -1,6 +1,14 @@
 export type GenerationMode = 'strict' | 'advisory' | 'disabled';
 export type GeneratorLlmProvider = 'anthropic' | 'gemini';
-export type GeneratorImageProvider = 'nano-banana' | 'atlas-cloud' | 'midapi';
+export type GeneratorImageProvider = 'nano-banana' | 'atlas-cloud' | 'midapi' | 'stable-diffusion';
+
+/**
+ * Whether the Stable Diffusion image provider option is exposed in the UI.
+ * Gated behind an env flag so builds that don't run an SD backend don't
+ * accidentally expose the option.
+ */
+export const STABLE_DIFFUSION_UI_ENABLED: boolean =
+  (typeof process !== 'undefined' ? process.env?.EXPO_PUBLIC_SD_ENABLED : undefined) === 'true';
 
 export interface ModelOption {
   value: string;

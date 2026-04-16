@@ -703,6 +703,28 @@ const qaReport = await qaRunner.runFullQA(input, {
 
 The following systems were added after the initial QA fix sessions. They are documented here for completeness as they address technical debt items or extend infrastructure:
 
+### Two-Tier Final QA System (April 2026)
+
+Two deterministic QA passes now run at the end of every generation, after the LLM QA agents have finished:
+
+**Tier 1 — Asset HTTP Verification**
+
+- **New file:** `src/ai-agents/validators/storyAssetWalker.ts` — `walkStoryAssets()` recursively visits every image slot in the story (story/episode/scene covers, beat images and panels, encounter phase/beat/outcome/situation images, storylet beats, NPC portraits) and issues an HTTP `HEAD` (falling back to a ranged `GET`) for each URL.
+- **CLI:** `npm run validate:assets` exposes the same walker as a standalone script against any generated-story directory.
+- **Config:** `ValidationConfig.assetHttpCheck` (default `true`) and `ValidationConfig.assetHttpCheckFailFast` (default `false`) control whether missing/broken/unreachable images log a warning or raise a `PipelineError`.
+
+**Tier 2 — Playwright Browser Playthrough**
+
+- **New file:** `src/ai-agents/validators/storyPathAnalyzer.ts` — builds a scene-level DAG and computes the minimum set of choice paths that exercise every scene and every choice at least once.
+- **New file:** `src/ai-agents/validators/playwrightQARunner.ts` — `runPlaywrightQAMultiPath()` spawns `test/e2e/storyPlaythrough.spec.ts` once per computed path (up to `maxParallel`, default `3`), passing the choice indices via `E2E_CHOICE_PATH`. Each run collects broken/placeholder images, console errors, network failures, and a coverage report.
+- **New file:** `test/e2e/storyPlaythrough.spec.ts` — the actual Playwright test. Also runnable standalone via `npm run test:e2e` (or `npm run test:e2e:story -- "Story Title"`) as long as the proxy and web app are running.
+- **New file:** `src/ai-agents/validators/qaRemediation.ts` — `remediateImageIssues()` parses each Tier-2 issue, looks up the original prompt from `prompts/`, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` writes `08-final-story.json` atop the old one. The pipeline then re-runs Tier 2 up to `ValidationConfig.playwrightQAMaxRetries` times (default `1`).
+- **Auto-skip:** The runner detects when the proxy/app is offline and marks the Tier-2 phase as `skipped` with a reason, so headless generations never fail because the UI isn't running.
+
+**Why this matters**
+
+These tiers close the last gap between "the pipeline claims the story is done" and "the story actually renders for a player" — a broken image or a runtime console error now blocks success and is auto-remediated when possible.
+
 ### Image Pipeline Infrastructure (New)
 - `src/ai-agents/images/` — Modular image prompt building, asset registry, slot manifests, coverage validation, provider policy
 - `src/ai-agents/encounters/` — Encounter-specific slot manifests and provider policy

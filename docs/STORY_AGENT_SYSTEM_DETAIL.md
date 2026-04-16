@@ -1,6 +1,6 @@
 # StoryRPG: Complete System Architecture Document
 
-**Last Updated:** December 2024
+**Last Updated:** April 2026
 
 A comprehensive reference for the story agent structure, storytelling rules, branching mechanics, and choice determination systems.
 
@@ -617,6 +617,11 @@ Includes verb conjugation for pronoun substitution and unresolved token fallback
 | **RequiredNPCValidator** | Planned NPCs appear in scenes |
 | **PlotValidator** | Character motivation consistency |
 | **StructuralValidator** | Scene reachability and dead ends |
+| **IncrementalValidators** | Per-scene voice / stakes / continuity / sensitivity / encounter structure |
+| **storyAssetWalker** | **Tier 1 QA** — HTTP-verify every image URL in the assembled story |
+| **storyPathAnalyzer** | Coverage planner — minimum choice paths to visit every scene/choice |
+| **playwrightQARunner** | **Tier 2 QA** — spawns Playwright to play through every choice path in a real browser |
+| **qaRemediation** | Re-generates broken/placeholder images and patches `08-final-story.json` |
 
 ### 13.2 QA Agents (LLM-Based Validators)
 
@@ -629,6 +634,27 @@ Includes verb conjugation for pronoun substitution and unresolved token fallback
 | **ToneAnalyzer** | Tone consistency across the episode |
 | **PacingAuditor** | Narrative rhythm and flow |
 | **SensitivityReviewer** | Content appropriateness |
+| **BlueprintGrowthCritic** | Growth-arc legibility in Phase-3 scene blueprints |
+| **GrowthNarrativeCritic** | Growth-arc legibility in generated prose & choices |
+
+### 13.3 Two-Tier Final QA
+
+After the LLM QA agents have produced their report and the story is assembled, the pipeline runs two deterministic QA passes that exercise the real artifacts:
+
+**Tier 1 — Asset HTTP Verification (`storyAssetWalker.ts`)**
+
+- Walks the assembled `Story` and collects every image URL (story/episode/scene covers, beats, panels, encounter phases/beats/outcomes/situations, storylets, NPC portraits).
+- Issues a concurrent `HEAD` request (with ranged `GET` fallback) against each URL and classifies the result as `ok` / `missing` / `broken` / `unreachable`.
+- Gate controlled by `ValidationConfig.assetHttpCheck` (default `true`) and `assetHttpCheckFailFast` (default `false`, warn-only).
+- Also available standalone via `npm run validate:assets <story-dir>` for quick local verification.
+
+**Tier 2 — Playwright Browser Playthrough (`playwrightQARunner.ts`)**
+
+1. `storyPathAnalyzer.computeCoveragePlan()` builds a scene-level DAG from the generated story and picks the minimum set of choice paths that visit every scene and every choice at least once. It also marks which scenes need specific encounter tiers to be forced.
+2. `runPlaywrightQAMultiPath()` spawns `test/e2e/storyPlaythrough.spec.ts` once per path (up to `maxParallel`, default `3`) against `http://localhost:8081`, passing the choice indices via the `E2E_CHOICE_PATH` env var.
+3. Each run drives the real reader UI, recording broken/placeholder images, console errors, network failures, and a coverage report.
+4. If any issue is fixable, `qaRemediation.remediateImageIssues()` parses the screen identifier, looks up the saved prompt under `prompts/`, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` rewrites `08-final-story.json`. Tier 2 then re-runs up to `playwrightQAMaxRetries` times (default `1`).
+5. When the proxy or web app is not reachable, the runner marks itself `skipped` rather than failing the pipeline — so CLI generations don't require the UI.
 
 ---
 
@@ -747,6 +773,17 @@ interface GenerationSettingsConfig {
 - `src/ai-agents/agents/EncounterArchitect.ts` — Encounter design
 - `src/ai-agents/agents/WorldBuilder.ts` — World building
 - `src/ai-agents/agents/CharacterDesigner.ts` — NPC design
+- `src/ai-agents/agents/BlueprintGrowthCritic.ts` — Phase-3.5 growth critic
+- `src/ai-agents/agents/GrowthNarrativeCritic.ts` — Phase-4.5 growth critic
+
+### 17.2.1 Validator & QA Files
+
+- `src/ai-agents/validators/IncrementalValidators.ts` — Per-scene voice/stakes/continuity/sensitivity/encounter checks
+- `src/ai-agents/validators/storyAssetWalker.ts` — Tier 1 asset HTTP verification
+- `src/ai-agents/validators/storyPathAnalyzer.ts` — Coverage path planner for Tier 2
+- `src/ai-agents/validators/playwrightQARunner.ts` — Tier 2 browser playthrough runner
+- `src/ai-agents/validators/qaRemediation.ts` — Auto-remediation for Tier 2 image issues
+- `test/e2e/storyPlaythrough.spec.ts` — The Playwright test that Tier 2 spawns
 
 ### 17.3 Pipeline Files
 

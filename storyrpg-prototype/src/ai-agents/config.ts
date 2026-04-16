@@ -258,6 +258,96 @@ export const DEFAULT_MIDJOURNEY_SETTINGS: Required<MidjourneySettings> = {
   version: '7',
 };
 
+// ========================================
+// Stable Diffusion settings
+// ========================================
+
+/**
+ * Backend flavors supported by the Stable Diffusion adapter layer.
+ *
+ * Only `a1111` has a concrete adapter today; the other values are reserved so
+ * the config surface can be authored ahead of time without breaking callers
+ * when new adapters land.
+ */
+export type StableDiffusionBackend = 'a1111' | 'comfy' | 'replicate' | 'stability' | 'fal';
+
+/** A single LoRA reference to weave into the positive prompt. */
+export interface StableDiffusionLoraRef {
+  name: string;
+  weight: number;
+}
+
+/**
+ * ControlNet model ids configured per module. `A1111Adapter` picks which one
+ * to use based on the `purpose` of a reference image. Leave blank to disable
+ * that flavor of ControlNet.
+ */
+export interface StableDiffusionControlNetModels {
+  depth?: string;
+  canny?: string;
+  referenceOnly?: string;
+}
+
+/**
+ * Stable Diffusion specific tuning parameters. All fields are optional — when
+ * unset the adapter falls back to adapter-specific defaults so that a minimal
+ * config (just `baseUrl`) still produces images.
+ */
+export interface StableDiffusionSettings extends ImageReferenceSettings {
+  /** Base URL for the SD backend (e.g. A1111 WebUI) — usually the proxy `/sd-api`. */
+  baseUrl?: string;
+  /** Optional API key/bearer token, forwarded as Authorization by the proxy. */
+  apiKey?: string;
+  /** Backend flavor (only `a1111` is wired today). */
+  backend?: StableDiffusionBackend;
+  /** Default checkpoint / model id used when the prompt doesn't specify one. */
+  defaultModel?: string;
+  /** Style LoRAs applied to every image for a consistent look. */
+  styleLoras?: StableDiffusionLoraRef[];
+  /** Per-character LoRA registry keyed by canonical character name. */
+  characterLoraByName?: Record<string, StableDiffusionLoraRef>;
+  /** IP-Adapter model id (runs through ControlNet extension on A1111/Forge). */
+  ipAdapterModel?: string;
+  /** ControlNet model ids for depth/canny/reference-only pipelines. */
+  controlNetModels?: StableDiffusionControlNetModels;
+  defaultSampler?: string;
+  defaultSteps?: number;
+  defaultCfg?: number;
+  /** Baseline negative prompt prepended to every generation. */
+  defaultNegativePrompt?: string;
+  /** Default output width in pixels. */
+  width?: number;
+  /** Default output height in pixels. */
+  height?: number;
+  /** Default denoising strength for img2img passes (0..1). */
+  defaultDenoisingStrength?: number;
+}
+
+export const DEFAULT_STABLE_DIFFUSION_SETTINGS: Required<
+  Omit<
+    StableDiffusionSettings,
+    'styleLoras' | 'characterLoraByName' | 'ipAdapterModel' | 'controlNetModels' | 'defaultModel' | 'apiKey'
+  >
+> & Pick<StableDiffusionSettings, 'styleLoras' | 'characterLoraByName' | 'ipAdapterModel' | 'controlNetModels' | 'defaultModel' | 'apiKey'> = {
+  baseUrl: '',
+  backend: 'a1111',
+  defaultSampler: 'DPM++ 2M Karras',
+  defaultSteps: 28,
+  defaultCfg: 6.5,
+  defaultNegativePrompt:
+    'lowres, blurry, deformed, bad anatomy, extra fingers, watermark, signature, jpeg artifacts, text',
+  width: 832,
+  height: 1216,
+  defaultDenoisingStrength: 0.55,
+  maxRefImagesPerCharacter: 2,
+  styleLoras: undefined,
+  characterLoraByName: undefined,
+  ipAdapterModel: undefined,
+  controlNetModels: undefined,
+  defaultModel: undefined,
+  apiKey: undefined,
+};
+
 export interface PipelineConfig {
   agents: {
     storyArchitect: AgentConfig;
@@ -291,6 +381,8 @@ export interface PipelineConfig {
     midjourney?: MidjourneySettings;
     // Gemini (Nano Banana) tuning parameters
     gemini?: GeminiSettings;
+    // Stable Diffusion tuning parameters (A1111/Forge REST by default)
+    stableDiffusion?: StableDiffusionSettings;
     /** 0 = disabled. Hard-abort encounter image phase after N consecutive failures (in addition to completeness gate). */
     encounterMaxConsecutiveFailuresBeforeAbort?: number;
     /** Panel layout mode for beat images: 'single' (one image per beat), 'special-beats' (panels for action/dramatic moments), 'all-beats' (panels for every beat). */

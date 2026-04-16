@@ -70,7 +70,13 @@ import type {
 } from '../utils/pipelineOutputWriter';
 import { EncounterImageAgent } from '../agents/image-team/EncounterImageAgent';
 import { ImagePrompt } from '../agents/ImageGenerator';
-import { ImageGenerationService, ReferenceImage, type EncounterImageDiagnostic } from '../services/imageGenerationService';
+import {
+  ImageGenerationService,
+  ReferenceImage,
+  type EncounterImageDiagnostic,
+  type CanonicalAppearance,
+  type CharacterAppearanceDescription,
+} from '../services/imageGenerationService';
 import type { GeneratedImage } from '../agents/ImageGenerator';
 import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/VideoDirectorAgent';
 import { VideoGenerationService } from '../services/videoGenerationService';
@@ -602,6 +608,12 @@ export class FullStoryPipeline {
       this.config.agents.imagePlanner || this.config.agents.storyArchitect,
       this.config.artStyle
     );
+    // Wire identity consistency gate thresholds from config.
+    this.imageAgentTeam.setIdentityGateConfig({
+      identityScoreThreshold: this.config.imageGen?.identityScoreThreshold,
+      maxIdentityRegenerations: this.config.imageGen?.maxIdentityRegenerations,
+      resetIdentityBudget: true,
+    });
     this.imageService = new ImageGenerationService({
       ...(this.config.imageGen || { enabled: false }),
       geminiApiKey: this.config.imageGen?.geminiApiKey || this.config.imageGen?.apiKey,
@@ -2018,6 +2030,18 @@ export class FullStoryPipeline {
           this.requirePhases('images', ['content_generation']);
           const imagesDir = outputDirectory + 'images/';
           this.imageService.setOutputDirectory(imagesDir);
+          // Invalidate cached reference sheets if the user has changed art
+          // style since the last run under this output directory. See
+          // ImageGenerationService.reconcileCachedReferenceStyle for why this
+          // matters (otherwise stale refs lock the aesthetic).
+          const invalidatedRefs = this.imageService.reconcileCachedReferenceStyle(this.config.artStyle);
+          if (invalidatedRefs > 0) {
+            this.emit({
+              type: 'debug',
+              phase: 'images',
+              message: `Art style changed — invalidated ${invalidatedRefs} cached reference image(s) so new refs will be generated under the current style.`,
+            });
+          }
           this.emit({ type: 'debug', phase: 'images', message: `Image output directory: ${imagesDir}` });
           
           // Generate master character/location references
@@ -5230,6 +5254,14 @@ export class FullStoryPipeline {
       if (this.config.imageGen?.enabled) {
         const imagesDir = outputDirectory + 'images/';
         this.imageService.setOutputDirectory(imagesDir);
+        const invalidatedRefs = this.imageService.reconcileCachedReferenceStyle(this.config.artStyle);
+        if (invalidatedRefs > 0) {
+          this.emit({
+            type: 'debug',
+            phase: 'images',
+            message: `Art style changed — invalidated ${invalidatedRefs} cached reference image(s) so new refs will be generated under the current style.`,
+          });
+        }
         this.emit({ type: 'debug', phase: 'images', message: `Image output directory: ${imagesDir}` });
       }
 
@@ -6318,8 +6350,12 @@ export class FullStoryPipeline {
             }
           });
 
-          // Store first character's ref sheet as style anchor for subsequent characters
-          const anchorImg = generatedSheet.generatedImages.get('composite') || generatedSheet.generatedImages.get('front');
+          // Store first character's ref sheet as style anchor for subsequent characters.
+          // Prefer the full-body front view over the face crop so the anchor
+          // carries costume and palette information, not just the face.
+          const anchorImg = generatedSheet.generatedImages.get('front')
+            || generatedSheet.generatedImages.get('composite')
+            || generatedSheet.generatedImages.get('face');
           if (anchorImg?.imageData && anchorImg?.mimeType) {
             this.imageService.setReferenceSheetStyleAnchor(anchorImg.imageData, anchorImg.mimeType);
           }
@@ -6443,8 +6479,12 @@ export class FullStoryPipeline {
         }
       });
 
-      // Store first character's ref sheet as style anchor for subsequent characters
-      const anchorImg = generatedSheet.generatedImages.get('composite') || generatedSheet.generatedImages.get('front');
+      // Store first character's ref sheet as style anchor for subsequent characters.
+      // Prefer the full-body front view over the face crop so the anchor
+      // carries costume and palette information, not just the face.
+      const anchorImg = generatedSheet.generatedImages.get('front')
+        || generatedSheet.generatedImages.get('composite')
+        || generatedSheet.generatedImages.get('face');
       if (anchorImg?.imageData && anchorImg?.mimeType) {
         this.imageService.setReferenceSheetStyleAnchor(anchorImg.imageData, anchorImg.mimeType);
       }
@@ -6752,6 +6792,100 @@ ${clothingRule}
     }
 
     return undefined;
+  }
+
+  /**
+   * Scan disk for beat images that were successfully written but never wired into
+   * `beatImages` / the AssetRegistry — typically because the generation promise
+   * resolved AFTER `withTimeout` rejected (Node has no native promise cancellation,
+   * so the underlying write to disk continues even after the caller gives up).
+   *
+   * For each beat missing from `beatImages`, we try a small set of known identifier
+   * patterns the pipeline uses (single path, panel path, tier1 retry) and, if a
+   * file exists, wire it back into both `beatImages` and the AssetRegistry so the
+   * final story assembly and coverage checks see the image.
+   */
+  private reconcileOrphanedBeatImages(
+    brief: FullCreativeBrief,
+    sceneContents: SceneContent[],
+    beatImages: Map<string, string>,
+    sceneImages: Map<string, string>,
+  ): number {
+    let recoveredCount = 0;
+
+    for (const scene of sceneContents) {
+      const sceneBeats = scene.beats || [];
+      if (sceneBeats.length === 0) continue;
+
+      const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
+
+      for (let beatIdx = 0; beatIdx < sceneBeats.length; beatIdx++) {
+        const beat = sceneBeats[beatIdx];
+        const beatKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beat.id);
+        if (beatImages.has(beatKey)) continue;
+
+        // Match the identifier patterns used at generation time, in priority order.
+        const baseId = `beat-${scopedSceneId}-${beat.id}`;
+        const candidateIdentifiers = [
+          `${baseId}-panel-0`,
+          baseId,
+          `${baseId}-retry`,
+        ];
+
+        for (const candidate of candidateIdentifiers) {
+          const existing = this.imageService.findExistingGeneratedImage(candidate);
+          if (!existing?.imageUrl) continue;
+
+          beatImages.set(beatKey, existing.imageUrl);
+          if (beatIdx === 0 && !sceneImages.has(scopedSceneId)) {
+            sceneImages.set(scopedSceneId, existing.imageUrl);
+          }
+          recoveredCount++;
+
+          console.warn(
+            `[Pipeline] Orphan recovery: wired orphaned image for scene "${scene.sceneId}" beat "${beat.id}" (identifier: ${candidate})`,
+          );
+          this.emit({
+            type: 'warning',
+            phase: 'images',
+            message: `Recovered orphaned image for ${scene.sceneId}:${beat.id}`,
+            data: { sceneId: scene.sceneId, beatId: beat.id, identifier: candidate, imageUrl: existing.imageUrl },
+          });
+
+          // Mirror into AssetRegistry so coverage checks + final assembler agree.
+          const heroSlotId = `story-beat:${scene.sceneId}::${beat.id}`;
+          try {
+            if (!this.assetRegistry.get(heroSlotId)) {
+              this.assetRegistry.planSlot({
+                slotId: heroSlotId,
+                family: 'story-beat',
+                imageType: 'beat',
+                sceneId: scene.sceneId,
+                scopedSceneId,
+                beatId: beat.id,
+                storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beat.id}].image`,
+                baseIdentifier: candidate,
+                required: false,
+                qualityTier: 'standard',
+                coverageKey: `beat:${scene.sceneId}::${beat.id}`,
+              });
+            }
+            this.assetRegistry.markSuccess(heroSlotId, {
+              prompt: { prompt: '' } as any,
+              imageUrl: existing.imageUrl,
+              imagePath: existing.imagePath,
+            } as GeneratedImage);
+          } catch { /* non-fatal */ }
+
+          break;
+        }
+      }
+    }
+
+    if (recoveredCount > 0) {
+      console.log(`[Pipeline] Orphan reconciliation: recovered ${recoveredCount} beat image(s) from disk`);
+    }
+    return recoveredCount;
   }
 
   /**
@@ -7415,6 +7549,11 @@ ${clothingRule}
         });
       }
     }
+
+    // Orphan reconciliation: wire up any images that landed on disk after their
+    // generation promise was abandoned by `withTimeout` (Node can't cancel the
+    // underlying work, so the file may appear after the pipeline gave up on it).
+    this.reconcileOrphanedBeatImages(brief, sceneContents, beatImages, sceneImages);
 
     // Recovery pass: detect scenes that got zero images and run fallback generation
     for (const scene of sceneContents) {
@@ -8798,7 +8937,7 @@ ${clothingRule}
       referenceImages: ReferenceImage[];
       characterIds: string[];
       characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
+      characterDescriptions: CharacterAppearanceDescription[];
       brief: FullCreativeBrief;
       encounter: EncounterStructure;
       settingContext?: SceneSettingContext;
@@ -9147,7 +9286,7 @@ ${clothingRule}
       type: 'encounter-setup' | 'encounter-outcome' | 'storylet-aftermath';
       characters: string[];
       characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
+      characterDescriptions: CharacterAppearanceDescription[];
       choiceId?: string;
       tier?: 'success' | 'complicated' | 'failure';
       outcomeType?: EncounterOutcome;
@@ -9304,7 +9443,7 @@ ${clothingRule}
       type: 'encounter-setup' | 'encounter-outcome' | 'storylet-aftermath';
       characters: string[];
       characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
+      characterDescriptions: CharacterAppearanceDescription[];
       choiceId?: string;
       tier?: 'success' | 'complicated' | 'failure';
       outcomeType?: EncounterOutcome;
@@ -9836,7 +9975,7 @@ ${clothingRule}
       referenceImages: ReferenceImage[];
       characterIds: string[];
       characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
+      characterDescriptions: CharacterAppearanceDescription[];
       brief: FullCreativeBrief;
       encounter: EncounterStructure;
       settingContext?: SceneSettingContext;
@@ -10056,8 +10195,8 @@ ${clothingRule}
   private buildCharacterDescriptions(
     characterIds: string[],
     characterBible: CharacterBible
-  ): Array<{ name: string; appearance: string }> {
-    const descs: Array<{ name: string; appearance: string }> = [];
+  ): CharacterAppearanceDescription[] {
+    const descs: CharacterAppearanceDescription[] = [];
     for (const charId of characterIds) {
       const c = characterBible.characters.find(ch => ch.id === charId);
       if (!c) continue;
@@ -10068,28 +10207,113 @@ ${clothingRule}
       // exist, silhouette hooks take precedence as the primary description.
       const silhouette = this.imageAgentTeam.getCharacterSilhouetteProfile(c.id);
       const hasSilhouette = silhouette?.silhouetteHooks && silhouette.silhouetteHooks.length > 0;
+      const consistencyInfo = this.imageAgentTeam.getCharacterConsistencyInfo(c.id);
 
       const parts: string[] = [];
-
       if (hasSilhouette) {
-        // Visual design is the source of truth — use silhouette hooks as the
-        // primary appearance description to avoid contradictions.
         parts.push(silhouette!.silhouetteHooks!.join(', '));
       } else if (c.physicalDescription) {
-        // No visual design data — fall back to the character bible description.
         parts.push(c.physicalDescription);
       }
-
       if (c.distinctiveFeatures && c.distinctiveFeatures.length > 0) {
         parts.push(`Distinctive features: ${c.distinctiveFeatures.join(', ')}`);
       }
       if (c.typicalAttire) parts.push(`Attire: ${c.typicalAttire}`);
 
-      if (parts.length > 0) {
-        descs.push({ name: c.name, appearance: parts.join('. ') });
+      // Build a structured canonicalAppearance by extracting semantic slots
+      // from the free-form description sources. Each slot becomes its own
+      // labeled line in the identity block, which dramatically reduces the
+      // LLM's tendency to drop or paraphrase critical attributes (hair color,
+      // eye color, distinguishing marks).
+      const sources: string[] = [
+        c.physicalDescription || '',
+        ...(silhouette?.silhouetteHooks || []),
+        ...(consistencyInfo?.visualAnchors || []),
+      ].filter(Boolean);
+      const canonicalAppearance = this.extractCanonicalAppearance(
+        sources,
+        c.distinctiveFeatures,
+        c.typicalAttire,
+      );
+
+      if (parts.length > 0 || canonicalAppearance) {
+        descs.push({
+          name: c.name,
+          appearance: parts.join('. '),
+          canonicalAppearance,
+        });
       }
     }
     return descs;
+  }
+
+  /**
+   * Extract structured identity slots (hair, eyes, skin, build, height, face)
+   * from free-form character description text. Each slot scans the merged
+   * source text for phrases that match the slot's keyword set and captures the
+   * surrounding words as the slot value.
+   *
+   * The extractor is deliberately conservative — it returns undefined for any
+   * slot it can't confidently populate, leaving the fallback appearance prose
+   * to cover the gap. distinctiveFeatures and typicalAttire are passed through
+   * directly since they are already structured.
+   */
+  private extractCanonicalAppearance(
+    sources: string[],
+    distinctiveFeatures: string[] | undefined,
+    typicalAttire: string | undefined,
+  ): CanonicalAppearance | undefined {
+    const text = sources.join('. ');
+    if (!text && (!distinctiveFeatures || distinctiveFeatures.length === 0) && !typicalAttire) {
+      return undefined;
+    }
+
+    const splitPhrases = (raw: string): string[] =>
+      raw
+        .split(/[.,;]|\s-\s|\s—\s/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+
+    const phrases = splitPhrases(text);
+
+    const findPhrase = (keywords: RegExp): string | undefined => {
+      for (const p of phrases) {
+        if (keywords.test(p)) return p;
+      }
+      return undefined;
+    };
+
+    const ca: CanonicalAppearance = {};
+
+    const hairPhrase = findPhrase(/\b(hair|hairstyle|braid|ponytail|locks|mane|curls|dreadlocks)\b/i);
+    if (hairPhrase) ca.hair = hairPhrase;
+
+    const eyesPhrase = findPhrase(/\b(eyes|eye|iris|gaze)\b/i);
+    if (eyesPhrase) ca.eyes = eyesPhrase;
+
+    const skinPhrase = findPhrase(/\b(skin|complexion|tan|pale|sunburn(?:t|ed)?|freckl(?:e|ed|es))\b/i);
+    if (skinPhrase) ca.skinTone = skinPhrase;
+
+    const buildPhrase = findPhrase(/\b(build|physique|stature|frame|muscled|slender|broad|lean|stocky|wiry|sinewy)\b/i);
+    if (buildPhrase) ca.build = buildPhrase;
+
+    const heightPhrase = findPhrase(/\b(tall|short|height|petite|towering|diminutive)\b/i);
+    if (heightPhrase) ca.height = heightPhrase;
+
+    const facePhrase = findPhrase(/\b(face|jaw|jawline|cheekbones?|nose|chin|brow|forehead)\b/i);
+    if (facePhrase) ca.face = facePhrase;
+
+    if (distinctiveFeatures && distinctiveFeatures.length > 0) {
+      ca.distinguishingMarks = distinctiveFeatures.slice(0, 6);
+    }
+    if (typicalAttire) {
+      ca.defaultAttire = typicalAttire;
+    }
+
+    const hasAny = Object.values(ca).some((v) =>
+      Array.isArray(v) ? v.length > 0 : typeof v === 'string' && v.length > 0
+    );
+    return hasAny ? ca : undefined;
   }
 
   private gatherCharacterReferenceImages(

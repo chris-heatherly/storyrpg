@@ -1664,7 +1664,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const imageSummaryLines = [
     `${generationSettings.generateImages ? 'Images enabled' : 'Images disabled'} • ${imageProviderLabel} renderer`,
     `Prompting: ${imageLlmProvider.toUpperCase()} • ${imageLlmModel}`,
-    `Style: ${artStyle.trim() || 'Default expressive illustrated'} • refs ${generationSettings.generateCharacterRefs ? 'on' : 'off'}`,
+    `Style: ${artStyle.trim() || '⚠ empty — will fall back to default (expressive illustrated)'} • refs ${generationSettings.generateCharacterRefs ? 'on' : 'off'}`,
   ];
   const videoSummaryLines = [
     `${videoSettings.enabled ? 'Video enabled' : 'Video disabled'} • ${videoLlmProvider.toUpperCase()} • ${videoLlmModel}`,
@@ -1894,7 +1894,13 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 <View style={styles.configItem}>
                   <Text style={styles.configLabel}>ART STYLE</Text>
                   <View style={styles.inputWrapper}><TextInput style={styles.input} value={artStyle} onChangeText={handleArtStyleChange} placeholder="e.g. rich digital painting, noir ink wash, anime cel shading, watercolor illustration..." placeholderTextColor={TERMINAL.colors.muted} /></View>
-                  <Text style={[styles.configHint, { marginTop: 4 }]}>Sets the visual aesthetic for all generated art. Leave blank for expressive illustrated style.</Text>
+                  {artStyle.trim().length === 0 ? (
+                    <Text style={[styles.configHint, { marginTop: 4, color: TERMINAL.colors.warning || TERMINAL.colors.muted }]}>
+                      ⚠ No art style set — images will fall back to &quot;dramatic cinematic story art&quot; (a generic illustrated look). Enter a specific style above for consistent, distinctive visuals.
+                    </Text>
+                  ) : (
+                    <Text style={[styles.configHint, { marginTop: 4 }]}>Sets the visual aesthetic for all generated art. This exact string is used as the style directive in every image prompt.</Text>
+                  )}
                 </View>
 
                 <View style={styles.configItem}>

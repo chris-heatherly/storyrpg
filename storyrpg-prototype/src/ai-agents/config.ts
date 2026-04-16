@@ -295,6 +295,18 @@ export interface PipelineConfig {
     encounterMaxConsecutiveFailuresBeforeAbort?: number;
     /** Panel layout mode for beat images: 'single' (one image per beat), 'special-beats' (panels for action/dramatic moments), 'all-beats' (panels for every beat). */
     panelMode?: 'single' | 'special-beats' | 'all-beats';
+    /**
+     * Minimum ConsistencyScorer score (0-100) a generated shot must achieve
+     * against its character reference images before it is accepted. Shots below
+     * this threshold trigger a single bounded edit-mode regeneration pass.
+     * Default: 75.
+     */
+    identityScoreThreshold?: number;
+    /**
+     * Episode-wide cap on identity-driven regenerations. Prevents runaway API
+     * spend when the model cannot stabilize on the reference. Default: 10.
+     */
+    maxIdentityRegenerations?: number;
   };
   
   // Midjourney-specific parameters exposed in settings

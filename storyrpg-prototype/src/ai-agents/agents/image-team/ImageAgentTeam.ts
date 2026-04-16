@@ -430,6 +430,14 @@ export class ImageAgentTeam extends BaseAgent {
     characters: string[];
   };
 
+  // Identity-gate configuration. These can be overridden via setIdentityGateConfig().
+  // - identityScoreThreshold: minimum ConsistencyScorer score (0-100) for a shot to pass
+  // - maxIdentityRegenerations: per-episode cap on identity-driven regenerations to
+  //   prevent runaway API spend if the model can't stabilize on the reference
+  private identityScoreThreshold: number = 75;
+  private maxIdentityRegenerations: number = 10;
+  private identityRegenerationsUsed: number = 0;
+
   constructor(config: AgentConfig, artStyle?: string) {
     super('Image Agent Team', config);
     this.artStyle = artStyle;
@@ -1114,8 +1122,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     );
 
     if (viewsToGenerate.length === 0) {
-      console.warn(`[ImageAgentTeam] No standard views found in sheet for ${sheet.characterName} — falling back to composite`);
-      return this.generateCompositeReferenceSheet(sheet, imageService, onProgress, undefined, userReferenceImages);
+      // Fail fast on the Gemini identity path instead of silently producing a
+      // composite grid. The upstream pipeline has its own single-portrait
+      // fallback that will kick in when this throws.
+      throw new Error(
+        `Individual-view reference generation requires at least one of front/three-quarter/profile views for ${sheet.characterName}; got none.`
+      );
     }
 
     const visualAnchors = sheet.visualAnchors?.join(', ') || '';
@@ -1187,6 +1199,29 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       }
 
       console.log(`[ImageAgentTeam] Individual view '${view.viewType}' complete for ${sheet.characterName} (${completedViews.length} views accumulated for consistency)`);
+    }
+
+    // Derive a dedicated face-crop reference from the front view so scene
+    // generation has a tight identity anchor (hair color, eye color, face
+    // structure) that isn't diluted by full-body rendering.
+    const frontImage = generatedImages.get('front');
+    if (frontImage?.imageData && frontImage?.mimeType) {
+      try {
+        const faceCrop = await extractReferenceFaceCrop(frontImage.imageData, frontImage.mimeType, {
+          mode: 'front',
+        });
+        if (faceCrop.data && faceCrop.mimeType) {
+          const faceImage: GeneratedImage = {
+            ...frontImage,
+            imageData: faceCrop.data,
+            mimeType: faceCrop.mimeType,
+          };
+          generatedImages.set('face', faceImage);
+          console.log(`[ImageAgentTeam] Face-crop identity anchor stored for ${sheet.characterName}`);
+        }
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Failed to derive face-crop for ${sheet.characterName}:`, err);
+      }
     }
 
     const generatedSheet: GeneratedReferenceSheet = {
@@ -1403,9 +1438,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       }
     };
 
-    // NB2 path: prefer individual views for cleaner identity signal per image
+    // NB2 path: prefer individual views for cleaner identity signal per image.
+    // The face crop is always selected first because a tight head-and-shoulders
+    // frame gives Gemini its strongest identity signal; full-body views follow
+    // for costume and build anchoring.
     if (preferIndividualViews) {
-      let priorityViews = ['front', 'three-quarter', 'profile'];
+      let priorityViews = ['face', 'front', 'three-quarter', 'profile'];
       if (preferredAngle && priorityViews.includes(preferredAngle)) {
         priorityViews = [preferredAngle, ...priorityViews.filter(v => v !== preferredAngle)];
       }
@@ -1420,12 +1458,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           });
         }
       }
-      // If individual views were found, add expressions and return
-      if (references.length > 0) {
-        appendExpressionRefs();
-        return references;
-      }
-      // Fall through to composite if no individual views exist
+      // Individual views are the authoritative identity path for the Gemini/NB2
+      // pipeline. If no views survived we return empty rather than falling back
+      // to a composite grid, which gives weaker per-view identity signal and
+      // hides the fact that reference generation failed.
+      appendExpressionRefs();
+      return references;
     }
 
     // Composite path: single image with all views (default for older models)
@@ -1946,6 +1984,17 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       console.warn('[ImageAgentTeam] Full QA validation failed:', qaErr);
     }
 
+    // Step 6: Character identity gate. After all other QA has run, score each
+    // shot against its character reference images. Shots scoring below the
+    // threshold are regenerated once through edit mode, which preserves
+    // composition while correcting face/hair/eye/mark drift. Bounded by
+    // maxIdentityRegenerations per-episode to cap spend.
+    try {
+      await this.runIdentityConsistencyGate(plan, generatedImages, prompts, imageService, request);
+    } catch (idErr) {
+      console.warn('[ImageAgentTeam] Identity consistency gate failed:', idErr);
+    }
+
     return {
       success: true,
       data: {
@@ -1955,6 +2004,173 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
         fullQAReport // Include full QA results for logging/debugging
       }
     };
+  }
+
+  /**
+   * Configure the identity consistency gate thresholds. Call at the start of an
+   * episode or generation run. `resetIdentityBudget` clears the per-episode
+   * counter so the budget applies per generation run, not per process lifetime.
+   */
+  setIdentityGateConfig(options: {
+    identityScoreThreshold?: number;
+    maxIdentityRegenerations?: number;
+    resetIdentityBudget?: boolean;
+  }): void {
+    if (typeof options.identityScoreThreshold === 'number') {
+      this.identityScoreThreshold = Math.max(0, Math.min(100, options.identityScoreThreshold));
+    }
+    if (typeof options.maxIdentityRegenerations === 'number') {
+      this.maxIdentityRegenerations = Math.max(0, Math.floor(options.maxIdentityRegenerations));
+    }
+    if (options.resetIdentityBudget) {
+      this.identityRegenerationsUsed = 0;
+    }
+  }
+
+  /** Reset the episode-level identity regeneration counter. */
+  resetIdentityRegenerationBudget(): void {
+    this.identityRegenerationsUsed = 0;
+  }
+
+  /**
+   * Score each generated shot against its character reference images and run a
+   * single bounded identity-driven regeneration through edit mode when a shot
+   * scores below the threshold. Early-exits per shot if the episode regen
+   * budget is exhausted.
+   */
+  private async runIdentityConsistencyGate(
+    plan: VisualPlan,
+    generatedImages: Map<string, GeneratedImage>,
+    prompts: Map<string, ImagePrompt>,
+    imageService: { generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage>; editImage?: (baseImage: { data: string; mimeType: string }, prompt: ImagePrompt, identifier: string, referenceImages?: any[]) => Promise<GeneratedImage> },
+    request: StoryboardRequest,
+  ): Promise<void> {
+    if (this.maxIdentityRegenerations <= 0) return;
+    if (this.identityRegenerationsUsed >= this.maxIdentityRegenerations) {
+      console.log('[ImageAgentTeam] Identity gate: episode regen budget exhausted, skipping.');
+      return;
+    }
+
+    for (let i = 0; i < plan.shots.length; i++) {
+      if (this.identityRegenerationsUsed >= this.maxIdentityRegenerations) {
+        console.log('[ImageAgentTeam] Identity gate: episode regen budget reached mid-scene, stopping.');
+        break;
+      }
+
+      const shot = plan.shots[i];
+      const shotKey = shot.beatId || shot.id || `shot-${i}`;
+      const image = generatedImages.get(shotKey);
+      if (!image?.imageData || !image?.mimeType) continue;
+
+      const characterIds = (shot.characters || []).filter(
+        (id) => typeof id === 'string' && id && this.characterReferenceSheets.has(id)
+      );
+      if (characterIds.length === 0) continue;
+
+      let idReport: Awaited<ReturnType<typeof this.validateImageConsistency>>;
+      try {
+        idReport = await this.validateImageConsistency(
+          { data: image.imageData, mimeType: image.mimeType },
+          characterIds,
+        );
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Identity scoring failed for shot ${shotKey}:`, err);
+        continue;
+      }
+
+      if (idReport.overallScore >= this.identityScoreThreshold) {
+        continue;
+      }
+
+      console.warn(
+        `[ImageAgentTeam] Identity gate: shot ${shotKey} scored ${idReport.overallScore.toFixed(1)} (threshold ${this.identityScoreThreshold}). Regenerating via edit mode.`
+      );
+
+      // Build strong identity ref pack: face crops first, then full views.
+      const identityRefs: Array<{ data: string; mimeType: string; role: string; characterName?: string; viewType?: string; visualAnchors?: string[] }> = [];
+      for (const charId of characterIds) {
+        const sheet = this.characterReferenceSheets.get(charId);
+        if (!sheet) continue;
+        const refs = this.getCharacterReferenceImages(charId, false, 3, undefined, true);
+        for (const r of refs) {
+          const nameParts = r.name.split('-');
+          const viewType = nameParts.length > 1 ? nameParts[nameParts.length - 1] : 'front';
+          identityRefs.push({
+            data: r.data,
+            mimeType: r.mimeType,
+            role: `character-reference-${r.name}`,
+            characterName: sheet.characterName,
+            viewType,
+            visualAnchors: sheet.visualAnchors,
+          });
+        }
+      }
+
+      const basePrompt = prompts.get(shotKey);
+      const feedbackHint = idReport.feedback.length > 0 ? ` Identity drift detected: ${idReport.feedback.slice(0, 2).join(' ')}` : '';
+      const editPrompt: ImagePrompt = basePrompt
+        ? {
+            ...basePrompt,
+            prompt:
+              `Preserve the composition, camera angle, pose, lighting, and background of the base image. ` +
+              `Correct only the character face, hair color, eye color, skin tone, and distinguishing marks ` +
+              `to match the character reference images exactly. Do not change what is happening in the scene.${feedbackHint}`,
+            negativePrompt: [basePrompt.negativePrompt, 'different face, different hair color, changed eye color, wrong skin tone, missing scar, missing tattoo, altered distinguishing feature']
+              .filter(Boolean)
+              .join(', '),
+          }
+        : {
+            prompt:
+              `Preserve the composition, camera angle, pose, lighting, and background of the base image. ` +
+              `Correct only the character face, hair color, eye color, skin tone, and distinguishing marks ` +
+              `to match the character reference images exactly. Do not change what is happening in the scene.${feedbackHint}`,
+            negativePrompt: 'different face, different hair color, changed eye color, wrong skin tone, missing scar, missing tattoo, altered distinguishing feature',
+            aspectRatio: '9:16',
+          };
+
+      const editIdentifier = `beat-${request.sceneId}-${shotKey}-identityregen`;
+      try {
+        let result: GeneratedImage;
+        if (typeof imageService.editImage === 'function') {
+          result = await imageService.editImage(
+            { data: image.imageData, mimeType: image.mimeType },
+            editPrompt,
+            editIdentifier,
+            identityRefs,
+          );
+        } else {
+          // Fallback for imageService wrappers that don't expose editImage —
+          // do a regular regeneration with stronger identity refs. This still
+          // applies the identity drift negatives and extra ref count, just
+          // without the composition-preserving edit path.
+          result = await imageService.generateImage(
+            editPrompt,
+            editIdentifier,
+            {
+              sceneId: request.sceneId,
+              beatId: shotKey,
+              type: 'scene',
+              regeneration: 1,
+              includeExpressionRefs: true,
+            },
+            identityRefs,
+          );
+        }
+
+        if (result.imageData && result.mimeType) {
+          generatedImages.set(shotKey, result);
+          if (result.imageUrl) shot.generatedImageUrl = result.imageUrl;
+          shot.generatedImageData = result.imageData;
+          shot.generatedImageMimeType = result.mimeType;
+          this.identityRegenerationsUsed++;
+          console.log(
+            `[ImageAgentTeam] Identity gate: shot ${shotKey} regenerated via edit mode (${this.identityRegenerationsUsed}/${this.maxIdentityRegenerations} budget used).`
+          );
+        }
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Identity gate regen failed for shot ${shotKey}:`, err);
+      }
+    }
   }
 
   /**

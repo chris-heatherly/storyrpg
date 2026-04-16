@@ -171,7 +171,13 @@ export function buildBeatImagePrompt(
     beat.relationshipDynamic,
   );
   const settingSelection = selectStyleAdaptation(scene.artStyle, scene.settingContext);
-  const artStyle = scene.artStyle || 'dramatic cinematic story art';
+  const userStyleProvided = typeof scene.artStyle === 'string' && scene.artStyle.trim().length > 0;
+  const artStyle = userStyleProvided ? (scene.artStyle as string) : 'dramatic cinematic story art';
+  const styleSource = userStyleProvided ? 'user' : 'default';
+
+  console.log(
+    `[beatPromptBuilder] artStyle for beat "${beat.beatId}" (shotType=${beat.shotType || 'character'}): "${artStyle}" (source: ${styleSource})`,
+  );
 
   if (isEstablishing) {
     return buildEstablishingPrompt(beat, scene, analysis, settingSelection, artStyle);
@@ -190,7 +196,7 @@ function buildEstablishingPrompt(
   const coreVisual = beat.visualMoment || beat.beatText;
 
   const promptParts: string[] = [
-    artStyle,
+    `Art style: ${artStyle}`,
     'wide establishing shot',
     coreVisual,
     `Scene: ${scene.sceneName}`,
@@ -201,7 +207,7 @@ function buildEstablishingPrompt(
     scene.colorMood?.lighting ? `Lighting: ${scene.colorMood.lighting}` : '',
     beat.mustShowDetail ? `Must include: ${beat.mustShowDetail}` : '',
     'No characters in foreground. Show the environment, atmosphere, and sense of place.',
-    'Maintain the specified art style consistently.',
+    `Maintain art style: ${artStyle}`,
   ];
 
   return {
@@ -237,10 +243,17 @@ function buildCharacterPrompt(
   const effectiveAction = beat.primaryAction || analysis.bodyLanguageDirectives.momentOfChange;
   const bodyLanguage = buildBodyLanguageFromAnalysis(analysis, beat.primaryAction, beat.relationshipDynamic);
 
-  // Build a flowing narrative prompt: [CAMERA] + [SCENE] woven together,
+  // Build a flowing narrative prompt: [STYLE] + [CAMERA] + [SCENE] woven together,
   // following the PROMPT_ASSEMBLY_PATTERN style from visualPrinciples.ts
   // instead of dot-separated keyword fragments.
   const narrativeParts: string[] = [];
+
+  // Art style anchors the FRONT of the prompt for strongest positional weight
+  // (mirrors the establishing-prompt path and the direct Gemini prompt in
+  // imageGenerationService.buildGeminiDirectPrompt). Tokens early in the
+  // prompt carry more weight for Gemini; placing style at the end made it
+  // easy for the model's own aesthetic bias to override the user's choice.
+  narrativeParts.push(`Art style: ${artStyle}`);
 
   // Camera + angle opens the frame
   const cameraOpener = camera.movement !== 'Static'
@@ -299,8 +312,10 @@ function buildCharacterPrompt(
     narrativeParts.push(`must show: ${beat.mustShowDetail}`);
   }
 
-  // Art style anchors the end
-  narrativeParts.push(artStyle);
+  // Repeat the art style as a closing anchor to reinforce it after all the
+  // narrative/camera/lighting text. Leading + trailing style = bracketed
+  // emphasis, the same pattern used by the direct Gemini prompt builder.
+  narrativeParts.push(`Maintain art style: ${artStyle}`);
 
   const keyExpression = beat.emotionalRead
     ? synthesizeExpressionFromEmotion(beat.emotionalRead)

@@ -156,6 +156,29 @@ export interface ReferenceImage {
   visualAnchors?: string[];
 }
 
+/**
+ * Structured per-character identity anchors. Each slot is rendered as a
+ * separate labeled line in the prompt identity block so the LLM is far less
+ * likely to summarize away critical attributes like hair color or a scar.
+ */
+export interface CanonicalAppearance {
+  face?: string;
+  hair?: string;
+  eyes?: string;
+  skinTone?: string;
+  build?: string;
+  height?: string;
+  distinguishingMarks?: string[];
+  defaultAttire?: string;
+}
+
+/** Per-character appearance payload passed alongside character names. */
+export interface CharacterAppearanceDescription {
+  name: string;
+  appearance: string;
+  canonicalAppearance?: CanonicalAppearance;
+}
+
 export interface ReferenceThumbnail {
   id: string;
   uri: string;
@@ -579,15 +602,21 @@ export class ImageGenerationService {
   private resolveArtStyle(promptStyle?: string, identifier?: string): string {
     let resolved: string;
     let source: string;
-    if (this._geminiSettings.canonicalArtStyle && this._geminiSettings.canonicalArtStyle.length > 0) {
-      resolved = this._geminiSettings.canonicalArtStyle;
+    const canonical = this._geminiSettings.canonicalArtStyle?.trim() || '';
+    const promptTrimmed = promptStyle?.trim() || '';
+    if (canonical.length > 0) {
+      resolved = canonical;
       source = 'canonicalArtStyle';
-    } else if (promptStyle) {
-      resolved = promptStyle;
+    } else if (promptTrimmed.length > 0) {
+      resolved = promptTrimmed;
       source = 'prompt.style';
     } else {
       resolved = ImageGenerationService.DEFAULT_ART_STYLE;
-      source = 'default';
+      source = 'default(fallback)';
+      console.warn(
+        `[ImageGenService] Art style falling back to default for "${identifier || '(no id)'}" — no canonicalArtStyle or prompt.style was supplied. ` +
+        `This is the most common cause of "style keeps reverting". Check that the user's art style is reaching buildPipelineConfig.`,
+      );
     }
     if (identifier) {
       console.log(`[ImageGenService] Art style for "${identifier}": "${resolved}" (source: ${source})`);
@@ -684,7 +713,11 @@ export class ImageGenerationService {
       }
 
       for (const ref of prevScene) {
-        sections.push(`Image ${imageIdx}: Previous scene — maintain visual continuity with this image.`);
+        sections.push(
+          `Image ${imageIdx}: Previous scene — STYLE AND SETTING CONTINUITY REFERENCE ONLY. ` +
+          `Match the color grading, lighting temperature, and environmental feel of this image. ` +
+          `Do NOT copy character appearance from this image — character identity comes from the dedicated character reference images below.`
+        );
         imageIdx++;
       }
 
@@ -693,9 +726,11 @@ export class ImageGenerationService {
         const isComposite = ref.viewType === 'composite' || ref.role?.includes('composite');
         let label = `Image ${imageIdx}: ${ref.characterName}`;
         if (isComposite) {
-          label += ` — CHARACTER REFERENCE SHEET showing this ONE character from multiple angles. Use only for identity matching.`;
+          label += ` — CHARACTER REFERENCE SHEET showing this ONE character from multiple angles. Use ONLY for identity matching (face, hair, skin tone, distinguishing features). Do NOT copy the rendering style, line weight, or color palette from this sheet — the ART STYLE text above is authoritative.`;
         } else if (ref.viewType && ref.viewType !== 'front') {
-          label += ` (${ref.viewType} view)`;
+          label += ` (${ref.viewType} view) — use ONLY for identity matching, not for rendering style.`;
+        } else {
+          label += ` — use ONLY for identity matching (face, hair, skin tone, distinguishing features). Do NOT copy the rendering style from this reference.`;
         }
         if (ref.visualAnchors && ref.visualAnchors.length > 0) {
           label += ` Key traits: ${ref.visualAnchors.slice(0, 5).join(', ')}`;
@@ -892,7 +927,7 @@ export class ImageGenerationService {
     }
     if (gemSettings.includePreviousScene && this._geminiPreviousScene) {
       parts.push({ inlineData: { mimeType: this._geminiPreviousScene.mimeType, data: this._geminiPreviousScene.data } });
-      parts.push({ text: `Previous scene — maintain visual continuity.` });
+      parts.push({ text: `Previous scene — STYLE AND SETTING CONTINUITY REFERENCE ONLY. Match color grading, lighting temperature, and environmental feel. Do NOT copy character appearance from this image; character identity comes from the dedicated character reference images.` });
       num++;
     }
     return num;
@@ -951,7 +986,7 @@ export class ImageGenerationService {
     referenceImages?: ReferenceImage[],
     metadata?: {
       characterNames?: string[];
-      characterDescriptions?: Array<{ name: string; appearance: string }>;
+      characterDescriptions?: CharacterAppearanceDescription[];
     }
   ): Promise<GeneratedImage> {
     if (!this._chatSceneId || this.config.provider !== 'nano-banana') {
@@ -1149,6 +1184,87 @@ export class ImageGenerationService {
   public setOutputDirectory(dir: string): void {
     this.outputDir = normalizeManagedOutputPath(dir);
     this.ensureDirectory(this.outputDir);
+  }
+
+  /**
+   * Reconcile cached reference images against the current art style.
+   *
+   * Cached images on disk (e.g. `ref_char1_front.png`) are keyed by identifier
+   * only, NOT by the art style they were generated under. If a user changes
+   * the art style between runs and generation resumes, `getExistingImageFile`
+   * happily returns the old image — and every scene that references it is
+   * then instructed to "match the exact hair / features / distinguishing
+   * traits" from that stale image, which drags the whole story back toward
+   * the previous aesthetic.
+   *
+   * This method writes a `.art-style-signature.txt` sidecar into the output
+   * directory capturing the currently-effective art style. On a subsequent
+   * call, if the signature has changed, it deletes cached reference-sheet
+   * images (identifiers matching `ref_*`) and clears in-memory prompt /
+   * identifier dedup caches so a fresh generation happens under the new
+   * style. Beat images are left alone — they'll be re-linked by normal
+   * resume logic, and a mismatched aesthetic on a beat is easier for the
+   * user to regenerate than a locked-in reference sheet.
+   *
+   * Returns the number of invalidated files (0 if signature unchanged or
+   * filesystem is unavailable, as in the Expo/web runtime).
+   */
+  public reconcileCachedReferenceStyle(artStyle: string | undefined): number {
+    if (!nodeFs || typeof nodeFs.existsSync !== 'function') return 0;
+    const effectiveStyle = (artStyle || '').trim();
+    const signaturePath = this.joinPath(this.outputDir, '.art-style-signature.txt');
+
+    let previousStyle: string | null = null;
+    try {
+      if (nodeFs.existsSync(signaturePath) && typeof nodeFs.readFileSync === 'function') {
+        previousStyle = String(nodeFs.readFileSync(signaturePath, 'utf-8')).trim();
+      }
+    } catch {
+      previousStyle = null;
+    }
+
+    const styleChanged = previousStyle !== null && previousStyle !== effectiveStyle;
+
+    if (styleChanged) {
+      console.warn(
+        `[ImageGenService] Art style changed since last run ("${previousStyle}" -> "${effectiveStyle}"). ` +
+        `Invalidating cached reference-sheet images so they regenerate under the new style.`,
+      );
+    }
+
+    let invalidated = 0;
+    if (styleChanged && typeof nodeFs.readdirSync === 'function' && typeof nodeFs.unlinkSync === 'function') {
+      try {
+        const files: string[] = nodeFs.readdirSync(this.outputDir);
+        for (const name of files) {
+          if (!/^ref_.*\.(png|jpg|jpeg|webp)$/i.test(name)) continue;
+          const fullPath = this.joinPath(this.outputDir, name);
+          try {
+            nodeFs.unlinkSync(fullPath);
+            invalidated++;
+          } catch (err) {
+            console.warn(`[ImageGenService] Failed to invalidate stale ref image "${name}":`, err);
+          }
+        }
+        if (invalidated > 0) {
+          this._promptCache.clear();
+          this._generatedIdentifiers.clear();
+          console.log(`[ImageGenService] Invalidated ${invalidated} stale reference image(s) and cleared dedup caches.`);
+        }
+      } catch (err) {
+        console.warn(`[ImageGenService] Failed to scan output directory for stale references:`, err);
+      }
+    }
+
+    try {
+      if (typeof nodeFs.writeFileSync === 'function') {
+        nodeFs.writeFileSync(signaturePath, effectiveStyle, 'utf-8');
+      }
+    } catch (err) {
+      console.warn(`[ImageGenService] Failed to persist art-style signature:`, err);
+    }
+
+    return invalidated;
   }
 
   /**
@@ -1396,7 +1512,7 @@ export class ImageGenerationService {
       type: ImageType; 
       characters?: string[];
       characterNames?: string[];
-      characterDescriptions?: Array<{ name: string; appearance: string }>;
+      characterDescriptions?: CharacterAppearanceDescription[];
       regeneration?: number;
       /** When true (encounter types only), try Atlas Cloud before Gemini if primary provider is nano-banana. */
       preferAtlasFirst?: boolean;
@@ -1884,14 +2000,18 @@ export class ImageGenerationService {
   private injectCharacterIdentity(
     prompt: ImagePrompt,
     characterNames?: string[],
-    characterDescriptions?: Array<{ name: string; appearance: string }>,
+    characterDescriptions?: CharacterAppearanceDescription[],
   ): ImagePrompt {
     const names = Array.from(new Set((characterNames || []).map(n => (n || '').trim()).filter(Boolean)));
     const descs = Array.from(
       new Map(
         (characterDescriptions || [])
-          .filter(d => d.name && d.appearance)
-          .map(d => [d.name.trim().toLowerCase(), { name: d.name.trim(), appearance: d.appearance.trim() }])
+          .filter(d => d.name && (d.appearance || d.canonicalAppearance))
+          .map(d => [d.name.trim().toLowerCase(), {
+            name: d.name.trim(),
+            appearance: (d.appearance || '').trim(),
+            canonicalAppearance: d.canonicalAppearance,
+          }])
       ).values()
     );
 
@@ -1904,32 +2024,66 @@ export class ImageGenerationService {
 
     const out: ImagePrompt = { ...prompt };
 
-    // Build a character identity block with physical descriptions.
-    // This is the primary defense against "dark hair" when the character is blonde, etc.
+    // Build a structured identity block from canonicalAppearance when the
+    // upstream provided it. Each slot is rendered as a separate labeled line
+    // — the model is much less likely to drop or summarize individual fields
+    // than a prose paragraph.
     const identityLines: string[] = [];
     if (descs.length > 0) {
       for (const d of descs) {
-        identityLines.push(`${d.name}: ${d.appearance}`);
+        const ca = d.canonicalAppearance;
+        if (ca && (ca.face || ca.hair || ca.eyes || ca.skinTone || ca.build || ca.height || (ca.distinguishingMarks && ca.distinguishingMarks.length) || ca.defaultAttire)) {
+          const slotLines: string[] = [`${d.name}:`];
+          if (ca.face) slotLines.push(`  - Face: ${ca.face}`);
+          if (ca.hair) slotLines.push(`  - Hair: ${ca.hair}`);
+          if (ca.eyes) slotLines.push(`  - Eyes: ${ca.eyes}`);
+          if (ca.skinTone) slotLines.push(`  - Skin: ${ca.skinTone}`);
+          if (ca.build) slotLines.push(`  - Build: ${ca.build}`);
+          if (ca.height) slotLines.push(`  - Height: ${ca.height}`);
+          if (ca.distinguishingMarks && ca.distinguishingMarks.length > 0) {
+            slotLines.push(`  - Distinguishing marks: ${ca.distinguishingMarks.join('; ')}`);
+          }
+          if (ca.defaultAttire) slotLines.push(`  - Attire: ${ca.defaultAttire}`);
+          identityLines.push(slotLines.join('\n'));
+        } else if (d.appearance) {
+          identityLines.push(`${d.name}: ${d.appearance}`);
+        } else {
+          identityLines.push(`${d.name}`);
+        }
       }
     } else if (names.length > 0) {
       identityLines.push(`Characters: ${names.join(', ')}`);
     }
 
     const identityBlock = identityLines.length > 0
-      ? `CHARACTER VISUAL IDENTITY (use these exact descriptions, do NOT contradict):\n${identityLines.join('\n')}`
+      ? `CHARACTER VISUAL IDENTITY — match these exact attributes from the reference images. Do NOT change hair color, eye color, skin tone, or distinguishing marks:\n${identityLines.join('\n')}`
       : '';
 
-    // Only inject the identity block when a character name actually appears somewhere in the prompt
-    // or its key fields. For establishing/atmospheric shots the prompt won't reference characters
-    // by name, so injecting the block would push the model toward showing characters in poses.
+    // Inject identity whenever we have structured descriptions (this implies
+    // the caller is passing reference images), and additionally whenever a
+    // character name appears in the prompt text. For pure atmospheric shots
+    // with no names and no descs, the early-return above already skipped.
     const promptMentionsCharacter = hasAnyName(out.prompt)
       || hasAnyName(out.visualNarrative)
       || hasAnyName(out.keyBodyLanguage)
       || hasAnyName(out.poseSpec)
       || hasAnyName(out.composition);
 
-    if (identityBlock && promptMentionsCharacter) {
-      out.prompt = `${identityBlock}\n\n${out.prompt}`;
+    const shouldInjectIdentity = identityBlock && (descs.length > 0 || promptMentionsCharacter);
+    if (shouldInjectIdentity) {
+      // Append at the end of the text part. Gemini weights text closest to
+      // the image references more strongly, and the identity block is the
+      // single most important signal to tie the refs to the target image.
+      out.prompt = `${out.prompt}\n\n${identityBlock}`;
+    }
+
+    // Strengthen the negative prompt with identity-drift terms so the model
+    // treats hair/eye/skin/mark changes as explicit failures.
+    if (shouldInjectIdentity) {
+      const identityNegatives = 'different face, different hair color, changed eye color, missing scar, missing tattoo, wrong skin tone, altered distinguishing feature, character swap';
+      out.negativePrompt = out.negativePrompt
+        ? `${out.negativePrompt}, ${identityNegatives}`
+        : identityNegatives;
     }
 
     // Replace generic character references with actual names in all text fields.
@@ -2287,14 +2441,23 @@ export class ImageGenerationService {
             const isComposite = ref.viewType === 'composite' || ref.role?.includes('composite');
             const isPanelContinuity = ref.role === 'previous-panel-continuity';
             if (isPanelContinuity) {
-              label = `Image ${imageNumber}: Previous panel in this sequence — match the exact art style, color palette, line weight, and character rendering from this image. This is the same scene from a different angle/moment.`;
+              // IDENTITY-ONLY match. Earlier versions asked Gemini to "match the
+              // exact art style, color palette, line weight, and character
+              // rendering" from the previous panel — which caused the whole
+              // story to lock onto the aesthetic of panel 0 regardless of the
+              // user-chosen art style. The text art-style directive is the
+              // single source of truth; the previous panel is only a character
+              // identity reference.
+              label = `Image ${imageNumber}: Previous panel in this sequence — use ONLY for character identity continuity (face, hair, clothing, build). Do NOT copy the rendering style, line weight, or color palette from this image; the art style is dictated by the text directive above.`;
               imageManifest.push(`Image ${imageNumber}: Panel continuity`);
             } else if (ref.characterName) {
               label = `Image ${imageNumber}: ${ref.characterName}`;
               if (isComposite) {
-                label += ` — CHARACTER REFERENCE SHEET showing this ONE character from multiple angles (front, side, three-quarter). This is a SINGLE character, not multiple characters. Use only for identity matching.`;
+                label += ` — CHARACTER REFERENCE SHEET showing this ONE character from multiple angles (front, side, three-quarter). This is a SINGLE character, not multiple characters. Use ONLY for identity matching (face, hair, skin tone, distinguishing features). Do NOT copy the rendering style, line weight, or color palette from this sheet — the art style is dictated by the text directive above.`;
               } else if (ref.viewType && ref.viewType !== 'front') {
-                label += ` (${ref.viewType} view)`;
+                label += ` (${ref.viewType} view) — use ONLY for identity matching, not for rendering style.`;
+              } else {
+                label += ` — use ONLY for identity matching (face, hair, skin tone, distinguishing features). Do NOT copy the rendering style from this reference.`;
               }
               if (ref.visualAnchors && ref.visualAnchors.length > 0) {
                 label += ` Key traits: ${ref.visualAnchors.slice(0, 5).join(', ')}`;
@@ -2319,7 +2482,7 @@ export class ImageGenerationService {
           // 5. Previous scene image (for scene-to-scene continuity)
           if (gemSettings.includePreviousScene && this._geminiPreviousScene) {
             parts.push({ inlineData: { mimeType: this._geminiPreviousScene.mimeType, data: this._geminiPreviousScene.data } });
-            parts.push({ text: `Image ${imageNumber}: Previous scene — maintain visual continuity.` });
+            parts.push({ text: `Image ${imageNumber}: Previous scene — STYLE AND SETTING CONTINUITY REFERENCE ONLY. Match color grading, lighting, and environmental feel. Do NOT copy character appearance from this image; character identity comes from the dedicated character reference images.` });
             imageManifest.push(`Image ${imageNumber}: Previous scene continuity`);
             imageNumber++;
           }
@@ -2372,11 +2535,15 @@ export class ImageGenerationService {
                consistencyText += ` PRIORITY: The action and emotion described in "THE STORY MOMENT" takes precedence over the reference pose. Use the reference ONLY for face and body type.`;
             }
             
+            // Reminder: the authoritative art style is the TEXT directive at
+            // the top of this prompt, not any specific reference image. The
+            // style reference / previous-scene images are weak visual hints,
+            // not style sources.
             if (styleLabel) {
-              consistencyText += ` Match the art style from ${styleLabel}.`;
+              consistencyText += ` Use ${styleLabel} as a weak hint for color temperature and rendering density only; the text art-style directive above is authoritative when they conflict.`;
             }
             if (prevLabel) {
-              consistencyText += ` Maintain visual continuity from ${prevLabel}.`;
+              consistencyText += ` Maintain environmental / lighting continuity from ${prevLabel} (color grading, time of day), but NOT its rendering style — the text art-style directive governs rendering.`;
             }
             parts.push({ text: consistencyText });
 

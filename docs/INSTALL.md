@@ -192,7 +192,7 @@ Run a quick check to make sure everything is ready:
 ```bash
 # Check that the proxy server starts correctly
 node proxy-server.js &
-# You should see "Proxy server running on port 3001"
+# You should see "Proxy server listening on port 3001"
 
 # Check the health endpoint
 curl http://localhost:3001/

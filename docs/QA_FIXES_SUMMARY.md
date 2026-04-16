@@ -710,4 +710,4 @@ The following systems were added after the initial QA fix sessions. They are doc
 
 ### Pipeline Utility Additions (New)
 - `src/ai-agents/utils/memoryStore.ts` — `MemoryStore` abstraction (`NodeMemoryStore`, `ProxyMemoryStore`)
-- `src/ai-agents/utils/withTimeout.ts` — `withTimeout` wrapper with configurable timeouts
+- `src/ai-agents/utils/withTimeout.ts` — `withTimeout` wrapper with configurable timeout handling

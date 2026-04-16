@@ -110,9 +110,12 @@ import { TERMINAL, RADIUS, TIMING, SPACING, sharedStyles, withAlpha } from '../t
 import { useSettingsStore } from '../stores/settingsStore';
 import { useClickDebounce } from '../utils/useDebounce';
 import { processTemplate } from '../engine/templateProcessor';
-import { ChevronRight, FileText, X } from 'lucide-react-native';
+import { FileText, X } from 'lucide-react-native';
 import { useImagePromptOverlay } from '../hooks/useImagePromptOverlay';
 import { formatSceneBeatLabelFromImageUrl } from '../utils/imagePromptDebug';
+import { ReadingShell } from './ReadingShell';
+import { ContinueButton } from './ContinueButton';
+import { CONTINUE_COPY, EYEBROWS } from '../theme/copy';
 
 // ========================================
 // BRANCHING TREE ENCOUNTER STATE
@@ -1426,6 +1429,104 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   ) : null;
 
   // ========================================
+  // SHELL CHROME HELPERS
+  // ========================================
+
+  const renderEncounterVignetteFlash = () => vignetteColor ? (
+    <Animated.View
+      style={[
+        StyleSheet.absoluteFillObject,
+        { pointerEvents: 'none' as const },
+        {
+          zIndex: 50,
+          borderWidth: 4,
+          borderColor: vignetteColor,
+          borderRadius: 0,
+          opacity: vignetteAnim,
+          shadowColor: vignetteColor,
+          shadowOffset: { width: 0, height: 0 },
+          shadowOpacity: 0.8,
+          shadowRadius: 40,
+        },
+      ]}
+    />
+  ) : null;
+
+  const renderEncounterClockChrome = (options?: { hiddenThreat?: boolean; approximateThreat?: boolean }) => (
+    <View style={styles.clockContainer}>
+      <Clock
+        name={encounter.goalClock?.name || 'OBJECTIVE'}
+        filled={encounterState?.goalProgress || 0}
+        total={encounterState?.goalMax || 6}
+        type="goal"
+      />
+      <View style={styles.clockDivider} />
+      <Clock
+        name={encounter.threatClock?.name || 'THREAT'}
+        filled={encounterState?.threatProgress || 0}
+        total={encounterState?.threatMax || 4}
+        type="threat"
+        hidden={options?.hiddenThreat}
+        approximateLevel={options?.approximateThreat ? encounter.informationVisibility?.threatClockApproximate : undefined}
+      />
+    </View>
+  );
+
+  const renderEncounterDevPromptButton = (image?: string | null) => (developerMode && image) ? (
+    <TouchableOpacity
+      style={styles.devPromptButton}
+      onPress={() => fetchImagePrompt(image)}
+    >
+      <FileText size={18} color={TERMINAL.colors.cyan} />
+    </TouchableOpacity>
+  ) : null;
+
+  const renderEncounterDevPromptPanel = () => showPromptOverlay ? (
+    <View style={[styles.devPromptPanel, { pointerEvents: 'auto' as const }]}>
+      <View style={styles.devPromptPanelHeader}>
+        <View style={styles.devPromptPanelHeaderText}>
+          <Text style={styles.devPromptPanelTitle}>IMAGE PROMPT</Text>
+          {!!promptContextLabel && (
+            <Text style={styles.devPromptPanelSubtitle}>{promptContextLabel}</Text>
+          )}
+        </View>
+        <TouchableOpacity onPress={() => setShowPromptOverlay(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+          <X size={20} color={TERMINAL.colors.textBody} />
+        </TouchableOpacity>
+      </View>
+      <ScrollView style={styles.devPromptPanelScroll} contentContainerStyle={styles.devPromptPanelScrollContent}>
+        {isLoadingPrompt ? (
+          <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
+        ) : (
+          <Text style={styles.devPromptPanelText} selectable>{promptText || 'No prompt available.'}</Text>
+        )}
+      </ScrollView>
+    </View>
+  ) : null;
+
+  const renderEncounterTerminalBand = (color: string) => (
+    <View
+      style={[
+        StyleSheet.absoluteFillObject,
+        { pointerEvents: 'none' as const },
+        {
+          zIndex: 5,
+          borderTopWidth: 3,
+          borderBottomWidth: 3,
+          borderColor: color,
+          opacity: 0.6,
+        },
+      ]}
+    />
+  );
+
+  const renderEncounterDevBadge = (label: string) => (developerMode && encounterSceneLabel) ? (
+    <View style={[styles.devBadge, { pointerEvents: 'none' as const }]}>
+      <Text style={styles.devBadgeText}>{label}</Text>
+    </View>
+  ) : null;
+
+  // ========================================
   // RENDER: TREE-BASED ENCOUNTER (Action/Reaction Flow)
   // ========================================
   
@@ -1474,106 +1575,27 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       : situation.setupText;
     
     return (
-      <Animated.View style={[styles.container, { opacity: fadeAnim, transform: [{ translateX: screenShakeAnim }] }]}>
-        {statCheckOverlayElement}
-        {/* Vignette flash overlay */}
-        {vignetteColor && (
-          <Animated.View
-            style={[
-              StyleSheet.absoluteFillObject,
-              { pointerEvents: 'none' as const },
-              {
-                zIndex: 50,
-                borderWidth: 4,
-                borderColor: vignetteColor,
-                borderRadius: 0,
-                opacity: vignetteAnim,
-                shadowColor: vignetteColor,
-                shadowOffset: { width: 0, height: 0 },
-                shadowOpacity: 0.8,
-                shadowRadius: 40,
-              },
-            ]}
-          />
-        )}
-
-        {/* Dual Clock Display */}
-        <View style={styles.clockContainer}>
-          <Clock 
-            name={encounter.goalClock?.name || 'OBJECTIVE'} 
-            filled={encounterState?.goalProgress || 0} 
-            total={encounterState?.goalMax || 6} 
-            type="goal" 
-          />
-          <View style={styles.clockDivider} />
-          <Clock 
-            name={encounter.threatClock?.name || 'THREAT'} 
-            filled={encounterState?.threatProgress || 0} 
-            total={encounterState?.threatMax || 4} 
-            type="threat"
-            hidden={encounter.informationVisibility?.threatClockVisible === false && !encounterState?.threatClockRevealed}
-            approximateLevel={encounter.informationVisibility?.threatClockApproximate}
-          />
-        </View>
-
-        {/* Full-bleed Background Image */}
-        <Animated.View style={[styles.imageContainer, { opacity: imageOpacity }]}>
-          {displayImage ? (
-            <Image
-              source={{ uri: displayImage }}
-              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
-              resizeMode="cover"
-              onLoad={() => console.log(`[EncounterView] Image loaded: ${displayImage}`)}
-              onError={(e) => console.warn(`[EncounterView] Image failed to load: ${displayImage}`, e.nativeEvent)}
-            />
-          ) : (
-            (() => { console.warn('[EncounterView] Showing placeholder — no pre-generated image available. This indicates a pipeline coverage gap.'); return null; })(),
-            <View style={styles.placeholderBackground} />
-          )}
-          <View style={styles.gradientOverlay} />
-
-          {developerMode && displayImage && (
-            <TouchableOpacity
-              style={styles.devPromptButton}
-              onPress={() => fetchImagePrompt(displayImage)}
-            >
-              <FileText size={18} color={TERMINAL.colors.cyan} />
-            </TouchableOpacity>
-          )}
-        </Animated.View>
-
-        {showPromptOverlay && (
-          <View style={[styles.devPromptPanel, { pointerEvents: 'auto' as const }]}>
-            <View style={styles.devPromptPanelHeader}>
-              <View style={styles.devPromptPanelHeaderText}>
-                <Text style={styles.devPromptPanelTitle}>IMAGE PROMPT</Text>
-                {!!promptContextLabel && (
-                  <Text style={styles.devPromptPanelSubtitle}>{promptContextLabel}</Text>
-                )}
-              </View>
-              <TouchableOpacity onPress={() => setShowPromptOverlay(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-                <X size={20} color={TERMINAL.colors.textBody} />
-              </TouchableOpacity>
-            </View>
-            <ScrollView style={styles.devPromptPanelScroll} contentContainerStyle={styles.devPromptPanelScrollContent}>
-              {isLoadingPrompt ? (
-                <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
-              ) : (
-                <Text style={styles.devPromptPanelText} selectable>{promptText || 'No prompt available.'}</Text>
-              )}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* Content Overlay */}
-        <View style={styles.uiOverlay}>
-          <ScrollView
-            ref={scrollViewRef}
-            style={styles.contentScrollView}
-            contentContainerStyle={styles.contentContainer}
-            showsVerticalScrollIndicator={false}
-          >
-            {/* Action Result (if coming from a choice) */}
+      <ReadingShell
+        imageUrl={displayImage}
+        fadeAnim={fadeAnim}
+        shakeAnim={screenShakeAnim}
+        imageOpacity={imageOpacity}
+        placeholderWatermark
+        scrollViewRef={scrollViewRef as any}
+        vignette={
+          <>
+            {statCheckOverlayElement}
+            {renderEncounterVignetteFlash()}
+          </>
+        }
+        chromeTop={renderEncounterClockChrome({
+          hiddenThreat: encounter.informationVisibility?.threatClockVisible === false && !encounterState?.threatClockRevealed,
+          approximateThreat: true,
+        })}
+        imageExtras={renderEncounterDevPromptButton(displayImage)}
+        overlays={renderEncounterDevPromptPanel()}
+      >
+        {/* Action Result (if coming from a choice) */}
             {hasOutcome && situation.previousOutcome && (
               <View style={styles.textPanel}>
                 <OutcomeHeader tier={situation.previousOutcome.tier} context="encounter" animValue={outcomeLabelAnim} />
@@ -1663,26 +1685,18 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
               </View>
             )}
 
-            {encounterEnding && (
-              <TouchableOpacity 
-                style={styles.continueButton} 
-                onPress={() => {
-                  const finalOutcome = goalFilled && !threatFilled ? 'victory' : 
-                                       threatFilled && !goalFilled ? 'defeat' :
-                                       goalFilled && threatFilled ? 'partialVictory' : 'escape';
-                  handleEncounterEnd(finalOutcome);
-                }}
-              >
-                <Text style={styles.continueText}>
-                  {goalFilled && !threatFilled ? 'CLAIM VICTORY' : 
-                   threatFilled && !goalFilled ? 'SEE RESULTS' : 'SEE RESULTS'}
-                </Text>
-                <ChevronRight size={16} color="white" />
-              </TouchableOpacity>
-            )}
-          </ScrollView>
-        </View>
-      </Animated.View>
+        {encounterEnding && (
+          <ContinueButton
+            label={goalFilled && !threatFilled ? 'CLAIM VICTORY' : 'SEE RESULTS'}
+            onPress={() => {
+              const finalOutcome = goalFilled && !threatFilled ? 'victory' :
+                                   threatFilled && !goalFilled ? 'defeat' :
+                                   goalFilled && threatFilled ? 'partialVictory' : 'escape';
+              handleEncounterEnd(finalOutcome);
+            }}
+          />
+        )}
+      </ReadingShell>
     );
   }
 
@@ -1697,105 +1711,54 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     const playerFacingBadges = consequences.filter(a => a.type !== 'flag');
 
     return (
-      <Animated.View style={[styles.container, { opacity: fadeAnim, transform: [{ translateX: screenShakeAnim }] }]}>
-        {statCheckOverlayElement}
-        {/* Vignette flash overlay */}
-        {vignetteColor && (
-          <Animated.View
-            style={[
-              StyleSheet.absoluteFillObject,
-              { pointerEvents: 'none' as const },
-              {
-                zIndex: 50,
-                borderWidth: 4,
-                borderColor: vignetteColor,
-                borderRadius: 0,
-                opacity: vignetteAnim,
-                shadowColor: vignetteColor,
-                shadowOffset: { width: 0, height: 0 },
-                shadowOpacity: 0.8,
-                shadowRadius: 40,
-              },
-            ]}
+      <ReadingShell
+        imageUrl={resolvedOutcomeImage}
+        fadeAnim={fadeAnim}
+        shakeAnim={screenShakeAnim}
+        imageOpacity={imageOpacity}
+        scrollViewRef={scrollViewRef as any}
+        vignette={
+          <>
+            {statCheckOverlayElement}
+            {renderEncounterVignetteFlash()}
+          </>
+        }
+        chromeTop={renderEncounterClockChrome()}
+      >
+        <View style={styles.textPanel}>
+          <OutcomeHeader tier={tier} context="encounter" animValue={outcomeLabelAnim} />
+          <NarrativeText
+            text={tpl(narrativeText)}
+            animate={isAnimating}
+            onAnimationComplete={() => {
+              setIsAnimating(false);
+              if (playerFacingBadges.length > 0) {
+                setShowBadges(true);
+              }
+              const badgeDelay = playerFacingBadges.length > 0 ? 1200 : 0;
+              const readingPause = 1500;
+              setTimeout(() => {
+                transitionTo(() => {
+                  setScreenState({
+                    type: 'active',
+                    situation: pendingNextSituation,
+                    phaseId: pendingPhaseId,
+                  });
+                  setIsAnimating(true);
+                  setShowChoices(false);
+                  setShowBadges(false);
+                  setConsequenceFeedback([]);
+                  scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+                });
+              }, badgeDelay + readingPause);
+            }}
           />
-        )}
 
-        {/* Dual Clock Display */}
-        <View style={styles.clockContainer}>
-          <Clock 
-            name={encounter.goalClock?.name || 'OBJECTIVE'} 
-            filled={encounterState?.goalProgress || 0} 
-            total={encounterState?.goalMax || 6} 
-            type="goal" 
-          />
-          <View style={styles.clockDivider} />
-          <Clock 
-            name={encounter.threatClock?.name || 'THREAT'} 
-            filled={encounterState?.threatProgress || 0} 
-            total={encounterState?.threatMax || 4} 
-            type="threat"
-          />
-        </View>
-
-        {/* Full-bleed Background Image */}
-        <Animated.View style={[styles.imageContainer, { opacity: imageOpacity }]}>
-          {resolvedOutcomeImage ? (
-            <Image
-              source={{ uri: resolvedOutcomeImage }}
-              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
-              resizeMode="cover"
-            />
-          ) : (
-            <View style={styles.placeholderBackground} />
+          {showBadges && playerFacingBadges.length > 0 && (
+            <ConsequenceToast consequences={playerFacingBadges} />
           )}
-          <View style={styles.gradientOverlay} />
-        </Animated.View>
-
-        {/* Content Overlay */}
-        <View style={styles.uiOverlay}>
-          <ScrollView
-            ref={scrollViewRef}
-            style={styles.contentScrollView}
-            contentContainerStyle={styles.contentContainer}
-            showsVerticalScrollIndicator={false}
-          >
-            <View style={styles.textPanel}>
-              <OutcomeHeader tier={tier} context="encounter" animValue={outcomeLabelAnim} />
-              <NarrativeText
-                text={tpl(narrativeText)}
-                animate={isAnimating}
-                onAnimationComplete={() => {
-                  setIsAnimating(false);
-                  if (playerFacingBadges.length > 0) {
-                    setShowBadges(true);
-                  }
-                  const badgeDelay = playerFacingBadges.length > 0 ? 1200 : 0;
-                  const readingPause = 1500;
-                  setTimeout(() => {
-                    transitionTo(() => {
-                      setScreenState({
-                        type: 'active',
-                        situation: pendingNextSituation,
-                        phaseId: pendingPhaseId,
-                      });
-                      setIsAnimating(true);
-                      setShowChoices(false);
-                      setShowBadges(false);
-                      setConsequenceFeedback([]);
-                      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
-                    });
-                  }, badgeDelay + readingPause);
-                }}
-              />
-
-              {/* Consequence Toast */}
-              {showBadges && playerFacingBadges.length > 0 && (
-                <ConsequenceToast consequences={playerFacingBadges} />
-              )}
-            </View>
-          </ScrollView>
         </View>
-      </Animated.View>
+      </ReadingShell>
     );
   }
 
@@ -1826,121 +1789,49 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       : undefined;
     
     return (
-      <View style={styles.container}>
-        {/* Terminal color band overlay */}
-        <View
-          style={[
-            StyleSheet.absoluteFillObject,
-            { pointerEvents: 'none' as const },
-            {
-              zIndex: 5,
-              borderTopWidth: 3,
-              borderBottomWidth: 3,
-              borderColor: labelInfo.color,
-              opacity: 0.6,
-            },
-          ]}
-        />
+      <ReadingShell
+        imageUrl={terminalImage}
+        imageOpacity={imageOpacity}
+        placeholderWatermark
+        vignette={renderEncounterTerminalBand(labelInfo.color)}
+        imageExtras={renderEncounterDevPromptButton(terminalImage)}
+        overlays={
+          <>
+            {renderEncounterDevPromptPanel()}
+            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • ${outcome.toUpperCase()}`)}
+          </>
+        }
+      >
+        <View style={styles.textPanel}>
+          <OutcomeHeader tier={labelInfo.tier} context="encounter" text={labelInfo.label} fontSize={28} />
+          <NarrativeText
+            text={tpl(finalNarrative)}
+            animate={true}
+            onAnimationComplete={() => {}}
+          />
 
-        {/* Full-bleed Background Image */}
-        <Animated.View style={[styles.imageContainer, { opacity: imageOpacity }]}>
-          {terminalImage ? (
-            <Image
-              source={{ uri: terminalImage }}
-              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
-              resizeMode="cover"
-              onLoad={() => console.log(`[EncounterView] Terminal image loaded: ${terminalImage}`)}
-              onError={(e) => console.warn(`[EncounterView] Terminal image FAILED: ${terminalImage}`, e.nativeEvent)}
-            />
-          ) : (
-            (() => { console.warn('[EncounterView] Terminal screen has NO image — showing placeholder'); return null; })(),
-            <View style={styles.placeholderBackground} />
-          )}
-          <View style={styles.gradientOverlay} />
-
-          {developerMode && terminalImage && (
-            <TouchableOpacity
-              style={styles.devPromptButton}
-              onPress={() => fetchImagePrompt(terminalImage)}
-            >
-              <FileText size={18} color={TERMINAL.colors.cyan} />
-            </TouchableOpacity>
-          )}
-        </Animated.View>
-
-        {showPromptOverlay && (
-          <View style={[styles.devPromptPanel, { pointerEvents: 'auto' as const }]}>
-            <View style={styles.devPromptPanelHeader}>
-              <View style={styles.devPromptPanelHeaderText}>
-                <Text style={styles.devPromptPanelTitle}>IMAGE PROMPT</Text>
-                {!!promptContextLabel && (
-                  <Text style={styles.devPromptPanelSubtitle}>{promptContextLabel}</Text>
-                )}
-              </View>
-              <TouchableOpacity onPress={() => setShowPromptOverlay(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-                <X size={20} color={TERMINAL.colors.textBody} />
-              </TouchableOpacity>
-            </View>
-            <ScrollView style={styles.devPromptPanelScroll} contentContainerStyle={styles.devPromptPanelScrollContent}>
-              {isLoadingPrompt ? (
-                <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
-              ) : (
-                <Text style={styles.devPromptPanelText} selectable>{promptText || 'No prompt available.'}</Text>
-              )}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* Dev mode badge */}
-        {developerMode && encounterSceneLabel && (
-          <View style={[styles.devBadge, { pointerEvents: 'none' as const }]}>
-            <Text style={styles.devBadgeText}>{encounterSceneLabel} • {outcome.toUpperCase()}</Text>
-          </View>
-        )}
-
-        {/* Content Overlay */}
-        <View style={styles.uiOverlay}>
-          <ScrollView
-            style={styles.contentScrollView}
-            contentContainerStyle={styles.contentContainer}
-            showsVerticalScrollIndicator={false}
-          >
-            <View style={styles.textPanel}>
-              <OutcomeHeader tier={labelInfo.tier} context="encounter" text={labelInfo.label} fontSize={28} />
-              <NarrativeText
-                text={tpl(finalNarrative)}
-                animate={true}
-                onAnimationComplete={() => {}}
-              />
-
-              {terminalCost && (
-                <View style={styles.costPanel}>
-                  <Text style={styles.costPanelLabel}>THE COST</Text>
-                  <Text style={styles.costPanelTitle}>{terminalCost.visibleComplication}</Text>
-                  <Text style={styles.costPanelMeta}>{`${terminalCost.severity.toUpperCase()} ${terminalCost.domain.toUpperCase()} COST`}</Text>
-                  <Text style={styles.costPanelBody}>{terminalCost.immediateEffect}</Text>
-                  {!!terminalCost.lingeringEffect && (
-                    <Text style={styles.costPanelLingering}>{terminalCost.lingeringEffect}</Text>
-                  )}
-                </View>
-              )}
-
-              {/* Terminal consequence summary */}
-              {consequenceFeedback.length > 0 && (
-                <ConsequenceBadgeList consequences={consequenceFeedback} layout="inline" animated={false} maxVisible={10} />
+          {terminalCost && (
+            <View style={styles.costPanel}>
+              <Text style={styles.costPanelLabel}>{EYEBROWS.cost}</Text>
+              <Text style={styles.costPanelTitle}>{terminalCost.visibleComplication}</Text>
+              <Text style={styles.costPanelMeta}>{`${terminalCost.severity.toUpperCase()} ${terminalCost.domain.toUpperCase()} COST`}</Text>
+              <Text style={styles.costPanelBody}>{terminalCost.immediateEffect}</Text>
+              {!!terminalCost.lingeringEffect && (
+                <Text style={styles.costPanelLingering}>{terminalCost.lingeringEffect}</Text>
               )}
             </View>
+          )}
 
-            <TouchableOpacity 
-              style={styles.continueButton} 
-              onPress={() => onComplete(outcome, allEncounterFeedbackRef.current, lastKnownImageRef.current || undefined)}
-            >
-              <Text style={styles.continueText}>CONTINUE STORY</Text>
-              <ChevronRight size={16} color="white" />
-            </TouchableOpacity>
-          </ScrollView>
+          {consequenceFeedback.length > 0 && (
+            <ConsequenceBadgeList consequences={consequenceFeedback} layout="inline" animated={false} maxVisible={10} />
+          )}
         </View>
-      </View>
+
+        <ContinueButton
+          copyKey="encounterConclude"
+          onPress={() => onComplete(outcome, allEncounterFeedbackRef.current, lastKnownImageRef.current || undefined)}
+        />
+      </ReadingShell>
     );
   }
 
@@ -2006,95 +1897,57 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     const phaseOutcomeTier = screenState.outcome as 'success' | 'complicated' | 'failure';
 
     return (
-      <View style={styles.container}>
-        {/* Dual Clock Display - Goal & Threat */}
-        <View style={styles.clockContainer}>
-          <Clock 
-            name={encounter.goalClock?.name || 'OBJECTIVE'} 
-            filled={encounterState?.goalProgress || 0} 
-            total={encounterState?.goalMax || 6} 
-            type="goal" 
-          />
-          <View style={styles.clockDivider} />
-          <Clock 
-            name={encounter.threatClock?.name || 'THREAT'} 
-            filled={encounterState?.threatProgress || 0} 
-            total={encounterState?.threatMax || 4} 
-            type="threat" 
-          />
-        </View>
+      <ReadingShell
+        imageUrl={currentImage}
+        imageOpacity={imageOpacity}
+        chromeTop={renderEncounterClockChrome()}
+      >
+        <View style={styles.textPanel}>
+          <OutcomeHeader tier={phaseOutcomeTier} context="encounter" />
+          <NarrativeText text={tpl(outcomeText)} animate={false} />
 
-        {/* Full-bleed Background Image */}
-        <Animated.View style={[styles.imageContainer, { opacity: imageOpacity }]}>
-          {currentImage ? (
-            <Image
-              source={{ uri: currentImage }}
-              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
-              resizeMode="cover"
-            />
-          ) : (
-            <View style={styles.placeholderBackground} />
-          )}
-          <View style={styles.gradientOverlay} />
-        </Animated.View>
-
-        {/* Content Overlay */}
-        <View style={styles.uiOverlay}>
-          <ScrollView
-            style={styles.contentScrollView}
-            contentContainerStyle={styles.contentContainer}
-            showsVerticalScrollIndicator={false}
-          >
-            {/* Reaction/Outcome Text */}
-            <View style={styles.textPanel}>
-              <OutcomeHeader tier={phaseOutcomeTier} context="encounter" />
-              <Text style={styles.outcomeText}>{tpl(outcomeText)}</Text>
-              
-              {/* If there's a next beat, show its setup text as continuation */}
-              {nextBeat && 'setupText' in nextBeat && nextBeat.setupText && !encounterEnding && (() => {
-                const nb = nextBeat as EncounterBeat;
-                let displayText = nb.setupText;
-                if (nb.setupTextVariants?.length) {
-                  for (const v of nb.setupTextVariants) {
-                    try { if (evaluateCondition(v.condition as any, player)) { displayText = v.text; break; } } catch { /* ignore */ }
-                  }
-                }
-                const encounterStateNarration = buildEncounterStateNarration(encounter, encounterState);
-                if (encounterStateNarration.length > 0) {
-                  displayText = `${displayText}\n\n${encounterStateNarration.join(' ')}`;
-                }
-                return <Text style={[styles.outcomeText, styles.nextBeatSetup]}>{tpl(displayText)}</Text>;
-              })()}
-            </View>
-
-            {/* Next Beat Choices - shown directly after reaction */}
-            {!encounterEnding && nextBeatChoices.length > 0 && (
-              <View style={styles.choicesList}>
-                {nextBeatChoices.map((choice, index) => (
-                  <ChoiceButton
-                    key={choice.id}
-                    choice={choice}
-                    index={index}
-                    onPress={handleOutcomeChoicePress}
-                  />
-                ))}
+          {nextBeat && 'setupText' in nextBeat && nextBeat.setupText && !encounterEnding && (() => {
+            const nb = nextBeat as EncounterBeat;
+            let displayText = nb.setupText;
+            if (nb.setupTextVariants?.length) {
+              for (const v of nb.setupTextVariants) {
+                try { if (evaluateCondition(v.condition as any, player)) { displayText = v.text; break; } } catch { /* ignore */ }
+              }
+            }
+            const encounterStateNarration = buildEncounterStateNarration(encounter, encounterState);
+            if (encounterStateNarration.length > 0) {
+              displayText = `${displayText}\n\n${encounterStateNarration.join(' ')}`;
+            }
+            return (
+              <View style={styles.nextBeatSetupWrap}>
+                <NarrativeText text={tpl(displayText)} animate={false} />
               </View>
-            )}
-
-            {/* Show Continue only if no next choices OR encounter is ending */}
-            {(encounterEnding || nextBeatChoices.length === 0) && (
-              <TouchableOpacity style={styles.continueButton} onPress={handleContinue}>
-                <Text style={styles.continueText}>
-                  {encounterEnding 
-                    ? (goalFilled && !threatFilled ? 'CLAIM VICTORY' : 'SEE RESULTS')
-                    : 'CONTINUE'}
-                </Text>
-                <ChevronRight size={16} color="white" />
-              </TouchableOpacity>
-            )}
-          </ScrollView>
+            );
+          })()}
         </View>
-      </View>
+
+        {!encounterEnding && nextBeatChoices.length > 0 && (
+          <View style={styles.choicesList}>
+            {nextBeatChoices.map((choice, index) => (
+              <ChoiceButton
+                key={choice.id}
+                choice={choice}
+                index={index}
+                onPress={handleOutcomeChoicePress}
+              />
+            ))}
+          </View>
+        )}
+
+        {(encounterEnding || nextBeatChoices.length === 0) && (
+          <ContinueButton
+            label={encounterEnding
+              ? (goalFilled && !threatFilled ? 'CLAIM VICTORY' : 'SEE RESULTS')
+              : CONTINUE_COPY.default}
+            onPress={handleContinue}
+          />
+        )}
+      </ReadingShell>
     );
   }
 
@@ -2106,57 +1959,22 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     const currentImage = resolveImageUrl(phaseOutcome?.outcomeImages?.[screenState.imageIndex]);
 
     return (
-      <View style={styles.container}>
-        {/* Dual Clock Display - Goal & Threat */}
-        <View style={styles.clockContainer}>
-          <Clock 
-            name={encounter.goalClock?.name || 'OBJECTIVE'} 
-            filled={encounterState?.goalProgress || 0} 
-            total={encounterState?.goalMax || 6} 
-            type="goal" 
+      <ReadingShell
+        imageUrl={currentImage}
+        imageOpacity={imageOpacity}
+        chromeTop={renderEncounterClockChrome()}
+      >
+        <View style={styles.textPanel}>
+          <OutcomeHeader
+            tier={screenState.outcome === 'success' ? 'success' : 'failure'}
+            context="encounter"
+            text={screenState.outcome === 'success' ? 'Breakthrough' : 'Overwhelmed'}
           />
-          <View style={styles.clockDivider} />
-          <Clock 
-            name={encounter.threatClock?.name || 'THREAT'} 
-            filled={encounterState?.threatProgress || 0} 
-            total={encounterState?.threatMax || 4} 
-            type="threat" 
-          />
+          <NarrativeText text={tpl(outcomeText)} animate={false} />
         </View>
 
-        {/* Full-bleed Background Image */}
-        <Animated.View style={[styles.imageContainer, { opacity: imageOpacity }]}>
-          {currentImage ? (
-            <Image
-              source={{ uri: currentImage }}
-              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
-              resizeMode="cover"
-            />
-          ) : (
-            <View style={styles.placeholderBackground} />
-          )}
-          <View style={styles.gradientOverlay} />
-        </Animated.View>
-
-        {/* Content Overlay */}
-        <View style={styles.uiOverlay}>
-          <View style={styles.contentContainer}>
-            <View style={styles.textPanel}>
-              <OutcomeHeader
-                tier={screenState.outcome === 'success' ? 'success' : 'failure'}
-                context="encounter"
-                text={screenState.outcome === 'success' ? 'Breakthrough' : 'Overwhelmed'}
-              />
-              <Text style={styles.outcomeText}>{tpl(outcomeText)}</Text>
-            </View>
-
-            <TouchableOpacity style={styles.continueButton} onPress={handleContinue}>
-              <Text style={styles.continueText}>CONTINUE</Text>
-              <ChevronRight size={16} color="white" />
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
+        <ContinueButton copyKey="default" onPress={handleContinue} />
+      </ReadingShell>
     );
   }
 
@@ -2200,119 +2018,50 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     const outcomeBorderColor = labelInfo.color;
 
     return (
-      <View style={styles.container}>
-        {/* Outcome color band overlay */}
-        <View
-          style={[
-            StyleSheet.absoluteFillObject,
-            { pointerEvents: 'none' as const },
-            {
-              zIndex: 5,
-              borderTopWidth: 3,
-              borderBottomWidth: 3,
-              borderColor: outcomeBorderColor,
-              opacity: 0.6,
-            },
-          ]}
-        />
+      <ReadingShell
+        imageUrl={finalImage}
+        imageOpacity={imageOpacity}
+        placeholderWatermark
+        vignette={renderEncounterTerminalBand(outcomeBorderColor)}
+        imageExtras={renderEncounterDevPromptButton(finalImage)}
+        overlays={
+          <>
+            {renderEncounterDevPromptPanel()}
+            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • ${outcomeLabel}`)}
+          </>
+        }
+      >
+        <View style={styles.textPanel}>
+          <OutcomeHeader tier={legacyTier} context="encounter" text={outcomeLabel} fontSize={28} />
+          <NarrativeText
+            text={tpl(outcomeNarrative)}
+            animate={true}
+            onAnimationComplete={() => {}}
+          />
 
-        {/* Full-bleed Background Image */}
-        <Animated.View style={[styles.imageContainer, { opacity: imageOpacity }]}>
-          {finalImage ? (
-            <Image
-              source={{ uri: finalImage }}
-              style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
-              resizeMode="cover"
-            />
-          ) : (
-            <View style={styles.placeholderBackground} />
-          )}
-          <View style={styles.gradientOverlay} />
-
-          {developerMode && finalImage && (
-            <TouchableOpacity
-              style={styles.devPromptButton}
-              onPress={() => fetchImagePrompt(finalImage)}
-            >
-              <FileText size={18} color={TERMINAL.colors.cyan} />
-            </TouchableOpacity>
-          )}
-        </Animated.View>
-
-        {showPromptOverlay && (
-          <View style={[styles.devPromptPanel, { pointerEvents: 'auto' as const }]}>
-            <View style={styles.devPromptPanelHeader}>
-              <View style={styles.devPromptPanelHeaderText}>
-                <Text style={styles.devPromptPanelTitle}>IMAGE PROMPT</Text>
-                {!!promptContextLabel && (
-                  <Text style={styles.devPromptPanelSubtitle}>{promptContextLabel}</Text>
+          {screenState.outcome === 'partialVictory' && (() => {
+            const legacyCost = outcomeData?.cost || encounter.outcomes?.partialVictory?.cost;
+            if (!legacyCost) return null;
+            return (
+              <View style={styles.costPanel}>
+                <Text style={styles.costPanelLabel}>{EYEBROWS.cost}</Text>
+                <Text style={styles.costPanelTitle}>{legacyCost.visibleComplication}</Text>
+                <Text style={styles.costPanelMeta}>{`${legacyCost.severity.toUpperCase()} ${legacyCost.domain.toUpperCase()} COST`}</Text>
+                <Text style={styles.costPanelBody}>{legacyCost.immediateEffect}</Text>
+                {!!legacyCost.lingeringEffect && (
+                  <Text style={styles.costPanelLingering}>{legacyCost.lingeringEffect}</Text>
                 )}
               </View>
-              <TouchableOpacity onPress={() => setShowPromptOverlay(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-                <X size={20} color={TERMINAL.colors.textBody} />
-              </TouchableOpacity>
-            </View>
-            <ScrollView style={styles.devPromptPanelScroll} contentContainerStyle={styles.devPromptPanelScrollContent}>
-              {isLoadingPrompt ? (
-                <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
-              ) : (
-                <Text style={styles.devPromptPanelText} selectable>{promptText || 'No prompt available.'}</Text>
-              )}
-            </ScrollView>
-          </View>
-        )}
+            );
+          })()}
 
-        {/* Dev mode badge */}
-        {developerMode && encounterSceneLabel && (
-          <View style={[styles.devBadge, { pointerEvents: 'none' as const }]}>
-            <Text style={styles.devBadgeText}>{encounterSceneLabel} • {outcomeLabel}</Text>
-          </View>
-        )}
-
-        {/* Content Overlay */}
-        <View style={styles.uiOverlay}>
-          <ScrollView
-            style={styles.contentScrollView}
-            contentContainerStyle={styles.contentContainer}
-            showsVerticalScrollIndicator={false}
-          >
-            <View style={styles.textPanel}>
-              <OutcomeHeader tier={legacyTier} context="encounter" text={outcomeLabel} fontSize={28} />
-              <NarrativeText
-                text={tpl(outcomeNarrative)}
-                animate={true}
-                onAnimationComplete={() => {}}
-              />
-
-              {screenState.outcome === 'partialVictory' && (() => {
-                const legacyCost = outcomeData?.cost || encounter.outcomes?.partialVictory?.cost;
-                if (!legacyCost) return null;
-                return (
-                  <View style={styles.costPanel}>
-                    <Text style={styles.costPanelLabel}>THE COST</Text>
-                    <Text style={styles.costPanelTitle}>{legacyCost.visibleComplication}</Text>
-                    <Text style={styles.costPanelMeta}>{`${legacyCost.severity.toUpperCase()} ${legacyCost.domain.toUpperCase()} COST`}</Text>
-                    <Text style={styles.costPanelBody}>{legacyCost.immediateEffect}</Text>
-                    {!!legacyCost.lingeringEffect && (
-                      <Text style={styles.costPanelLingering}>{legacyCost.lingeringEffect}</Text>
-                    )}
-                  </View>
-                );
-              })()}
-
-              {/* Consequence summary (from handleEncounterEnd) */}
-              {consequenceFeedback.length > 0 && (
-                <ConsequenceBadgeList consequences={consequenceFeedback} layout="inline" animated={false} maxVisible={10} />
-              )}
-            </View>
-
-            <TouchableOpacity style={styles.continueButton} onPress={handleContinue}>
-              <Text style={styles.continueText}>CONTINUE STORY</Text>
-              <ChevronRight size={16} color="white" />
-            </TouchableOpacity>
-          </ScrollView>
+          {consequenceFeedback.length > 0 && (
+            <ConsequenceBadgeList consequences={consequenceFeedback} layout="inline" animated={false} maxVisible={10} />
+          )}
         </View>
-      </View>
+
+        <ContinueButton copyKey="encounterConclude" onPress={handleContinue} />
+      </ReadingShell>
     );
   }
 
@@ -2334,28 +2083,17 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   const currentImage = resolveImageUrl(finalImageUrl);
   if (currentImage) lastKnownImageRef.current = currentImage;
 
-  return (
-    <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-      {/* Dual Clock Display - Goal & Threat (with fog of war support per GDD 6.8.8) */}
-      <View style={styles.clockContainer}>
-        <Clock 
-          name={encounter.goalClock?.name || 'OBJECTIVE'} 
-          filled={encounterState?.goalProgress || 0} 
-          total={encounterState?.goalMax || 6} 
-          type="goal" 
-        />
-        <View style={styles.clockDivider} />
-        <Clock 
-          name={encounter.threatClock?.name || 'THREAT'} 
-          filled={encounterState?.threatProgress || 0} 
-          total={encounterState?.threatMax || 4} 
-          type="threat"
-          hidden={encounter.informationVisibility?.threatClockVisible === false && !encounterState?.threatClockRevealed}
-          approximateLevel={encounter.informationVisibility?.threatClockApproximate}
-        />
-      </View>
+  const activeElements = encounter.environmentalElements?.filter(
+    e => (encounterState?.activeElements?.has(e.id) || e.isActive) && !(encounterState?.usedElements?.has(e.id) || e.wasUsed)
+  ) ?? [];
 
-      {/* Stakes Display - Pixar Stakes (Physical/Emotional/Philosophical) */}
+  const legacyChromeTop = (
+    <>
+      {renderEncounterClockChrome({
+        hiddenThreat: encounter.informationVisibility?.threatClockVisible === false && !encounterState?.threatClockRevealed,
+        approximateThreat: true,
+      })}
+
       {encounter.pixarStakes && (
         <View style={styles.stakesContainer}>
           {encounter.pixarStakes.physical && (
@@ -2379,17 +2117,12 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         </View>
       )}
 
-      {/* Active Environmental Elements */}
-      {encounter.environmentalElements && encounter.environmentalElements.filter(
-        e => (encounterState?.activeElements?.has(e.id) || e.isActive) && !(encounterState?.usedElements?.has(e.id) || e.wasUsed)
-      ).length > 0 && (
+      {activeElements.length > 0 && (
         <View style={styles.environmentContainer}>
-          {encounter.environmentalElements.filter(
-            e => (encounterState?.activeElements?.has(e.id) || e.isActive) && !(encounterState?.usedElements?.has(e.id) || e.wasUsed)
-          ).map(element => (
+          {activeElements.map(element => (
             <View key={element.id} style={[
               styles.environmentBadge,
-              element.type === 'hazard' ? styles.hazardBadge : 
+              element.type === 'hazard' ? styles.hazardBadge :
               element.type === 'opportunity' ? styles.opportunityBadge : styles.neutralBadge
             ]}>
               <Text style={styles.environmentIcon}>
@@ -2401,11 +2134,9 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         </View>
       )}
 
-      {/* NPC States - Disposition and Tells */}
       {encounter.npcStates && encounter.npcStates.length > 0 && (
         <View style={styles.npcStateContainer}>
           {encounter.npcStates.map(npc => {
-            // Check if any tells should be revealed based on current encounter state
             const revealedTell = npc.tells?.find((tell, index) => {
               const tellId = `${npc.npcId}:${index}`;
               if (encounterState?.revealedTells?.has(tellId)) return true;
@@ -2417,7 +2148,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
                 default: return false;
               }
             });
-            
+
             return (
               <View key={npc.npcId} style={styles.npcStateBadge}>
                 <Text style={styles.npcName}>{npc.name}</Text>
@@ -2437,80 +2168,58 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           })}
         </View>
       )}
+    </>
+  );
 
-      {/* Full-bleed Background Image */}
-      <Animated.View style={[styles.imageContainer, { opacity: imageOpacity }]}>
-        {currentImage ? (
-          <Image
-            source={{ uri: currentImage }}
-            style={[styles.fullBleedImage, webDisableImageFade && { opacity: 1 }] as any}
-            resizeMode="cover"
-            onLoad={() => console.log(`[EncounterView] Image loaded: ${currentImage}`)}
-            onError={(e) => {
-              console.warn(`[EncounterView] Image failed to load: ${currentImage}`, e.nativeEvent);
-              if (processedBeat && currentImage === processedBeat.image) {
-                setImageErrorId(processedBeat.id);
-              }
-            }}
-          />
-        ) : (
-          <View style={styles.placeholderBackground} />
-        )}
-        <View style={styles.gradientOverlay} />
-      </Animated.View>
-
-      {/* Content Overlay */}
-      <View style={styles.uiOverlay}>
-        <ScrollView
-          ref={scrollViewRef}
-          style={styles.contentScrollView}
-          contentContainerStyle={styles.contentContainer}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Narrative Text */}
-          <View style={styles.textPanel}>
-            <NarrativeText
-              text={tpl(processedBeat.text)}
-              speaker={processedBeat.speaker}
-              speakerMood={processedBeat.speakerMood}
-              animate={true}
-              onAnimationComplete={handleAnimationComplete}
-            />
-          </View>
-
-          {/* Resolution Text */}
-          {resolutionText && (
-            <View style={styles.resolutionPanel}>
-              <Text style={styles.resolutionText}>{tpl(resolutionText)}</Text>
-            </View>
-          )}
-
-          {/* Choices */}
-          {showChoices && processedBeat.hasChoices && (
-            <View style={styles.choicesList}>
-              {processedBeat.choices.map((choice, index) => (
-                <ChoiceButton
-                  key={choice.id}
-                  choice={choice}
-                  index={index}
-                  onPress={handleChoicePress}
-                  isSelected={selectedChoiceId === choice.id}
-                  isDeselected={selectedChoiceId !== null && selectedChoiceId !== choice.id}
-                />
-              ))}
-            </View>
-          )}
-
-          {/* Continue Button */}
-          {!isAnimating && processedBeat.autoAdvance && !resolutionText && (
-            <TouchableOpacity style={styles.continueButton} onPress={handleContinue}>
-              <Text style={styles.continueText}>CONTINUE</Text>
-              <ChevronRight size={16} color="white" />
-            </TouchableOpacity>
-          )}
-        </ScrollView>
+  return (
+    <ReadingShell
+      imageUrl={currentImage}
+      fadeAnim={fadeAnim}
+      imageOpacity={imageOpacity}
+      scrollViewRef={scrollViewRef as any}
+      chromeTop={legacyChromeTop}
+      onImageError={(e) => {
+        console.warn(`[EncounterView] Image failed to load: ${currentImage}`, e?.nativeEvent);
+        if (processedBeat && currentImage === processedBeat.image) {
+          setImageErrorId(processedBeat.id);
+        }
+      }}
+    >
+      <View style={styles.textPanel}>
+        <NarrativeText
+          text={tpl(processedBeat.text)}
+          speaker={processedBeat.speaker}
+          speakerMood={processedBeat.speakerMood}
+          animate={true}
+          onAnimationComplete={handleAnimationComplete}
+        />
       </View>
-    </Animated.View>
+
+      {resolutionText && (
+        <View style={styles.resolutionPanel}>
+          <Text style={styles.resolutionText}>{tpl(resolutionText)}</Text>
+        </View>
+      )}
+
+      {showChoices && processedBeat.hasChoices && (
+        <View style={styles.choicesList}>
+          {processedBeat.choices.map((choice, index) => (
+            <ChoiceButton
+              key={choice.id}
+              choice={choice}
+              index={index}
+              onPress={handleChoicePress}
+              isSelected={selectedChoiceId === choice.id}
+              isDeselected={selectedChoiceId !== null && selectedChoiceId !== choice.id}
+            />
+          ))}
+        </View>
+      )}
+
+      {!isAnimating && processedBeat.autoAdvance && !resolutionText && (
+        <ContinueButton copyKey="default" onPress={handleContinue} />
+      )}
+    </ReadingShell>
   );
 };
 
@@ -2547,18 +2256,6 @@ const styles = StyleSheet.create({
     width: 1,
     height: 30,
     backgroundColor: 'rgba(255,255,255,0.2)',
-  },
-  progressBarContainer: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 4,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    zIndex: 100,
-  },
-  progressBarFill: {
-    height: '100%',
   },
   imageContainer: {
     ...StyleSheet.absoluteFillObject,
@@ -2666,7 +2363,8 @@ const styles = StyleSheet.create({
   resolutionPanel: sharedStyles.resolutionPanel,
   resolutionText: sharedStyles.resolutionText,
   choicesList: {
-    marginBottom: 20,
+    gap: 12,
+    marginBottom: 8,
   },
   continueButton: sharedStyles.continueButton,
   continueText: sharedStyles.continueText,
@@ -2701,6 +2399,12 @@ const styles = StyleSheet.create({
     borderTopColor: 'rgba(255,255,255,0.2)',
     fontStyle: 'italic',
     color: TERMINAL.colors.textLight,
+  },
+  nextBeatSetupWrap: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.2)',
   },
   nextSituationPanel: {
     marginTop: 8,

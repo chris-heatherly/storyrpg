@@ -29,6 +29,9 @@ import type { StoryCatalogEntry } from '../../types';
 import type { FontSize } from '../../stores/settingsStore';
 import type { GenerationJob, JobStatus } from '../../stores/generationJobStore';
 import { TERMINAL } from '../../theme';
+import { APP_VERSION_LABEL } from '../../config/version';
+import { SegmentedControl, Toggle } from '../ui';
+import { PipelineProgress } from '../PipelineProgress';
 
 type SettingsStyles = Record<string, any>;
 
@@ -90,29 +93,15 @@ export function DisplayPreferencesSection({
       />
 
       <View style={styles.settingCard}>
-        <View style={styles.optionsGrid}>
-          {fontSizeOptions.map((option) => (
-            <TouchableOpacity
-              key={option.key}
-              style={[
-                styles.optionButton,
-                fontSize === option.key && styles.optionButtonSelected,
-              ]}
-              onPress={() => onSetFontSize(option.key)}
-            >
-              <Text
-                style={[
-                  styles.optionText,
-                  fontSize === option.key && styles.optionTextSelected,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        <SegmentedControl
+          ariaLabel="Font size"
+          options={fontSizeOptions.map((option) => ({ value: option.key, label: option.label }))}
+          value={fontSize}
+          onChange={onSetFontSize}
+          testID="settings-font-size"
+        />
 
-        <View style={styles.previewBox}>
+        <View style={[styles.previewBox, { marginTop: 12 }]}>
           <View style={styles.previewHeader}>
             <Eye size={14} color={TERMINAL.colors.muted} />
             <Text style={styles.previewLabel}>LIVE PREVIEW</Text>
@@ -126,28 +115,15 @@ export function DisplayPreferencesSection({
         </View>
 
         <View style={styles.sectionCardDivider}>
-          <TouchableOpacity
-            style={styles.devModeToggle}
-            onPress={onTogglePreferVideo}
-            activeOpacity={0.7}
-          >
-            <View style={styles.devModeInfo}>
-              <Film size={16} color={preferVideo ? TERMINAL.colors.cyan : TERMINAL.colors.muted} />
-              <View style={styles.devModeText}>
-                <Text style={[styles.devModeTitle, preferVideo && styles.devModeTitleActive]}>
-                  PREFER VIDEO
-                </Text>
-                <Text style={styles.devModeDesc}>
-                  {preferVideo
-                    ? 'Show animated video clips when available'
-                    : 'Show still images even when video exists'}
-                </Text>
-              </View>
-            </View>
-            <View style={[styles.toggleSwitch, preferVideo && styles.toggleSwitchActive]}>
-              <View style={[styles.toggleKnob, preferVideo && styles.toggleKnobActive]} />
-            </View>
-          </TouchableOpacity>
+          <Toggle
+            value={preferVideo}
+            onValueChange={() => onTogglePreferVideo()}
+            label="PREFER VIDEO"
+            helperText={preferVideo
+              ? 'Show animated video clips when available'
+              : 'Show still images even when video exists'}
+            testID="settings-prefer-video"
+          />
         </View>
       </View>
     </View>
@@ -181,28 +157,13 @@ export function DeveloperToolsSection({
       />
 
       <View style={styles.settingCard}>
-        <TouchableOpacity
-          style={styles.devModeToggle}
-          onPress={onToggleDeveloperMode}
-          activeOpacity={0.7}
-        >
-          <View style={styles.devModeInfo}>
-            <View style={styles.devModeIcons}>
-              <Code size={16} color={developerMode ? TERMINAL.colors.cyan : TERMINAL.colors.muted} />
-            </View>
-            <View style={styles.devModeText}>
-              <Text style={[styles.devModeTitle, developerMode && styles.devModeTitleActive]}>
-                DEV MODE
-              </Text>
-              <Text style={styles.devModeDesc}>
-                Image prompts, feedback, and regeneration
-              </Text>
-            </View>
-          </View>
-          <View style={[styles.toggleSwitch, developerMode && styles.toggleSwitchActive]}>
-            <View style={[styles.toggleKnob, developerMode && styles.toggleKnobActive]} />
-          </View>
-        </TouchableOpacity>
+        <Toggle
+          value={developerMode}
+          onValueChange={() => onToggleDeveloperMode()}
+          label="DEV MODE"
+          helperText="Image prompts, feedback, and regeneration"
+          testID="settings-developer-mode"
+        />
 
         {developerMode ? (
           <View style={styles.devModeFeatures}>
@@ -379,6 +340,17 @@ export function GenerationJobsSection({
                   {typeof job.phaseProgress === 'number' ? `${Math.round(job.phaseProgress)}% PHASE • ` : ''}
                   {formatEta(job.etaSeconds) ? `ETA ${formatEta(job.etaSeconds)}` : ''}
                 </Text>
+              ) : null}
+              {Array.isArray(job.events) && job.events.length > 0 ? (
+                <View style={{ marginTop: 10 }}>
+                  <PipelineProgress
+                    events={job.events as any}
+                    currentPhase={job.currentPhase}
+                    isRunning={job.status === 'running'}
+                    progress={job.progress}
+                    etaSeconds={job.etaSeconds ?? null}
+                  />
+                </View>
               ) : null}
               <View style={styles.jobActions}>
                 <TouchableOpacity
@@ -646,7 +618,7 @@ export function SystemInfoSection({ styles }: SystemInfoSectionProps) {
         </View>
         <View style={styles.infoRow}>
           <Text style={styles.infoLabel}>VERSION</Text>
-          <Text style={styles.infoValue}>1.0.0 ALPHA</Text>
+          <Text style={styles.infoValue}>{APP_VERSION_LABEL}</Text>
         </View>
         <View style={styles.infoRow}>
           <Text style={styles.infoLabel}>STATUS</Text>

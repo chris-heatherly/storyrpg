@@ -15,7 +15,7 @@ import {
   TextInput,
   Image,
 } from 'react-native';
-import { TERMINAL, createBoxTop, createBoxBottom, createDivider } from '../theme/terminal';
+import { TERMINAL, createBoxTop, createBoxBottom, createDivider } from '../theme';
 
 export interface CheckpointData {
   phase: string;

@@ -30,7 +30,7 @@ import {
   Zap,
   FileText,
 } from 'lucide-react-native';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 import {
   SCENE_DEFAULTS,
   CONCURRENCY_DEFAULTS,

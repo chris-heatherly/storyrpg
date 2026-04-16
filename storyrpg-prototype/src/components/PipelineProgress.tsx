@@ -25,7 +25,7 @@ import {
   Package,
   Volume2
 } from 'lucide-react-native';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 
 // Import PipelineEvent from canonical source
 import type { PipelineEvent } from '../ai-agents/pipeline';

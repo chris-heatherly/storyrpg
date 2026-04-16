@@ -48,7 +48,7 @@ import {
 } from 'lucide-react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 import { PipelineProgress } from '../components/PipelineProgress';
 import { CheckpointReview } from '../components/CheckpointReview';
 import { ImageJobPanel } from '../components/ImageJobPanel';
@@ -64,6 +64,7 @@ import { useGenerationJobStore, PipelineEventData } from '../stores/generationJo
 import { useGeneratorSettings } from '../hooks/useGeneratorSettings';
 import { useAvailableModels } from '../hooks/useAvailableModels';
 import { ModelDropdown } from '../components/ModelDropdown';
+import { ConfirmDialog } from '../components/ui';
 import { useGeneratorRunner } from '../hooks/useGeneratorRunner';
 import { useEndingModePlanner } from './generator/useEndingModePlanner';
 import { buildPipelineConfig } from '../ai-agents/config/buildPipelineConfig';
@@ -345,6 +346,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [showImagesPanel, setShowImagesPanel] = useState(true);
   const [showNarrationPanel, setShowNarrationPanel] = useState(false);
   const [showVideoPanel, setShowVideoPanel] = useState(false);
+  const [confirmCancelGeneration, setConfirmCancelGeneration] = useState(false);
 
   // Document mode state
   const [documentPath, setDocumentPath] = useState('');
@@ -1450,56 +1452,45 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     setIsViewingHistory(false); setHistoryJob(undefined);
   };
 
-  // Cancel running generation job
-  const cancelGeneration = async () => {
-    Alert.alert(
-      'Cancel Generation',
-      'Are you sure you want to stop the current generation? Progress will be saved and you may be able to resume later.',
-      [
-        { text: 'Keep Running', style: 'cancel' },
-        {
-          text: 'Stop Generation',
-          style: 'destructive',
-          onPress: async () => {
-            // Signal the in-browser pipeline to stop immediately
-            if (pipelineRef.current) {
-              pipelineRef.current.cancel();
-            } else if (onCancelExternalPipeline) {
-              onCancelExternalPipeline();
-            }
-            if (currentJobId) {
-              if (USE_SERVER_WORKER) {
-                try {
-                  await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}/cancel`, { method: 'POST' });
-                } catch (cancelErr) {
-                  console.warn('[GeneratorScreen] Failed to cancel worker job:', cancelErr);
-                }
-              }
-              await cancelGenJob(currentJobId);
-              // Save checkpoint data for potential resume
-              await updateGenJob(currentJobId, {
-                status: 'cancelled',
-                error: 'Cancelled by user',
-                currentPhase: currentPhase || 'unknown',
-                checkpoint: {
-                  briefJson: currentBriefRef.current ? JSON.stringify(currentBriefRef.current) : undefined,
-                  completedPhases: [...completedPhasesRef.current],
-                  lastSuccessfulPhase: lastSuccessfulPhaseRef.current || undefined,
-                  sourceAnalysisJson: sourceAnalysis ? JSON.stringify(sourceAnalysis) : undefined,
-                  isResumable: completedPhasesRef.current.length > 0,
-                  resumeHint: completedPhasesRef.current.length > 0 
-                    ? `Completed phases: ${completedPhasesRef.current.join(', ')}. Restart to regenerate.`
-                    : 'No phases completed. Restart to try again.',
-                },
-              });
-            }
-            setState('error');
-            setError('Generation cancelled by user. You may restart from the beginning.');
-            pipelineRef.current = null;
-          },
+  const cancelGeneration = () => {
+    setConfirmCancelGeneration(true);
+  };
+
+  const performCancelGeneration = async () => {
+    setConfirmCancelGeneration(false);
+    if (pipelineRef.current) {
+      pipelineRef.current.cancel();
+    } else if (onCancelExternalPipeline) {
+      onCancelExternalPipeline();
+    }
+    if (currentJobId) {
+      if (USE_SERVER_WORKER) {
+        try {
+          await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}/cancel`, { method: 'POST' });
+        } catch (cancelErr) {
+          console.warn('[GeneratorScreen] Failed to cancel worker job:', cancelErr);
+        }
+      }
+      await cancelGenJob(currentJobId);
+      await updateGenJob(currentJobId, {
+        status: 'cancelled',
+        error: 'Cancelled by user',
+        currentPhase: currentPhase || 'unknown',
+        checkpoint: {
+          briefJson: currentBriefRef.current ? JSON.stringify(currentBriefRef.current) : undefined,
+          completedPhases: [...completedPhasesRef.current],
+          lastSuccessfulPhase: lastSuccessfulPhaseRef.current || undefined,
+          sourceAnalysisJson: sourceAnalysis ? JSON.stringify(sourceAnalysis) : undefined,
+          isResumable: completedPhasesRef.current.length > 0,
+          resumeHint: completedPhasesRef.current.length > 0
+            ? `Completed phases: ${completedPhasesRef.current.join(', ')}. Restart to regenerate.`
+            : 'No phases completed. Restart to try again.',
         },
-      ]
-    );
+      });
+    }
+    setState('error');
+    setError('Generation cancelled by user. You may restart from the beginning.');
+    pipelineRef.current = null;
   };
 
   const hasSourceInput = Boolean(documentBrief || userPrompt.trim());
@@ -2767,8 +2758,18 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         <ImageJobPanel />
         <VideoJobPanel />
       </ScrollView>
-      
-      
+
+      <ConfirmDialog
+        visible={confirmCancelGeneration}
+        title="Stop generation?"
+        message="Progress will be saved and you may be able to resume later."
+        confirmLabel="Stop"
+        cancelLabel="Keep running"
+        destructive
+        onConfirm={performCancelGeneration}
+        onCancel={() => setConfirmCancelGeneration(false)}
+        testID="generator-cancel-dialog"
+      />
     </SafeAreaView>
   );
 };
@@ -3156,23 +3157,6 @@ const styles = StyleSheet.create({
     color: TERMINAL.colors.error,
     textAlign: 'center',
     fontWeight: '600',
-  },
-  retryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    backgroundColor: 'rgba(59,130,246,0.1)',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.2)',
-  },
-  retryButtonText: {
-    fontSize: 11,
-    fontWeight: '900',
-    color: TERMINAL.colors.primary,
-    letterSpacing: 1,
   },
   modelList: {
     maxHeight: 400,

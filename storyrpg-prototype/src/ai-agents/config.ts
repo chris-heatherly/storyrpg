@@ -144,6 +144,15 @@ export interface GenerationSettingsConfig {
   cloudQueueEndpoint?: string;
   /** Pipeline failure handling policy. `fail_fast` stops immediately instead of generating fallback content. */
   failurePolicy?: 'fail_fast' | 'recover';
+  /**
+   * I5 instrumentation. When true, captures a side-by-side diff of the
+   * LLM-driven `BranchManager` output vs the deterministic
+   * `analyzeBranchTopology` output and persists it as
+   * `06d-branch-shadow-diff.json`. Default off; enable when evaluating
+   * whether the LLM branch pass catches issues the deterministic analyzer
+   * does not (gates deferred decision D4).
+   */
+  branchShadowModeEnabled?: boolean;
 }
 
 // Video generation settings (Veo via Gemini API)

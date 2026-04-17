@@ -214,6 +214,7 @@ import { LocalWorkerQueue, mapWithConcurrency } from '../utils/concurrency';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../utils/dependencyGraph';
 import { PipelineTelemetry } from '../utils/pipelineTelemetry';
 import { analyzeBranchTopology } from '../utils/branchTopology';
+import { buildBranchShadowDiff } from '../utils/branchShadowDiff';
 import { collectMissingEncounterImageKeys, getEncounterBeats } from '../utils/encounterImageCoverage';
 import { PROXY_CONFIG } from '../../config/endpoints';
 import {
@@ -532,6 +533,16 @@ export class FullStoryPipeline {
   // response metadata. Persisted via pipelineOutputWriter so we can later
   // analyze per-phase success rates and LLM cost (I2 instrumentation).
   private encounterTelemetry: EncounterTelemetry[] = [];
+
+  // Shadow-mode diffs between the LLM `BranchManager` and the deterministic
+  // `analyzeBranchTopology` pass. Populated only when
+  // `config.generation.branchShadowModeEnabled` is true; persisted as a
+  // sidecar via pipelineOutputWriter so D4 (BranchManager gating) can be
+  // decided from data rather than intuition (I5 instrumentation).
+  private branchShadowDiffs: Array<{
+    episodeId: string;
+    diff: import('../utils/branchShadowDiff').BranchShadowDiff;
+  }> = [];
 
   private events: PipelineEvent[] = [];
   private checkpoints: CheckpointData[] = [];
@@ -2488,6 +2499,9 @@ export class FullStoryPipeline {
             ? this.encounterTelemetry
             : undefined,
           llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+          branchShadowDiffs: this.branchShadowDiffs.length > 0
+            ? this.branchShadowDiffs
+            : undefined,
           bestPracticesReport,
           finalStory: story,
           visualPlanning: visualPlanningOutputs,
@@ -3254,6 +3268,19 @@ export class FullStoryPipeline {
           phase: 'branch_validation',
           message: `[deterministic] Scene ${sceneId} dead-ends before the ending scene`,
         });
+      }
+
+      // I5: capture a side-by-side diff of the LLM vs deterministic passes
+      // when shadow mode is enabled. No console spam here — the sidecar is
+      // the consumer. The LLM pass keeps running either way (it already
+      // does today), so this is pure observation, not gating.
+      if (this.config.generation?.branchShadowModeEnabled) {
+        try {
+          const diff = buildBranchShadowDiff(result.data, deterministicTopology);
+          this.branchShadowDiffs.push({ episodeId: blueprint.episodeId, diff });
+        } catch (diffErr) {
+          console.warn(`[Pipeline] Failed to build branch shadow diff: ${diffErr instanceof Error ? diffErr.message : diffErr}`);
+        }
       }
 
       this.emit({
@@ -5834,6 +5861,9 @@ export class FullStoryPipeline {
           ? this.encounterTelemetry
           : undefined,
         llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+        branchShadowDiffs: this.branchShadowDiffs.length > 0
+          ? this.branchShadowDiffs
+          : undefined,
         bestPracticesReport: aggregatedBPReport,
         encounterImageDiagnostics: allEncounterImageDiagnostics,
       }, Date.now() - startTime);

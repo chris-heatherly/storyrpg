@@ -19,6 +19,7 @@ import { EncounterStructure } from '../agents/EncounterArchitect';
 import type { EncounterTelemetry } from '../agents/EncounterArchitect';
 import type { SceneValidationResult } from '../validators/IncrementalValidators';
 import type { LlmLedger } from './pipelineTelemetry';
+import type { BranchShadowDiff } from './branchShadowDiff';
 import { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import type { 
   ColorScript,
@@ -182,6 +183,13 @@ export interface PipelineOutputs {
    * rebalance decisions can be grounded in measured cost rather than guesses.
    */
   llmLedger?: LlmLedger;
+  /**
+   * Per-episode branch shadow diffs (I5 instrumentation). Only populated
+   * when `config.generation.branchShadowModeEnabled` is true. When present,
+   * `savePipelineOutputs` writes a sidecar (`06d-branch-shadow-diff.json`)
+   * so the LLM-vs-deterministic branch analysis overlap is measurable.
+   */
+  branchShadowDiffs?: Array<{ episodeId: string; diff: BranchShadowDiff }>;
   bestPracticesReport?: ComprehensiveValidationReport;
   finalStory?: Story;
   // Visual planning assets
@@ -915,7 +923,51 @@ export async function savePipelineOutputs(
     });
   }
 
-  // 7d. Save LLM ledger (I4 instrumentation).
+  // 7d. Save branch shadow diffs (I5 instrumentation).
+  //
+  // Off by default; only written when shadow mode was enabled in config.
+  // Each episode contributes one diff entry. Aggregated totals are
+  // recomputed here from the per-episode diffs so consumers don't have to.
+  if (outputs.branchShadowDiffs && outputs.branchShadowDiffs.length > 0) {
+    const perEpisode = outputs.branchShadowDiffs;
+    const totals = perEpisode.reduce(
+      (acc, { diff }) => {
+        acc.agreed += diff.agreedScenes.length;
+        acc.llmOnly += diff.llmOnlyScenes.length;
+        acc.deterministicOnly += diff.deterministicOnlyScenes.length;
+        acc.llmValidationIssues += diff.counts.llmValidationIssues;
+        acc.deterministicUnreachable += diff.counts.deterministicUnreachable;
+        acc.deterministicDeadEnds += diff.counts.deterministicDeadEnds;
+        acc.deterministicReconvergence += diff.counts.deterministicReconvergence;
+        return acc;
+      },
+      {
+        agreed: 0,
+        llmOnly: 0,
+        deterministicOnly: 0,
+        llmValidationIssues: 0,
+        deterministicUnreachable: 0,
+        deterministicDeadEnds: 0,
+        deterministicReconvergence: 0,
+      },
+    );
+    const shadowDoc = {
+      generatedAt: new Date().toISOString(),
+      episodeCount: perEpisode.length,
+      totals,
+      episodes: perEpisode,
+    };
+    const shadowPath = outputDir + '06d-branch-shadow-diff.json';
+    const shadowSize = await writeJsonFile(shadowPath, shadowDoc);
+    files.push({
+      name: 'Branch Shadow Diff',
+      path: shadowPath,
+      type: 'branch-shadow-diff',
+      size: shadowSize,
+    });
+  }
+
+  // 7e. Save LLM ledger (I4 instrumentation).
   //
   // Run-level aggregation of every LLM call observed via BaseAgent's
   // observer. Token totals are populated from anthropic + gemini transports;

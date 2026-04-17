@@ -1,7 +1,7 @@
 {
-  "imageProvider": "nano-banana",
-  "imageLlmProvider": "gemini",
-  "imageLlmModel": "gemini-2.5-pro",
+  "imageProvider": "atlas-cloud",
+  "imageLlmProvider": "anthropic",
+  "imageLlmModel": "claude-sonnet-4-20250514",
   "videoSettings": {
     "enabled": false,
     "model": "veo-3.1-generate-preview",
@@ -12,8 +12,8 @@
   },
   "llmProvider": "anthropic",
   "llmModel": "claude-sonnet-4-20250514",
-  "atlasCloudModel": "google/nano-banana-2/text-to-image",
-  "artStyle": "romance novel",
+  "atlasCloudModel": "black-forest-labs/flux-dev-lora",
+  "artStyle": "",
   "generationSettings": {
     "targetSceneCount": 6,
     "majorChoiceCount": 3,

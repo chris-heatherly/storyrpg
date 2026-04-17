@@ -168,10 +168,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   setFailedImages(prev => new Set(prev).add(story.id));
                 }}
               />
+              <View style={styles.storyBadge}>
+                <Text style={styles.storyBadgeText}>{(story.genre || 'unknown').toUpperCase()}</Text>
+              </View>
+              <View pointerEvents="none" style={styles.storyOverlayFadeFaint} />
+              <View pointerEvents="none" style={styles.storyOverlayFadeMid} />
+              <View pointerEvents="none" style={styles.storyOverlayFadeStrong} />
               <View style={styles.storyOverlay}>
-                <View style={styles.storyBadge}>
-                  <Text style={styles.storyBadgeText}>{(story.genre || 'unknown').toUpperCase()}</Text>
-                </View>
                 <Text style={[styles.storyCardTitle, { fontSize: fonts.large }]}>{(story.title || 'Untitled').toUpperCase()}</Text>
                 <Text style={[styles.storyCardMeta, { fontSize: fonts.small }]}>{story.episodeCount} EPISODES</Text>
                 <View style={styles.playButtonMini}>
@@ -349,7 +352,7 @@ const styles = StyleSheet.create({
   },
   storyCard: {
     width: (width - 56) / 2,
-    height: 240,
+    height: 312,
     borderRadius: 24,
     overflow: 'hidden',
     backgroundColor: '#1e2229',
@@ -357,13 +360,38 @@ const styles = StyleSheet.create({
   storyImage: {
     width: '100%',
     height: '100%',
-    opacity: 0.6,
   },
   storyOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
     padding: 16,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(15, 17, 21, 0.4)',
+  },
+  storyOverlayFadeFaint: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 140,
+    backgroundColor: 'rgba(15, 17, 21, 0.25)',
+  },
+  storyOverlayFadeMid: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 90,
+    backgroundColor: 'rgba(15, 17, 21, 0.45)',
+  },
+  storyOverlayFadeStrong: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 50,
+    backgroundColor: 'rgba(15, 17, 21, 0.6)',
   },
   storyBadge: {
     position: 'absolute',
@@ -373,6 +401,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
+    zIndex: 2,
   },
   storyBadgeText: {
     fontSize: 8,
@@ -406,7 +435,7 @@ const styles = StyleSheet.create({
   },
   lockedCard: {
     width: (width - 56) / 2,
-    height: 240,
+    height: 312,
     borderRadius: 24,
     borderWidth: 2,
     borderStyle: 'dashed',

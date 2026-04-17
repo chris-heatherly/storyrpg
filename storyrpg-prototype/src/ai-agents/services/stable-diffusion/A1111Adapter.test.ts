@@ -145,6 +145,49 @@ describe('A1111Adapter', () => {
     expect(body.prompt).toContain('<lora:hero_lora:0.85>');
   });
 
+  it('stacks character LoRAs for every name in metadata.characterNames (plural)', async () => {
+    const adapter = new A1111Adapter();
+    await adapter.generate(
+      {
+        prompt: { prompt: 'duel' } as any,
+        identifier: 'scene-2',
+        jobId: 'job-2',
+        settings: {
+          ...baseSettings,
+          characterLoraByName: {
+            hero: { name: 'hero_lora', weight: 0.85 },
+            rival: { name: 'rival_lora', weight: 0.8 },
+          },
+        },
+        metadata: { characterNames: ['hero', 'rival'] },
+      },
+      makeIo(),
+    );
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.prompt).toContain('<lora:hero_lora:0.85>');
+    expect(body.prompt).toContain('<lora:rival_lora:0.80>');
+  });
+
+  it('skips characterNames entries that are not registered without error', async () => {
+    const adapter = new A1111Adapter();
+    await adapter.generate(
+      {
+        prompt: { prompt: 'solo' } as any,
+        identifier: 'scene-3',
+        jobId: 'job-3',
+        settings: {
+          ...baseSettings,
+          characterLoraByName: { hero: { name: 'hero_lora', weight: 0.85 } },
+        },
+        metadata: { characterNames: ['hero', 'unknown_bystander'] },
+      },
+      makeIo(),
+    );
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.prompt).toContain('<lora:hero_lora:0.85>');
+    expect(body.prompt).not.toContain('unknown_bystander');
+  });
+
   it('preflight succeeds when /sd-models returns a non-empty array', async () => {
     (globalThis as any).fetch = vi.fn(async () => ({
       ok: true,

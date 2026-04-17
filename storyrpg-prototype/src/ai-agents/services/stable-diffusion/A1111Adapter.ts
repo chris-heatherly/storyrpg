@@ -24,6 +24,7 @@ import type {
   SDWriteHelpers,
 } from './StableDiffusionAdapter';
 import type { StableDiffusionSettings } from '../../config';
+import type { ImagePromptLora } from '../../agents/ImageGenerator';
 import type { ProviderPreflightResult } from '../imageGenerationService';
 import { EXTERNAL_APIS } from '../../../config/endpoints';
 import { buildSDPrompt } from './buildSDPrompt';
@@ -64,6 +65,43 @@ function buildAuthHeaders(settings: StableDiffusionSettings): Record<string, str
     headers['x-stable-diffusion-token'] = settings.apiKey;
   }
   return headers;
+}
+
+/**
+ * Resolve every character LoRA that should be stacked onto this generation.
+ *
+ * The pipeline passes character identity in one of two metadata shapes:
+ *
+ *  - `characterName: string`        — legacy single-character metadata
+ *  - `characterNames: string[]`     — current multi-character metadata emitted
+ *                                     by `FullStoryPipeline` (scenes, panels,
+ *                                     encounters). This is the common case.
+ *
+ * Historically the adapter only looked at the singular key, so multi-
+ * character scenes silently skipped character LoRAs entirely. We now resolve
+ * both shapes and stack every registered LoRA so each visible character gets
+ * its identity anchor. Unregistered names are skipped quietly.
+ */
+function resolveCharacterLoras(
+  metadata: Record<string, any> | undefined,
+  settings: StableDiffusionSettings,
+): ImagePromptLora[] | undefined {
+  const registry = settings.characterLoraByName;
+  if (!registry || !metadata) return undefined;
+  const names = new Set<string>();
+  const singular = typeof metadata.characterName === 'string' ? metadata.characterName : undefined;
+  if (singular) names.add(singular);
+  const plural = Array.isArray(metadata.characterNames) ? metadata.characterNames : [];
+  for (const n of plural) {
+    if (typeof n === 'string' && n.length > 0) names.add(n);
+  }
+  if (names.size === 0) return undefined;
+  const loras: ImagePromptLora[] = [];
+  for (const n of names) {
+    const lora = registry[n];
+    if (lora) loras.push(lora);
+  }
+  return loras.length > 0 ? loras : undefined;
 }
 
 function buildControlNetArgs(
@@ -115,11 +153,8 @@ export class A1111Adapter implements StableDiffusionAdapter {
 
   async generate(req: SDRequest, io: SDWriteHelpers): Promise<GeneratedImage> {
     const { prompt, identifier, settings, referenceImages } = req;
-    const characterName = req.metadata?.characterName;
-    const characterLora = characterName
-      ? settings.characterLoraByName?.[characterName]
-      : undefined;
-    const built = buildSDPrompt(prompt, settings, characterLora);
+    const characterLoras = resolveCharacterLoras(req.metadata, settings);
+    const built = buildSDPrompt(prompt, settings, characterLoras);
     const refs = referencePackToSDInputs(referenceImages, settings, {
       controlNet: prompt.controlNet,
       ipAdapter: prompt.ipAdapter,

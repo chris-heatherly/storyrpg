@@ -9,11 +9,12 @@ import {
   resetProviderCapabilityOverrides,
 } from './providerCapabilities';
 
-const ALL_PROVIDERS: ImageProvider[] = [
+// `useapi` is a legacy alias for `midapi`; it intentionally resolves to the
+// `midapi` capability row. All other provider ids are canonical.
+const CANONICAL_PROVIDERS: ImageProvider[] = [
   'nano-banana',
   'atlas-cloud',
   'midapi',
-  'useapi',
   'dall-e',
   'stable-diffusion',
   'placeholder',
@@ -24,21 +25,35 @@ describe('providerCapabilities', () => {
     resetProviderCapabilityOverrides();
   });
 
-  it('exposes a capability row for every known provider', () => {
-    for (const id of ALL_PROVIDERS) {
+  it('exposes a capability row for every canonical provider', () => {
+    for (const id of CANONICAL_PROVIDERS) {
       const caps = getProviderCapabilities(id);
       expect(caps.id).toBe(id);
       expect(typeof caps.supportsLoraTraining).toBe('boolean');
     }
   });
 
+  it('aliases useapi → midapi so the two cannot drift apart', () => {
+    const midapiCaps = getProviderCapabilities('midapi');
+    const useapiCaps = getProviderCapabilities('useapi');
+    expect(useapiCaps).toEqual(midapiCaps);
+    expect(useapiCaps.id).toBe('midapi');
+    // Override applied to either alias must affect both lookups.
+    overrideProviderCapabilities('useapi', { concurrency: 7 });
+    expect(getProviderCapabilities('midapi').concurrency).toBe(7);
+    expect(getProviderCapabilities('useapi').concurrency).toBe(7);
+  });
+
   describe('supportsLoraTraining', () => {
     it('is true only for stable-diffusion', () => {
-      for (const id of ALL_PROVIDERS) {
+      for (const id of CANONICAL_PROVIDERS) {
         const expected = id === 'stable-diffusion';
         expect(getProviderCapabilities(id).supportsLoraTraining).toBe(expected);
         expect(providerSupportsLoraTraining(id)).toBe(expected);
       }
+      // useapi alias inherits midapi's value
+      expect(getProviderCapabilities('useapi').supportsLoraTraining).toBe(false);
+      expect(providerSupportsLoraTraining('useapi')).toBe(false);
     });
 
     it('is false for unknown providers (falls back to placeholder row)', () => {

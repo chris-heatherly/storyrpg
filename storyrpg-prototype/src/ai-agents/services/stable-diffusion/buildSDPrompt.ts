@@ -59,12 +59,14 @@ function dedupeCsv(parts: string[]): string {
 /**
  * Merge LoRAs from settings (style, per-character registry) with any already
  * on the prompt. Prompt-level LoRAs win on duplicates so callers can override
- * registry weights per-shot.
+ * registry weights per-shot. Multiple character LoRAs are supported so
+ * multi-character scenes can stack the identity anchors for every visible
+ * character (one LoRA per character, each keyed by name in the registry).
  */
 function mergeLoras(
   promptLoras: ImagePromptLora[] | undefined,
   settingsLoras: ImagePromptLora[] | undefined,
-  characterLora?: ImagePromptLora,
+  characterLoras?: ImagePromptLora[],
 ): ImagePromptLora[] {
   const merged = new Map<string, ImagePromptLora>();
   const push = (lora: ImagePromptLora | undefined) => {
@@ -74,7 +76,7 @@ function mergeLoras(
     if (!merged.has(key)) merged.set(key, lora);
   };
   (promptLoras || []).forEach(push);
-  if (characterLora) push(characterLora);
+  (characterLoras || []).forEach(push);
   (settingsLoras || []).forEach(push);
   return Array.from(merged.values());
 }
@@ -94,7 +96,7 @@ function mergeLoras(
 export function buildSDPrompt(
   prompt: ImagePrompt,
   settings: StableDiffusionSettings,
-  characterLora?: ImagePromptLora,
+  characterLoras?: ImagePromptLora | ImagePromptLora[],
 ): BuiltSDPrompt {
   const basePositive = stripLoraTags(prompt.prompt || '');
   const style = (prompt.style || '').trim();
@@ -107,7 +109,10 @@ export function buildSDPrompt(
   if (prompt.keyGesture) positiveParts.push(prompt.keyGesture);
   if (prompt.keyBodyLanguage) positiveParts.push(prompt.keyBodyLanguage);
 
-  const loras = mergeLoras(prompt.loras, settings.styleLoras, characterLora);
+  const characterLoraList = characterLoras
+    ? Array.isArray(characterLoras) ? characterLoras : [characterLoras]
+    : undefined;
+  const loras = mergeLoras(prompt.loras, settings.styleLoras, characterLoraList);
   const loraTags = loras.map(formatLoraTag).filter(Boolean);
 
   const positive = [dedupeCsv(positiveParts), loraTags.join(' ')].filter(Boolean).join(' ').trim();

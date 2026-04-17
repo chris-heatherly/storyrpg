@@ -89,7 +89,11 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
     acceptsInlineRefs: false,
     acceptsUrlRefs: true,
     supportsBatch: false,
-    supportsSeed: false,
+    // Midjourney honors `--seed` for reproducible variations. Generations are
+    // not bit-identical across runs, but the seed reliably produces the same
+    // family of outputs — useful for deterministic re-rolls and variation
+    // sets, which is what this capability flag is consumed for upstream.
+    supportsSeed: true,
     supportsNegativePrompt: true,
     usesMidjourneyRefTokens: true,
     minRequestIntervalMs: 3000,
@@ -97,13 +101,19 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
     rpmCeiling: 20,
     supportsLoraTraining: false,
   },
+  // `useapi` is a legacy alias for `midapi` — both route to the same Midjourney
+  // backend via useapi.net. Historically kept as a duplicated row; now that
+  // `normalizeProvider()` aliases useapi → midapi at construction, the alias
+  // is preserved here only for structural consumers that key off the union.
+  // `getProviderCapabilities()` redirects useapi → midapi below so the two
+  // can never drift apart.
   useapi: {
     id: 'useapi',
     maxRefs: 2,
     acceptsInlineRefs: false,
     acceptsUrlRefs: true,
     supportsBatch: false,
-    supportsSeed: false,
+    supportsSeed: true,
     supportsNegativePrompt: true,
     usesMidjourneyRefTokens: true,
     minRequestIntervalMs: 3000,
@@ -158,12 +168,24 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
 let runtimeOverrides: Partial<Record<ImageProvider, Partial<ProviderCapabilities>>> = {};
 
 /**
+ * Canonicalize legacy / alias provider ids before lookup. `useapi` is the
+ * legacy name for what is now `midapi` — both go to the same backend, so
+ * we point them at the same capability row (and the same override slot)
+ * instead of letting two entries drift out of sync.
+ */
+function canonicalProviderId(provider: ImageProvider | string | undefined): ImageProvider {
+  const p = (provider as ImageProvider) || 'placeholder';
+  if (p === 'useapi') return 'midapi';
+  return p;
+}
+
+/**
  * Returns the effective capability row for a provider, merging runtime
  * overrides on top of the static default. Unknown providers fall back to
  * `placeholder` shape so callers always get a deterministic answer.
  */
 export function getProviderCapabilities(provider: ImageProvider | string | undefined): ProviderCapabilities {
-  const normalized = (provider as ImageProvider) || 'placeholder';
+  const normalized = canonicalProviderId(provider);
   const base = DEFAULT_CAPABILITIES[normalized] ?? DEFAULT_CAPABILITIES.placeholder;
   const override = runtimeOverrides[normalized];
   if (!override) return base;
@@ -179,13 +201,14 @@ export function overrideProviderCapabilities(
   provider: ImageProvider,
   override: Partial<ProviderCapabilities> | undefined
 ): void {
+  const key = canonicalProviderId(provider);
   if (!override) {
     const next = { ...runtimeOverrides };
-    delete next[provider];
+    delete next[key];
     runtimeOverrides = next;
     return;
   }
-  runtimeOverrides = { ...runtimeOverrides, [provider]: override };
+  runtimeOverrides = { ...runtimeOverrides, [key]: override };
 }
 
 export function resetProviderCapabilityOverrides(): void {

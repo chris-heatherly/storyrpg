@@ -13,7 +13,7 @@ import { budgetCanonicalPrompt } from '../images/promptComposer';
 import { ProviderPolicy } from '../images/providerPolicy';
 import type { ImageSlotFamily } from '../images/slotTypes';
 import { ProviderThrottle } from './providerThrottle';
-import { getProviderCapabilities } from '../images/providerCapabilities';
+import { getProviderCapabilities, overrideProviderCapabilities } from '../images/providerCapabilities';
 import { filterRefsForProvider } from '../images/referencePackBuilder';
 import { createStableDiffusionAdapter } from './stable-diffusion/factory';
 import type { StableDiffusionAdapter } from './stable-diffusion/StableDiffusionAdapter';
@@ -341,6 +341,66 @@ export class ImageGenerationService {
     };
     this._stableDiffusionSettings = config.stableDiffusionSettings;
     this.ensureDirectory(this.outputDir);
+    this.applyProviderTierOverridesFromEnv();
+  }
+
+  /**
+   * Honor env-driven per-provider tier overrides. The default capability
+   * table in `providerCapabilities.ts` is tuned to the public / free-tier
+   * rate limits; higher-tier accounts (Gemini Tier 2 = 360 RPM, Tier 3 =
+   * 1000 RPM, Atlas paid tiers, etc.) were silently throttled because no
+   * config surface forwarded the override.
+   *
+   * Supported env vars:
+   *
+   *   EXPO_PUBLIC_GEMINI_RPM / GEMINI_RPM                      (nano-banana RPM)
+   *   EXPO_PUBLIC_GEMINI_CONCURRENCY / GEMINI_CONCURRENCY      (nano-banana in-flight cap)
+   *   EXPO_PUBLIC_ATLAS_CLOUD_RPM / ATLAS_CLOUD_RPM            (atlas-cloud RPM)
+   *   EXPO_PUBLIC_ATLAS_CLOUD_CONCURRENCY / ATLAS_CLOUD_CONCURRENCY
+   *
+   * RPM converts to `minRequestIntervalMs = 60_000 / rpm`. A value of 0 or
+   * a non-positive parse clears the override for that field so operators
+   * can selectively relax only one dimension.
+   */
+  private applyProviderTierOverridesFromEnv(): void {
+    const env = typeof process !== 'undefined' ? (process.env as Record<string, string | undefined>) : {};
+    const readNum = (...keys: string[]): number | undefined => {
+      for (const key of keys) {
+        const raw = env[key];
+        if (raw === undefined || raw === '') continue;
+        const n = Number(raw);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+      return undefined;
+    };
+
+    const apply = (
+      provider: ImageProvider,
+      rpmKeys: string[],
+      concurrencyKeys: string[],
+    ): void => {
+      const rpm = readNum(...rpmKeys);
+      const concurrency = readNum(...concurrencyKeys);
+      if (rpm === undefined && concurrency === undefined) return;
+      const override: Partial<{ minRequestIntervalMs: number; concurrency: number; rpmCeiling: number }> = {};
+      if (rpm !== undefined) {
+        override.minRequestIntervalMs = Math.max(0, Math.floor(60_000 / rpm));
+        override.rpmCeiling = Math.round(rpm);
+      }
+      if (concurrency !== undefined) {
+        override.concurrency = Math.max(1, Math.min(64, Math.floor(concurrency)));
+      }
+      overrideProviderCapabilities(provider, override);
+      if (typeof console !== 'undefined') {
+        console.log(
+          `[ImageGenerationService] Applied tier override for ${provider}:`,
+          override,
+        );
+      }
+    };
+
+    apply('nano-banana', ['EXPO_PUBLIC_GEMINI_RPM', 'GEMINI_RPM'], ['EXPO_PUBLIC_GEMINI_CONCURRENCY', 'GEMINI_CONCURRENCY']);
+    apply('atlas-cloud', ['EXPO_PUBLIC_ATLAS_CLOUD_RPM', 'ATLAS_CLOUD_RPM'], ['EXPO_PUBLIC_ATLAS_CLOUD_CONCURRENCY', 'ATLAS_CLOUD_CONCURRENCY']);
   }
 
   public getStableDiffusionSettings(): StableDiffusionSettings | undefined {
@@ -898,12 +958,19 @@ export class ImageGenerationService {
   }
 
   /**
-   * Structured prompt for Nano Banana models via Atlas Cloud /edit endpoint.
-   * Mirrors the Gemini direct prompt architecture: art style first, narrative
-   * prompt as primary content, labeled reference image descriptions matching
-   * the body.images array order, character identity lock, style consistency.
+   * Structured prompt for multi-image edit models reached via Atlas Cloud —
+   * currently Nano Banana (Gemini 2.5/3) and Seedream v4/v5. Mirrors the
+   * Gemini direct prompt architecture: art style first, narrative prompt as
+   * primary content, labeled reference-image descriptions whose `Image N:`
+   * indices match the body.images array order, character identity lock, and
+   * a style-consistency reminder.
+   *
+   * Applies whenever `modelCapabilities.supportsRichPrompt` is true so both
+   * provider families get the same labeled-ref scaffold; the phrasing is
+   * model-agnostic ("Image N: ..." + "CHARACTER IDENTITY: ..."), no
+   * provider-specific tokens.
    */
-  private buildAtlasNanoBananaPrompt(
+  private buildAtlasRichPrompt(
     prompt: ImagePrompt,
     identifier: string | undefined,
     referenceImages: ReferenceImage[],
@@ -2631,9 +2698,14 @@ export class ImageGenerationService {
         this.emit({ type: 'job_updated', id: jobId, updates: { status: 'processing', attempts: attempt, progress: (attempt / (this.maxRetries + 1)) * 50 } });
 
         const effectivePrompt = this.applyEncounterPromptBudget(prompt, imageType, attempt);
+        // Per-model max refs for the direct Gemini adapter. Encounter images
+        // tighten the cap further on retries (prompt-budget trimming), and
+        // we never pass more than the model can usefully consume.
+        const modelMaxRefs = this.getGeminiMaxRefs();
+        const availableRefs = referenceImages?.length || 0;
         const reducedRefCap = this.shouldTrackEncounterType(imageType)
-          ? (attempt >= 3 ? 3 : 5)
-          : (referenceImages?.length || 0);
+          ? Math.min(modelMaxRefs, attempt >= 3 ? 3 : 5)
+          : Math.min(modelMaxRefs, availableRefs);
         const effectiveRefs = referenceImages && reducedRefCap > 0
           ? this.prioritizeReferenceImages(referenceImages, reducedRefCap)
           : referenceImages;
@@ -3680,6 +3752,29 @@ export class ImageGenerationService {
     }
   }
 
+  /**
+   * Max reference images the direct Gemini adapter should pass per call,
+   * keyed off the active `_geminiSettings.model`. Mirrors the Atlas Cloud
+   * `modelCapabilities.maxRefImages` table so the same Gemini family gets
+   * the same cap whether it's reached directly or via Atlas:
+   *
+   *   gemini-3.1-flash-image-preview  → 14 (maps to google/nano-banana-2)
+   *   gemini-3-pro-image-preview      → 10 (maps to google/nano-banana-pro)
+   *   gemini-2.5-flash-image          → 10 (maps to google/nano-banana)
+   *   unknown / future                → 10 (conservative default)
+   *
+   * Previously the direct adapter passed every ref regardless of model, so
+   * a large reference pack sent to 2.5 Flash or 3 Pro could exceed the
+   * model's useful ref budget and degrade character consistency.
+   */
+  private getGeminiMaxRefs(): number {
+    const model = this._geminiSettings.model || '';
+    if (model.startsWith('gemini-3.1-flash-image')) return 14;
+    if (model.startsWith('gemini-3-pro-image')) return 10;
+    if (model.startsWith('gemini-2.5-flash-image')) return 10;
+    return 10;
+  }
+
   // === Atlas Cloud model capability detection ===
 
   private get modelCapabilities() {
@@ -3699,7 +3794,12 @@ export class ImageGenerationService {
       maxBatchSize: isSeedream5 ? 15 : isSeedream ? 14 : 1,
       supportsCharConsistency: isNanoBanana,
       maxConsistentChars: isNanoBanana2 ? 5 : isNanoBananaPro ? 5 : 0,
-      supportsRichPrompt: isNanoBanana,
+      // Both the Nano Banana family and Seedream consume labeled multi-image
+      // edit refs; the `buildAtlasRichPrompt` scaffold (labeled Image-N lines
+      // + identity-lock prose) improves consistency on both. Seedream was
+      // previously routed to the terser text-only builder and under-used its
+      // own reference inputs.
+      supportsRichPrompt: isNanoBanana || isSeedream,
       isNanoBanana,
       isSeedream,
     };
@@ -3970,7 +4070,7 @@ export class ImageGenerationService {
         this.emit({ type: 'job_updated', id: jobId, updates: { status: 'processing', attempts: attempt, progress: 10 } });
 
         const fullPrompt = caps.supportsRichPrompt
-          ? this.buildAtlasNanoBananaPrompt(prompt, identifier, atlasReferenceImages)
+          ? this.buildAtlasRichPrompt(prompt, identifier, atlasReferenceImages)
           : this.buildAtlasCloudPrompt(prompt, identifier);
 
         const body: Record<string, any> = {

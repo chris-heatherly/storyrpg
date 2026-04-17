@@ -143,9 +143,11 @@ function getAtlasCloudImageModels() {
     { value: 'alibaba/wan-2.6/text-to-image', label: 'Wan-2.6', price: '$0.021/pic', description: 'Supports various artistic styles and realistic photographic effects.' },
     { value: 'alibaba/wan-2.5/text-to-image', label: 'Wan-2.5', price: '$0.021/pic', description: 'Alibaba WAN 2.5 general text-to-image.' },
     // Black Forest Labs (Flux)
-    { value: 'black-forest-labs/flux-dev', label: 'Flux Dev', price: '$0.012/pic', description: 'Flux-dev 12B parameter rectified flow transformer.' },
-    { value: 'black-forest-labs/flux-schnell', label: 'Flux Schnell', price: '$0.003/pic', description: 'FLUX.1 [schnell] — fastest 12B rectified-flow model, great for drafts.' },
-    { value: 'black-forest-labs/flux-dev-lora', label: 'Flux Dev LoRA', price: '$0.015/pic', description: 'FLUX.1 [dev] with LoRA support for personalized styles.' },
+    { value: 'black-forest-labs/flux-dev', label: 'Flux Dev', price: '$0.012/pic', description: 'Flux-dev 12B parameter rectified flow transformer. Text-to-image only.' },
+    { value: 'black-forest-labs/flux-schnell', label: 'Flux Schnell', price: '$0.003/pic', description: 'FLUX.1 [schnell] — fastest 12B rectified-flow model, great for drafts. Text-to-image only.' },
+    { value: 'black-forest-labs/flux-dev-lora', label: 'Flux Dev LoRA', price: '$0.015/pic', description: 'FLUX.1 [dev] with LoRA tag support for personalized styles and brands. Text-to-image only.' },
+    { value: 'black-forest-labs/flux-kontext-dev', label: 'Flux Kontext Dev', price: '$0.025/pic', description: 'FLUX.1 Kontext [dev] — image editing via text prompts. Requires a reference image.' },
+    { value: 'black-forest-labs/flux-kontext-dev-lora', label: 'Flux Kontext Dev LoRA', price: '$0.030/pic', description: 'FLUX.1 Kontext [dev] with LoRA support for brand/style-consistent image edits. Requires a reference image.' },
     // Others
     { value: 'z-image/turbo', label: 'Z-Image Turbo', price: '$0.01/pic', description: 'Sub-second 6B text-to-image model, great for testing. Text only.' },
     { value: 'baidu/ERNIE-Image-Turbo/text-to-image', label: 'ERNIE Image Turbo', price: 'FREE', description: 'Baidu ERNIE Image, low-latency turbo variant. Free tier.' },

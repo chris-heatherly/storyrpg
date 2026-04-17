@@ -52,7 +52,7 @@ storyrpg-prototype/
 │   ├── screens/                   ← App screens (Home, EpisodeSelect, Reading, Generator, Settings, Visualizer)
 │   ├── components/                ← Reusable UI components
 │   ├── engine/                    ← Deterministic playback: storyEngine, conditionEvaluator, resolutionEngine, identityEngine, templateProcessor, growthConsequenceBuilder
-│   ├── stores/                    ← Zustand stores: gameStore, settingsStore, generationJobStore, seasonPlanStore, imageFeedbackStore, imageJobStore, videoJobStore, appNavigationStore, encounterStatePersistence, playerStatePersistence
+│   ├── stores/                    ← Zustand stores: settingsStore, generationJobStore, seasonPlanStore, imageFeedbackStore, imageJobStore, videoJobStore, appNavigationStore, encounterStatePersistence, playerStatePersistence. Note: `gameStore` in this directory is **React Context**, not Zustand.
 │   ├── types/                     ← Canonical data model (Story, Episode, Scene, Beat, Choice, PlayerState, Encounter, etc.)
 │   ├── ai-agents/                 ← AI generation pipeline (see below)
 │   ├── config/                    ← endpoints.ts (all URLs), generatorLlmOptions.ts
@@ -116,7 +116,7 @@ Client reads story files → Story Engine → Player experience
 | `src/engine/identityEngine.ts` | Tracks player identity formation through choices. |
 | `src/engine/templateProcessor.ts` | Template processing for dynamic narrative content. |
 | `src/engine/growthConsequenceBuilder.ts` | Builds growth consequences for character development. |
-| `src/stores/gameStore.ts` | Player state: attributes, relationships, flags, inventory, progress. Persists to AsyncStorage. |
+| `src/stores/gameStore.ts` | Player state: attributes, relationships, flags, inventory, progress. **React Context** (not Zustand). Persists to AsyncStorage. |
 | `src/ai-agents/pipeline/FullStoryPipeline.ts` | Main generation orchestrator — wires all agents, validators, and services together. |
 | `src/ai-agents/agents/` | Individual AI agent specialists (WorldBuilder, StoryArchitect, StyleArchitect, SceneWriter, ChoiceAuthor, BranchManager, EncounterArchitect, QA agents, image team). |
 | `src/ai-agents/agents/StyleArchitect.ts` | LLM agent that expands arbitrary art-style strings into a structured `ArtStyleProfile`. Falls back to `buildVerbatimProfile` so unknown styles never inherit cinematic vocabulary. |
@@ -135,7 +135,7 @@ Client reads story files → Story Engine → Player experience
 | `src/config/endpoints.ts` | All URLs, proxy config, external API endpoints, storage keys, timing defaults. |
 | `proxy-server.js` + `proxy/` | Express routes for Anthropic/OpenRouter proxy, file ops, job management, catalog, ElevenLabs, image APIs. |
 | `App.tsx` | Root component — sets up providers, navigation, story library loading. |
-| `src/screens/ReadingScreen.tsx` | The main story playbook UI. |
+| `src/screens/ReadingScreen.tsx` | The main story playback UI. |
 | `src/screens/GeneratorScreen.tsx` | Story generation UI with job monitoring. |
 
 ## Common Commands
@@ -146,9 +146,9 @@ All commands run from `storyrpg-prototype/`:
 npm run dev          # Start proxy + web app together (kills existing node processes first)
 npm run proxy        # Start only the proxy server (port 3001)
 npm run web          # Start only the Expo web dev server (port 8081)
-npm run validate     # Typecheck (3 configs) + run tests
+npm run validate     # Typecheck (4 configs) + lint + run tests
 npm test             # Vitest only
-npm run typecheck    # TypeScript checking across app, test, and contracts configs
+npm run typecheck    # TypeScript checking across app, test, contracts, and worker configs
 npm run generate     # CLI story generation
 npm run generate:heist    # Generate heist story type
 npm run generate:fantasy  # Generate fantasy story type
@@ -242,4 +242,4 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/PARALLEL_GENERATION.md` | Parallel generation status |
 | `docs/visual_storytelling_guide.md` | Visual storytelling design principles |
 | `docs/reference/` | Original reference materials (PDF text extracts) |
-| `.cursor/skills/` | Cursor agent skills: pipeline debugging, validation, orchestration, image generation, UX design, story structure rules, update docs |
+| `.cursor/skills/` | Cursor agent skills: pipeline debugging, validation, orchestration, agent development, image generation, story playback, proxy server, audio narration, testing tooling, UX design, story structure rules, update docs |

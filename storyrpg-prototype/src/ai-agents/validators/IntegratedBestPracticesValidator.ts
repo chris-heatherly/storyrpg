@@ -539,6 +539,7 @@ export class IntegratedBestPracticesValidator {
       consequenceBudget: this.consequenceBudgetValidator,
       stakesTriangle: this.stakesTriangleValidator,
       fiveFactor: this.fiveFactorValidator,
+      callbackOpportunities: this.callbackValidator,
     };
   }
 }

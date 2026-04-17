@@ -128,7 +128,10 @@ export interface GenerationSettingsConfig {
 
   // Concurrency and guardrail settings
   episodeParallelismEnabled?: boolean;
-  sceneParallelismEnabled?: boolean;
+  // NOTE: historical `sceneParallelismEnabled` was removed — scene generation
+  // is still serial inside a single episode. Topological ordering via the
+  // dependency graph is always on. Real wave-based parallelism is deferred
+  // to the Phase 5 `ContentGenerationPhase` extraction.
   imageWorkerModeEnabled?: boolean;
   audioWorkerModeEnabled?: boolean;
   shadowSchedulerEnabled?: boolean;

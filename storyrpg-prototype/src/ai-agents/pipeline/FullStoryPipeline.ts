@@ -93,6 +93,7 @@ import {
   PixarStakes, GeneratedStorylet as TypeGeneratedStorylet, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
 import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './EpisodePipeline';
+import { SavingPhase } from './phases/SavingPhase';
 import {
   createOutputDirectory,
   ensureDirectory,
@@ -184,6 +185,7 @@ import {
   CharacterVoiceProfile,
   aggregateValidationResults,
   PhaseValidator,
+  StructuralValidator,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import {
@@ -574,7 +576,6 @@ export interface FullPipelineResult {
     dependencyScheduler?: {
       hasCycle: boolean;
       waveCount: number;
-      usedParallelScheduling: boolean;
       fallbackToSerial: boolean;
     };
   };
@@ -704,7 +705,6 @@ export class FullStoryPipeline {
   private dependencySchedulerStats = {
     hasCycle: false,
     waveCount: 0,
-    usedParallelScheduling: false,
     fallbackToSerial: false,
   };
 
@@ -1431,7 +1431,6 @@ export class FullStoryPipeline {
     this.dependencySchedulerStats = {
       hasCycle: false,
       waveCount: 0,
-      usedParallelScheduling: false,
       fallbackToSerial: false,
     };
     this.resetCollectedVisualPlanning(); // Reset visual planning collection for new run
@@ -2397,6 +2396,36 @@ export class FullStoryPipeline {
       );
       story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
 
+      // === STRUCTURAL AUTO-FIX ===
+      // Repair common structural issues (missing startingBeatId, broken nextBeatId,
+      // empty beat text, malformed variants) before the completeness gate runs.
+      if (story) {
+        try {
+          const structuralValidator = new StructuralValidator();
+          const autoFixResult = structuralValidator.autoFix(story);
+          story = autoFixResult.story;
+          if (autoFixResult.fixedCount > 0) {
+            this.addCheckpoint('structural_autofix', {
+              fixedCount: autoFixResult.fixedCount,
+              fixes: autoFixResult.fixes,
+            });
+            this.emit({
+              type: 'pipeline_event',
+              event: 'structural_autofix_applied',
+              fixedCount: autoFixResult.fixedCount,
+              fixes: autoFixResult.fixes,
+            } as any);
+            console.log(
+              `[Pipeline] StructuralValidator.autoFix applied ${autoFixResult.fixedCount} repairs`
+            );
+          }
+        } catch (autoFixError) {
+          console.warn(
+            `[Pipeline] StructuralValidator.autoFix failed (non-fatal): ${(autoFixError as Error).message}`
+          );
+        }
+      }
+
       // === PRE-GENERATION COMPLETENESS GATE ===
       // Strict: ANY missing image halts the pipeline. No silent fallbacks.
       if (story) {
@@ -2556,50 +2585,51 @@ export class FullStoryPipeline {
           outputDirectory = await createOutputDirectory(brief.story.title);
         }
         if (story) story.outputDir = outputDirectory;
-        
-        // Prepare visual planning outputs for saving
-        const visualPlanningOutputs = this.getCollectedVisualPlanningForSave();
-        
-        const OUTPUT_WRITER_TIMEOUT_MS = 120_000; // 2 minutes max for disk saves
-        const savePromise = savePipelineOutputs(outputDirectory, {
-          brief,
-          worldBible,
-          characterBible,
-          episodeBlueprint,
-          sceneContents,
-          choiceSets,
-          encounters: Array.from(encounters.values()),
-          qaReport,
-          incrementalValidationResults: this.sceneValidationResults.length > 0
-            ? this.sceneValidationResults
-            : undefined,
-          encounterTelemetry: this.encounterTelemetry.length > 0
-            ? this.encounterTelemetry
-            : undefined,
-          llmLedger: this.telemetry.getLlmLedger() ?? undefined,
-          branchShadowDiffs: this.branchShadowDiffs.length > 0
-            ? this.branchShadowDiffs
-            : undefined,
-          bestPracticesReport,
-          finalStory: story,
-          visualPlanning: visualPlanningOutputs,
-          videoClipsGenerated: videoResults?.size || 0,
-          videoDiagnostics,
-          audioDiagnostics,
-          encounterImageDiagnostics,
-        }, Date.now() - startTime);
 
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`OutputWriter timed out after ${OUTPUT_WRITER_TIMEOUT_MS / 1000}s`)), OUTPUT_WRITER_TIMEOUT_MS)
+        const visualPlanningOutputs = this.getCollectedVisualPlanningForSave();
+
+        const savingPhase = new SavingPhase();
+        const savingResult = await savingPhase.run(
+          {
+            outputDirectory,
+            durationMs: Date.now() - startTime,
+            outputs: {
+              brief,
+              worldBible,
+              characterBible,
+              episodeBlueprint,
+              sceneContents,
+              choiceSets,
+              encounters: Array.from(encounters.values()),
+              qaReport,
+              incrementalValidationResults:
+                this.sceneValidationResults.length > 0 ? this.sceneValidationResults : undefined,
+              encounterTelemetry:
+                this.encounterTelemetry.length > 0 ? this.encounterTelemetry : undefined,
+              llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+              branchShadowDiffs:
+                this.branchShadowDiffs.length > 0 ? this.branchShadowDiffs : undefined,
+              bestPracticesReport,
+              finalStory: story,
+              visualPlanning: visualPlanningOutputs,
+              videoClipsGenerated: videoResults?.size || 0,
+              videoDiagnostics,
+              audioDiagnostics,
+              encounterImageDiagnostics,
+            },
+          },
+          {
+            config: this.config,
+            emit: (event) => this.emit(event),
+            addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+          }
         );
 
-        outputManifest = await Promise.race([savePromise, timeoutPromise]);
-
-        this.emit({
-          type: 'phase_complete',
-          phase: 'saving',
-          message: `Saved ${outputManifest.files.length} files to ${outputDirectory}`,
-        });
+        if (savingResult.manifest) {
+          outputManifest = savingResult.manifest;
+        } else if (savingResult.error) {
+          console.warn(`[Pipeline] Failed to save outputs: ${savingResult.error.message}`);
+        }
       } catch (saveError) {
         const saveErrorMsg = saveError instanceof Error ? saveError.message : String(saveError);
         console.warn(`[Pipeline] Failed to save outputs: ${saveErrorMsg}`);
@@ -3452,13 +3482,15 @@ export class FullStoryPipeline {
       // encounterBuildup will be overridden per-scene below
       encounterBuildup: primaryEncounterScene.encounterBuildup || '',
     } : undefined;
+    // Build a dependency graph and flatten topological waves into a serial
+    // ordering. Scene content generation is intentionally serial today because
+    // the loop below threads previous-scene summaries, repair loops, and shared
+    // state. Real wave-based parallel execution is tracked as a follow-up once
+    // the `ContentGenerationPhase` is extracted (see pipeline/phases/).
     const dependencyGraph = buildSceneDependencyGraph(blueprint);
     const topoWaves = dependencyGraph.hasCycle ? [] : buildTopologicalWaves(blueprint);
     this.dependencySchedulerStats.hasCycle = dependencyGraph.hasCycle;
     this.dependencySchedulerStats.waveCount = topoWaves.length;
-    this.dependencySchedulerStats.usedParallelScheduling = Boolean(
-      this.config.generation?.sceneParallelismEnabled && !dependencyGraph.hasCycle && topoWaves.length > 0
-    );
     this.dependencySchedulerStats.fallbackToSerial = dependencyGraph.hasCycle;
     if (dependencyGraph.hasCycle) {
       this.emit({
@@ -5505,7 +5537,6 @@ export class FullStoryPipeline {
     this.dependencySchedulerStats = {
       hasCycle: false,
       waveCount: 0,
-      usedParallelScheduling: false,
       fallbackToSerial: false,
     };
     const startTime = Date.now();

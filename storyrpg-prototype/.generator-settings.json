@@ -13,7 +13,7 @@
   "llmProvider": "anthropic",
   "llmModel": "claude-sonnet-4-20250514",
   "atlasCloudModel": "black-forest-labs/flux-dev-lora",
-  "artStyle": "",
+  "artStyle": "Mid-Century 'Cartoon Modern' animation art style, characterized by a sophisticated, stylized graphical aesthetic. This look features bold, geometric shapes, asymmetrical compositions, minimalist design, and intentionally flattened perspective. Backgrounds are often abstract and non-representational, defined by blocks of muted, flat colors (such as mustard yellow, turquoise, avocado green, and charcoal gray) applied with rough, textured brushstrokes or silkscreen effects. Characters and objects are rendered with dynamic, sketchy line work and energetic movement, often showing exaggerated anatomy or \"broken\" outlines, evoking the hand-drawn energy of 1960s TV animation and jazz album covers.",
   "generationSettings": {
     "targetSceneCount": 6,
     "majorChoiceCount": 3,

@@ -136,14 +136,6 @@ export {
   ACTION_POSE_DEFINITIONS
 } from './CharacterReferenceSheetAgent';
 
-// Re-export drama extraction types
-export type {
-  DramaExtraction,
-  DramaExtractionRequest,
-  CharacterPhysicalManifestation
-} from './DramaExtractionAgent';
-export { DramaExtractionAgent } from './DramaExtractionAgent';
-
 // Re-export cinematic beat analyzer
 export {
   analyzeBeatCinematically,

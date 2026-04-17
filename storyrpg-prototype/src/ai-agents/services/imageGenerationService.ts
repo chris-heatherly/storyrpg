@@ -49,6 +49,23 @@ if (!isNativeRuntime()) {
   } catch (e) {}
 }
 
+/**
+ * Atlas Cloud LoRA reference. Used by Flux Dev LoRA and Flux Kontext Dev LoRA
+ * on the Atlas Cloud API. The `path` is either a HuggingFace repo (e.g.
+ * `author/repo`) or a direct URL to a `.safetensors` file. `scale` defaults
+ * to 1.0 when omitted; typical character LoRAs work well at 0.7-1.0.
+ *
+ * Atlas documents a hard cap of 5 LoRAs per request.
+ *
+ * @see https://atlascloud.ai/docs/en/models/lora
+ */
+export interface AtlasCloudLoraRef {
+  /** HuggingFace repo (`author/repo`) or HTTPS URL to a .safetensors file. */
+  path: string;
+  /** Weight applied at inference; default 1.0. */
+  scale?: number;
+}
+
 export interface ImageGenerationConfig {
   enabled?: boolean;
   provider?: ImageProvider;
@@ -59,6 +76,20 @@ export interface ImageGenerationConfig {
   // Atlas Cloud configuration
   atlasCloudApiKey?: string;
   atlasCloudModel?: string;
+  /**
+   * Per-character LoRA registry for Atlas Cloud Flux LoRA variants
+   * (`flux-dev-lora`, `flux-kontext-dev-lora`). Keyed by canonical character
+   * name as used in `metadata.characterName` / `metadata.characterNames`.
+   * Only consumed when the active `atlasCloudModel` supports LoRA tags
+   * (see `modelCapabilities.supportsLoraTags`).
+   */
+  atlasCloudCharacterLoras?: Record<string, AtlasCloudLoraRef>;
+  /**
+   * Style LoRAs always applied on LoRA-capable Flux variants, regardless of
+   * character. Merged ahead of character LoRAs so they occupy the lowest
+   * slots and survive the 5-slot cap when multiple characters appear.
+   */
+  atlasCloudStyleLoras?: AtlasCloudLoraRef[];
   // useapi.net configuration (Midjourney)
   useapiToken?: string;
   midapiToken?: string;
@@ -2085,7 +2116,7 @@ export class ImageGenerationService {
 
       if (preferAtlasFirst) {
         try {
-          result = await this.generateWithAtlasCloud(normalizedPrompt, identifier, jobId, capabilityFilteredRefs, metadata?.type);
+          result = await this.generateWithAtlasCloud(normalizedPrompt, identifier, jobId, capabilityFilteredRefs, metadata?.type, metadata);
           if (!result.imageUrl && result.imagePath) {
             result.imageUrl = this.getServedImageUrl(result.imagePath);
           }
@@ -2135,7 +2166,7 @@ export class ImageGenerationService {
         this.isPlaceholderResult(result)
       ) {
         console.warn(`[ImageGenerationService] Encounter fallback: nano-banana returned placeholder for "${identifier}", trying Atlas Cloud`);
-        const fallbackResult = await this.generateWithAtlasCloud(normalizedPrompt, `${identifier}-atlas-fallback`, jobId, referenceImages, metadata?.type);
+        const fallbackResult = await this.generateWithAtlasCloud(normalizedPrompt, `${identifier}-atlas-fallback`, jobId, referenceImages, metadata?.type, metadata);
         if (fallbackResult.imagePath && !fallbackResult.imageUrl) {
           fallbackResult.imageUrl = this.getServedImageUrl(fallbackResult.imagePath);
         }
@@ -2241,7 +2272,7 @@ export class ImageGenerationService {
 
       if (fallbackEligible) {
         try {
-          const fallbackResult = await this.generateWithAtlasCloud(normalizedPrompt, `${identifier}-atlas-fallback`, jobId, referenceImages, metadata?.type);
+          const fallbackResult = await this.generateWithAtlasCloud(normalizedPrompt, `${identifier}-atlas-fallback`, jobId, referenceImages, metadata?.type, metadata);
           if (!fallbackResult.imageUrl && fallbackResult.imagePath) {
             fallbackResult.imageUrl = this.getServedImageUrl(fallbackResult.imagePath);
           }
@@ -3779,29 +3810,107 @@ export class ImageGenerationService {
 
   private get modelCapabilities() {
     const model = this.config.atlasCloudModel || '';
+
+    // Nano Banana (Google) — first-class: /text-to-image + /edit, 5-char consistency
     const isNanoBanana2 = model.startsWith('google/nano-banana-2');
     const isNanoBananaPro = model.startsWith('google/nano-banana-pro');
     const isNanoBananaStd = model.startsWith('google/nano-banana/');
     const isNanoBanana = isNanoBanana2 || isNanoBananaPro || isNanoBananaStd;
+
+    // Seedream (ByteDance) — first-class: /text-to-image + /edit + batch variants
     const isSeedream = model.startsWith('bytedance/seedream-');
     const isSeedream5 = model.startsWith('bytedance/seedream-v5');
 
+    // Flux (Black Forest Labs)
+    //   flux-dev, flux-schnell        — pure T2I (no refs, no LoRA at API level)
+    //   flux-dev-lora                 — T2I with LoRA tag support (LoRA payload shape
+    //                                   is not published in Atlas docs; leaving LoRA
+    //                                   wiring to a follow-up PR)
+    //   flux-kontext-dev              — dedicated image-edit model, ~1 ref image
+    //   flux-kontext-dev-lora         — image-edit + LoRA tag support
+    const isFluxSchnell = model === 'black-forest-labs/flux-schnell';
+    const isFluxDev = model === 'black-forest-labs/flux-dev';
+    const isFluxDevLora = model === 'black-forest-labs/flux-dev-lora';
+    const isFluxKontext = model === 'black-forest-labs/flux-kontext-dev';
+    const isFluxKontextLora = model === 'black-forest-labs/flux-kontext-dev-lora';
+    const isFluxKontextAny = isFluxKontext || isFluxKontextLora;
+    const isFluxLoraAny = isFluxDevLora || isFluxKontextLora;
+    const isFlux = isFluxSchnell || isFluxDev || isFluxDevLora || isFluxKontextAny;
+
+    // OpenAI GPT Image (1, 1.5, 1-Mini) — separate /text-to-image and /edit endpoints
+    const isGptImage = model.startsWith('openai/gpt-image-');
+
+    // Qwen Image 2.0 family (qwen/qwen-image-2.0, qwen/qwen-image-2.0-pro)
+    //   — /text-to-image and /edit endpoints
+    const isQwenImage20 = model.startsWith('qwen/qwen-image-2.0');
+
+    // Alibaba Qwen-Image family (alibaba/qwen-image/*, atlascloud/qwen-image/*)
+    //   — /text-to-image-max, /text-to-image-plus, /edit, /edit-plus, /edit-plus-20251215
+    const isQwenImageAlibaba = model.startsWith('alibaba/qwen-image/')
+      || model.startsWith('atlascloud/qwen-image/');
+    const isQwenImage = isQwenImage20 || isQwenImageAlibaba;
+
+    // Alibaba Wan (2.5 / 2.6 / 2.7 / 2.7-pro) — /text-to-image + /image-edit
+    const isWan = /^alibaba\/wan-2\.[567](-pro)?\//.test(model);
+
+    // Pure T2I families (no ref support)
+    const isImagen = model.startsWith('google/imagen');
+    const isZImage = model.startsWith('z-image/');
+    const isErnie = model.startsWith('baidu/ERNIE-') || model.startsWith('baidu/ernie-');
+
+    const supportsEditRefs = isNanoBanana
+      || isSeedream
+      || isFluxKontextAny
+      || isGptImage
+      || isQwenImage
+      || isWan;
+
+    // Per-family max reference image budgets. Nano Banana and Seedream numbers
+    // are from Atlas's published per-model specs; others are conservative
+    // estimates matching common usage on upstream providers (Replicate / fal /
+    // OpenAI). `filterReferencesForProvider` already truncates safely so these
+    // are a ceiling, not a hard contract.
+    let maxRefImages = 0;
+    if (isNanoBanana2) maxRefImages = 14;
+    else if (isNanoBananaPro) maxRefImages = 10;
+    else if (isNanoBananaStd) maxRefImages = 10;
+    else if (isSeedream) maxRefImages = 10;
+    else if (isFluxKontextAny) maxRefImages = 1;     // Kontext is single-ref by design
+    else if (isGptImage) maxRefImages = 4;           // gpt-image-1 edit accepts up to ~4 inputs
+    else if (isQwenImage20) maxRefImages = 3;
+    else if (isQwenImageAlibaba) maxRefImages = 5;   // edit-plus variants accept more
+    else if (isWan) maxRefImages = 3;
+
     return {
-      supportsEditRefs: isSeedream || isNanoBanana,
-      maxRefImages: isNanoBanana2 ? 14 : isNanoBananaPro ? 10 : isSeedream ? 10 : isNanoBananaStd ? 10 : 0,
+      supportsEditRefs,
+      maxRefImages,
       supportsBatch: isSeedream,
       supportsBatchEdit: isSeedream,
       maxBatchSize: isSeedream5 ? 15 : isSeedream ? 14 : 1,
       supportsCharConsistency: isNanoBanana,
       maxConsistentChars: isNanoBanana2 ? 5 : isNanoBananaPro ? 5 : 0,
-      // Both the Nano Banana family and Seedream consume labeled multi-image
-      // edit refs; the `buildAtlasRichPrompt` scaffold (labeled Image-N lines
-      // + identity-lock prose) improves consistency on both. Seedream was
-      // previously routed to the terser text-only builder and under-used its
-      // own reference inputs.
+      // The labeled-image rich-prompt scaffold (`buildAtlasRichPrompt`) was
+      // tuned for Nano Banana + Seedream. Extending it to GPT Image / Qwen /
+      // Wan / Kontext would be a separate tuning pass — leaving gated for now
+      // so new families use the terser text-only builder until we validate.
       supportsRichPrompt: isNanoBanana || isSeedream,
+      // LoRA tag payloads (Flux Dev LoRA + Flux Kontext Dev LoRA). The actual
+      // payload wiring is deferred — this flag is surfaced so downstream code
+      // and tests can assert the family detection.
+      supportsLoraTags: isFluxLoraAny,
       isNanoBanana,
       isSeedream,
+      isFlux,
+      isFluxKontext: isFluxKontextAny,
+      isFluxLora: isFluxLoraAny,
+      isGptImage,
+      isQwenImage,
+      isQwenImage20,
+      isQwenImageAlibaba,
+      isWan,
+      isImagen,
+      isZImage,
+      isErnie,
     };
   }
 
@@ -4017,28 +4126,160 @@ export class ImageGenerationService {
   }
 
   /**
-   * Resolve the Atlas Cloud model string, auto-routing to the appropriate
-   * Seedream variant when references or batch are requested.
-   * Nano Banana family routes to /edit when refs present, /text-to-image otherwise.
-   * Other models are returned as-is.
+   * Resolve the Atlas Cloud model string, auto-routing between text-to-image
+   * and edit endpoints based on whether references are present.
+   *
+   * Routing rules (see modelCapabilities for family detection):
+   *   Nano Banana     — /text-to-image ↔ /edit
+   *   Seedream        — base ↔ /edit, /sequential, /edit-sequential
+   *   GPT Image       — /text-to-image ↔ /edit
+   *   Qwen Image 2.0  — /text-to-image ↔ /edit
+   *   Qwen (Alibaba)  — /text-to-image-max|plus ↔ /edit|edit-plus
+   *   Wan             — /text-to-image ↔ /image-edit
+   *   Flux Kontext    — already an edit model, passthrough
+   *   Flux base/LoRA  — T2I only, passthrough (refs would be silently ignored
+   *                     upstream; we warn at the caller when hasRefs=true)
+   *   Everything else — returned as-is
    */
   private resolveAtlasCloudModel(opts?: { hasRefs?: boolean; isBatch?: boolean }): string {
     const baseModel = this.config.atlasCloudModel || 'bytedance/seedream-v4.5';
+    const hasRefs = !!opts?.hasRefs;
+    const isBatch = !!opts?.isBatch;
 
     if (baseModel.startsWith('google/nano-banana')) {
       const stem = baseModel.replace(/\/(text-to-image|edit)$/, '');
-      return opts?.hasRefs ? `${stem}/edit` : `${stem}/text-to-image`;
+      return hasRefs ? `${stem}/edit` : `${stem}/text-to-image`;
     }
 
     if (baseModel.startsWith('bytedance/seedream-')) {
       const stem = baseModel.replace(/\/(sequential|edit-sequential|edit)$/, '');
-      if (opts?.hasRefs && opts?.isBatch) return `${stem}/edit-sequential`;
-      if (opts?.hasRefs) return `${stem}/edit`;
-      if (opts?.isBatch) return `${stem}/sequential`;
+      if (hasRefs && isBatch) return `${stem}/edit-sequential`;
+      if (hasRefs) return `${stem}/edit`;
+      if (isBatch) return `${stem}/sequential`;
       return stem;
     }
 
+    if (baseModel.startsWith('openai/gpt-image-')) {
+      const stem = baseModel.replace(/\/(text-to-image|edit)$/, '');
+      return hasRefs ? `${stem}/edit` : `${stem}/text-to-image`;
+    }
+
+    if (baseModel.startsWith('qwen/qwen-image-2.0')) {
+      const stem = baseModel.replace(/\/(text-to-image|edit)$/, '');
+      return hasRefs ? `${stem}/edit` : `${stem}/text-to-image`;
+    }
+
+    // Alibaba Qwen-Image has parallel T2I and edit variants with suffix
+    // families (max|plus ↔ edit|edit-plus). When refs are present we prefer
+    // the richer `edit-plus` variant because it's the multi-image-aware path.
+    if (baseModel.startsWith('alibaba/qwen-image/') || baseModel.startsWith('atlascloud/qwen-image/')) {
+      const stem = baseModel.replace(
+        /\/(text-to-image(-max|-plus)?|edit(-plus(-\d+)?)?)$/,
+        '',
+      );
+      if (!hasRefs) {
+        if (baseModel.includes('-max')) return `${stem}/text-to-image-max`;
+        if (baseModel.includes('-plus')) return `${stem}/text-to-image-plus`;
+        return `${stem}/text-to-image`;
+      }
+      if (baseModel.includes('-max')) return `${stem}/edit`;
+      if (baseModel.includes('-plus')) return `${stem}/edit-plus`;
+      return `${stem}/edit`;
+    }
+
+    if (/^alibaba\/wan-2\.[567](-pro)?\//.test(baseModel)) {
+      const stem = baseModel.replace(/\/(text-to-image|image-edit)$/, '');
+      return hasRefs ? `${stem}/image-edit` : `${stem}/text-to-image`;
+    }
+
+    // Flux Kontext: already an edit model. Refs are required for meaningful
+    // output but we don't rewrite the slug.
+    //
+    // Flux Dev / Schnell / Dev LoRA: pure T2I. If refs were passed, the caller
+    // already filtered them out via filterReferencesForProvider (maxRefImages=0),
+    // so we just return the slug untouched.
     return baseModel;
+  }
+
+  /**
+   * Resolve the `loras: [...]` payload for Atlas Cloud Flux LoRA variants.
+   *
+   * Shape: `[{ path, scale }]` where `path` is an HF repo (`author/repo`) or
+   * direct `.safetensors` URL. Atlas enforces a hard cap of 5 entries.
+   *
+   * Lookup order, so style LoRAs survive the cap when many characters appear:
+   *   1. `config.atlasCloudStyleLoras` (stable across the whole story)
+   *   2. per-character entries from `config.atlasCloudCharacterLoras` keyed by
+   *      `metadata.characterNames[]` or `metadata.characterName`.
+   *
+   * Duplicates (by normalized path) are collapsed to the first occurrence so a
+   * style LoRA that also happens to be registered for a character doesn't
+   * consume two slots.
+   *
+   * Returns `undefined` when the active model doesn't support LoRA tags or
+   * when nothing was resolved, which tells the body-builder to omit the field
+   * entirely rather than send `[]` (which Atlas interprets as a default).
+   */
+  private resolveAtlasFluxLoras(
+    metadata?: Record<string, any>,
+  ): AtlasCloudLoraRef[] | undefined {
+    const caps = this.modelCapabilities;
+    if (!caps.supportsLoraTags) return undefined;
+
+    const styleRefs = this.config.atlasCloudStyleLoras || [];
+    const charRegistry = this.config.atlasCloudCharacterLoras || {};
+
+    const rawNames: string[] = [];
+    if (metadata?.characterName && typeof metadata.characterName === 'string') {
+      rawNames.push(metadata.characterName);
+    }
+    if (Array.isArray(metadata?.characterNames)) {
+      for (const n of metadata.characterNames) {
+        if (typeof n === 'string') rawNames.push(n);
+      }
+    }
+
+    const charRefs: AtlasCloudLoraRef[] = [];
+    const seenCharKey = new Set<string>();
+    for (const name of rawNames) {
+      const trimmed = name.trim();
+      if (!trimmed) continue;
+      // Try exact match first, then case-insensitive.
+      const direct = charRegistry[trimmed];
+      let ref: AtlasCloudLoraRef | undefined = direct;
+      if (!ref) {
+        const lower = trimmed.toLowerCase();
+        for (const [k, v] of Object.entries(charRegistry)) {
+          if (k.toLowerCase() === lower) {
+            ref = v;
+            break;
+          }
+        }
+      }
+      if (!ref || !ref.path) continue;
+      const dedupe = trimmed.toLowerCase();
+      if (seenCharKey.has(dedupe)) continue;
+      seenCharKey.add(dedupe);
+      charRefs.push(ref);
+    }
+
+    const combined: AtlasCloudLoraRef[] = [];
+    const seenPath = new Set<string>();
+    for (const ref of [...styleRefs, ...charRefs]) {
+      if (!ref || typeof ref.path !== 'string' || !ref.path.trim()) continue;
+      const key = ref.path.trim().toLowerCase();
+      if (seenPath.has(key)) continue;
+      seenPath.add(key);
+      combined.push({
+        path: ref.path.trim(),
+        scale: typeof ref.scale === 'number' && Number.isFinite(ref.scale)
+          ? ref.scale
+          : 1,
+      });
+      if (combined.length >= 5) break;
+    }
+
+    return combined.length > 0 ? combined : undefined;
   }
 
   private async generateWithAtlasCloud(
@@ -4046,7 +4287,8 @@ export class ImageGenerationService {
     identifier: string,
     jobId: string,
     referenceImages?: ReferenceImage[],
-    imageType?: ImageType
+    imageType?: ImageType,
+    metadata?: Record<string, any>,
   ): Promise<GeneratedImage> {
     const env = typeof process !== 'undefined' ? process.env : {} as any;
     const apiKey = this.config.atlasCloudApiKey || env.EXPO_PUBLIC_ATLAS_CLOUD_API_KEY || env.ATLAS_CLOUD_API_KEY;
@@ -4088,11 +4330,36 @@ export class ImageGenerationService {
           body.size = this.mapAspectRatioToSize(prompt.aspectRatio || '1:1', model);
           body.output_format = 'png';
           if (hasRefs) {
-            body.images = await this.prepareAtlasImageRefs(atlasReferenceImages, apiKey);
+            // Flux Kontext expects a single `image_url` (string) rather than
+            // the `images[]` array used by Seedream/Nano Banana/Qwen/Wan.
+            // Mirrors fal.ai's `flux-kontext-lora` schema which Atlas
+            // normalizes to. Kontext is single-ref by design (maxRefImages=1),
+            // so taking refs[0] is lossless.
+            if (caps.isFluxKontext) {
+              const prepared = await this.prepareAtlasImageRefs(
+                atlasReferenceImages.slice(0, 1),
+                apiKey,
+              );
+              if (prepared[0]) body.image_url = prepared[0];
+            } else {
+              body.images = await this.prepareAtlasImageRefs(atlasReferenceImages, apiKey);
+            }
           }
         }
 
-        console.log(`[ImageGenerationService] Atlas Cloud: Submitting async generation with model ${model} (attempt ${attempt}, refs: ${atlasReferenceImages.length})`);
+        // Flux Dev LoRA / Flux Kontext Dev LoRA accept a `loras: [{path, scale}]`
+        // array with a hard cap of 5. Resolve the registry lookup from metadata
+        // (characterNames + style refs) and fold it in. Helper returns undefined
+        // when the active model doesn't support LoRAs or when nothing is
+        // configured, so this is a no-op for every other Atlas family.
+        if (caps.supportsLoraTags) {
+          const loraPayload = this.resolveAtlasFluxLoras(metadata);
+          if (loraPayload && loraPayload.length > 0) {
+            body.loras = loraPayload;
+          }
+        }
+
+        console.log(`[ImageGenerationService] Atlas Cloud: Submitting async generation with model ${model} (attempt ${attempt}, refs: ${atlasReferenceImages.length}${body.loras ? `, loras: ${body.loras.length}` : ''})`);
 
         const response = await fetch(`${baseUrl}/generateImage`, {
           method: 'POST',
@@ -4313,11 +4580,48 @@ export class ImageGenerationService {
           body.output_format = 'png';
           if (hasRefs) {
             const batchRefs = this.collectAtlasReferenceImages(referenceImages);
-            body.images = await this.prepareAtlasImageRefs(batchRefs, apiKey);
+            // Same Kontext special-case as the single-generation path.
+            // In practice `supportsBatchEdit` is false for Kontext so we
+            // won't reach here, but we keep the branch for defensive
+            // symmetry if Atlas ever enables batching on that family.
+            if (caps.isFluxKontext) {
+              const prepared = await this.prepareAtlasImageRefs(batchRefs.slice(0, 1), apiKey);
+              if (prepared[0]) body.image_url = prepared[0];
+            } else {
+              body.images = await this.prepareAtlasImageRefs(batchRefs, apiKey);
+            }
           }
         }
 
-        console.log(`[ImageGenerationService] Atlas Cloud batch: ${chunk.length} images with model ${model} (async)`);
+        // Aggregate metadata across the whole chunk: a Seedream-style batch
+        // shares one request, so any character mentioned in any prompt should
+        // contribute a LoRA. Style LoRAs apply unconditionally via the helper.
+        if (caps.supportsLoraTags) {
+          const batchMeta: Record<string, any> = {
+            characterNames: Array.from(
+              new Set(
+                chunk.flatMap((p) => {
+                  const names: string[] = [];
+                  if (p.metadata?.characterName && typeof p.metadata.characterName === 'string') {
+                    names.push(p.metadata.characterName);
+                  }
+                  if (Array.isArray(p.metadata?.characterNames)) {
+                    for (const n of p.metadata.characterNames) {
+                      if (typeof n === 'string') names.push(n);
+                    }
+                  }
+                  return names;
+                }),
+              ),
+            ),
+          };
+          const loraPayload = this.resolveAtlasFluxLoras(batchMeta);
+          if (loraPayload && loraPayload.length > 0) {
+            body.loras = loraPayload;
+          }
+        }
+
+        console.log(`[ImageGenerationService] Atlas Cloud batch: ${chunk.length} images with model ${model} (async${body.loras ? `, loras: ${body.loras.length}` : ''})`);
         this.emit({ type: 'job_updated', id: batchJobId, updates: { status: 'processing', progress: 10 } });
 
         const response = await fetch(`${baseUrl}/generateImage`, {

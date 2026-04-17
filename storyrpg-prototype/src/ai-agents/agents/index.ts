@@ -45,17 +45,7 @@ export {
   type StakesAnnotation,
 } from './ChoiceAuthor';
 
-// Dialogue & Branch Management Agents
-export {
-  DialogueSpecialist,
-  type DialogueSpecialistInput,
-  type DialogueOutput,
-  type DialogueLine,
-  type DialogueVariant,
-  type RelationshipState,
-  type EmotionalContext,
-} from './DialogueSpecialist';
-
+// Branch Management Agents
 export {
   BranchManager,
   type BranchManagerInput,
@@ -78,32 +68,12 @@ export {
   type EscalationPhase,
 } from './EncounterArchitect';
 
-export {
-  BeatWriter,
-  type BeatWriterInput,
-  type BeatContent,
-  type BeatTextVariant,
-  type BeatOutcome,
-} from './BeatWriter';
-
-export {
-  ResolutionDesigner,
-  type ResolutionDesignerInput,
-  type ResolutionDesign,
-  type ResolutionOutcome,
-} from './ResolutionDesigner';
-
 // Quality Assurance Agents
 export {
   ContinuityChecker,
   VoiceValidator,
   StakesAnalyzer,
   QARunner,
-  PlotHoleDetector,
-  ToneAnalyzer,
-  PacingAuditor,
-  SensitivityReviewer,
-  ExtendedQARunner,
   type ContinuityCheckerInput,
   type ContinuityReport,
   type ContinuityIssue,
@@ -115,51 +85,7 @@ export {
   type StakesIssue,
   type QAInput,
   type QAReport,
-  type PlotHoleDetectorInput,
-  type PlotHoleReport,
-  type PlotHole,
-  type ToneAnalyzerInput,
-  type ToneReport,
-  type ToneIssue,
-  type PacingAuditorInput,
-  type PacingReport,
-  type PacingIssue,
-  type SensitivityReviewerInput,
-  type SensitivityReport,
-  type SensitivityIssue,
-  type ExtendedQAInput,
-  type ExtendedQAReport,
 } from './QAAgents';
-
-// Integration & Testing Agents
-export {
-  ScriptCompiler,
-  type ScriptCompilerInput,
-  type CompiledEpisode,
-  type CompiledScene,
-  type CompiledBeat,
-  type CompiledChoice,
-} from './ScriptCompiler';
-
-export {
-  VariableTracker,
-  type VariableTrackerInput,
-  type VariableReport,
-  type VariableUsage,
-  type VariableIssue,
-  type VariableType,
-} from './VariableTracker';
-
-export {
-  PlaytestSimulator,
-  type PlaytestSimulatorInput,
-  type PlaytestReport,
-  type SimulatedPath,
-  type PathStep,
-  type PathIssue,
-  type PlayStrategy,
-  type GameState,
-} from './PlaytestSimulator';
 
 // Image Generation Agent Team
 export {
@@ -179,4 +105,3 @@ export { VisualIllustratorAgent, type IllustrationRequest } from './image-team/V
 export { EncounterImageAgent, type EncounterSequencePlan } from './image-team/EncounterImageAgent';
 export { ConsistencyScorerAgent, type ConsistencyScore, type ConsistencyRequest } from './image-team/ConsistencyScorerAgent';
 export { CompositionValidatorAgent, type CompositionValidation, type CompositionRequest } from './image-team/CompositionValidatorAgent';
-export { AssetAuditorAgent, type AuditReport, type AuditRequest } from './image-team/AssetAuditorAgent';

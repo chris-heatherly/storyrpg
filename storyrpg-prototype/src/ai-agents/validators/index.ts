@@ -27,6 +27,10 @@ export type { ValidationInput } from './IntegratedBestPracticesValidator';
 export { BaseValidator } from './BaseValidator';
 export type { ValidationIssue, ValidationResult } from './BaseValidator';
 
+// Structural validator (story-shape integrity + auto-fix)
+export { StructuralValidator } from './StructuralValidator';
+export type { StructuralIssue, StructuralReport } from './StructuralValidator';
+
 // Future validators (available but not yet integrated into pipeline)
 // TODO: Integrate these validators when multi-episode/season generation is enabled
 export { SeasonValidator } from './SeasonValidator';

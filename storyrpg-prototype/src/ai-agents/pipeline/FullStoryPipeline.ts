@@ -7743,7 +7743,7 @@ ${clothingRule}
           beatId: b.id,
         }));
 
-        const diversity = checkStructuralDiversity(shots);
+        const diversity = checkStructuralDiversity(shots, this.config.imageGen?.artStyleProfile);
         if (!diversity.acceptable) {
           this.emit({
             type: 'warning',

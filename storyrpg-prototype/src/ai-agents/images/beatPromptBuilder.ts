@@ -20,6 +20,12 @@ import {
   type CinematicAnalysis,
   type BeatType,
 } from '../agents/image-team/CinematicBeatAnalyzer';
+import {
+  UNIVERSAL_NEGATIVE_PROMPT,
+  CHARACTER_NEGATIVE_OVERLAY,
+  ESTABLISHING_NEGATIVE_OVERLAY,
+  composeNegativePrompt as composeNegativePromptShared,
+} from './cinematicPromptCore';
 
 export interface BeatPromptInput {
   beatId: string;
@@ -123,19 +129,12 @@ export interface ScenePromptContext {
   styleProfile?: import('./artStyleProfile').ArtStyleProfile;
 }
 
-const BASE_NEGATIVE_PROMPT =
-  'triptych, diptych, collage, montage, picture-in-picture, inset panel, overlaid cutout, ' +
-  'split-screen, comic panels, image within image, composite image, floating portrait, ' +
-  'text overlay, caption text, title text, speech bubbles, watermarks, signatures, ' +
-  'dialog text, narrative text, sound effects, onomatopoeia, ' +
-  'blurry, low quality';
-
-const CHARACTER_NEGATIVE =
-  ', stiff pose, symmetrical stance, characters frozen in place, arms at sides, ' +
-  'neutral expression, mannequin pose, standing straight, centered composition';
-
-const ESTABLISHING_NEGATIVE =
-  ', character portrait, close-up face, people in foreground';
+// B8: negative-prompt constants moved to `cinematicPromptCore` so the
+// deterministic and LLM-agent paths share the same floor. Aliased here for
+// readability in the builder body and to preserve the old local names.
+const BASE_NEGATIVE_PROMPT = UNIVERSAL_NEGATIVE_PROMPT;
+const CHARACTER_NEGATIVE = CHARACTER_NEGATIVE_OVERLAY;
+const ESTABLISHING_NEGATIVE = ESTABLISHING_NEGATIVE_OVERLAY;
 
 function buildChoicePayoffPrefix(
   isBranchPayoff: boolean,
@@ -777,55 +776,8 @@ export function overrideShotFromPlan(
   return overridden;
 }
 
-/**
- * C2: Assemble the final negative prompt, honoring the active art-style
- * profile. Drops built-in negatives that the profile's `acceptableDeviations`
- * explicitly permit (e.g. a minimalist / storybook style should not be told
- * to avoid "centered composition" because that's exactly the look it wants),
- * and merges `genreNegatives` so style-specific anti-patterns survive into
- * the final negative-prompt string.
- */
-function composeNegativePrompt(
-  base: string,
-  profile: import('./artStyleProfile').ArtStyleProfile | undefined,
-  surface: 'character' | 'establishing',
-): string {
-  if (!profile) return base;
-
-  let adjusted = base;
-
-  // Strip "stiff pose"-family negatives when the profile accepts static posing.
-  if (profile.acceptableDeviations.includes('mid-action-posing')) {
-    adjusted = adjusted
-      .replace(/,?\s*stiff pose/gi, '')
-      .replace(/,?\s*characters frozen in place/gi, '')
-      .replace(/,?\s*mannequin pose/gi, '');
-  }
-  if (profile.acceptableDeviations.includes('asymmetric-body-language')) {
-    adjusted = adjusted
-      .replace(/,?\s*symmetrical stance/gi, '')
-      .replace(/,?\s*arms at sides/gi, '')
-      .replace(/,?\s*standing straight/gi, '');
-  }
-  if (profile.acceptableDeviations.includes('no-symmetrical-composition') ||
-      profile.acceptableDeviations.includes('no-dead-center')) {
-    adjusted = adjusted.replace(/,?\s*centered composition/gi, '');
-  }
-  if (profile.acceptableDeviations.includes('thumbnail-readable-expressions')) {
-    adjusted = adjusted.replace(/,?\s*neutral expression/gi, '');
-  }
-
-  adjusted = adjusted.replace(/\s{2,}/g, ' ').replace(/^\s*,+\s*/, '').replace(/\s*,\s*,/g, ',').trim();
-
-  if (profile.genreNegatives.length > 0) {
-    adjusted = `${adjusted}, ${profile.genreNegatives.join(', ')}`;
-  }
-
-  // `surface` is currently used only for future-proofing; different surfaces
-  // could want different deviation sets (e.g. establishing shots may still
-  // want to avoid "character portrait" even for storybook profiles). For now
-  // both surfaces share the same deviation map.
-  void surface;
-
-  return adjusted;
-}
+// B8: `composeNegativePrompt` now lives in `cinematicPromptCore` so the
+// deterministic path and the LLM-based illustrator path share one source
+// of truth for style-aware negative-prompt assembly. Re-exported locally
+// as an alias so existing call sites in this file don't need to change.
+const composeNegativePrompt = composeNegativePromptShared;

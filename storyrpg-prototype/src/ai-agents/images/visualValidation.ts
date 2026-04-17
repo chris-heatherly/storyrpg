@@ -7,6 +7,7 @@
  */
 
 import type { GeneratedImage, ImagePrompt } from '../agents/ImageGenerator';
+import type { ArtStyleProfile } from './artStyleProfile';
 
 export interface Tier1CheckResult {
   passed: boolean;
@@ -94,9 +95,15 @@ export interface SceneDiversityCheck {
 /**
  * Tier 1: Structural diversity check across a scene's shots.
  * Returns warnings (not blocking) about repeated angles/types.
+ *
+ * C5: Under an `ArtStyleProfile` that whitelists `centered-composition` or
+ * `stiff-pose-ok` we relax the repetition threshold — those styles
+ * intentionally reuse symmetrical / tableau staging and we shouldn't
+ * spam the operator with false-positive diversity warnings.
  */
 export function checkStructuralDiversity(
   shots: Array<{ cameraAngle?: string; shotType?: string; beatId: string }>,
+  styleProfile?: ArtStyleProfile,
 ): { acceptable: boolean; warnings: string[] } {
   const warnings: string[] = [];
   if (shots.length <= 2) return { acceptable: true, warnings };
@@ -111,7 +118,14 @@ export function checkStructuralDiversity(
     typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
   }
 
-  const threshold = Math.ceil(shots.length * 0.6);
+  const relaxesRepetition = !!styleProfile && (
+    styleProfile.acceptableDeviations.includes('no-symmetrical-composition') ||
+    styleProfile.acceptableDeviations.includes('no-dead-center') ||
+    styleProfile.acceptableDeviations.includes('asymmetric-body-language') ||
+    styleProfile.acceptableDeviations.includes('mid-action-posing')
+  );
+  const thresholdFactor = relaxesRepetition ? 0.8 : 0.6;
+  const threshold = Math.ceil(shots.length * thresholdFactor);
   for (const [angle, count] of angleCounts) {
     if (count >= threshold) {
       warnings.push(`Camera angle "${angle}" used ${count}/${shots.length} times`);
@@ -129,20 +143,43 @@ export function checkStructuralDiversity(
 /**
  * Tier 2: Build the vision prompt for a consolidated per-scene review.
  * The caller sends this prompt + images to a vision LLM.
+ *
+ * C5: If an `ArtStyleProfile` is supplied, the rubric is rewritten so the
+ * vision model evaluates the image against THIS style's intent instead of
+ * a generic cinematic default. Styles that whitelist `stiff-pose-ok` /
+ * `centered-composition` soften the pose rubric so we don't flag
+ * tableau-style or icon-style intentional stasis.
  */
 export function buildTier2VisionPrompt(
   sceneId: string,
   shots: Array<{ shotId: string; beatId: string; promptSummary: string }>,
+  styleProfile?: ArtStyleProfile,
 ): string {
   const shotLines = shots.map((s, i) =>
     `Image ${i + 1} (${s.shotId}): ${s.promptSummary}`
   ).join('\n');
 
-  return `You are reviewing ${shots.length} sequential story beat images for scene "${sceneId}".
+  const allowsStaticPose = !!styleProfile && (
+    styleProfile.acceptableDeviations.includes('asymmetric-body-language') ||
+    styleProfile.acceptableDeviations.includes('mid-action-posing')
+  );
+  const poseRubric = allowsStaticPose
+    ? `- pose: Is the pose intentional and consistent with the "${styleProfile?.name}" style's visual grammar? Do NOT penalize static or symmetrical poses — they are part of this style.`
+    : `- pose: Is the pose dynamic and purposeful (not stiff, neutral, or mannequin-like)?`;
 
+  const styleHeader = styleProfile
+    ? `\nThis scene is rendered in the "${styleProfile.name}" style: ${styleProfile.description}\nEvaluate the images AGAINST THIS STYLE — do not expect photoreal lighting, cinematic depth-of-field, or Hollywood staging unless the style explicitly calls for them.\n`
+    : '';
+
+  const styleSpecificChecks = styleProfile && styleProfile.inappropriateVocabulary.length > 0
+    ? `\nAdditionally flag any image that shows: ${styleProfile.inappropriateVocabulary.slice(0, 6).join(', ')} — these contradict the active style.`
+    : '';
+
+  return `You are reviewing ${shots.length} sequential story beat images for scene "${sceneId}".
+${styleHeader}
 For EACH image, rate these qualities on a 1–5 scale:
 - expression: Does the character's facial expression match the requested emotion?
-- pose: Is the pose dynamic and purposeful (not stiff, neutral, or mannequin-like)?
+${poseRubric}
 - flow: Does this image flow visually from the previous one (consistent setting, logical progression)?
 - setting: Does the environment match the scene description?
 
@@ -154,7 +191,7 @@ Return ONLY a JSON array:
   ...
 ]
 
-Flag any image where ANY score is below 3. For the first image, give flow a 5 (no predecessor).`;
+Flag any image where ANY score is below 3. For the first image, give flow a 5 (no predecessor).${styleSpecificChecks}`;
 }
 
 /**

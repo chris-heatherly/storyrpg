@@ -12,6 +12,119 @@ This document captures the live runtime behavior of the StoryRPG image pipeline.
 - Use model-specific controls when they improve results.
 - Enforce encounter image completeness as a pipeline invariant.
 
+## Recent Improvements (April 2026)
+
+The image pipeline has been extended with several foundational and
+pillar-specific improvements. All of them are gated behind explicit
+configuration so existing stories render identically unless the operator
+opts in:
+
+- **B1 / two-axis QA toggles** — `EXPO_PUBLIC_IMAGE_PROMPT_MODE`
+  (`deterministic` | `llm` | `compare`) and `EXPO_PUBLIC_IMAGE_QA_MODE`
+  (`off` | `fast` | `full`) let prompt-building and QA rigor be tuned
+  independently. See `src/ai-agents/config/imageQaConfig.ts`.
+- **C1 / ArtStyleProfile** — structured replacement for the flat
+  `canonicalArtStyle` string. Captures rendering technique, color
+  philosophy, lighting, acceptable deviations, genre negatives, and
+  positive vocabulary so prompt building and validators can modulate to
+  the active style. Resolved via `resolveArtStyleProfile` and presets in
+  `src/ai-agents/config/artStylePresets.ts`.
+- **E4 / ProviderCapabilities table** — central table describing whether
+  each provider accepts inline vs URL references, supports batches,
+  speaks Midjourney ref tokens, etc. Powers A1/A7/A8/A9/D7.
+- **A1 / per-provider throttle** — replaces a global rate-limit delay
+  with a per-provider concurrency + inter-request spacing controller
+  (`src/ai-agents/services/providerThrottle.ts`).
+- **A9 / skip refs provider can't consume** — callers no longer pay the
+  payload cost for refs the active provider will drop.
+- **A11 / inflight dedup** — identical prompts submitted while an earlier
+  request is still in flight now share the single result.
+- **A6 / tamed retry ladder** — retry cap reduced to 2 and back-off
+  capped at 20s for text-class errors.
+- **A2 / post-success `rateLimitDelayMs` dropped** — the per-provider
+  throttle handles spacing without a blanket post-success sleep.
+- **C2 / style-aware negatives** — deterministic prompts now drop
+  default negatives that the active style explicitly permits
+  (e.g. "centered composition" for a minimalist preset) and merge the
+  profile's `genreNegatives` into the final string.
+- **C4 / bidirectional style-aware prompt strength** —
+  `ensureVisualPromptStrength` in `ImageGenerationService` now skips
+  guardrails allowed by the profile, strips inappropriate vocabulary
+  from the prompt, and injects the profile's positive vocabulary.
+- **C5 / style-aware validators** — `checkStructuralDiversity` and
+  `buildTier2VisionPrompt` adapt their rubric when a profile whitelists
+  static pose / centered composition so intentional stylistic stasis is
+  not flagged as a failure.
+- **C6 / style anchor strength knob** — optional per-profile
+  `anchorWeight` controls how aggressively the text prompt defers to the
+  style-reference image.
+- **C7 / preset library** — 6+ curated `ArtStyleProfile` presets
+  selectable via `EXPO_PUBLIC_ART_STYLE_PRESET`.
+- **B2 / scene-level sequence grammar pass** — after the beat-local
+  planner, a scene-wide pass in `shotSequencePlanner` enforces varied
+  opening shots in longer scenes, climax-adjacent shot demotion, and
+  contrast in 2-beat scenes.
+- **B3 / compressed universal prompt skeleton** — shrinks the shared
+  negative-prompt floor and single-lines the canonical section headers
+  in `promptComposer`. Saves ~60% of the boilerplate tokens per prompt.
+- **B5 / choice-payoff visual language** — choice kind (combat /
+  diplomacy / stealth / etc.) now emits a concrete visual-language
+  clause in the prompt so the rendered beat matches the narrative
+  intent.
+- **B6 / color-script follow-through per beat** — per-beat color-script
+  hints flow into the prompt so palette shifts are honored across the
+  sequence rather than only at scene boundaries.
+- **B7 / coverage profile knob** — `CoverageProfile` biases the ratio
+  of dominant / supporting / rest shots per scene; exposed via config.
+- **B8 / CinematicPromptCore** — shared module
+  (`src/ai-agents/images/cinematicPromptCore.ts`) hosts the universal
+  negative floor, the character/establishing overlays, and
+  `composeNegativePrompt` so both the deterministic and LLM paths pull
+  from one source of truth.
+- **D1 / supporting-character master refs** — characters tagged
+  `supporting` are now promoted to master reference sheets (not just
+  major/core), preventing identity drift on recurring side cast.
+- **D2 / reserved ref-pack slots** — location and style-anchor slots
+  are reserved in the reference pack so high-priority anchors can't be
+  crowded out by low-priority character refs.
+- **D3 / per-character ref pack weight** — character refs now carry a
+  weight so the most important face wins when the pack is over budget.
+- **D4 / wardrobe & state tracking** — `CharacterVisualState` tracks
+  wardrobe, injuries, and held props across a scene and feeds them into
+  the prompt's identity block.
+- **D5 / anchor regen on identity change** — reference sheets store an
+  `identityFingerprint` (FNV-1a hash of the character's identity
+  fields). `invalidateStaleReferenceSheets` prunes mismatched sheets at
+  the top of the master-images phase.
+- **D6 / stable SD seeds per character** — `SeedRegistry` produces
+  deterministic seeds per character/scene for Stable Diffusion so a
+  retry produces the same face.
+- **D7 / Midjourney `--cref` / `--sref`** — when reference images carry
+  a pre-uploaded URL (`ReferenceImage.url`) and
+  `midjourneySettings.enableCrefSref` is on, the Midjourney prompt
+  builder emits native `--cref <url>`, `--sref <url>`, `--cw`, `--sw`
+  flags. Falls back cleanly to the existing `--oref`/identity-hint path
+  when no URL is available.
+- **D8 / identity-drift audit** — `auditIdentityDrift` on
+  `ImageAgentTeam` is a non-destructive companion to the D5 invalidator.
+  Runs under QA_MODE=fast/full and emits a structured warning listing
+  characters whose cached sheet fingerprint no longer matches the
+  current profile, so the operator can decide whether to regenerate
+  downstream scenes.
+- **D9 / group-scene disambiguation** — multi-character beats emit an
+  explicit per-character block so the model doesn't conflate
+  similarly-built characters.
+- **D10 / scoped previous-panel continuity** — the
+  previous-panel-continuity reference is now only injected for direct
+  continuations, preventing cross-branch bleed.
+- **E3 / structured feedback in regen prompts** —
+  `regenerate-image.ts` consumes both free-form notes and the
+  `imageFeedbackStore`'s structured `reasons` tags to drive directive
+  and negative-prompt additions.
+
+All improvements preserve today's default behavior — to opt in, set the
+relevant env var / config flag described in each bullet.
+
 ## Current Runtime Flow
 
 1. `FullStoryPipeline` generates character references and body-language assets during the master-images phase.

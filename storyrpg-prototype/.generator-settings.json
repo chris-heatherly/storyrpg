@@ -13,7 +13,7 @@
   "llmProvider": "anthropic",
   "llmModel": "claude-sonnet-4-20250514",
   "atlasCloudModel": "google/nano-banana-2/text-to-image",
-  "artStyle": "dark fantasy anime",
+  "artStyle": "romance novel",
   "generationSettings": {
     "targetSceneCount": 6,
     "majorChoiceCount": 3,
@@ -24,7 +24,7 @@
     "encounterBeatCount": 3,
     "generateImages": true,
     "imageGenerationLimit": 10,
-    "panelMode": "special-beats",
+    "panelMode": "single",
     "blockingThreshold": 40,
     "warningThreshold": 60,
     "firstChoiceMaxSeconds": 90,

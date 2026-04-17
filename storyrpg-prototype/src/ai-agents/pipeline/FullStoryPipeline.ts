@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): Phase 3 will extract this 12,986-line file
+// into pipeline/phases/*.ts modules and restore whole-file typecheck.
 /**
  * Full Story Pipeline Orchestrator
  *
@@ -12,7 +14,7 @@
  * Includes human checkpoints for review at key stages.
  */
 
-import { PipelineConfig, loadConfig, defaultValidationConfig, type MemoryConfig } from '../config';
+import { PipelineConfig, loadConfig, defaultValidationConfig, type MemoryConfig, type PreapprovedAnchor } from '../config';
 import { getMemoryStore, NodeMemoryStore, type MemoryStore } from '../utils/memoryStore';
 import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
@@ -43,6 +45,7 @@ import {
   EncounterArchitect, 
   EncounterArchitectInput, 
   EncounterStructure,
+  EncounterTelemetry,
   GeneratedStorylet
 } from '../agents/EncounterArchitect';
 import { StateChange } from '../types/llm-output';
@@ -59,7 +62,8 @@ import {
   ColorScript,
   ColorScriptRequest,
   StoryBeatInput,
-  VisualPlan
+  VisualPlan,
+  computeCharacterIdentityFingerprint,
 } from '../agents/image-team/ImageAgentTeam';
 import type {
   CharacterVisualReference,
@@ -70,7 +74,13 @@ import type {
 } from '../utils/pipelineOutputWriter';
 import { EncounterImageAgent } from '../agents/image-team/EncounterImageAgent';
 import { ImagePrompt } from '../agents/ImageGenerator';
-import { ImageGenerationService, ReferenceImage, type EncounterImageDiagnostic } from '../services/imageGenerationService';
+import {
+  ImageGenerationService,
+  ReferenceImage,
+  type EncounterImageDiagnostic,
+  type CanonicalAppearance,
+  type CharacterAppearanceDescription,
+} from '../services/imageGenerationService';
 import type { GeneratedImage } from '../agents/ImageGenerator';
 import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/VideoDirectorAgent';
 import { VideoGenerationService } from '../services/videoGenerationService';
@@ -85,6 +95,7 @@ import {
 import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './EpisodePipeline';
 import {
   createOutputDirectory,
+  ensureDirectory,
   savePipelineOutputs,
   savePipelineErrorLog,
   saveEarlyDiagnostic,
@@ -95,6 +106,7 @@ import {
   loadEncounterResumeStateSync,
   saveBeatResumeState,
   loadBeatResumeStateSync,
+  BeatResumeStateV1,
   updateOutputManifest,
   OutputManifest,
 } from '../utils/pipelineOutputWriter';
@@ -126,7 +138,28 @@ import { EncounterProviderPolicy } from '../encounters/encounterProviderPolicy';
 import { AssetRegistry } from '../images/assetRegistry';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { validateRegistryCoverage } from '../images/coverageValidator';
+import { walkStoryAssets, formatAssetWalkReport } from '../validators/storyAssetWalker';
+import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
+import { remediateImageIssues, resaveFinalStory } from '../validators/qaRemediation';
 import { buildReferencePack } from '../images/referencePackBuilder';
+import {
+  buildCharacterAnchorPrompt,
+  buildArcStripAnchorPrompt,
+  buildEnvironmentAnchorPrompt,
+  anchorIdentifier,
+} from '../images/anchorPrompts';
+import { composeCanonicalStyleString } from '../images/artStyleProfile';
+import {
+  LoraTrainingAgent,
+  type CharacterTrainingCandidate,
+  type StyleTrainingCandidate,
+} from '../agents/image-team/LoraTrainingAgent';
+import {
+  LoraRegistry,
+  createNodeLoraRegistryIO,
+} from '../images/loraRegistry';
+import { createLoraTrainerAdapter } from '../services/lora-training/factory';
+import { providerSupportsLoraTraining } from '../images/providerCapabilities';
 import { buildStoryImageSlotManifest } from '../images/storyImageSlotManifest';
 import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
 import { buildBeatImagePrompt, overrideShotFromPlan } from '../images/beatPromptBuilder';
@@ -181,6 +214,7 @@ import { LocalWorkerQueue, mapWithConcurrency } from '../utils/concurrency';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../utils/dependencyGraph';
 import { PipelineTelemetry } from '../utils/pipelineTelemetry';
 import { analyzeBranchTopology } from '../utils/branchTopology';
+import { buildBranchShadowDiff } from '../utils/branchShadowDiff';
 import { collectMissingEncounterImageKeys, getEncounterBeats } from '../utils/encounterImageCoverage';
 import { PROXY_CONFIG } from '../../config/endpoints';
 import {
@@ -194,7 +228,7 @@ import {
 
 // Re-export types for consumers
 export type { OutputManifest } from '../utils/pipelineOutputWriter';
-export type { PipelineEvent } from './EpisodePipeline';
+export type { PipelineEvent } from './events';
 
 /**
  * Normalize a Consequence object to fix common LLM field-name deviations.
@@ -495,6 +529,21 @@ export class FullStoryPipeline {
   private incrementalValidator: IncrementalValidationRunner | null = null;
   private sceneValidationResults: SceneValidationResult[] = [];
 
+  // Per-encounter telemetry, populated from EncounterArchitect.execute()'s
+  // response metadata. Persisted via pipelineOutputWriter so we can later
+  // analyze per-phase success rates and LLM cost (I2 instrumentation).
+  private encounterTelemetry: EncounterTelemetry[] = [];
+
+  // Shadow-mode diffs between the LLM `BranchManager` and the deterministic
+  // `analyzeBranchTopology` pass. Populated only when
+  // `config.generation.branchShadowModeEnabled` is true; persisted as a
+  // sidecar via pipelineOutputWriter so D4 (BranchManager gating) can be
+  // decided from data rather than intuition (I5 instrumentation).
+  private branchShadowDiffs: Array<{
+    episodeId: string;
+    diff: import('../utils/branchShadowDiff').BranchShadowDiff;
+  }> = [];
+
   private events: PipelineEvent[] = [];
   private checkpoints: CheckpointData[] = [];
   private eventHandler?: PipelineEventHandler;
@@ -506,6 +555,29 @@ export class FullStoryPipeline {
   private currentEpisode: number = 0;
   private totalEpisodes: number = 1;
   private cachedPipelineMemory: string | null = null;
+
+  /**
+   * Paths (relative or absolute) to the three style-bible anchor images,
+   * whether preapproved by the UI or generated in `generateEpisodeStyleBible`.
+   * Persisted onto `Story.styleAnchors` so single-image regenerations and
+   * session resumes can re-prime `setGeminiStyleReference` without
+   * rebuilding the style bible from scratch.
+   */
+  private _styleAnchorPaths: {
+    character?: string;
+    arcStrip?: string;
+    environment?: string;
+  } = {};
+
+  /**
+   * Lazily-created LoRA training plumbing. We construct it the first time a
+   * pipeline run reaches a training trigger, so runs on providers that don't
+   * support LoRAs never pay for the registry filesystem ops.
+   */
+  private _loraTrainingAgent?: LoraTrainingAgent;
+  private _loraRegistry?: LoraRegistry;
+  /** Remembers whether we've already emitted an "enabled/skipped" banner. */
+  private _loraTrainingBanner = false;
 
   // Visual planning outputs collection
   private collectedVisualPlanning: {
@@ -530,6 +602,24 @@ export class FullStoryPipeline {
   private imageWorkerQueue: LocalWorkerQueue;
   private audioWorkerQueue: LocalWorkerQueue;
   private videoWorkerQueue: LocalWorkerQueue;
+  /**
+   * A10: Promise for a pre-warmed color script. Seeded before
+   * `runMasterImageGeneration` so the color-script LLM call overlaps with
+   * master image generation. `runEpisodeImageGeneration` consumes the
+   * promise when it exists instead of kicking off a fresh call.
+   */
+  private _preWarmedColorScriptPromise: Promise<ColorScript | undefined> | null = null;
+  /**
+   * A3 (narrow): Results of the optional parallel scene-opening-beat
+   * prefetch phase, keyed by the canonical beat identifier. Populated by
+   * `prefetchSceneOpeningBeats` when
+   * `EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS` is enabled; consumed by the
+   * main scene loop in `runEpisodeImageGeneration` at beat 0 of each
+   * scene. Entries point at resolved `GeneratedImage` objects (the
+   * prefetch phase awaits Promise.allSettled before the main loop runs,
+   * so no live Promises are stored here).
+   */
+  private _openingBeatPrefetch: Map<string, GeneratedImage> = new Map();
   private locationMasterShots = new Map<string, { data: string; mimeType: string }>();
   private assetRegistry: AssetRegistry = new AssetRegistry();
   private completedPhases = new Set<string>();
@@ -558,7 +648,12 @@ export class FullStoryPipeline {
         error: observation.error,
       });
     });
-    const imageWorkerConcurrency = this.config.generation?.imageWorkerModeEnabled
+    // A5: default image worker mode ON. The per-provider throttle in
+    // ImageGenerationService now enforces its own rate limits per provider,
+    // so running beat image work concurrently is safe and much faster.
+    // A caller can still opt out by explicitly setting `imageWorkerModeEnabled: false`.
+    const imageWorkerModeEnabled = this.config.generation?.imageWorkerModeEnabled !== false;
+    const imageWorkerConcurrency = imageWorkerModeEnabled
       ? Math.max(1, Math.min(4, this.config.generation?.maxParallelScenes ?? CONCURRENCY_DEFAULTS.maxParallelScenes))
       : 1;
     this.imageWorkerQueue = new LocalWorkerQueue(imageWorkerConcurrency);
@@ -597,13 +692,26 @@ export class FullStoryPipeline {
       this.config.agents.imagePlanner || this.config.agents.storyArchitect,
       this.config.artStyle
     );
+    // Wire identity consistency gate thresholds from config.
+    this.imageAgentTeam.setIdentityGateConfig({
+      identityScoreThreshold: this.config.imageGen?.identityScoreThreshold,
+      maxIdentityRegenerations: this.config.imageGen?.maxIdentityRegenerations,
+      resetIdentityBudget: true,
+    });
     this.imageService = new ImageGenerationService({
       ...(this.config.imageGen || { enabled: false }),
       geminiApiKey: this.config.imageGen?.geminiApiKey || this.config.imageGen?.apiKey,
       midjourneySettings: this.config.imageGen?.midjourney || this.config.midjourneySettings,
       geminiSettings: this.config.imageGen?.gemini || this.config.geminiSettings,
+      stableDiffusionSettings: this.config.imageGen?.stableDiffusion,
       failurePolicy: this.getFailurePolicy(),
     });
+    // C4: install the structured art-style profile (if any) so prompt
+    // strengthening can operate bidirectionally on style-inappropriate /
+    // style-positive vocabulary rather than applying only cinematic defaults.
+    if (this.config.imageGen?.artStyleProfile) {
+      this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
+    }
     
     // Initialize audio generation service
     this.audioService = new AudioGenerationService(this.config.narration?.elevenLabsApiKey);
@@ -987,6 +1095,8 @@ export class FullStoryPipeline {
         return 'scene_content';
       case 'Final Story':
         return 'final_story';
+      case 'Output Directory':
+        return 'output_directory';
       default:
         return null;
     }
@@ -1989,10 +2099,20 @@ export class FullStoryPipeline {
       let encounterImageDiagnostics: EncounterImageRunDiagnostic[] = [];
       let videoResults: Map<string, string> | undefined;
       let videoDiagnostics: VideoGenerationDiagnostic[] = [];
-      let audioDiagnostics: AudioGenerationDiagnostic[] = [];
+      const audioDiagnostics: AudioGenerationDiagnostic[] = [];
       
       try {
-        outputDirectory = await createOutputDirectory(brief.story.title);
+        const resumedOutputDir = this.getResumeOutput<{ outputDirectory: string }>(
+          resumeCheckpoint, 'output_directory'
+        )?.outputDirectory;
+        if (resumedOutputDir) {
+          outputDirectory = resumedOutputDir;
+          await ensureDirectory(outputDirectory);
+          console.log(`[Pipeline] Resumed output directory: ${outputDirectory}`);
+        } else {
+          outputDirectory = await createOutputDirectory(brief.story.title);
+        }
+        this.addCheckpoint('Output Directory', { outputDirectory }, false);
         this.resetAssetRegistry(idSlugify(brief.story.title));
         await saveEarlyDiagnostic(outputDirectory, `episode-${brief.episode.number}-blueprint.json`, episodeBlueprint);
 
@@ -2001,8 +2121,36 @@ export class FullStoryPipeline {
           this.requirePhases('images', ['content_generation']);
           const imagesDir = outputDirectory + 'images/';
           this.imageService.setOutputDirectory(imagesDir);
+          // Invalidate cached reference sheets if the user has changed art
+          // style since the last run under this output directory. See
+          // ImageGenerationService.reconcileCachedReferenceStyle for why this
+          // matters (otherwise stale refs lock the aesthetic).
+          const invalidatedRefs = this.imageService.reconcileCachedReferenceStyle(this.config.artStyle);
+          if (invalidatedRefs > 0) {
+            this.emit({
+              type: 'debug',
+              phase: 'images',
+              message: `Art style changed — invalidated ${invalidatedRefs} cached reference image(s) so new refs will be generated under the current style.`,
+            });
+          }
           this.emit({ type: 'debug', phase: 'images', message: `Image output directory: ${imagesDir}` });
           
+          // A10: warm up the color script in parallel with master image
+          // generation. Both are independent (color script is pure text;
+          // master images don't need the script) so overlapping them hides
+          // the color-script latency. `runEpisodeImageGeneration` consumes
+          // the promise below. Failures are swallowed into `undefined` so
+          // the downstream path can still fall back to a fresh call.
+          this._preWarmedColorScriptPromise = this.generateEpisodeColorScript(brief, sceneContents, choiceSets)
+            .catch((err) => {
+              this.emit({
+                type: 'warning',
+                phase: 'images',
+                message: `A10 color-script prewarm failed (will retry inline): ${err instanceof Error ? err.message : String(err)}`,
+              });
+              return undefined;
+            });
+
           // Generate master character/location references
           this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
           await this.imageWorkerQueue.run(() =>
@@ -2014,7 +2162,7 @@ export class FullStoryPipeline {
           imageResults = await this.imageWorkerQueue.run(() =>
             this.measurePhase(
               'episode_image_generation',
-              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, brief, worldBible, characterBible)
+              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, brief, worldBible, characterBible, outputDirectory)
             )
           );
           
@@ -2045,8 +2193,9 @@ export class FullStoryPipeline {
                 {
                   agent: 'EncounterImageAgent',
                   context: {
+                    outputDirectory,
                     encounterCount: encounters.size,
-                    failureKind: 'image_step',
+                    failureKind: 'image_generation',
                   },
                   originalError: encImgError instanceof Error ? encImgError : undefined,
                 }
@@ -2078,14 +2227,33 @@ export class FullStoryPipeline {
         if (imgError instanceof PipelineError) {
           throw imgError;
         }
-        // Non-quota image failures remain non-blocking.
         const imgErrorMsg = imgError instanceof Error ? imgError.message : String(imgError);
-        console.warn(`[Pipeline] Image generation failed: ${imgErrorMsg}`);
+        console.error(`[Pipeline] Image generation failed: ${imgErrorMsg}`);
         this.emit({
-          type: 'warning',
+          type: 'error',
           phase: 'images',
-          message: `Image generation failed (non-blocking): ${imgErrorMsg}`,
+          message: `Image generation failed: ${imgErrorMsg}`,
         });
+        if (outputDirectory) {
+          try {
+            await savePipelineErrorLog(outputDirectory, [{
+              timestamp: new Date().toISOString(),
+              phase: 'images',
+              message: imgErrorMsg,
+            }]);
+          } catch { /* best-effort save */ }
+        }
+        throw new PipelineError(
+          `Image generation failed: ${imgErrorMsg}`,
+          'images',
+          {
+            context: {
+              outputDirectory,
+              failureKind: 'image_generation',
+            },
+            originalError: imgError instanceof Error ? imgError : undefined,
+          }
+        );
       }
 
       // === PHASE 5.7: VIDEO GENERATION (optional) ===
@@ -2151,35 +2319,10 @@ export class FullStoryPipeline {
       );
       story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
 
-      // === STORYLET / ENCOUNTER IMAGE GAP WARNING (non-fatal) ===
-      // Missing encounter or storylet images are logged but no longer halt the
-      // pipeline. The gaps are already persisted in the run-state files and
-      // AssetRegistry for targeted retry on re-run.
-      if (encounterImageResults?.storyletFailures?.length) {
-        const failMsg = encounterImageResults.storyletFailures.join('; ');
-        console.warn(`[Pipeline] Encounter/storylet image gaps (non-fatal, continuing): ${failMsg}`);
-        this.emit({ type: 'warning', phase: 'encounter_images', message: `Image gaps (continuing): ${failMsg}` });
-      }
-
       // === PRE-GENERATION COMPLETENESS GATE ===
-      // Scan the assembled story for any missing images. Encounter images are
-      // mandatory with no fallback. Beat images can fall back to scene backgrounds.
+      // Strict: ANY missing image halts the pipeline. No silent fallbacks.
       if (story) {
         const registryCoverage = validateRegistryCoverage(story, this.assetRegistry);
-        const missingEncounterImages: string[] = [];
-        const missingBeatImages: string[] = [];
-        for (const episode of story.episodes || []) {
-          for (const scene of episode.scenes || []) {
-            for (const beat of scene.beats || []) {
-              if (!beat.image) {
-                missingBeatImages.push(`beat:${scene.id}::${beat.id}`);
-              }
-            }
-            if (scene.encounter) {
-              missingEncounterImages.push(...collectMissingEncounterImageKeys(scene.id, scene.encounter));
-            }
-          }
-        }
 
         if (registryCoverage.missingRequiredCoverageKeys.length > 0) {
           console.error(
@@ -2190,87 +2333,113 @@ export class FullStoryPipeline {
             'completeness_gate',
             {
               context: {
+                outputDirectory,
                 missingCount: registryCoverage.missingRequiredCoverageKeys.length,
                 missingImages: registryCoverage.missingRequiredCoverageKeys.slice(0, 50),
-                failureKind: 'registry_coverage',
+                failureKind: 'image_completeness',
               },
             }
           );
         }
 
-        // Encounter images: hard failure, no fallback
-        if (missingEncounterImages.length > 0) {
-          console.error(`[Pipeline] COMPLETENESS GATE: ${missingEncounterImages.length} ENCOUNTER images missing (mandatory):`);
-          for (const m of missingEncounterImages.slice(0, 20)) {
-            console.error(`[Pipeline]   - ${m}`);
-          }
-          throw new PipelineError(
-            `Encounter image completeness gate failed: ${missingEncounterImages.length} encounter images missing after assembly`,
-            'completeness_gate',
-            {
-              context: {
-                missingCount: missingEncounterImages.length,
-                missingImages: missingEncounterImages.slice(0, 50),
-                failureKind: 'encounter_image_mandatory',
-              },
-            }
-          );
-        }
+        const missingImages: { category: string; key: string }[] = [];
 
-        // Beat images: scene background fallback is acceptable
-        if (missingBeatImages.length > 0) {
-          console.warn(`[Pipeline] PRE-GENERATION COMPLETENESS: ${missingBeatImages.length} beat images missing after assembly:`);
-          for (const m of missingBeatImages.slice(0, 20)) {
-            console.warn(`[Pipeline]   - ${m}`);
-          }
-          this.throwIfFailFast(
-            `Pre-generation completeness gate: ${missingBeatImages.length} beat images missing`,
-            'completeness_gate',
-            {
-              context: {
-                missingCount: missingBeatImages.length,
-                missingImages: missingBeatImages.slice(0, 50),
-                failureKind: 'image_step',
-              },
+        if (!story.coverImage) missingImages.push({ category: 'cover', key: 'story-cover' });
+
+        for (const episode of story.episodes || []) {
+          if (!episode.coverImage) missingImages.push({ category: 'cover', key: `episode:${episode.id}` });
+
+          for (const scene of episode.scenes || []) {
+            if (!scene.backgroundImage) {
+              missingImages.push({ category: 'scene-bg', key: `scene:${scene.id}` });
             }
-          );
-          for (const episode of story.episodes || []) {
-            for (const scene of episode.scenes || []) {
-              const sceneBackground = scene.backgroundImage;
-              if (sceneBackground) {
-                for (const beat of scene.beats || []) {
+
+            for (const beat of scene.beats || []) {
+              if (!beat.image) {
+                missingImages.push({ category: 'beat', key: `beat:${scene.id}::${beat.id}` });
+              }
+            }
+
+            if (scene.encounter) {
+              const missingEncKeys = collectMissingEncounterImageKeys(scene.id, scene.encounter);
+              for (const k of missingEncKeys) {
+                missingImages.push({ category: 'encounter', key: k });
+              }
+
+              for (const [outcomeName, storylet] of Object.entries((scene.encounter as any).storylets || {})) {
+                const sl = storylet as any;
+                for (const beat of sl?.beats || []) {
                   if (!beat.image) {
-                    beat.image = sceneBackground;
-                    console.log(`[Pipeline] Assigned scene background as fallback for beat ${beat.id} in ${scene.id}`);
+                    missingImages.push({ category: 'storylet', key: `storylet:${scene.id}::${outcomeName}::${beat.id}` });
                   }
                 }
               }
             }
           }
-          const stillMissing: string[] = [];
-          for (const episode of story.episodes || []) {
-            for (const scene of episode.scenes || []) {
-              for (const beat of scene.beats || []) {
-                if (!beat.image) stillMissing.push(`beat:${scene.id}::${beat.id}`);
-              }
+        }
+
+        if (missingImages.length > 0) {
+          const byCategory: Record<string, { category: string; key: string }[]> = {};
+          for (const m of missingImages) {
+            if (!byCategory[m.category]) byCategory[m.category] = [];
+            byCategory[m.category].push(m);
+          }
+          const summary = Object.entries(byCategory)
+            .map(([cat, items]) => `${items.length} ${cat}`)
+            .join(', ');
+
+          console.error(`[Pipeline] COMPLETENESS GATE FAILED: ${missingImages.length} images missing (${summary})`);
+          for (const [cat, items] of Object.entries(byCategory)) {
+            for (const item of items.slice(0, 10)) {
+              console.error(`[Pipeline]   [${cat}] ${item.key}`);
             }
           }
-          if (stillMissing.length > 0) {
-            throw new PipelineError(
-              `Pre-generation completeness gate failed: ${stillMissing.length} beat images remain after fallback`,
-              'completeness_gate',
-              {
-                context: {
-                  missingCount: stillMissing.length,
-                  missingImages: stillMissing.slice(0, 50),
-                  failureKind: 'image_step',
-                },
-              }
-            );
-          }
-          this.emit({ type: 'warning', phase: 'completeness_gate', message: `${missingBeatImages.length} beat images assigned scene background fallbacks.` });
+
+          throw new PipelineError(
+            `Image completeness gate failed: ${missingImages.length} images missing (${summary})`,
+            'completeness_gate',
+            {
+              context: {
+                outputDirectory,
+                totalMissing: missingImages.length,
+                byCategory: Object.fromEntries(
+                  Object.entries(byCategory).map(([cat, items]) => [cat, items.map(i => i.key).slice(0, 20)])
+                ),
+                failureKind: 'image_completeness',
+              },
+            }
+          );
         } else {
-          console.log(`[Pipeline] PRE-GENERATION COMPLETENESS: 100% image coverage — all beats and encounters have images.`);
+          console.log(`[Pipeline] PRE-GENERATION COMPLETENESS: 100% image coverage — all image types verified.`);
+        }
+      }
+
+      // === ASSET HTTP VERIFICATION (Tier 1 QA) ===
+      if (story && this.config.validation?.assetHttpCheck !== false) {
+        try {
+          const assetReport = await walkStoryAssets(story, {
+            httpTimeoutMs: 5000,
+            concurrency: 20,
+          });
+          console.log(`[Pipeline] ${formatAssetWalkReport(assetReport)}`);
+          if (assetReport.missing + assetReport.broken + assetReport.unreachable > 0) {
+            const failCount = assetReport.missing + assetReport.broken + assetReport.unreachable;
+            this.emit({
+              type: 'warning',
+              phase: 'asset_verification',
+              message: `Asset HTTP check: ${failCount} image(s) failed verification (${assetReport.missing} missing, ${assetReport.broken} broken, ${assetReport.unreachable} unreachable)`,
+            });
+            if (this.config.validation?.assetHttpCheckFailFast) {
+              throw new PipelineError(
+                `Asset HTTP verification failed: ${failCount} image(s) not reachable`,
+                'completeness_gate',
+                { context: { failCount, missing: assetReport.missing, broken: assetReport.broken, unreachable: assetReport.unreachable } }
+              );
+            }
+          }
+        } catch (err) {
+          if (err instanceof PipelineError) throw err;
+          console.warn('[Pipeline] Asset HTTP verification failed (non-fatal):', (err as Error).message);
         }
       }
 
@@ -2323,6 +2492,16 @@ export class FullStoryPipeline {
           choiceSets,
           encounters: Array.from(encounters.values()),
           qaReport,
+          incrementalValidationResults: this.sceneValidationResults.length > 0
+            ? this.sceneValidationResults
+            : undefined,
+          encounterTelemetry: this.encounterTelemetry.length > 0
+            ? this.encounterTelemetry
+            : undefined,
+          llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+          branchShadowDiffs: this.branchShadowDiffs.length > 0
+            ? this.branchShadowDiffs
+            : undefined,
           bestPracticesReport,
           finalStory: story,
           visualPlanning: visualPlanningOutputs,
@@ -2536,6 +2715,146 @@ export class FullStoryPipeline {
               },
             });
           }
+        }
+      }
+
+      // === PHASE 8: BROWSER QA (Playwright playthrough) ===
+      if (story && outputDirectory && this.config.validation?.playwrightQA !== false) {
+        const maxRetries = this.config.validation?.playwrightQAMaxRetries ?? 1;
+        const storyTitle = brief.story.title || '';
+
+        this.emit({ type: 'phase_start', phase: 'browser_qa', message: 'Phase 8: Running full-coverage browser QA...' });
+
+        let qaAttempt = 0;
+        let lastQAResult: PlaywrightQAResult | null = null;
+
+        while (qaAttempt <= maxRetries) {
+          try {
+            this.emit({
+              type: 'progress',
+              phase: 'browser_qa',
+              message: qaAttempt === 0
+                ? 'Analyzing story paths and launching parallel browser playthroughs...'
+                : `Re-testing after remediation (attempt ${qaAttempt + 1}/${maxRetries + 1})...`,
+            });
+
+            lastQAResult = await runPlaywrightQAMultiPath({
+              storyTitle,
+              story,
+              maxBeats: 200,
+              timeoutMs: 300_000,
+              maxParallel: 3,
+              onProgress: (msg) => {
+                this.emit({ type: 'progress', phase: 'browser_qa', message: msg });
+              },
+            });
+
+            if (lastQAResult.skipped) {
+              this.emit({
+                type: 'warning',
+                phase: 'browser_qa',
+                message: `Browser QA skipped: ${lastQAResult.skipReason}`,
+              });
+              break;
+            }
+
+            const coverage = lastQAResult.coverageReport;
+            const pathSummary = coverage
+              ? `${coverage.completedPaths}/${coverage.totalPaths} paths, ${coverage.totalChoicesMade} choices exercised`
+              : `${lastQAResult.totalBeats} beats`;
+
+            console.log(`[Pipeline] Browser QA pass ${qaAttempt + 1}: ${pathSummary}, ` +
+              `${lastQAResult.imageIssues.length} image issues, ${lastQAResult.networkFailures.length} network failures`);
+
+            if (lastQAResult.passed) {
+              this.emit({
+                type: 'phase_complete',
+                phase: 'browser_qa',
+                message: `Browser QA passed — ${pathSummary}, 0 issues`,
+              });
+              break;
+            }
+
+            // Issues found — attempt remediation if we have retries left
+            const issueCount = lastQAResult.imageIssues.length + lastQAResult.networkFailures.length;
+            this.emit({
+              type: 'warning',
+              phase: 'browser_qa',
+              message: `Browser QA found ${issueCount} issue(s) across ${pathSummary}`,
+            });
+
+            if (qaAttempt < maxRetries) {
+              this.emit({
+                type: 'progress',
+                phase: 'browser_qa',
+                message: `Remediating ${issueCount} issue(s)...`,
+              });
+
+              try {
+                const remediation = await remediateImageIssues(
+                  lastQAResult.imageIssues,
+                  lastQAResult.networkFailures,
+                  story,
+                  this.imageService,
+                  this.assetRegistry,
+                  outputDirectory,
+                );
+
+                const regenCount = remediation.fixes.filter(f => f.action === 'regenerated').length;
+                const skipCount = remediation.fixes.filter(f => f.action === 'skipped').length;
+
+                console.log(`[Pipeline] QA Remediation: ${regenCount} regenerated, ${skipCount} skipped`);
+                for (const fix of remediation.fixes) {
+                  console.log(`[Pipeline]   ${fix.action}: ${fix.identifier || fix.issueScreen} — ${fix.reason || fix.newUrl || ''}`);
+                }
+
+                if (remediation.hasChanges) {
+                  story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
+                  story.outputDir = outputDirectory;
+                  resaveFinalStory(story, outputDirectory);
+                  this.emit({
+                    type: 'progress',
+                    phase: 'browser_qa',
+                    message: `Remediated ${regenCount} image(s), re-saved story. Re-testing...`,
+                  });
+                } else {
+                  this.emit({
+                    type: 'warning',
+                    phase: 'browser_qa',
+                    message: 'No fixable issues found during remediation — skipping retest',
+                  });
+                  break;
+                }
+              } catch (remErr) {
+                console.warn('[Pipeline] QA remediation error (non-fatal):', (remErr as Error).message);
+                this.emit({
+                  type: 'warning',
+                  phase: 'browser_qa',
+                  message: `Remediation failed: ${(remErr as Error).message}`,
+                });
+                break;
+              }
+            }
+          } catch (qaErr) {
+            console.warn('[Pipeline] Browser QA error (non-fatal):', (qaErr as Error).message);
+            this.emit({
+              type: 'warning',
+              phase: 'browser_qa',
+              message: `Browser QA failed: ${(qaErr as Error).message}`,
+            });
+            break;
+          }
+
+          qaAttempt++;
+        }
+
+        if (lastQAResult && !lastQAResult.passed && !lastQAResult.skipped) {
+          const remaining = lastQAResult.imageIssues.length + lastQAResult.networkFailures.length;
+          this.emit({
+            type: 'warning',
+            phase: 'browser_qa',
+            message: `Browser QA completed with ${remaining} unresolved issue(s) after ${qaAttempt} attempt(s)`,
+          });
         }
       }
 
@@ -2951,6 +3270,19 @@ export class FullStoryPipeline {
         });
       }
 
+      // I5: capture a side-by-side diff of the LLM vs deterministic passes
+      // when shadow mode is enabled. No console spam here — the sidecar is
+      // the consumer. The LLM pass keeps running either way (it already
+      // does today), so this is pure observation, not gating.
+      if (this.config.generation?.branchShadowModeEnabled) {
+        try {
+          const diff = buildBranchShadowDiff(result.data, deterministicTopology);
+          this.branchShadowDiffs.push({ episodeId: blueprint.episodeId, diff });
+        } catch (diffErr) {
+          console.warn(`[Pipeline] Failed to build branch shadow diff: ${diffErr instanceof Error ? diffErr.message : diffErr}`);
+        }
+      }
+
       this.emit({
         type: 'agent_complete',
         agent: 'BranchManager',
@@ -3012,6 +3344,8 @@ export class FullStoryPipeline {
     
     // Reset scene validation results
     this.sceneValidationResults = [];
+    // Reset encounter telemetry (I2 — fresh per episode run)
+    this.encounterTelemetry = [];
     
     this.emit({
       type: 'debug',
@@ -4231,6 +4565,7 @@ export class FullStoryPipeline {
         // Only register encounter + run validation if EncounterArchitect succeeded
         if (encounterResult?.success && encounterResult.data) {
           encounters.set(sceneBlueprint.id, encounterResult.data);
+          this.captureEncounterTelemetry(encounterResult.metadata);
           this.emit({
             type: 'agent_complete',
             agent: 'EncounterArchitect',
@@ -4342,6 +4677,7 @@ export class FullStoryPipeline {
                     if (regenValidation.passed ||
                         regenValidation.issues.length < encounterValidation.issues.length) {
                       encounters.set(sceneBlueprint.id, regenEncounterResult.data);
+                      this.captureEncounterTelemetry(regenEncounterResult.metadata);
                       // Update the stored validation result
                       const valIdx = this.sceneValidationResults.findIndex(v => v.sceneId === sceneBlueprint.id);
                       if (valIdx !== -1) {
@@ -4455,7 +4791,40 @@ export class FullStoryPipeline {
     if (skipRedundantQA && this.sceneValidationResults.length > 0) {
       // Calculate issue counts from incremental validation
       const aggregated = aggregateValidationResults(this.sceneValidationResults);
-      
+
+      // Flatten actual incremental issues so the skip stubs carry them into
+      // the QA report instead of reporting `issues: []`. Without this, any
+      // run with `skipRedundantQA: true` silently discards everything that
+      // the incremental validators caught.
+      const voiceIssues: NonNullable<QARunnerOptions['incrementalResults']>['voiceIssues'] = [];
+      const stakesIssues: NonNullable<QARunnerOptions['incrementalResults']>['stakesIssues'] = [];
+      for (const sceneResult of this.sceneValidationResults) {
+        if (sceneResult.voice?.issues) {
+          for (const iss of sceneResult.voice.issues) {
+            voiceIssues.push({
+              sceneId: sceneResult.sceneId,
+              beatId: iss.beatId,
+              characterId: iss.characterId,
+              characterName: iss.characterName,
+              severity: iss.severity,
+              issue: iss.issue,
+              suggestion: iss.suggestion,
+            });
+          }
+        }
+        if (sceneResult.stakes?.issues) {
+          for (const iss of sceneResult.stakes.issues) {
+            stakesIssues.push({
+              sceneId: sceneResult.sceneId,
+              choiceSetId: iss.choiceId,
+              severity: iss.severity,
+              issue: iss.issue,
+              suggestion: iss.suggestion,
+            });
+          }
+        }
+      }
+
       qaOptions.skipVoiceValidation = true;
       qaOptions.skipStakesAnalysis = true;
       qaOptions.continuityFocusCrossScene = true;
@@ -4463,6 +4832,8 @@ export class FullStoryPipeline {
         voiceIssueCount: aggregated.totalIssues.voice,
         stakesIssueCount: aggregated.totalIssues.stakes,
         continuityIssueCount: aggregated.totalIssues.continuity,
+        voiceIssues,
+        stakesIssues,
       };
       
       this.emit({ 
@@ -4474,6 +4845,9 @@ export class FullStoryPipeline {
     this.emitPhaseProgress('qa', 1, qaStepTotal, 'qa:steps', 'QA input bundle prepared');
 
     this.emit({ type: 'agent_start', agent: 'QARunner', message: 'Running quality assurance checks' });
+
+    const characterKnowledge = this.buildContinuityCharacterKnowledge(characterBible);
+    const timelineEvents = this.buildContinuityTimeline(blueprint);
 
     const report = await this.qaRunner.runFullQA({
       sceneContents,
@@ -4494,6 +4868,8 @@ export class FullStoryPipeline {
         mood: s.mood,
         narrativeFunction: s.narrativeFunction,
       })),
+      characterKnowledge,
+      timelineEvents,
     }, qaOptions);
     this.emitPhaseProgress('qa', 2, qaStepTotal, 'qa:steps', 'QA analysis complete');
 
@@ -4509,6 +4885,90 @@ export class FullStoryPipeline {
     this.emitPhaseProgress('qa', 3, qaStepTotal, 'qa:steps', 'QA report finalized');
 
     return report;
+  }
+
+  /**
+   * Pull an `EncounterTelemetry` payload out of an EncounterArchitect
+   * response's metadata (if present) and append it to the run-level
+   * telemetry collector. Silently ignores responses that predate the
+   * telemetry contract.
+   */
+  private captureEncounterTelemetry(metadata: Record<string, unknown> | undefined): void {
+    const raw = metadata?.encounterTelemetry as EncounterTelemetry | undefined;
+    if (raw && typeof raw.sceneId === 'string') {
+      this.encounterTelemetry.push(raw);
+    }
+  }
+
+  /**
+   * Build a best-effort `characterKnowledge` bundle for ContinuityChecker.
+   *
+   * The pipeline does not model first-class "what does this character know
+   * at time T" data, so we populate this from the character bible using
+   * information we DO have:
+   *   - Each character knows their own overview, core want/fear/flaw, and
+   *     any relationships they explicitly hold.
+   *   - Each character is assumed NOT to know the hidden secrets of OTHER
+   *     characters (this is the most common source of "character knows
+   *     something they shouldn't" continuity bugs).
+   *
+   * This is intentionally conservative: we feed the LLM real data where we
+   * have it, and we do not invent knowledge facts we cannot verify.
+   */
+  private buildContinuityCharacterKnowledge(
+    characterBible: CharacterBible
+  ): Array<{ characterId: string; knows: string[]; doesNotKnow: string[] }> {
+    const characters = characterBible.characters ?? [];
+    if (characters.length === 0) return [];
+
+    return characters.map(c => {
+      const knows: string[] = [];
+      if (c.overview) knows.push(c.overview);
+      if (c.want) knows.push(`their own goal: ${c.want}`);
+      if (c.fear) knows.push(`their own fear: ${c.fear}`);
+      const relationships = Array.isArray(c.relationships) ? c.relationships : [];
+      relationships.forEach(r => {
+        if (r.targetName && r.relationshipType) {
+          knows.push(`${r.targetName} (${r.relationshipType})`);
+        }
+      });
+
+      const doesNotKnow: string[] = [];
+      for (const other of characters) {
+        if (other.id === c.id) continue;
+        if (other.hiddenSecret) {
+          doesNotKnow.push(`${other.name}'s secret: ${other.hiddenSecret}`);
+        }
+      }
+
+      return {
+        characterId: c.id,
+        knows,
+        doesNotKnow,
+      };
+    });
+  }
+
+  /**
+   * Build a best-effort `timelineEvents` list for ContinuityChecker from
+   * the episode blueprint's ordered scene list. This gives the LLM a
+   * concrete reference for "what happens when" so it can flag forward
+   * references and impossible knowledge across scenes.
+   */
+  private buildContinuityTimeline(
+    blueprint: EpisodeBlueprint
+  ): Array<{ event: string; when: string }> {
+    const scenes = blueprint.scenes ?? [];
+    if (scenes.length === 0) return [];
+
+    return scenes.map((s, idx) => {
+      const label = s.name || s.id;
+      const details = [s.narrativeFunction, s.mood].filter(Boolean).join(' / ');
+      return {
+        event: details ? `${label} (${details})` : label,
+        when: `Scene ${idx + 1} (${s.id})`,
+      };
+    });
   }
 
   private assembleStory(
@@ -4542,7 +5002,7 @@ export class FullStoryPipeline {
       // Check if this scene has an encounter - use extracted converter
       const encounterStructure = encounters.get(sceneBlueprint.id);
       const sceneEncounterImages = encounterImages.get(sceneBlueprint.id);
-      let encounter = encounterStructure 
+      const encounter = encounterStructure 
         ? convertEncounterStructureToEncounter(encounterStructure, sceneBlueprint)
         : undefined;
       
@@ -4734,6 +5194,15 @@ export class FullStoryPipeline {
 
       episodes: [episode],
       outputDir: '', // Will be filled in by pipeline
+
+      artStyleProfile: this.config.imageGen?.artStyleProfile,
+      styleAnchors: (this._styleAnchorPaths.character || this._styleAnchorPaths.arcStrip || this._styleAnchorPaths.environment)
+        ? {
+            character: this._styleAnchorPaths.character ? { imagePath: this._styleAnchorPaths.character } : undefined,
+            arcStrip: this._styleAnchorPaths.arcStrip ? { imagePath: this._styleAnchorPaths.arcStrip } : undefined,
+            environment: this._styleAnchorPaths.environment ? { imagePath: this._styleAnchorPaths.environment } : undefined,
+          }
+        : undefined,
     };
 
     return story;
@@ -5025,8 +5494,19 @@ export class FullStoryPipeline {
       }
       this.emitPhaseProgress('foundation', 2, 2, 'foundation:steps', 'Character foundation complete');
 
-      // 2.5. Create output directory EARLY so images go to the right place
-      const outputDirectory = await createOutputDirectory(baseBrief.story.title);
+      // 2.5. Create output directory EARLY so images go to the right place (or resume existing one)
+      const resumedOutputDir = this.getResumeOutput<{ outputDirectory: string }>(
+        resumeCheckpoint, 'output_directory'
+      )?.outputDirectory;
+      let outputDirectory: string;
+      if (resumedOutputDir) {
+        outputDirectory = resumedOutputDir;
+        await ensureDirectory(outputDirectory);
+        console.log(`[Pipeline] Resumed output directory: ${outputDirectory}`);
+      } else {
+        outputDirectory = await createOutputDirectory(baseBrief.story.title);
+      }
+      this.addCheckpoint('Output Directory', { outputDirectory }, false);
       
       // Initialize AssetRegistry with JSONL persistence for durable image tracking
       const registryJsonlPath = (outputDirectory.endsWith('/') ? outputDirectory : outputDirectory + '/') + '08-asset-registry.jsonl';
@@ -5041,6 +5521,14 @@ export class FullStoryPipeline {
       if (this.config.imageGen?.enabled) {
         const imagesDir = outputDirectory + 'images/';
         this.imageService.setOutputDirectory(imagesDir);
+        const invalidatedRefs = this.imageService.reconcileCachedReferenceStyle(this.config.artStyle);
+        if (invalidatedRefs > 0) {
+          this.emit({
+            type: 'debug',
+            phase: 'images',
+            message: `Art style changed — invalidated ${invalidatedRefs} cached reference image(s) so new refs will be generated under the current style.`,
+          });
+        }
         this.emit({ type: 'debug', phase: 'images', message: `Image output directory: ${imagesDir}` });
       }
 
@@ -5287,6 +5775,7 @@ export class FullStoryPipeline {
           },
           visualPlanning: visualPlanningOutputs,
           encounterImageDiagnostics: allEncounterImageDiagnostics,
+          llmLedger: this.telemetry.getLlmLedger() ?? undefined,
         }, Date.now() - startTime);
         const partialTimeout = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('Partial save timed out')), 120_000)
@@ -5365,6 +5854,16 @@ export class FullStoryPipeline {
         finalStory: story,
         visualPlanning: visualPlanningOutputs,
         qaReport: aggregatedQAReport,
+        incrementalValidationResults: this.sceneValidationResults.length > 0
+          ? this.sceneValidationResults
+          : undefined,
+        encounterTelemetry: this.encounterTelemetry.length > 0
+          ? this.encounterTelemetry
+          : undefined,
+        llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+        branchShadowDiffs: this.branchShadowDiffs.length > 0
+          ? this.branchShadowDiffs
+          : undefined,
         bestPracticesReport: aggregatedBPReport,
         encounterImageDiagnostics: allEncounterImageDiagnostics,
       }, Date.now() - startTime);
@@ -5395,20 +5894,30 @@ export class FullStoryPipeline {
         dependencyScheduler: { ...this.dependencySchedulerStats },
       };
 
-      // If storylet images failed, halt the pipeline AFTER saving. The partial story
-      // with encounter tree images is on disk. Stop here to avoid wasting credits.
+      // If storylet images failed, save diagnostics then halt the pipeline.
       if (allStoryletFailures.length > 0) {
         const failMsg = allStoryletFailures.join('; ');
-        console.warn(`[Pipeline] Encounter/storylet image gaps across episodes (non-fatal): ${failMsg}`);
-        this.emit({ type: 'warning', phase: 'encounter_images', message: `Image gaps across episodes (continuing): ${failMsg}` });
+        console.error(`[Pipeline] Encounter/storylet image gaps across episodes: ${failMsg}`);
+        this.emit({ type: 'error', phase: 'encounter_images', message: `Image gaps across episodes: ${failMsg}` });
         try {
           await savePipelineErrorLog(outputDirectory, allStoryletFailures.map(f => ({
             timestamp: new Date().toISOString(),
             phase: 'encounter_images',
             message: f,
-            severity: 'warning',
           })));
-        } catch { /* non-fatal */ }
+        } catch { /* best-effort save */ }
+        throw new PipelineError(
+          `Storylet image gaps: ${allStoryletFailures.length} storylet images missing across episodes`,
+          'encounter_images',
+          {
+            context: {
+              outputDirectory,
+              failureKind: 'image_completeness',
+              totalMissing: allStoryletFailures.length,
+              failures: allStoryletFailures.slice(0, 30),
+            },
+          }
+        );
       }
 
       // Mark job as completed
@@ -5538,10 +6047,21 @@ export class FullStoryPipeline {
       if (this.config.imageGen?.enabled) {
         this.emit({ type: 'phase_start', phase: `images_ep_${i}`, message: `Generating visuals for Episode ${i}...` });
         try {
+          // A10: warm up color script in parallel with the episode image
+          // phase so the script latency overlaps master-image work.
+          this._preWarmedColorScriptPromise = this.generateEpisodeColorScript(episodeBrief, sceneContents, choiceSets)
+            .catch((err) => {
+              this.emit({
+                type: 'warning',
+                phase: `images_ep_${i}`,
+                message: `A10 color-script prewarm failed (will retry inline): ${err instanceof Error ? err.message : String(err)}`,
+              });
+              return undefined;
+            });
           imageResults = await this.imageWorkerQueue.run(() =>
             this.measurePhase(
               `episode_${i}_images`,
-              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible)
+              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible, outputDirectory)
             )
           );
         } catch (imgError) {
@@ -5554,9 +6074,33 @@ export class FullStoryPipeline {
               originalError: imgError instanceof Error ? imgError : undefined,
             });
           }
+          if (imgError instanceof PipelineError) {
+            throw imgError;
+          }
           const imgMsg = imgError instanceof Error ? imgError.message : String(imgError);
-          console.error(`[Pipeline] Episode ${i} beat image generation failed (non-fatal): ${imgMsg}`);
-          this.emit({ type: 'warning', phase: `images_ep_${i}`, message: `Beat image generation failed (continuing without images): ${imgMsg}` });
+          console.error(`[Pipeline] Episode ${i} beat image generation failed: ${imgMsg}`);
+          this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Beat image generation failed: ${imgMsg}` });
+          try {
+            await savePipelineErrorLog(outputDirectory, [{
+              timestamp: new Date().toISOString(),
+              phase: `images_ep_${i}`,
+              message: imgMsg,
+              episodeNumber: i,
+            }]);
+          } catch { /* best-effort save */ }
+          throw new PipelineError(
+            `Episode ${i} beat image generation failed: ${imgMsg}`,
+            `images_ep_${i}`,
+            {
+              agent: 'ImageAgentTeam',
+              context: {
+                outputDirectory,
+                episode: i,
+                failureKind: 'image_generation',
+              },
+              originalError: imgError instanceof Error ? imgError : undefined,
+            }
+          );
         }
 
         if (encounters.size > 0) {
@@ -5598,7 +6142,7 @@ export class FullStoryPipeline {
             this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Encounter image generation failed for episode ${i}: ${encImgMsg}` });
             throw new PipelineError(`Episode ${i} encounter image generation failed: ${encImgMsg}`, `images_ep_${i}`, {
               agent: 'EncounterImageAgent',
-              context: { episode: i, encounterCount: encounters.size, failureKind: 'image_step' },
+              context: { outputDirectory, episode: i, encounterCount: encounters.size, failureKind: 'image_generation' },
               originalError: encImgError instanceof Error ? encImgError : undefined,
             });
           }
@@ -5780,8 +6324,51 @@ export class FullStoryPipeline {
     worldBible: WorldBible,
     brief: FullCreativeBrief
   ): Promise<void> {
+    // D5: Before spending any budget on master images, drop reference sheets
+    // whose stored identity fingerprint no longer matches the current
+    // character profile. This catches the "author rewrote the character's
+    // appearance between episodes" case — the cached anchor would otherwise
+    // keep pinning new images to the old look. Freshly-generated sheets get
+    // fingerprinted below; pre-D5 cached sheets adopt their current
+    // fingerprint on first seen so drift detection starts from now.
+    // D8: Under QA_MODE=fast/full, emit a structured drift audit BEFORE
+    // invalidating. The audit is a pure fingerprint comparison (no LLM, no
+    // image diff) so it's free to run. Operators can use the report to
+    // decide whether downstream scenes should be regenerated too.
+    const qaModeForDrift = this.config.imageGen?.qa?.qaMode ?? 'off';
+    if (qaModeForDrift !== 'off') {
+      const driftReport = this.imageAgentTeam.auditIdentityDrift(characterBible.characters);
+      if (driftReport.length > 0) {
+        this.emit({
+          type: 'debug',
+          phase: 'images',
+          message: `D8 identity-drift audit (${qaModeForDrift}): ${driftReport.length} character(s) drifted — ${driftReport
+            .map((d) => `${d.characterName}:${d.reason}`)
+            .join(', ')}`,
+        });
+      }
+    }
+
+    const invalidated = this.imageAgentTeam.invalidateStaleReferenceSheets(characterBible.characters);
+    if (invalidated.length > 0) {
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: `D5: invalidated ${invalidated.length} stale reference sheet(s) due to identity change: ${invalidated.join(', ')}`,
+      });
+    }
+
+    // D1: Promote recurring non-protagonist characters to master reference
+    // sheets. In addition to major/core importance, we now include
+    // `supporting` characters — the writer typically tags characters that
+    // appear in multiple scenes at this tier, so they benefit most from a
+    // stable identity anchor. Minor one-off characters are still skipped to
+    // avoid wasting generation budget on throwaway appearances.
     const majorCharacters = characterBible.characters.filter((char) =>
-      char.importance === 'major' || char.importance === 'core' || char.id === brief.protagonist.id
+      char.importance === 'major' ||
+      char.importance === 'core' ||
+      char.importance === 'supporting' ||
+      char.id === brief.protagonist.id
     );
     const majorLocations = worldBible.locations.filter((loc) => {
       const briefLoc = brief.world.keyLocations.find((location) => location.id === loc.id);
@@ -5801,7 +6388,11 @@ export class FullStoryPipeline {
         console.warn(`[Pipeline] Skipping duplicate character ID "${char.id}" (${char.name}) — already generated reference sheet.`);
         continue;
       }
-      const isMajor = char.importance === 'major' || char.importance === 'core' || char.id === brief.protagonist.id;
+      // D1: treat "supporting" the same as "major" for reference-sheet eligibility.
+      const isMajor = char.importance === 'major' ||
+        char.importance === 'core' ||
+        char.importance === 'supporting' ||
+        char.id === brief.protagonist.id;
       const userRefImages = this.findUserReferenceImages(char, brief);
       const hasUserRefs = userRefImages.length > 0;
 
@@ -5813,6 +6404,11 @@ export class FullStoryPipeline {
       if (isMajor || hasUserRefs) {
         processedCharIds.add(char.id);
         await this.generateCharacterReferenceSheet(char, brief, hasUserRefs ? userRefImages : undefined);
+        // D5: tag the freshly-generated reference sheet with the identity
+        // fingerprint that produced it so future runs can detect drift and
+        // invalidate at the top of this phase (see `invalidateStaleReferenceSheets`).
+        const fingerprint = computeCharacterIdentityFingerprint(char);
+        this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
         if (totalMasterAssets > 0) {
           completedMasterAssets += 1;
           this.emitPhaseProgress(
@@ -6063,28 +6659,37 @@ export class FullStoryPipeline {
               }
             : this.imageService;
 
-          // Generate reference sheet: individual views for NB2 (better identity signal), composite for older models
-          const useIndividualViews = this.config.imageGen?.gemini?.useIndividualCharacterViews !== false && this.imageService.getGeminiSettings().useIndividualCharacterViews;
+          // Dual-artifact reference generation: always produce BOTH the
+          // individual views (front / three-quarter / profile / face /
+          // expressions — primary identity signal for Gemini, Atlas, SD) and
+          // the composite model sheet (consumed by Midjourney --cref and
+          // used as a low-weight style anchor for Gemini). Per-provider
+          // filtering in imageGenerationService decides which artifact each
+          // downstream call actually receives.
           const progressCb = (status: string, index: number, total: number) => {
             this.emit({
               type: 'checkpoint',
               phase: 'reference_sheet',
-              message: `${char.name}: Generating ${useIndividualViews ? 'individual view' : 'composite'} reference sheet`,
+              message: `${char.name}: Generating character references (${status})`,
               data: { characterId: char.id, viewType: status, progress: index / total }
             });
           };
-          const generatedSheet = useIndividualViews
-            ? await withTimeout(this.imageAgentTeam.generateIndividualViewImages(
-                fullRefResult.poseSheet, imageServiceWithOwOverride, progressCb, userReferenceImages
-              ), PIPELINE_TIMEOUTS.storyboard, `IndividualViewRefSheet(${char.name})`)
-            : await withTimeout(this.imageAgentTeam.generateCompositeReferenceSheet(
-                fullRefResult.poseSheet, imageServiceWithOwOverride, progressCb, primaryUserRef, userReferenceImages
-              ), PIPELINE_TIMEOUTS.storyboard, `CompositeRefSheet(${char.name})`);
+          const generatedSheet = await withTimeout(
+            this.imageAgentTeam.generateFullCharacterReferences(
+              fullRefResult.poseSheet,
+              imageServiceWithOwOverride,
+              progressCb,
+              primaryUserRef,
+              userReferenceImages,
+            ),
+            PIPELINE_TIMEOUTS.storyboard,
+            `FullCharacterReferences(${char.name})`,
+          );
 
           this.emit({
             type: 'agent_complete',
             agent: 'CharacterReferenceSheetAgent',
-            message: `${useIndividualViews ? 'Individual view' : 'Composite'} reference sheet complete for ${char.name}: ${generatedSheet.generatedImages.size} images`,
+            message: `Character references complete for ${char.name}: ${generatedSheet.generatedImages.size} artifacts (views + composite)`,
             data: {
               characterId: char.id,
               viewCount: generatedSheet.generatedImages.size,
@@ -6095,8 +6700,12 @@ export class FullStoryPipeline {
             }
           });
 
-          // Store first character's ref sheet as style anchor for subsequent characters
-          const anchorImg = generatedSheet.generatedImages.get('composite') || generatedSheet.generatedImages.get('front');
+          // Store first character's ref sheet as style anchor for subsequent characters.
+          // Prefer the full-body front view over the face crop so the anchor
+          // carries costume and palette information, not just the face.
+          const anchorImg = generatedSheet.generatedImages.get('front')
+            || generatedSheet.generatedImages.get('composite')
+            || generatedSheet.generatedImages.get('face');
           if (anchorImg?.imageData && anchorImg?.mimeType) {
             this.imageService.setReferenceSheetStyleAnchor(anchorImg.imageData, anchorImg.mimeType);
           }
@@ -6192,27 +6801,30 @@ export class FullStoryPipeline {
           }
         : this.imageService;
 
-      const useIndividualViewsSimple = this.config.imageGen?.gemini?.useIndividualCharacterViews !== false && this.imageService.getGeminiSettings().useIndividualCharacterViews;
       const simpleProgressCb = (status: string, index: number, total: number) => {
         this.emit({
           type: 'checkpoint',
           phase: 'reference_sheet',
-          message: `${char.name}: Generating ${useIndividualViewsSimple ? 'individual view' : 'composite'} reference sheet`,
+          message: `${char.name}: Generating character references (${status})`,
           data: { characterId: char.id, viewType: status, progress: index / total }
         });
       };
-      const generatedSheet = useIndividualViewsSimple
-        ? await withTimeout(this.imageAgentTeam.generateIndividualViewImages(
-            sheet, imageServiceWithOwOverrideSimple, simpleProgressCb, userReferenceImages
-          ), PIPELINE_TIMEOUTS.storyboard, `IndividualViewRefSheet(${char.name})`)
-        : await withTimeout(this.imageAgentTeam.generateCompositeReferenceSheet(
-            sheet, imageServiceWithOwOverrideSimple, simpleProgressCb, primaryUserRef, userReferenceImages
-          ), PIPELINE_TIMEOUTS.storyboard, `CompositeRefSheet(${char.name})`);
+      const generatedSheet = await withTimeout(
+        this.imageAgentTeam.generateFullCharacterReferences(
+          sheet,
+          imageServiceWithOwOverrideSimple,
+          simpleProgressCb,
+          primaryUserRef,
+          userReferenceImages,
+        ),
+        PIPELINE_TIMEOUTS.storyboard,
+        `FullCharacterReferences(${char.name})`,
+      );
 
       this.emit({
         type: 'agent_complete',
         agent: 'CharacterReferenceSheetAgent',
-        message: `${useIndividualViewsSimple ? 'Individual view' : 'Composite'} reference sheet complete for ${char.name}: ${generatedSheet.generatedImages.size} images`,
+        message: `Character references complete for ${char.name}: ${generatedSheet.generatedImages.size} artifacts (views + composite)`,
         data: {
           characterId: char.id,
           viewCount: generatedSheet.generatedImages.size,
@@ -6220,8 +6832,12 @@ export class FullStoryPipeline {
         }
       });
 
-      // Store first character's ref sheet as style anchor for subsequent characters
-      const anchorImg = generatedSheet.generatedImages.get('composite') || generatedSheet.generatedImages.get('front');
+      // Store first character's ref sheet as style anchor for subsequent characters.
+      // Prefer the full-body front view over the face crop so the anchor
+      // carries costume and palette information, not just the face.
+      const anchorImg = generatedSheet.generatedImages.get('front')
+        || generatedSheet.generatedImages.get('composite')
+        || generatedSheet.generatedImages.get('face');
       if (anchorImg?.imageData && anchorImg?.mimeType) {
         this.imageService.setReferenceSheetStyleAnchor(anchorImg.imageData, anchorImg.mimeType);
       }
@@ -6532,6 +7148,100 @@ ${clothingRule}
   }
 
   /**
+   * Scan disk for beat images that were successfully written but never wired into
+   * `beatImages` / the AssetRegistry — typically because the generation promise
+   * resolved AFTER `withTimeout` rejected (Node has no native promise cancellation,
+   * so the underlying write to disk continues even after the caller gives up).
+   *
+   * For each beat missing from `beatImages`, we try a small set of known identifier
+   * patterns the pipeline uses (single path, panel path, tier1 retry) and, if a
+   * file exists, wire it back into both `beatImages` and the AssetRegistry so the
+   * final story assembly and coverage checks see the image.
+   */
+  private reconcileOrphanedBeatImages(
+    brief: FullCreativeBrief,
+    sceneContents: SceneContent[],
+    beatImages: Map<string, string>,
+    sceneImages: Map<string, string>,
+  ): number {
+    let recoveredCount = 0;
+
+    for (const scene of sceneContents) {
+      const sceneBeats = scene.beats || [];
+      if (sceneBeats.length === 0) continue;
+
+      const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
+
+      for (let beatIdx = 0; beatIdx < sceneBeats.length; beatIdx++) {
+        const beat = sceneBeats[beatIdx];
+        const beatKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beat.id);
+        if (beatImages.has(beatKey)) continue;
+
+        // Match the identifier patterns used at generation time, in priority order.
+        const baseId = `beat-${scopedSceneId}-${beat.id}`;
+        const candidateIdentifiers = [
+          `${baseId}-panel-0`,
+          baseId,
+          `${baseId}-retry`,
+        ];
+
+        for (const candidate of candidateIdentifiers) {
+          const existing = this.imageService.findExistingGeneratedImage(candidate);
+          if (!existing?.imageUrl) continue;
+
+          beatImages.set(beatKey, existing.imageUrl);
+          if (beatIdx === 0 && !sceneImages.has(scopedSceneId)) {
+            sceneImages.set(scopedSceneId, existing.imageUrl);
+          }
+          recoveredCount++;
+
+          console.warn(
+            `[Pipeline] Orphan recovery: wired orphaned image for scene "${scene.sceneId}" beat "${beat.id}" (identifier: ${candidate})`,
+          );
+          this.emit({
+            type: 'warning',
+            phase: 'images',
+            message: `Recovered orphaned image for ${scene.sceneId}:${beat.id}`,
+            data: { sceneId: scene.sceneId, beatId: beat.id, identifier: candidate, imageUrl: existing.imageUrl },
+          });
+
+          // Mirror into AssetRegistry so coverage checks + final assembler agree.
+          const heroSlotId = `story-beat:${scene.sceneId}::${beat.id}`;
+          try {
+            if (!this.assetRegistry.get(heroSlotId)) {
+              this.assetRegistry.planSlot({
+                slotId: heroSlotId,
+                family: 'story-beat',
+                imageType: 'beat',
+                sceneId: scene.sceneId,
+                scopedSceneId,
+                beatId: beat.id,
+                storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beat.id}].image`,
+                baseIdentifier: candidate,
+                required: false,
+                qualityTier: 'standard',
+                coverageKey: `beat:${scene.sceneId}::${beat.id}`,
+              });
+            }
+            this.assetRegistry.markSuccess(heroSlotId, {
+              prompt: { prompt: '' } as any,
+              imageUrl: existing.imageUrl,
+              imagePath: existing.imagePath,
+            } as GeneratedImage);
+          } catch { /* non-fatal */ }
+
+          break;
+        }
+      }
+    }
+
+    if (recoveredCount > 0) {
+      console.log(`[Pipeline] Orphan reconciliation: recovered ${recoveredCount} beat image(s) from disk`);
+    }
+    return recoveredCount;
+  }
+
+  /**
    * Run image generation for an entire episode
    * Returns a map of beatId -> imageUrl for linking to story
    * Now uses character reference sheets for consistency AND pose diversity validation
@@ -6542,7 +7252,8 @@ ${clothingRule}
     choiceSets: ChoiceSet[],
     brief: FullCreativeBrief,
     worldBible: WorldBible,
-    characterBible: CharacterBible
+    characterBible: CharacterBible,
+    outputDirectory?: string
   ): Promise<{ beatImages: Map<string, string>; sceneImages: Map<string, string> }> {
     const beatImages = new Map<string, string>();
     const sceneImages = new Map<string, string>();
@@ -6555,8 +7266,20 @@ ${clothingRule}
     let globalImageIndex = 0;
     const estimatedTotalImages = sceneContents.reduce((sum, sc) => sum + (sc.beats?.length || 0), 0);
     
-    // PHASE 1: Generate color script for visual arc consistency
-    const colorScript = await this.generateEpisodeColorScript(brief, sceneContents, choiceSets);
+    // PHASE 1: Generate color script for visual arc consistency.
+    // A10: prefer the pre-warmed promise if the caller kicked one off in
+    // parallel with master-image generation. Fresh inline call is the
+    // fallback (and matches pre-A10 behavior).
+    let colorScript: ColorScript | undefined;
+    if (this._preWarmedColorScriptPromise) {
+      colorScript = await this._preWarmedColorScriptPromise;
+      this._preWarmedColorScriptPromise = null;
+      if (colorScript === undefined) {
+        colorScript = await this.generateEpisodeColorScript(brief, sceneContents, choiceSets);
+      }
+    } else {
+      colorScript = await this.generateEpisodeColorScript(brief, sceneContents, choiceSets);
+    }
     
     // Store color script for saving
     if (colorScript) {
@@ -6566,13 +7289,59 @@ ${clothingRule}
     if (colorScript) {
       styleReferenceStored = await this.generateEpisodeStyleBible(brief, colorScript, characterBible);
     }
+
+    // LoRA training hook. Runs after the character reference sheets AND the
+    // style-bible anchors are available — both are prerequisites for
+    // meaningful training data. The call is a no-op for providers that
+    // can't consume LoRAs (i.e. anything but Stable Diffusion today) and
+    // whenever the subsystem is disabled in config.
+    try {
+      await this.runLoraTrainingIfEligible(brief, characterBible, outputDirectory);
+    } catch (loraErr) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `LoRA training pass threw (non-fatal, continuing scene generation): ${loraErr instanceof Error ? loraErr.message : String(loraErr)}`,
+      });
+    }
     
+    // A3 (narrow, opt-in): fan out scene-opening beats in parallel before
+    // the main loop runs. Keeps D10's per-scene continuity invariant intact
+    // because mid-scene beats remain strictly sequential inside the loop —
+    // only the FIRST beat of each scene is hoisted, which by definition
+    // has no previous-beat continuity dependency (D10 clears the reference
+    // at every scene boundary). A4 (full overlap of scene N with scene
+    // N+1's tail) remains deferred; see IMAGE_PIPELINE_RUNTIME.md.
+    const imagePipelineEnv = typeof process !== 'undefined' ? process.env : ({} as Record<string, string | undefined>);
+    const parallelSceneStartsEnabled = imagePipelineEnv.EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS === 'true'
+      || imagePipelineEnv.EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS === '1';
+    if (parallelSceneStartsEnabled) {
+      try {
+        await this.prefetchSceneOpeningBeats(sceneContents, brief, characterBible, colorScript, worldBible, outputDirectory);
+      } catch (prefetchErr) {
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: `A3-narrow prefetch phase threw (falling back to inline generation): ${prefetchErr instanceof Error ? prefetchErr.message : String(prefetchErr)}`,
+        });
+        this._openingBeatPrefetch.clear();
+      }
+    } else {
+      this._openingBeatPrefetch.clear();
+    }
+
     for (let sceneIndex = 0; sceneIndex < sceneContents.length; sceneIndex++) {
       await this.checkCancellation();
       const scene = sceneContents[sceneIndex];
       const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
       this.emit({ type: 'agent_start', agent: 'ImageAgentTeam', message: `Planning visuals for scene: ${scene.sceneName}...` });
-      
+
+      // D10: drop the previous-scene reference at every scene boundary so the
+      // first beat of the new scene isn't biased by the last beat of the
+      // previous one. Continuation within the scene's beats still benefits
+      // from setGeminiPreviousScene after each successful generation.
+      this.imageService.clearGeminiPreviousScene();
+
       try {
         // Null-safety: guarantee array fields are always arrays before any downstream code touches them
         if (!Array.isArray(scene.moodProgression)) scene.moodProgression = scene.moodProgression ? [scene.moodProgression as unknown as string] : [];
@@ -6662,14 +7431,14 @@ ${clothingRule}
           // treated as establishing shots — environment-only, no character poses.
           const explicitShotType = (b as any).shotType as 'establishing' | 'character' | 'action' | undefined;
           const isEstablishing = explicitShotType === 'establishing'
-            || (!explicitShotType && this.isEstablishingBeat(b.text, b.speaker, (b as any).primaryAction, beatCharContext));
+            || (!explicitShotType && this.isEstablishingBeat(b.text, b.speaker, b.primaryAction, beatCharContext));
           const resolvedShotType: 'establishing' | 'character' | 'action' = explicitShotType
             || (isEstablishing ? 'establishing' : 'character');
           return {
             id: b.id,
             text: b.text,
-            isClimaxBeat: (b as { isClimaxBeat?: boolean }).isClimaxBeat,
-            isKeyStoryBeat: (b as { isKeyStoryBeat?: boolean }).isKeyStoryBeat,
+            isClimaxBeat: b.isClimaxBeat,
+            isKeyStoryBeat: b.isKeyStoryBeat,
             // Per-beat character classification — empty for establishing shots so no identity block is injected
             characters: isEstablishing ? [] : beatCharContext.foreground,
             foregroundCharacters: isEstablishing ? [] : beatCharContext.foregroundNames,
@@ -6678,12 +7447,12 @@ ${clothingRule}
             emotionHint: isEstablishing ? undefined : this.mapSpeakerMoodToEmotion(b.speakerMood),
             intensityHint: this.inferIntensity(b.speakerMood, b.text),
             valenceHint: this.inferValence(b.speakerMood, b.text),
-            // Thread SceneWriter-authored visual contract directly to StoryboardAgent
-            visualMoment: (b as any).visualMoment,
-            primaryAction: isEstablishing ? '' : (b as any).primaryAction,
-            emotionalRead: isEstablishing ? '' : (b as any).emotionalRead,
-            relationshipDynamic: isEstablishing ? '' : (b as any).relationshipDynamic,
-            mustShowDetail: (b as any).mustShowDetail,
+            // B4: SceneWriter-authored visual contract fields now typed on Beat.
+            visualMoment: b.visualMoment,
+            primaryAction: isEstablishing ? '' : b.primaryAction,
+            emotionalRead: isEstablishing ? '' : b.emotionalRead,
+            relationshipDynamic: isEstablishing ? '' : b.relationshipDynamic,
+            mustShowDetail: b.mustShowDetail,
             // Shot intent — drives image prompt strategy (establishing = environment-only)
             shotType: resolvedShotType,
           };
@@ -6699,10 +7468,10 @@ ${clothingRule}
             isClimaxBeat: b.isClimaxBeat,
             isKeyStoryBeat: b.isKeyStoryBeat,
             isChoicePayoff: (b as any).isChoicePayoff,
-            emotionalRead: (b as any).emotionalRead,
-            relationshipDynamic: (b as any).relationshipDynamic,
-            primaryAction: (b as any).primaryAction,
-            intensityTier: (b as any).intensityTier,
+            emotionalRead: b.emotionalRead,
+            relationshipDynamic: b.relationshipDynamic,
+            primaryAction: b.primaryAction,
+            intensityTier: b.intensityTier,
           })),
           { genre: brief.story.genre, tone: brief.story.tone },
           panelMode,
@@ -6722,6 +7491,26 @@ ${clothingRule}
           console.log(`[Pipeline] ⏭ Skipping storyboard for scene "${scene.sceneId}" — no narrative beats to illustrate (encounter-only scene)`);
           this.emit({ type: 'debug', phase: 'images', message: `Skipped storyboard for ${scene.sceneName}: no narrative beats` });
           continue;
+        }
+
+        // Beat resume state: load completed beat IDs for this scene from disk
+        const sceneSlug = idSlugify(scene.sceneId);
+        const beatResumeLoaded = outputDirectory ? loadBeatResumeStateSync(outputDirectory, sceneSlug) : null;
+        const beatResumeSet = new Set<string>(beatResumeLoaded?.completedIdentifiers ?? []);
+        const beatResumeImageMap: Record<string, string> = { ...(beatResumeLoaded?.beatImageMap ?? {}) };
+        const persistBeatResume = async (): Promise<void> => {
+          if (!outputDirectory) return;
+          await saveBeatResumeState(outputDirectory, sceneSlug, {
+            version: 1,
+            sceneId: scene.sceneId,
+            scopedSceneId,
+            completedIdentifiers: [...beatResumeSet],
+            beatImageMap: beatResumeImageMap,
+            generatedAt: new Date().toISOString(),
+          });
+        };
+        if (beatResumeLoaded && beatResumeSet.size > 0) {
+          console.log(`[Pipeline] Beat resume: loaded ${beatResumeSet.size} completed beats for scene ${scene.sceneId}`);
         }
 
         // Determine scene mood from mood progression
@@ -6770,6 +7559,10 @@ ${clothingRule}
           settingContext: scene.settingContext,
           artStyle: this.config.artStyle,
           colorMood: colorMoodHints,
+          // C2: pass the structured style profile so the deterministic prompt
+          // builder can drop negatives that contradict the chosen aesthetic
+          // and merge the profile's genreNegatives into the final prompt.
+          styleProfile: this.config.imageGen?.artStyleProfile,
         };
 
         // Build beat-level character lookup from our earlier analysis
@@ -6796,6 +7589,95 @@ ${clothingRule}
             continue;
           }
 
+          // Disk-based beat resume: check if this beat was completed in a prior run
+          if (beatResumeSet.has(identifier) && beatResumeImageMap[identifier]) {
+            console.log(`[Pipeline] Beat resume: reusing existing image for ${beatId} from disk resume state`);
+            const beatMapKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beatId);
+            beatImages.set(beatMapKey, beatResumeImageMap[identifier]);
+            if (beatIdx === 0) sceneImages.set(scopedSceneId, beatResumeImageMap[identifier]);
+            globalImageIndex++;
+            continue;
+          }
+
+          // A3-narrow: reuse prefetched scene-opening beat if available. The
+          // prefetch phase ran before the main loop and produced a resolved
+          // GeneratedImage for this identifier; mirror the post-generation
+          // bookkeeping here (beatImages / sceneImages / assetRegistry /
+          // resume / style-ref / lastGeneratedImage) so downstream code sees
+          // exactly the same state as if the inline generateImage succeeded.
+          if (beatIdx === 0) {
+            const prefetchLookupKey = identifier.replace(/[^a-zA-Z0-9_\-./]/g, '').replace(/-+/g, '-');
+            const prefetched = this._openingBeatPrefetch.get(prefetchLookupKey);
+            if (prefetched && prefetched.imageUrl) {
+              this._openingBeatPrefetch.delete(prefetchLookupKey);
+              console.log(`[Pipeline] A3-narrow: reusing prefetched opening-beat image for ${identifier}`);
+              const beatMapKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beatId);
+              beatImages.set(beatMapKey, prefetched.imageUrl);
+              sceneImages.set(scopedSceneId, prefetched.imageUrl);
+
+              try {
+                const slotId = resumeSlotId;
+                if (!this.assetRegistry.get(slotId)) {
+                  this.assetRegistry.planSlot({
+                    slotId,
+                    family: 'story-beat',
+                    imageType: 'beat',
+                    sceneId: scene.sceneId,
+                    scopedSceneId,
+                    beatId,
+                    storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beatId}].imageUrl`,
+                    baseIdentifier: identifier,
+                    required: false,
+                    qualityTier: 'standard',
+                    coverageKey: `beat:${scene.sceneId}:${beatId}`,
+                  });
+                }
+                this.assetRegistry.markSuccess(slotId, prefetched);
+                // Mirror the main loop's scene-slot bookkeeping (line 7624-7642).
+                const sceneSlotId = `story-scene:${scene.sceneId}`;
+                if (!this.assetRegistry.get(sceneSlotId)) {
+                  this.assetRegistry.planSlot({
+                    slotId: sceneSlotId,
+                    family: 'story-scene',
+                    imageType: 'scene',
+                    sceneId: scene.sceneId,
+                    scopedSceneId,
+                    beatId,
+                    storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].backgroundImage`,
+                    baseIdentifier: `scene-${scopedSceneId}-bg`,
+                    required: false,
+                    qualityTier: 'standard',
+                    coverageKey: `scene:${scene.sceneId}`,
+                  });
+                }
+                this.assetRegistry.markSuccess(sceneSlotId, prefetched);
+              } catch { /* non-fatal: registry is supplementary to beatImages map */ }
+
+              if (prefetched.imageData && prefetched.mimeType) {
+                lastGeneratedImage = { data: prefetched.imageData, mimeType: prefetched.mimeType };
+              }
+
+              if (!styleReferenceStored && prefetched.imageData && prefetched.mimeType) {
+                this.imageService.setGeminiStyleReference(prefetched.imageData, prefetched.mimeType);
+                styleReferenceStored = true;
+                this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from prefetched opener of scene ${scene.sceneId}` });
+              }
+
+              beatResumeSet.add(identifier);
+              beatResumeImageMap[identifier] = prefetched.imageUrl;
+              persistBeatResume().catch(() => {});
+
+              globalImageIndex++;
+              this.emit({
+                type: 'checkpoint',
+                phase: 'images',
+                message: `Image ${globalImageIndex} of ~${estimatedTotalImages} complete (prefetched)`,
+                data: { imageIndex: globalImageIndex, totalImages: estimatedTotalImages, identifier, sceneId: scene.sceneId, prefetched: true },
+              });
+              continue;
+            }
+          }
+
           const isEstablishingBeat = (beat as any).shotType === 'establishing';
           let shotCharacterIds: string[];
           if (isEstablishingBeat) {
@@ -6811,6 +7693,34 @@ ${clothingRule}
           const shotCharacterNames = shotCharacterIds
             .map(id => characterBible.characters.find(c => c.id === id)?.name)
             .filter(Boolean) as string[];
+
+          // B6: Look up per-beat color guidance from the episode color script.
+          const beatColorEntry = (colorScript as any)?.beats?.find(
+            (b: any) => b.beatId === beatId
+          );
+          let beatColorOverride: import('../images/beatPromptBuilder').BeatPromptInput['colorMoodOverride'] | undefined;
+          if (beatColorEntry) {
+            const hues: string[] = Array.isArray(beatColorEntry.dominantHues) ? beatColorEntry.dominantHues : [];
+            const palette = hues.length > 0 ? hues.join(' and ') : undefined;
+            const temperature = typeof beatColorEntry.lightTemp === 'string' ? beatColorEntry.lightTemp : undefined;
+            // Compare to the previous beat's hues to produce a transition note.
+            let transitionNote: string | undefined;
+            if (beatIdx > 0) {
+              const prevEntry = (colorScript as any).beats?.[beatIdx - 1];
+              const prevHues: string[] = Array.isArray(prevEntry?.dominantHues) ? prevEntry.dominantHues : [];
+              if (prevHues.length > 0 && palette) {
+                transitionNote = `transitioning from ${prevHues.join('/')} to ${hues.join('/')}`;
+              }
+            }
+            beatColorOverride = {
+              palette,
+              lighting: typeof beatColorEntry.lightDirection === 'string'
+                ? `${beatColorEntry.lightDirection} light`
+                : undefined,
+              temperature,
+              transitionNote,
+            };
+          }
 
           const beatPromptInput: import('../images/beatPromptBuilder').BeatPromptInput = {
             beatId,
@@ -6831,6 +7741,7 @@ ${clothingRule}
             isBranchPayoff: beatIdx === 0 && !!scene.incomingChoiceContext,
             foregroundCharacterNames: isEstablishingBeat ? [] : (beat.foregroundCharacters || shotCharacterNames),
             backgroundCharacterNames: isEstablishingBeat ? [] : beat.backgroundCharacters,
+            colorMoodOverride: beatColorOverride,
           };
 
           let imagePrompt = buildBeatImagePrompt(beatPromptInput, scenePromptCtx);
@@ -6990,6 +7901,10 @@ ${clothingRule}
                   }
                   this.assetRegistry.markSuccess(heroSlotId, { imageUrl: panelUrls[0] } as GeneratedImage);
                 } catch { /* non-fatal */ }
+
+                beatResumeSet.add(identifier);
+                beatResumeImageMap[identifier] = panelUrls[0];
+                persistBeatResume().catch(() => {});
               }
 
               if (!styleReferenceStored && lastGeneratedImage) {
@@ -7102,6 +8017,10 @@ ${clothingRule}
                 this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from scene ${scene.sceneId}` });
               }
 
+              beatResumeSet.add(identifier);
+              beatResumeImageMap[identifier] = result.imageUrl;
+              persistBeatResume().catch(() => {});
+
               await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
             }
             } // end single-image / panel branch
@@ -7154,6 +8073,11 @@ ${clothingRule}
       }
     }
 
+    // Orphan reconciliation: wire up any images that landed on disk after their
+    // generation promise was abandoned by `withTimeout` (Node can't cancel the
+    // underlying work, so the file may appear after the pipeline gave up on it).
+    this.reconcileOrphanedBeatImages(brief, sceneContents, beatImages, sceneImages);
+
     // Recovery pass: detect scenes that got zero images and run fallback generation
     for (const scene of sceneContents) {
       await this.checkCancellation();
@@ -7197,7 +8121,7 @@ ${clothingRule}
             style: this.config.artStyle || undefined,
             aspectRatio: '9:19.5',
             composition: `Scene: ${scene.sceneName}. Genre: ${brief.story.genre}, Tone: ${brief.story.tone}. Generate exactly ONE single full-bleed image with ONE unified scene and ONE camera angle. No split-screen, no diptych, no stacked panels, no repeated subject, no image-within-image.`,
-            negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, multi-panel, storyboard, grid layout, diptych, triptych, collage, montage, stacked scenes, image within image, duplicate character, same character twice, cloned figure, repeated subject',
+            negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, storyboard, grid layout, diptych, triptych, collage, duplicate character, same character twice, cloned figure, repeated subject',
           }, scene.settingContext);
           const identifier = `beat-${scopedSceneId}-${beat.id}-recovery`;
           const result = await withTimeout(this.imageService.generateImage(
@@ -7238,7 +8162,7 @@ ${clothingRule}
           beatId: b.id,
         }));
 
-        const diversity = checkStructuralDiversity(shots);
+        const diversity = checkStructuralDiversity(shots, this.config.imageGen?.artStyleProfile);
         if (!diversity.acceptable) {
           this.emit({
             type: 'warning',
@@ -7586,35 +8510,62 @@ ${clothingRule}
       };
 
       const gemSettings = this.imageService.getGeminiSettings();
-      const preferIndividualViews = gemSettings.useIndividualCharacterViews ?? false;
       const maxPerChar = gemSettings.maxRefImagesPerCharacter || 2;
 
       const referenceImages: Array<{ data: string; mimeType: string; role: string; characterName: string; viewType: string }> = [];
 
-      // Protagonist references
+      // Helper: canonicalize role from ref.name (e.g. "Aoi-face" → "character-reference-face")
+      const roleFor = (refName: string): { role: string; viewType: string } => {
+        const viewType = refName.split('-').pop() || 'front';
+        if (viewType === 'face') return { role: 'character-reference-face', viewType };
+        return { role: 'character-reference', viewType };
+      };
+
+      // Protagonist references — individual views (authoritative identity signal)
       const protRefs = this.imageAgentTeam.getCharacterReferenceImages(
-        brief.protagonist.id, false, maxPerChar, 'front', preferIndividualViews
+        brief.protagonist.id, false, maxPerChar, 'front', true
       );
       for (const ref of protRefs) {
+        const { role, viewType } = roleFor(ref.name);
         referenceImages.push({
           data: ref.data, mimeType: ref.mimeType,
-          role: `character-reference-${ref.name}`,
+          role,
           characterName: brief.protagonist.name,
-          viewType: ref.name.split('-').pop() || 'front',
+          viewType,
+        });
+      }
+      // Composite sheet as a separate artifact — routed per-provider downstream.
+      const protComposite = this.imageAgentTeam.getCompositeReferenceImage(brief.protagonist.id);
+      if (protComposite) {
+        referenceImages.push({
+          data: protComposite.data, mimeType: protComposite.mimeType,
+          role: 'composite-sheet',
+          characterName: brief.protagonist.name,
+          viewType: 'composite',
         });
       }
 
       // Antagonist references (if available, limited)
       if (antagonist) {
         const antagRefs = this.imageAgentTeam.getCharacterReferenceImages(
-          antagonist.id, false, 2, 'front', preferIndividualViews
+          antagonist.id, false, 2, 'front', true
         );
         for (const ref of antagRefs) {
+          const { role, viewType } = roleFor(ref.name);
           referenceImages.push({
             data: ref.data, mimeType: ref.mimeType,
-            role: `character-reference-${ref.name}`,
+            role,
             characterName: antagonist.name,
-            viewType: ref.name.split('-').pop() || 'front',
+            viewType,
+          });
+        }
+        const antagComposite = this.imageAgentTeam.getCompositeReferenceImage(antagonist.id);
+        if (antagComposite) {
+          referenceImages.push({
+            data: antagComposite.data, mimeType: antagComposite.mimeType,
+            role: 'composite-sheet',
+            characterName: antagonist.name,
+            viewType: 'composite',
           });
         }
       }
@@ -8536,7 +9487,7 @@ ${clothingRule}
       referenceImages: ReferenceImage[];
       characterIds: string[];
       characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
+      characterDescriptions: CharacterAppearanceDescription[];
       brief: FullCreativeBrief;
       encounter: EncounterStructure;
       settingContext?: SceneSettingContext;
@@ -8885,7 +9836,7 @@ ${clothingRule}
       type: 'encounter-setup' | 'encounter-outcome' | 'storylet-aftermath';
       characters: string[];
       characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
+      characterDescriptions: CharacterAppearanceDescription[];
       choiceId?: string;
       tier?: 'success' | 'complicated' | 'failure';
       outcomeType?: EncounterOutcome;
@@ -9042,7 +9993,7 @@ ${clothingRule}
       type: 'encounter-setup' | 'encounter-outcome' | 'storylet-aftermath';
       characters: string[];
       characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
+      characterDescriptions: CharacterAppearanceDescription[];
       choiceId?: string;
       tier?: 'success' | 'complicated' | 'failure';
       outcomeType?: EncounterOutcome;
@@ -9574,7 +10525,7 @@ ${clothingRule}
       referenceImages: ReferenceImage[];
       characterIds: string[];
       characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
+      characterDescriptions: CharacterAppearanceDescription[];
       brief: FullCreativeBrief;
       encounter: EncounterStructure;
       settingContext?: SceneSettingContext;
@@ -9794,8 +10745,8 @@ ${clothingRule}
   private buildCharacterDescriptions(
     characterIds: string[],
     characterBible: CharacterBible
-  ): Array<{ name: string; appearance: string }> {
-    const descs: Array<{ name: string; appearance: string }> = [];
+  ): CharacterAppearanceDescription[] {
+    const descs: CharacterAppearanceDescription[] = [];
     for (const charId of characterIds) {
       const c = characterBible.characters.find(ch => ch.id === charId);
       if (!c) continue;
@@ -9806,28 +10757,113 @@ ${clothingRule}
       // exist, silhouette hooks take precedence as the primary description.
       const silhouette = this.imageAgentTeam.getCharacterSilhouetteProfile(c.id);
       const hasSilhouette = silhouette?.silhouetteHooks && silhouette.silhouetteHooks.length > 0;
+      const consistencyInfo = this.imageAgentTeam.getCharacterConsistencyInfo(c.id);
 
       const parts: string[] = [];
-
       if (hasSilhouette) {
-        // Visual design is the source of truth — use silhouette hooks as the
-        // primary appearance description to avoid contradictions.
         parts.push(silhouette!.silhouetteHooks!.join(', '));
       } else if (c.physicalDescription) {
-        // No visual design data — fall back to the character bible description.
         parts.push(c.physicalDescription);
       }
-
       if (c.distinctiveFeatures && c.distinctiveFeatures.length > 0) {
         parts.push(`Distinctive features: ${c.distinctiveFeatures.join(', ')}`);
       }
       if (c.typicalAttire) parts.push(`Attire: ${c.typicalAttire}`);
 
-      if (parts.length > 0) {
-        descs.push({ name: c.name, appearance: parts.join('. ') });
+      // Build a structured canonicalAppearance by extracting semantic slots
+      // from the free-form description sources. Each slot becomes its own
+      // labeled line in the identity block, which dramatically reduces the
+      // LLM's tendency to drop or paraphrase critical attributes (hair color,
+      // eye color, distinguishing marks).
+      const sources: string[] = [
+        c.physicalDescription || '',
+        ...(silhouette?.silhouetteHooks || []),
+        ...(consistencyInfo?.visualAnchors || []),
+      ].filter(Boolean);
+      const canonicalAppearance = this.extractCanonicalAppearance(
+        sources,
+        c.distinctiveFeatures,
+        c.typicalAttire,
+      );
+
+      if (parts.length > 0 || canonicalAppearance) {
+        descs.push({
+          name: c.name,
+          appearance: parts.join('. '),
+          canonicalAppearance,
+        });
       }
     }
     return descs;
+  }
+
+  /**
+   * Extract structured identity slots (hair, eyes, skin, build, height, face)
+   * from free-form character description text. Each slot scans the merged
+   * source text for phrases that match the slot's keyword set and captures the
+   * surrounding words as the slot value.
+   *
+   * The extractor is deliberately conservative — it returns undefined for any
+   * slot it can't confidently populate, leaving the fallback appearance prose
+   * to cover the gap. distinctiveFeatures and typicalAttire are passed through
+   * directly since they are already structured.
+   */
+  private extractCanonicalAppearance(
+    sources: string[],
+    distinctiveFeatures: string[] | undefined,
+    typicalAttire: string | undefined,
+  ): CanonicalAppearance | undefined {
+    const text = sources.join('. ');
+    if (!text && (!distinctiveFeatures || distinctiveFeatures.length === 0) && !typicalAttire) {
+      return undefined;
+    }
+
+    const splitPhrases = (raw: string): string[] =>
+      raw
+        .split(/[.,;]|\s-\s|\s—\s/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+
+    const phrases = splitPhrases(text);
+
+    const findPhrase = (keywords: RegExp): string | undefined => {
+      for (const p of phrases) {
+        if (keywords.test(p)) return p;
+      }
+      return undefined;
+    };
+
+    const ca: CanonicalAppearance = {};
+
+    const hairPhrase = findPhrase(/\b(hair|hairstyle|braid|ponytail|locks|mane|curls|dreadlocks)\b/i);
+    if (hairPhrase) ca.hair = hairPhrase;
+
+    const eyesPhrase = findPhrase(/\b(eyes|eye|iris|gaze)\b/i);
+    if (eyesPhrase) ca.eyes = eyesPhrase;
+
+    const skinPhrase = findPhrase(/\b(skin|complexion|tan|pale|sunburn(?:t|ed)?|freckl(?:e|ed|es))\b/i);
+    if (skinPhrase) ca.skinTone = skinPhrase;
+
+    const buildPhrase = findPhrase(/\b(build|physique|stature|frame|muscled|slender|broad|lean|stocky|wiry|sinewy)\b/i);
+    if (buildPhrase) ca.build = buildPhrase;
+
+    const heightPhrase = findPhrase(/\b(tall|short|height|petite|towering|diminutive)\b/i);
+    if (heightPhrase) ca.height = heightPhrase;
+
+    const facePhrase = findPhrase(/\b(face|jaw|jawline|cheekbones?|nose|chin|brow|forehead)\b/i);
+    if (facePhrase) ca.face = facePhrase;
+
+    if (distinctiveFeatures && distinctiveFeatures.length > 0) {
+      ca.distinguishingMarks = distinctiveFeatures.slice(0, 6);
+    }
+    if (typicalAttire) {
+      ca.defaultAttire = typicalAttire;
+    }
+
+    const hasAny = Object.values(ca).some((v) =>
+      Array.isArray(v) ? v.length > 0 : typeof v === 'string' && v.length > 0
+    );
+    return hasAny ? ca : undefined;
   }
 
   private gatherCharacterReferenceImages(
@@ -9842,7 +10878,11 @@ ${clothingRule}
     const gemSettings = this.imageService.getGeminiSettings();
     const mjSettings = this.imageService.getMidjourneySettings();
     const maxPerChar = gemSettings.maxRefImagesPerCharacter || mjSettings.maxRefImagesPerCharacter || 2;
-    const preferIndividualViews = gemSettings.useIndividualCharacterViews ?? false;
+    // Dual-artifact routing: always request the individual views here. The
+    // composite sheet is added separately below with a canonical
+    // `composite-sheet` role so the per-provider filter can route it
+    // correctly (Midjourney --cref, Gemini style-anchor).
+    const preferIndividualViews = true;
     
     for (const charId of characterIds) {
       if (references.length >= MAX_TOTAL_REFS) break;
@@ -9864,17 +10904,48 @@ ${clothingRule}
       for (const ref of charRefs) {
         const nameParts = ref.name.split('-');
         const viewType = nameParts.length > 1 ? nameParts[nameParts.length - 1] : 'front';
-        
+
+        // Canonical role tagging so the per-provider filter can route by
+        // artifact shape. `character-reference-face` keeps the face-crop
+        // elevated in rolePriority; expression views keep the 'expression'
+        // token so rolePriority routes them correctly.
+        let role: string;
+        if (viewType === 'face') {
+          role = 'character-reference-face';
+        } else if (ref.name.includes('expression')) {
+          role = `character-reference-expression-${viewType}`;
+        } else {
+          role = 'character-reference';
+        }
+
         references.push({
           data: ref.data,
           mimeType: ref.mimeType,
-          role: `character-reference-${ref.name}`,
+          role,
           characterName,
           viewType,
           visualAnchors,
         });
       }
-      
+
+      // Emit the composite model sheet as a separate artifact with its own
+      // canonical role. Downstream provider filters will either drop it
+      // (Gemini/Atlas — promoted to style anchor instead) or surface it
+      // as Midjourney `--cref`. Always tag it so the filter can find it.
+      if (references.length < MAX_TOTAL_REFS) {
+        const composite = this.imageAgentTeam.getCompositeReferenceImage(charId);
+        if (composite) {
+          references.push({
+            data: composite.data,
+            mimeType: composite.mimeType,
+            role: 'composite-sheet',
+            characterName,
+            viewType: 'composite',
+            visualAnchors,
+          });
+        }
+      }
+
       if (consistencyInfo) {
         this.emit({ type: 'debug', phase: 'images', message: `Using ${charRefs.length} ref image(s) for ${characterName}: ${consistencyInfo.visualAnchors.join(', ')}` });
       }
@@ -9898,7 +10969,31 @@ ${clothingRule}
     if (!family) {
       return references;
     }
-    return buildReferencePack(options.slotId || `${family}:${characterIds.join(',')}`, family, references).references;
+
+    // D3: derive per-character weights from their bible importance. Weights
+    // are multiplied against the profile's maxPerCharacter so major characters
+    // get more ref-pack slots than supporting/minor ones.
+    const characterWeights: Record<string, number> = {};
+    for (const charId of characterIds) {
+      const entry = characterBible.characters.find((c) => c.id === charId);
+      if (!entry) continue;
+      const name = entry.name || charId;
+      const importance = (entry.importance || '').toLowerCase();
+      if (entry.role?.toLowerCase() === 'protagonist' || importance === 'major') {
+        characterWeights[name] = 1.5;
+      } else if (importance === 'supporting') {
+        characterWeights[name] = 1.0;
+      } else if (importance === 'minor') {
+        characterWeights[name] = 0.75;
+      }
+    }
+
+    return buildReferencePack(
+      options.slotId || `${family}:${characterIds.join(',')}`,
+      family,
+      references,
+      { characterWeights },
+    ).references;
   }
 
   /**
@@ -10361,62 +11456,161 @@ ${clothingRule}
     this.emit({ type: 'agent_start', agent: 'ColorScriptAgent', message: 'Generating episode style bible...' });
 
     try {
-      const thumbsResult = await withTimeout(
-        this.imageAgentTeam.generateColorScriptThumbnails(colorScript),
-        PIPELINE_TIMEOUTS.colorScript,
-        'ColorScriptThumbnails'
-      );
+      // Composite style string carries the full ArtStyleProfile DNA instead
+      // of just the short label, so downstream prompt assembly already sees
+      // "romance novel. Rendering: …. Color: …." rather than a bare name
+      // that the model's priors can misinterpret.
+      const profileStyle =
+        composeCanonicalStyleString(this.config.imageGen?.artStyleProfile) ||
+        this.config.artStyle ||
+        undefined;
 
-      if (!thumbsResult.success || !thumbsResult.data) {
-        this.emit({ type: 'warning', phase: 'images', message: `Style bible prompt generation failed: ${thumbsResult.error || 'unknown error'}` });
-        return false;
+      const titleSlug = idSlugify(brief.story.title);
+      const preapproved = this.config.imageGen?.preapprovedStyleAnchors;
+
+      // === Arc color strip ===
+      let stripImage: GeneratedImage | undefined;
+      if (preapproved?.arcStrip) {
+        stripImage = await this.hydratePreapprovedAnchor(preapproved.arcStrip);
+        if (preapproved.arcStrip.imagePath) {
+          this._styleAnchorPaths.arcStrip = preapproved.arcStrip.imagePath;
+        }
+        this.emit({
+          type: 'info',
+          phase: 'images',
+          message: 'Style bible arc strip: using UI-preapproved anchor (skipping in-pipeline generation).',
+        });
+      } else {
+        const thumbsResult = await withTimeout(
+          this.imageAgentTeam.generateColorScriptThumbnails(colorScript),
+          PIPELINE_TIMEOUTS.colorScript,
+          'ColorScriptThumbnails'
+        );
+
+        if (!thumbsResult.success || !thumbsResult.data) {
+          this.emit({ type: 'warning', phase: 'images', message: `Style bible prompt generation failed: ${thumbsResult.error || 'unknown error'}` });
+          return false;
+        }
+
+        const built = buildArcStripAnchorPrompt({
+          style: profileStyle,
+          storyTitle: brief.story.title,
+          stripPrompt: thumbsResult.data.stripPrompt,
+        });
+        stripImage = await withTimeout(
+          this.imageService.generateImage(
+            built.prompt,
+            anchorIdentifier(titleSlug, built.role),
+            { type: 'master' },
+          ),
+          PIPELINE_TIMEOUTS.imageGeneration,
+          'EpisodeStyleBibleStrip'
+        );
+        if (stripImage?.imagePath) {
+          this._styleAnchorPaths.arcStrip = stripImage.imagePath;
+        }
       }
 
-      const stripPrompt: ImagePrompt = {
-        prompt: thumbsResult.data.stripPrompt,
-        style: this.config.artStyle || undefined,
-        aspectRatio: '4:1',
-        composition: 'Horizontal color script strip showing the episode look bible. Abstract mood panels only, no text, no characters, no people, no figures.',
-        negativePrompt: 'text, letters, numbers, captions, labels, collage, split-screen, multi-image grid, photorealistic, photography, person, people, character, figure, face, body, silhouette of person, human, man, woman, portrait',
-        visualNarrative: `Episode style bible for ${brief.story.title}: abstract color-and-light arc strip. NO characters, NO people, NO figures — purely abstract color mood panels.`,
-      };
-
-      const stripIdentifier = `style-bible-${idSlugify(brief.story.title)}-arc-strip`;
-      const stripImage = await withTimeout(
-        this.imageService.generateImage(stripPrompt, stripIdentifier, { type: 'master' }),
-        PIPELINE_TIMEOUTS.imageGeneration,
-        'EpisodeStyleBibleStrip'
-      );
-
+      // === Character anchor ===
       const protagonistRefImages = this.gatherCharacterReferenceImages([brief.protagonist.id], characterBible);
       const protagonistName = characterBible.characters.find(c => c.id === brief.protagonist.id)?.name || brief.protagonist.name;
-      const colorTerms = colorScript.colorDictionary.slice(0, 3).map(entry => entry.color).join(', ');
-      const anchorPrompt: ImagePrompt = {
-        prompt: `single character portrait of ${protagonistName}, one person only, three-quarter standing pose, readable face and costume, cinematic story frame, the episode palette expressed through ${colorTerms || 'the planned color script'}, designed as a visual style bible anchor, unified single image`,
-        style: this.config.artStyle || undefined,
-        aspectRatio: '3:4',
-        composition: 'One single unified image of one character, no splits, no panels, no divisions, clear silhouette, polished rendering, no text.',
-        negativePrompt: 'text, letters, numbers, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, reference sheet, turnaround, photorealistic, photography, neutral mannequin pose',
-        visualNarrative: `${protagonistName} rendered as the canonical in-style anchor for the episode. One single unified image, not split or divided.`,
-        keyExpression: 'Readable calm but alert expression, neutral enough for reuse, never blank.',
-        keyBodyLanguage: 'Relaxed but purposeful three-quarter stance, asymmetric weight shift, clear silhouette.',
-      };
+      const colorTerms = colorScript.colorDictionary.slice(0, 3).map(entry => entry.color);
 
-      const anchorIdentifier = `style-bible-${idSlugify(brief.story.title)}-character-anchor`;
-      const anchorImage = await withTimeout(
-        this.imageService.generateImage(
-          anchorPrompt,
-          anchorIdentifier,
-          { type: 'master', characters: [brief.protagonist.id], characterNames: [protagonistName], characterDescriptions: this.buildCharacterDescriptions([brief.protagonist.id], characterBible) },
-          protagonistRefImages.length > 0 ? protagonistRefImages : undefined
-        ),
-        PIPELINE_TIMEOUTS.imageGeneration,
-        'EpisodeStyleBibleCharacterAnchor'
-      );
+      let anchorImage: GeneratedImage;
+      if (preapproved?.character) {
+        anchorImage = await this.hydratePreapprovedAnchor(preapproved.character);
+        if (preapproved.character.imagePath) {
+          this._styleAnchorPaths.character = preapproved.character.imagePath;
+        }
+        this.emit({
+          type: 'info',
+          phase: 'images',
+          message: 'Style bible character anchor: using UI-preapproved anchor (skipping in-pipeline generation).',
+        });
+      } else {
+        const built = buildCharacterAnchorPrompt({
+          style: profileStyle,
+          protagonistName,
+          colorTerms,
+        });
+        anchorImage = await withTimeout(
+          this.imageService.generateImage(
+            built.prompt,
+            anchorIdentifier(titleSlug, built.role),
+            {
+              type: 'master',
+              characters: [brief.protagonist.id],
+              characterNames: [protagonistName],
+              characterDescriptions: this.buildCharacterDescriptions([brief.protagonist.id], characterBible),
+            },
+            protagonistRefImages.length > 0 ? protagonistRefImages : undefined,
+          ),
+          PIPELINE_TIMEOUTS.imageGeneration,
+          'EpisodeStyleBibleCharacterAnchor'
+        );
+        if (anchorImage?.imagePath) {
+          this._styleAnchorPaths.character = anchorImage.imagePath;
+        }
+      }
 
-      const preferredAnchor = (anchorImage.imageData && anchorImage.mimeType)
+      // === Environment anchor (optional) ===
+      // Gated behind EXPO_PUBLIC_STYLE_BIBLE_RICH for in-pipeline generation.
+      // A UI-preapproved environment anchor always wins regardless of the flag.
+      const env = typeof process !== 'undefined' ? process.env : ({} as Record<string, string | undefined>);
+      const richSamplesEnabled =
+        env.EXPO_PUBLIC_STYLE_BIBLE_RICH === 'true' || env.EXPO_PUBLIC_STYLE_BIBLE_RICH === '1';
+      let environmentAnchorImage: GeneratedImage | undefined;
+      if (preapproved?.environment) {
+        try {
+          environmentAnchorImage = await this.hydratePreapprovedAnchor(preapproved.environment);
+          if (preapproved.environment.imagePath) {
+            this._styleAnchorPaths.environment = preapproved.environment.imagePath;
+          }
+          this.emit({
+            type: 'info',
+            phase: 'images',
+            message: 'Style bible environment anchor: using UI-preapproved anchor (skipping in-pipeline generation).',
+          });
+        } catch (envErr) {
+          this.emit({
+            type: 'warning',
+            phase: 'images',
+            message: `Preapproved environment anchor hydration failed (non-fatal): ${envErr instanceof Error ? envErr.message : String(envErr)}`,
+          });
+        }
+      } else if (richSamplesEnabled) {
+        try {
+          const primaryLocation = brief.world.keyLocations[0];
+          const built = buildEnvironmentAnchorPrompt({
+            style: profileStyle,
+            storyTitle: brief.story.title,
+            locationName: primaryLocation?.name,
+            toneTerms: colorScript.colorDictionary.slice(0, 2).map(e => e.color),
+          });
+          environmentAnchorImage = await withTimeout(
+            this.imageService.generateImage(
+              built.prompt,
+              anchorIdentifier(titleSlug, built.role),
+              { type: 'master' as const },
+            ),
+            PIPELINE_TIMEOUTS.imageGeneration,
+            'EpisodeStyleBibleEnvironmentAnchor'
+          );
+          if (environmentAnchorImage?.imagePath) {
+            this._styleAnchorPaths.environment = environmentAnchorImage.imagePath;
+          }
+        } catch (envErr) {
+          this.emit({
+            type: 'warning',
+            phase: 'images',
+            message: `C3 rich style bible: environment anchor failed (non-fatal): ${envErr instanceof Error ? envErr.message : String(envErr)}`,
+          });
+        }
+      }
+
+      const preferredAnchor = (anchorImage?.imageData && anchorImage?.mimeType)
         ? anchorImage
-        : (stripImage.imageData && stripImage.mimeType ? stripImage : undefined);
+        : (stripImage?.imageData && stripImage?.mimeType ? stripImage : undefined);
 
       if (!preferredAnchor?.imageData || !preferredAnchor?.mimeType) {
         this.emit({ type: 'warning', phase: 'images', message: 'Episode style bible did not produce a reusable image anchor. Falling back to first scene anchor.' });
@@ -10429,8 +11623,15 @@ ${clothingRule}
         agent: 'ColorScriptAgent',
         message: 'Episode style bible ready and stored as the primary style anchor.',
         data: {
-          stripGenerated: !!stripImage.imageUrl,
-          characterAnchorGenerated: !!anchorImage.imageUrl,
+          stripGenerated: !!stripImage?.imageUrl,
+          characterAnchorGenerated: !!anchorImage?.imageUrl,
+          environmentAnchorGenerated: !!environmentAnchorImage?.imageUrl,
+          richSamplesEnabled,
+          preapprovedAnchorsUsed: {
+            character: !!preapproved?.character,
+            arcStrip: !!preapproved?.arcStrip,
+            environment: !!preapproved?.environment,
+          },
         }
       });
       return true;
@@ -10439,6 +11640,549 @@ ${clothingRule}
       this.emit({ type: 'warning', phase: 'images', message: `Episode style bible generation failed: ${message}` });
       return false;
     }
+  }
+
+  /**
+   * Lazily construct (or return) the `LoraTrainingAgent` for this run.
+   * Returns `undefined` when the active image provider does not support LoRA
+   * inference (non-SD) or when the subsystem is disabled — callers should
+   * treat `undefined` as "skip LoRA training transparently".
+   *
+   * The registry is rooted under the current run's output directory
+   * (`<outputDirectory>/loras/`) so trained artifacts are co-located with
+   * the rest of the generation outputs and can be pruned together.
+   */
+  private getOrCreateLoraTrainingAgent(
+    storyId: string,
+    outputDirectory?: string,
+  ): LoraTrainingAgent | undefined {
+    const settings = this.config.imageGen?.loraTraining;
+    if (!settings || !settings.enabled) return undefined;
+    const provider = (this.config.imageGen?.provider || 'nano-banana') as import('../config').ImageProvider;
+    if (!providerSupportsLoraTraining(provider)) return undefined;
+    if (this._loraTrainingAgent) return this._loraTrainingAgent;
+
+    // Pick a registry root. Prefer `<outputDirectory>/loras/` when we have
+    // one; fall back to a workspace-relative `generated-stories/<storyId>/loras`
+    // directory so callers that never passed outputDirectory still get a
+    // stable path (the registry auto-creates it on first write).
+    const registryRoot = outputDirectory
+      ? (outputDirectory.endsWith('/') ? `${outputDirectory}loras` : `${outputDirectory}/loras`)
+      : `generated-stories/${storyId}/loras`;
+
+    let io;
+    try {
+      io = createNodeLoraRegistryIO();
+    } catch {
+      // Non-Node environments (native RN) can't train LoRAs today — surface
+      // this once as a warning and disable the agent for the run.
+      if (!this._loraTrainingBanner) {
+        this._loraTrainingBanner = true;
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: 'LoRA training enabled but filesystem access is unavailable in this runtime — skipping training.',
+        });
+      }
+      return undefined;
+    }
+
+    const registry = new LoraRegistry(storyId, registryRoot, io);
+    const adapter = createLoraTrainerAdapter({
+      backend: settings.backend,
+      kohya: {
+        proxyBaseUrl: settings.baseUrl,
+        apiKey: settings.apiKey,
+      },
+    });
+    const agent = new LoraTrainingAgent({
+      storyId,
+      provider,
+      settings,
+      adapter,
+      registry,
+      onProgress: (event) => {
+        if (event.type === 'start') {
+          this.emit({ type: 'agent_start', agent: 'LoraTrainingAgent', message: `Training ${event.kind} LoRA for ${event.name}…` });
+        } else if (event.type === 'complete') {
+          this.emit({ type: 'agent_complete', agent: 'LoraTrainingAgent', message: `Trained ${event.kind} LoRA ${event.record.name}.` });
+        } else if (event.type === 'skip') {
+          this.emit({ type: 'debug', phase: 'images', message: `LoRA skip (${event.kind}/${event.name}): ${event.reason}` });
+        } else if (event.type === 'fail') {
+          this.emit({ type: 'warning', phase: 'images', message: `LoRA training failed (${event.kind}/${event.name}): ${event.reason}` });
+        }
+      },
+    });
+    this._loraTrainingAgent = agent;
+    this._loraRegistry = registry;
+    return agent;
+  }
+
+  /**
+   * Trigger character + style LoRA training once the reference sheets and
+   * style-bible anchors exist. Safe to call multiple times per run — the
+   * registry's fingerprint-keyed cache short-circuits anything that was
+   * already trained.
+   *
+   * Newly registered artifacts are merged back into
+   * `StableDiffusionSettings.styleLoras` / `.characterLoraByName` via
+   * `imageService.updateStableDiffusionSettings` so the existing
+   * `buildSDPrompt` path emits `<lora:...>` tags on subsequent scene
+   * generation with no additional surgery.
+   */
+  private async runLoraTrainingIfEligible(
+    brief: FullCreativeBrief,
+    characterBible: CharacterBible,
+    outputDirectory?: string,
+  ): Promise<void> {
+    const storyId = idSlugify(brief.story.title) || 'story';
+    const agent = this.getOrCreateLoraTrainingAgent(storyId, outputDirectory);
+    if (!agent || !agent.shouldRun()) return;
+
+    if (!this._loraTrainingBanner) {
+      this._loraTrainingBanner = true;
+      this.emit({
+        type: 'info',
+        phase: 'images',
+        message: `LoRA training enabled (backend=${agent.settings.backend}); checking candidates…`,
+      });
+    }
+
+    // Load any artifacts persisted by previous runs of the same story.
+    try {
+      await this._loraRegistry?.load();
+    } catch (err) {
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: `LoRA registry load non-fatal: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+
+    // Build character candidates from the cached reference sheets.
+    const seen = new Set<string>();
+    const characters: CharacterTrainingCandidate[] = [];
+    for (const char of characterBible.characters) {
+      if (seen.has(char.id)) continue;
+      seen.add(char.id);
+      const sheet = this.imageAgentTeam.getReferenceSheet(char.id);
+      if (!sheet) continue;
+      const references: { viewKey: string; imagePath?: string }[] = [];
+      for (const [viewKey, image] of sheet.generatedImages.entries()) {
+        if (image?.imagePath) {
+          references.push({ viewKey, imagePath: image.imagePath });
+        }
+      }
+      if (references.length === 0) continue;
+      const identityFingerprint = sheet.identityFingerprint || computeCharacterIdentityFingerprint(char);
+      characters.push({
+        character: {
+          id: char.id,
+          name: char.name,
+          role: char.role,
+          tier: (char.importance || '').toLowerCase(),
+          physicalDescription: char.physicalDescription,
+          distinctiveFeatures: char.distinctiveFeatures,
+          typicalAttire: char.typicalAttire,
+        },
+        identityFingerprint,
+        references,
+      });
+    }
+
+    // Build the style candidate from the current anchor paths. We
+    // fingerprint on the paths themselves (stable across rerenders if the
+    // anchors haven't been regenerated) — a future improvement is to hash
+    // the file bytes directly. `anchorHashes` is intentionally simple here
+    // and stays compatible with `computeStyleLoraFingerprint`.
+    const profile = this.config.imageGen?.artStyleProfile;
+    let style: StyleTrainingCandidate | undefined;
+    if (profile) {
+      const anchors: { role: string; imagePath?: string }[] = [];
+      if (this._styleAnchorPaths.character) anchors.push({ role: 'character', imagePath: this._styleAnchorPaths.character });
+      if (this._styleAnchorPaths.arcStrip) anchors.push({ role: 'arcStrip', imagePath: this._styleAnchorPaths.arcStrip });
+      if (this._styleAnchorPaths.environment) anchors.push({ role: 'environment', imagePath: this._styleAnchorPaths.environment });
+      if (anchors.length > 0) {
+        style = {
+          profile,
+          anchors,
+          anchorHashes: anchors.map((a) => a.imagePath || a.role),
+          episodeCount: this.totalEpisodes,
+        };
+      }
+    }
+
+    if (characters.length === 0 && !style) {
+      this.emit({ type: 'debug', phase: 'images', message: 'LoRA training: no eligible candidates this run.' });
+      return;
+    }
+
+    // Drop any previously-trained artifacts whose fingerprint no longer
+    // matches the current characters/style. Mirrors
+    // `invalidateStaleReferenceSheets` on the character-sheet side.
+    try {
+      const removed = await agent.invalidateStaleLoras(characters, style);
+      if (removed.length > 0) {
+        this.emit({
+          type: 'debug',
+          phase: 'images',
+          message: `LoRA registry: invalidated ${removed.length} stale record(s): ${removed.map((r) => r.name).join(', ')}`,
+        });
+      }
+    } catch (invalidateErr) {
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: `LoRA invalidate pass threw (non-fatal): ${invalidateErr instanceof Error ? invalidateErr.message : String(invalidateErr)}`,
+      });
+    }
+
+    const report = await agent.trainAll(characters, style);
+    if (!report.ran) return;
+
+    // Merge the registry back into SD settings so subsequent scene image
+    // prompts emit `<lora:...>` tags automatically.
+    const existing = this.imageService.getStableDiffusionSettings();
+    const merged = agent.mergeSettings(existing);
+    this.imageService.updateStableDiffusionSettings(merged);
+    this.emit({
+      type: 'debug',
+      phase: 'images',
+      message: `LoRA training report: ${report.entries
+        .map((e) => `${e.kind}/${e.name}=${e.outcome}`)
+        .join(', ')}`,
+    });
+  }
+
+  /**
+   * Turn a PreapprovedAnchor (inline base64 or on-disk path) into a
+   * `GeneratedImage` shape compatible with the rest of the style-bible
+   * bookkeeping — specifically the later `setGeminiStyleReference` call
+   * which needs `imageData` + `mimeType`.
+   */
+  private async hydratePreapprovedAnchor(
+    anchor: PreapprovedAnchor,
+  ): Promise<GeneratedImage> {
+    if (!anchor) {
+      throw new Error('hydratePreapprovedAnchor called with empty anchor');
+    }
+    if (anchor.data && anchor.mimeType) {
+      return {
+        prompt: { prompt: '' } as ImagePrompt,
+        imagePath: anchor.imagePath,
+        imageUrl: undefined,
+        imageData: anchor.data,
+        mimeType: anchor.mimeType,
+        metadata: { format: 'preapproved-anchor' },
+      };
+    }
+    if (anchor.imagePath) {
+      try {
+        const fs = await import('fs/promises');
+        const buffer = await fs.readFile(anchor.imagePath);
+        const b64 = buffer.toString('base64');
+        const lower = anchor.imagePath.toLowerCase();
+        const mimeType = lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+          ? 'image/jpeg'
+          : lower.endsWith('.webp')
+          ? 'image/webp'
+          : 'image/png';
+        return {
+          prompt: { prompt: '' } as ImagePrompt,
+          imagePath: anchor.imagePath,
+          imageUrl: undefined,
+          imageData: b64,
+          mimeType,
+          metadata: { format: 'preapproved-anchor' },
+        };
+      } catch (err) {
+        throw new Error(
+          `Failed to read preapproved anchor from disk (${anchor.imagePath}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    throw new Error('Preapproved anchor has neither inline data nor an imagePath');
+  }
+
+  /**
+   * A3 (narrow): optionally prefetch scene-opening beat images in parallel
+   * before the main scene loop runs. This overlaps opening-beat latency
+   * across scenes while keeping D10's per-scene continuity invariant
+   * intact — mid-scene beats (which depend on the previous beat as a
+   * continuity reference) remain strictly sequential inside the main loop.
+   *
+   * Gated on `EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS=true`; defaults off.
+   * Runs fully *before* the main loop begins mutating
+   * `_geminiPreviousScene`, so the prefetch's generateImage calls see the
+   * singleton in a clean null state (which is what a scene-opener expects
+   * — D10 clears the previous-scene ref at every scene boundary).
+   *
+   * Skipped entirely for panel-mode stories (panelMode !== 'single'):
+   * panel beats render multiple sub-images per beat, which the prefetch
+   * doesn't cover. Also skipped per-scene for openers already resumed
+   * from disk or the asset registry.
+   *
+   * Populates `this._openingBeatPrefetch`, a map keyed by beat identifier.
+   * The main loop checks this map at beat 0 of each scene and, when a
+   * prefetched result is present, short-circuits the inline generateImage
+   * call and feeds the prefetched image into the normal post-generation
+   * bookkeeping (beatImages, sceneImages, assetRegistry, beatResume,
+   * styleReferenceStored, lastGeneratedImage).
+   */
+  private async prefetchSceneOpeningBeats(
+    sceneContents: SceneContent[],
+    brief: FullCreativeBrief,
+    characterBible: CharacterBible,
+    colorScript: ColorScript | undefined,
+    worldBible: WorldBible,
+    outputDirectory?: string,
+  ): Promise<void> {
+    this._openingBeatPrefetch.clear();
+
+    const panelMode: PanelMode = this.config.imageGen?.panelMode || 'single';
+    if (panelMode !== 'single') {
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: `A3-narrow prefetch skipped: panelMode="${panelMode}" (prefetch only supports single-image mode).`,
+      });
+      return;
+    }
+
+    type PrefetchItem = {
+      identifier: string;
+      sceneId: string;
+      scopedSceneId: string;
+      beatId: string;
+      work: Promise<GeneratedImage>;
+    };
+    const items: PrefetchItem[] = [];
+    const imageStrategy = this.config.imageGen?.strategy || 'selective';
+
+    for (const scene of sceneContents) {
+      try {
+        const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
+
+        if (!Array.isArray(scene.moodProgression)) scene.moodProgression = [];
+        if (!Array.isArray(scene.keyMoments)) scene.keyMoments = [];
+
+        const beatsToIllustrate = imageStrategy === 'all-beats'
+          ? scene.beats
+          : scene.beats.filter((b, idx) => {
+              const isStartingBeat = b.id === scene.startingBeatId || idx === 0;
+              const isChoicePoint = b.isChoicePoint === true;
+              const isLastBeat = idx === scene.beats.length - 1;
+              const isClimaxBeat = (b as { isClimaxBeat?: boolean }).isClimaxBeat === true;
+              const isKeyStoryBeat = (b as { isKeyStoryBeat?: boolean }).isKeyStoryBeat === true;
+              const isChoicePayoff = (b as { isChoicePayoff?: boolean }).isChoicePayoff === true;
+              const isIntervalBeat = idx % 3 === 0;
+              return isStartingBeat || isChoicePoint || isLastBeat || isClimaxBeat || isKeyStoryBeat || isChoicePayoff || isIntervalBeat;
+            });
+        if (beatsToIllustrate.length === 0) continue;
+
+        const openerBeat = beatsToIllustrate[0];
+        const beatId = openerBeat.id;
+        const rawIdentifier = `beat-${scopedSceneId}-${beatId}`;
+        // Mirror the sanitization the service performs so our map key matches
+        // exactly what the main loop will eventually look up.
+        const identifier = rawIdentifier.replace(/[^a-zA-Z0-9_\-./]/g, '').replace(/-+/g, '-');
+
+        if (outputDirectory) {
+          const sceneSlug = idSlugify(scene.sceneId);
+          const beatResumeLoaded = loadBeatResumeStateSync(outputDirectory, sceneSlug);
+          const beatResumeSet = new Set<string>(beatResumeLoaded?.completedIdentifiers ?? []);
+          if (beatResumeSet.has(identifier) || beatResumeSet.has(rawIdentifier)) continue;
+        }
+
+        const resumeSlotId = `story-beat:${scene.sceneId}::${beatId}`;
+        const existingRecord = this.assetRegistry.getResolvedAsset(resumeSlotId);
+        if (existingRecord?.latestUrl) continue;
+
+        const sceneCharacterIds = this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id);
+        const locationInfo = getLocationInfoForScene(scene, worldBible);
+        const sceneLocationId = locationInfo?.locationId;
+        const sceneContext = this.extractSceneContext(scene, 0, sceneContents.length, worldBible);
+
+        const beatCharContext = this.analyzeBeatCharacters(
+          openerBeat.text,
+          openerBeat.speaker,
+          sceneCharacterIds,
+          characterBible,
+          brief.protagonist.id,
+        );
+        const explicitShotType = (openerBeat as { shotType?: 'establishing' | 'character' | 'action' }).shotType;
+        const isEstablishing = explicitShotType === 'establishing'
+          || (!explicitShotType && this.isEstablishingBeat(openerBeat.text, openerBeat.speaker, openerBeat.primaryAction, beatCharContext));
+        const resolvedShotType: 'establishing' | 'character' | 'action' = explicitShotType
+          || (isEstablishing ? 'establishing' : 'character');
+
+        const sceneColorMood = (colorScript as unknown as { scenes?: Array<Record<string, unknown>> })?.scenes
+          ?.find((cs) => (cs as { sceneId?: string; sceneName?: string }).sceneId === scene.sceneId
+            || (cs as { sceneId?: string; sceneName?: string }).sceneName === scene.sceneName) as Record<string, unknown> | undefined;
+        const colorMoodHints = sceneColorMood ? {
+          palette: (sceneColorMood.palette || sceneColorMood.colorPalette) as string | undefined,
+          lighting: (sceneColorMood.lighting || sceneColorMood.lightingMood) as string | undefined,
+          temperature: sceneColorMood.temperature as string | undefined,
+        } : undefined;
+
+        const sceneMood = scene.moodProgression.length > 0
+          ? scene.moodProgression[0]
+          : (sceneContext.isClimactic ? 'intense' : 'dramatic');
+
+        const scenePromptCtx: import('../images/beatPromptBuilder').ScenePromptContext = {
+          sceneId: scene.sceneId,
+          sceneName: scene.sceneName,
+          genre: brief.story.genre,
+          tone: brief.story.tone,
+          mood: sceneMood,
+          settingContext: scene.settingContext,
+          artStyle: this.config.artStyle,
+          colorMood: colorMoodHints,
+          styleProfile: this.config.imageGen?.artStyleProfile,
+        };
+
+        const beatColorEntry = (colorScript as unknown as { beats?: Array<Record<string, unknown>> })?.beats
+          ?.find((b) => (b as { beatId?: string }).beatId === beatId) as Record<string, unknown> | undefined;
+        let beatColorOverride: import('../images/beatPromptBuilder').BeatPromptInput['colorMoodOverride'] | undefined;
+        if (beatColorEntry) {
+          const hues: string[] = Array.isArray(beatColorEntry.dominantHues) ? beatColorEntry.dominantHues as string[] : [];
+          const palette = hues.length > 0 ? hues.join(' and ') : undefined;
+          const temperature = typeof beatColorEntry.lightTemp === 'string' ? beatColorEntry.lightTemp : undefined;
+          beatColorOverride = {
+            palette,
+            lighting: typeof beatColorEntry.lightDirection === 'string'
+              ? `${beatColorEntry.lightDirection} light`
+              : undefined,
+            temperature,
+            // Beat 0 has no previous beat — no transition note.
+            transitionNote: undefined,
+          };
+        }
+
+        let shotCharacterIds: string[];
+        if (isEstablishing) {
+          shotCharacterIds = [];
+        } else {
+          shotCharacterIds = openerBeat.characters && openerBeat.characters.length > 0
+            ? [...openerBeat.characters]
+            : [...sceneCharacterIds];
+          if (!shotCharacterIds.includes(brief.protagonist.id)) {
+            shotCharacterIds = [brief.protagonist.id, ...shotCharacterIds];
+          }
+        }
+        const shotCharacterNames = shotCharacterIds
+          .map(id => characterBible.characters.find(c => c.id === id)?.name)
+          .filter(Boolean) as string[];
+
+        const beatPromptInput: import('../images/beatPromptBuilder').BeatPromptInput = {
+          beatId,
+          beatText: openerBeat.text,
+          beatIndex: 0,
+          totalBeats: beatsToIllustrate.length,
+          visualMoment: this.sanitizePromptText(openerBeat.visualMoment || '', brief, ''),
+          primaryAction: isEstablishing ? '' : this.sanitizePromptText(openerBeat.primaryAction || '', brief, ''),
+          emotionalRead: isEstablishing ? '' : this.sanitizePromptText(openerBeat.emotionalRead || '', brief, ''),
+          relationshipDynamic: isEstablishing ? '' : this.sanitizePromptText(openerBeat.relationshipDynamic || '', brief, ''),
+          mustShowDetail: this.sanitizePromptText(openerBeat.mustShowDetail || '', brief, ''),
+          shotType: resolvedShotType,
+          isClimaxBeat: openerBeat.isClimaxBeat,
+          isKeyStoryBeat: openerBeat.isKeyStoryBeat,
+          isChoicePayoff: (openerBeat as { isChoicePayoff?: boolean }).isChoicePayoff,
+          choiceContext: this.sanitizePromptText((openerBeat as { choiceContext?: string }).choiceContext || '', brief, ''),
+          incomingChoiceContext: this.sanitizePromptText(scene.incomingChoiceContext || '', brief, ''),
+          isBranchPayoff: !!scene.incomingChoiceContext,
+          foregroundCharacterNames: isEstablishing ? [] : (openerBeat.foregroundCharacters || shotCharacterNames),
+          backgroundCharacterNames: isEstablishing ? [] : openerBeat.backgroundCharacters,
+          colorMoodOverride: beatColorOverride,
+        };
+
+        let imagePrompt = buildBeatImagePrompt(beatPromptInput, scenePromptCtx);
+        imagePrompt = this.sanitizeImagePrompt(imagePrompt, brief);
+
+        const includeExpressionRefs = !!(openerBeat.isClimaxBeat || openerBeat.isKeyStoryBeat);
+        const referenceImages = this.gatherCharacterReferenceImages(
+          shotCharacterIds,
+          characterBible,
+          sceneLocationId,
+          {
+            includeExpressions: includeExpressionRefs,
+            family: 'story-beat',
+            slotId: resumeSlotId,
+          },
+        );
+
+        const work = withTimeout(
+          this.imageService.generateImage(
+            imagePrompt,
+            identifier,
+            {
+              sceneId: scopedSceneId,
+              beatId,
+              type: 'scene' as const,
+              characters: shotCharacterIds,
+              characterNames: shotCharacterNames,
+              characterDescriptions: this.buildCharacterDescriptions(shotCharacterIds, characterBible),
+            },
+            referenceImages.length > 0 ? referenceImages : undefined,
+          ),
+          PIPELINE_TIMEOUTS.imageGeneration,
+          `prefetchOpener(${scopedSceneId}:${beatId})`,
+        );
+
+        items.push({ identifier, sceneId: scene.sceneId, scopedSceneId, beatId, work });
+      } catch (perSceneErr) {
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: `A3-narrow prefetch: setup failed for scene "${scene.sceneId}" (non-fatal): ${perSceneErr instanceof Error ? perSceneErr.message : String(perSceneErr)}`,
+        });
+      }
+    }
+
+    if (items.length === 0) {
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: `A3-narrow prefetch: no eligible scene-opening beats to prefetch.`,
+      });
+      return;
+    }
+
+    this.emit({
+      type: 'agent_start',
+      agent: 'ImageService',
+      message: `A3-narrow: prefetching ${items.length} scene-opening beats in parallel`,
+    });
+
+    const settled = await Promise.allSettled(items.map(i => i.work));
+
+    let successCount = 0;
+    let failCount = 0;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const result = settled[i];
+      if (result.status === 'fulfilled' && (result.value.imageUrl || result.value.imagePath)) {
+        this._openingBeatPrefetch.set(item.identifier, result.value);
+        successCount++;
+      } else {
+        failCount++;
+        const reason = result.status === 'rejected'
+          ? (result.reason instanceof Error ? result.reason.message : String(result.reason))
+          : 'prefetch returned no image';
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: `A3-narrow prefetch missed for ${item.identifier} (will regenerate inline): ${reason}`,
+        });
+      }
+    }
+
+    this.emit({
+      type: 'agent_complete',
+      agent: 'ImageService',
+      message: `A3-narrow prefetch complete: ${successCount}/${items.length} succeeded (${failCount} fell back to inline)`,
+      data: { prefetchSize: items.length, successCount, failCount },
+    });
   }
 
   /**

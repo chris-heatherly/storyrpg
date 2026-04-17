@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { ChevronDown } from 'lucide-react-native';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 
 export interface DropdownOption {
   value: string;

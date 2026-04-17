@@ -2,13 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   DEFAULT_GEMINI_SETTINGS,
+  DEFAULT_LORA_TRAINING_SETTINGS,
   DEFAULT_MIDJOURNEY_SETTINGS,
+  DEFAULT_STABLE_DIFFUSION_SETTINGS,
   DEFAULT_VIDEO_SETTINGS,
   GeminiSettings,
+  LoraTrainingSettings,
   MidjourneySettings,
+  StableDiffusionSettings,
 } from '../ai-agents/config';
 import { GenerationSettings, DEFAULT_GENERATION_SETTINGS } from '../components/GenerationSettingsPanel';
 import { PROXY_CONFIG } from '../config/endpoints';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('GeneratorSettings');
 import {
   DEFAULT_LLM_MODELS,
   DEFAULT_LLM_PROVIDER,
@@ -58,6 +65,8 @@ export const GENERATOR_STORAGE_KEYS = {
   midjourneySettings: '@storyrpg_midjourney_settings',
   geminiSettings: '@storyrpg_gemini_settings',
   videoSettings: '@storyrpg_video_settings',
+  stableDiffusionSettings: '@storyrpg_stable_diffusion_settings',
+  loraTrainingSettings: '@storyrpg_lora_training_settings',
 } as const;
 
 function isGeneratorLlmProvider(value: string | null | undefined): value is GeneratorLlmProvider {
@@ -115,6 +124,8 @@ interface ProxySettingsShape {
   videoSettings?: GeneratorVideoSettings;
   geminiSettings?: GeminiSettings;
   midjourneySettings?: MidjourneySettings;
+  stableDiffusionSettings?: StableDiffusionSettings;
+  loraTrainingSettings?: LoraTrainingSettings;
   atlasCloudModel?: string;
 }
 
@@ -142,7 +153,7 @@ function patchProxySettings(patch: Partial<ProxySettingsShape>): void {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }).catch(err => console.log('[GeneratorSettings] Proxy patch failed:', err.message));
+    }).catch(err => log.debug('[GeneratorSettings] Proxy patch failed:', err.message));
   }, 500);
 }
 
@@ -161,6 +172,8 @@ export function useGeneratorSettings() {
   const [midapiToken, setMidapiToken] = useState('');
   const [midjourneySettings, setMidjourneySettings] = useState<MidjourneySettings>({ ...DEFAULT_MIDJOURNEY_SETTINGS });
   const [geminiSettings, setGeminiSettings] = useState<GeminiSettings>({ ...DEFAULT_GEMINI_SETTINGS });
+  const [stableDiffusionSettings, setStableDiffusionSettings] = useState<StableDiffusionSettings>({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS });
+  const [loraTrainingSettings, setLoraTrainingSettings] = useState<LoraTrainingSettings>({ ...DEFAULT_LORA_TRAINING_SETTINGS });
   const [imageProvider, setImageProvider] = useState<GeneratorImageProvider>('nano-banana');
   const [artStyle, setArtStyle] = useState('');
   const [imageStrategy, setImageStrategy] = useState<'selective' | 'all-beats'>('all-beats');
@@ -214,6 +227,12 @@ export function useGeneratorSettings() {
       }
       if (ps.midjourneySettings) {
         setMidjourneySettings({ ...DEFAULT_MIDJOURNEY_SETTINGS, ...ps.midjourneySettings });
+      }
+      if (ps.stableDiffusionSettings) {
+        setStableDiffusionSettings({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS, ...ps.stableDiffusionSettings });
+      }
+      if (ps.loraTrainingSettings) {
+        setLoraTrainingSettings({ ...DEFAULT_LORA_TRAINING_SETTINGS, ...ps.loraTrainingSettings });
       }
     };
 
@@ -272,6 +291,8 @@ export function useGeneratorSettings() {
           storedGenerationSettings,
           storedNarrationSettings,
           storedVideoSettings,
+          storedStableDiffusionSettings,
+          storedLoraTrainingSettings,
         ] = await Promise.all([
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.anthropicApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmGeminiApiKey),
@@ -291,6 +312,8 @@ export function useGeneratorSettings() {
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.generationSettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.narrationSettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.videoSettings),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.stableDiffusionSettings),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.loraTrainingSettings),
         ]);
 
         if (!isMounted) return;
@@ -383,9 +406,21 @@ export function useGeneratorSettings() {
               setVideoSettings((current) => ({ ...current, ...parsedVideoSettings }));
             } catch (_) {}
           }
+
+          if (storedStableDiffusionSettings) {
+            try {
+              setStableDiffusionSettings({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS, ...JSON.parse(storedStableDiffusionSettings) });
+            } catch (_) {}
+          }
+
+          if (storedLoraTrainingSettings) {
+            try {
+              setLoraTrainingSettings({ ...DEFAULT_LORA_TRAINING_SETTINGS, ...JSON.parse(storedLoraTrainingSettings) });
+            } catch (_) {}
+          }
         }
       } catch (error) {
-        console.log('Failed to load generator settings from AsyncStorage:', error);
+        log.debug('Failed to load generator settings from AsyncStorage:', error);
       }
     };
 
@@ -411,7 +446,7 @@ export function useGeneratorSettings() {
         await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.llmModel, newModel);
       }
     } catch (error) {
-      console.log('Failed to save LLM provider:', error);
+      log.debug('Failed to save LLM provider:', error);
     }
   }, [llmModel]);
 
@@ -421,7 +456,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.llmModel, model.trim() ? model.trim() : null);
     } catch (error) {
-      console.log('Failed to save LLM model:', error);
+      log.debug('Failed to save LLM model:', error);
     }
   }, []);
 
@@ -439,7 +474,7 @@ export function useGeneratorSettings() {
         await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.imageLlmModel, nextModel);
       }
     } catch (error) {
-      console.log('Failed to save image LLM provider:', error);
+      log.debug('Failed to save image LLM provider:', error);
     }
   }, [imageLlmModel]);
 
@@ -449,7 +484,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.imageLlmModel, model.trim() ? model.trim() : null);
     } catch (error) {
-      console.log('Failed to save image LLM model:', error);
+      log.debug('Failed to save image LLM model:', error);
     }
   }, []);
 
@@ -467,7 +502,7 @@ export function useGeneratorSettings() {
         await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.videoLlmModel, nextModel);
       }
     } catch (error) {
-      console.log('Failed to save video LLM provider:', error);
+      log.debug('Failed to save video LLM provider:', error);
     }
   }, [videoLlmModel]);
 
@@ -477,7 +512,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.videoLlmModel, model.trim() ? model.trim() : null);
     } catch (error) {
-      console.log('Failed to save video LLM model:', error);
+      log.debug('Failed to save video LLM model:', error);
     }
   }, []);
 
@@ -487,7 +522,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.generationMode, mode);
     } catch (error) {
-      console.log('Failed to save generation mode:', error);
+      log.debug('Failed to save generation mode:', error);
     }
   }, []);
 
@@ -496,7 +531,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.anthropicApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save API key:', error);
+      log.debug('Failed to save API key:', error);
     }
   }, []);
 
@@ -505,7 +540,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.geminiApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save Gemini API key:', error);
+      log.debug('Failed to save Gemini API key:', error);
     }
   }, []);
 
@@ -514,7 +549,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.elevenLabsApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save ElevenLabs API key:', error);
+      log.debug('Failed to save ElevenLabs API key:', error);
     }
   }, []);
 
@@ -523,7 +558,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.atlasCloudApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save Atlas Cloud API key:', error);
+      log.debug('Failed to save Atlas Cloud API key:', error);
     }
   }, []);
 
@@ -533,7 +568,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.atlasCloudModel, modelId);
     } catch (error) {
-      console.log('Failed to save Atlas Cloud model:', error);
+      log.debug('Failed to save Atlas Cloud model:', error);
     }
   }, []);
 
@@ -542,7 +577,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.midapiToken, token.trim() ? token : null);
     } catch (error) {
-      console.log('Failed to save MidAPI token:', error);
+      log.debug('Failed to save MidAPI token:', error);
     }
   }, []);
 
@@ -553,7 +588,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.geminiSettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save Gemini settings:', error);
+      log.debug('Failed to save Gemini settings:', error);
     }
   }, [geminiSettings]);
 
@@ -564,9 +599,49 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.midjourneySettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save Midjourney settings:', error);
+      log.debug('Failed to save Midjourney settings:', error);
     }
   }, [midjourneySettings]);
+
+  const handleStableDiffusionSettingsChange = useCallback(async (newSettings: Partial<StableDiffusionSettings>) => {
+    const updated = { ...stableDiffusionSettings, ...newSettings };
+    setStableDiffusionSettings(updated);
+    patchProxySettings({ stableDiffusionSettings: updated });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.stableDiffusionSettings, JSON.stringify(updated));
+    } catch (error) {
+      log.debug('Failed to save Stable Diffusion settings:', error);
+    }
+  }, [stableDiffusionSettings]);
+
+  // Deep-merges partial LoRA training settings (supports nested `training`
+  // and `characterThresholds` / `styleThresholds` patches). Persists to
+  // both AsyncStorage and the proxy disk cache.
+  const handleLoraTrainingSettingsChange = useCallback(async (newSettings: Partial<LoraTrainingSettings>) => {
+    const updated: LoraTrainingSettings = {
+      ...loraTrainingSettings,
+      ...newSettings,
+      characterThresholds: {
+        ...loraTrainingSettings.characterThresholds,
+        ...(newSettings.characterThresholds || {}),
+      },
+      styleThresholds: {
+        ...loraTrainingSettings.styleThresholds,
+        ...(newSettings.styleThresholds || {}),
+      },
+      training: {
+        ...loraTrainingSettings.training,
+        ...(newSettings.training || {}),
+      },
+    };
+    setLoraTrainingSettings(updated);
+    patchProxySettings({ loraTrainingSettings: updated });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.loraTrainingSettings, JSON.stringify(updated));
+    } catch (error) {
+      log.debug('Failed to save LoRA training settings:', error);
+    }
+  }, [loraTrainingSettings]);
 
   const handleImageProviderChange = useCallback(async (provider: GeneratorImageProvider) => {
     setImageProvider(provider);
@@ -574,7 +649,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.imageProvider, provider);
     } catch (error) {
-      console.log('Failed to save image provider:', error);
+      log.debug('Failed to save image provider:', error);
     }
   }, []);
 
@@ -584,7 +659,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.artStyle, style.trim() ? style : null);
     } catch (error) {
-      console.log('Failed to save art style:', error);
+      log.debug('Failed to save art style:', error);
     }
   }, []);
 
@@ -594,7 +669,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.imageStrategy, strategy);
     } catch (error) {
-      console.log('Failed to save image strategy:', error);
+      log.debug('Failed to save image strategy:', error);
     }
   }, []);
 
@@ -604,7 +679,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.generationSettings, JSON.stringify(settings));
     } catch (error) {
-      console.log('Failed to save generation settings:', error);
+      log.debug('Failed to save generation settings:', error);
     }
   }, []);
 
@@ -618,7 +693,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.narrationSettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save narration settings:', error);
+      log.debug('Failed to save narration settings:', error);
     }
   }, [narrationSettings]);
 
@@ -632,7 +707,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.videoSettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save video settings:', error);
+      log.debug('Failed to save video settings:', error);
     }
   }, [videoSettings]);
 
@@ -651,6 +726,8 @@ export function useGeneratorSettings() {
     midapiToken,
     midjourneySettings,
     geminiSettings,
+    stableDiffusionSettings,
+    loraTrainingSettings,
     imageProvider,
     artStyle,
     imageStrategy,
@@ -673,6 +750,8 @@ export function useGeneratorSettings() {
     handleMidapiTokenChange,
     handleGeminiSettingsChange,
     handleMidjourneySettingsChange,
+    handleStableDiffusionSettingsChange,
+    handleLoraTrainingSettingsChange,
     handleImageProviderChange,
     handleArtStyleChange,
     handleImageStrategyChange,

@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): Phase 4 client/pipeline decoupling will split
+// this writer and address expo-file-system API drift.
 /**
  * Pipeline Output Writer
  *
@@ -14,6 +16,10 @@ import { SceneContent } from '../agents/SceneWriter';
 import { ChoiceSet } from '../agents/ChoiceAuthor';
 import { QAReport } from '../agents/QAAgents';
 import { EncounterStructure } from '../agents/EncounterArchitect';
+import type { EncounterTelemetry } from '../agents/EncounterArchitect';
+import type { SceneValidationResult } from '../validators/IncrementalValidators';
+import type { LlmLedger } from './pipelineTelemetry';
+import type { BranchShadowDiff } from './branchShadowDiff';
 import { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import type { 
   ColorScript,
@@ -156,6 +162,34 @@ export interface PipelineOutputs {
   choiceSets?: ChoiceSet[];
   encounters?: EncounterStructure[];
   qaReport?: QAReport;
+  /**
+   * Raw per-scene results from the IncrementalValidators run. When present,
+   * `savePipelineOutputs` writes an aggregated sidecar (`06b-incremental-aggregate.json`)
+   * so QA vs incremental overlap is measurable from saved artifacts.
+   * I1 from the determinism/LLM instrumentation plan.
+   */
+  incrementalValidationResults?: SceneValidationResult[];
+  /**
+   * Per-encounter telemetry (I2 instrumentation). When present,
+   * `savePipelineOutputs` writes a sidecar (`06c-encounter-telemetry.json`)
+   * capturing per-phase success, LLM call counts, and wall-clock times
+   * for each encounter generated in the run.
+   */
+  encounterTelemetry?: EncounterTelemetry[];
+  /**
+   * Run-level LLM call ledger (I4 instrumentation). When present,
+   * `savePipelineOutputs` writes a sidecar (`09-llm-ledger.json`) summarising
+   * per-agent call counts, token usage, and wall-clock time so future
+   * rebalance decisions can be grounded in measured cost rather than guesses.
+   */
+  llmLedger?: LlmLedger;
+  /**
+   * Per-episode branch shadow diffs (I5 instrumentation). Only populated
+   * when `config.generation.branchShadowModeEnabled` is true. When present,
+   * `savePipelineOutputs` writes a sidecar (`06d-branch-shadow-diff.json`)
+   * so the LLM-vs-deterministic branch analysis overlap is measurable.
+   */
+  branchShadowDiffs?: Array<{ episodeId: string; diff: BranchShadowDiff }>;
   bestPracticesReport?: ComprehensiveValidationReport;
   finalStory?: Story;
   // Visual planning assets
@@ -239,7 +273,7 @@ function getTimestamp(): string {
 /**
  * Ensure the output directory exists
  */
-async function ensureDirectory(path: string): Promise<void> {
+export async function ensureDirectory(path: string): Promise<void> {
   if (isWebRuntime()) {
     // On web, we'll handle this differently (download or IndexedDB)
     return;
@@ -780,6 +814,179 @@ export async function savePipelineOutputs(
     const qaPath = outputDir + '06-qa-report.json';
     const qaSize = await writeJsonFile(qaPath, outputs.qaReport);
     files.push({ name: 'QA Report', path: qaPath, type: 'qa', size: qaSize });
+  }
+
+  // 7b. Save IncrementalValidators aggregate (for I1 instrumentation).
+  //
+  // This sidecar lets us measure overlap between what the incremental
+  // validators caught during generation and what end-of-pipeline QA
+  // surfaces. It is written whenever incremental validation actually ran
+  // (i.e. we have at least one SceneValidationResult).
+  if (outputs.incrementalValidationResults && outputs.incrementalValidationResults.length > 0) {
+    const rawResults = outputs.incrementalValidationResults;
+    const totalIssues = { voice: 0, stakes: 0, sensitivity: 0, continuity: 0, encounter: 0 };
+    const regenerationRequests = { scene: 0, choices: 0, encounter: 0, none: 0 };
+    let passedScenes = 0;
+    let failedScenes = 0;
+    let totalValidationMs = 0;
+
+    for (const r of rawResults) {
+      totalIssues.voice += r.voice?.issues?.length ?? 0;
+      totalIssues.stakes += r.stakes?.issues?.length ?? 0;
+      totalIssues.sensitivity += r.sensitivity?.issues?.length ?? 0;
+      totalIssues.continuity += r.continuity?.issues?.length ?? 0;
+      totalIssues.encounter += r.encounter?.issues?.length ?? 0;
+      if (r.overallPassed) passedScenes++; else failedScenes++;
+      if (r.regenerationRequested === 'scene') regenerationRequests.scene++;
+      else if (r.regenerationRequested === 'choices') regenerationRequests.choices++;
+      else if (r.regenerationRequested === 'encounter') regenerationRequests.encounter++;
+      else regenerationRequests.none++;
+      totalValidationMs += r.validationTimeMs ?? 0;
+    }
+
+    const aggregate = {
+      generatedAt: new Date().toISOString(),
+      totalScenes: rawResults.length,
+      passedScenes,
+      failedScenes,
+      totalIssues,
+      regenerationRequests,
+      averageValidationTimeMs: rawResults.length > 0
+        ? Math.round(totalValidationMs / rawResults.length)
+        : 0,
+      perScene: rawResults.map(r => ({
+        sceneId: r.sceneId,
+        sceneName: r.sceneName,
+        overallPassed: r.overallPassed,
+        regenerationRequested: r.regenerationRequested,
+        validationTimeMs: r.validationTimeMs,
+        counts: {
+          voice: r.voice?.issues?.length ?? 0,
+          stakes: r.stakes?.issues?.length ?? 0,
+          sensitivity: r.sensitivity?.issues?.length ?? 0,
+          continuity: r.continuity?.issues?.length ?? 0,
+          encounter: r.encounter?.issues?.length ?? 0,
+        },
+        issues: {
+          voice: r.voice?.issues ?? [],
+          stakes: r.stakes?.issues ?? [],
+          sensitivity: r.sensitivity?.issues ?? [],
+          continuity: r.continuity?.issues ?? [],
+          encounter: r.encounter?.issues ?? [],
+        },
+      })),
+    };
+
+    const aggregatePath = outputDir + '06b-incremental-aggregate.json';
+    const aggregateSize = await writeJsonFile(aggregatePath, aggregate);
+    files.push({
+      name: 'Incremental Validation Aggregate',
+      path: aggregatePath,
+      type: 'incremental-aggregate',
+      size: aggregateSize,
+    });
+  }
+
+  // 7c. Save per-encounter telemetry (I2 instrumentation).
+  if (outputs.encounterTelemetry && outputs.encounterTelemetry.length > 0) {
+    const telemetry = outputs.encounterTelemetry;
+    const modeCounts: Record<string, number> = {};
+    let totalLlmCalls = 0;
+    let totalMs = 0;
+    let phase4FailCount = 0;
+    let phase3RanCount = 0;
+    for (const t of telemetry) {
+      modeCounts[t.mode] = (modeCounts[t.mode] ?? 0) + 1;
+      totalLlmCalls += t.llmCallCount ?? 0;
+      totalMs += t.msElapsed ?? 0;
+      if (!t.phase4Ok) phase4FailCount++;
+      if (t.phase3Ran) phase3RanCount++;
+    }
+    const telemetryDoc = {
+      generatedAt: new Date().toISOString(),
+      totalEncounters: telemetry.length,
+      modeCounts,
+      phase3RanCount,
+      phase4FailCount,
+      totalLlmCalls,
+      totalMs,
+      averageMs: telemetry.length > 0 ? Math.round(totalMs / telemetry.length) : 0,
+      encounters: telemetry,
+    };
+    const telemetryPath = outputDir + '06c-encounter-telemetry.json';
+    const telemetrySize = await writeJsonFile(telemetryPath, telemetryDoc);
+    files.push({
+      name: 'Encounter Telemetry',
+      path: telemetryPath,
+      type: 'encounter-telemetry',
+      size: telemetrySize,
+    });
+  }
+
+  // 7d. Save branch shadow diffs (I5 instrumentation).
+  //
+  // Off by default; only written when shadow mode was enabled in config.
+  // Each episode contributes one diff entry. Aggregated totals are
+  // recomputed here from the per-episode diffs so consumers don't have to.
+  if (outputs.branchShadowDiffs && outputs.branchShadowDiffs.length > 0) {
+    const perEpisode = outputs.branchShadowDiffs;
+    const totals = perEpisode.reduce(
+      (acc, { diff }) => {
+        acc.agreed += diff.agreedScenes.length;
+        acc.llmOnly += diff.llmOnlyScenes.length;
+        acc.deterministicOnly += diff.deterministicOnlyScenes.length;
+        acc.llmValidationIssues += diff.counts.llmValidationIssues;
+        acc.deterministicUnreachable += diff.counts.deterministicUnreachable;
+        acc.deterministicDeadEnds += diff.counts.deterministicDeadEnds;
+        acc.deterministicReconvergence += diff.counts.deterministicReconvergence;
+        return acc;
+      },
+      {
+        agreed: 0,
+        llmOnly: 0,
+        deterministicOnly: 0,
+        llmValidationIssues: 0,
+        deterministicUnreachable: 0,
+        deterministicDeadEnds: 0,
+        deterministicReconvergence: 0,
+      },
+    );
+    const shadowDoc = {
+      generatedAt: new Date().toISOString(),
+      episodeCount: perEpisode.length,
+      totals,
+      episodes: perEpisode,
+    };
+    const shadowPath = outputDir + '06d-branch-shadow-diff.json';
+    const shadowSize = await writeJsonFile(shadowPath, shadowDoc);
+    files.push({
+      name: 'Branch Shadow Diff',
+      path: shadowPath,
+      type: 'branch-shadow-diff',
+      size: shadowSize,
+    });
+  }
+
+  // 7e. Save LLM ledger (I4 instrumentation).
+  //
+  // Run-level aggregation of every LLM call observed via BaseAgent's
+  // observer. Token totals are populated from anthropic + gemini transports;
+  // `totals.usageReported` surfaces how many calls actually reported usage so
+  // gaps (e.g. openai, error paths) remain visible instead of silently
+  // counting as zero tokens.
+  if (outputs.llmLedger) {
+    const ledgerDoc = {
+      generatedAt: new Date().toISOString(),
+      ...outputs.llmLedger,
+    };
+    const ledgerPath = outputDir + '09-llm-ledger.json';
+    const ledgerSize = await writeJsonFile(ledgerPath, ledgerDoc);
+    files.push({
+      name: 'LLM Call Ledger',
+      path: ledgerPath,
+      type: 'llm-ledger',
+      size: ledgerSize,
+    });
   }
 
   // 8. Save Best Practices Validation Metrics

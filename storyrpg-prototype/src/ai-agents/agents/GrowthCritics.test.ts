@@ -59,9 +59,9 @@ describe('GrowthNarrativeCritic.execute', () => {
     const input: GrowthNarrativeCriticInput = { scenes: [] };
     const result = await critic.execute(input);
     expect(result.success).toBe(true);
-    expect(result.data.passed).toBe(true);
-    expect(result.data.issues).toHaveLength(0);
-    expect(result.data.summary).toContain('No growth scenes');
+    expect(result.data!.passed).toBe(true);
+    expect(result.data!.issues).toHaveLength(0);
+    expect(result.data!.summary).toContain('No growth scenes');
   });
 });
 

@@ -238,6 +238,47 @@ export interface Phase3Result {
   }>;
 }
 
+/**
+ * Structured per-encounter telemetry (I2 from the determinism / LLM
+ * instrumentation plan). Emitted alongside each EncounterArchitect run
+ * so we can measure per-phase success rates, LLM cost, and wall-clock
+ * time across real runs before deciding on any phase-architecture
+ * changes.
+ */
+export interface EncounterTelemetry {
+  sceneId: string;
+  /**
+   * phased_success   — phased path, every phase returned data
+   * phased_with_gaps — phased path, at least one phase null/failed
+   * lean             — phased path threw; legacy lean prompt succeeded
+   * deterministic    — both lean attempts failed; deterministic fallback
+   *                    used instead
+   */
+  mode: 'phased_success' | 'phased_with_gaps' | 'lean' | 'deterministic';
+  phase1Ok: boolean;
+  /** success per opening-beat choice, in choice order */
+  phase2: boolean[];
+  phase3Ran: boolean;
+  phase3Ok: boolean;
+  phase4Ok: boolean;
+  /**
+   * Number of LLM calls issued during this encounter generation.
+   * Phased path is 1 (Phase 1) + N (Phase 2, one per choice) + 0/1 (Phase 3)
+   * + 1 (Phase 4). Lean path is 1 or 2. Deterministic path is 0.
+   */
+  llmCallCount: number;
+  msElapsed: number;
+  /**
+   * Outcome slots whose emitted prose matched the `createDefaultStorylet`
+   * fallback text hash-for-hash (I3 instrumentation). Populated for all
+   * paths; empty array means all storylets were LLM-authored. Non-empty
+   * for phased runs usually signals Phase 4 failed or returned partial
+   * output; non-empty for lean runs signals the LLM omitted a slot and
+   * `normalizeStructure` filled it with a default.
+   */
+  phase4DefaultCollisions: Array<'victory' | 'partialVictory' | 'defeat' | 'escape'>;
+}
+
 /** Phase 4 output: storylets */
 export interface Phase4Result {
   victory: GeneratedStorylet;
@@ -906,6 +947,7 @@ Outcomes should include consequences that match the skill being tested:
     allNpcs?: NPCInfo[],
   ): Promise<AgentResponse<EncounterStructure>> {
     console.log(`[EncounterArchitect] Designing encounter for scene: ${input.sceneId}`);
+    const execStart = Date.now();
 
     try {
       return await this.executePhased(input, playerRelationships, allNpcs);
@@ -928,20 +970,52 @@ Outcomes should include consequences that match the skill being tested:
       error?: string;
     }> = [];
 
+    const buildLeanTelemetry = (
+      llmCalls: number,
+      structure: EncounterStructure,
+    ): EncounterTelemetry => ({
+      sceneId: input.sceneId,
+      mode: 'lean',
+      phase1Ok: false,
+      phase2: [],
+      phase3Ran: false,
+      phase3Ok: false,
+      phase4Ok: false,
+      llmCallCount: llmCalls,
+      msElapsed: Date.now() - execStart,
+      phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+    });
+
     const leanResult = await this.tryLLMAttempt(input, 1, 'lean', minimumBeatCount, attemptSummaries, lastError, lastRawResponse);
-    if (leanResult.success && leanResult.data) return leanResult;
+    if (leanResult.success && leanResult.data) {
+      return { ...leanResult, metadata: { ...(leanResult.metadata ?? {}), encounterTelemetry: buildLeanTelemetry(1, leanResult.data) } };
+    }
     lastError = leanResult.error;
     lastRawResponse = leanResult.rawResponse;
 
     const retryResult = await this.tryLLMAttempt(input, 2, 'lean_retry', minimumBeatCount, attemptSummaries, lastError, lastRawResponse);
-    if (retryResult.success && retryResult.data) return retryResult;
+    if (retryResult.success && retryResult.data) {
+      return { ...retryResult, metadata: { ...(retryResult.metadata ?? {}), encounterTelemetry: buildLeanTelemetry(2, retryResult.data) } };
+    }
 
     console.warn(`[EncounterArchitect] All LLM attempts failed for ${input.sceneId}. Building deterministic fallback.`);
     try {
       let structure = this.buildDeterministicFallback(input);
       structure = this.normalizeStructure(structure, input);
       this.validateStructure(structure, input);
-      return { success: true, data: structure };
+      const telemetry: EncounterTelemetry = {
+        sceneId: input.sceneId,
+        mode: 'deterministic',
+        phase1Ok: false,
+        phase2: [],
+        phase3Ran: false,
+        phase3Ok: false,
+        phase4Ok: false,
+        llmCallCount: 2, // Both lean attempts were made
+        msElapsed: Date.now() - execStart,
+        phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+      };
+      return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
     } catch (fallbackError) {
       const fbMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
       return { success: false, error: `All attempts exhausted including fallback: ${fbMsg}` };
@@ -2930,7 +3004,19 @@ CRITICAL RULES:
       let structure = this.buildDeterministicFallback(input);
       structure = this.normalizeStructure(structure, input);
       this.validateStructure(structure, input);
-      return { success: true, data: structure };
+      const telemetry: EncounterTelemetry = {
+        sceneId: input.sceneId,
+        mode: 'deterministic',
+        phase1Ok: false,
+        phase2: [],
+        phase3Ran: false,
+        phase3Ok: false,
+        phase4Ok: false,
+        llmCallCount: 1, // Phase 1 was attempted
+        msElapsed: Date.now() - phasedStart,
+        phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+      };
+      return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
     }
 
     // ---- Phases 2, 3, 4 in parallel ----
@@ -2941,7 +3027,8 @@ CRITICAL RULES:
       })
     );
 
-    const phase3Promise = input.priorStateContext
+    const phase3Ran = !!input.priorStateContext;
+    const phase3Promise = phase3Ran
       ? this.runPhase3(input, phase1).catch(err => {
           console.warn(`[EncounterArchitect] Phase 3 failed: ${err instanceof Error ? err.message : err}`);
           return null;
@@ -2969,7 +3056,28 @@ CRITICAL RULES:
     const totalMs = Date.now() - phasedStart;
     console.log(`[EncounterArchitect] Phased generation complete in ${totalMs}ms for ${input.sceneId}`);
 
-    return { success: true, data: structure };
+    const phase2Ok = phase2Results.map(r => r !== null);
+    const phase3Ok = phase3Result !== null;
+    const phase4Ok = phase4Result !== null;
+    const anyGap = phase2Ok.some(ok => !ok) || (phase3Ran && !phase3Ok) || !phase4Ok;
+    const telemetry: EncounterTelemetry = {
+      sceneId: input.sceneId,
+      mode: anyGap ? 'phased_with_gaps' : 'phased_success',
+      phase1Ok: true,
+      phase2: phase2Ok,
+      phase3Ran,
+      phase3Ok,
+      phase4Ok,
+      llmCallCount:
+        1 /* phase 1 */ +
+        phase2Promises.length /* one call per opening-beat choice */ +
+        (phase3Ran ? 1 : 0) /* phase 3 only runs when priorStateContext */ +
+        1 /* phase 4 */,
+      msElapsed: totalMs,
+      phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+    };
+
+    return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
   }
 
   // ---- Phase 1: Opening Beat ----
@@ -3362,7 +3470,16 @@ Return ONLY the JSON object.`;
     } as EncounterBeat;
 
     // Build storylets from Phase 4 or use minimal defaults
-    const storylets = phase4Result || this.buildDefaultStorylets(input);
+    let storylets: Phase4Result;
+    if (phase4Result) {
+      storylets = phase4Result;
+    } else {
+      console.warn(
+        `[EncounterArchitect] Phase 4 unavailable for ${input.sceneId}; ` +
+        `using createDefaultStorylet fallback (victory/defeat/escape)`
+      );
+      storylets = this.buildDefaultStorylets(input);
+    }
 
     return {
       sceneId: phase1.sceneId || input.sceneId,
@@ -3493,41 +3610,60 @@ Return ONLY the JSON object.`;
     }
   }
 
+  /**
+   * Compares each emitted storylet's beat prose against the text that
+   * `createDefaultStorylet` would produce for that outcome, and returns
+   * the list of outcome slots whose content is a byte-for-byte collision
+   * with the fallback (I3 instrumentation).
+   *
+   * A storylet is considered a default collision when the concatenated
+   * beat text (joined by '\n') exactly matches what the default builder
+   * would emit for the same `(outcome, input)` pair. This signal lets
+   * later analysis distinguish "LLM authored everything" from "we
+   * silently shipped fallback prose".
+   */
+  private detectDefaultStoryletCollisions(
+    structure: EncounterStructure,
+    input: EncounterArchitectInput,
+  ): Array<'victory' | 'partialVictory' | 'defeat' | 'escape'> {
+    const collisions: Array<'victory' | 'partialVictory' | 'defeat' | 'escape'> = [];
+    const slots: Array<'victory' | 'partialVictory' | 'defeat' | 'escape'> = [
+      'victory', 'partialVictory', 'defeat', 'escape',
+    ];
+    const storylets = structure.storylets ?? {};
+    const joinBeats = (beats: Array<{ text?: string }> | undefined): string =>
+      (beats ?? []).map(b => b?.text ?? '').join('\n');
+
+    for (const slot of slots) {
+      const emitted = (storylets as Record<string, GeneratedStorylet | undefined>)[slot];
+      if (!emitted) continue;
+      const defaultStorylet = this.createDefaultStorylet(slot, input);
+      if (joinBeats(emitted.beats) === joinBeats(defaultStorylet.beats)) {
+        collisions.push(slot);
+      }
+    }
+    return collisions;
+  }
+
+  /**
+   * Fallback storylets used by `assemblePhasedEncounter` when Phase 4's
+   * LLM call fails (timeout, parse error, empty response, etc.).
+   *
+   * Historically this produced single-beat, placeholder-style prose
+   * (e.g. "{{player.name}} overcame the challenge. The victory is
+   * earned.") that subsequently shipped verbatim in player-facing
+   * stories because `normalizeStructure` / `validateStructure` only
+   * *add* missing storylets and do not *replace* existing ones.
+   *
+   * We now delegate to `createDefaultStorylet` so both the phased
+   * fallback and the lean / deterministic fallbacks emit the same
+   * richer default content (multi-beat, with consequences and flags).
+   */
   private buildDefaultStorylets(input: EncounterArchitectInput): Phase4Result {
     return {
-      victory: {
-        id: `${input.sceneId}-sv`,
-        name: 'Victory',
-        triggerOutcome: 'victory',
-        tone: 'triumphant',
-        narrativeFunction: 'Celebrate the achievement',
-        beats: [{ id: `${input.sceneId}-sv-1`, text: `{{player.name}} overcame the challenge. The victory is earned.`, isTerminal: true }],
-        startingBeatId: `${input.sceneId}-sv-1`,
-        consequences: [],
-        nextSceneId: input.victoryNextSceneId,
-      } as GeneratedStorylet,
-      defeat: {
-        id: `${input.sceneId}-sd`,
-        name: 'Defeat',
-        triggerOutcome: 'defeat',
-        tone: 'somber',
-        narrativeFunction: 'Process the failure',
-        beats: [{ id: `${input.sceneId}-sd-1`, text: `It wasn't enough. {{player.name}} must find another way.`, isTerminal: true }],
-        startingBeatId: `${input.sceneId}-sd-1`,
-        consequences: [],
-        nextSceneId: input.defeatNextSceneId,
-      } as GeneratedStorylet,
-      escape: {
-        id: `${input.sceneId}-se`,
-        name: 'Escape',
-        triggerOutcome: 'escape',
-        tone: 'relieved',
-        narrativeFunction: 'Narrow escape and taking stock',
-        beats: [{ id: `${input.sceneId}-se-1`, text: `{{player.name}} got away, but the challenge remains.`, isTerminal: true }],
-        startingBeatId: `${input.sceneId}-se-1`,
-        consequences: [],
-        nextSceneId: input.victoryNextSceneId,
-      } as GeneratedStorylet,
+      victory: this.createDefaultStorylet('victory', input),
+      defeat: this.createDefaultStorylet('defeat', input),
+      escape: this.createDefaultStorylet('escape', input),
     };
   }
 }

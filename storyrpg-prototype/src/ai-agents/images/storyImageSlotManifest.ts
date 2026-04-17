@@ -69,8 +69,8 @@ export function buildStoryImageSlotManifest(
       coverageKey: storyBeatCoverageKey(scene.sceneId, beat.id),
       metadata: {
         isChoicePoint: beat.isChoicePoint === true,
-        isClimaxBeat: beat.isClimaxBeat === true,
-        isKeyStoryBeat: beat.isKeyStoryBeat === true,
+        isClimaxBeat: (beat as unknown as Record<string, unknown>).isClimaxBeat === true,
+        isKeyStoryBeat: (beat as unknown as Record<string, unknown>).isKeyStoryBeat === true,
       },
     });
   }

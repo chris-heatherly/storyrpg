@@ -113,7 +113,7 @@ export function normalizePipelineEventData(value: unknown): PipelineEventData | 
           currentItem: typeof value.telemetry.currentItem === 'number' ? value.telemetry.currentItem : undefined,
           totalItems: typeof value.telemetry.totalItems === 'number' ? value.telemetry.totalItems : undefined,
           subphaseLabel: typeof value.telemetry.subphaseLabel === 'string' ? value.telemetry.subphaseLabel : undefined,
-          etaSeconds: typeof value.telemetry.etaSeconds === 'number' || value.telemetry.etaSeconds === null
+          etaSeconds: typeof value.telemetry.etaSeconds === 'number'
             ? value.telemetry.etaSeconds
             : undefined,
           elapsedSeconds: typeof value.telemetry.elapsedSeconds === 'number' ? value.telemetry.elapsedSeconds : undefined,
@@ -154,7 +154,7 @@ export function normalizeGenerationJob(value: unknown): GenerationJob | null {
     progress: value.progress,
     episodeCount: value.episodeCount,
     currentEpisode: value.currentEpisode,
-    etaSeconds: typeof value.etaSeconds === 'number' || value.etaSeconds === null ? value.etaSeconds : undefined,
+    etaSeconds: typeof value.etaSeconds === 'number' ? value.etaSeconds : undefined,
     phaseProgress: typeof value.phaseProgress === 'number' ? value.phaseProgress : undefined,
     currentItem: typeof value.currentItem === 'number' ? value.currentItem : undefined,
     totalItems: typeof value.totalItems === 'number' ? value.totalItems : undefined,

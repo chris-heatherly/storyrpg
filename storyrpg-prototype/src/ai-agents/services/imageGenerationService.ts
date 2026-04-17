@@ -7,13 +7,29 @@
 
 import * as ExpoFileSystem from 'expo-file-system';
 import { ImagePrompt, GeneratedImage } from '../agents/ImageGenerator';
-import { GeminiSettings, DEFAULT_GEMINI_SETTINGS, MidjourneySettings, DEFAULT_MIDJOURNEY_SETTINGS, ImageProvider } from '../config';
+import { GeminiSettings, DEFAULT_GEMINI_SETTINGS, MidjourneySettings, DEFAULT_MIDJOURNEY_SETTINGS, ImageProvider, StableDiffusionSettings } from '../config';
+import type { SDReferencePurpose } from '../agents/ImageGenerator';
 import { budgetCanonicalPrompt } from '../images/promptComposer';
 import { ProviderPolicy } from '../images/providerPolicy';
 import type { ImageSlotFamily } from '../images/slotTypes';
+import { ProviderThrottle } from './providerThrottle';
+import { getProviderCapabilities } from '../images/providerCapabilities';
+import { filterRefsForProvider } from '../images/referencePackBuilder';
+import { createStableDiffusionAdapter } from './stable-diffusion/factory';
+import type { StableDiffusionAdapter } from './stable-diffusion/StableDiffusionAdapter';
+import {
+  createDefaultImageProviderRegistry,
+  type ImageProviderRegistry,
+  type ProviderServiceBridge,
+} from './providers';
+import { SeedRegistry, type SeedKey } from './stable-diffusion/seedRegistry';
 import { isNativeRuntime, isWebRuntime } from '../../utils/runtimeEnv';
+import { PROXY_CONFIG } from '../../config/endpoints';
 import { selectStyleAdaptation } from '../utils/styleAdaptation';
 import { ENCOUNTER_VISUAL_PRINCIPLES_COMPACT, STORY_BEAT_VISUAL_PRINCIPLES_COMPACT, getBeatStagingDirection } from '../prompts';
+// E2: pure helper functions moved out of this file. Grow this module
+// with additional extractions as the service continues to split.
+import { normalizeManagedOutputPath, detectImageMimeType } from './imageGenerationHelpers';
 
 // Dynamic import for Node.js fs module
 let nodeFs: any;
@@ -52,6 +68,7 @@ export interface ImageGenerationConfig {
   // Provider-specific settings
   geminiSettings?: GeminiSettings;
   midjourneySettings?: MidjourneySettings;
+  stableDiffusionSettings?: StableDiffusionSettings;
   failurePolicy?: 'fail_fast' | 'recover';
 }
 
@@ -124,17 +141,8 @@ type EffectiveRequestMeta = {
   model?: string;
 };
 
-function normalizeManagedOutputPath(filePath: string): string {
-  if (!filePath) return filePath;
-  const normalized = filePath.replace(/\\/g, '/');
-  for (const marker of ['generated-stories/', 'generated-images/', 'generated-videos/', 'ref-images/']) {
-    const idx = normalized.indexOf(marker);
-    if (idx >= 0) {
-      return normalized.slice(idx);
-    }
-  }
-  return filePath;
-}
+// E2: `normalizeManagedOutputPath` moved to ./imageGenerationHelpers.ts.
+// Imported at top alongside `detectImageMimeType`.
 
 export type ImageJobEvent = 
   | { type: 'job_added'; job: any }
@@ -154,6 +162,42 @@ export interface ReferenceImage {
   viewType?: string;
   /** Key visual traits to call out (e.g. ["scar on left cheek", "silver hair"]) */
   visualAnchors?: string[];
+  /**
+   * Optional purpose tag consumed by the Stable Diffusion adapter. Non-SD
+   * providers ignore this field entirely — this stays additive for
+   * Gemini / Atlas / MidAPI consumers.
+   */
+  purpose?: SDReferencePurpose;
+  /**
+   * D7 / A7: Pre-uploaded HTTP(S) URL for this reference, if known. URL-based
+   * providers (Midjourney `--cref`/`--sref`, Atlas Seedream) prefer URLs over
+   * inline base64. When empty, providers that require URLs fall back to
+   * their legacy identity-hint path.
+   */
+  url?: string;
+}
+
+/**
+ * Structured per-character identity anchors. Each slot is rendered as a
+ * separate labeled line in the prompt identity block so the LLM is far less
+ * likely to summarize away critical attributes like hair color or a scar.
+ */
+export interface CanonicalAppearance {
+  face?: string;
+  hair?: string;
+  eyes?: string;
+  skinTone?: string;
+  build?: string;
+  height?: string;
+  distinguishingMarks?: string[];
+  defaultAttire?: string;
+}
+
+/** Per-character appearance payload passed alongside character names. */
+export interface CharacterAppearanceDescription {
+  name: string;
+  appearance: string;
+  canonicalAppearance?: CanonicalAppearance;
 }
 
 export interface ReferenceThumbnail {
@@ -164,35 +208,7 @@ export interface ReferenceThumbnail {
   role: string;
 }
 
-/**
- * Detect the actual MIME type from a base64-encoded image by inspecting magic bytes,
- * or extract it from a data URI prefix. Falls back to 'image/png' when detection fails.
- */
-function detectImageMimeType(output: string): { mimeType: string; extension: string; base64Data: string } {
-  // If the output is a data URI, extract the real MIME type from the prefix
-  const dataUriMatch = output.match(/^data:(image\/[\w+.-]+);base64,/);
-  if (dataUriMatch) {
-    const mimeType = dataUriMatch[1];
-    const base64Data = output.slice(dataUriMatch[0].length);
-    const extension = mimeType.includes('jpeg') || mimeType.includes('jpg') ? 'jpg'
-      : mimeType.includes('webp') ? 'webp'
-      : 'png';
-    return { mimeType, extension, base64Data };
-  }
-
-  // Raw base64 — sniff magic bytes from the first few bytes
-  try {
-    const head = atob(output.slice(0, 16));
-    if (head.charCodeAt(0) === 0xFF && head.charCodeAt(1) === 0xD8) {
-      return { mimeType: 'image/jpeg', extension: 'jpg', base64Data: output };
-    }
-    if (head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP') {
-      return { mimeType: 'image/webp', extension: 'webp', base64Data: output };
-    }
-  } catch (_) { /* atob may fail on non-base64 preamble — fall through */ }
-
-  return { mimeType: 'image/png', extension: 'png', base64Data: output };
-}
+// E2: `detectImageMimeType` moved to ./imageGenerationHelpers.ts.
 
 export class ImageGenerationService {
   private config: ImageGenerationConfig;
@@ -202,12 +218,53 @@ export class ImageGenerationService {
   private maxRetries: number;
   private retryDelayMs: number;
   private retryBackoffMultiplier: number;
-  private lastRequestTime: number = 0;
-  private minRequestInterval: number = 3000; // Minimum 3s between requests to same service (20 RPM)
+  /**
+   * Hard cap on exponential-backoff delay (A6). Without this cap a
+   * five-retry schedule could grow to 80s on a single bad prompt, blocking
+   * the provider's semaphore for minutes. Capped at 20s keeps the worst
+   * case bounded while still giving transient failures room to recover.
+   */
+  private maxRetryBackoffMs: number = 20_000;
+  /**
+   * Retry cap for `text_instead_of_image` errors (A6). This is a prompt
+   * problem, not a transient network failure — once a prompt reliably
+   * returns text the provider is unlikely to change its mind on a 5th
+   * attempt, so cut the ladder short.
+   */
+  private maxTextInsteadOfImageRetries: number = 2;
+  /**
+   * Per-provider rate-limiter + concurrency gate. Replaces the previous
+   * single-instance `lastRequestTime` / `_concurrencyLimit` pair that
+   * serialized every provider through one throttle. See
+   * `services/providerThrottle.ts` and `images/providerCapabilities.ts`.
+   */
+  private _throttle = new ProviderThrottle();
+  /**
+   * Inflight dedup (A11). Two concurrent `generateImage` calls with the
+   * same prompt hash share the same promise so we never pay for the same
+   * image twice concurrently. Entries self-clean on settle.
+   */
+  private _inflightGenerations: Map<string, Promise<GeneratedImage>> = new Map();
 
   // Gemini continuity state
   private _geminiSettings: Required<GeminiSettings> = { ...DEFAULT_GEMINI_SETTINGS };
+  /**
+   * C4: Structured art-style profile. Used by `ensureVisualPromptStrength` to
+   * bidirectionally strengthen/soften prompts based on the active style —
+   * strip style-inappropriate vocabulary, inject style-positive vocabulary,
+   * merge style-specific negative prompts, and skip guardrails the style has
+   * explicitly opted out of via `acceptableDeviations`.
+   *
+   * Leave unset to keep today's default-cinematic behavior.
+   */
+  private _artStyleProfile: import('../images/artStyleProfile').ArtStyleProfile | null = null;
   private _midjourneySettings: Required<MidjourneySettings> = { ...DEFAULT_MIDJOURNEY_SETTINGS };
+  private _stableDiffusionSettings: StableDiffusionSettings | undefined;
+  // Lazily-instantiated Stable Diffusion adapter. Created on first use so
+  // non-SD pipelines don't pay the cost (and so backend selection can change
+  // after construction via `updateStableDiffusionSettings`).
+  private _sdAdapter: StableDiffusionAdapter | null = null;
+  private _sdSeedRegistry: SeedRegistry = new SeedRegistry('image-gen-service');
   private _geminiStyleReference: { data: string; mimeType: string } | null = null;
   private _geminiPreviousScene: { data: string; mimeType: string } | null = null;
   private _referenceSheetStyleAnchor: { data: string; mimeType: string } | null = null;
@@ -220,12 +277,24 @@ export class ImageGenerationService {
   // Identifier-based dedup (covers browser runtime where file-existence check is unavailable)
   private _generatedIdentifiers = new Set<string>();
   private providerPolicy = new ProviderPolicy();
+  /**
+   * Provider registry — replaces the legacy `switch (provider)` inside
+   * `generateImageCore`. Each entry is an `ImageProviderAdapter` whose
+   * `generate`/`edit` methods delegate back into this service via the
+   * `ProviderServiceBridge`. Adapter bodies will progressively absorb the
+   * concrete `generateWithX` implementations in future phases.
+   */
+  private providerRegistry: ImageProviderRegistry = createDefaultImageProviderRegistry();
+  private providerBridge: ProviderServiceBridge = {
+    generateWithNanoBanana: (...args) => this.generateWithNanoBanana(...args),
+    generateWithAtlasCloud: (...args) => this.generateWithAtlasCloud(...args),
+    generateWithUseapi: (...args) => this.generateWithUseapi(...args),
+    generateWithDallE: (...args) => this.generateWithDallE(...args),
+    generateWithStableDiffusion: (...args) => this.generateWithStableDiffusion(...args),
+    generatePlaceholder: (...args) => this.generatePlaceholder(...args),
+    preflightImageProvider: (force) => this.preflightImageProvider(force),
+  };
   
-  // Shared efficiency: bounded concurrency
-  private _concurrencyLimit: number = 3;
-  private _activeConcurrency: number = 0;
-  private _concurrencyQueue: Array<() => void> = [];
-
   // Observability counters
   public pipelineMetrics = {
     cacheHits: 0,
@@ -270,7 +339,110 @@ export class ImageGenerationService {
       ...DEFAULT_MIDJOURNEY_SETTINGS,
       ...config.midjourneySettings,
     };
+    this._stableDiffusionSettings = config.stableDiffusionSettings;
     this.ensureDirectory(this.outputDir);
+  }
+
+  public getStableDiffusionSettings(): StableDiffusionSettings | undefined {
+    return this._stableDiffusionSettings;
+  }
+
+  public updateStableDiffusionSettings(settings: StableDiffusionSettings | undefined): void {
+    this._stableDiffusionSettings = settings;
+    // Invalidate cached adapter so next call picks up the new backend.
+    this._sdAdapter = null;
+  }
+
+  private getSDAdapter(): StableDiffusionAdapter {
+    if (!this._sdAdapter) {
+      this._sdAdapter = createStableDiffusionAdapter(this._stableDiffusionSettings);
+    }
+    return this._sdAdapter;
+  }
+
+  private getSDWriteHelpers() {
+    return {
+      outputDir: this.outputDir,
+      writeFile: (p: string, content: string | Buffer, isBase64?: boolean) => this.writeFile(p, content, isBase64),
+      joinPath: (base: string, ...parts: string[]) => this.joinPath(base, ...parts),
+      toImageHttpUrl: (p: string, mime: string, data: string) => this.toImageHttpUrl(p, mime, data),
+    };
+  }
+
+  /**
+   * Decide a deterministic seed for an SD request when the caller hasn't
+   * pinned one. Precedence:
+   *  1. `prompt.seed` (caller explicitly chose).
+   *  2. character-in-scene seed (best continuity for beat panels).
+   *  3. scene seed (for scene masters / establishing shots).
+   *  4. character seed (character portraits with no scene context).
+   *  5. anchor seed derived from `identifier` (last-resort determinism).
+   *
+   * Force-regenerate requests deliberately skip caching so users can reroll
+   * by clearing the registry entry (or explicitly passing a new seed).
+   */
+  public applyDeterministicSeed(
+    prompt: ImagePrompt,
+    identifier: string,
+    metadata?: Record<string, any>,
+  ): ImagePrompt {
+    if (typeof prompt.seed === 'number') return prompt;
+    const sceneId = (metadata?.sceneId as string) || undefined;
+    const characterName = (metadata?.characterName as string) || (metadata?.characterId as string) || undefined;
+    // D6: callers may opt-in to a specific seed scope (e.g. reference sheets
+    // want the pure `character` scope so the same face/body noise pattern is
+    // reused across every appearance, rather than being scene-salted).
+    const override = metadata?.seedScope as SeedKey['scope'] | undefined;
+    const characterIds: string[] | undefined = Array.isArray(metadata?.characterIds)
+      ? metadata.characterIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+      : undefined;
+    // When multiple characters are in-frame, join their ids deterministically so the
+    // noise pattern depends on the full cast rather than an arbitrary primary pick.
+    const joinedCharacterId = characterIds && characterIds.length > 0
+      ? [...characterIds].sort().join('+')
+      : characterName;
+
+    let key: SeedKey;
+    const effectiveScope: SeedKey['scope'] | undefined = override
+      ?? (sceneId && joinedCharacterId
+        ? 'characterInScene'
+        : sceneId
+          ? 'scene'
+          : joinedCharacterId
+            ? 'character'
+            : 'anchor');
+
+    switch (effectiveScope) {
+      case 'character':
+        key = joinedCharacterId
+          ? { scope: 'character', characterId: joinedCharacterId }
+          : { scope: 'anchor', raw: identifier };
+        break;
+      case 'scene':
+        key = sceneId ? { scope: 'scene', sceneId } : { scope: 'anchor', raw: identifier };
+        break;
+      case 'characterInScene':
+        key = sceneId && joinedCharacterId
+          ? { scope: 'characterInScene', sceneId, characterId: joinedCharacterId }
+          : { scope: 'anchor', raw: identifier };
+        break;
+      case 'anchor':
+      default:
+        key = { scope: 'anchor', raw: identifier };
+        break;
+    }
+    const seed = this._sdSeedRegistry.get(key);
+    return { ...prompt, seed };
+  }
+
+  /** Allow callers (e.g. regen flows) to pin/override a seed for a key. */
+  public pinStableDiffusionSeed(key: SeedKey, seed: number): void {
+    this._sdSeedRegistry.set(key, seed);
+  }
+
+  /** Allow callers to reset deterministic seeds (e.g. "Reroll all" UX). */
+  public clearStableDiffusionSeeds(): void {
+    this._sdSeedRegistry.clear();
   }
 
   private isFailFastEnabled(): boolean {
@@ -291,6 +463,21 @@ export class ImageGenerationService {
     this._geminiSettings = { ...DEFAULT_GEMINI_SETTINGS, ...settings };
   }
 
+  /**
+   * C4: Install the active art-style profile. Pass `null`/`undefined` to fall
+   * back to the default cinematic behavior. Callers typically pull this from
+   * `PipelineConfig.imageGen.artStyleProfile` once per pipeline run.
+   */
+  public setArtStyleProfile(
+    profile: import('../images/artStyleProfile').ArtStyleProfile | null | undefined,
+  ): void {
+    this._artStyleProfile = profile ?? null;
+  }
+
+  public getArtStyleProfile(): import('../images/artStyleProfile').ArtStyleProfile | null {
+    return this._artStyleProfile;
+  }
+
   public getMidjourneySettings(): Required<MidjourneySettings> {
     return this._midjourneySettings;
   }
@@ -301,6 +488,16 @@ export class ImageGenerationService {
 
   public setGeminiPreviousScene(data: string, mimeType: string): void {
     this._geminiPreviousScene = { data, mimeType };
+  }
+
+  /**
+   * D10: Drop the stored "previous scene" reference without touching the
+   * persistent style anchor, chat history, or style reference. Call this at
+   * narrative boundaries (new scene, new encounter branch) where feeding the
+   * previous image into the next generation would misguide the model.
+   */
+  public clearGeminiPreviousScene(): void {
+    this._geminiPreviousScene = null;
   }
 
   public setReferenceSheetStyleAnchor(data: string, mimeType: string): void {
@@ -573,26 +770,99 @@ export class ImageGenerationService {
       if (!this.config.useapiToken && !this.config.midapiToken) return done(false, 'missing MidAPI token');
       return done(true, forceCanary ? 'midapi preflight uses token validation only' : undefined);
     }
+    if (provider === 'stable-diffusion') {
+      const settings = this._stableDiffusionSettings;
+      if (!settings || !settings.baseUrl) return done(false, 'missing Stable Diffusion baseUrl');
+      if (!forceCanary) return done(true);
+      try {
+        const adapter = this.getSDAdapter();
+        const result = await adapter.preflight(settings);
+        return {
+          ok: result.ok,
+          provider,
+          reason: result.reason,
+          latencyMs: Date.now() - startedAt,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return done(false, `Stable Diffusion preflight error: ${msg}`);
+      }
+    }
     return done(true);
   }
 
   private resolveArtStyle(promptStyle?: string, identifier?: string): string {
     let resolved: string;
     let source: string;
-    if (this._geminiSettings.canonicalArtStyle && this._geminiSettings.canonicalArtStyle.length > 0) {
-      resolved = this._geminiSettings.canonicalArtStyle;
+    const canonical = this._geminiSettings.canonicalArtStyle?.trim() || '';
+    const promptTrimmed = promptStyle?.trim() || '';
+    if (canonical.length > 0) {
+      resolved = canonical;
       source = 'canonicalArtStyle';
-    } else if (promptStyle) {
-      resolved = promptStyle;
+    } else if (promptTrimmed.length > 0) {
+      resolved = promptTrimmed;
       source = 'prompt.style';
     } else {
       resolved = ImageGenerationService.DEFAULT_ART_STYLE;
-      source = 'default';
+      source = 'default(fallback)';
+      console.warn(
+        `[ImageGenService] Art style falling back to default for "${identifier || '(no id)'}" — no canonicalArtStyle or prompt.style was supplied. ` +
+        `This is the most common cause of "style keeps reverting". Check that the user's art style is reaching buildPipelineConfig.`,
+      );
     }
     if (identifier) {
       console.log(`[ImageGenService] Art style for "${identifier}": "${resolved}" (source: ${source})`);
     }
     return resolved;
+  }
+
+  /**
+   * Emit the ArtStyleProfile DNA — rendering technique, color philosophy,
+   * lighting, line weight, composition language, mood — as individual labeled
+   * lines so the image model receives the complete style contract. Callers
+   * should invoke this immediately after the `ART STYLE (MANDATORY):` line so
+   * the DNA reinforces the canonical style label instead of competing with it.
+   */
+  private appendProfileDnaSections(sections: string[]): void {
+    const profile = this._artStyleProfile;
+    if (!profile) return;
+    if (profile.renderingTechnique) {
+      sections.push(`RENDERING TECHNIQUE: ${profile.renderingTechnique}.`);
+    }
+    if (profile.colorPhilosophy) {
+      sections.push(`COLOR PHILOSOPHY: ${profile.colorPhilosophy}.`);
+    }
+    if (profile.lightingApproach) {
+      sections.push(`LIGHTING: ${profile.lightingApproach}.`);
+    }
+    if (profile.lineWeight) {
+      sections.push(`LINE WEIGHT: ${profile.lineWeight}.`);
+    }
+    if (profile.compositionStyle) {
+      sections.push(`COMPOSITION: ${profile.compositionStyle}.`);
+    }
+    if (profile.moodRange) {
+      sections.push(`MOOD: ${profile.moodRange}.`);
+    }
+  }
+
+  /**
+   * Flatten profile DNA into a comma-separated phrase for prompt builders that
+   * concatenate sections into a single sentence (Atlas Cloud, Midjourney, SD).
+   */
+  private composeProfileDnaPhrase(): string {
+    const profile = this._artStyleProfile;
+    if (!profile) return '';
+    const parts = [
+      profile.renderingTechnique,
+      profile.colorPhilosophy,
+      profile.lightingApproach,
+      profile.lineWeight,
+      profile.compositionStyle,
+      profile.moodRange,
+    ].filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+    if (parts.length === 0) return '';
+    return `Style DNA: ${parts.join('; ')}.`;
   }
 
   private getSettingAdaptationNotes(prompt: ImagePrompt, identifier?: string): string[] {
@@ -609,8 +879,10 @@ export class ImageGenerationService {
   private buildAtlasCloudPrompt(prompt: ImagePrompt, identifier?: string): string {
     const resolvedStyle = this.resolveArtStyle(prompt.style, identifier);
     const settingNotes = this.getSettingAdaptationNotes(prompt, identifier);
+    const dnaPhrase = this.composeProfileDnaPhrase();
     const sections = [
       `Art style (MANDATORY): ${resolvedStyle}.`,
+      dnaPhrase,
       settingNotes.length > 0
         ? `Setting adaptation (same overall style, not a style switch): ${settingNotes.join(' ')}`
         : '',
@@ -643,6 +915,8 @@ export class ImageGenerationService {
     const sections: string[] = [];
 
     sections.push(`ART STYLE (MANDATORY): ${resolvedStyle}. Maintain this exact art style throughout the entire image.`);
+
+    this.appendProfileDnaSections(sections);
 
     if (settingNotes.length > 0) {
       sections.push(`SETTING ADAPTATION (same style, not a style switch): ${settingNotes.join(' ')}`);
@@ -684,7 +958,11 @@ export class ImageGenerationService {
       }
 
       for (const ref of prevScene) {
-        sections.push(`Image ${imageIdx}: Previous scene — maintain visual continuity with this image.`);
+        sections.push(
+          `Image ${imageIdx}: Previous scene — STYLE AND SETTING CONTINUITY REFERENCE ONLY. ` +
+          `Match the color grading, lighting temperature, and environmental feel of this image. ` +
+          `Do NOT copy character appearance from this image — character identity comes from the dedicated character reference images below.`
+        );
         imageIdx++;
       }
 
@@ -693,9 +971,11 @@ export class ImageGenerationService {
         const isComposite = ref.viewType === 'composite' || ref.role?.includes('composite');
         let label = `Image ${imageIdx}: ${ref.characterName}`;
         if (isComposite) {
-          label += ` — CHARACTER REFERENCE SHEET showing this ONE character from multiple angles. Use only for identity matching.`;
+          label += ` — CHARACTER REFERENCE SHEET showing this ONE character from multiple angles. Use ONLY for identity matching (face, hair, skin tone, distinguishing features). Do NOT copy the rendering style, line weight, or color palette from this sheet — the ART STYLE text above is authoritative.`;
         } else if (ref.viewType && ref.viewType !== 'front') {
-          label += ` (${ref.viewType} view)`;
+          label += ` (${ref.viewType} view) — use ONLY for identity matching, not for rendering style.`;
+        } else {
+          label += ` — use ONLY for identity matching (face, hair, skin tone, distinguishing features). Do NOT copy the rendering style from this reference.`;
         }
         if (ref.visualAnchors && ref.visualAnchors.length > 0) {
           label += ` Key traits: ${ref.visualAnchors.slice(0, 5).join(', ')}`;
@@ -775,7 +1055,9 @@ export class ImageGenerationService {
         : ref.visualAnchors?.slice(0, 2).join(', '))
       .filter(Boolean)
       .join('; ');
+    const dnaPhrase = this.composeProfileDnaPhrase();
     const subjectDescription = [
+      dnaPhrase,
       settingNotes.length > 0 ? `same overall style, setting-specific adaptation: ${settingNotes.join('; ')}` : '',
       prompt.visualNarrative,
       prompt.prompt,
@@ -787,11 +1069,47 @@ export class ImageGenerationService {
       identityHints ? `character identity anchors: ${identityHints}` : '',
     ].filter(Boolean).join(', ');
 
+    // D7: If enabled AND the caller supplied pre-uploaded reference URLs,
+    // use Midjourney's native `--cref` (character) and `--sref` (style)
+    // flags for maximum character/style lock. For non-reference images
+    // (scenes), prefer the highest-priority character ref's URL. For
+    // reference sheets themselves we skip `--cref` because they ARE the
+    // anchor. The existing `--sref <code>` numeric-code path remains as
+    // a fallback when no style-reference URL is available.
+    const crefSrefParams: string[] = [];
+    if (mj.enableCrefSref && !isReferenceLike) {
+      // Midjourney only accepts two reference slots: `--cref` (character)
+      // and `--sref` (style). Prefer the composite model sheet for --cref
+      // because it packs multiple views + palette into a single image —
+      // which is exactly what --cref expects. Fall back to any legacy
+      // character-reference / master-reference URL if no composite is
+      // present. For --sref, prefer the canonical `style-anchor` role and
+      // fall back to the legacy `style-reference` role.
+      const characterRefUrl = referenceImages
+        ?.find(r => r.url && r.role === 'composite-sheet')?.url
+        ?? referenceImages?.find(r => r.url && (r.role === 'character-reference' || r.role === 'master-reference'))?.url;
+      const styleRefUrl = referenceImages
+        ?.find(r => r.url && r.role === 'style-anchor')?.url
+        ?? referenceImages?.find(r => r.url && r.role === 'style-reference')?.url;
+      if (characterRefUrl) {
+        crefSrefParams.push(`--cref ${characterRefUrl}`);
+        const cw = Math.max(0, Math.min(100, mj.characterWeight ?? 100));
+        crefSrefParams.push(`--cw ${cw}`);
+      }
+      if (styleRefUrl) {
+        crefSrefParams.push(`--sref ${styleRefUrl}`);
+        const sw = Math.max(0, Math.min(1000, mj.styleWeight ?? 100));
+        crefSrefParams.push(`--sw ${sw}`);
+      }
+    }
+
     const params = [
       `--ar ${aspectRatio}`,
       mj.version ? `--v ${mj.version}` : '',
       typeof stylize === 'number' ? `--stylize ${stylize}` : '',
-      mj.srefCode ? `--sref ${mj.srefCode}` : '',
+      // Prefer URL-based --sref from crefSrefParams; fall back to numeric code.
+      crefSrefParams.some(p => p.startsWith('--sref ')) ? '' : (mj.srefCode ? `--sref ${mj.srefCode}` : ''),
+      ...crefSrefParams,
       speedFlag,
     ].filter(Boolean);
 
@@ -826,6 +1144,46 @@ export class ImageGenerationService {
   }
 
   private static readonly ATLAS_UPLOAD_PAYLOAD_THRESHOLD = 10 * 1024 * 1024; // 10 MB
+
+  /**
+   * A7: For URL-based providers (notably Midjourney with `--cref`/`--sref`),
+   * ensure each ReferenceImage carries a `url`. Uploads any inline-only
+   * refs via the Atlas uploadMedia endpoint (which returns a public
+   * download URL that Midjourney can fetch). On upload failure the ref
+   * is returned untouched so the prompt builder's fallback path still
+   * runs.
+   *
+   * No-op (returns undefined) if no refs were supplied; returns the input
+   * array untouched if an Atlas API key isn't configured.
+   */
+  private async ensureReferenceUrls(
+    refs: ReferenceImage[] | undefined,
+  ): Promise<ReferenceImage[] | undefined> {
+    if (!refs || refs.length === 0) return refs;
+    const apiKey = this.config.atlasCloudApiKey;
+    if (!apiKey) return refs; // no uploader available
+    const result: ReferenceImage[] = [];
+    for (const ref of refs) {
+      if (ref.url || !ref.data) {
+        result.push(ref);
+        continue;
+      }
+      try {
+        const uploaded = await this.uploadAtlasMedia(ref.data, ref.mimeType, apiKey);
+        // uploadAtlasMedia falls back to `data:...base64,...` on failure;
+        // only record an actual http(s) URL so downstream consumers don't
+        // get a data-URL masquerading as a remote URL.
+        if (/^https?:\/\//i.test(uploaded)) {
+          result.push({ ...ref, url: uploaded });
+        } else {
+          result.push(ref);
+        }
+      } catch {
+        result.push(ref);
+      }
+    }
+    return result;
+  }
 
   /**
    * Upload a base64 image to Atlas Cloud via the uploadMedia proxy route,
@@ -892,7 +1250,7 @@ export class ImageGenerationService {
     }
     if (gemSettings.includePreviousScene && this._geminiPreviousScene) {
       parts.push({ inlineData: { mimeType: this._geminiPreviousScene.mimeType, data: this._geminiPreviousScene.data } });
-      parts.push({ text: `Previous scene — maintain visual continuity.` });
+      parts.push({ text: `Previous scene — STYLE AND SETTING CONTINUITY REFERENCE ONLY. Match color grading, lighting temperature, and environmental feel. Do NOT copy character appearance from this image; character identity comes from the dedicated character reference images.` });
       num++;
     }
     return num;
@@ -951,7 +1309,7 @@ export class ImageGenerationService {
     referenceImages?: ReferenceImage[],
     metadata?: {
       characterNames?: string[];
-      characterDescriptions?: Array<{ name: string; appearance: string }>;
+      characterDescriptions?: CharacterAppearanceDescription[];
     }
   ): Promise<GeneratedImage> {
     if (!this._chatSceneId || this.config.provider !== 'nano-banana') {
@@ -974,12 +1332,7 @@ export class ImageGenerationService {
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        const now = Date.now();
-        const timeSinceLast = now - this.lastRequestTime;
-        if (timeSinceLast < this.minRequestInterval) {
-          await this.delay(this.minRequestInterval - timeSinceLast);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('nano-banana');
 
         // Build the new user turn
         const userParts: any[] = [];
@@ -1152,6 +1505,87 @@ export class ImageGenerationService {
   }
 
   /**
+   * Reconcile cached reference images against the current art style.
+   *
+   * Cached images on disk (e.g. `ref_char1_front.png`) are keyed by identifier
+   * only, NOT by the art style they were generated under. If a user changes
+   * the art style between runs and generation resumes, `getExistingImageFile`
+   * happily returns the old image — and every scene that references it is
+   * then instructed to "match the exact hair / features / distinguishing
+   * traits" from that stale image, which drags the whole story back toward
+   * the previous aesthetic.
+   *
+   * This method writes a `.art-style-signature.txt` sidecar into the output
+   * directory capturing the currently-effective art style. On a subsequent
+   * call, if the signature has changed, it deletes cached reference-sheet
+   * images (identifiers matching `ref_*`) and clears in-memory prompt /
+   * identifier dedup caches so a fresh generation happens under the new
+   * style. Beat images are left alone — they'll be re-linked by normal
+   * resume logic, and a mismatched aesthetic on a beat is easier for the
+   * user to regenerate than a locked-in reference sheet.
+   *
+   * Returns the number of invalidated files (0 if signature unchanged or
+   * filesystem is unavailable, as in the Expo/web runtime).
+   */
+  public reconcileCachedReferenceStyle(artStyle: string | undefined): number {
+    if (!nodeFs || typeof nodeFs.existsSync !== 'function') return 0;
+    const effectiveStyle = (artStyle || '').trim();
+    const signaturePath = this.joinPath(this.outputDir, '.art-style-signature.txt');
+
+    let previousStyle: string | null = null;
+    try {
+      if (nodeFs.existsSync(signaturePath) && typeof nodeFs.readFileSync === 'function') {
+        previousStyle = String(nodeFs.readFileSync(signaturePath, 'utf-8')).trim();
+      }
+    } catch {
+      previousStyle = null;
+    }
+
+    const styleChanged = previousStyle !== null && previousStyle !== effectiveStyle;
+
+    if (styleChanged) {
+      console.warn(
+        `[ImageGenService] Art style changed since last run ("${previousStyle}" -> "${effectiveStyle}"). ` +
+        `Invalidating cached reference-sheet images so they regenerate under the new style.`,
+      );
+    }
+
+    let invalidated = 0;
+    if (styleChanged && typeof nodeFs.readdirSync === 'function' && typeof nodeFs.unlinkSync === 'function') {
+      try {
+        const files: string[] = nodeFs.readdirSync(this.outputDir);
+        for (const name of files) {
+          if (!/^ref_.*\.(png|jpg|jpeg|webp)$/i.test(name)) continue;
+          const fullPath = this.joinPath(this.outputDir, name);
+          try {
+            nodeFs.unlinkSync(fullPath);
+            invalidated++;
+          } catch (err) {
+            console.warn(`[ImageGenService] Failed to invalidate stale ref image "${name}":`, err);
+          }
+        }
+        if (invalidated > 0) {
+          this._promptCache.clear();
+          this._generatedIdentifiers.clear();
+          console.log(`[ImageGenService] Invalidated ${invalidated} stale reference image(s) and cleared dedup caches.`);
+        }
+      } catch (err) {
+        console.warn(`[ImageGenService] Failed to scan output directory for stale references:`, err);
+      }
+    }
+
+    try {
+      if (typeof nodeFs.writeFileSync === 'function') {
+        nodeFs.writeFileSync(signaturePath, effectiveStyle, 'utf-8');
+      }
+    } catch (err) {
+      console.warn(`[ImageGenService] Failed to persist art-style signature:`, err);
+    }
+
+    return invalidated;
+  }
+
+  /**
    * Convert an image file path to an HTTP URL served by the proxy.
    * Handles both relative ('generated-stories/...') and absolute ('/app/generated-stories/...') paths.
    * Returns a data URI fallback only when the path isn't under a served directory.
@@ -1221,7 +1655,7 @@ export class ImageGenerationService {
       }
     }
     if (isWebRuntime()) {
-      const response = await fetch('http://localhost:3001/write-file', {
+      const response = await fetch(PROXY_CONFIG.writeFile, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1237,7 +1671,7 @@ export class ImageGenerationService {
       return;
     }
     const options = isBase64 ? { encoding: 'base64' as any } : { encoding: 'utf8' as any };
-    let data = typeof content === 'string' ? content : Buffer.isBuffer(content) ? content.toString('base64') : String(content);
+    const data = typeof content === 'string' ? content : Buffer.isBuffer(content) ? content.toString('base64') : String(content);
     await ExpoFileSystem.writeAsStringAsync(resolvedPath, data, options);
   }
 
@@ -1330,27 +1764,71 @@ export class ImageGenerationService {
   }
 
   /**
-   * Bounded concurrency gate: wait until a slot is available.
+   * Wait until the next request against `provider` is allowed by its
+   * per-provider pacing (A1). Replaces the former single-instance
+   * `lastRequestTime` + `minRequestInterval` pair so one provider's rate
+   * ceiling no longer throttles the others.
    */
-  private async acquireConcurrencySlot(): Promise<void> {
-    if (this._activeConcurrency < this._concurrencyLimit) {
-      this._activeConcurrency++;
-      return;
-    }
-    return new Promise<void>((resolve) => {
-      this._concurrencyQueue.push(() => {
-        this._activeConcurrency++;
-        resolve();
-      });
-    });
+  private async waitForProviderPacing(provider: ImageProvider): Promise<void> {
+    await this._throttle.waitForPacing(provider);
   }
 
-  private releaseConcurrencySlot(): void {
-    this._activeConcurrency--;
-    if (this._concurrencyQueue.length > 0) {
-      const next = this._concurrencyQueue.shift();
-      next?.();
+  /**
+   * A9: Drop references this provider can't meaningfully consume. Returns
+   * a possibly-shorter array; caller should use the result in place of the
+   * original refs. Capacity (`maxRefs`) is enforced here too so a downstream
+   * provider never sees an over-stuffed payload.
+   *
+   * Behavior:
+   * - `maxRefs === 0`: drop everything.
+   * - provider only accepts URL refs and the ref doesn't have a URL-bearing
+   *   external representation: drop it (we don't pre-upload in this pass).
+   * - otherwise: cap to `maxRefs` and preserve ordering (caller has already
+   *   prioritized via the reference pack builder).
+   */
+  private filterReferencesForProvider(
+    provider: ImageProvider,
+    refs: ReferenceImage[] | undefined,
+  ): ReferenceImage[] | undefined {
+    if (!refs || refs.length === 0) return refs;
+    const caps = getProviderCapabilities(provider);
+    if (caps.maxRefs === 0) return [];
+
+    // Step 1: artifact-shape routing. Strip the composite sheet from
+    // Gemini/Atlas/SD packs (it echoes as a collage when passed as a
+    // regular ref) and, when the provider is nano-banana or atlas-cloud,
+    // install the composite as the low-weight style anchor instead. For
+    // Midjourney, keep only the composite + style-anchor artifacts (two
+    // slots → --cref and --sref).
+    const { refs: shapeFiltered, extractedComposite } = filterRefsForProvider(refs, provider);
+
+    if (
+      extractedComposite &&
+      (provider === 'nano-banana' || provider === 'atlas-cloud') &&
+      this._geminiSettings.compositeAsStyleAnchor !== false &&
+      typeof extractedComposite.data === 'string' &&
+      extractedComposite.data.length > 0
+    ) {
+      try {
+        this.setReferenceSheetStyleAnchor(extractedComposite.data, extractedComposite.mimeType);
+      } catch {
+        // setter is best-effort; a failure here just means the composite
+        // won't be consulted as a style anchor for this request.
+      }
     }
+
+    // Step 2: capability gating — keep only refs the provider can actually
+    // consume (inline vs URL), then cap to the advertised maxRefs.
+    const usable = shapeFiltered.filter((ref) => {
+      const hasInlineData = typeof ref.data === 'string' && ref.data.length > 0;
+      if (hasInlineData && caps.acceptsInlineRefs) return true;
+      const hasUrl = typeof (ref as any).url === 'string' && (ref as any).url.length > 0;
+      if (hasUrl && (caps.acceptsUrlRefs || caps.usesMidjourneyRefTokens)) return true;
+      return false;
+    });
+
+    if (usable.length <= caps.maxRefs) return usable;
+    return usable.slice(0, caps.maxRefs);
   }
 
   /**
@@ -1396,7 +1874,7 @@ export class ImageGenerationService {
       type: ImageType; 
       characters?: string[];
       characterNames?: string[];
-      characterDescriptions?: Array<{ name: string; appearance: string }>;
+      characterDescriptions?: CharacterAppearanceDescription[];
       regeneration?: number;
       /** When true (encounter types only), try Atlas Cloud before Gemini if primary provider is nano-banana. */
       preferAtlasFirst?: boolean;
@@ -1444,6 +1922,57 @@ export class ImageGenerationService {
       return { prompt: normalizedPrompt, imagePath: undefined, imageUrl: undefined };
     }
 
+    // A11: Inflight dedup. Two concurrent callers for the same prompt hash
+    // share a single provider round-trip instead of racing each other. Only
+    // applies to first-try generations (regenerations bypass so the caller
+    // always gets a fresh image).
+    if (!metadata?.regeneration) {
+      const inflightKey = this.computePromptHash(normalizedPrompt, metadata);
+      const existingInflight = this._inflightGenerations.get(inflightKey);
+      if (existingInflight) {
+        console.log(`[ImageGenerationService] Inflight dedup for "${identifier}" — awaiting in-progress generation`);
+        return existingInflight;
+      }
+      const work = this.generateImageCore(
+        normalizedPrompt,
+        identifier,
+        jobId,
+        requestStartedAt,
+        metadata,
+        referenceImages,
+      );
+      this._inflightGenerations.set(inflightKey, work);
+      work.finally(() => {
+        if (this._inflightGenerations.get(inflightKey) === work) {
+          this._inflightGenerations.delete(inflightKey);
+        }
+      });
+      return work;
+    }
+
+    return this.generateImageCore(
+      normalizedPrompt,
+      identifier,
+      jobId,
+      requestStartedAt,
+      metadata,
+      referenceImages,
+    );
+  }
+
+  /**
+   * Inner generation path called by `generateImage` after caches and inflight
+   * dedup have been resolved. Factored out so the dedup wrapper doesn't
+   * duplicate the ~250 line generation pipeline.
+   */
+  private async generateImageCore(
+    normalizedPrompt: ImagePrompt,
+    identifier: string,
+    jobId: string,
+    requestStartedAt: number,
+    metadata: Parameters<ImageGenerationService['generateImage']>[2],
+    referenceImages: ReferenceImage[] | undefined,
+  ): Promise<GeneratedImage> {
     const promptArtifact = this.config.savePrompts !== false
       ? await this.savePrompt(normalizedPrompt, identifier, metadata)
       : undefined;
@@ -1468,13 +1997,17 @@ export class ImageGenerationService {
       }
     });
 
-    // Bounded concurrency gate
-    await this.acquireConcurrencySlot();
+    // Resolve provider first so the concurrency gate is per-provider (A1).
     let provider = this.normalizeProvider(this.config.provider);
     const providerFamily = this.getPolicyFamily(metadata?.type);
     if (!this.providerPolicy.canUseProvider(provider, providerFamily) && provider === 'nano-banana' && this.hasAtlasCloudConfigured()) {
       provider = 'atlas-cloud';
     }
+    const releaseProviderSlot = await this._throttle.acquire(provider);
+    // A9: Drop reference images the provider can't meaningfully consume. Avoids
+    // paying the tokenization / upload cost on refs that would have been
+    // silently ignored by the downstream provider.
+    const capabilityFilteredRefs = this.filterReferencesForProvider(provider, referenceImages);
     try {
       let result: GeneratedImage;
       const preferAtlasFirst =
@@ -1485,7 +2018,7 @@ export class ImageGenerationService {
 
       if (preferAtlasFirst) {
         try {
-          result = await this.generateWithAtlasCloud(normalizedPrompt, identifier, jobId, referenceImages, metadata?.type);
+          result = await this.generateWithAtlasCloud(normalizedPrompt, identifier, jobId, capabilityFilteredRefs, metadata?.type);
           if (!result.imageUrl && result.imagePath) {
             result.imageUrl = this.getServedImageUrl(result.imagePath);
           }
@@ -1498,23 +2031,28 @@ export class ImageGenerationService {
           const msg = atlasErr instanceof Error ? atlasErr.message : String(atlasErr);
           console.warn(`[ImageGenerationService] Atlas-first encounter generation failed, using Gemini: ${msg}`);
           this.providerPolicy.observeTransientFailure('atlas-cloud', providerFamily);
-          result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, referenceImages, metadata?.type);
+          result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, this.filterReferencesForProvider('nano-banana', referenceImages), metadata?.type);
         }
-      } else switch (provider) {
-        case 'nano-banana': result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, referenceImages, metadata?.type); break;
-        case 'atlas-cloud': result = await this.generateWithAtlasCloud(normalizedPrompt, identifier, jobId, referenceImages, metadata?.type); break;
-        case 'midapi':
-        case 'useapi':
-          result = await this.generateWithUseapi(normalizedPrompt, identifier, jobId, metadata, referenceImages);
-          break;
-        case 'dall-e': result = await this.generateWithDallE(normalizedPrompt, identifier, jobId); break;
-        case 'stable-diffusion': result = await this.generateWithStableDiffusion(normalizedPrompt, identifier, jobId); break;
-        default:
-          if (this.isFailFastEnabled()) {
-            throw new Error(`Image provider "${String(this.config.provider || 'placeholder')}" is not available in fail-fast mode`);
-          }
-          result = await this.generatePlaceholder(normalizedPrompt, identifier, jobId);
-          break;
+      } else {
+        if (
+          !this.providerRegistry.has(provider) &&
+          provider !== 'placeholder' &&
+          this.isFailFastEnabled()
+        ) {
+          throw new Error(`Image provider "${String(this.config.provider || 'placeholder')}" is not available in fail-fast mode`);
+        }
+        const adapter = this.providerRegistry.get(provider);
+        result = await adapter.generate(
+          {
+            prompt: normalizedPrompt,
+            identifier,
+            jobId,
+            imageType: metadata?.type,
+            referenceImages: capabilityFilteredRefs,
+            metadata,
+          },
+          this.providerBridge,
+        );
       }
 
       if (!result.imageUrl && result.imagePath) {
@@ -1725,7 +2263,7 @@ export class ImageGenerationService {
       }
       throw err;
     } finally {
-      this.releaseConcurrencySlot();
+      releaseProviderSlot();
     }
   }
 
@@ -1743,8 +2281,52 @@ export class ImageGenerationService {
     referenceImages?: ReferenceImage[]
   ): Promise<GeneratedImage> {
     if (!this.config.enabled) return { prompt, imagePath: undefined, imageUrl: undefined };
-    if (this.config.provider !== 'nano-banana') {
-      console.warn('[ImageGenerationService] editImage only supported for nano-banana provider, falling back to generateImage');
+
+    const provider = this.normalizeProvider(this.config.provider);
+
+    // Stable Diffusion supports native img2img via its adapter — route there
+    // first so we don't lose the base image by falling through to generateImage.
+    if (provider === 'stable-diffusion') {
+      const settings = this._stableDiffusionSettings;
+      if (settings?.baseUrl) {
+        const adapter = this.getSDAdapter();
+        if (typeof adapter.edit === 'function') {
+          try {
+            return await adapter.edit(
+              {
+                prompt,
+                identifier,
+                jobId: `edit-${identifier}-${Date.now()}`,
+                settings,
+                referenceImages,
+                baseImage,
+              },
+              this.getSDWriteHelpers(),
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[ImageGenerationService] Stable Diffusion editImage failed for "${identifier}": ${msg}`);
+            if (this.isFailFastEnabled()) throw err;
+          }
+        } else if (this.isFailFastEnabled()) {
+          throw new Error(`Stable Diffusion adapter "${adapter.id}" does not support editImage`);
+        }
+      } else if (this.isFailFastEnabled()) {
+        throw new Error('Stable Diffusion editImage requires STABLE_DIFFUSION_BASE_URL');
+      }
+      // Fallback: treat as fresh generation with the base image passed as init reference.
+      const initRef: ReferenceImage = {
+        data: baseImage.data,
+        mimeType: baseImage.mimeType,
+        role: 'img2img-init',
+        purpose: 'img2img-init',
+      };
+      const combinedRefs = [initRef, ...(referenceImages || [])];
+      return this.generateImage(prompt, identifier, { type: 'scene' }, combinedRefs);
+    }
+
+    if (provider !== 'nano-banana') {
+      console.warn('[ImageGenerationService] editImage only supported for nano-banana and stable-diffusion providers, falling back to generateImage');
       return this.generateImage(prompt, identifier, { type: 'scene' }, referenceImages);
     }
 
@@ -1761,12 +2343,7 @@ export class ImageGenerationService {
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        const now = Date.now();
-        const timeSinceLast = now - this.lastRequestTime;
-        if (timeSinceLast < this.minRequestInterval) {
-          await this.delay(this.minRequestInterval - timeSinceLast);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('nano-banana');
 
         const parts: any[] = [];
 
@@ -1884,14 +2461,18 @@ export class ImageGenerationService {
   private injectCharacterIdentity(
     prompt: ImagePrompt,
     characterNames?: string[],
-    characterDescriptions?: Array<{ name: string; appearance: string }>,
+    characterDescriptions?: CharacterAppearanceDescription[],
   ): ImagePrompt {
     const names = Array.from(new Set((characterNames || []).map(n => (n || '').trim()).filter(Boolean)));
     const descs = Array.from(
       new Map(
         (characterDescriptions || [])
-          .filter(d => d.name && d.appearance)
-          .map(d => [d.name.trim().toLowerCase(), { name: d.name.trim(), appearance: d.appearance.trim() }])
+          .filter(d => d.name && (d.appearance || d.canonicalAppearance))
+          .map(d => [d.name.trim().toLowerCase(), {
+            name: d.name.trim(),
+            appearance: (d.appearance || '').trim(),
+            canonicalAppearance: d.canonicalAppearance,
+          }])
       ).values()
     );
 
@@ -1904,32 +2485,66 @@ export class ImageGenerationService {
 
     const out: ImagePrompt = { ...prompt };
 
-    // Build a character identity block with physical descriptions.
-    // This is the primary defense against "dark hair" when the character is blonde, etc.
+    // Build a structured identity block from canonicalAppearance when the
+    // upstream provided it. Each slot is rendered as a separate labeled line
+    // — the model is much less likely to drop or summarize individual fields
+    // than a prose paragraph.
     const identityLines: string[] = [];
     if (descs.length > 0) {
       for (const d of descs) {
-        identityLines.push(`${d.name}: ${d.appearance}`);
+        const ca = d.canonicalAppearance;
+        if (ca && (ca.face || ca.hair || ca.eyes || ca.skinTone || ca.build || ca.height || (ca.distinguishingMarks && ca.distinguishingMarks.length) || ca.defaultAttire)) {
+          const slotLines: string[] = [`${d.name}:`];
+          if (ca.face) slotLines.push(`  - Face: ${ca.face}`);
+          if (ca.hair) slotLines.push(`  - Hair: ${ca.hair}`);
+          if (ca.eyes) slotLines.push(`  - Eyes: ${ca.eyes}`);
+          if (ca.skinTone) slotLines.push(`  - Skin: ${ca.skinTone}`);
+          if (ca.build) slotLines.push(`  - Build: ${ca.build}`);
+          if (ca.height) slotLines.push(`  - Height: ${ca.height}`);
+          if (ca.distinguishingMarks && ca.distinguishingMarks.length > 0) {
+            slotLines.push(`  - Distinguishing marks: ${ca.distinguishingMarks.join('; ')}`);
+          }
+          if (ca.defaultAttire) slotLines.push(`  - Attire: ${ca.defaultAttire}`);
+          identityLines.push(slotLines.join('\n'));
+        } else if (d.appearance) {
+          identityLines.push(`${d.name}: ${d.appearance}`);
+        } else {
+          identityLines.push(`${d.name}`);
+        }
       }
     } else if (names.length > 0) {
       identityLines.push(`Characters: ${names.join(', ')}`);
     }
 
     const identityBlock = identityLines.length > 0
-      ? `CHARACTER VISUAL IDENTITY (use these exact descriptions, do NOT contradict):\n${identityLines.join('\n')}`
+      ? `CHARACTER VISUAL IDENTITY — match these exact attributes from the reference images. Do NOT change hair color, eye color, skin tone, or distinguishing marks:\n${identityLines.join('\n')}`
       : '';
 
-    // Only inject the identity block when a character name actually appears somewhere in the prompt
-    // or its key fields. For establishing/atmospheric shots the prompt won't reference characters
-    // by name, so injecting the block would push the model toward showing characters in poses.
+    // Inject identity whenever we have structured descriptions (this implies
+    // the caller is passing reference images), and additionally whenever a
+    // character name appears in the prompt text. For pure atmospheric shots
+    // with no names and no descs, the early-return above already skipped.
     const promptMentionsCharacter = hasAnyName(out.prompt)
       || hasAnyName(out.visualNarrative)
       || hasAnyName(out.keyBodyLanguage)
       || hasAnyName(out.poseSpec)
       || hasAnyName(out.composition);
 
-    if (identityBlock && promptMentionsCharacter) {
-      out.prompt = `${identityBlock}\n\n${out.prompt}`;
+    const shouldInjectIdentity = identityBlock && (descs.length > 0 || promptMentionsCharacter);
+    if (shouldInjectIdentity) {
+      // Append at the end of the text part. Gemini weights text closest to
+      // the image references more strongly, and the identity block is the
+      // single most important signal to tie the refs to the target image.
+      out.prompt = `${out.prompt}\n\n${identityBlock}`;
+    }
+
+    // Strengthen the negative prompt with identity-drift terms so the model
+    // treats hair/eye/skin/mark changes as explicit failures.
+    if (shouldInjectIdentity) {
+      const identityNegatives = 'different face, different hair color, changed eye color, missing scar, missing tattoo, wrong skin tone, altered distinguishing feature, character swap';
+      out.negativePrompt = out.negativePrompt
+        ? `${out.negativePrompt}, ${identityNegatives}`
+        : identityNegatives;
     }
 
     // Replace generic character references with actual names in all text fields.
@@ -2011,15 +2626,7 @@ export class ImageGenerationService {
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
         lastAttempt = attempt;
-        // Simple rate limiting: ensure minimum interval between any requests
-        const now = Date.now();
-        const timeSinceLast = now - this.lastRequestTime;
-        if (timeSinceLast < this.minRequestInterval) {
-          const waitTime = this.minRequestInterval - timeSinceLast;
-          console.log(`[ImageGenerationService] Rate limiting: waiting ${waitTime}ms before request...`);
-          await this.delay(waitTime);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('nano-banana');
 
         this.emit({ type: 'job_updated', id: jobId, updates: { status: 'processing', attempts: attempt, progress: (attempt / (this.maxRetries + 1)) * 50 } });
 
@@ -2287,14 +2894,23 @@ export class ImageGenerationService {
             const isComposite = ref.viewType === 'composite' || ref.role?.includes('composite');
             const isPanelContinuity = ref.role === 'previous-panel-continuity';
             if (isPanelContinuity) {
-              label = `Image ${imageNumber}: Previous panel in this sequence — match the exact art style, color palette, line weight, and character rendering from this image. This is the same scene from a different angle/moment.`;
+              // IDENTITY-ONLY match. Earlier versions asked Gemini to "match the
+              // exact art style, color palette, line weight, and character
+              // rendering" from the previous panel — which caused the whole
+              // story to lock onto the aesthetic of panel 0 regardless of the
+              // user-chosen art style. The text art-style directive is the
+              // single source of truth; the previous panel is only a character
+              // identity reference.
+              label = `Image ${imageNumber}: Previous panel in this sequence — use ONLY for character identity continuity (face, hair, clothing, build). Do NOT copy the rendering style, line weight, or color palette from this image; the art style is dictated by the text directive above.`;
               imageManifest.push(`Image ${imageNumber}: Panel continuity`);
             } else if (ref.characterName) {
               label = `Image ${imageNumber}: ${ref.characterName}`;
               if (isComposite) {
-                label += ` — CHARACTER REFERENCE SHEET showing this ONE character from multiple angles (front, side, three-quarter). This is a SINGLE character, not multiple characters. Use only for identity matching.`;
+                label += ` — CHARACTER REFERENCE SHEET showing this ONE character from multiple angles (front, side, three-quarter). This is a SINGLE character, not multiple characters. Use ONLY for identity matching (face, hair, skin tone, distinguishing features). Do NOT copy the rendering style, line weight, or color palette from this sheet — the art style is dictated by the text directive above.`;
               } else if (ref.viewType && ref.viewType !== 'front') {
-                label += ` (${ref.viewType} view)`;
+                label += ` (${ref.viewType} view) — use ONLY for identity matching, not for rendering style.`;
+              } else {
+                label += ` — use ONLY for identity matching (face, hair, skin tone, distinguishing features). Do NOT copy the rendering style from this reference.`;
               }
               if (ref.visualAnchors && ref.visualAnchors.length > 0) {
                 label += ` Key traits: ${ref.visualAnchors.slice(0, 5).join(', ')}`;
@@ -2316,10 +2932,30 @@ export class ImageGenerationService {
             imageNumber++;
           }
 
+          // 4b. Composite character sheet → style anchor (dual-artifact routing).
+          // When `compositeAsStyleAnchor` is enabled (default) the per-provider
+          // filter installs the composite here so Gemini can consult it for
+          // palette/silhouette without receiving it as a regular character ref
+          // (which would cause collage-leak in the output). The label below
+          // explicitly instructs Gemini to ignore layout.
+          if (
+            gemSettings.compositeAsStyleAnchor !== false &&
+            this._referenceSheetStyleAnchor &&
+            // Only attach when no explicit per-episode style reference is
+            // already filling this slot — otherwise we double up on style
+            // signals and burn attention budget.
+            !(gemSettings.includeStyleReference && this._geminiStyleReference)
+          ) {
+            parts.push({ inlineData: { mimeType: this._referenceSheetStyleAnchor.mimeType, data: this._referenceSheetStyleAnchor.data } });
+            parts.push({ text: `Image ${imageNumber}: Character model sheet (LOW-WEIGHT style anchor) — use ONLY for color palette, silhouette feel, and overall rendering density. Do NOT copy the multi-panel layout. Do NOT treat this as multiple characters; it shows ONE character from several angles. The scene is a single continuous image as specified above.` });
+            imageManifest.push(`Image ${imageNumber}: Composite style anchor`);
+            imageNumber++;
+          }
+
           // 5. Previous scene image (for scene-to-scene continuity)
           if (gemSettings.includePreviousScene && this._geminiPreviousScene) {
             parts.push({ inlineData: { mimeType: this._geminiPreviousScene.mimeType, data: this._geminiPreviousScene.data } });
-            parts.push({ text: `Image ${imageNumber}: Previous scene — maintain visual continuity.` });
+            parts.push({ text: `Image ${imageNumber}: Previous scene — STYLE AND SETTING CONTINUITY REFERENCE ONLY. Match color grading, lighting, and environmental feel. Do NOT copy character appearance from this image; character identity comes from the dedicated character reference images.` });
             imageManifest.push(`Image ${imageNumber}: Previous scene continuity`);
             imageNumber++;
           }
@@ -2372,11 +3008,15 @@ export class ImageGenerationService {
                consistencyText += ` PRIORITY: The action and emotion described in "THE STORY MOMENT" takes precedence over the reference pose. Use the reference ONLY for face and body type.`;
             }
             
+            // Reminder: the authoritative art style is the TEXT directive at
+            // the top of this prompt, not any specific reference image. The
+            // style reference / previous-scene images are weak visual hints,
+            // not style sources.
             if (styleLabel) {
-              consistencyText += ` Match the art style from ${styleLabel}.`;
+              consistencyText += ` Use ${styleLabel} as a weak hint for color temperature and rendering density only; the text art-style directive above is authoritative when they conflict.`;
             }
             if (prevLabel) {
-              consistencyText += ` Maintain visual continuity from ${prevLabel}.`;
+              consistencyText += ` Maintain environmental / lighting continuity from ${prevLabel} (color grading, time of day), but NOT its rendering style — the text art-style directive governs rendering.`;
             }
             parts.push({ text: consistencyText });
 
@@ -2502,14 +3142,20 @@ export class ImageGenerationService {
         }
         if (errorClass === 'text_instead_of_image') {
           this.pipelineMetrics.transientRetries++;
-          if (attempt < this.maxRetries) {
-            console.log(`[ImageGenerationService] Text-instead-of-image for "${identifier}" — retrying with image-reinforcement directive (attempt ${attempt + 1}/${this.maxRetries})`);
+          // A6: Cap text-instead-of-image retries — once a prompt consistently
+          // returns text, a 5th attempt rarely changes the outcome.
+          if (attempt < Math.min(this.maxRetries, this.maxTextInsteadOfImageRetries)) {
+            console.log(`[ImageGenerationService] Text-instead-of-image for "${identifier}" — retrying with image-reinforcement directive (attempt ${attempt + 1}/${this.maxTextInsteadOfImageRetries})`);
             await this.delay(this.retryDelayMs);
+          } else {
+            console.warn(`[ImageGenerationService] Text-instead-of-image cap (${this.maxTextInsteadOfImageRetries}) reached for "${identifier}" — giving up on this prompt`);
+            break;
           }
         } else {
           this.pipelineMetrics.transientRetries++;
           if (attempt < this.maxRetries) {
-            const backoff = this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
+            const rawBackoff = this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
+            const backoff = Math.min(rawBackoff, this.maxRetryBackoffMs);
             const jitter = Math.floor(Math.random() * 750);
             if (this.shouldTrackEncounterType(imageType) && attempt >= 2) {
               const probe = await this.preflightImageProvider(false);
@@ -2658,6 +3304,14 @@ export class ImageGenerationService {
       sections.push(`ART STYLE (MANDATORY): ${styleToUse}.`);
     }
 
+    // 1a. Profile DNA — when an ArtStyleProfile is installed, emit each
+    // component as its own labeled line so the image model receives the full
+    // style contract (rendering technique, palette, lighting, line, composition,
+    // mood) instead of just a name. Without this, the prompt carries only the
+    // flat label and the style defaults to whatever the model's priors associate
+    // with that label.
+    this.appendProfileDnaSections(sections);
+
     if (settingNotes.length > 0) {
       sections.push(`SETTING ADAPTATION (SAME STYLE, NOT A STYLE SWITCH): ${settingNotes.join(' ')}`);
     }
@@ -2789,6 +3443,8 @@ export class ImageGenerationService {
       sections.push(`ART STYLE (MANDATORY): ${styleToUse}.`);
     }
 
+    this.appendProfileDnaSections(sections);
+
     const settingNotes = this.getSettingAdaptationNotes(strengthenedPrompt);
     if (settingNotes.length > 0) {
       sections.push(`SETTING: ${settingNotes.join(' ')}`);
@@ -2834,10 +3490,19 @@ export class ImageGenerationService {
 
   private ensureVisualPromptStrength(prompt: ImagePrompt): ImagePrompt {
     const result: ImagePrompt = { ...prompt };
+    // C4: Profile-aware guardrails. When a structured `ArtStyleProfile` is
+    // installed, it tells us which default rules to skip (`acceptableDeviations`),
+    // which vocabulary to inject (`positiveVocabulary`), which vocabulary to
+    // strip (`inappropriateVocabulary`), and which extra negatives to merge
+    // (`genreNegatives`). No profile = today's cinematic defaults.
+    const profile = this._artStyleProfile;
+    const allowsDeviation = (rule: import('../images/artStyleProfile').DefaultRuleId): boolean =>
+      !!profile && profile.acceptableDeviations.includes(rule);
+
     const text = `${result.visualNarrative || ''} ${result.emotionalCore || ''} ${result.prompt || ''}`.toLowerCase();
     const hasActionVerb = /\b(grabs?|reaches?|recoils?|steps?|stumbles?|lunges?|turns?|pushes?|pulls?|raises?|lowers?|clenches?|releases?|strikes?|dodges?|embraces?|confronts?|retreats?|advances?|runs?|walks?|leans?|twists?|lifts?|drops?|wrings?|presses?|squeezes?|clutches?|shields?)\b/.test(text);
 
-    if (!hasActionVerb) {
+    if (!hasActionVerb && !allowsDeviation('mid-action-posing') && !allowsDeviation('frozen-moment-of-change')) {
       const fallbackAction = 'Characters are in the middle of a visible action with clear cause and effect, not standing still.';
       result.visualNarrative = result.visualNarrative
         ? `${result.visualNarrative} ${fallbackAction}`
@@ -2857,23 +3522,31 @@ export class ImageGenerationService {
       result.keyExpression = `Expression showing: ${result.emotionalCore}. Show it through specific facial anatomy — brow tension, eye direction, mouth set, jaw position.`;
     }
 
-    // Strengthen vague or missing keyBodyLanguage
-    if (!result.keyBodyLanguage && result.emotionalCore) {
-      result.keyBodyLanguage = `Weight shifted to one foot, body angled with intent. Posture reflects: ${result.emotionalCore}.`;
-    } else if (result.keyBodyLanguage && /^(tense posture|standing close|facing each other|side by side)$/i.test(result.keyBodyLanguage.trim())) {
-      result.keyBodyLanguage = `${result.keyBodyLanguage} — with visible weight shift, one shoulder leading, asymmetric stance showing intent.`;
-      console.warn('[ImageGenerationService] Prompt guardrail: vague keyBodyLanguage; injected specificity');
+    // Strengthen vague or missing keyBodyLanguage.
+    // C4: Styles that allow symmetric/centered composition (storybook, minimalist,
+    // pixel, etc.) opt out of the asymmetric-body-language injection.
+    if (!allowsDeviation('asymmetric-body-language')) {
+      if (!result.keyBodyLanguage && result.emotionalCore) {
+        result.keyBodyLanguage = `Weight shifted to one foot, body angled with intent. Posture reflects: ${result.emotionalCore}.`;
+      } else if (result.keyBodyLanguage && /^(tense posture|standing close|facing each other|side by side)$/i.test(result.keyBodyLanguage.trim())) {
+        result.keyBodyLanguage = `${result.keyBodyLanguage} — with visible weight shift, one shoulder leading, asymmetric stance showing intent.`;
+        console.warn('[ImageGenerationService] Prompt guardrail: vague keyBodyLanguage; injected specificity');
+      }
     }
 
-    // Detect stiff-pose patterns and inject overrides
-    const stiffPatterns = /\b(holding hands?|standing together|standing side by side|facing each other|standing still|posed together)\b/i;
-    const allText = `${result.prompt || ''} ${result.keyGesture || ''} ${result.keyBodyLanguage || ''}`;
-    if (stiffPatterns.test(allText)) {
-      if (!result.keyGesture || stiffPatterns.test(result.keyGesture)) {
-        result.keyGesture = (result.keyGesture || '') +
-          ' — hands must be ACTIVE: gripping something, gesturing, pressing against a surface, reaching, or pulling back. Not passively clasped.';
+    // Detect stiff-pose patterns and inject overrides.
+    // C4: Skip for styles that accept static/posed compositions
+    // (storybook, minimalist, pixel, etc.) via `mid-action-posing` deviation.
+    if (!allowsDeviation('mid-action-posing')) {
+      const stiffPatterns = /\b(holding hands?|standing together|standing side by side|facing each other|standing still|posed together)\b/i;
+      const allText = `${result.prompt || ''} ${result.keyGesture || ''} ${result.keyBodyLanguage || ''}`;
+      if (stiffPatterns.test(allText)) {
+        if (!result.keyGesture || stiffPatterns.test(result.keyGesture)) {
+          result.keyGesture = (result.keyGesture || '') +
+            ' — hands must be ACTIVE: gripping something, gesturing, pressing against a surface, reaching, or pulling back. Not passively clasped.';
+        }
+        console.warn('[ImageGenerationService] Prompt guardrail: stiff-pose pattern detected; injected active gesture directive');
       }
-      console.warn('[ImageGenerationService] Prompt guardrail: stiff-pose pattern detected; injected active gesture directive');
     }
 
     // Strengthen empty or metadata-only composition with actual visual direction
@@ -2906,6 +3579,73 @@ export class ImageGenerationService {
       result.visualNarrative = stripNonDiegetic(result.visualNarrative);
       result.emotionalCore = stripNonDiegetic(result.emotionalCore);
       result.keyGesture = stripNonDiegetic(result.keyGesture);
+    }
+
+    // C4: Bidirectional style-aware vocabulary pass. Strips phrases that
+    // contradict the active style (e.g. "photoreal" in a pixel-art profile)
+    // and ensures at least one style-positive cue is present in the main
+    // prompt so the model commits to the look.
+    if (profile) {
+      if (profile.inappropriateVocabulary.length > 0) {
+        const patterns = profile.inappropriateVocabulary
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0)
+          .map((v) => new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'));
+        if (patterns.length > 0) {
+          const stripInappropriate = (field: string | undefined): string | undefined => {
+            if (!field) return field;
+            let cleaned = field;
+            for (const p of patterns) {
+              cleaned = cleaned.replace(p, '');
+            }
+            cleaned = cleaned.replace(/\s{2,}/g, ' ').replace(/ ,/g, ',').trim();
+            if (cleaned !== field.trim()) {
+              console.warn(
+                `[ImageGenerationService] Prompt guardrail: stripped style-inappropriate vocabulary for profile "${profile.name}"`,
+              );
+            }
+            return cleaned || field;
+          };
+          result.prompt = stripInappropriate(result.prompt) || result.prompt;
+          result.visualNarrative = stripInappropriate(result.visualNarrative);
+          result.composition = stripInappropriate(result.composition);
+          result.keyGesture = stripInappropriate(result.keyGesture);
+          result.keyExpression = stripInappropriate(result.keyExpression);
+        }
+      }
+
+      if (profile.positiveVocabulary.length > 0) {
+        const existing = (result.prompt || '').toLowerCase();
+        // Defensive filter: when a profile comes from an unknown family we
+        // never want the cinematic default vocabulary to leak in. The
+        // verbatim builder already avoids this, but future callers could
+        // construct an unknown-family profile that still carries cinematic
+        // cues. Treat the default cinematic words as forbidden for unknown
+        // families so they can't override the user's actual style.
+        const cinematicBlocklist = new Set([
+          'cinematic', 'dramatic', 'emotionally charged', 'sharp focus',
+        ]);
+        const allowedVocab =
+          profile.family === 'unknown'
+            ? profile.positiveVocabulary.filter(
+                (v) => !cinematicBlocklist.has(v.trim().toLowerCase()),
+              )
+            : profile.positiveVocabulary;
+        const missing = allowedVocab.filter(
+          (v) => v && !existing.includes(v.toLowerCase()),
+        );
+        if (missing.length > 0) {
+          const injection = `Style cues: ${missing.join(', ')}.`;
+          result.prompt = result.prompt ? `${result.prompt}\n${injection}` : injection;
+        }
+      }
+
+      if (profile.genreNegatives.length > 0) {
+        const merged = [result.negativePrompt, ...profile.genreNegatives]
+          .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+          .join(', ');
+        if (merged) result.negativePrompt = merged;
+      }
     }
 
     return result;
@@ -2966,10 +3706,7 @@ export class ImageGenerationService {
   }
 
   private getAtlasCloudProxyUrl(): string {
-    if (isWebRuntime() && typeof window !== 'undefined') {
-      return `http://${window.location.hostname || 'localhost'}:3001/atlas-cloud-api`;
-    }
-    return 'http://localhost:3001/atlas-cloud-api';
+    return PROXY_CONFIG.atlasCloudApi;
   }
 
   private isSeedreamModel(model?: string): boolean {
@@ -3228,12 +3965,7 @@ export class ImageGenerationService {
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        const now = Date.now();
-        const timeSinceLast = now - this.lastRequestTime;
-        if (timeSinceLast < this.minRequestInterval) {
-          await this.delay(this.minRequestInterval - timeSinceLast);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('atlas-cloud');
 
         this.emit({ type: 'job_updated', id: jobId, updates: { status: 'processing', attempts: attempt, progress: 10 } });
 
@@ -3330,7 +4062,8 @@ export class ImageGenerationService {
         }
         this.pipelineMetrics.transientRetries++;
         if (attempt < this.maxRetries) {
-          await this.delay(this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1));
+          const rawBackoff = this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
+          await this.delay(Math.min(rawBackoff, this.maxRetryBackoffMs));
         }
       }
     }
@@ -3355,6 +4088,56 @@ export class ImageGenerationService {
     }
     const placeholder = await this.generatePlaceholder(prompt, identifier, jobId);
     return placeholder;
+  }
+
+  /**
+   * A8: Report the batch capability for the active provider/model combo so
+   * callers can decide whether to collect sibling prompts into a single
+   * `generateImageBatch` call. Returns 1 when batching isn't supported
+   * (callers should still use `generateImageBatch` — it transparently
+   * falls back to a sequential loop). Intended as a lightweight capability
+   * probe; not an authoritative rate-limit hint.
+   */
+  getMaxBatchSize(hasRefs: boolean = false): number {
+    const caps = this.modelCapabilities;
+    const canBatch = hasRefs ? caps.supportsBatchEdit : caps.supportsBatch;
+    return canBatch ? caps.maxBatchSize : 1;
+  }
+
+  /**
+   * A8: Thin convenience wrapper for "N independent sibling prompts" —
+   * common patterns include encounter outcome siblings (success /
+   * complicated / failure) and storylet aftermath variants. The wrapper
+   * delegates to `generateImageBatch` so Atlas Seedream can fold the
+   * siblings into a single API call; non-Seedream providers still get a
+   * correct (but sequential) result via the inner fallback.
+   *
+   * Callers supply the full referenceImages up-front because Seedream's
+   * batch-edit call reuses a single ref set across all prompts in the
+   * chunk. Per-prompt ref overrides aren't supported — if a sibling needs
+   * a different ref set, fall back to `generateImage` directly.
+   */
+  async generateSiblingImagesBatched(
+    prompts: { prompt: ImagePrompt; identifier: string; metadata?: any }[],
+    referenceImages?: ReferenceImage[],
+  ): Promise<GeneratedImage[]> {
+    if (prompts.length === 0) return [];
+    const maxBatch = this.getMaxBatchSize(!!(referenceImages && referenceImages.length));
+    if (maxBatch <= 1 || prompts.length === 1) {
+      // No batch gain is available — route through the single-call path
+      // so rate-limit + retry logic stays identical to the legacy flow.
+      const results: GeneratedImage[] = [];
+      for (const p of prompts) {
+        results.push(await this.generateImage(p.prompt, p.identifier, p.metadata, referenceImages));
+      }
+      return results;
+    }
+    this.emit({
+      type: 'debug',
+      phase: 'images',
+      message: `A8 sibling-batch: folding ${prompts.length} prompts into batches of up to ${maxBatch}`,
+    } as any);
+    return this.generateImageBatch(prompts, referenceImages);
   }
 
   /**
@@ -3405,12 +4188,7 @@ export class ImageGenerationService {
       this.emit({ type: 'job_added', job: { id: batchJobId, identifier: `batch(${chunk.length})`, prompt: 'Batch generation', status: 'pending' } });
 
       try {
-        const now = Date.now();
-        const timeSinceLast = now - this.lastRequestTime;
-        if (timeSinceLast < this.minRequestInterval) {
-          await this.delay(this.minRequestInterval - timeSinceLast);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('atlas-cloud');
 
         const combinedPrompt = chunk.map((p, i) => {
           const batchStyle = this.resolveArtStyle(p.prompt.style);
@@ -3554,32 +4332,28 @@ export class ImageGenerationService {
 
     this.emit({ type: 'job_updated', id: jobId, updates: { status: 'generating', progress: 5, message: 'Calling Midjourney via useapi.net...' } });
 
-    const fullPrompt = this.buildMidjourneyPrompt(prompt, identifier, metadata, referenceImages);
+    // A7: Midjourney's --cref/--sref flags require public URLs, so opportunistically
+    // pre-upload any references that are still inline-only. If an uploader
+    // endpoint isn't configured we leave the refs untouched and the prompt
+    // builder falls back to the --oref / identity-hint path.
+    const resolvedRefs = this._midjourneySettings.enableCrefSref
+      ? await this.ensureReferenceUrls(referenceImages)
+      : referenceImages;
+
+    const fullPrompt = this.buildMidjourneyPrompt(prompt, identifier, metadata, resolvedRefs);
 
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
         // Rate limiting
-        const now = Date.now();
-        const timeSinceLastRequest = now - this.lastRequestTime;
-        if (timeSinceLastRequest < this.minRequestInterval) {
-          await this.delay(this.minRequestInterval - timeSinceLastRequest);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('midapi');
 
         console.log(`[ImageGenerationService] Midjourney: Generating image (attempt ${attempt}/${this.maxRetries})`);
         console.log(`[ImageGenerationService] Midjourney: Prompt: ${fullPrompt.substring(0, 100)}...`);
         this.emit({ type: 'job_updated', id: jobId, updates: { progress: 10, attempts: attempt, message: 'Submitting to Midjourney...' } });
 
-        // Use proxy server to avoid CORS issues
-        const getProxyUrl = () => {
-          if (isWebRuntime() && typeof window !== 'undefined') {
-            return `http://${window.location.hostname || 'localhost'}:3001/useapi`;
-          }
-          return 'http://localhost:3001/useapi';
-        };
-        const baseUrl = getProxyUrl();
+        const baseUrl = `${PROXY_CONFIG.getProxyUrl()}/useapi`;
 
         // Step 1: Submit the imagine job
         const submitResponse = await fetch(`${baseUrl}/midjourney/jobs/imagine`, {
@@ -3719,10 +4493,10 @@ export class ImageGenerationService {
         this.emit({ type: 'job_updated', id: jobId, updates: { error: lastError.message, attempts: attempt } });
         if (attempt < this.maxRetries) {
           // Longer delay for rate limiting errors
-          const delayTime = lastError.message.includes('Rate limited') 
-            ? 15000 * attempt // 15s, 30s, 45s for rate limits (Midjourney is slower)
+          const rawDelayTime = lastError.message.includes('Rate limited')
+            ? 15000 * attempt
             : this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
-          await this.delay(delayTime);
+          await this.delay(Math.min(rawDelayTime, this.maxRetryBackoffMs));
         }
       }
     }
@@ -3759,11 +4533,41 @@ export class ImageGenerationService {
     return this.generatePlaceholder(prompt, identifier, jobId);
   }
 
-  private async generateWithStableDiffusion(prompt: ImagePrompt, identifier: string, jobId: string): Promise<GeneratedImage> {
-    if (this.isFailFastEnabled()) {
-      throw new Error('Stable Diffusion image generation is not implemented for fail-fast mode');
+  private async generateWithStableDiffusion(
+    prompt: ImagePrompt,
+    identifier: string,
+    jobId: string,
+    referenceImages?: ReferenceImage[],
+    metadata?: Record<string, any>,
+  ): Promise<GeneratedImage> {
+    const settings = this._stableDiffusionSettings;
+    if (!settings || !settings.baseUrl) {
+      const msg = 'Stable Diffusion is selected but no baseUrl is configured. Set STABLE_DIFFUSION_BASE_URL or update settings.';
+      if (this.isFailFastEnabled()) throw new Error(msg);
+      console.warn(`[ImageGenerationService] ${msg} — falling back to placeholder for "${identifier}"`);
+      return this.generatePlaceholder(prompt, identifier, jobId);
     }
-    return this.generatePlaceholder(prompt, identifier, jobId);
+
+    const adapter = this.getSDAdapter();
+    const promptWithSeed = this.applyDeterministicSeed(prompt, identifier, metadata);
+    const dnaPhrase = this.composeProfileDnaPhrase();
+    const promptWithDna = dnaPhrase
+      ? { ...promptWithSeed, prompt: `${promptWithSeed.prompt || ''}${promptWithSeed.prompt ? '\n\n' : ''}${dnaPhrase}` }
+      : promptWithSeed;
+    try {
+      const result = await adapter.generate(
+        { prompt: promptWithDna, identifier, jobId, metadata, referenceImages, settings },
+        this.getSDWriteHelpers(),
+      );
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (this.isFailFastEnabled()) {
+        throw new Error(`Stable Diffusion generation failed (${adapter.id}): ${msg}`);
+      }
+      console.error(`[ImageGenerationService] Stable Diffusion generation failed for "${identifier}" via ${adapter.id}: ${msg}`);
+      return this.generatePlaceholder(prompt, identifier, jobId);
+    }
   }
 
   private async generatePlaceholder(prompt: ImagePrompt, identifier: string, jobId: string): Promise<GeneratedImage> {

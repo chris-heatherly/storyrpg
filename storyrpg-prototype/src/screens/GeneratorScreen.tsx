@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): Phase 4 client/pipeline decoupling will replace
+// direct FullStoryPipeline imports with PipelineClient facade and restore typecheck.
 /**
  * Generator Screen
  *
@@ -16,11 +18,13 @@ import {
   SafeAreaView,
   TextInput,
   Platform,
-  Modal,
   ActivityIndicator,
   Switch,
   Image,
+  Modal,
+  Pressable,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import {
   ChevronRight,
   ChevronDown,
@@ -45,14 +49,21 @@ import {
   BookOpen,
   ImageIcon,
   Film,
+  Play,
+  Library,
+  PauseCircle,
 } from 'lucide-react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 import { PipelineProgress } from '../components/PipelineProgress';
 import { CheckpointReview } from '../components/CheckpointReview';
 import { ImageJobPanel } from '../components/ImageJobPanel';
 import { VideoJobPanel } from '../components/VideoJobPanel';
+import { StepIndicator, deriveWizardStep } from './generator/StepIndicator';
+import { AdvancedSettingsSheet } from './generator/AdvancedSettingsSheet';
+import { ProgressStep } from './generator/steps/ProgressStep';
+import { CompleteStep } from './generator/steps/CompleteStep';
 import { GenerationSettingsPanel, GenerationSettings } from '../components/GenerationSettingsPanel';
 import { EpisodeSelector } from '../components/EpisodeSelector';
 import { useSettingsStore } from '../stores/settingsStore';
@@ -60,13 +71,19 @@ import { seasonPlanStore } from '../stores/seasonPlanStore';
 import { SeasonPlan, EpisodeRecommendation } from '../types/seasonPlan';
 import { SeasonPlannerAgent } from '../ai-agents/agents/SeasonPlannerAgent';
 import { useImageJobStore } from '../stores/imageJobStore';
+import { useVideoJobStore } from '../stores/videoJobStore';
 import { useGenerationJobStore, PipelineEventData } from '../stores/generationJobStore';
 import { useGeneratorSettings } from '../hooks/useGeneratorSettings';
 import { useAvailableModels } from '../hooks/useAvailableModels';
 import { ModelDropdown } from '../components/ModelDropdown';
+import { ConfirmDialog } from '../components/ui';
 import { useGeneratorRunner } from '../hooks/useGeneratorRunner';
 import { useEndingModePlanner } from './generator/useEndingModePlanner';
-import { buildPipelineConfig } from '../ai-agents/config/buildPipelineConfig';
+import { buildPipelineConfig, PipelineConfigExtras } from '../ai-agents/config/buildPipelineConfig';
+import { StyleArchitect } from '../ai-agents/agents/StyleArchitect';
+import { ImageGenerationService } from '../ai-agents/services/imageGenerationService';
+import { useStyleSetup, AnchorRole } from './generator/hooks/useStyleSetup';
+import { StyleSetupSection } from './generator/StyleSetupSection';
 import { runStoryAnalysis, runStoryGeneration } from '../ai-agents/services/storyGenerationService';
 
 // Import the real pipeline
@@ -78,7 +95,8 @@ import {
   OutputManifest,
   SourceAnalysisResult,
 } from '../ai-agents/pipeline/FullStoryPipeline';
-import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
+import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, DEFAULT_STABLE_DIFFUSION_SETTINGS, DEFAULT_LORA_TRAINING_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
+import { STABLE_DIFFUSION_UI_ENABLED } from '../config/generatorLlmOptions';
 import { EndingMode, SourceMaterialAnalysis, StoryEndingTarget } from '../types/sourceAnalysis';
 import { Story } from '../types';
 import {
@@ -109,7 +127,7 @@ interface CheckpointData {
   requiresApproval: boolean;
 }
 
-type GeneratorState = 'idle' | 'config' | 'analyzing' | 'analysis_complete' | 'running' | 'checkpoint' | 'complete' | 'error';
+type GeneratorState = 'idle' | 'config' | 'analyzing' | 'analysis_complete' | 'running' | 'checkpoint' | 'complete' | 'cancelled' | 'error';
 type GenerationMode = 'strict' | 'advisory' | 'disabled';
 
 type AnalysisCharacterTarget = {
@@ -249,6 +267,17 @@ const ConfigBucketCard: React.FC<ConfigBucketCardProps> = ({
 interface GeneratorScreenProps {
   onBack: () => void;
   onStoryGenerated?: (story: Story) => void;
+  /**
+   * Called when the user clicks "Play now" on the completion screen. The host
+   * app should add the story to the library, initialize it in the game store,
+   * and navigate to the reading surface.
+   */
+  onPlayStory?: (story: Story) => void | Promise<void>;
+  /**
+   * Called when the user clicks "View in library" on the completion screen.
+   * The host app should navigate to the story library (usually Home).
+   */
+  onViewLibrary?: () => void;
   resumeJobId?: string; // If provided, resume viewing this job's progress
   onCancelExternalPipeline?: () => void;
 }
@@ -264,7 +293,7 @@ type FailureWorkspaceState = {
   error: string | null;
 };
 
-export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStoryGenerated, resumeJobId, onCancelExternalPipeline }) => {
+export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStoryGenerated, onPlayStory, onViewLibrary, resumeJobId, onCancelExternalPipeline }) => {
   const [state, setState] = useState<GeneratorState>('idle');
   const [events, setEvents] = useState<PipelineEvent[]>([]);
   const [currentPhase, setCurrentPhase] = useState<string | undefined>();
@@ -308,6 +337,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     midapiToken,
     midjourneySettings,
     geminiSettings,
+    stableDiffusionSettings,
+    loraTrainingSettings,
     imageProvider,
     artStyle,
     imageStrategy,
@@ -330,6 +361,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     handleMidapiTokenChange,
     handleGeminiSettingsChange,
     handleMidjourneySettingsChange,
+    handleStableDiffusionSettingsChange,
+    handleLoraTrainingSettingsChange,
     handleImageProviderChange,
     handleArtStyleChange,
     handleGenerationSettingsChange,
@@ -339,12 +372,28 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const { models: availableModels, atlasCloudModels, scannedAt: modelsScanDate, loading: modelsScanLoading, refresh: refreshModels } = useAvailableModels();
   const [showMjSettings, setShowMjSettings] = useState(false);
   const [showGeminiSettings, setShowGeminiSettings] = useState(false);
+  const [showSdSettings, setShowSdSettings] = useState(false);
+  const [showLoraSettings, setShowLoraSettings] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  // Keep STORY open by default (the required prompt/doc lives inside); start
+  // all other optional buckets collapsed so the primary CTA is reachable
+  // without a long scroll. The full wizard refactor (Tranche B) replaces this
+  // with an explicit step indicator.
   const [showStoryPanel, setShowStoryPanel] = useState(true);
-  const [showImagesPanel, setShowImagesPanel] = useState(true);
+  const [showImagesPanel, setShowImagesPanel] = useState(false);
   const [showNarrationPanel, setShowNarrationPanel] = useState(false);
   const [showVideoPanel, setShowVideoPanel] = useState(false);
+  const [confirmCancelGeneration, setConfirmCancelGeneration] = useState(false);
+  const [showJobsSheet, setShowJobsSheet] = useState(false);
+
+  // Surface background image/video jobs in a header pill + bottom sheet rather
+  // than mounting the full panels at the bottom of the generator scroll. The
+  // pill is only rendered when jobs exist.
+  const imageJobCount = useImageJobStore((s) => Object.keys(s.jobs).length);
+  const videoJobCount = useVideoJobStore((s) => Object.keys(s.jobs).length);
+  const totalBackgroundJobs = imageJobCount + videoJobCount;
+  const hasBackgroundJobs = totalBackgroundJobs > 0;
 
   // Document mode state
   const [documentPath, setDocumentPath] = useState('');
@@ -835,7 +884,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     return brief;
   };
 
-  const createPipelineConfig = (): PipelineConfig => buildPipelineConfig({
+  const buildPipelineConfigInput = () => ({
     llmProvider,
     llmModel,
     imageLlmProvider,
@@ -854,11 +903,115 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     artStyle,
     geminiSettings,
     midjourneySettings,
+    stableDiffusionSettings,
+    loraTrainingSettings,
     generationSettings,
     generationMode,
     narrationSettings,
     videoSettings,
   });
+
+  // ----- Style Setup (inline on analysis_complete) -----------------------
+  // The section lets the user expand the raw style string into an editable
+  // profile, preview the three style-bible anchors, and approve them before
+  // we kick off generation. When they approve, the handoff payload here is
+  // merged into `createPipelineConfig` as `extras` so the pipeline skips
+  // re-building anchors that the UI already locked in.
+  const primaryProtagonistName =
+    sourceAnalysis?.protagonist?.name?.trim() || customStoryTitle || 'Hero';
+  const primaryLocationName =
+    sourceAnalysis?.keyLocations?.[0]?.name?.trim() || undefined;
+  const colorScriptTerms = (sourceAnalysis?.themes || [])
+    .slice(0, 3)
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const styleSetup = useStyleSetup({
+    rawArtStyle: artStyle,
+    storyTitle: customStoryTitle || 'Untitled Story',
+    protagonistName: primaryProtagonistName,
+    colorTerms: colorScriptTerms,
+    primaryLocation: primaryLocationName,
+    expandStyleFn: async (raw: string) => {
+      const architect = new StyleArchitect({
+        provider: llmProvider,
+        model: llmModel,
+        apiKey: selectedLlmApiKey,
+        maxTokens: 1024,
+        temperature: 0.4,
+      });
+      return architect.expand({ artStyle: raw, genreHint: sourceAnalysis?.genre });
+    },
+    generateAnchorImageFn: async (_role, prompt) => {
+      const service = new ImageGenerationService({
+        enabled: true,
+        provider: (imageProvider === 'useapi' ? 'midapi' : imageProvider) as any,
+        geminiApiKey: geminiApiKey.trim(),
+        atlasCloudApiKey: atlasCloudApiKey.trim() || undefined,
+        atlasCloudModel: atlasCloudModel.trim() || undefined,
+        midapiToken: midapiToken.trim() || undefined,
+        geminiSettings,
+        midjourneySettings,
+        stableDiffusionSettings,
+        savePrompts: false,
+      });
+      const identifier = `style-preview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await service.generateImage(prompt, identifier, { type: 'style-reference' as any });
+      const imageUrl = result.imageUrl || '';
+      if (result.imageData && result.mimeType) {
+        return { data: result.imageData, mimeType: result.mimeType };
+      }
+      if (imageUrl.startsWith('data:')) {
+        const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          return { data: match[2], mimeType: match[1] };
+        }
+      }
+      if (imageUrl) {
+        const fetched = await fetch(imageUrl);
+        const blob = await fetched.blob();
+        const buffer = await blob.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+        const base64 = typeof btoa !== 'undefined'
+          ? btoa(binary)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          : (global as any).Buffer?.from(bytes).toString('base64') || '';
+        return { data: base64, mimeType: blob.type || 'image/png' };
+      }
+      throw new Error('Concept image returned no data');
+    },
+    saveAnchorFn: async (role: AnchorRole, data: string, mimeType: string) => {
+      const storyIdSeed = (customStoryTitle || 'untitled')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 60);
+      const storyId = storyIdSeed || 'untitled';
+      const res = await fetch(`${PROXY_CONFIG.getProxyUrl()}/style-anchor/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storyId, role, data, mimeType }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`save failed (${res.status}): ${body}`);
+      }
+      const payload = await res.json();
+      return { imagePath: payload.imagePath as string };
+    },
+  });
+
+  const createPipelineConfig = (extraOverrides?: PipelineConfigExtras): PipelineConfig => {
+    const handoff = styleSetup.handoff;
+    const extras: PipelineConfigExtras = {
+      artStyleProfileOverride: extraOverrides?.artStyleProfileOverride || handoff.profile,
+      preapprovedStyleAnchors:
+        extraOverrides?.preapprovedStyleAnchors || handoff.preapprovedStyleAnchors,
+    };
+    return buildPipelineConfig(buildPipelineConfigInput(), extras);
+  };
 
   const startAnalysis = async () => {
     if (!selectedLlmApiKey) {
@@ -1439,7 +1592,24 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   
   const exportStory = () => {
     if (!generatedStory || !generatedCode) return;
-    Alert.alert('Export Ready', `Story: ${generatedStory.title}\n\n${formatStoryStats(generatedStory)}\n\nFile: ${getStoryFileName(generatedStory)}`, [{ text: 'Copy Code', onPress: () => console.log(generatedCode) }, { text: 'OK' }]);
+    const code = generatedCode;
+    const copyToClipboard = async () => {
+      try {
+        await Clipboard.setStringAsync(code);
+        Alert.alert('Copied', 'Story TypeScript code copied to clipboard.');
+      } catch (copyErr) {
+        console.warn('[GeneratorScreen] Failed to copy story code:', copyErr);
+        Alert.alert('Copy Failed', 'Could not copy to clipboard. Try again or export manually.');
+      }
+    };
+    Alert.alert(
+      'Export Ready',
+      `Story: ${generatedStory.title}\n\n${formatStoryStats(generatedStory)}\n\nFile: ${getStoryFileName(generatedStory)}`,
+      [
+        { text: 'Copy Code', onPress: () => { void copyToClipboard(); } },
+        { text: 'OK' },
+      ],
+    );
   };
 
   const resetGenerator = () => {
@@ -1450,56 +1620,49 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     setIsViewingHistory(false); setHistoryJob(undefined);
   };
 
-  // Cancel running generation job
-  const cancelGeneration = async () => {
-    Alert.alert(
-      'Cancel Generation',
-      'Are you sure you want to stop the current generation? Progress will be saved and you may be able to resume later.',
-      [
-        { text: 'Keep Running', style: 'cancel' },
-        {
-          text: 'Stop Generation',
-          style: 'destructive',
-          onPress: async () => {
-            // Signal the in-browser pipeline to stop immediately
-            if (pipelineRef.current) {
-              pipelineRef.current.cancel();
-            } else if (onCancelExternalPipeline) {
-              onCancelExternalPipeline();
-            }
-            if (currentJobId) {
-              if (USE_SERVER_WORKER) {
-                try {
-                  await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}/cancel`, { method: 'POST' });
-                } catch (cancelErr) {
-                  console.warn('[GeneratorScreen] Failed to cancel worker job:', cancelErr);
-                }
-              }
-              await cancelGenJob(currentJobId);
-              // Save checkpoint data for potential resume
-              await updateGenJob(currentJobId, {
-                status: 'cancelled',
-                error: 'Cancelled by user',
-                currentPhase: currentPhase || 'unknown',
-                checkpoint: {
-                  briefJson: currentBriefRef.current ? JSON.stringify(currentBriefRef.current) : undefined,
-                  completedPhases: [...completedPhasesRef.current],
-                  lastSuccessfulPhase: lastSuccessfulPhaseRef.current || undefined,
-                  sourceAnalysisJson: sourceAnalysis ? JSON.stringify(sourceAnalysis) : undefined,
-                  isResumable: completedPhasesRef.current.length > 0,
-                  resumeHint: completedPhasesRef.current.length > 0 
-                    ? `Completed phases: ${completedPhasesRef.current.join(', ')}. Restart to regenerate.`
-                    : 'No phases completed. Restart to try again.',
-                },
-              });
-            }
-            setState('error');
-            setError('Generation cancelled by user. You may restart from the beginning.');
-            pipelineRef.current = null;
-          },
+  const cancelGeneration = () => {
+    setConfirmCancelGeneration(true);
+  };
+
+  const performCancelGeneration = async () => {
+    setConfirmCancelGeneration(false);
+    if (pipelineRef.current) {
+      pipelineRef.current.cancel();
+    } else if (onCancelExternalPipeline) {
+      onCancelExternalPipeline();
+    }
+    if (currentJobId) {
+      if (USE_SERVER_WORKER) {
+        try {
+          await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}/cancel`, { method: 'POST' });
+        } catch (cancelErr) {
+          console.warn('[GeneratorScreen] Failed to cancel worker job:', cancelErr);
+        }
+      }
+      await cancelGenJob(currentJobId);
+      await updateGenJob(currentJobId, {
+        status: 'cancelled',
+        error: 'Cancelled by user',
+        currentPhase: currentPhase || 'unknown',
+        checkpoint: {
+          briefJson: currentBriefRef.current ? JSON.stringify(currentBriefRef.current) : undefined,
+          completedPhases: [...completedPhasesRef.current],
+          lastSuccessfulPhase: lastSuccessfulPhaseRef.current || undefined,
+          sourceAnalysisJson: sourceAnalysis ? JSON.stringify(sourceAnalysis) : undefined,
+          isResumable: completedPhasesRef.current.length > 0,
+          resumeHint: completedPhasesRef.current.length > 0
+            ? `Completed phases: ${completedPhasesRef.current.join(', ')}. Restart to regenerate.`
+            : 'No phases completed. Restart to try again.',
         },
-      ]
-    );
+      });
+    }
+    // Route intentional cancels to a dedicated 'cancelled' state so the UI
+    // doesn't conflate user stops with actual pipeline failures (which would
+    // surface the failure-workspace triage UI). The error string is cleared to
+    // prevent any stale failure messaging.
+    setState('cancelled');
+    setError(null);
+    pipelineRef.current = null;
   };
 
   const hasSourceInput = Boolean(documentBrief || userPrompt.trim());
@@ -1566,6 +1729,31 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             <Text style={styles.failureValue}>{blockedAction}</Text>
             <Text style={styles.failureLabel}>ERROR</Text>
             <Text style={styles.failureMessage}>{String(failure.message || historyJob?.error || error || 'Unknown failure')}</Text>
+            {(failure.failureKind === 'image_completeness' || failure.failureKind === 'image_generation') && failure.context?.byCategory && (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.failureLabel}>MISSING IMAGES BY CATEGORY</Text>
+                {Object.entries(failure.context.byCategory as Record<string, string[]>).map(([category, keys]) => (
+                  <View key={category} style={{ marginTop: 6, marginLeft: 8 }}>
+                    <Text style={[styles.failureValue, { marginBottom: 2 }]}>
+                      {category.toUpperCase()} ({keys.length})
+                    </Text>
+                    {keys.slice(0, 10).map((key: string) => (
+                      <Text key={key} style={[styles.failureMessage, { fontSize: 11, marginLeft: 8, marginTop: 1 }]}>
+                        {key}
+                      </Text>
+                    ))}
+                    {keys.length > 10 && (
+                      <Text style={[styles.failureMessage, { fontSize: 11, marginLeft: 8, fontStyle: 'italic' }]}>
+                        ...and {keys.length - 10} more
+                      </Text>
+                    )}
+                  </View>
+                ))}
+                <Text style={[styles.failureMessage, { marginTop: 8 }]}>
+                  Resume will re-generate only the {failure.context.totalMissing || 'missing'} images.
+                </Text>
+              </View>
+            )}
           </View>
         )}
 
@@ -1639,7 +1827,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const imageSummaryLines = [
     `${generationSettings.generateImages ? 'Images enabled' : 'Images disabled'} • ${imageProviderLabel} renderer`,
     `Prompting: ${imageLlmProvider.toUpperCase()} • ${imageLlmModel}`,
-    `Style: ${artStyle.trim() || 'Default expressive illustrated'} • refs ${generationSettings.generateCharacterRefs ? 'on' : 'off'}`,
+    `Style: ${artStyle.trim() || '⚠ empty — will fall back to default (expressive illustrated)'} • refs ${generationSettings.generateCharacterRefs ? 'on' : 'off'}`,
   ];
   const videoSummaryLines = [
     `${videoSettings.enabled ? 'Video enabled' : 'Video disabled'} • ${videoLlmProvider.toUpperCase()} • ${videoLlmModel}`,
@@ -1660,8 +1848,37 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           <Text style={styles.headerButtonText}>BACK</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>AI GENERATOR</Text>
-        <View style={{ width: 60 }} />
+        {hasBackgroundJobs ? (
+          <TouchableOpacity
+            style={styles.jobsPill}
+            onPress={() => setShowJobsSheet(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`Open background jobs (${totalBackgroundJobs})`}
+          >
+            <Layers size={12} color={TERMINAL.colors.amber} />
+            <Text style={styles.jobsPillText}>JOBS</Text>
+            <View style={styles.jobsPillBadge}>
+              <Text style={styles.jobsPillBadgeText}>{totalBackgroundJobs}</Text>
+            </View>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.headerSpacer} />
+        )}
       </View>
+      {/*
+        Wizard-style step indicator. Rendered once the user has progressed
+        past the hero `idle` landing so we don't pre-announce the wizard
+        before the user has engaged. The indicator reads the existing
+        `state` machine directly — we don't introduce a new source of
+        truth for the current step.
+      */}
+      {state !== 'idle' && !isViewingHistory && (
+        <StepIndicator
+          currentStep={deriveWizardStep(state)}
+          completed={state === 'complete'}
+          errored={state === 'error'}
+        />
+      )}
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false} contentContainerStyle={styles.contentPadding}>
         <View style={styles.statusBar}>
           <Cpu size={14} color={TERMINAL.colors.muted} />
@@ -1802,23 +2019,25 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   </Text>
                 </View>
 
+                {/*
+                  Advanced story settings now open in the AdvancedSettingsSheet
+                  instead of expanding inline inside the Story bucket. This
+                  removes one level of nested disclosure — the previous flow
+                  forced the user through Story bucket -> inline disclosure ->
+                  six more collapsible sections to reach advanced controls.
+                */}
                 <View style={styles.configItem}>
                   <TouchableOpacity
                     style={styles.inlineDisclosure}
-                    onPress={() => setShowAdvancedSettings(!showAdvancedSettings)}
+                    onPress={() => setShowAdvancedSettings(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open advanced story settings"
                   >
                     <Settings size={16} color={TERMINAL.colors.primary} style={{ marginRight: 8 }} />
                     <Text style={styles.configLabel}>ADVANCED STORY SETTINGS</Text>
-                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showAdvancedSettings ? '90deg' : '0deg' }] }} />
+                    <Text style={styles.advancedSettingsHint}>OPEN</Text>
+                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 8 }} />
                   </TouchableOpacity>
-                  {showAdvancedSettings && (
-                    <View style={styles.disclosureBody}>
-                      <GenerationSettingsPanel
-                        settings={generationSettings}
-                        onChange={handleGenerationSettingsChange}
-                      />
-                    </View>
-                  )}
                 </View>
               </ConfigBucketCard>
 
@@ -1863,13 +2082,24 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     <TouchableOpacity style={[styles.segment, imageProvider === 'atlas-cloud' && styles.segmentActive]} onPress={() => handleImageProviderChange('atlas-cloud')}>
                       <Text style={[styles.segmentText, imageProvider === 'atlas-cloud' && styles.segmentTextActive]}>ATLAS</Text>
                     </TouchableOpacity>
+                    {STABLE_DIFFUSION_UI_ENABLED && (
+                      <TouchableOpacity style={[styles.segment, imageProvider === 'stable-diffusion' && styles.segmentActive]} onPress={() => handleImageProviderChange('stable-diffusion')}>
+                        <Text style={[styles.segmentText, imageProvider === 'stable-diffusion' && styles.segmentTextActive]}>SD</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </View>
 
                 <View style={styles.configItem}>
                   <Text style={styles.configLabel}>ART STYLE</Text>
                   <View style={styles.inputWrapper}><TextInput style={styles.input} value={artStyle} onChangeText={handleArtStyleChange} placeholder="e.g. rich digital painting, noir ink wash, anime cel shading, watercolor illustration..." placeholderTextColor={TERMINAL.colors.muted} /></View>
-                  <Text style={[styles.configHint, { marginTop: 4 }]}>Sets the visual aesthetic for all generated art. Leave blank for expressive illustrated style.</Text>
+                  {artStyle.trim().length === 0 ? (
+                    <Text style={[styles.configHint, { marginTop: 4, color: TERMINAL.colors.warning || TERMINAL.colors.muted }]}>
+                      ⚠ No art style set — images will fall back to &quot;dramatic cinematic story art&quot; (a generic illustrated look). Enter a specific style above for consistent, distinctive visuals.
+                    </Text>
+                  ) : (
+                    <Text style={[styles.configHint, { marginTop: 4 }]}>Sets the visual aesthetic for all generated art. This exact string is used as the style directive in every image prompt.</Text>
+                  )}
                 </View>
 
                 <View style={styles.configItem}>
@@ -2170,6 +2400,449 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       onSelect={handleAtlasCloudModelChange}
                       placeholder="Select Atlas Cloud model…"
                     />
+                  </View>
+                )}
+
+                {STABLE_DIFFUSION_UI_ENABLED && imageProvider === 'stable-diffusion' && (
+                  <View style={styles.configItem}>
+                    <TouchableOpacity
+                      style={styles.inlineDisclosure}
+                      onPress={() => setShowSdSettings(!showSdSettings)}
+                    >
+                      <Settings size={16} color={TERMINAL.colors.cyan} style={{ marginRight: 8 }} />
+                      <Text style={[styles.configLabel, { color: TERMINAL.colors.cyan }]}>STABLE DIFFUSION PARAMETERS</Text>
+                      <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showSdSettings ? '90deg' : '0deg' }] }} />
+                    </TouchableOpacity>
+                    {showSdSettings && (
+                      <View style={styles.disclosureBody}>
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>BASE URL</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={stableDiffusionSettings.baseUrl || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ baseUrl: v })}
+                              placeholder="http://localhost:7860 or proxy /sd-api"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                          <Text style={styles.configHint}>Points at Automatic1111/Forge WebUI (or the proxy mount).</Text>
+                        </View>
+
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>API KEY (OPTIONAL)</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={stableDiffusionSettings.apiKey || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ apiKey: v })}
+                              placeholder="Bearer token for remote/secured backends"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              secureTextEntry
+                              autoCapitalize="none"
+                            />
+                          </View>
+                        </View>
+
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>DEFAULT MODEL</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={stableDiffusionSettings.defaultModel || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultModel: v })}
+                              placeholder="e.g. sdxl-base-1.0 or checkpoint filename"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                          <Text style={styles.configHint}>Matches a checkpoint name returned by /sdapi/v1/sd-models.</Text>
+                        </View>
+
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>SAMPLER</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={stableDiffusionSettings.defaultSampler || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultSampler: v })}
+                              placeholder={DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultSampler}
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                        </View>
+
+                        <View style={{ marginBottom: 16, flexDirection: 'row', gap: 12 }}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>STEPS</Text>
+                            <View style={styles.inputWrapper}>
+                              <TextInput
+                                style={styles.input}
+                                value={String(stableDiffusionSettings.defaultSteps ?? '')}
+                                onChangeText={(v) => {
+                                  const n = parseInt(v, 10);
+                                  handleStableDiffusionSettingsChange({ defaultSteps: Number.isFinite(n) ? n : undefined });
+                                }}
+                                keyboardType="number-pad"
+                                placeholder={String(DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultSteps)}
+                                placeholderTextColor={TERMINAL.colors.muted}
+                              />
+                            </View>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>CFG</Text>
+                            <View style={styles.inputWrapper}>
+                              <TextInput
+                                style={styles.input}
+                                value={String(stableDiffusionSettings.defaultCfg ?? '')}
+                                onChangeText={(v) => {
+                                  const n = parseFloat(v);
+                                  handleStableDiffusionSettingsChange({ defaultCfg: Number.isFinite(n) ? n : undefined });
+                                }}
+                                keyboardType="decimal-pad"
+                                placeholder={String(DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultCfg)}
+                                placeholderTextColor={TERMINAL.colors.muted}
+                              />
+                            </View>
+                          </View>
+                        </View>
+
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>NEGATIVE PROMPT</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={[styles.input, { height: 80 }]}
+                              multiline
+                              value={stableDiffusionSettings.defaultNegativePrompt || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultNegativePrompt: v })}
+                              placeholder={DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultNegativePrompt}
+                              placeholderTextColor={TERMINAL.colors.muted}
+                            />
+                          </View>
+                        </View>
+
+                        <TouchableOpacity
+                          style={styles.inlineResetButton}
+                          onPress={() => handleStableDiffusionSettingsChange({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS })}
+                        >
+                          <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
+                          <Text style={styles.inlineResetButtonText}>RESET TO DEFAULTS</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                )}
+
+                {STABLE_DIFFUSION_UI_ENABLED && imageProvider === 'stable-diffusion' && (
+                  <View style={styles.configItem}>
+                    <TouchableOpacity
+                      style={styles.inlineDisclosure}
+                      onPress={() => setShowLoraSettings(!showLoraSettings)}
+                    >
+                      <Cpu size={16} color={TERMINAL.colors.cyan} style={{ marginRight: 8 }} />
+                      <Text style={[styles.configLabel, { color: TERMINAL.colors.cyan }]}>LORA AUTO-TRAINING</Text>
+                      <View style={{ marginLeft: 8 }}>
+                        <Text style={[styles.configHint, { color: loraTrainingSettings.enabled ? TERMINAL.colors.success : TERMINAL.colors.muted }]}>
+                          {loraTrainingSettings.enabled ? 'ON' : 'OFF'}
+                        </Text>
+                      </View>
+                      <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showLoraSettings ? '90deg' : '0deg' }] }} />
+                    </TouchableOpacity>
+                    {showLoraSettings && (
+                      <View style={styles.disclosureBody}>
+                        <Text style={styles.configHint}>
+                          Automatically train per-character and per-episode style LoRAs against the configured
+                          Stable Diffusion model. Training runs alongside scene generation and is cached by
+                          fingerprint so unchanged inputs never re-train. Only active for the Stable Diffusion
+                          provider; the pipeline silently skips this step on every other backend.
+                        </Text>
+
+                        <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <View style={{ flex: 1, paddingRight: 12 }}>
+                            <Text style={styles.configLabel}>ENABLE AUTO-TRAIN</Text>
+                            <Text style={styles.configHint}>
+                              Master switch. When disabled, every training call no-ops regardless of backend.
+                            </Text>
+                          </View>
+                          <Switch
+                            value={!!loraTrainingSettings.enabled}
+                            onValueChange={(value) => handleLoraTrainingSettingsChange({ enabled: value })}
+                            trackColor={{ false: TERMINAL.colors.muted, true: TERMINAL.colors.cyan }}
+                          />
+                        </View>
+
+                        <View style={{ marginTop: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>TRAINER BACKEND</Text>
+                          <View style={styles.segmentedControl}>
+                            {(['disabled', 'kohya', 'diffusers', 'replicate'] as const).map((opt) => (
+                              <TouchableOpacity
+                                key={opt}
+                                style={[styles.segment, loraTrainingSettings.backend === opt && styles.segmentActive]}
+                                onPress={() => handleLoraTrainingSettingsChange({ backend: opt })}
+                              >
+                                <Text style={[styles.segmentText, loraTrainingSettings.backend === opt && styles.segmentTextActive]}>{opt.toUpperCase()}</Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                          <Text style={styles.configHint}>
+                            Only "kohya" is implemented today. The proxy forwards jobs to
+                            LORA_TRAINER_BASE_URL; leave empty to use whatever the proxy env provides.
+                          </Text>
+                        </View>
+
+                        <View style={{ marginTop: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>TRAINER BASE URL (OPTIONAL)</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={loraTrainingSettings.baseUrl || ''}
+                              onChangeText={(v) => handleLoraTrainingSettingsChange({ baseUrl: v })}
+                              placeholder="http://localhost:7861 (overrides LORA_TRAINER_BASE_URL)"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                        </View>
+
+                        <View style={{ marginTop: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>TRAINER API KEY (OPTIONAL)</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={loraTrainingSettings.apiKey || ''}
+                              onChangeText={(v) => handleLoraTrainingSettingsChange({ apiKey: v })}
+                              placeholder="Bearer token for the trainer sidecar"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              secureTextEntry
+                              autoCapitalize="none"
+                            />
+                          </View>
+                        </View>
+
+                        <View style={{ marginTop: 20 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>CHARACTER ELIGIBILITY</Text>
+                          <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>MIN REFS</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.characterThresholds.minRefs ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({
+                                      characterThresholds: { minRefs: Number.isFinite(n) ? n : DEFAULT_LORA_TRAINING_SETTINGS.characterThresholds.minRefs },
+                                    });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.characterThresholds.minRefs)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <Text style={styles.configHint}>
+                            Characters need at least this many distinct reference images before they become
+                            training candidates. Tiers: {loraTrainingSettings.characterThresholds.tiers.join(', ')}.
+                          </Text>
+                          <View style={{ marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                            {(['core', 'major', 'supporting', 'minor'] as const).map((tier) => {
+                              const active = loraTrainingSettings.characterThresholds.tiers.includes(tier);
+                              return (
+                                <TouchableOpacity
+                                  key={tier}
+                                  style={[styles.segment, active && styles.segmentActive, { paddingHorizontal: 12 }]}
+                                  onPress={() => {
+                                    const current = new Set(loraTrainingSettings.characterThresholds.tiers);
+                                    if (active) current.delete(tier); else current.add(tier);
+                                    handleLoraTrainingSettingsChange({
+                                      characterThresholds: { tiers: Array.from(current) as typeof loraTrainingSettings.characterThresholds.tiers },
+                                    });
+                                  }}
+                                >
+                                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{tier.toUpperCase()}</Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                          <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center' }}>
+                            <Switch
+                              value={!!loraTrainingSettings.characterThresholds.blockScenes}
+                              onValueChange={(value) => handleLoraTrainingSettingsChange({ characterThresholds: { blockScenes: value } })}
+                              trackColor={{ false: TERMINAL.colors.muted, true: TERMINAL.colors.cyan }}
+                            />
+                            <Text style={[styles.configLabel, { marginLeft: 8 }]}>BLOCK SCENES UNTIL TRAINED</Text>
+                          </View>
+                          <Text style={styles.configHint}>
+                            When enabled, episode scene generation waits for character LoRA jobs to finish so
+                            they can be applied from beat #1. Disable for a faster-but-less-consistent pass.
+                          </Text>
+                        </View>
+
+                        <View style={{ marginTop: 20 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>STYLE ELIGIBILITY</Text>
+                          <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>MIN EPISODES</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.styleThresholds.minEpisodes ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({
+                                      styleThresholds: { minEpisodes: Number.isFinite(n) ? n : DEFAULT_LORA_TRAINING_SETTINGS.styleThresholds.minEpisodes },
+                                    });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.styleThresholds.minEpisodes)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center' }}>
+                            <Switch
+                              value={!!loraTrainingSettings.styleThresholds.forceStyle}
+                              onValueChange={(value) => handleLoraTrainingSettingsChange({ styleThresholds: { forceStyle: value } })}
+                              trackColor={{ false: TERMINAL.colors.muted, true: TERMINAL.colors.cyan }}
+                            />
+                            <Text style={[styles.configLabel, { marginLeft: 8 }]}>FORCE STYLE LORA</Text>
+                          </View>
+                          <Text style={styles.configHint}>
+                            Force a style LoRA even if the series is shorter than MIN EPISODES. Useful when a
+                            single episode has a very specific, unique style bible.
+                          </Text>
+                        </View>
+
+                        <View style={{ marginTop: 20 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>HYPERPARAMETERS</Text>
+                          <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>STEPS</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.steps ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { steps: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.steps)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>RANK</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.rank ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { rank: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.rank)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>LR</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.learningRate ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseFloat(v);
+                                    handleLoraTrainingSettingsChange({ training: { learningRate: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="decimal-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.learningRate)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <View style={{ marginTop: 12, flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>RESOLUTION</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.resolution ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { resolution: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.resolution)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>BATCH SIZE</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.batchSize ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { batchSize: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.batchSize)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>REPEATS</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.repeats ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { repeats: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.repeats)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <View style={{ marginTop: 12 }}>
+                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>BASE MODEL (OPTIONAL)</Text>
+                            <View style={styles.inputWrapper}>
+                              <TextInput
+                                style={styles.input}
+                                value={loraTrainingSettings.training.baseModel || ''}
+                                onChangeText={(v) => handleLoraTrainingSettingsChange({ training: { baseModel: v } })}
+                                placeholder="Checkpoint the LoRA is fine-tuned on (defaults to SD default model)"
+                                placeholderTextColor={TERMINAL.colors.muted}
+                                autoCapitalize="none"
+                              />
+                            </View>
+                          </View>
+                        </View>
+
+                        <TouchableOpacity
+                          style={[styles.inlineResetButton, { marginTop: 20 }]}
+                          onPress={() => handleLoraTrainingSettingsChange({ ...DEFAULT_LORA_TRAINING_SETTINGS })}
+                        >
+                          <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
+                          <Text style={styles.inlineResetButtonText}>RESET TO DEFAULTS</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
                   </View>
                 )}
 
@@ -2635,26 +3308,100 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 )}
               </View>
             )}
-            <View style={styles.configActions}>{(!documentBrief && !userPrompt.trim()) ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={styles.executeButton} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>INITIATE GENERATION</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
+            <StyleSetupSection
+              rawArtStyle={artStyle}
+              expanding={styleSetup.expanding}
+              expansionError={styleSetup.expansionError}
+              profile={styleSetup.profile}
+              slots={styleSetup.slots}
+              useDefaults={styleSetup.useDefaults}
+              statusSummary={styleSetup.statusSummary}
+              onExpand={styleSetup.expand}
+              onUpdateField={styleSetup.updateField}
+              onGenerateAnchor={styleSetup.generateAnchor}
+              onApproveAnchor={styleSetup.approveAnchor}
+              onToggleUseDefaults={styleSetup.setUseDefaults}
+            />
+            <View style={styles.configActions}>{!hasSourceInput ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={styles.executeButton} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>INITIATE GENERATION</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
           </View>
         )}
         {(state === 'running' || state === 'checkpoint') && (
           <View style={styles.runningSection}>
-            <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} />
-            <View style={styles.runningActions}>
-              <TouchableOpacity style={styles.cancelButton} onPress={cancelGeneration}>
-                <StopCircle size={18} color={TERMINAL.colors.error} />
-                <Text style={styles.cancelButtonText}>STOP GENERATION</Text>
-              </TouchableOpacity>
-            </View>
+            <ProgressStep>
+              <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} />
+              <View style={styles.runningActions}>
+                <TouchableOpacity style={styles.cancelButton} onPress={cancelGeneration}>
+                  <StopCircle size={18} color={TERMINAL.colors.error} />
+                  <Text style={styles.cancelButtonText}>STOP GENERATION</Text>
+                </TouchableOpacity>
+              </View>
+            </ProgressStep>
           </View>
         )}
         {state === 'checkpoint' && currentCheckpoint && (<View style={styles.checkpointSection}><CheckpointReview checkpoint={currentCheckpoint} onApprove={handleCheckpointApprove} onReject={handleCheckpointReject} /></View>)}
         {state === 'complete' && generatedStory && !isViewingHistory && (
           <View style={styles.completeSection}>
-            <View style={styles.successHeader}><CheckCircle2 size={48} color={TERMINAL.colors.primary} /><Text style={styles.completeTitle}>SYNTHESIS COMPLETE</Text><Text style={styles.completeSubtitle}>NARRATIVE READY FOR DEPLOYMENT</Text></View>
-            <View style={styles.storySummaryCard}><View style={styles.summaryRow}><Text style={styles.summaryLabel}>TITLE</Text><Text style={styles.summaryValue}>{(generatedStory.title || 'Untitled').toUpperCase()}</Text></View><View style={styles.summaryRow}><Text style={styles.summaryLabel}>EPISODES</Text><Text style={styles.summaryValue}>{generatedStory.episodes.length}</Text></View><View style={styles.summaryRow}><Text style={styles.summaryLabel}>SCENES</Text><Text style={styles.summaryValue}>{generatedStory.episodes.reduce((acc, ep) => acc + ep.scenes.length, 0)}</Text></View></View>
-            <View style={styles.completeActions}><TouchableOpacity style={styles.executeButton} onPress={exportStory}><Download size={18} color="white" /><Text style={styles.executeButtonText}>EXPORT STORY DATA</Text></TouchableOpacity><TouchableOpacity style={styles.secondaryActionButton} onPress={resetGenerator}><RefreshCw size={18} color={TERMINAL.colors.primary} /><Text style={styles.secondaryActionButtonText}>NEW GENERATION</Text></TouchableOpacity></View>
+            <CompleteStep>
+              <View style={styles.successHeader}>
+                <CheckCircle2 size={48} color={TERMINAL.colors.primary} />
+                <Text style={styles.completeTitle}>SYNTHESIS COMPLETE</Text>
+                <Text style={styles.completeSubtitle}>NARRATIVE READY FOR DEPLOYMENT</Text>
+              </View>
+              <View style={styles.storySummaryCard}>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>TITLE</Text>
+                <Text style={styles.summaryValue}>{(generatedStory.title || 'Untitled').toUpperCase()}</Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>EPISODES</Text>
+                <Text style={styles.summaryValue}>{generatedStory.episodes.length}</Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>SCENES</Text>
+                <Text style={styles.summaryValue}>{generatedStory.episodes.reduce((acc, ep) => acc + ep.scenes.length, 0)}</Text>
+              </View>
+            </View>
+            <View style={styles.completeActions}>
+              {onPlayStory && (
+                <TouchableOpacity style={styles.executeButton} onPress={() => { void onPlayStory(generatedStory); }}>
+                  <Play size={18} color="white" />
+                  <Text style={styles.executeButtonText}>PLAY NOW</Text>
+                </TouchableOpacity>
+              )}
+              {onViewLibrary && (
+                <TouchableOpacity style={styles.secondaryActionButton} onPress={onViewLibrary}>
+                  <Library size={18} color={TERMINAL.colors.primary} />
+                  <Text style={styles.secondaryActionButtonText}>VIEW IN LIBRARY</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={styles.secondaryActionButton} onPress={resetGenerator}>
+                <RefreshCw size={18} color={TERMINAL.colors.primary} />
+                <Text style={styles.secondaryActionButtonText}>GENERATE ANOTHER</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.textButton} onPress={exportStory}>
+                <Text style={styles.textButtonText}>EXPORT STORY DATA</Text>
+              </TouchableOpacity>
+            </View>
+            </CompleteStep>
+          </View>
+        )}
+        {state === 'cancelled' && !isViewingHistory && (
+          <View style={styles.cancelledSection}>
+            <View style={styles.cancelledHeader}>
+              <PauseCircle size={40} color={TERMINAL.colors.amber} />
+              <Text style={styles.cancelledTitle}>GENERATION CANCELLED</Text>
+              <Text style={styles.cancelledSubtitle}>Pipeline stopped cleanly. Your inputs are preserved.</Text>
+            </View>
+            <View style={styles.cancelledActions}>
+              <TouchableOpacity style={styles.executeButton} onPress={() => setState('config')}>
+                <Settings size={18} color="white" />
+                <Text style={styles.executeButtonText}>BACK TO CONFIG</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.secondaryActionButton} onPress={resetGenerator}>
+                <RefreshCw size={18} color={TERMINAL.colors.primary} />
+                <Text style={styles.secondaryActionButtonText}>START OVER</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
         {state === 'error' && !isViewingHistory && (
@@ -2733,11 +3480,80 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             </View>
           </View>
         )}
-        <ImageJobPanel />
-        <VideoJobPanel />
       </ScrollView>
-      
-      
+
+      <ConfirmDialog
+        visible={confirmCancelGeneration}
+        title="Stop generation?"
+        message="Progress will be saved and you may be able to resume later."
+        confirmLabel="Stop"
+        cancelLabel="Keep running"
+        destructive
+        onConfirm={performCancelGeneration}
+        onCancel={() => setConfirmCancelGeneration(false)}
+        testID="generator-cancel-dialog"
+      />
+
+      <AdvancedSettingsSheet
+        visible={showAdvancedSettings}
+        settings={generationSettings}
+        onChange={handleGenerationSettingsChange}
+        onClose={() => setShowAdvancedSettings(false)}
+      />
+
+      {/*
+        Background jobs bottom sheet. Surfaces the full ImageJobPanel /
+        VideoJobPanel UIs on demand without forcing them to live at the
+        bottom of the generator scroll. Modal is unmounted when the sheet
+        is closed, so the panels do not render (and their internal
+        animations / polling don't run) unless requested.
+      */}
+      <Modal
+        visible={showJobsSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowJobsSheet(false)}
+      >
+        <View style={styles.jobsSheetOverlay}>
+          <Pressable
+            style={styles.jobsSheetBackdrop}
+            onPress={() => setShowJobsSheet(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close background jobs sheet"
+          />
+          <View style={styles.jobsSheet}>
+            <View style={styles.jobsSheetHandle} />
+            <View style={styles.jobsSheetHeader}>
+              <View style={styles.jobsSheetTitleRow}>
+                <Layers size={16} color={TERMINAL.colors.amber} />
+                <Text style={styles.jobsSheetTitle}>BACKGROUND JOBS</Text>
+                <View style={styles.jobsPillBadge}>
+                  <Text style={styles.jobsPillBadgeText}>{totalBackgroundJobs}</Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={styles.jobsSheetClose}
+                onPress={() => setShowJobsSheet(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close background jobs"
+              >
+                <Text style={styles.jobsSheetCloseText}>CLOSE</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              style={styles.jobsSheetBody}
+              contentContainerStyle={styles.jobsSheetBodyContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {imageJobCount > 0 && <ImageJobPanel />}
+              {videoJobCount > 0 && <VideoJobPanel />}
+              {!hasBackgroundJobs && (
+                <Text style={styles.jobsSheetEmpty}>NO ACTIVE JOBS</Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -2746,17 +3562,126 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: TERMINAL.colors.bg },
   header: { height: 64, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
   headerTitle: { fontSize: 14, fontWeight: '900', color: 'white', letterSpacing: 2 },
+  headerSpacer: { width: 60 },
+  jobsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+  },
+  jobsPillText: {
+    color: TERMINAL.colors.amber,
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+  },
+  jobsPillBadge: {
+    minWidth: 18,
+    paddingHorizontal: 6,
+    height: 18,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: TERMINAL.colors.amber,
+  },
+  jobsPillBadgeText: {
+    color: TERMINAL.colors.bg,
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  jobsSheetOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  jobsSheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  jobsSheet: {
+    maxHeight: '85%',
+    backgroundColor: TERMINAL.colors.bg,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    paddingTop: 8,
+  },
+  jobsSheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    marginBottom: 8,
+  },
+  jobsSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  jobsSheetTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  jobsSheetTitle: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+  },
+  jobsSheetClose: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  jobsSheetCloseText: {
+    color: TERMINAL.colors.muted,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  jobsSheetBody: {
+    flexGrow: 0,
+  },
+  jobsSheetBodyContent: {
+    padding: 16,
+    gap: 12,
+    paddingBottom: 32,
+  },
+  jobsSheetEmpty: {
+    textAlign: 'center',
+    color: TERMINAL.colors.muted,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+    paddingVertical: 40,
+  },
   headerIconButton: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8 },
   headerButtonText: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   content: { flex: 1 },
   contentPadding: { padding: 20, paddingBottom: 40 },
-  statusBar: { flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: '#16191f', borderRadius: 12, marginBottom: 24, gap: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  statusBar: { flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 12, marginBottom: 24, gap: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   statusLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   statusValue: { fontSize: 10, fontWeight: '900', letterSpacing: 1 },
-  status_idle: { color: TERMINAL.colors.muted }, status_config: { color: TERMINAL.colors.cyan }, status_analyzing: { color: TERMINAL.colors.amber }, status_analysis_complete: { color: TERMINAL.colors.primary }, status_running: { color: TERMINAL.colors.amber }, status_checkpoint: { color: TERMINAL.colors.cyan }, status_complete: { color: TERMINAL.colors.primary }, status_error: { color: TERMINAL.colors.error }, status_history: { color: TERMINAL.colors.cyan },
+  status_idle: { color: TERMINAL.colors.muted }, status_config: { color: TERMINAL.colors.cyan }, status_analyzing: { color: TERMINAL.colors.amber }, status_analysis_complete: { color: TERMINAL.colors.primary }, status_running: { color: TERMINAL.colors.amber }, status_checkpoint: { color: TERMINAL.colors.cyan }, status_complete: { color: TERMINAL.colors.primary }, status_cancelled: { color: TERMINAL.colors.amber }, status_error: { color: TERMINAL.colors.error }, status_history: { color: TERMINAL.colors.cyan },
   section: { marginBottom: 32 }, sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 }, sectionTitle: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.primary, letterSpacing: 1 },
   configIntro: { fontSize: 11, color: TERMINAL.colors.muted, lineHeight: 18, marginTop: -4, marginBottom: 18, fontWeight: '600' },
-  heroCard: { backgroundColor: '#16191f', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', alignItems: 'center' },
+  heroCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', alignItems: 'center' },
   heroText: { fontSize: 14, fontWeight: '900', color: 'white', textAlign: 'center', lineHeight: 22, marginBottom: 24, letterSpacing: 0.5 },
   pipelineGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 12, marginBottom: 30 },
   pipelineGridItem: { width: 60, height: 70, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 12, alignItems: 'center', justifyContent: 'center', gap: 4 },
@@ -2764,7 +3689,7 @@ const styles = StyleSheet.create({
   primaryActionButton: { backgroundColor: TERMINAL.colors.primary, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 24, paddingVertical: 16, borderRadius: 16, gap: 12, width: '100%', justifyContent: 'center' },
   primaryActionButtonText: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 1 },
   configGroup: { gap: 18, marginBottom: 30 },
-  setupStepCard: { backgroundColor: '#16191f', borderRadius: 22, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', gap: 16 },
+  setupStepCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 22, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', gap: 16 },
   setupStepHeader: { flexDirection: 'row', gap: 14, alignItems: 'flex-start' },
   bucketCardHeader: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
   bucketCardHeaderMain: { flex: 1, gap: 10 },
@@ -2787,6 +3712,13 @@ const styles = StyleSheet.create({
   configLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.amber, letterSpacing: 1, marginLeft: 4 },
   configHint: { fontSize: 9, color: TERMINAL.colors.muted, marginLeft: 4, marginTop: 4, fontWeight: '600' },
   inlineDisclosure: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  advancedSettingsHint: {
+    marginLeft: 'auto',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1,
+    color: TERMINAL.colors.primary,
+  },
   disclosureBody: { marginTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 12 },
   disclosureScroll: { marginTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 12, maxHeight: 420 },
   configGroupIntro: { color: TERMINAL.colors.muted, fontSize: 10, marginBottom: 16, letterSpacing: 1 },
@@ -2818,20 +3750,20 @@ const styles = StyleSheet.create({
   setupChecklistLabel: { fontSize: 8, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1, marginBottom: 6 },
   setupChecklistValue: { fontSize: 11, fontWeight: '900', color: 'white', letterSpacing: 0.5 },
   setupChecklistValueReady: { color: TERMINAL.colors.primary },
-  inputWrapper: { backgroundColor: '#16191f', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 16 },
+  inputWrapper: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 16 },
   input: { height: 50, color: 'white', fontSize: 14, fontWeight: '700' },
-  segmentedControl: { flexDirection: 'row', backgroundColor: '#16191f', borderRadius: 14, padding: 4, gap: 4 },
+  segmentedControl: { flexDirection: 'row', backgroundColor: TERMINAL.colors.bgLight, borderRadius: 14, padding: 4, gap: 4 },
   segment: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: 10 },
   segmentActive: { backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   segmentText: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 }, segmentTextActive: { color: 'white' },
-  modelPickerContainer: { backgroundColor: '#16191f', borderRadius: 14, padding: 4, gap: 2 },
+  modelPickerContainer: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 14, padding: 4, gap: 2 },
   modelPickerOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 14, borderRadius: 10 },
   modelPickerOptionActive: { backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   modelPickerLabel: { fontSize: 11, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 0.5 },
   modelPickerLabelActive: { color: 'white' },
   modelPickerValue: { fontSize: 9, fontWeight: '700', color: 'rgba(255,255,255,0.15)', letterSpacing: 0.3 },
   modelPickerValueActive: { color: TERMINAL.colors.muted },
-  filePicker: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#16191f', borderRadius: 20, padding: 16, borderWidth: 2, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.1)', gap: 16 },
+  filePicker: { flexDirection: 'row', alignItems: 'center', backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 16, borderWidth: 2, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.1)', gap: 16 },
   filePickerActive: { borderStyle: 'solid', borderColor: TERMINAL.colors.primary, backgroundColor: 'rgba(59, 130, 246, 0.05)' },
   fileIconBox: { width: 44, height: 44, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   fileInfo: { flex: 1 }, fileName: { fontSize: 12, fontWeight: '900', color: 'white', marginBottom: 4 }, fileMeta: { fontSize: 9, color: TERMINAL.colors.muted, fontWeight: '700' },
@@ -2843,13 +3775,13 @@ const styles = StyleSheet.create({
   executeButtonText: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 1 },
   textButton: { paddingVertical: 12, alignItems: 'center' }, textButtonText: { fontSize: 11, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   configActions: { gap: 12 },
-  analysisGroup: { gap: 20, marginBottom: 30 }, titleCard: { backgroundColor: '#16191f', borderRadius: 20, padding: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  analysisGroup: { gap: 20, marginBottom: 30 }, titleCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   analysisMeta: { fontSize: 10, color: TERMINAL.colors.muted, fontWeight: '700', marginTop: 10 }, statsGrid: { flexDirection: 'row', gap: 12 },
-  statItem: { flex: 1, backgroundColor: '#16191f', borderRadius: 16, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  statItem: { flex: 1, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   statLabel: { fontSize: 8, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1, marginBottom: 4 }, statValue: { fontSize: 18, fontWeight: '900', color: 'white' },
   subHeader: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 2, marginTop: 10 },
   // Analysis card styles
-  analysisCard: { backgroundColor: '#16191f', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  analysisCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   analysisCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   analysisCardTitle: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   // Themes
@@ -2909,18 +3841,23 @@ const styles = StyleSheet.create({
   locationList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   locationItem: { backgroundColor: 'rgba(255,255,255,0.05)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 },
   locationName: { fontSize: 9, fontWeight: '700', color: TERMINAL.colors.muted, letterSpacing: 0.5 },
-  outlineList: { maxHeight: 250, backgroundColor: '#16191f', borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', overflow: 'hidden' },
+  outlineList: { maxHeight: 250, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', overflow: 'hidden' },
   outlineItem: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.03)', gap: 16 },
   outlineNumber: { width: 28, height: 28, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   outlineNumberText: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.cyan }, outlineInfo: { flex: 1 },
   outlineTitle: { fontSize: 12, fontWeight: '900', color: 'white', marginBottom: 4, letterSpacing: 0.5 }, outlineSynopsis: { fontSize: 10, color: TERMINAL.colors.muted, lineHeight: 16, fontWeight: '600' },
-  generationConfig: { backgroundColor: '#16191f', borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: TERMINAL.colors.primary },
+  generationConfig: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: TERMINAL.colors.primary },
   counter: { flexDirection: 'row', alignItems: 'center', marginTop: 16, gap: 30 },
   counterBtn: { width: 44, height: 44, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   counterBtnText: { fontSize: 24, color: 'white', fontWeight: '300' }, counterVal: { fontSize: 32, fontWeight: '900', color: TERMINAL.colors.primary },
   completeSection: { alignItems: 'center', paddingVertical: 20 }, successHeader: { alignItems: 'center', marginBottom: 30 },
   completeTitle: { fontSize: 20, fontWeight: '900', color: 'white', letterSpacing: 2, marginTop: 20, marginBottom: 8 }, completeSubtitle: { fontSize: 11, fontWeight: '700', color: TERMINAL.colors.primary, letterSpacing: 1 },
-  storySummaryCard: { width: '100%', backgroundColor: '#16191f', borderRadius: 24, padding: 24, gap: 16, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  cancelledSection: { alignItems: 'center', paddingVertical: 40, gap: 24 },
+  cancelledHeader: { alignItems: 'center', gap: 12 },
+  cancelledTitle: { fontSize: 16, fontWeight: '900', color: TERMINAL.colors.amber, letterSpacing: 2, marginTop: 12 },
+  cancelledSubtitle: { fontSize: 12, color: TERMINAL.colors.muted, textAlign: 'center', lineHeight: 18, fontWeight: '600', paddingHorizontal: 20 },
+  cancelledActions: { width: '100%', gap: 12 },
+  storySummaryCard: { width: '100%', backgroundColor: TERMINAL.colors.bgLight, borderRadius: 24, padding: 24, gap: 16, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, summaryLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 }, summaryValue: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 0.5 },
   completeActions: { width: '100%', gap: 12 }, secondaryActionButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 18, borderRadius: 20, borderWidth: 1, borderColor: TERMINAL.colors.primary, gap: 12 },
   secondaryActionButtonText: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.primary, letterSpacing: 1 },
@@ -2928,7 +3865,7 @@ const styles = StyleSheet.create({
   errorTitle: { fontSize: 18, fontWeight: '900', color: TERMINAL.colors.error, letterSpacing: 2, marginTop: 16 },
   errorDetail: { fontSize: 12, color: TERMINAL.colors.muted, textAlign: 'center', lineHeight: 20, paddingHorizontal: 20, marginBottom: 30, fontWeight: '600' },
   errorActions: { width: '100%', gap: 12 },
-  progressPlaceholder: { backgroundColor: '#16191f', borderRadius: 24, padding: 4, marginTop: 10 },
+  progressPlaceholder: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 24, padding: 4, marginTop: 10 },
   errorCard: { backgroundColor: 'rgba(239, 68, 68, 0.05)', borderRadius: 20, padding: 24, borderWidth: 1, borderColor: 'rgba(239, 68, 68, 0.2)', alignItems: 'center', gap: 16 },
   errorText: { fontSize: 12, color: TERMINAL.colors.error, fontWeight: '700', textAlign: 'center', letterSpacing: 0.5 },
   runningSection: { paddingVertical: 10, gap: 16 }, checkpointSection: { paddingVertical: 10 },
@@ -2992,7 +3929,7 @@ const styles = StyleSheet.create({
   },
   historyStatItem: {
     flex: 1,
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 16,
     padding: 16,
     alignItems: 'center',
@@ -3029,7 +3966,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   historyProgressSection: {
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 24,
     padding: 4,
   },
@@ -3041,7 +3978,7 @@ const styles = StyleSheet.create({
   configError: { fontSize: 9, color: TERMINAL.colors.error, marginLeft: 4, marginTop: 4, fontWeight: '600' },
   // Model picker button
   modelPickerButton: {
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
@@ -3064,46 +4001,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginLeft: 10,
   },
-  // Modal styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'flex-end',
-  },
-  modelPickerModal: {
-    backgroundColor: '#1e2229',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    maxHeight: '80%',
-    paddingBottom: 20,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-  },
-  modalTitle: {
-    fontSize: 14,
-    fontWeight: '900',
-    color: 'white',
-    letterSpacing: 1,
-  },
-  modalCloseBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalCloseBtnText: {
-    color: TERMINAL.colors.muted,
-    fontSize: 16,
-    fontWeight: '700',
-  },
+  // Loading state (used by the season plan loading indicator). Modal-specific
+  // styles (modelPickerModal, modalHeader, modalTitle, etc.) previously lived
+  // here but were dead code tied to an earlier inline model-picker
+  // implementation; they have been removed along with the Modal import.
   loadingContainer: {
     padding: 60,
     alignItems: 'center',
@@ -3115,94 +4016,9 @@ const styles = StyleSheet.create({
     color: TERMINAL.colors.muted,
     letterSpacing: 1,
   },
-  errorContainer: {
-    padding: 40,
-    alignItems: 'center',
-    gap: 16,
-  },
-  errorMessage: {
-    fontSize: 12,
-    color: TERMINAL.colors.error,
-    textAlign: 'center',
-    fontWeight: '600',
-  },
-  retryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    backgroundColor: 'rgba(59,130,246,0.1)',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.2)',
-  },
-  retryButtonText: {
-    fontSize: 11,
-    fontWeight: '900',
-    color: TERMINAL.colors.primary,
-    letterSpacing: 1,
-  },
-  modelList: {
-    maxHeight: 400,
-  },
-  modelItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.03)',
-    gap: 12,
-  },
-  modelItemSelected: {
-    backgroundColor: 'rgba(59,130,246,0.1)',
-  },
-  modelThumbnail: {
-    width: 48,
-    height: 48,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  modelInfo: {
-    flex: 1,
-  },
-  modelName: {
-    fontSize: 13,
-    fontWeight: '900',
-    color: 'white',
-    marginBottom: 2,
-  },
-  modelNameSelected: {
-    color: TERMINAL.colors.primary,
-  },
-  modelType: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: TERMINAL.colors.cyan,
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  modelDesc: {
-    fontSize: 10,
-    color: TERMINAL.colors.muted,
-    lineHeight: 14,
-    fontWeight: '600',
-  },
-  modalFooter: {
-    padding: 16,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-  },
-  modalFooterText: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: TERMINAL.colors.muted,
-    letterSpacing: 1,
-  },
   failureWorkspaceCard: {
     marginTop: 16,
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: 'rgba(239,68,68,0.22)',

@@ -1,7 +1,12 @@
 {
-  "scannedAt": 1776180423755,
+  "scannedAt": 1776429633321,
   "providers": {
     "anthropic": [
+      {
+        "value": "claude-opus-4-7",
+        "label": "Claude Opus 4.7",
+        "createdAt": "2026-04-14T00:00:00Z"
+      },
       {
         "value": "claude-sonnet-4-6",
         "label": "Claude Sonnet 4.6",
@@ -138,6 +143,11 @@
         "value": "gemini-3.1-pro-preview",
         "label": "Gemini 3.1 Pro Preview",
         "description": "Gemini 3.1 Pro Preview"
+      },
+      {
+        "value": "gemini-3.1-flash-tts-preview",
+        "label": "Gemini 3.1 Flash TTS Preview",
+        "description": "Gemini 3.1 Flash TTS Preview"
       },
       {
         "value": "gemini-3.1-flash-lite-preview",

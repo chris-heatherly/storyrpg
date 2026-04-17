@@ -792,7 +792,13 @@ export class PhaseValidator {
       for (const beat of encounterBeats) {
         if (beat.choices) {
           for (const choice of beat.choices) {
-            if (!choice.outcomes || choice.outcomes.length === 0) {
+            const outcomes = choice.outcomes as unknown as Array<unknown> | Record<string, unknown> | undefined;
+            const outcomeCount = Array.isArray(outcomes)
+              ? outcomes.length
+              : outcomes
+                ? Object.keys(outcomes).length
+                : 0;
+            if (outcomeCount === 0) {
               issues.push({
                 severity: 'warning',
                 code: 'ENCOUNTER_CHOICE_NO_OUTCOMES',

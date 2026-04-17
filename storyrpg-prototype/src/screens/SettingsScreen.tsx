@@ -346,33 +346,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.05)',
     marginLeft: 28,
   },
-  optionsGrid: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 16,
-  },
-  optionButton: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    alignItems: 'center',
-  },
-  optionButtonSelected: {
-    borderColor: TERMINAL.colors.primary,
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-  },
-  optionText: {
-    fontSize: 10,
-    fontWeight: '900',
-    color: TERMINAL.colors.muted,
-    letterSpacing: 1,
-  },
-  optionTextSelected: {
-    color: TERMINAL.colors.primary,
-  },
   previewBox: {
     backgroundColor: '#0f1115',
     borderRadius: 12,
@@ -883,18 +856,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginBottom: 16,
   },
-  confirmMessage: {
-    fontSize: 12,
-    color: TERMINAL.colors.muted,
-    textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 30,
-    fontWeight: '600',
-  },
-  confirmStoryName: {
-    color: TERMINAL.colors.error,
-    fontWeight: '900',
-  },
   confirmButtons: {
     flexDirection: 'row',
     gap: 12,
@@ -939,60 +900,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: TERMINAL.colors.cyan,
     letterSpacing: 1,
-  },
-  devModeToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  devModeInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    flex: 1,
-  },
-  devModeIcons: {
-    flexDirection: 'row',
-    gap: 4,
-  },
-  devModeText: {
-    flex: 1,
-  },
-  devModeTitle: {
-    fontSize: 12,
-    fontWeight: '900',
-    color: TERMINAL.colors.muted,
-    letterSpacing: 0.5,
-    marginBottom: 2,
-  },
-  devModeTitleActive: {
-    color: 'white',
-  },
-  devModeDesc: {
-    fontSize: 10,
-    color: TERMINAL.colors.muted,
-    fontWeight: '600',
-  },
-  toggleSwitch: {
-    width: 48,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    padding: 3,
-    justifyContent: 'center',
-  },
-  toggleSwitchActive: {
-    backgroundColor: TERMINAL.colors.cyan,
-  },
-  toggleKnob: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: 'rgba(255,255,255,0.3)',
-  },
-  toggleKnobActive: {
-    backgroundColor: 'white',
-    alignSelf: 'flex-end',
   },
   devModeFeatures: {
     marginTop: 16,

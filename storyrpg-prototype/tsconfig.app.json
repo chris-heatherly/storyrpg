@@ -1,13 +1,16 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    "jsx": "react-native"
   },
   "include": [
-    "src/hooks/useImagePromptOverlay.ts",
-    "src/stores/generationJobStore.ts",
-    "src/stores/playerStatePersistence.ts",
-    "src/types/generationJob.ts",
-    "src/utils/imagePromptDebug.ts"
+    "App.tsx",
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx"
   ]
 }

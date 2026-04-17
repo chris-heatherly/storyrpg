@@ -1,7 +1,7 @@
 # StoryRPG - Installation and Setup Guide
 
-**Version:** 1.0  
-**Last Updated:** February 26, 2026  
+**Version:** 1.1  
+**Last Updated:** April 2026  
 **Audience:** Anyone setting up StoryRPG on a new machine
 
 ---
@@ -39,6 +39,7 @@
 | **Docker** | Containerized proxy server | If you prefer Docker over running Node.js directly |
 | **Xcode** | iOS development | Only for building native iOS app |
 | **Android Studio** | Android development | Only for building native Android app |
+| **Playwright Chromium** | Tier-2 browser playthrough QA | Install with `npx playwright install chromium` before `npm run test:e2e` or before running the in-pipeline browser QA phase |
 
 ### Required API Keys
 
@@ -192,7 +193,7 @@ Run a quick check to make sure everything is ready:
 ```bash
 # Check that the proxy server starts correctly
 node proxy-server.js &
-# You should see "Proxy server running on port 3001"
+# You should see "Proxy server listening on port 3001"
 
 # Check the health endpoint
 curl http://localhost:3001/
@@ -268,6 +269,80 @@ ATLAS_CLOUD_API_KEY=your-atlas-cloud-key-here
 EXPO_PUBLIC_IMAGE_PROVIDER=midapi
 MIDAPI_TOKEN=your-midapi-token-here
 ```
+
+**Stable Diffusion (self-hosted AUTOMATIC1111 / Forge WebUI):**
+
+StoryRPG talks to a Stable Diffusion WebUI via the proxy's `/sd-api/*` route; no third-party key is required unless your WebUI is fronted by one.
+
+1. Install [AUTOMATIC1111 `stable-diffusion-webui`](https://github.com/AUTOMATIC1111/stable-diffusion-webui) or a compatible fork (Forge, reForge).
+2. Launch it with the API enabled so StoryRPG can call it. Typical dev flags:
+   - `./webui.sh --api --listen --port 7860 --cors-allow-origins=*`
+3. (Recommended) Install the `sd-webui-controlnet` extension and place:
+   - Depth, canny, or reference-only ControlNet models under `models/ControlNet/`
+   - Any IP-Adapter (FaceID) models you want to use for character identity
+   - Style / character LoRAs under `models/Lora/`
+4. Confirm the WebUI responds with a model list: `curl http://localhost:7860/sdapi/v1/sd-models`.
+
+Then add this to `storyrpg-prototype/.env`:
+
+```env
+EXPO_PUBLIC_IMAGE_PROVIDER=stable-diffusion
+EXPO_PUBLIC_SD_ENABLED=true
+STABLE_DIFFUSION_BASE_URL=http://localhost:7860
+# Optional — only if you front the WebUI with an auth proxy:
+# STABLE_DIFFUSION_API_KEY=your-token-here
+# Optional — non-default backends throw until implemented (default: a1111):
+# STABLE_DIFFUSION_BACKEND=a1111
+# Optional — seed checkpoint passed on requests that don't override it:
+# STABLE_DIFFUSION_DEFAULT_MODEL=sdxl-base-1.0
+```
+
+With `EXPO_PUBLIC_SD_ENABLED=true` the Generator screen exposes an `SD` segment and a parameters panel where you can override base URL, model, sampler, steps, CFG, and negative prompt per session. ControlNet models / IP-Adapter model names, per-character LoRA mappings, and style LoRAs are part of `StableDiffusionSettings` and can be edited via the UI or passed programmatically in `PipelineConfig.imageGen.stableDiffusion`. See `docs/IMAGE_PIPELINE_RUNTIME.md` (Provider Notes → `stable-diffusion`) for the full feature matrix.
+
+### 4.c) Optional — LoRA Auto-Training Sidecar
+
+Stable Diffusion is the only provider that can consume LoRAs, so the
+pipeline ships an **auto-train LoRA** subsystem that produces
+per-character and per-episode style LoRAs on the fly. The subsystem is
+off by default; enabling it requires a LoRA training sidecar
+(`kohya_ss` today) reachable from the proxy.
+
+1. Stand up a `kohya_ss` (or compatible) HTTP sidecar that implements
+   the contract in `docs/LORA_TRAINING.md`.
+2. Add this to `storyrpg-prototype/.env`:
+
+```env
+# --- LoRA auto-training (Stable Diffusion only) ---
+# Master switch for the Generator UI + worker:
+EXPO_PUBLIC_LORA_AUTO_TRAIN=true
+# Also read by the CLI/worker entry point:
+LORA_AUTO_TRAIN=true
+
+# Trainer backend. Only "kohya" is wired today; "diffusers" and
+# "replicate" are reserved for future adapters.
+LORA_TRAINER_BACKEND=kohya
+EXPO_PUBLIC_LORA_TRAINER_BACKEND=kohya
+
+# Sidecar URL (proxied through /lora-training/*):
+LORA_TRAINER_BASE_URL=http://localhost:7861
+EXPO_PUBLIC_LORA_TRAINER_BASE_URL=http://localhost:7861
+
+# Optional bearer token or custom auth header:
+# LORA_TRAINER_API_KEY=your-token-here
+# LORA_TRAINER_AUTH_HEADER=X-Api-Key
+
+# Override the per-request timeout (default 10 minutes, artifact
+# downloads use 15 minutes):
+# LORA_TRAINER_TIMEOUT_MS=600000
+```
+
+3. Trained artifacts and the fingerprint registry are cached under
+   `generated-stories/<storyId>/loras/`. Re-running generation with
+   unchanged character / style inputs hits the cache and does not
+   re-train.
+
+See `docs/LORA_TRAINING.md` for the full sidecar contract, the
+eligibility heuristics, and the Generator UI exposure.
 
 ---
 
@@ -573,7 +648,7 @@ EXPO_PUBLIC_GEMINI_API_KEY=AIza...
 # Enable/disable image generation (true/false)
 EXPO_PUBLIC_IMAGE_GENERATION_ENABLED=true
 
-# Image provider: 'nano-banana' (Gemini), 'atlas-cloud', 'midapi'
+# Image provider: 'nano-banana' (Gemini), 'atlas-cloud', 'midapi', 'stable-diffusion'
 EXPO_PUBLIC_IMAGE_PROVIDER=nano-banana
 
 # Gemini model for images
@@ -585,6 +660,25 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 
 # MidAPI/Midjourney (alternative provider)
 # MIDAPI_TOKEN=...
+
+# Stable Diffusion (self-hosted AUTOMATIC1111 / Forge WebUI)
+# EXPO_PUBLIC_SD_ENABLED=true                # show the SD option + settings panel in the Generator UI
+# STABLE_DIFFUSION_BASE_URL=http://localhost:7860
+# STABLE_DIFFUSION_API_KEY=                  # optional bearer token; sent as x-stable-diffusion-token
+# STABLE_DIFFUSION_BACKEND=a1111             # only 'a1111' is currently implemented
+# STABLE_DIFFUSION_DEFAULT_MODEL=sdxl-base-1.0
+
+# LoRA auto-training (Stable Diffusion only) — off by default.
+# See docs/LORA_TRAINING.md for the kohya sidecar contract.
+# EXPO_PUBLIC_LORA_AUTO_TRAIN=false          # master switch in the Generator UI
+# LORA_AUTO_TRAIN=false                      # same, for CLI/worker entry points
+# LORA_TRAINER_BACKEND=disabled              # disabled | kohya | diffusers | replicate
+# EXPO_PUBLIC_LORA_TRAINER_BACKEND=disabled
+# LORA_TRAINER_BASE_URL=http://localhost:7861
+# EXPO_PUBLIC_LORA_TRAINER_BASE_URL=http://localhost:7861
+# LORA_TRAINER_API_KEY=                      # optional bearer token
+# LORA_TRAINER_AUTH_HEADER=                  # override header name (defaults to Authorization)
+# LORA_TRAINER_TIMEOUT_MS=600000             # default 10 min; artifact downloads use 15 min
 
 # ===================================================================
 # AUDIO / NARRATION (Optional)
@@ -625,6 +719,19 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 
 # Validation mode: 'strict', 'advisory', 'disabled'
 # EXPO_PUBLIC_VALIDATION_MODE=advisory
+
+# ===================================================================
+# PLAYWRIGHT / END-TO-END QA
+# ===================================================================
+# These variables are consumed by test/e2e/storyPlaythrough.spec.ts and
+# by the in-pipeline Tier-2 browser QA runner. Defaults are usually fine.
+
+# E2E_BASE_URL=http://localhost:8081     # App URL Playwright targets
+# E2E_STORY="Story Title"                 # Story title substring to select
+# E2E_MAX_BEATS=100                       # Max beats to play through per scene
+# E2E_ENCOUNTER_TIER=success              # Force tier: success | complicated | failure
+# E2E_CHOICE_PATH=[0,1,0]                 # JSON array of 0-based choice indices
+# E2E_RESULT_FILE=latest.json             # Output filename for results JSON
 ```
 
 ### npm Scripts Reference
@@ -646,9 +753,12 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 | `npm run proxy:compose:down` | Stop Docker proxy |
 | `npm run proxy:compose:logs` | View Docker proxy logs |
 | `npm run proxy:health` | Check proxy server health |
-| `npm test` | Run tests |
-| `npm run typecheck` | Run TypeScript type checking |
+| `npm test` | Run Vitest unit tests |
+| `npm run typecheck` | Run TypeScript type checking (app, test, contracts configs) |
 | `npm run validate` | Run both type checking and tests |
+| `npm run test:e2e` | Run Playwright E2E playthrough tests (proxy + web must be running) |
+| `npm run test:e2e:story` | Run E2E tests filtered by title, e.g. `npm run test:e2e:story -- "Blade Runner"` |
+| `npm run validate:assets` | Standalone Tier-1 asset HTTP verification over a generated story directory |
 | `npm run clean:runtime` | Clean up runtime artifacts |
 
 ---

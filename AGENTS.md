@@ -24,7 +24,9 @@ docs/
 ├── STORY_BRANCHING.md             ← Story branching mechanics
 ├── STORY_PIPELINE_PROMPTING.md    ← Pipeline prompting contracts
 ├── STORY_AGENT_SYSTEM_DETAIL.md   ← Deep agent system notes
+├── IMAGE_PIPELINE_AUDIT.md        ← Image pipeline audit documentation
 ├── IMAGE_PIPELINE_RUNTIME.md      ← Image generation runtime behavior
+├── LORA_TRAINING.md               ← Auto-train-LoRA subsystem + kohya sidecar contract
 ├── INCREMENTAL_VALIDATION_PLAN.md ← Validation system design
 ├── QA_FIXES_SUMMARY.md            ← QA fixes and patterns
 ├── MOBILE_REDESIGN.md             ← Mobile-first reader redesign notes
@@ -49,20 +51,20 @@ storyrpg-prototype/
 ├── src/
 │   ├── screens/                   ← App screens (Home, EpisodeSelect, Reading, Generator, Settings, Visualizer)
 │   ├── components/                ← Reusable UI components
-│   ├── engine/                    ← Deterministic playback: storyEngine, conditionEvaluator, resolutionEngine, identityEngine, templateProcessor
-│   ├── stores/                    ← Zustand stores: gameStore, settingsStore, generationJobStore, seasonPlanStore, imageFeedbackStore, imageJobStore, videoJobStore, appNavigationStore, etc.
+│   ├── engine/                    ← Deterministic playback: storyEngine, conditionEvaluator, resolutionEngine, identityEngine, templateProcessor, growthConsequenceBuilder
+│   ├── stores/                    ← Zustand stores: gameStore, settingsStore, generationJobStore, seasonPlanStore, imageFeedbackStore, imageJobStore, videoJobStore, appNavigationStore, encounterStatePersistence, playerStatePersistence
 │   ├── types/                     ← Canonical data model (Story, Episode, Scene, Beat, Choice, PlayerState, Encounter, etc.)
 │   ├── ai-agents/                 ← AI generation pipeline (see below)
 │   ├── config/                    ← endpoints.ts (all URLs), generatorLlmOptions.ts
 │   ├── hooks/                     ← React hooks
-│   ├── services/                  ← Shared services
+│   ├── services/                  ← Shared services (storyLibrary, narrationService, encounterMemoryService)
 │   ├── theme/                     ← Styling constants
 │   ├── utils/                     ← Helpers
 │   ├── visualizer/                ← Story graph visualization
 │   └── data/stories/              ← Built-in story content index
 │
 ├── generated-stories/             ← Output directory for generated story JSON + images
-├── scripts/                       ← Maintenance scripts (clean artifacts, upload to blob)
+├── scripts/                       ← Maintenance scripts (clean artifacts, upload to blob, validate assets)
 ├── test/stubs/                    ← Vitest stubs for react-native and async-storage
 ├── tsconfig.app.json              ← TypeScript config for app subset
 ├── tsconfig.test.json             ← TypeScript config for tests
@@ -81,9 +83,9 @@ storyrpg-prototype/
 | Persistence | AsyncStorage (client), JSON on filesystem (stories), optional Vercel Blob |
 | Backend | Express proxy (`proxy-server.js`) — local dev only, not a deployed backend |
 | AI Text | Anthropic Claude (via proxy), with OpenRouter / Gemini alternatives |
-| AI Images | Gemini (default), Atlas Cloud, Midjourney/MidAPI |
+| AI Images | Gemini (default), Atlas Cloud, Midjourney/MidAPI, Stable Diffusion (self-hosted AUTOMATIC1111/Forge via swappable adapter) |
 | AI Audio | ElevenLabs TTS (optional) |
-| Testing | Vitest ^4.0.18 (Node env with RN stubs) |
+| Testing | Vitest ^4.0.18 (Node env with RN stubs), Playwright (E2E testing) |
 | Web Deploy | Vercel (static Expo web export) |
 
 ## Architecture Overview
@@ -112,15 +114,28 @@ Client reads story files → Story Engine → Player experience
 | `src/engine/conditionEvaluator.ts` | Evaluates conditional logic (flags, stats, relationships) to gate content. |
 | `src/engine/resolutionEngine.ts` | Fiction-first skill/stat checks with narrative outcomes. |
 | `src/engine/identityEngine.ts` | Tracks player identity formation through choices. |
+| `src/engine/templateProcessor.ts` | Template processing for dynamic narrative content. |
+| `src/engine/growthConsequenceBuilder.ts` | Builds growth consequences for character development. |
 | `src/stores/gameStore.ts` | Player state: attributes, relationships, flags, inventory, progress. Persists to AsyncStorage. |
 | `src/ai-agents/pipeline/FullStoryPipeline.ts` | Main generation orchestrator — wires all agents, validators, and services together. |
-| `src/ai-agents/agents/` | Individual AI agent specialists (WorldBuilder, StoryArchitect, SceneWriter, ChoiceAuthor, BranchManager, EncounterArchitect, QA agents, image team). |
+| `src/ai-agents/agents/` | Individual AI agent specialists (WorldBuilder, StoryArchitect, StyleArchitect, SceneWriter, ChoiceAuthor, BranchManager, EncounterArchitect, QA agents, image team). |
+| `src/ai-agents/agents/StyleArchitect.ts` | LLM agent that expands arbitrary art-style strings into a structured `ArtStyleProfile`. Falls back to `buildVerbatimProfile` so unknown styles never inherit cinematic vocabulary. |
+| `src/ai-agents/images/artStyleProfile.ts` | `ArtStyleProfile` interface + heuristic resolvers (`resolveArtStyleProfile`, `buildVerbatimProfile`, `composeCanonicalStyleString`). |
+| `src/ai-agents/images/anchorPrompts.ts` | Shared builders for the three style-bible anchors (character, arc color strip, environment vignette) consumed by both the pipeline and the UI style-setup section. |
 | `src/ai-agents/validators/` | Structural and content validators that run between pipeline stages. |
-| `src/ai-agents/services/` | Image generation, audio generation, and LLM service abstractions. |
+| `src/ai-agents/services/` | Image generation, audio generation, video generation, and LLM service abstractions. |
+| `src/screens/generator/hooks/useStyleSetup.ts` | React hook that owns the inline Style Setup section's state (expanded profile, anchor slot statuses, handoff payload). |
+| `src/screens/generator/StyleSetupSection.tsx` | UI for the inline style-setup section on `analysis_complete`. |
+| `proxy/styleRoutes.js` | Proxy endpoints for persisting UI-approved style-bible anchor images to `generated-stories/<storyId>/style-bible/`. |
+| `src/ai-agents/agents/image-team/LoraTrainingAgent.ts` | Orchestrates auto-train-LoRA eligibility, dataset assembly, dispatch, and cache lookups. Stable-Diffusion-only (gated by `providerCapabilities.supportsLoraTraining`). |
+| `src/ai-agents/images/datasetBuilder.ts` | Pure helpers that turn character reference sheets + style-bible anchors into captioned `LoraTrainingImage[]` training sets. |
+| `src/ai-agents/images/loraRegistry.ts` | Fingerprint-keyed LoRA artifact cache at `generated-stories/<storyId>/loras/registry.json`, with a `mergeIntoStableDiffusionSettings` seam. |
+| `src/ai-agents/services/lora-training/` | `LoraTrainerAdapter` interface, factory, and `KohyaAdapter` implementation for the `kohya_ss` sidecar. |
+| `proxy/loraTrainingRoutes.js` | Proxy mount for `/lora-training/*` — forwards jobs, status polling, artifact downloads, and installation to the configured trainer. |
 | `src/config/endpoints.ts` | All URLs, proxy config, external API endpoints, storage keys, timing defaults. |
 | `proxy-server.js` + `proxy/` | Express routes for Anthropic/OpenRouter proxy, file ops, job management, catalog, ElevenLabs, image APIs. |
 | `App.tsx` | Root component — sets up providers, navigation, story library loading. |
-| `src/screens/ReadingScreen.tsx` | The main story playback UI. |
+| `src/screens/ReadingScreen.tsx` | The main story playbook UI. |
 | `src/screens/GeneratorScreen.tsx` | Story generation UI with job monitoring. |
 
 ## Common Commands
@@ -140,6 +155,9 @@ npm run generate:fantasy  # Generate fantasy story type
 npm run generate:doc      # Generate from document
 npm run generate:template # Generate template from document
 npm run clean:runtime     # Clean runtime artifacts
+npm run validate:assets   # Validate story assets
+npm run test:e2e          # Run Playwright E2E tests
+npm run test:e2e:story    # Run story-specific E2E tests
 ```
 
 ## Environment Variables
@@ -151,12 +169,23 @@ Defined in `storyrpg-prototype/.env`. Key variables:
 | `ANTHROPIC_API_KEY` | Text generation (required for story generation) |
 | `EXPO_PUBLIC_GEMINI_API_KEY` | Image generation (default provider) |
 | `ELEVENLABS_API_KEY` | Voice narration (optional) |
-| `EXPO_PUBLIC_IMAGE_PROVIDER` | Image provider selection |
+| `EXPO_PUBLIC_IMAGE_PROVIDER` | Image provider selection (`nano-banana`, `atlas-cloud`, `midapi`, `stable-diffusion`) |
+| `EXPO_PUBLIC_SD_ENABLED` | Show the Stable Diffusion option + settings panel in the Generator UI |
+| `STABLE_DIFFUSION_BASE_URL` | Base URL of a self-hosted A1111/Forge WebUI (e.g. `http://localhost:7860`) |
+| `STABLE_DIFFUSION_API_KEY` | Optional bearer token forwarded to the SD WebUI |
+| `STABLE_DIFFUSION_BACKEND` | SD adapter backend (only `a1111` is implemented today) |
+| `STABLE_DIFFUSION_DEFAULT_MODEL` | Default SD checkpoint when a request doesn't specify one |
+| `EXPO_PUBLIC_LORA_AUTO_TRAIN` / `LORA_AUTO_TRAIN` | Master switch for the auto-train-LoRA subsystem (Stable Diffusion only) |
+| `LORA_TRAINER_BACKEND` / `EXPO_PUBLIC_LORA_TRAINER_BACKEND` | LoRA trainer backend (`disabled` \| `kohya` \| `diffusers` \| `replicate`; only `kohya` is implemented) |
+| `LORA_TRAINER_BASE_URL` / `EXPO_PUBLIC_LORA_TRAINER_BASE_URL` | Base URL of the LoRA training sidecar |
+| `LORA_TRAINER_API_KEY` | Optional bearer token forwarded to the trainer sidecar |
 | `EXPO_PUBLIC_PROXY_URL` | Override proxy URL (default: `http://localhost:3001`) |
 | `EXPO_PUBLIC_LLM_MODEL` | LLM model selection |
 | `EXPO_PUBLIC_LLM_PROVIDER` | LLM provider selection |
 | `EXPO_PUBLIC_VIDEO_GENERATION_ENABLED` | Enable video generation features |
 | `EXPO_PUBLIC_USE_SERVER_WORKER` | Use server-side worker for generation |
+| `EXPO_PUBLIC_VALIDATION_ENABLED` | Enable story validation features |
+| `EXPO_PUBLIC_VALIDATION_MODE` | Validation mode configuration |
 | `PORT` | Proxy server port (default: 3001) |
 
 Full reference in `docs/INSTALL.md` section 10.
@@ -204,9 +233,13 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/STORY_BRANCHING.md` | Story branching mechanics and structure |
 | `docs/STORY_PIPELINE_PROMPTING.md` | Pipeline prompting contracts and agent instructions |
 | `docs/STORY_AGENT_SYSTEM_DETAIL.md` | Deep agent system implementation notes |
+| `docs/IMAGE_PIPELINE_AUDIT.md` | Image pipeline audit documentation |
 | `docs/IMAGE_PIPELINE_RUNTIME.md` | Image generation runtime behavior |
+| `docs/LORA_TRAINING.md` | Auto-train-LoRA subsystem: agents, registry, fingerprinting, kohya sidecar contract, UI exposure |
 | `docs/INCREMENTAL_VALIDATION_PLAN.md` | Validation system design |
 | `docs/QA_FIXES_SUMMARY.md` | QA fixes and recurring patterns |
+| `docs/MOBILE_REDESIGN.md` | Mobile-first reader redesign notes |
+| `docs/PARALLEL_GENERATION.md` | Parallel generation status |
 | `docs/visual_storytelling_guide.md` | Visual storytelling design principles |
 | `docs/reference/` | Original reference materials (PDF text extracts) |
-| `.cursor/skills/` | Cursor agent skills: pipeline debugging, validation, orchestration, image generation, UX design, story structure rules |
+| `.cursor/skills/` | Cursor agent skills: pipeline debugging, validation, orchestration, image generation, UX design, story structure rules, update docs |

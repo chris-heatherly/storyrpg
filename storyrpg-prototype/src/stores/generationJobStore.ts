@@ -14,6 +14,7 @@ import {
   PipelineEventData,
   normalizeGenerationJob,
 } from '../types/generationJob';
+import { PROXY_CONFIG } from '../config/endpoints';
 
 export type { GenerationJob, JobStatus, PipelineEventData } from '../types/generationJob';
 
@@ -39,19 +40,7 @@ interface GenerationJobStore {
   getJob: (jobId: string) => GenerationJob | undefined;
 }
 
-// Get proxy URL from config or fall back to default
-const getProxyHost = (): string => {
-  try {
-    const { PROXY_CONFIG } = require('../config/endpoints');
-    return PROXY_CONFIG.getProxyUrl();
-  } catch (e) {
-    // Fallback if config not available
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      return `http://${window.location.hostname || 'localhost'}:3001`;
-    }
-    return 'http://localhost:3001';
-  }
-};
+const getProxyHost = (): string => PROXY_CONFIG.getProxyUrl();
 
 /**
  * Strip bulky checkpoint/events data before persisting to localStorage.

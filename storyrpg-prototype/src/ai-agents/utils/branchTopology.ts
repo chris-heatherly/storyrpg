@@ -41,7 +41,7 @@ export function analyzeBranchTopology(blueprint: EpisodeBlueprint): Deterministi
   const deadEndSceneIds = blueprint.scenes
     .filter((scene) => {
       const nextIds = adjacency.get(scene.id) || [];
-      return nextIds.length === 0 && scene.id !== blueprint.endingSceneId;
+      return nextIds.length === 0 && scene.id !== (blueprint as { endingSceneId?: string }).endingSceneId;
     })
     .map((scene) => scene.id);
 

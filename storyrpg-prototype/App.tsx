@@ -16,13 +16,14 @@ import { GeneratorScreen } from './src/screens/GeneratorScreen';
 import { allStories as builtInStories } from './src/data/stories';
 import { PlayerState, Story } from './src/types';
 import { TERMINAL } from './src/theme';
-import { renameStory } from './src/ai-agents/utils/pipelineOutputWriter';
 import { PROXY_CONFIG } from './src/config/endpoints';
-import { FullStoryPipeline } from './src/ai-agents/pipeline/FullStoryPipeline';
+import {
+  pipelineClient,
+  type PipelineHandle,
+} from './src/ai-agents/pipeline/PipelineClient';
 import { loadConfig } from './src/ai-agents/config';
 import { useVideoJobStore } from './src/stores/videoJobStore';
 import { useStoryLibrary } from './src/hooks/useStoryLibrary';
-import { sanitizeStoryForPersistence } from './src/ai-agents/utils/storyPayloads';
 import { useAppNavigationStore } from './src/stores/appNavigationStore';
 
 const GENERATED_STORIES_KEY = '@storyrpg_generated_stories';
@@ -31,7 +32,7 @@ const DELETED_STORIES_KEY = '@storyrpg_deleted_stories'; // Track intentionally 
 function AppContent() {
   // Protagonist name/pronouns come from the story's established characters
   const [videoGeneratingStoryId, setVideoGeneratingStoryId] = useState<string | null>(null);
-  const videoPipelineRef = useRef<FullStoryPipeline | null>(null);
+  const videoPipelineRef = useRef<PipelineHandle | null>(null);
   const [visualizerStory, setVisualizerStory] = useState<Story | null>(null);
   const currentScreen = useAppNavigationStore((state) => state.currentScreen);
   const showPauseMenu = useAppNavigationStore((state) => state.showPauseMenu);
@@ -87,7 +88,7 @@ function AppContent() {
           .filter((story) => !fileLoadedStoryIds.has(story.id))
           .map((story) => storyCacheRef.current.get(story.id))
           .filter(Boolean)
-          .map((story) => sanitizeStoryForPersistence(story as Story));
+          .map((story) => pipelineClient.sanitizeStoryForPersistence(story as unknown as Story));
         
         if (storiesToSave.length === 0) return;
 
@@ -231,12 +232,32 @@ function AppContent() {
   };
 
   const handleBackFromGenerator = () => {
-    closeGeneratorRoute('settings');
+    // closeGenerator() without an argument defaults to the recorded launch
+    // origin (home or settings), so Back returns the user where they came from.
+    closeGeneratorRoute();
   };
 
   const handleStoryGenerated = (story: Story) => {
     if (!story || !story.id || !story.title) return;
     upsertStory(story);
+  };
+
+  // Called when the user clicks "Play now" on the generator's complete screen.
+  // Initializes the generated story in the game store and navigates to reading.
+  const handlePlayGeneratedStory = async (story: Story) => {
+    if (!story || !story.id) return;
+    upsertStory(story);
+    const full = await loadFullStory(story.id);
+    const target = full || story;
+    const protagonist = resolveProtagonist(target);
+    initializeStory(target, protagonist.name, protagonist.pronouns);
+    closeGeneratorRoute('episodes');
+  };
+
+  // Called when the user clicks "View in library" — route back to home so the
+  // story card is visible in the main library.
+  const handleViewLibrary = () => {
+    closeGeneratorRoute('home');
   };
 
   const handleDeleteStory = async (storyId: string) => {
@@ -311,7 +332,7 @@ function AppContent() {
     }));
 
     // Perform the actual rename
-    const success = await renameStory(storyId, oldOutputDir, newTitle);
+    const success = await pipelineClient.renameStory(storyId, oldOutputDir, newTitle);
     
     if (!success) {
       console.warn('[App] Failed to rename story on backend');
@@ -351,11 +372,12 @@ function AppContent() {
         enabled: true,
       };
 
-      const pipeline = new FullStoryPipeline(config);
+      const pipeline = await pipelineClient.createPipeline(config);
       pipeline.setExternalJobId(jobId);
       videoPipelineRef.current = pipeline;
+      const rawPipeline = pipeline.raw as any;
 
-      pipeline.videoService.onEvent((event) => {
+      rawPipeline.videoService.onEvent((event: any) => {
         switch (event.type) {
           case 'job_added':
             addVideoJob({
@@ -405,7 +427,7 @@ function AppContent() {
         }
       });
 
-      const result = await pipeline.runVideoOnly(story);
+      const result = await rawPipeline.runVideoOnly(story);
 
       await updateGenJob(jobId, {
         status: 'completed',
@@ -474,6 +496,8 @@ function AppContent() {
         <GeneratorScreen
           onBack={handleBackFromGenerator}
           onStoryGenerated={handleStoryGenerated}
+          onPlayStory={handlePlayGeneratedStory}
+          onViewLibrary={handleViewLibrary}
           resumeJobId={resumeJobId}
           onCancelExternalPipeline={() => {
             if (videoPipelineRef.current) {

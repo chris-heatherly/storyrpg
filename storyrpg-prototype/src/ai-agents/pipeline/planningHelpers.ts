@@ -66,8 +66,8 @@ export function buildSeasonPlanDirectives(
     }
   }
 
-  const growthCurveEntry = (plan as Record<string, unknown>).growthCurve
-    ? ((plan as Record<string, unknown>).growthCurve as Array<Record<string, unknown>>)
+  const growthCurveEntry = (plan as unknown as Record<string, unknown>).growthCurve
+    ? ((plan as unknown as Record<string, unknown>).growthCurve as Array<Record<string, unknown>>)
         .find((g: Record<string, unknown>) => g.episodeNumber === epNum)
     : undefined;
 

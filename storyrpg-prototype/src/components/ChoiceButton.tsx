@@ -92,6 +92,11 @@ export const ChoiceButton: React.FC<ChoiceButtonProps> = ({
         onPressOut={handlePressOut}
         activeOpacity={0.85}
         disabled={isDisabled || isSelected || isDeselected}
+        accessibilityRole="button"
+        accessibilityLabel={choice.text}
+        accessibilityHint={choice.isLocked && choice.lockedReason ? `Locked: ${choice.lockedReason}` : undefined}
+        accessibilityState={{ disabled: isDisabled, selected: isSelected }}
+        testID={`choice-${choice.id}`}
       >
         <Animated.View style={[
           StyleSheet.absoluteFill,
@@ -155,6 +160,7 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.choice,
     gap: 16,
     overflow: 'hidden',
+    minHeight: 44,
   },
   glowOverlay: {
     borderWidth: 2,

@@ -26,7 +26,7 @@ import {
   ChevronUp,
   ThumbsDown,
 } from 'lucide-react-native';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 import { useImageJobStore, ImageJob } from '../stores/imageJobStore';
 import { useImageFeedbackStore } from '../stores/imageFeedbackStore';
 import { PROXY_CONFIG } from '../config/endpoints';

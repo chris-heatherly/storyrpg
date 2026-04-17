@@ -765,7 +765,7 @@ export class IncrementalContinuityChecker extends BaseValidator {
               this.setFlags.add(flagName);
             }
 
-            if (consequence.type === 'modifyScore') {
+            if ((consequence.type as string) === 'modifyScore' || consequence.type === 'changeScore' || consequence.type === 'setScore') {
               const scoreName = (consequence as { score: string }).score;
               if (!this.knownScores.has(scoreName)) {
                 issues.push({
@@ -1189,7 +1189,7 @@ export class IncrementalEncounterValidator extends BaseValidator {
     };
 
     for (const beat of encounterBeats) {
-      if ((beat.setupTextVariants || []).some((variant: any) => conditionUsesRelationship(variant?.condition))) {
+      if (((beat as { setupTextVariants?: Array<{ condition?: unknown }> }).setupTextVariants || []).some((variant: { condition?: unknown }) => conditionUsesRelationship(variant?.condition))) {
         hasRelationshipPayoff = true;
       }
       if (!beat.choices || beat.choices.length === 0) {

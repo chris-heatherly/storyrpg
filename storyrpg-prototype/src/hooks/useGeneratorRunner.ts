@@ -124,10 +124,10 @@ export function useGeneratorRunner() {
     const pushWorkerTimelineEvent = (event: any) =>
       applyWorkerTimelineEvent(event, {
         onPipelineEvent,
-        addImageJob: addJob,
+        addImageJob: addJob as unknown as (job: { id: string; identifier?: string; prompt?: string; maxRetries?: number; metadata?: unknown }) => void,
         updateImageJob: updateJob,
         removeImageJob: removeJob,
-        addVideoJob,
+        addVideoJob: addVideoJob as unknown as (job: { id: string; identifier?: string; sourceImageUrl?: string; metadata?: unknown }) => void,
         updateVideoJob,
         removeVideoJob,
       });

@@ -340,7 +340,6 @@ function convertEmbeddedChoice(llmChoice: LLMEmbeddedEncounterChoice): EmbeddedE
     text: llmChoice.text,
     approach: llmChoice.approach,
     primarySkill: llmChoice.primarySkill,
-    skillAdvantage: llmChoice.skillAdvantage,
     outcomes: {
       success: convertOutcome(llmChoice.outcomes?.success, 'success', { goalTicks: 2, threatTicks: 0, narrativeText: 'Success!' }),
       complicated: convertOutcome(llmChoice.outcomes?.complicated, 'complicated', { goalTicks: 1, threatTicks: 1, narrativeText: 'Partial success...' }),

@@ -405,7 +405,11 @@ Return JSON:
     return emotionalPhrases?.join('; ') || 'None detected';
   }
 
-  private buildSystemPrompt(): string {
+  protected getAgentSpecificPrompt(): string {
+    return this.buildCliffhangerPrompt();
+  }
+
+  private buildCliffhangerPrompt(): string {
     return `You are an expert at analyzing cliffhangers in serialized fiction.
 
 A compelling cliffhanger creates:
@@ -484,7 +488,7 @@ Return JSON with:
     }
   }
 
-  private parseJSON(response: string): any {
+  protected parseJSON(response: string): any {
     let cleaned = response.trim();
     if (cleaned.startsWith('```json')) {
       cleaned = cleaned.slice(7);

@@ -15,7 +15,7 @@ import {
   TextInput,
   Image,
 } from 'react-native';
-import { TERMINAL, createBoxTop, createBoxBottom, createDivider } from '../theme/terminal';
+import { TERMINAL, createBoxTop, createBoxBottom, createDivider } from '../theme';
 
 export interface CheckpointData {
   phase: string;
@@ -584,7 +584,7 @@ const styles = StyleSheet.create({
   thumbnail: {
     width: '100%',
     aspectRatio: 9 / 19.5,
-    backgroundColor: TERMINAL.colors.bgDark,
+    backgroundColor: TERMINAL.colors.bgHighlight,
   },
   imageLabel: {
     color: TERMINAL.colors.cyan,

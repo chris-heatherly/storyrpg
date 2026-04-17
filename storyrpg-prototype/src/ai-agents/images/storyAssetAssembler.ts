@@ -56,7 +56,7 @@ function applyEncounterRecord(story: Story, record: AssetRecord): void {
       const beat = (phase.beats || []).find((candidate: any) => candidate.id === record.slot.beatId);
       if (!beat || !('choices' in beat)) continue;
       const path = record.slot.choiceMapKey || '';
-      const { choice, tier } = walkChoicePath(beat.choices, path);
+      const { choice, tier } = walkChoicePath(beat.choices as never, path);
       const resolvedTier = record.slot.outcomeTier || tier;
       if (!choice || !resolvedTier) continue;
       if (record.slot.family === 'encounter-outcome') {

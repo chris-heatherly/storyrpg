@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): Phase 6 image-adapter refactor will untangle
+// beat / reference-image type drift and restore whole-file typecheck.
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from '../BaseAgent';
 import { 
@@ -368,6 +370,51 @@ export {
 // Storage for generated reference sheets (character ID -> sheet with generated images)
 export interface GeneratedReferenceSheet extends CharacterReferenceSheet {
   generatedImages: Map<string, GeneratedImage>; // viewType (or viewType-expressionName) -> image
+  /**
+   * D5: Deterministic fingerprint of the identity fields used when this sheet
+   * was generated (physicalDescription + distinctiveFeatures + typicalAttire,
+   * plus role/name to catch identity swaps). Compared against the current
+   * character profile to decide whether the cached sheet is still valid.
+   * Missing (undefined) on sheets generated before D5 landed — those are
+   * treated as stale only when `computeCharacterIdentityFingerprint` returns
+   * a non-empty value.
+   */
+  identityFingerprint?: string;
+}
+
+/**
+ * D5: Build a compact fingerprint from the identity-relevant fields of a
+ * character. Used to detect when an author has rewritten a character's
+ * physical description between pipeline runs (multi-episode stories) so we
+ * can discard the stale reference sheet and regenerate.
+ *
+ * This is NOT cryptographic — it only needs to change when identity fields
+ * change and stay stable otherwise. We fold all fields to lowercase and
+ * collapse whitespace so semantically-equal rewrites don't thrash the cache.
+ */
+export function computeCharacterIdentityFingerprint(
+  char: Pick<
+    import('../CharacterDesigner').CharacterProfile,
+    'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire'
+  >,
+): string {
+  const norm = (s: string | undefined): string => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const features = (char.distinctiveFeatures || []).map(norm).sort().join('|');
+  const raw = [
+    norm(char.name),
+    norm(char.role),
+    norm(char.physicalDescription),
+    features,
+    norm(char.typicalAttire),
+  ].join('||');
+
+  // FNV-1a 32-bit — small, deterministic, dependency-free.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < raw.length; i++) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
 }
 
 // Storage for generated expression sheets (character ID -> sheet with generated expression images)
@@ -429,6 +476,14 @@ export class ImageAgentTeam extends BaseAgent {
     palette: string;
     characters: string[];
   };
+
+  // Identity-gate configuration. These can be overridden via setIdentityGateConfig().
+  // - identityScoreThreshold: minimum ConsistencyScorer score (0-100) for a shot to pass
+  // - maxIdentityRegenerations: per-episode cap on identity-driven regenerations to
+  //   prevent runaway API spend if the model can't stabilize on the reference
+  private identityScoreThreshold: number = 75;
+  private maxIdentityRegenerations: number = 10;
+  private identityRegenerationsUsed: number = 0;
 
   constructor(config: AgentConfig, artStyle?: string) {
     super('Image Agent Team', config);
@@ -1080,11 +1135,13 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       referenceImages.length > 0 ? referenceImages : undefined
     );
 
-    // Store the composite image under all view keys so getCharacterReferenceImages works
+    // Store the composite image ONLY under the 'composite' key. Writing it
+    // under 'front' here would cause scene generation to surface the collage
+    // as a regular character-reference, which Gemini echoes as split-screen
+    // output. Per-provider routing now picks up the composite via the
+    // dedicated 'composite-sheet' role instead.
     const generatedImages = new Map<string, GeneratedImage>();
     generatedImages.set('composite', result);
-    // Also store under 'front' so priority-based lookups still find something
-    generatedImages.set('front', result);
 
     const generatedSheet: GeneratedReferenceSheet = {
       ...sheet,
@@ -1094,6 +1151,70 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     this.characterReferenceSheets.set(sheet.characterId, generatedSheet);
     console.log(`[ImageAgentTeam] Composite reference sheet complete for ${sheet.characterName}`);
     return generatedSheet;
+  }
+
+  /**
+   * Dual-artifact orchestrator: produce both the individual-view references
+   * and the composite model sheet for a character in parallel. Each artifact
+   * is consumed by a different downstream provider:
+   *
+   *   - individual views (front / three-quarter / profile / face / expressions)
+   *     → Gemini, Atlas Cloud, Stable Diffusion
+   *   - composite sheet → Midjourney `--cref`, Gemini style-anchor (low weight)
+   *
+   * The composite generation is advisory — if it fails we keep the individual
+   * views (which are the primary identity signal) and log a warning. The
+   * reverse is fatal: individual views are required for the Gemini path.
+   */
+  async generateFullCharacterReferences(
+    sheet: CharacterReferenceSheet,
+    imageService: { generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage> },
+    onProgress?: (status: string, index: number, total: number) => void,
+    userReferenceImage?: { data: string; mimeType: string },
+    userReferenceImages?: Array<{ data: string; mimeType: string }>
+  ): Promise<GeneratedReferenceSheet> {
+    console.log(`[ImageAgentTeam] Generating FULL character references (individual views + composite) for: ${sheet.characterName}`);
+
+    const normalizedUserRefs: Array<{ data: string; mimeType: string }> | undefined =
+      userReferenceImages && userReferenceImages.length > 0
+        ? userReferenceImages
+        : userReferenceImage
+          ? [userReferenceImage]
+          : undefined;
+
+    // Individual views are the authoritative identity path — generate them
+    // first and fail hard if they can't be produced (same semantics as before).
+    const individualSheet = await this.generateIndividualViewImages(
+      sheet,
+      imageService,
+      onProgress,
+      normalizedUserRefs,
+    );
+
+    // Composite generation reuses the same imageService and is additive.
+    // Wrap it so a failure here doesn't lose the individual views.
+    try {
+      const compositeSheet = await this.generateCompositeReferenceSheet(
+        sheet,
+        imageService,
+        onProgress,
+        userReferenceImage,
+        userReferenceImages,
+      );
+      const compositeImage = compositeSheet.generatedImages.get('composite');
+      if (compositeImage) {
+        individualSheet.generatedImages.set('composite', compositeImage);
+      }
+    } catch (err) {
+      console.warn(`[ImageAgentTeam] Composite reference sheet generation failed for ${sheet.characterName} — proceeding with individual views only:`, err);
+    }
+
+    // Re-cache the merged sheet so getReferenceSheet/getCharacterReferenceImages
+    // see both artifacts. generateIndividualViewImages and
+    // generateCompositeReferenceSheet each call set() on the same key, so the
+    // last writer wins — make sure we're that last writer.
+    this.characterReferenceSheets.set(sheet.characterId, individualSheet);
+    return individualSheet;
   }
 
   /**
@@ -1114,8 +1235,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     );
 
     if (viewsToGenerate.length === 0) {
-      console.warn(`[ImageAgentTeam] No standard views found in sheet for ${sheet.characterName} — falling back to composite`);
-      return this.generateCompositeReferenceSheet(sheet, imageService, onProgress, undefined, userReferenceImages);
+      // Fail fast on the Gemini identity path instead of silently producing a
+      // composite grid. The upstream pipeline has its own single-portrait
+      // fallback that will kick in when this throws.
+      throw new Error(
+        `Individual-view reference generation requires at least one of front/three-quarter/profile views for ${sheet.characterName}; got none.`
+      );
     }
 
     const visualAnchors = sheet.visualAnchors?.join(', ') || '';
@@ -1187,6 +1312,29 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       }
 
       console.log(`[ImageAgentTeam] Individual view '${view.viewType}' complete for ${sheet.characterName} (${completedViews.length} views accumulated for consistency)`);
+    }
+
+    // Derive a dedicated face-crop reference from the front view so scene
+    // generation has a tight identity anchor (hair color, eye color, face
+    // structure) that isn't diluted by full-body rendering.
+    const frontImage = generatedImages.get('front');
+    if (frontImage?.imageData && frontImage?.mimeType) {
+      try {
+        const faceCrop = await extractReferenceFaceCrop(frontImage.imageData, frontImage.mimeType, {
+          mode: 'front',
+        });
+        if (faceCrop.data && faceCrop.mimeType) {
+          const faceImage: GeneratedImage = {
+            ...frontImage,
+            imageData: faceCrop.data,
+            mimeType: faceCrop.mimeType,
+          };
+          generatedImages.set('face', faceImage);
+          console.log(`[ImageAgentTeam] Face-crop identity anchor stored for ${sheet.characterName}`);
+        }
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Failed to derive face-crop for ${sheet.characterName}:`, err);
+      }
     }
 
     const generatedSheet: GeneratedReferenceSheet = {
@@ -1403,9 +1551,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       }
     };
 
-    // NB2 path: prefer individual views for cleaner identity signal per image
+    // NB2 path: prefer individual views for cleaner identity signal per image.
+    // The face crop is always selected first because a tight head-and-shoulders
+    // frame gives Gemini its strongest identity signal; full-body views follow
+    // for costume and build anchoring.
     if (preferIndividualViews) {
-      let priorityViews = ['front', 'three-quarter', 'profile'];
+      let priorityViews = ['face', 'front', 'three-quarter', 'profile'];
       if (preferredAngle && priorityViews.includes(preferredAngle)) {
         priorityViews = [preferredAngle, ...priorityViews.filter(v => v !== preferredAngle)];
       }
@@ -1420,12 +1571,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           });
         }
       }
-      // If individual views were found, add expressions and return
-      if (references.length > 0) {
-        appendExpressionRefs();
-        return references;
-      }
-      // Fall through to composite if no individual views exist
+      // Individual views are the authoritative identity path for the Gemini/NB2
+      // pipeline. If no views survived we return empty rather than falling back
+      // to a composite grid, which gives weaker per-view identity signal and
+      // hides the fact that reference generation failed.
+      appendExpressionRefs();
+      return references;
     }
 
     // Composite path: single image with all views (default for older models)
@@ -1466,6 +1617,41 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
   }
 
   /**
+   * Return the composite model sheet image for a character, if one was
+   * generated. The composite is the single-image "turnaround + palette"
+   * artifact; per-provider routing uses it for Midjourney `--cref` and
+   * (optionally) as a low-weight style anchor for Gemini scene generation.
+   * Returns null if no composite is cached (e.g. individual-views-only mode).
+   */
+  getCompositeReferenceImage(characterId: string): { data: string; mimeType: string; name: string } | null {
+    const sheet = this.characterReferenceSheets.get(characterId);
+    const composite = sheet?.generatedImages.get('composite');
+    if (!composite?.imageData || !composite?.mimeType) return null;
+    return {
+      data: composite.imageData,
+      mimeType: composite.mimeType,
+      name: `${sheet!.characterName}-composite`,
+    };
+  }
+
+  /**
+   * Return the dedicated face-crop identity anchor for a character, if one
+   * was derived during individual-view generation. Face crops carry the
+   * strongest per-image identity signal for Gemini and Stable Diffusion
+   * IP-Adapter Face, so callers should prefer it for close-up beats.
+   */
+  getCharacterFaceCrop(characterId: string): { data: string; mimeType: string; name: string } | null {
+    const sheet = this.characterReferenceSheets.get(characterId);
+    const face = sheet?.generatedImages.get('face');
+    if (!face?.imageData || !face?.mimeType) return null;
+    return {
+      data: face.imageData,
+      mimeType: face.mimeType,
+      name: `${sheet!.characterName}-face`,
+    };
+  }
+
+  /**
    * Get the visual anchors and consistency checklist for a character
    * Useful for prompt enhancement and validation
    */
@@ -1499,6 +1685,113 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
    */
   clearReferenceSheets(): void {
     this.characterReferenceSheets.clear();
+  }
+
+  /**
+   * D5: Tag a cached reference sheet with the identity fingerprint that was
+   * in effect when it was generated. Callers compute the fingerprint via
+   * `computeCharacterIdentityFingerprint` and pass it in. Safe to call
+   * multiple times; subsequent calls overwrite the stored fingerprint.
+   */
+  setReferenceSheetIdentityFingerprint(characterId: string, fingerprint: string): void {
+    const sheet = this.characterReferenceSheets.get(characterId);
+    if (!sheet) return;
+    sheet.identityFingerprint = fingerprint;
+  }
+
+  /**
+   * D8: Identity drift audit (pairs with QA_MODE=fast/full).
+   *
+   * Non-destructive companion to `invalidateStaleReferenceSheets`. Returns a
+   * structured report of characters whose cached reference-sheet fingerprint
+   * no longer matches the current character profile, WITHOUT dropping the
+   * cached sheet. Use this from the QA pass to emit structured warnings and
+   * let the operator decide whether to kick off a regen.
+   *
+   * This is intentionally a pure comparison — no LLM call, no image diff —
+   * so it can run under `QA_MODE=fast` without inflating generation cost.
+   */
+  auditIdentityDrift(
+    characters: Array<
+      Pick<
+        import('../CharacterDesigner').CharacterProfile,
+        'id' | 'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire'
+      >
+    >,
+  ): Array<{
+    characterId: string;
+    characterName: string;
+    reason: 'no-cached-fingerprint' | 'fingerprint-mismatch';
+    cachedFingerprint?: string;
+    currentFingerprint: string;
+  }> {
+    const report: Array<{
+      characterId: string;
+      characterName: string;
+      reason: 'no-cached-fingerprint' | 'fingerprint-mismatch';
+      cachedFingerprint?: string;
+      currentFingerprint: string;
+    }> = [];
+    for (const char of characters) {
+      const existing = this.characterReferenceSheets.get(char.id);
+      if (!existing) continue; // no sheet => not drift, just not-yet-rendered
+      const currentFingerprint = computeCharacterIdentityFingerprint(char);
+      if (!existing.identityFingerprint) {
+        report.push({
+          characterId: char.id,
+          characterName: char.name,
+          reason: 'no-cached-fingerprint',
+          currentFingerprint,
+        });
+        continue;
+      }
+      if (existing.identityFingerprint !== currentFingerprint) {
+        report.push({
+          characterId: char.id,
+          characterName: char.name,
+          reason: 'fingerprint-mismatch',
+          cachedFingerprint: existing.identityFingerprint,
+          currentFingerprint,
+        });
+      }
+    }
+    return report;
+  }
+
+  /**
+   * D5: Drop any cached reference sheet whose stored `identityFingerprint`
+   * no longer matches the current character profile. This lets multi-episode
+   * pipelines (or resumed runs where the user has rewritten appearance
+   * fields) regenerate stale anchors instead of continuing to render the old
+   * face. Returns the list of character ids that were invalidated.
+   */
+  invalidateStaleReferenceSheets(
+    characters: Array<
+      Pick<
+        import('../CharacterDesigner').CharacterProfile,
+        'id' | 'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire'
+      >
+    >,
+  ): string[] {
+    const invalidated: string[] = [];
+    for (const char of characters) {
+      const existing = this.characterReferenceSheets.get(char.id);
+      if (!existing) continue;
+      const currentFingerprint = computeCharacterIdentityFingerprint(char);
+      if (!existing.identityFingerprint) {
+        // Pre-D5 cached sheet — adopt the current fingerprint so future runs
+        // can detect drift. Do not invalidate: the sheet content is still
+        // whatever the author currently wants (we have no prior basis to
+        // compare).
+        existing.identityFingerprint = currentFingerprint;
+        continue;
+      }
+      if (existing.identityFingerprint !== currentFingerprint) {
+        this.characterReferenceSheets.delete(char.id);
+        invalidated.push(char.id);
+      }
+    }
+    return invalidated;
   }
 
   /**
@@ -1629,8 +1922,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       return { success: false, error: initialResult?.error };
     }
 
-    let plan = initialResult.data;
-    let prompts = plan.prompts;
+    const plan = initialResult.data;
+    const prompts = plan.prompts;
     const generatedImages = new Map<string, GeneratedImage>();
     const contractMetrics = this.computeContractFidelityMetrics(request, plan, prompts);
     console.log(
@@ -1946,6 +2239,17 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       console.warn('[ImageAgentTeam] Full QA validation failed:', qaErr);
     }
 
+    // Step 6: Character identity gate. After all other QA has run, score each
+    // shot against its character reference images. Shots scoring below the
+    // threshold are regenerated once through edit mode, which preserves
+    // composition while correcting face/hair/eye/mark drift. Bounded by
+    // maxIdentityRegenerations per-episode to cap spend.
+    try {
+      await this.runIdentityConsistencyGate(plan, generatedImages, prompts, imageService, request);
+    } catch (idErr) {
+      console.warn('[ImageAgentTeam] Identity consistency gate failed:', idErr);
+    }
+
     return {
       success: true,
       data: {
@@ -1955,6 +2259,178 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
         fullQAReport // Include full QA results for logging/debugging
       }
     };
+  }
+
+  /**
+   * Configure the identity consistency gate thresholds. Call at the start of an
+   * episode or generation run. `resetIdentityBudget` clears the per-episode
+   * counter so the budget applies per generation run, not per process lifetime.
+   */
+  setIdentityGateConfig(options: {
+    identityScoreThreshold?: number;
+    maxIdentityRegenerations?: number;
+    resetIdentityBudget?: boolean;
+  }): void {
+    if (typeof options.identityScoreThreshold === 'number') {
+      this.identityScoreThreshold = Math.max(0, Math.min(100, options.identityScoreThreshold));
+    }
+    if (typeof options.maxIdentityRegenerations === 'number') {
+      this.maxIdentityRegenerations = Math.max(0, Math.floor(options.maxIdentityRegenerations));
+    }
+    if (options.resetIdentityBudget) {
+      this.identityRegenerationsUsed = 0;
+    }
+  }
+
+  /** Reset the episode-level identity regeneration counter. */
+  resetIdentityRegenerationBudget(): void {
+    this.identityRegenerationsUsed = 0;
+  }
+
+  /**
+   * Score each generated shot against its character reference images and run a
+   * single bounded identity-driven regeneration through edit mode when a shot
+   * scores below the threshold. Early-exits per shot if the episode regen
+   * budget is exhausted.
+   */
+  private async runIdentityConsistencyGate(
+    plan: VisualPlan,
+    generatedImages: Map<string, GeneratedImage>,
+    prompts: Map<string, ImagePrompt>,
+    imageService: { generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage>; editImage?: (baseImage: { data: string; mimeType: string }, prompt: ImagePrompt, identifier: string, referenceImages?: any[]) => Promise<GeneratedImage> },
+    request: StoryboardRequest,
+  ): Promise<void> {
+    if (this.maxIdentityRegenerations <= 0) return;
+    if (this.identityRegenerationsUsed >= this.maxIdentityRegenerations) {
+      console.log('[ImageAgentTeam] Identity gate: episode regen budget exhausted, skipping.');
+      return;
+    }
+
+    for (let i = 0; i < plan.shots.length; i++) {
+      if (this.identityRegenerationsUsed >= this.maxIdentityRegenerations) {
+        console.log('[ImageAgentTeam] Identity gate: episode regen budget reached mid-scene, stopping.');
+        break;
+      }
+
+      const shot = plan.shots[i];
+      const shotKey = shot.beatId || shot.id || `shot-${i}`;
+      const image = generatedImages.get(shotKey);
+      if (!image?.imageData || !image?.mimeType) continue;
+
+      const characterIds = (shot.characters || []).filter(
+        (id) => typeof id === 'string' && id && this.characterReferenceSheets.has(id)
+      );
+      if (characterIds.length === 0) continue;
+
+      let idReport: Awaited<ReturnType<typeof this.validateImageConsistency>>;
+      try {
+        idReport = await this.validateImageConsistency(
+          { data: image.imageData, mimeType: image.mimeType },
+          characterIds,
+        );
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Identity scoring failed for shot ${shotKey}:`, err);
+        continue;
+      }
+
+      if (idReport.overallScore >= this.identityScoreThreshold) {
+        continue;
+      }
+
+      console.warn(
+        `[ImageAgentTeam] Identity gate: shot ${shotKey} scored ${idReport.overallScore.toFixed(1)} (threshold ${this.identityScoreThreshold}). Regenerating via edit mode.`
+      );
+
+      // Build strong identity ref pack: face crops first, then full views.
+      // Canonical role tags so the per-provider filter can route by artifact
+      // shape. Composite sheets are intentionally NOT included on the
+      // identity-rescue path — this is a Gemini-style edit-mode retry and we
+      // don't want the collage layout echoing into the regenerated scene.
+      const identityRefs: Array<{ data: string; mimeType: string; role: string; characterName?: string; viewType?: string; visualAnchors?: string[] }> = [];
+      for (const charId of characterIds) {
+        const sheet = this.characterReferenceSheets.get(charId);
+        if (!sheet) continue;
+        const refs = this.getCharacterReferenceImages(charId, false, 3, undefined, true);
+        for (const r of refs) {
+          const nameParts = r.name.split('-');
+          const viewType = nameParts.length > 1 ? nameParts[nameParts.length - 1] : 'front';
+          const role = viewType === 'face' ? 'character-reference-face' : 'character-reference';
+          identityRefs.push({
+            data: r.data,
+            mimeType: r.mimeType,
+            role,
+            characterName: sheet.characterName,
+            viewType,
+            visualAnchors: sheet.visualAnchors,
+          });
+        }
+      }
+
+      const basePrompt = prompts.get(shotKey);
+      const feedbackHint = idReport.feedback.length > 0 ? ` Identity drift detected: ${idReport.feedback.slice(0, 2).join(' ')}` : '';
+      const editPrompt: ImagePrompt = basePrompt
+        ? {
+            ...basePrompt,
+            prompt:
+              `Preserve the composition, camera angle, pose, lighting, and background of the base image. ` +
+              `Correct only the character face, hair color, eye color, skin tone, and distinguishing marks ` +
+              `to match the character reference images exactly. Do not change what is happening in the scene.${feedbackHint}`,
+            negativePrompt: [basePrompt.negativePrompt, 'different face, different hair color, changed eye color, wrong skin tone, missing scar, missing tattoo, altered distinguishing feature']
+              .filter(Boolean)
+              .join(', '),
+          }
+        : {
+            prompt:
+              `Preserve the composition, camera angle, pose, lighting, and background of the base image. ` +
+              `Correct only the character face, hair color, eye color, skin tone, and distinguishing marks ` +
+              `to match the character reference images exactly. Do not change what is happening in the scene.${feedbackHint}`,
+            negativePrompt: 'different face, different hair color, changed eye color, wrong skin tone, missing scar, missing tattoo, altered distinguishing feature',
+            aspectRatio: '9:16',
+          };
+
+      const editIdentifier = `beat-${request.sceneId}-${shotKey}-identityregen`;
+      try {
+        let result: GeneratedImage;
+        if (typeof imageService.editImage === 'function') {
+          result = await imageService.editImage(
+            { data: image.imageData, mimeType: image.mimeType },
+            editPrompt,
+            editIdentifier,
+            identityRefs,
+          );
+        } else {
+          // Fallback for imageService wrappers that don't expose editImage —
+          // do a regular regeneration with stronger identity refs. This still
+          // applies the identity drift negatives and extra ref count, just
+          // without the composition-preserving edit path.
+          result = await imageService.generateImage(
+            editPrompt,
+            editIdentifier,
+            {
+              sceneId: request.sceneId,
+              beatId: shotKey,
+              type: 'scene',
+              regeneration: 1,
+              includeExpressionRefs: true,
+            },
+            identityRefs,
+          );
+        }
+
+        if (result.imageData && result.mimeType) {
+          generatedImages.set(shotKey, result);
+          if (result.imageUrl) shot.generatedImageUrl = result.imageUrl;
+          shot.generatedImageData = result.imageData;
+          shot.generatedImageMimeType = result.mimeType;
+          this.identityRegenerationsUsed++;
+          console.log(
+            `[ImageAgentTeam] Identity gate: shot ${shotKey} regenerated via edit mode (${this.identityRegenerationsUsed}/${this.maxIdentityRegenerations} budget used).`
+          );
+        }
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Identity gate regen failed for shot ${shotKey}:`, err);
+      }
+    }
   }
 
   /**

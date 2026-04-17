@@ -38,6 +38,15 @@ export interface ProviderCapabilities {
   concurrency: number;
   /** Rough RPM ceiling advertised by the provider (used for observability). */
   rpmCeiling?: number;
+  /**
+   * Can this provider consume locally-trained LoRA weights at inference time,
+   * and therefore benefit from the auto-training subsystem? Only the
+   * self-hosted Stable Diffusion path supports this today. Every hosted
+   * provider (Gemini/nano-banana, Atlas/Seedream, Midjourney, DALL-E) has
+   * no customer-facing LoRA fine-tune or inference mechanism, so this flag
+   * gates `LoraTrainingAgent` to a no-op there.
+   */
+  supportsLoraTraining: boolean;
 }
 
 /**
@@ -58,6 +67,7 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
     minRequestIntervalMs: 1000,
     concurrency: 6,
     rpmCeiling: 60,
+    supportsLoraTraining: false,
   },
   'atlas-cloud': {
     id: 'atlas-cloud',
@@ -71,6 +81,7 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
     minRequestIntervalMs: 1500,
     concurrency: 4,
     rpmCeiling: 40,
+    supportsLoraTraining: false,
   },
   midapi: {
     id: 'midapi',
@@ -84,6 +95,7 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
     minRequestIntervalMs: 3000,
     concurrency: 2,
     rpmCeiling: 20,
+    supportsLoraTraining: false,
   },
   useapi: {
     id: 'useapi',
@@ -97,6 +109,7 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
     minRequestIntervalMs: 3000,
     concurrency: 2,
     rpmCeiling: 20,
+    supportsLoraTraining: false,
   },
   'dall-e': {
     id: 'dall-e',
@@ -110,6 +123,7 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
     minRequestIntervalMs: 2000,
     concurrency: 3,
     rpmCeiling: 30,
+    supportsLoraTraining: false,
   },
   'stable-diffusion': {
     id: 'stable-diffusion',
@@ -123,6 +137,7 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
     minRequestIntervalMs: 0,
     concurrency: 1,
     rpmCeiling: undefined,
+    supportsLoraTraining: true,
   },
   placeholder: {
     id: 'placeholder',
@@ -136,6 +151,7 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
     minRequestIntervalMs: 0,
     concurrency: 16,
     rpmCeiling: undefined,
+    supportsLoraTraining: false,
   },
 };
 
@@ -180,4 +196,17 @@ export function resetProviderCapabilityOverrides(): void {
 export function providerConsumesRefs(provider: ImageProvider | undefined): boolean {
   const caps = getProviderCapabilities(provider);
   return caps.maxRefs > 0 && (caps.acceptsInlineRefs || caps.acceptsUrlRefs || caps.usesMidjourneyRefTokens);
+}
+
+/**
+ * Convenience: is it meaningful to train (and apply) LoRAs for this provider?
+ *
+ * Only self-hosted Stable Diffusion today. Every other provider returns
+ * `false` so the auto-training subsystem transparently no-ops when the
+ * operator swaps to a hosted backend.
+ */
+export function providerSupportsLoraTraining(
+  provider: ImageProvider | string | undefined
+): boolean {
+  return getProviderCapabilities(provider).supportsLoraTraining === true;
 }

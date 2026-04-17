@@ -937,6 +937,41 @@ The Image Agent Team coordinates visual content generation:
 - **Lighting and color scripts:** Mood and atmosphere are maintained through consistent lighting/color
 - **Composition validation:** Images are validated for narrative clarity and visual coherence
 
+### ArtStyleProfile + Style Setup (pre-pipeline UI)
+
+- **`ArtStyleProfile`** (`src/ai-agents/images/artStyleProfile.ts`) is the
+  canonical structured representation of an art direction. It carries the
+  rendering technique, color philosophy, lighting approach, line weight,
+  composition style, mood range, positive/inappropriate vocabulary, and a
+  style-family tag (known preset vs. `unknown` for freeform styles).
+- Unknown styles are routed through `buildVerbatimProfile`, which echoes
+  the user's own words back into each DNA field so the pipeline never
+  injects cinematic vocabulary that contradicts the requested style.
+- **`StyleArchitect`** (`src/ai-agents/agents/StyleArchitect.ts`) is an
+  LLM agent that expands any raw art-style string into a full
+  `ArtStyleProfile`. A small in-process cache keyed on the raw string +
+  genre hint makes repeated expansions free for the rest of the session.
+- **Style-bible anchor prompts** live in
+  `src/ai-agents/images/anchorPrompts.ts` so the same builders drive the
+  pipeline anchors and the UI concept previews.
+- **Inline Style Setup section** on the `analysis_complete` screen
+  (`src/screens/generator/StyleSetupSection.tsx`, state in
+  `useStyleSetup`) lets the operator expand the style, edit DNA fields,
+  preview the three style-bible anchors (character portrait, arc color
+  strip, environment vignette), approve the ones they want to lock in,
+  and optionally skip the preview via a *Use defaults* toggle.
+- Approved anchors are persisted via the proxy endpoint
+  `POST /style-anchor/save`, which writes the base64 blob to
+  `generated-stories/<storyId>/style-bible/<role>.<ext>`. The resolved
+  file path is threaded into the pipeline config via
+  `PipelineConfigExtras.preapprovedStyleAnchors` so
+  `FullStoryPipeline.generateEpisodeStyleBible` hydrates the anchor from
+  disk instead of re-generating it.
+- The approved `ArtStyleProfile` and anchor file paths are persisted onto
+  the generated `Story` object (`Story.artStyleProfile`,
+  `Story.styleAnchors`) so replay and analytics always see the exact
+  style contract used during generation.
+
 ### Image Quality Feedback
 
 The system includes a feedback loop for image quality:

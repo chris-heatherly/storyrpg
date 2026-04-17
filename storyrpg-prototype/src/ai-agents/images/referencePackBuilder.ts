@@ -1,5 +1,6 @@
 import type { ReferenceImage } from '../services/imageGenerationService';
 import type { ImageSlotFamily, SlotReferencePack } from './slotTypes';
+import type { ImageProvider } from '../config';
 
 export interface ReferencePackProfile {
   maxTotal: number;
@@ -117,6 +118,11 @@ function rolePriority(role: string): number {
   // Face crops carry the strongest per-image identity signal. Always select
   // them first so they are never evicted by other character-reference views.
   if (role.includes('character-reference') && role.includes('face')) return 2;
+  // Composite sheets sit between identity and style: they're not first-class
+  // identity (risk of collage-leak downstream) but they carry palette and
+  // silhouette context. Rank them AFTER identity views so per-character slots
+  // fill up with clean views first.
+  if (role === 'composite-sheet') return 3.5 as unknown as number;
   if (role.includes('character-reference')) return 3;
   if (role.includes('expression')) return 4;
   if (role.includes('location') || role.includes('environment')) return 5;
@@ -128,10 +134,20 @@ function isExpressionRef(role: string): boolean {
 }
 
 function isIdentityRef(role: string): boolean {
+  // composite-sheet is explicitly NOT an identity ref for the pack builder —
+  // it's routed as a style-anchor equivalent and consumes a reserved slot
+  // (or is dropped entirely) rather than a per-character identity slot.
+  if (role === 'composite-sheet') return false;
   return role.includes('character-reference');
 }
 
+function isCompositeRef(role: string): boolean {
+  return role === 'composite-sheet';
+}
+
 function isStyleAnchorRef(role: string): boolean {
+  // Include the dedicated `style-anchor` role alongside legacy "style-*"
+  // names so the reserved style slot can capture either.
   return role.includes('style');
 }
 
@@ -255,4 +271,91 @@ export function buildReferencePack(
 
 export function getReferencePackProfile(family: ImageSlotFamily): ReferencePackProfile {
   return PROFILES[family];
+}
+
+/**
+ * Partition a reference set into "what the provider should see" vs
+ * "extracted composite / style anchor" so callers can (a) hand the filtered
+ * pack to the provider adapter and (b) optionally install the composite
+ * as Gemini's low-weight style anchor.
+ *
+ * Per-provider rules:
+ *
+ *   nano-banana / atlas-cloud:
+ *     Drop the composite sheet from the flat ref list — Gemini and
+ *     multi-image URL providers echo collage layouts into their outputs
+ *     when a turnaround is passed as a regular ref. The composite is
+ *     surfaced separately via `extractedComposite` so the caller can set
+ *     it as the style anchor via `setReferenceSheetStyleAnchor`.
+ *
+ *   stable-diffusion:
+ *     Drop the composite. IP-Adapter averages a collage into a muddy
+ *     embedding and OpenPose detects multiple people in a turnaround.
+ *     Individual views (face crop, full-body front, three-quarter) are
+ *     routed to specific ControlNet / IP-Adapter units downstream.
+ *
+ *   midapi / useapi (Midjourney):
+ *     Keep ONLY the composite sheet (→ --cref) and any style-anchor ref
+ *     (→ --sref). Midjourney only accepts 2 reference slots, and the
+ *     composite is the canonical format for --cref. Drop everything else.
+ *
+ *   dall-e / placeholder:
+ *     Drop all refs — the provider does not consume reference images.
+ *
+ * The original pack is never mutated.
+ */
+export interface FilteredProviderRefs {
+  /** Refs to pass to the provider's ref array / URL list. */
+  refs: ReferenceImage[];
+  /**
+   * The composite sheet that was stripped from the pack for Gemini/Atlas/SD,
+   * if one was present. Callers that care about Gemini's style-anchor slot
+   * should install this via `ImageGenerationService.setReferenceSheetStyleAnchor`.
+   * Undefined for Midjourney (where the composite stays in `refs` as --cref)
+   * and for providers that don't have a composite in the input.
+   */
+  extractedComposite?: ReferenceImage;
+}
+
+export function filterRefsForProvider(
+  refs: ReferenceImage[] | undefined,
+  provider: ImageProvider | string | undefined,
+): FilteredProviderRefs {
+  if (!refs || refs.length === 0) return { refs: [] };
+
+  const composite = refs.find((r) => r.role === 'composite-sheet');
+  const nonComposite = refs.filter((r) => r.role !== 'composite-sheet');
+
+  switch (provider) {
+    case 'nano-banana':
+    case 'atlas-cloud':
+      return {
+        refs: nonComposite,
+        extractedComposite: composite,
+      };
+
+    case 'stable-diffusion':
+      return {
+        refs: nonComposite,
+        extractedComposite: composite,
+      };
+
+    case 'midapi':
+    case 'useapi': {
+      // Midjourney: keep only the composite (→ --cref) and any style-anchor
+      // / style-reference refs (→ --sref). Everything else is discarded.
+      const kept = refs.filter(
+        (r) => r.role === 'composite-sheet' || isStyleAnchorRef(r.role),
+      );
+      return { refs: kept };
+    }
+
+    case 'dall-e':
+    case 'placeholder':
+      return { refs: [] };
+
+    default:
+      // Unknown provider: return refs unchanged so callers still function.
+      return { refs };
+  }
 }

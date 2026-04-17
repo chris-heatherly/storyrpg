@@ -14,7 +14,7 @@
  * Includes human checkpoints for review at key stages.
  */
 
-import { PipelineConfig, loadConfig, defaultValidationConfig, type MemoryConfig } from '../config';
+import { PipelineConfig, loadConfig, defaultValidationConfig, type MemoryConfig, type PreapprovedAnchor } from '../config';
 import { getMemoryStore, NodeMemoryStore, type MemoryStore } from '../utils/memoryStore';
 import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
@@ -141,6 +141,13 @@ import { walkStoryAssets, formatAssetWalkReport } from '../validators/storyAsset
 import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
 import { remediateImageIssues, resaveFinalStory } from '../validators/qaRemediation';
 import { buildReferencePack } from '../images/referencePackBuilder';
+import {
+  buildCharacterAnchorPrompt,
+  buildArcStripAnchorPrompt,
+  buildEnvironmentAnchorPrompt,
+  anchorIdentifier,
+} from '../images/anchorPrompts';
+import { composeCanonicalStyleString } from '../images/artStyleProfile';
 import { buildStoryImageSlotManifest } from '../images/storyImageSlotManifest';
 import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
 import { buildBeatImagePrompt, overrideShotFromPlan } from '../images/beatPromptBuilder';
@@ -520,6 +527,19 @@ export class FullStoryPipeline {
   private currentEpisode: number = 0;
   private totalEpisodes: number = 1;
   private cachedPipelineMemory: string | null = null;
+
+  /**
+   * Paths (relative or absolute) to the three style-bible anchor images,
+   * whether preapproved by the UI or generated in `generateEpisodeStyleBible`.
+   * Persisted onto `Story.styleAnchors` so single-image regenerations and
+   * session resumes can re-prime `setGeminiStyleReference` without
+   * rebuilding the style bible from scratch.
+   */
+  private _styleAnchorPaths: {
+    character?: string;
+    arcStrip?: string;
+    environment?: string;
+  } = {};
 
   // Visual planning outputs collection
   private collectedVisualPlanning: {
@@ -4985,6 +5005,15 @@ export class FullStoryPipeline {
 
       episodes: [episode],
       outputDir: '', // Will be filled in by pipeline
+
+      artStyleProfile: this.config.imageGen?.artStyleProfile,
+      styleAnchors: (this._styleAnchorPaths.character || this._styleAnchorPaths.arcStrip || this._styleAnchorPaths.environment)
+        ? {
+            character: this._styleAnchorPaths.character ? { imagePath: this._styleAnchorPaths.character } : undefined,
+            arcStrip: this._styleAnchorPaths.arcStrip ? { imagePath: this._styleAnchorPaths.arcStrip } : undefined,
+            environment: this._styleAnchorPaths.environment ? { imagePath: this._styleAnchorPaths.environment } : undefined,
+          }
+        : undefined,
     };
 
     return story;
@@ -6430,28 +6459,37 @@ export class FullStoryPipeline {
               }
             : this.imageService;
 
-          // Generate reference sheet: individual views for NB2 (better identity signal), composite for older models
-          const useIndividualViews = this.config.imageGen?.gemini?.useIndividualCharacterViews !== false && this.imageService.getGeminiSettings().useIndividualCharacterViews;
+          // Dual-artifact reference generation: always produce BOTH the
+          // individual views (front / three-quarter / profile / face /
+          // expressions — primary identity signal for Gemini, Atlas, SD) and
+          // the composite model sheet (consumed by Midjourney --cref and
+          // used as a low-weight style anchor for Gemini). Per-provider
+          // filtering in imageGenerationService decides which artifact each
+          // downstream call actually receives.
           const progressCb = (status: string, index: number, total: number) => {
             this.emit({
               type: 'checkpoint',
               phase: 'reference_sheet',
-              message: `${char.name}: Generating ${useIndividualViews ? 'individual view' : 'composite'} reference sheet`,
+              message: `${char.name}: Generating character references (${status})`,
               data: { characterId: char.id, viewType: status, progress: index / total }
             });
           };
-          const generatedSheet = useIndividualViews
-            ? await withTimeout(this.imageAgentTeam.generateIndividualViewImages(
-                fullRefResult.poseSheet, imageServiceWithOwOverride, progressCb, userReferenceImages
-              ), PIPELINE_TIMEOUTS.storyboard, `IndividualViewRefSheet(${char.name})`)
-            : await withTimeout(this.imageAgentTeam.generateCompositeReferenceSheet(
-                fullRefResult.poseSheet, imageServiceWithOwOverride, progressCb, primaryUserRef, userReferenceImages
-              ), PIPELINE_TIMEOUTS.storyboard, `CompositeRefSheet(${char.name})`);
+          const generatedSheet = await withTimeout(
+            this.imageAgentTeam.generateFullCharacterReferences(
+              fullRefResult.poseSheet,
+              imageServiceWithOwOverride,
+              progressCb,
+              primaryUserRef,
+              userReferenceImages,
+            ),
+            PIPELINE_TIMEOUTS.storyboard,
+            `FullCharacterReferences(${char.name})`,
+          );
 
           this.emit({
             type: 'agent_complete',
             agent: 'CharacterReferenceSheetAgent',
-            message: `${useIndividualViews ? 'Individual view' : 'Composite'} reference sheet complete for ${char.name}: ${generatedSheet.generatedImages.size} images`,
+            message: `Character references complete for ${char.name}: ${generatedSheet.generatedImages.size} artifacts (views + composite)`,
             data: {
               characterId: char.id,
               viewCount: generatedSheet.generatedImages.size,
@@ -6563,27 +6601,30 @@ export class FullStoryPipeline {
           }
         : this.imageService;
 
-      const useIndividualViewsSimple = this.config.imageGen?.gemini?.useIndividualCharacterViews !== false && this.imageService.getGeminiSettings().useIndividualCharacterViews;
       const simpleProgressCb = (status: string, index: number, total: number) => {
         this.emit({
           type: 'checkpoint',
           phase: 'reference_sheet',
-          message: `${char.name}: Generating ${useIndividualViewsSimple ? 'individual view' : 'composite'} reference sheet`,
+          message: `${char.name}: Generating character references (${status})`,
           data: { characterId: char.id, viewType: status, progress: index / total }
         });
       };
-      const generatedSheet = useIndividualViewsSimple
-        ? await withTimeout(this.imageAgentTeam.generateIndividualViewImages(
-            sheet, imageServiceWithOwOverrideSimple, simpleProgressCb, userReferenceImages
-          ), PIPELINE_TIMEOUTS.storyboard, `IndividualViewRefSheet(${char.name})`)
-        : await withTimeout(this.imageAgentTeam.generateCompositeReferenceSheet(
-            sheet, imageServiceWithOwOverrideSimple, simpleProgressCb, primaryUserRef, userReferenceImages
-          ), PIPELINE_TIMEOUTS.storyboard, `CompositeRefSheet(${char.name})`);
+      const generatedSheet = await withTimeout(
+        this.imageAgentTeam.generateFullCharacterReferences(
+          sheet,
+          imageServiceWithOwOverrideSimple,
+          simpleProgressCb,
+          primaryUserRef,
+          userReferenceImages,
+        ),
+        PIPELINE_TIMEOUTS.storyboard,
+        `FullCharacterReferences(${char.name})`,
+      );
 
       this.emit({
         type: 'agent_complete',
         agent: 'CharacterReferenceSheetAgent',
-        message: `${useIndividualViewsSimple ? 'Individual view' : 'Composite'} reference sheet complete for ${char.name}: ${generatedSheet.generatedImages.size} images`,
+        message: `Character references complete for ${char.name}: ${generatedSheet.generatedImages.size} artifacts (views + composite)`,
         data: {
           characterId: char.id,
           viewCount: generatedSheet.generatedImages.size,
@@ -7865,7 +7906,7 @@ ${clothingRule}
             style: this.config.artStyle || undefined,
             aspectRatio: '9:19.5',
             composition: `Scene: ${scene.sceneName}. Genre: ${brief.story.genre}, Tone: ${brief.story.tone}. Generate exactly ONE single full-bleed image with ONE unified scene and ONE camera angle. No split-screen, no diptych, no stacked panels, no repeated subject, no image-within-image.`,
-            negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, multi-panel, storyboard, grid layout, diptych, triptych, collage, montage, stacked scenes, image within image, duplicate character, same character twice, cloned figure, repeated subject',
+            negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, storyboard, grid layout, diptych, triptych, collage, duplicate character, same character twice, cloned figure, repeated subject',
           }, scene.settingContext);
           const identifier = `beat-${scopedSceneId}-${beat.id}-recovery`;
           const result = await withTimeout(this.imageService.generateImage(
@@ -8254,35 +8295,62 @@ ${clothingRule}
       };
 
       const gemSettings = this.imageService.getGeminiSettings();
-      const preferIndividualViews = gemSettings.useIndividualCharacterViews ?? false;
       const maxPerChar = gemSettings.maxRefImagesPerCharacter || 2;
 
       const referenceImages: Array<{ data: string; mimeType: string; role: string; characterName: string; viewType: string }> = [];
 
-      // Protagonist references
+      // Helper: canonicalize role from ref.name (e.g. "Aoi-face" → "character-reference-face")
+      const roleFor = (refName: string): { role: string; viewType: string } => {
+        const viewType = refName.split('-').pop() || 'front';
+        if (viewType === 'face') return { role: 'character-reference-face', viewType };
+        return { role: 'character-reference', viewType };
+      };
+
+      // Protagonist references — individual views (authoritative identity signal)
       const protRefs = this.imageAgentTeam.getCharacterReferenceImages(
-        brief.protagonist.id, false, maxPerChar, 'front', preferIndividualViews
+        brief.protagonist.id, false, maxPerChar, 'front', true
       );
       for (const ref of protRefs) {
+        const { role, viewType } = roleFor(ref.name);
         referenceImages.push({
           data: ref.data, mimeType: ref.mimeType,
-          role: `character-reference-${ref.name}`,
+          role,
           characterName: brief.protagonist.name,
-          viewType: ref.name.split('-').pop() || 'front',
+          viewType,
+        });
+      }
+      // Composite sheet as a separate artifact — routed per-provider downstream.
+      const protComposite = this.imageAgentTeam.getCompositeReferenceImage(brief.protagonist.id);
+      if (protComposite) {
+        referenceImages.push({
+          data: protComposite.data, mimeType: protComposite.mimeType,
+          role: 'composite-sheet',
+          characterName: brief.protagonist.name,
+          viewType: 'composite',
         });
       }
 
       // Antagonist references (if available, limited)
       if (antagonist) {
         const antagRefs = this.imageAgentTeam.getCharacterReferenceImages(
-          antagonist.id, false, 2, 'front', preferIndividualViews
+          antagonist.id, false, 2, 'front', true
         );
         for (const ref of antagRefs) {
+          const { role, viewType } = roleFor(ref.name);
           referenceImages.push({
             data: ref.data, mimeType: ref.mimeType,
-            role: `character-reference-${ref.name}`,
+            role,
             characterName: antagonist.name,
-            viewType: ref.name.split('-').pop() || 'front',
+            viewType,
+          });
+        }
+        const antagComposite = this.imageAgentTeam.getCompositeReferenceImage(antagonist.id);
+        if (antagComposite) {
+          referenceImages.push({
+            data: antagComposite.data, mimeType: antagComposite.mimeType,
+            role: 'composite-sheet',
+            characterName: antagonist.name,
+            viewType: 'composite',
           });
         }
       }
@@ -10595,7 +10663,11 @@ ${clothingRule}
     const gemSettings = this.imageService.getGeminiSettings();
     const mjSettings = this.imageService.getMidjourneySettings();
     const maxPerChar = gemSettings.maxRefImagesPerCharacter || mjSettings.maxRefImagesPerCharacter || 2;
-    const preferIndividualViews = gemSettings.useIndividualCharacterViews ?? false;
+    // Dual-artifact routing: always request the individual views here. The
+    // composite sheet is added separately below with a canonical
+    // `composite-sheet` role so the per-provider filter can route it
+    // correctly (Midjourney --cref, Gemini style-anchor).
+    const preferIndividualViews = true;
     
     for (const charId of characterIds) {
       if (references.length >= MAX_TOTAL_REFS) break;
@@ -10617,17 +10689,48 @@ ${clothingRule}
       for (const ref of charRefs) {
         const nameParts = ref.name.split('-');
         const viewType = nameParts.length > 1 ? nameParts[nameParts.length - 1] : 'front';
-        
+
+        // Canonical role tagging so the per-provider filter can route by
+        // artifact shape. `character-reference-face` keeps the face-crop
+        // elevated in rolePriority; expression views keep the 'expression'
+        // token so rolePriority routes them correctly.
+        let role: string;
+        if (viewType === 'face') {
+          role = 'character-reference-face';
+        } else if (ref.name.includes('expression')) {
+          role = `character-reference-expression-${viewType}`;
+        } else {
+          role = 'character-reference';
+        }
+
         references.push({
           data: ref.data,
           mimeType: ref.mimeType,
-          role: `character-reference-${ref.name}`,
+          role,
           characterName,
           viewType,
           visualAnchors,
         });
       }
-      
+
+      // Emit the composite model sheet as a separate artifact with its own
+      // canonical role. Downstream provider filters will either drop it
+      // (Gemini/Atlas — promoted to style anchor instead) or surface it
+      // as Midjourney `--cref`. Always tag it so the filter can find it.
+      if (references.length < MAX_TOTAL_REFS) {
+        const composite = this.imageAgentTeam.getCompositeReferenceImage(charId);
+        if (composite) {
+          references.push({
+            data: composite.data,
+            mimeType: composite.mimeType,
+            role: 'composite-sheet',
+            characterName,
+            viewType: 'composite',
+            visualAnchors,
+          });
+        }
+      }
+
       if (consistencyInfo) {
         this.emit({ type: 'debug', phase: 'images', message: `Using ${charRefs.length} ref image(s) for ${characterName}: ${consistencyInfo.visualAnchors.join(', ')}` });
       }
@@ -11138,85 +11241,149 @@ ${clothingRule}
     this.emit({ type: 'agent_start', agent: 'ColorScriptAgent', message: 'Generating episode style bible...' });
 
     try {
-      const thumbsResult = await withTimeout(
-        this.imageAgentTeam.generateColorScriptThumbnails(colorScript),
-        PIPELINE_TIMEOUTS.colorScript,
-        'ColorScriptThumbnails'
-      );
+      // Composite style string carries the full ArtStyleProfile DNA instead
+      // of just the short label, so downstream prompt assembly already sees
+      // "romance novel. Rendering: …. Color: …." rather than a bare name
+      // that the model's priors can misinterpret.
+      const profileStyle =
+        composeCanonicalStyleString(this.config.imageGen?.artStyleProfile) ||
+        this.config.artStyle ||
+        undefined;
 
-      if (!thumbsResult.success || !thumbsResult.data) {
-        this.emit({ type: 'warning', phase: 'images', message: `Style bible prompt generation failed: ${thumbsResult.error || 'unknown error'}` });
-        return false;
+      const titleSlug = idSlugify(brief.story.title);
+      const preapproved = this.config.imageGen?.preapprovedStyleAnchors;
+
+      // === Arc color strip ===
+      let stripImage: GeneratedImage | undefined;
+      if (preapproved?.arcStrip) {
+        stripImage = await this.hydratePreapprovedAnchor(preapproved.arcStrip);
+        if (preapproved.arcStrip.imagePath) {
+          this._styleAnchorPaths.arcStrip = preapproved.arcStrip.imagePath;
+        }
+        this.emit({
+          type: 'info',
+          phase: 'images',
+          message: 'Style bible arc strip: using UI-preapproved anchor (skipping in-pipeline generation).',
+        });
+      } else {
+        const thumbsResult = await withTimeout(
+          this.imageAgentTeam.generateColorScriptThumbnails(colorScript),
+          PIPELINE_TIMEOUTS.colorScript,
+          'ColorScriptThumbnails'
+        );
+
+        if (!thumbsResult.success || !thumbsResult.data) {
+          this.emit({ type: 'warning', phase: 'images', message: `Style bible prompt generation failed: ${thumbsResult.error || 'unknown error'}` });
+          return false;
+        }
+
+        const built = buildArcStripAnchorPrompt({
+          style: profileStyle,
+          storyTitle: brief.story.title,
+          stripPrompt: thumbsResult.data.stripPrompt,
+        });
+        stripImage = await withTimeout(
+          this.imageService.generateImage(
+            built.prompt,
+            anchorIdentifier(titleSlug, built.role),
+            { type: 'master' },
+          ),
+          PIPELINE_TIMEOUTS.imageGeneration,
+          'EpisodeStyleBibleStrip'
+        );
+        if (stripImage?.imagePath) {
+          this._styleAnchorPaths.arcStrip = stripImage.imagePath;
+        }
       }
 
-      const stripPrompt: ImagePrompt = {
-        prompt: thumbsResult.data.stripPrompt,
-        style: this.config.artStyle || undefined,
-        aspectRatio: '4:1',
-        composition: 'Horizontal color script strip showing the episode look bible. Abstract mood panels only, no text, no characters, no people, no figures.',
-        negativePrompt: 'text, letters, numbers, captions, labels, collage, split-screen, multi-image grid, photorealistic, photography, person, people, character, figure, face, body, silhouette of person, human, man, woman, portrait',
-        visualNarrative: `Episode style bible for ${brief.story.title}: abstract color-and-light arc strip. NO characters, NO people, NO figures — purely abstract color mood panels.`,
-      };
-
-      const stripIdentifier = `style-bible-${idSlugify(brief.story.title)}-arc-strip`;
-      const stripImage = await withTimeout(
-        this.imageService.generateImage(stripPrompt, stripIdentifier, { type: 'master' }),
-        PIPELINE_TIMEOUTS.imageGeneration,
-        'EpisodeStyleBibleStrip'
-      );
-
+      // === Character anchor ===
       const protagonistRefImages = this.gatherCharacterReferenceImages([brief.protagonist.id], characterBible);
       const protagonistName = characterBible.characters.find(c => c.id === brief.protagonist.id)?.name || brief.protagonist.name;
-      const colorTerms = colorScript.colorDictionary.slice(0, 3).map(entry => entry.color).join(', ');
-      const anchorPrompt: ImagePrompt = {
-        prompt: `single character portrait of ${protagonistName}, one person only, three-quarter standing pose, readable face and costume, cinematic story frame, the episode palette expressed through ${colorTerms || 'the planned color script'}, designed as a visual style bible anchor, unified single image`,
-        style: this.config.artStyle || undefined,
-        aspectRatio: '3:4',
-        composition: 'One single unified image of one character, no splits, no panels, no divisions, clear silhouette, polished rendering, no text.',
-        negativePrompt: 'text, letters, numbers, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, reference sheet, turnaround, photorealistic, photography, neutral mannequin pose',
-        visualNarrative: `${protagonistName} rendered as the canonical in-style anchor for the episode. One single unified image, not split or divided.`,
-        keyExpression: 'Readable calm but alert expression, neutral enough for reuse, never blank.',
-        keyBodyLanguage: 'Relaxed but purposeful three-quarter stance, asymmetric weight shift, clear silhouette.',
-      };
+      const colorTerms = colorScript.colorDictionary.slice(0, 3).map(entry => entry.color);
 
-      const anchorIdentifier = `style-bible-${idSlugify(brief.story.title)}-character-anchor`;
-      const anchorImage = await withTimeout(
-        this.imageService.generateImage(
-          anchorPrompt,
-          anchorIdentifier,
-          { type: 'master', characters: [brief.protagonist.id], characterNames: [protagonistName], characterDescriptions: this.buildCharacterDescriptions([brief.protagonist.id], characterBible) },
-          protagonistRefImages.length > 0 ? protagonistRefImages : undefined
-        ),
-        PIPELINE_TIMEOUTS.imageGeneration,
-        'EpisodeStyleBibleCharacterAnchor'
-      );
+      let anchorImage: GeneratedImage;
+      if (preapproved?.character) {
+        anchorImage = await this.hydratePreapprovedAnchor(preapproved.character);
+        if (preapproved.character.imagePath) {
+          this._styleAnchorPaths.character = preapproved.character.imagePath;
+        }
+        this.emit({
+          type: 'info',
+          phase: 'images',
+          message: 'Style bible character anchor: using UI-preapproved anchor (skipping in-pipeline generation).',
+        });
+      } else {
+        const built = buildCharacterAnchorPrompt({
+          style: profileStyle,
+          protagonistName,
+          colorTerms,
+        });
+        anchorImage = await withTimeout(
+          this.imageService.generateImage(
+            built.prompt,
+            anchorIdentifier(titleSlug, built.role),
+            {
+              type: 'master',
+              characters: [brief.protagonist.id],
+              characterNames: [protagonistName],
+              characterDescriptions: this.buildCharacterDescriptions([brief.protagonist.id], characterBible),
+            },
+            protagonistRefImages.length > 0 ? protagonistRefImages : undefined,
+          ),
+          PIPELINE_TIMEOUTS.imageGeneration,
+          'EpisodeStyleBibleCharacterAnchor'
+        );
+        if (anchorImage?.imagePath) {
+          this._styleAnchorPaths.character = anchorImage.imagePath;
+        }
+      }
 
-      // C3: Optional third sample — an environment vignette in the episode's
-      // tone. Locks in texture/atmosphere alongside the character anchor and
-      // color strip. Gated behind EXPO_PUBLIC_STYLE_BIBLE_RICH so teams that
-      // want to spend the extra image budget can opt in; default off.
+      // === Environment anchor (optional) ===
+      // Gated behind EXPO_PUBLIC_STYLE_BIBLE_RICH for in-pipeline generation.
+      // A UI-preapproved environment anchor always wins regardless of the flag.
       const env = typeof process !== 'undefined' ? process.env : ({} as Record<string, string | undefined>);
-      const richSamplesEnabled = env.EXPO_PUBLIC_STYLE_BIBLE_RICH === 'true' ||
-        env.EXPO_PUBLIC_STYLE_BIBLE_RICH === '1';
+      const richSamplesEnabled =
+        env.EXPO_PUBLIC_STYLE_BIBLE_RICH === 'true' || env.EXPO_PUBLIC_STYLE_BIBLE_RICH === '1';
       let environmentAnchorImage: GeneratedImage | undefined;
-      if (richSamplesEnabled) {
+      if (preapproved?.environment) {
+        try {
+          environmentAnchorImage = await this.hydratePreapprovedAnchor(preapproved.environment);
+          if (preapproved.environment.imagePath) {
+            this._styleAnchorPaths.environment = preapproved.environment.imagePath;
+          }
+          this.emit({
+            type: 'info',
+            phase: 'images',
+            message: 'Style bible environment anchor: using UI-preapproved anchor (skipping in-pipeline generation).',
+          });
+        } catch (envErr) {
+          this.emit({
+            type: 'warning',
+            phase: 'images',
+            message: `Preapproved environment anchor hydration failed (non-fatal): ${envErr instanceof Error ? envErr.message : String(envErr)}`,
+          });
+        }
+      } else if (richSamplesEnabled) {
         try {
           const primaryLocation = brief.world.keyLocations[0];
-          const toneTerms = colorScript.colorDictionary.slice(0, 2).map(e => e.color).join(', ');
-          const environmentPrompt: ImagePrompt = {
-            prompt: `environment vignette of ${primaryLocation?.name || 'the episode\'s primary location'} at the key tonal moment, no people, atmospheric light and texture, the episode palette expressed through ${toneTerms || 'the planned color script'}, designed as a visual style bible anchor for locations, unified single image`,
-            style: this.config.artStyle || undefined,
-            aspectRatio: '16:9',
-            composition: 'Environment-only establishing vignette. No people, no figures, no text. Single cohesive image locking in the episode\'s material palette and lighting.',
-            negativePrompt: 'text, letters, numbers, captions, labels, characters, people, figures, person, woman, man, silhouette of person, portrait, collage, split-screen, multi-panel',
-            visualNarrative: `Episode style bible environment anchor for ${brief.story.title}: locks in the look of ${primaryLocation?.name || 'the primary location'} under the episode's tonal palette.`,
-          };
-          const environmentIdentifier = `style-bible-${idSlugify(brief.story.title)}-environment-anchor`;
+          const built = buildEnvironmentAnchorPrompt({
+            style: profileStyle,
+            storyTitle: brief.story.title,
+            locationName: primaryLocation?.name,
+            toneTerms: colorScript.colorDictionary.slice(0, 2).map(e => e.color),
+          });
           environmentAnchorImage = await withTimeout(
-            this.imageService.generateImage(environmentPrompt, environmentIdentifier, { type: 'master' as const }),
+            this.imageService.generateImage(
+              built.prompt,
+              anchorIdentifier(titleSlug, built.role),
+              { type: 'master' as const },
+            ),
             PIPELINE_TIMEOUTS.imageGeneration,
             'EpisodeStyleBibleEnvironmentAnchor'
           );
+          if (environmentAnchorImage?.imagePath) {
+            this._styleAnchorPaths.environment = environmentAnchorImage.imagePath;
+          }
         } catch (envErr) {
           this.emit({
             type: 'warning',
@@ -11226,9 +11393,9 @@ ${clothingRule}
         }
       }
 
-      const preferredAnchor = (anchorImage.imageData && anchorImage.mimeType)
+      const preferredAnchor = (anchorImage?.imageData && anchorImage?.mimeType)
         ? anchorImage
-        : (stripImage.imageData && stripImage.mimeType ? stripImage : undefined);
+        : (stripImage?.imageData && stripImage?.mimeType ? stripImage : undefined);
 
       if (!preferredAnchor?.imageData || !preferredAnchor?.mimeType) {
         this.emit({ type: 'warning', phase: 'images', message: 'Episode style bible did not produce a reusable image anchor. Falling back to first scene anchor.' });
@@ -11241,10 +11408,15 @@ ${clothingRule}
         agent: 'ColorScriptAgent',
         message: 'Episode style bible ready and stored as the primary style anchor.',
         data: {
-          stripGenerated: !!stripImage.imageUrl,
-          characterAnchorGenerated: !!anchorImage.imageUrl,
+          stripGenerated: !!stripImage?.imageUrl,
+          characterAnchorGenerated: !!anchorImage?.imageUrl,
           environmentAnchorGenerated: !!environmentAnchorImage?.imageUrl,
           richSamplesEnabled,
+          preapprovedAnchorsUsed: {
+            character: !!preapproved?.character,
+            arcStrip: !!preapproved?.arcStrip,
+            environment: !!preapproved?.environment,
+          },
         }
       });
       return true;
@@ -11253,6 +11425,56 @@ ${clothingRule}
       this.emit({ type: 'warning', phase: 'images', message: `Episode style bible generation failed: ${message}` });
       return false;
     }
+  }
+
+  /**
+   * Turn a PreapprovedAnchor (inline base64 or on-disk path) into a
+   * `GeneratedImage` shape compatible with the rest of the style-bible
+   * bookkeeping — specifically the later `setGeminiStyleReference` call
+   * which needs `imageData` + `mimeType`.
+   */
+  private async hydratePreapprovedAnchor(
+    anchor: PreapprovedAnchor,
+  ): Promise<GeneratedImage> {
+    if (!anchor) {
+      throw new Error('hydratePreapprovedAnchor called with empty anchor');
+    }
+    if (anchor.data && anchor.mimeType) {
+      return {
+        prompt: { prompt: '' } as ImagePrompt,
+        imagePath: anchor.imagePath,
+        imageUrl: undefined,
+        imageData: anchor.data,
+        mimeType: anchor.mimeType,
+        metadata: { format: 'preapproved-anchor' },
+      };
+    }
+    if (anchor.imagePath) {
+      try {
+        const fs = await import('fs/promises');
+        const buffer = await fs.readFile(anchor.imagePath);
+        const b64 = buffer.toString('base64');
+        const lower = anchor.imagePath.toLowerCase();
+        const mimeType = lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+          ? 'image/jpeg'
+          : lower.endsWith('.webp')
+          ? 'image/webp'
+          : 'image/png';
+        return {
+          prompt: { prompt: '' } as ImagePrompt,
+          imagePath: anchor.imagePath,
+          imageUrl: undefined,
+          imageData: b64,
+          mimeType,
+          metadata: { format: 'preapproved-anchor' },
+        };
+      } catch (err) {
+        throw new Error(
+          `Failed to read preapproved anchor from disk (${anchor.imagePath}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    throw new Error('Preapproved anchor has neither inline data nor an imagePath');
   }
 
   /**

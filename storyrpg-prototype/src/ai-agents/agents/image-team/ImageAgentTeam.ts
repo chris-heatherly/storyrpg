@@ -1135,11 +1135,13 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       referenceImages.length > 0 ? referenceImages : undefined
     );
 
-    // Store the composite image under all view keys so getCharacterReferenceImages works
+    // Store the composite image ONLY under the 'composite' key. Writing it
+    // under 'front' here would cause scene generation to surface the collage
+    // as a regular character-reference, which Gemini echoes as split-screen
+    // output. Per-provider routing now picks up the composite via the
+    // dedicated 'composite-sheet' role instead.
     const generatedImages = new Map<string, GeneratedImage>();
     generatedImages.set('composite', result);
-    // Also store under 'front' so priority-based lookups still find something
-    generatedImages.set('front', result);
 
     const generatedSheet: GeneratedReferenceSheet = {
       ...sheet,
@@ -1149,6 +1151,70 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     this.characterReferenceSheets.set(sheet.characterId, generatedSheet);
     console.log(`[ImageAgentTeam] Composite reference sheet complete for ${sheet.characterName}`);
     return generatedSheet;
+  }
+
+  /**
+   * Dual-artifact orchestrator: produce both the individual-view references
+   * and the composite model sheet for a character in parallel. Each artifact
+   * is consumed by a different downstream provider:
+   *
+   *   - individual views (front / three-quarter / profile / face / expressions)
+   *     → Gemini, Atlas Cloud, Stable Diffusion
+   *   - composite sheet → Midjourney `--cref`, Gemini style-anchor (low weight)
+   *
+   * The composite generation is advisory — if it fails we keep the individual
+   * views (which are the primary identity signal) and log a warning. The
+   * reverse is fatal: individual views are required for the Gemini path.
+   */
+  async generateFullCharacterReferences(
+    sheet: CharacterReferenceSheet,
+    imageService: { generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage> },
+    onProgress?: (status: string, index: number, total: number) => void,
+    userReferenceImage?: { data: string; mimeType: string },
+    userReferenceImages?: Array<{ data: string; mimeType: string }>
+  ): Promise<GeneratedReferenceSheet> {
+    console.log(`[ImageAgentTeam] Generating FULL character references (individual views + composite) for: ${sheet.characterName}`);
+
+    const normalizedUserRefs: Array<{ data: string; mimeType: string }> | undefined =
+      userReferenceImages && userReferenceImages.length > 0
+        ? userReferenceImages
+        : userReferenceImage
+          ? [userReferenceImage]
+          : undefined;
+
+    // Individual views are the authoritative identity path — generate them
+    // first and fail hard if they can't be produced (same semantics as before).
+    const individualSheet = await this.generateIndividualViewImages(
+      sheet,
+      imageService,
+      onProgress,
+      normalizedUserRefs,
+    );
+
+    // Composite generation reuses the same imageService and is additive.
+    // Wrap it so a failure here doesn't lose the individual views.
+    try {
+      const compositeSheet = await this.generateCompositeReferenceSheet(
+        sheet,
+        imageService,
+        onProgress,
+        userReferenceImage,
+        userReferenceImages,
+      );
+      const compositeImage = compositeSheet.generatedImages.get('composite');
+      if (compositeImage) {
+        individualSheet.generatedImages.set('composite', compositeImage);
+      }
+    } catch (err) {
+      console.warn(`[ImageAgentTeam] Composite reference sheet generation failed for ${sheet.characterName} — proceeding with individual views only:`, err);
+    }
+
+    // Re-cache the merged sheet so getReferenceSheet/getCharacterReferenceImages
+    // see both artifacts. generateIndividualViewImages and
+    // generateCompositeReferenceSheet each call set() on the same key, so the
+    // last writer wins — make sure we're that last writer.
+    this.characterReferenceSheets.set(sheet.characterId, individualSheet);
+    return individualSheet;
   }
 
   /**
@@ -1548,6 +1614,41 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     appendExpressionRefs();
 
     return references;
+  }
+
+  /**
+   * Return the composite model sheet image for a character, if one was
+   * generated. The composite is the single-image "turnaround + palette"
+   * artifact; per-provider routing uses it for Midjourney `--cref` and
+   * (optionally) as a low-weight style anchor for Gemini scene generation.
+   * Returns null if no composite is cached (e.g. individual-views-only mode).
+   */
+  getCompositeReferenceImage(characterId: string): { data: string; mimeType: string; name: string } | null {
+    const sheet = this.characterReferenceSheets.get(characterId);
+    const composite = sheet?.generatedImages.get('composite');
+    if (!composite?.imageData || !composite?.mimeType) return null;
+    return {
+      data: composite.imageData,
+      mimeType: composite.mimeType,
+      name: `${sheet!.characterName}-composite`,
+    };
+  }
+
+  /**
+   * Return the dedicated face-crop identity anchor for a character, if one
+   * was derived during individual-view generation. Face crops carry the
+   * strongest per-image identity signal for Gemini and Stable Diffusion
+   * IP-Adapter Face, so callers should prefer it for close-up beats.
+   */
+  getCharacterFaceCrop(characterId: string): { data: string; mimeType: string; name: string } | null {
+    const sheet = this.characterReferenceSheets.get(characterId);
+    const face = sheet?.generatedImages.get('face');
+    if (!face?.imageData || !face?.mimeType) return null;
+    return {
+      data: face.imageData,
+      mimeType: face.mimeType,
+      name: `${sheet!.characterName}-face`,
+    };
   }
 
   /**
@@ -2241,6 +2342,10 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       );
 
       // Build strong identity ref pack: face crops first, then full views.
+      // Canonical role tags so the per-provider filter can route by artifact
+      // shape. Composite sheets are intentionally NOT included on the
+      // identity-rescue path — this is a Gemini-style edit-mode retry and we
+      // don't want the collage layout echoing into the regenerated scene.
       const identityRefs: Array<{ data: string; mimeType: string; role: string; characterName?: string; viewType?: string; visualAnchors?: string[] }> = [];
       for (const charId of characterIds) {
         const sheet = this.characterReferenceSheets.get(charId);
@@ -2249,10 +2354,11 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
         for (const r of refs) {
           const nameParts = r.name.split('-');
           const viewType = nameParts.length > 1 ? nameParts[nameParts.length - 1] : 'front';
+          const role = viewType === 'face' ? 'character-reference-face' : 'character-reference';
           identityRefs.push({
             data: r.data,
             mimeType: r.mimeType,
-            role: `character-reference-${r.name}`,
+            role,
             characterName: sheet.characterName,
             viewType,
             visualAnchors: sheet.visualAnchors,

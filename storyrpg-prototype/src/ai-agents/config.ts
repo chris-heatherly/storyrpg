@@ -31,6 +31,21 @@ import type { ImageQaConfig } from './config/imageQaConfig';
 import { resolveImageQaConfig, resolveArtStylePresetProfile } from './config/imageQaConfig';
 import type { ArtStyleProfile } from './images/artStyleProfile';
 
+/**
+ * One pre-approved style-bible anchor image supplied by the UI's Style
+ * Setup flow. Either the inline base64 payload (preferred for immediate
+ * handoff to `setGeminiStyleReference`) or an on-disk path that the
+ * pipeline can read.
+ */
+export interface PreapprovedAnchor {
+  /** Base64-encoded image bytes (no data-URL prefix). */
+  data?: string;
+  /** MIME type matching `data` (e.g. `image/png`). */
+  mimeType?: string;
+  /** Absolute or workspace-relative path to the stored image. */
+  imagePath?: string;
+}
+
 export type { ImageQaConfig, ImagePromptMode, ImageQaMode } from './config/imageQaConfig';
 export { DEFAULT_IMAGE_QA_CONFIG } from './config/imageQaConfig';
 export type { ArtStyleProfile } from './images/artStyleProfile';
@@ -201,8 +216,22 @@ export interface GeminiSettings extends ImageReferenceSettings {
   referenceResolution?: ImageResolution;
   /** Resolution for cover art and master location images (default: '2K') */
   coverResolution?: ImageResolution;
-  /** Generate individual view images instead of composite sheets for NB2 character consistency (default: true) */
+  /**
+   * @deprecated As of the dual-artifact routing change, character reference
+   * generation always produces BOTH individual views and the composite
+   * sheet; per-provider filtering picks the right artifact per downstream
+   * call. Kept here for back-compat with persisted settings — the flag is
+   * read but no longer gates generation.
+   */
   useIndividualCharacterViews?: boolean;
+  /**
+   * When true (default), the composite model sheet is attached as a
+   * low-weight style anchor to Gemini/Atlas scene generations instead of
+   * being passed as a regular character-reference. This prevents the
+   * "collage leak" where Gemini echoes the turnaround layout into scene
+   * outputs while still letting the palette/silhouette inform style.
+   */
+  compositeAsStyleAnchor?: boolean;
   /** Thinking level for scene/beat images (default: 'minimal') */
   thinkingLevel?: 'minimal' | 'high';
   /** Thinking level for reference sheets and cover art (default: 'high') */
@@ -225,6 +254,7 @@ export const DEFAULT_GEMINI_SETTINGS: Required<GeminiSettings> = {
   referenceResolution: '2K',
   coverResolution: '2K',
   useIndividualCharacterViews: true,
+  compositeAsStyleAnchor: true,
   thinkingLevel: 'minimal',
   referenceThinkingLevel: 'high',
   usePreviewForValidation: false,
@@ -376,6 +406,186 @@ export const DEFAULT_STABLE_DIFFUSION_SETTINGS: Required<
   apiKey: undefined,
 };
 
+// ========================================
+// Auto-train LoRA settings
+// ========================================
+
+/**
+ * Which character tiers are eligible for auto character-LoRA training. Matches
+ * `Character.role`/tier strings used by the existing reference-sheet pipeline.
+ */
+export type LoraTrainableCharacterTier = 'core' | 'major' | 'supporting';
+
+/**
+ * Which concrete trainer backend the `LoraTrainingAgent` talks to. `disabled`
+ * keeps the whole subsystem dormant — the agent short-circuits before it
+ * even instantiates an adapter.
+ */
+export type LoraTrainerBackend =
+  | 'kohya'
+  | 'a1111-dreambooth'
+  | 'comfy-training'
+  | 'replicate'
+  | 'fal'
+  | 'disabled';
+
+/** Eligibility heuristics for automatically training a character LoRA. */
+export interface LoraCharacterThresholds {
+  /** Minimum number of high-quality reference images the character must have. */
+  minRefs: number;
+  /** Tiers eligible for auto-training (default: core + major + supporting). */
+  tiers: LoraTrainableCharacterTier[];
+  /**
+   * When true (default), scene generation for that character waits for its
+   * LoRA to finish training before rendering. When false, training runs in
+   * the background and the first few scenes may still use the base model.
+   */
+  blockScenes: boolean;
+}
+
+/** Eligibility heuristics for automatically training an episode-style LoRA. */
+export interface LoraStyleThresholds {
+  /**
+   * Minimum episode count before the style LoRA trains automatically. Stories
+   * with a single episode rarely recoup the training cost.
+   */
+  minEpisodes: number;
+  /**
+   * Force style training even when `minEpisodes` is not met. Lets the UI
+   * "Train style LoRA" button bypass the heuristic for a one-off.
+   */
+  forceStyle: boolean;
+}
+
+/**
+ * Shared training knobs passed through to the adapter. Adapters merge their
+ * own defaults on top, so leaving a field `undefined` just means "use the
+ * adapter's default".
+ */
+export interface LoraHyperparameters {
+  baseModel?: string;
+  steps?: number;
+  rank?: number;
+  networkAlpha?: number;
+  learningRate?: number;
+  batchSize?: number;
+  resolution?: number;
+  repeats?: number;
+  optimizer?: string;
+  scheduler?: string;
+  seed?: number;
+  mixedPrecision?: string;
+}
+
+export interface LoraTrainingSettings {
+  /** Master switch. When false, `LoraTrainingAgent` always no-ops. */
+  enabled: boolean;
+  /** Trainer backend; `disabled` keeps the agent dormant even if enabled=true. */
+  backend: LoraTrainerBackend;
+  /** Optional override for the proxy-mounted trainer base URL. */
+  baseUrl?: string;
+  /** Optional bearer token forwarded to the trainer sidecar. */
+  apiKey?: string;
+  /** Character-training eligibility knobs. */
+  characterThresholds: LoraCharacterThresholds;
+  /** Style-training eligibility knobs. */
+  styleThresholds: LoraStyleThresholds;
+  /** Shared training hyperparameters. */
+  training: LoraHyperparameters;
+}
+
+/**
+ * Safe defaults. `enabled=false` and `backend='disabled'` together mean
+ * existing stories render exactly as they do today unless the operator opts
+ * in via env vars or the Generator UI.
+ */
+export const DEFAULT_LORA_TRAINING_SETTINGS: LoraTrainingSettings = {
+  enabled: false,
+  backend: 'disabled',
+  characterThresholds: {
+    minRefs: 6,
+    tiers: ['core', 'major', 'supporting'],
+    blockScenes: true,
+  },
+  styleThresholds: {
+    minEpisodes: 2,
+    forceStyle: false,
+  },
+  training: {
+    steps: 1500,
+    rank: 32,
+    networkAlpha: 32,
+    learningRate: 1e-4,
+    batchSize: 2,
+    resolution: 1024,
+    repeats: 10,
+    optimizer: 'adamw8bit',
+    scheduler: 'cosine',
+    mixedPrecision: 'bf16',
+  },
+};
+
+/**
+ * Resolve a `LoraTrainingSettings` object from env vars, applying sensible
+ * defaults. Called from `loadConfig()` and `buildPipelineConfig()` so the
+ * same semantics apply to both the CLI/worker entry point and the UI-driven
+ * generator flow.
+ */
+export function resolveLoraTrainingSettings(
+  env: Record<string, string | undefined>,
+  overrides?: Partial<LoraTrainingSettings>,
+): LoraTrainingSettings {
+  const defaults = DEFAULT_LORA_TRAINING_SETTINGS;
+  const backendRaw = (
+    overrides?.backend ||
+    env.LORA_TRAINER_BACKEND ||
+    env.EXPO_PUBLIC_LORA_TRAINER_BACKEND ||
+    defaults.backend
+  ).trim() as LoraTrainerBackend;
+  const enabledRaw =
+    overrides?.enabled !== undefined
+      ? overrides.enabled
+      : env.EXPO_PUBLIC_LORA_AUTO_TRAIN === 'true' || env.LORA_AUTO_TRAIN === 'true';
+  const toNum = (value: string | undefined, fallback: number | undefined) => {
+    if (value === undefined || value === '') return fallback;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  return {
+    enabled: enabledRaw && backendRaw !== 'disabled',
+    backend: backendRaw || 'disabled',
+    baseUrl: overrides?.baseUrl || env.LORA_TRAINER_BASE_URL || env.EXPO_PUBLIC_LORA_TRAINER_BASE_URL || undefined,
+    apiKey: overrides?.apiKey || env.LORA_TRAINER_API_KEY || undefined,
+    characterThresholds: {
+      minRefs:
+        overrides?.characterThresholds?.minRefs ??
+        (toNum(env.LORA_TRAIN_CHARACTER_MIN_REFS, defaults.characterThresholds.minRefs) as number),
+      tiers: overrides?.characterThresholds?.tiers ?? defaults.characterThresholds.tiers,
+      blockScenes:
+        overrides?.characterThresholds?.blockScenes ??
+        (env.LORA_TRAIN_CHARACTER_BLOCK === undefined
+          ? defaults.characterThresholds.blockScenes
+          : env.LORA_TRAIN_CHARACTER_BLOCK === 'true'),
+    },
+    styleThresholds: {
+      minEpisodes:
+        overrides?.styleThresholds?.minEpisodes ??
+        (toNum(env.LORA_TRAIN_STYLE_EPISODE_THRESHOLD, defaults.styleThresholds.minEpisodes) as number),
+      forceStyle:
+        overrides?.styleThresholds?.forceStyle ??
+        (env.LORA_TRAIN_STYLE_FORCE === 'true' || defaults.styleThresholds.forceStyle),
+    },
+    training: {
+      ...defaults.training,
+      ...(overrides?.training ?? {}),
+      baseModel: overrides?.training?.baseModel || env.LORA_TRAIN_BASE_MODEL || defaults.training.baseModel,
+      steps: toNum(env.LORA_TRAIN_STEPS, overrides?.training?.steps ?? defaults.training.steps),
+      rank: toNum(env.LORA_TRAIN_RANK, overrides?.training?.rank ?? defaults.training.rank),
+      learningRate: toNum(env.LORA_TRAIN_LR, overrides?.training?.learningRate ?? defaults.training.learningRate),
+    },
+  };
+}
+
 export interface PipelineConfig {
   agents: {
     storyArchitect: AgentConfig;
@@ -440,6 +650,29 @@ export interface PipelineConfig {
      * so legacy callers keep working.
      */
     artStyleProfile?: ArtStyleProfile;
+    /**
+     * Pre-approved style-bible anchor images supplied by the UI's Style
+     * Setup section. When present, `generateEpisodeStyleBible` skips its
+     * internal generation for whichever roles were approved and primes
+     * `setGeminiStyleReference` from the preferred anchor (character first,
+     * falling back to arc strip). Any slot left undefined is still
+     * generated in-pipeline the way it is today.
+     *
+     * The image is either supplied inline (base64 + mimeType) for the
+     * freshest handoff or as a filesystem path written by the proxy.
+     */
+    preapprovedStyleAnchors?: {
+      character?: PreapprovedAnchor;
+      arcStrip?: PreapprovedAnchor;
+      environment?: PreapprovedAnchor;
+    };
+    /**
+     * Auto-train LoRA settings. Drives the `LoraTrainingAgent` in
+     * `FullStoryPipeline`. Only meaningful when `provider === 'stable-diffusion'`
+     * (other providers can't consume trained LoRAs — see
+     * `providerCapabilities.supportsLoraTraining`).
+     */
+    loraTraining?: LoraTrainingSettings;
   };
   
   // Midjourney-specific parameters exposed in settings
@@ -571,6 +804,7 @@ export function loadConfig(): PipelineConfig {
       provider: env.EXPO_PUBLIC_IMAGE_PROVIDER || env.IMAGE_PROVIDER || 'nano-banana',
       qa: resolveImageQaConfig(env),
       artStyleProfile: resolveArtStylePresetProfile(env),
+      loraTraining: resolveLoraTrainingSettings(env),
     },
     videoGen: {
       enabled: env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true' || env.VIDEO_GENERATION_ENABLED === 'true',

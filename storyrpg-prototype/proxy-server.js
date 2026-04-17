@@ -30,6 +30,7 @@ const { registerElevenLabsRoutes } = require('./proxy/elevenLabsRoutes');
 const { registerAtlasCloudRoutes } = require('./proxy/atlasCloudRoutes');
 const { registerMidApiRoutes } = require('./proxy/midApiRoutes');
 const { registerImageFeedbackRoutes } = require('./proxy/imageFeedbackRoutes');
+const { registerStyleRoutes } = require('./proxy/styleRoutes');
 const { createWorkerLifecycle } = require('./proxy/workerLifecycle');
 const { registerGenerationJobRoutes } = require('./proxy/generationJobRoutes');
 
@@ -133,6 +134,7 @@ const { feedbackStore } = registerImageFeedbackRoutes(app, {
   storiesDir: STORIES_DIR,
   cachedJsonStore: createCachedStore,
 });
+registerStyleRoutes(app, { storiesDir: STORIES_DIR });
 registerAtlasCloudRoutes(app);
 const { midapiCallbackCache } = registerMidApiRoutes(app, { rootDir: ROOT_DIR });
 registerAnthropicProxyRoutes(app, { getLlmTransportBudgets });

@@ -79,7 +79,11 @@ import { ModelDropdown } from '../components/ModelDropdown';
 import { ConfirmDialog } from '../components/ui';
 import { useGeneratorRunner } from '../hooks/useGeneratorRunner';
 import { useEndingModePlanner } from './generator/useEndingModePlanner';
-import { buildPipelineConfig } from '../ai-agents/config/buildPipelineConfig';
+import { buildPipelineConfig, PipelineConfigExtras } from '../ai-agents/config/buildPipelineConfig';
+import { StyleArchitect } from '../ai-agents/agents/StyleArchitect';
+import { ImageGenerationService } from '../ai-agents/services/imageGenerationService';
+import { useStyleSetup, AnchorRole } from './generator/hooks/useStyleSetup';
+import { StyleSetupSection } from './generator/StyleSetupSection';
 import { runStoryAnalysis, runStoryGeneration } from '../ai-agents/services/storyGenerationService';
 
 // Import the real pipeline
@@ -877,7 +881,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     return brief;
   };
 
-  const createPipelineConfig = (): PipelineConfig => buildPipelineConfig({
+  const buildPipelineConfigInput = () => ({
     llmProvider,
     llmModel,
     imageLlmProvider,
@@ -902,6 +906,108 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     narrationSettings,
     videoSettings,
   });
+
+  // ----- Style Setup (inline on analysis_complete) -----------------------
+  // The section lets the user expand the raw style string into an editable
+  // profile, preview the three style-bible anchors, and approve them before
+  // we kick off generation. When they approve, the handoff payload here is
+  // merged into `createPipelineConfig` as `extras` so the pipeline skips
+  // re-building anchors that the UI already locked in.
+  const primaryProtagonistName =
+    sourceAnalysis?.protagonist?.name?.trim() || customStoryTitle || 'Hero';
+  const primaryLocationName =
+    sourceAnalysis?.keyLocations?.[0]?.name?.trim() || undefined;
+  const colorScriptTerms = (sourceAnalysis?.themes || [])
+    .slice(0, 3)
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const styleSetup = useStyleSetup({
+    rawArtStyle: artStyle,
+    storyTitle: customStoryTitle || 'Untitled Story',
+    protagonistName: primaryProtagonistName,
+    colorTerms: colorScriptTerms,
+    primaryLocation: primaryLocationName,
+    expandStyleFn: async (raw: string) => {
+      const architect = new StyleArchitect({
+        provider: llmProvider,
+        model: llmModel,
+        apiKey: selectedLlmApiKey,
+        maxTokens: 1024,
+        temperature: 0.4,
+      });
+      return architect.expand({ artStyle: raw, genreHint: sourceAnalysis?.genre });
+    },
+    generateAnchorImageFn: async (_role, prompt) => {
+      const service = new ImageGenerationService({
+        enabled: true,
+        provider: (imageProvider === 'useapi' ? 'midapi' : imageProvider) as any,
+        geminiApiKey: geminiApiKey.trim(),
+        atlasCloudApiKey: atlasCloudApiKey.trim() || undefined,
+        atlasCloudModel: atlasCloudModel.trim() || undefined,
+        midapiToken: midapiToken.trim() || undefined,
+        geminiSettings,
+        midjourneySettings,
+        stableDiffusionSettings,
+        savePrompts: false,
+      });
+      const identifier = `style-preview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await service.generateImage(prompt, identifier, { type: 'style-reference' as any });
+      const imageUrl = result.imageUrl || '';
+      if (result.imageData && result.mimeType) {
+        return { data: result.imageData, mimeType: result.mimeType };
+      }
+      if (imageUrl.startsWith('data:')) {
+        const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          return { data: match[2], mimeType: match[1] };
+        }
+      }
+      if (imageUrl) {
+        const fetched = await fetch(imageUrl);
+        const blob = await fetched.blob();
+        const buffer = await blob.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+        const base64 = typeof btoa !== 'undefined'
+          ? btoa(binary)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          : (global as any).Buffer?.from(bytes).toString('base64') || '';
+        return { data: base64, mimeType: blob.type || 'image/png' };
+      }
+      throw new Error('Concept image returned no data');
+    },
+    saveAnchorFn: async (role: AnchorRole, data: string, mimeType: string) => {
+      const storyIdSeed = (customStoryTitle || 'untitled')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 60);
+      const storyId = storyIdSeed || 'untitled';
+      const res = await fetch(`${PROXY_CONFIG.getProxyUrl()}/style-anchor/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storyId, role, data, mimeType }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`save failed (${res.status}): ${body}`);
+      }
+      const payload = await res.json();
+      return { imagePath: payload.imagePath as string };
+    },
+  });
+
+  const createPipelineConfig = (extraOverrides?: PipelineConfigExtras): PipelineConfig => {
+    const handoff = styleSetup.handoff;
+    const extras: PipelineConfigExtras = {
+      artStyleProfileOverride: extraOverrides?.artStyleProfileOverride || handoff.profile,
+      preapprovedStyleAnchors:
+        extraOverrides?.preapprovedStyleAnchors || handoff.preapprovedStyleAnchors,
+    };
+    return buildPipelineConfig(buildPipelineConfigInput(), extras);
+  };
 
   const startAnalysis = async () => {
     if (!selectedLlmApiKey) {
@@ -2887,6 +2993,20 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 )}
               </View>
             )}
+            <StyleSetupSection
+              rawArtStyle={artStyle}
+              expanding={styleSetup.expanding}
+              expansionError={styleSetup.expansionError}
+              profile={styleSetup.profile}
+              slots={styleSetup.slots}
+              useDefaults={styleSetup.useDefaults}
+              statusSummary={styleSetup.statusSummary}
+              onExpand={styleSetup.expand}
+              onUpdateField={styleSetup.updateField}
+              onGenerateAnchor={styleSetup.generateAnchor}
+              onApproveAnchor={styleSetup.approveAnchor}
+              onToggleUseDefaults={styleSetup.setUseDefaults}
+            />
             <View style={styles.configActions}>{!hasSourceInput ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={styles.executeButton} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>INITIATE GENERATION</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
           </View>
         )}

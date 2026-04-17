@@ -329,8 +329,8 @@ ${PROMPT_ASSEMBLY_PATTERN}
 [TRANSITION if applicable] + [CAMERA] + [THE BEAT: action, emotion, relationship] + [VISUAL STYLE: pose, lighting]
 
 ## CRITICAL: SINGLE UNIFIED IMAGE — NO COMPOSITES
-Every output must be ONE continuous full-bleed image from ONE camera angle. NEVER produce triptychs, diptychs, collages, montages, picture-in-picture, inset panels, overlaid cutouts, floating portraits over scenes, split-screen, or ANY multi-image composition. No internal borders or frames.
-The negativePrompt MUST always include: 'triptych, diptych, collage, montage, picture-in-picture, inset panel, overlaid cutout, split-screen, comic panels, image within image, composite image'.
+Every output must be ONE continuous full-bleed image from ONE camera angle. NEVER produce triptychs, diptychs, collages, picture-in-picture, inset panels, floating portraits over scenes, split-screen, or ANY multi-image composition. No internal borders or frames.
+The negativePrompt MUST always include: 'triptych, diptych, collage, picture-in-picture, split-screen, comic panels'.
 
 ## CRITICAL: NO TEXT IN IMAGES
 The negativePrompt MUST always include 'text overlay, caption text, title text, speech bubbles, watermarks, signatures'. The image must contain NO rendered text except text that naturally exists within the scene world (e.g. a shop sign, book title, clothing text, or banner visible to characters). No captions, labels, or annotations.
@@ -351,7 +351,7 @@ Include "duplicate character, same character appearing twice, cloned figures" in
 Return a JSON object:
 {
   "prompt": "Complete prompt describing the story beat (action, emotion, relationship dynamics). MUST name ALL characters by their actual names — NEVER use generic references like 'a woman', 'a man', 'two people', 'the figure', 'the character'. Transition continuity directives at the START if applicable.",
-  "negativePrompt": "triptych, diptych, collage, montage, picture-in-picture, inset panel, overlaid cutout, split-screen, comic panels, image within image, composite image, floating portrait, duplicate character, same character appearing twice, cloned figures, single character alone when multiple should be present, character portrait, missing characters, static pose, standing straight, symmetrical pose, arms at sides, mannequin pose, centered composition, repeated staging from previous image, text overlay, caption text, title text, speech bubbles, watermarks, signatures, [transition-specific negatives]",
+  "negativePrompt": "triptych, diptych, collage, picture-in-picture, split-screen, comic panels, duplicate character, same character appearing twice, cloned figures, single character alone when multiple should be present, character portrait, missing characters, static pose, standing straight, symmetrical pose, arms at sides, mannequin pose, centered composition, repeated staging from previous image, text overlay, caption text, title text, speech bubbles, watermarks, signatures, [transition-specific negatives]",
   "style": "${effectiveStyle}",
   "aspectRatio": "9:19.5",
   "composition": "Focal point and depth layers — where the ACTION is framed",

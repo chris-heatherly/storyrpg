@@ -117,9 +117,15 @@ Client reads story files → Story Engine → Player experience
 | `src/engine/growthConsequenceBuilder.ts` | Builds growth consequences for character development. |
 | `src/stores/gameStore.ts` | Player state: attributes, relationships, flags, inventory, progress. Persists to AsyncStorage. |
 | `src/ai-agents/pipeline/FullStoryPipeline.ts` | Main generation orchestrator — wires all agents, validators, and services together. |
-| `src/ai-agents/agents/` | Individual AI agent specialists (WorldBuilder, StoryArchitect, SceneWriter, ChoiceAuthor, BranchManager, EncounterArchitect, QA agents, image team). |
+| `src/ai-agents/agents/` | Individual AI agent specialists (WorldBuilder, StoryArchitect, StyleArchitect, SceneWriter, ChoiceAuthor, BranchManager, EncounterArchitect, QA agents, image team). |
+| `src/ai-agents/agents/StyleArchitect.ts` | LLM agent that expands arbitrary art-style strings into a structured `ArtStyleProfile`. Falls back to `buildVerbatimProfile` so unknown styles never inherit cinematic vocabulary. |
+| `src/ai-agents/images/artStyleProfile.ts` | `ArtStyleProfile` interface + heuristic resolvers (`resolveArtStyleProfile`, `buildVerbatimProfile`, `composeCanonicalStyleString`). |
+| `src/ai-agents/images/anchorPrompts.ts` | Shared builders for the three style-bible anchors (character, arc color strip, environment vignette) consumed by both the pipeline and the UI style-setup section. |
 | `src/ai-agents/validators/` | Structural and content validators that run between pipeline stages. |
 | `src/ai-agents/services/` | Image generation, audio generation, video generation, and LLM service abstractions. |
+| `src/screens/generator/hooks/useStyleSetup.ts` | React hook that owns the inline Style Setup section's state (expanded profile, anchor slot statuses, handoff payload). |
+| `src/screens/generator/StyleSetupSection.tsx` | UI for the inline style-setup section on `analysis_complete`. |
+| `proxy/styleRoutes.js` | Proxy endpoints for persisting UI-approved style-bible anchor images to `generated-stories/<storyId>/style-bible/`. |
 | `src/config/endpoints.ts` | All URLs, proxy config, external API endpoints, storage keys, timing defaults. |
 | `proxy-server.js` + `proxy/` | Express routes for Anthropic/OpenRouter proxy, file ops, job management, catalog, ElevenLabs, image APIs. |
 | `App.tsx` | Root component — sets up providers, navigation, story library loading. |

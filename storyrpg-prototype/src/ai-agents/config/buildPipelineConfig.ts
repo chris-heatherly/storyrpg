@@ -5,9 +5,14 @@ import {
   MidjourneySettings,
   StableDiffusionSettings,
   ImageProvider,
+  LoraTrainingSettings,
+  resolveLoraTrainingSettings,
 } from '../config';
 import { resolveImageQaConfig, resolveArtStylePresetProfile } from './imageQaConfig';
-import { resolveArtStyleProfile } from '../images/artStyleProfile';
+import { resolveArtStyleProfile, composeCanonicalStyleString } from '../images/artStyleProfile';
+import type { ArtStyleProfile } from '../images/artStyleProfile';
+import { StyleArchitect } from '../agents/StyleArchitect';
+import type { PreapprovedAnchor } from '../config';
 import type { GenerationSettings } from '../../components/GenerationSettingsPanel';
 import {
   DEFAULT_LLM_MODELS,
@@ -40,6 +45,11 @@ export interface BuildPipelineConfigInput {
   geminiSettings: GeminiSettings;
   midjourneySettings: MidjourneySettings;
   stableDiffusionSettings?: StableDiffusionSettings;
+  /**
+   * Optional UI overrides for the auto-train LoRA subsystem. When omitted,
+   * env-var defaults apply via `resolveLoraTrainingSettings`.
+   */
+  loraTrainingSettings?: Partial<LoraTrainingSettings>;
   generationSettings: GenerationSettings;
   generationMode: GenerationMode;
   narrationSettings: GeneratorNarrationSettings;
@@ -100,14 +110,41 @@ function resolveStableDiffusionSettings(
   };
 }
 
-export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineConfig {
+/**
+ * Optional extras an async/UI-driven caller can supply to short-circuit
+ * the heuristic style-resolution step and thread pre-approved style-bible
+ * anchors into the pipeline.
+ */
+export interface PipelineConfigExtras {
+  /**
+   * A fully-formed profile the caller already resolved (e.g. via
+   * StyleArchitect, or via the UI style-setup section where the user
+   * edited individual DNA fields). When present, this wins over the
+   * preset-based or keyword-based heuristic.
+   */
+  artStyleProfileOverride?: ArtStyleProfile;
+  /** Anchor images the user approved in the UI. */
+  preapprovedStyleAnchors?: {
+    character?: PreapprovedAnchor;
+    arcStrip?: PreapprovedAnchor;
+    environment?: PreapprovedAnchor;
+  };
+}
+
+export function buildPipelineConfig(
+  input: BuildPipelineConfigInput,
+  extras?: PipelineConfigExtras,
+): PipelineConfig {
   const selectedLlmModel = getSelectedLlmModel(input);
   const selectedLlmApiKey = getSelectedLlmApiKey(input);
   const artStyle = input.artStyle.trim() || undefined;
   const normalizedImageProvider = normalizeImageProvider(input.imageProvider);
   const env = typeof process !== 'undefined' ? (process.env as Record<string, string | undefined>) : {};
   const qa = resolveImageQaConfig(env);
-  const artStyleProfile = resolveArtStylePresetProfile(env) ?? (artStyle ? resolveArtStyleProfile(artStyle) : undefined);
+  const artStyleProfile =
+    extras?.artStyleProfileOverride ??
+    resolveArtStylePresetProfile(env) ??
+    (artStyle ? resolveArtStyleProfile(artStyle) : undefined);
 
   return {
     agents: {
@@ -187,11 +224,14 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
       midjourney: normalizedImageProvider === 'midapi' ? input.midjourneySettings : undefined,
       gemini: {
         ...(normalizedImageProvider === 'nano-banana' ? input.geminiSettings : {}),
-        canonicalArtStyle: artStyleProfile?.name || input.artStyle.trim() || '',
+        canonicalArtStyle:
+          composeCanonicalStyleString(artStyleProfile) || input.artStyle.trim() || '',
       },
       stableDiffusion: resolveStableDiffusionSettings(normalizedImageProvider, input.stableDiffusionSettings),
       qa,
       artStyleProfile,
+      preapprovedStyleAnchors: extras?.preapprovedStyleAnchors,
+      loraTraining: resolveLoraTrainingSettings(env, input.loraTrainingSettings),
     },
     generation: {
       failurePolicy: input.generationSettings.failFastMode ? 'fail_fast' : 'recover',
@@ -250,4 +290,50 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
       apiKey: input.geminiApiKey.trim() || undefined,
     },
   };
+}
+
+/**
+ * Async variant of `buildPipelineConfig` that first asks the `StyleArchitect`
+ * LLM to expand the user's raw art-style string into a full `ArtStyleProfile`.
+ * Falls back to the keyword heuristic on any failure. Callers that already
+ * have a profile (for example, the UI's style-setup section where the user
+ * edited DNA fields manually) should skip this and pass the profile via
+ * `extras.artStyleProfileOverride` on the sync builder instead.
+ */
+export async function buildPipelineConfigAsync(
+  input: BuildPipelineConfigInput,
+  extras?: PipelineConfigExtras,
+): Promise<PipelineConfig> {
+  if (extras?.artStyleProfileOverride) {
+    return buildPipelineConfig(input, extras);
+  }
+
+  const rawStyle = input.artStyle.trim();
+  if (!rawStyle) {
+    return buildPipelineConfig(input, extras);
+  }
+
+  const selectedLlmApiKey = getSelectedLlmApiKey(input);
+  const architectConfig = {
+    provider: input.llmProvider,
+    model: getSelectedLlmModel(input),
+    apiKey: selectedLlmApiKey,
+    maxTokens: 1024,
+    temperature: 0.4,
+  };
+
+  try {
+    const architect = new StyleArchitect(architectConfig);
+    const profile = await architect.expand({ artStyle: rawStyle });
+    return buildPipelineConfig(input, {
+      ...extras,
+      artStyleProfileOverride: profile,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[buildPipelineConfigAsync] StyleArchitect failed for "${rawStyle}" (${message}); using heuristic resolution.`,
+    );
+    return buildPipelineConfig(input, extras);
+  }
 }

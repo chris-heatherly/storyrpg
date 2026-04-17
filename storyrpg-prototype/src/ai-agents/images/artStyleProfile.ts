@@ -113,8 +113,11 @@ export const DEFAULT_CINEMATIC_PROFILE: ArtStyleProfile = {
 
 /**
  * Best-effort derivation of a profile from a flat art-style string. Uses a
- * keyword match against known families. The result is intentionally
- * conservative — the caller can still override individual fields afterwards.
+ * keyword match against known families. Unknown strings are expanded via
+ * `buildVerbatimProfile` instead of inheriting the cinematic default's
+ * vocabulary, which would actively fight arbitrary styles (e.g. a prompt
+ * containing "ART STYLE (MANDATORY): romance novel." plus a `positiveVocabulary`
+ * injection of "cinematic, dramatic, emotionally charged, sharp focus").
  */
 export function resolveArtStyleProfile(input: string | ArtStyleProfile | undefined): ArtStyleProfile {
   if (!input) return DEFAULT_CINEMATIC_PROFILE;
@@ -126,11 +129,62 @@ export function resolveArtStyleProfile(input: string | ArtStyleProfile | undefin
   const lower = s.toLowerCase();
   const inferredFamily = inferFamily(lower);
 
+  if (inferredFamily === 'unknown') {
+    return buildVerbatimProfile(s);
+  }
+
   const base = BASE_BY_FAMILY[inferredFamily] ?? DEFAULT_CINEMATIC_PROFILE;
   return {
     ...base,
     name: s,
   };
+}
+
+/**
+ * Heuristic profile for arbitrary strings with no LLM available. Echoes the
+ * user's string into every DNA slot and uses the string itself as the sole
+ * positive-vocabulary anchor, so `ensureVisualPromptStrength` injects
+ * `Style cues: <input>.` instead of the cinematic defaults. This is the
+ * safest fallback for styles the keyword matcher doesn't recognize.
+ */
+export function buildVerbatimProfile(input: string): ArtStyleProfile {
+  const name = input.trim() || DEFAULT_CINEMATIC_PROFILE.name;
+  return {
+    name,
+    family: 'unknown',
+    renderingTechnique: `rendered in the distinctive look of ${name}`,
+    colorPhilosophy: `the palette typical of ${name}`,
+    lightingApproach: `the lighting language of ${name}`,
+    lineWeight: `the line and edge treatment characteristic of ${name}`,
+    compositionStyle: `the composition language characteristic of ${name}`,
+    moodRange: `the mood and atmosphere typical of ${name}`,
+    acceptableDeviations: [],
+    genreNegatives: [],
+    positiveVocabulary: [name],
+    inappropriateVocabulary: [],
+    anchorWeight: 2,
+  };
+}
+
+/**
+ * Flatten an ArtStyleProfile into a single string suitable for the legacy
+ * `canonicalArtStyle` field and for any call site that can only carry a
+ * string (e.g. anchor prompts that serialize `ImagePrompt.style`). Prompt
+ * builders that have access to the full profile should read the DNA fields
+ * directly rather than re-parsing this string.
+ */
+export function composeCanonicalStyleString(profile: ArtStyleProfile | null | undefined): string {
+  if (!profile) return '';
+  const parts = [
+    profile.name?.trim(),
+    profile.renderingTechnique && `Rendering: ${profile.renderingTechnique}`,
+    profile.colorPhilosophy && `Color: ${profile.colorPhilosophy}`,
+    profile.lightingApproach && `Lighting: ${profile.lightingApproach}`,
+    profile.lineWeight && `Line: ${profile.lineWeight}`,
+    profile.compositionStyle && `Composition: ${profile.compositionStyle}`,
+    profile.moodRange && `Mood: ${profile.moodRange}`,
+  ].filter((v): v is string => typeof v === 'string' && v.length > 0);
+  return parts.join('. ') + (parts.length > 0 ? '.' : '');
 }
 
 function inferFamily(lower: string): ArtStyleFamily {

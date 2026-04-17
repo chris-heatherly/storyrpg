@@ -181,7 +181,15 @@ export function referencePackToSDInputs(
     ipAdapter?: ImagePromptIpAdapter;
   },
 ): SDReferenceBundle {
-  const list = Array.isArray(refs) ? [...refs] : [];
+  // Drop the composite model sheet at the entry point. Per-provider
+  // filtering upstream already removes it for SD, but this is a defense
+  // in depth: composite/turnaround sheets degrade IP-Adapter embeddings
+  // (the embedding averages across the 3 panels) and confuse OpenPose
+  // ControlNet (which detects 3 figures in a turnaround). Individual
+  // views remain and are routed to specific units below.
+  const list = Array.isArray(refs)
+    ? refs.filter((r) => r.role !== 'composite-sheet')
+    : [];
   const claimed = new Set<ReferenceImage>();
 
   const init = pickInit(list);

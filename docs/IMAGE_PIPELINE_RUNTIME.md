@@ -192,11 +192,35 @@ relevant env var / config flag described in each bullet.
 
 ## Current Runtime Flow
 
+0. **Style Setup (pre-pipeline, UI-driven).** Before the generator is
+   kicked off, the `analysis_complete` screen renders the inline
+   **Style Setup section**. It lets the operator:
+   - Expand the raw art-style string into a full `ArtStyleProfile` via
+     `StyleArchitect` (LLM). The heuristic `buildVerbatimProfile`
+     remains the fallback when the LLM is unavailable so unknown
+     styles never inherit cinematic vocabulary.
+   - Edit any DNA field (rendering technique, color philosophy,
+     lighting, line weight, composition, mood, positive/inappropriate
+     vocabulary).
+   - Generate, preview, and approve the three style-bible anchors
+     (character portrait, arc color strip, environment vignette) using
+     the same builders the pipeline uses (`src/ai-agents/images/anchorPrompts.ts`).
+   - Persist approved anchors to
+     `generated-stories/<storyId>/style-bible/<role>.<ext>` via the
+     `/style-anchor/save` proxy route so the worker can read them off
+     disk.
+   - Opt out via the **Use defaults (skip preview)** toggle, in which
+     case the pipeline builds the style bible from scratch the old way.
+   The handoff flows through `PipelineConfigExtras` →
+   `imageGen.artStyleProfile` and `imageGen.preapprovedStyleAnchors` so
+   the worker skips in-pipeline anchor generation for slots the UI
+   already locked in.
 1. `FullStoryPipeline` generates character references and body-language assets during the master-images phase.
 2. `ColorScriptAgent` creates the episode color arc.
 3. The pipeline generates an episode style bible before scene renders begin:
-   - an abstract color-script strip
-   - a controlled character-in-style anchor image
+   - an abstract color-script strip (skipped if pre-approved via the UI)
+   - a controlled character-in-style anchor image (skipped if pre-approved via the UI)
+   - an optional environment vignette anchor (skipped if pre-approved via the UI)
 4. The best style-bible image becomes the primary style anchor for downstream image generation.
 5. `StoryboardAgent` plans shot rhythm, transitions, color/mood, motifs, and beat locks.
 6. `VisualIllustratorAgent` converts shots into structured image prompts.

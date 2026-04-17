@@ -83,6 +83,29 @@ export interface Story {
   episodes: Episode[];
 
   outputDir?: string;
+
+  /**
+   * Structured art-style profile the generation pipeline used. Persisted so
+   * single-image regenerations, resumes, and downstream playback can read
+   * back the same style contract without re-running StyleArchitect.
+   *
+   * Typed loosely as `unknown` here to avoid a circular dependency on the
+   * `ai-agents/images` module; the pipeline stores an `ArtStyleProfile`
+   * and the reader casts back at consumption time.
+   */
+  artStyleProfile?: unknown;
+
+  /**
+   * Paths to the three style-bible anchor images the user approved in
+   * the Style Setup UI (or the pipeline generated in-flight). Any slot
+   * may be absent; playback only cares about `character` for
+   * `setGeminiStyleReference` hand-off on resume.
+   */
+  styleAnchors?: {
+    character?: { imagePath: string };
+    arcStrip?: { imagePath: string };
+    environment?: { imagePath: string };
+  };
 }
 
 export interface StoryCatalogEpisode {

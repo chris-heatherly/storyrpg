@@ -99,4 +99,21 @@ describe('referencePackToSDInputs', () => {
     const out = referencePackToSDInputs([junk], settings, {});
     expect(out.unused).toContain(junk);
   });
+
+  it('filters out composite-sheet refs before routing to SD units', () => {
+    const composite = img('composite-sheet', undefined, 'hero');
+    const face = img('character-reference-face', undefined, 'hero');
+    const out = referencePackToSDInputs([composite, face], settings, {});
+    // Composite is dropped entirely (not routed, not in unused) to avoid
+    // muddying the IP-Adapter embedding with a multi-panel turnaround.
+    expect(out.ipAdapter?.image).toBe(face);
+    expect(out.unused).not.toContain(composite);
+    const allClaimed = [
+      out.init,
+      out.mask,
+      out.ipAdapter?.image,
+      ...out.controlNets.map((c) => c.image),
+    ].filter(Boolean);
+    expect(allClaimed).not.toContain(composite);
+  });
 });

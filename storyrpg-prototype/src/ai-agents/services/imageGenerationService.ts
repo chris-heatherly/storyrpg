@@ -14,6 +14,7 @@ import { ProviderPolicy } from '../images/providerPolicy';
 import type { ImageSlotFamily } from '../images/slotTypes';
 import { ProviderThrottle } from './providerThrottle';
 import { getProviderCapabilities } from '../images/providerCapabilities';
+import { filterRefsForProvider } from '../images/referencePackBuilder';
 import { createStableDiffusionAdapter } from './stable-diffusion/factory';
 import type { StableDiffusionAdapter } from './stable-diffusion/StableDiffusionAdapter';
 import {
@@ -815,6 +816,55 @@ export class ImageGenerationService {
     return resolved;
   }
 
+  /**
+   * Emit the ArtStyleProfile DNA — rendering technique, color philosophy,
+   * lighting, line weight, composition language, mood — as individual labeled
+   * lines so the image model receives the complete style contract. Callers
+   * should invoke this immediately after the `ART STYLE (MANDATORY):` line so
+   * the DNA reinforces the canonical style label instead of competing with it.
+   */
+  private appendProfileDnaSections(sections: string[]): void {
+    const profile = this._artStyleProfile;
+    if (!profile) return;
+    if (profile.renderingTechnique) {
+      sections.push(`RENDERING TECHNIQUE: ${profile.renderingTechnique}.`);
+    }
+    if (profile.colorPhilosophy) {
+      sections.push(`COLOR PHILOSOPHY: ${profile.colorPhilosophy}.`);
+    }
+    if (profile.lightingApproach) {
+      sections.push(`LIGHTING: ${profile.lightingApproach}.`);
+    }
+    if (profile.lineWeight) {
+      sections.push(`LINE WEIGHT: ${profile.lineWeight}.`);
+    }
+    if (profile.compositionStyle) {
+      sections.push(`COMPOSITION: ${profile.compositionStyle}.`);
+    }
+    if (profile.moodRange) {
+      sections.push(`MOOD: ${profile.moodRange}.`);
+    }
+  }
+
+  /**
+   * Flatten profile DNA into a comma-separated phrase for prompt builders that
+   * concatenate sections into a single sentence (Atlas Cloud, Midjourney, SD).
+   */
+  private composeProfileDnaPhrase(): string {
+    const profile = this._artStyleProfile;
+    if (!profile) return '';
+    const parts = [
+      profile.renderingTechnique,
+      profile.colorPhilosophy,
+      profile.lightingApproach,
+      profile.lineWeight,
+      profile.compositionStyle,
+      profile.moodRange,
+    ].filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+    if (parts.length === 0) return '';
+    return `Style DNA: ${parts.join('; ')}.`;
+  }
+
   private getSettingAdaptationNotes(prompt: ImagePrompt, identifier?: string): string[] {
     if (prompt.settingAdaptationNotes && prompt.settingAdaptationNotes.length > 0) {
       return prompt.settingAdaptationNotes;
@@ -829,8 +879,10 @@ export class ImageGenerationService {
   private buildAtlasCloudPrompt(prompt: ImagePrompt, identifier?: string): string {
     const resolvedStyle = this.resolveArtStyle(prompt.style, identifier);
     const settingNotes = this.getSettingAdaptationNotes(prompt, identifier);
+    const dnaPhrase = this.composeProfileDnaPhrase();
     const sections = [
       `Art style (MANDATORY): ${resolvedStyle}.`,
+      dnaPhrase,
       settingNotes.length > 0
         ? `Setting adaptation (same overall style, not a style switch): ${settingNotes.join(' ')}`
         : '',
@@ -863,6 +915,8 @@ export class ImageGenerationService {
     const sections: string[] = [];
 
     sections.push(`ART STYLE (MANDATORY): ${resolvedStyle}. Maintain this exact art style throughout the entire image.`);
+
+    this.appendProfileDnaSections(sections);
 
     if (settingNotes.length > 0) {
       sections.push(`SETTING ADAPTATION (same style, not a style switch): ${settingNotes.join(' ')}`);
@@ -1001,7 +1055,9 @@ export class ImageGenerationService {
         : ref.visualAnchors?.slice(0, 2).join(', '))
       .filter(Boolean)
       .join('; ');
+    const dnaPhrase = this.composeProfileDnaPhrase();
     const subjectDescription = [
+      dnaPhrase,
       settingNotes.length > 0 ? `same overall style, setting-specific adaptation: ${settingNotes.join('; ')}` : '',
       prompt.visualNarrative,
       prompt.prompt,
@@ -1022,12 +1078,19 @@ export class ImageGenerationService {
     // a fallback when no style-reference URL is available.
     const crefSrefParams: string[] = [];
     if (mj.enableCrefSref && !isReferenceLike) {
+      // Midjourney only accepts two reference slots: `--cref` (character)
+      // and `--sref` (style). Prefer the composite model sheet for --cref
+      // because it packs multiple views + palette into a single image —
+      // which is exactly what --cref expects. Fall back to any legacy
+      // character-reference / master-reference URL if no composite is
+      // present. For --sref, prefer the canonical `style-anchor` role and
+      // fall back to the legacy `style-reference` role.
       const characterRefUrl = referenceImages
-        ?.find(r => r.url && (r.role === 'character-reference' || r.role === 'master-reference'))
-        ?.url;
+        ?.find(r => r.url && r.role === 'composite-sheet')?.url
+        ?? referenceImages?.find(r => r.url && (r.role === 'character-reference' || r.role === 'master-reference'))?.url;
       const styleRefUrl = referenceImages
-        ?.find(r => r.url && r.role === 'style-reference')
-        ?.url;
+        ?.find(r => r.url && r.role === 'style-anchor')?.url
+        ?? referenceImages?.find(r => r.url && r.role === 'style-reference')?.url;
       if (characterRefUrl) {
         crefSrefParams.push(`--cref ${characterRefUrl}`);
         const cw = Math.max(0, Math.min(100, mj.characterWeight ?? 100));
@@ -1731,7 +1794,32 @@ export class ImageGenerationService {
     const caps = getProviderCapabilities(provider);
     if (caps.maxRefs === 0) return [];
 
-    const usable = refs.filter((ref) => {
+    // Step 1: artifact-shape routing. Strip the composite sheet from
+    // Gemini/Atlas/SD packs (it echoes as a collage when passed as a
+    // regular ref) and, when the provider is nano-banana or atlas-cloud,
+    // install the composite as the low-weight style anchor instead. For
+    // Midjourney, keep only the composite + style-anchor artifacts (two
+    // slots → --cref and --sref).
+    const { refs: shapeFiltered, extractedComposite } = filterRefsForProvider(refs, provider);
+
+    if (
+      extractedComposite &&
+      (provider === 'nano-banana' || provider === 'atlas-cloud') &&
+      this._geminiSettings.compositeAsStyleAnchor !== false &&
+      typeof extractedComposite.data === 'string' &&
+      extractedComposite.data.length > 0
+    ) {
+      try {
+        this.setReferenceSheetStyleAnchor(extractedComposite.data, extractedComposite.mimeType);
+      } catch {
+        // setter is best-effort; a failure here just means the composite
+        // won't be consulted as a style anchor for this request.
+      }
+    }
+
+    // Step 2: capability gating — keep only refs the provider can actually
+    // consume (inline vs URL), then cap to the advertised maxRefs.
+    const usable = shapeFiltered.filter((ref) => {
       const hasInlineData = typeof ref.data === 'string' && ref.data.length > 0;
       if (hasInlineData && caps.acceptsInlineRefs) return true;
       const hasUrl = typeof (ref as any).url === 'string' && (ref as any).url.length > 0;
@@ -2844,6 +2932,26 @@ export class ImageGenerationService {
             imageNumber++;
           }
 
+          // 4b. Composite character sheet → style anchor (dual-artifact routing).
+          // When `compositeAsStyleAnchor` is enabled (default) the per-provider
+          // filter installs the composite here so Gemini can consult it for
+          // palette/silhouette without receiving it as a regular character ref
+          // (which would cause collage-leak in the output). The label below
+          // explicitly instructs Gemini to ignore layout.
+          if (
+            gemSettings.compositeAsStyleAnchor !== false &&
+            this._referenceSheetStyleAnchor &&
+            // Only attach when no explicit per-episode style reference is
+            // already filling this slot — otherwise we double up on style
+            // signals and burn attention budget.
+            !(gemSettings.includeStyleReference && this._geminiStyleReference)
+          ) {
+            parts.push({ inlineData: { mimeType: this._referenceSheetStyleAnchor.mimeType, data: this._referenceSheetStyleAnchor.data } });
+            parts.push({ text: `Image ${imageNumber}: Character model sheet (LOW-WEIGHT style anchor) — use ONLY for color palette, silhouette feel, and overall rendering density. Do NOT copy the multi-panel layout. Do NOT treat this as multiple characters; it shows ONE character from several angles. The scene is a single continuous image as specified above.` });
+            imageManifest.push(`Image ${imageNumber}: Composite style anchor`);
+            imageNumber++;
+          }
+
           // 5. Previous scene image (for scene-to-scene continuity)
           if (gemSettings.includePreviousScene && this._geminiPreviousScene) {
             parts.push({ inlineData: { mimeType: this._geminiPreviousScene.mimeType, data: this._geminiPreviousScene.data } });
@@ -3196,6 +3304,14 @@ export class ImageGenerationService {
       sections.push(`ART STYLE (MANDATORY): ${styleToUse}.`);
     }
 
+    // 1a. Profile DNA — when an ArtStyleProfile is installed, emit each
+    // component as its own labeled line so the image model receives the full
+    // style contract (rendering technique, palette, lighting, line, composition,
+    // mood) instead of just a name. Without this, the prompt carries only the
+    // flat label and the style defaults to whatever the model's priors associate
+    // with that label.
+    this.appendProfileDnaSections(sections);
+
     if (settingNotes.length > 0) {
       sections.push(`SETTING ADAPTATION (SAME STYLE, NOT A STYLE SWITCH): ${settingNotes.join(' ')}`);
     }
@@ -3326,6 +3442,8 @@ export class ImageGenerationService {
     if (styleToUse) {
       sections.push(`ART STYLE (MANDATORY): ${styleToUse}.`);
     }
+
+    this.appendProfileDnaSections(sections);
 
     const settingNotes = this.getSettingAdaptationNotes(strengthenedPrompt);
     if (settingNotes.length > 0) {
@@ -3498,7 +3616,22 @@ export class ImageGenerationService {
 
       if (profile.positiveVocabulary.length > 0) {
         const existing = (result.prompt || '').toLowerCase();
-        const missing = profile.positiveVocabulary.filter(
+        // Defensive filter: when a profile comes from an unknown family we
+        // never want the cinematic default vocabulary to leak in. The
+        // verbatim builder already avoids this, but future callers could
+        // construct an unknown-family profile that still carries cinematic
+        // cues. Treat the default cinematic words as forbidden for unknown
+        // families so they can't override the user's actual style.
+        const cinematicBlocklist = new Set([
+          'cinematic', 'dramatic', 'emotionally charged', 'sharp focus',
+        ]);
+        const allowedVocab =
+          profile.family === 'unknown'
+            ? profile.positiveVocabulary.filter(
+                (v) => !cinematicBlocklist.has(v.trim().toLowerCase()),
+              )
+            : profile.positiveVocabulary;
+        const missing = allowedVocab.filter(
           (v) => v && !existing.includes(v.toLowerCase()),
         );
         if (missing.length > 0) {
@@ -4417,9 +4550,13 @@ export class ImageGenerationService {
 
     const adapter = this.getSDAdapter();
     const promptWithSeed = this.applyDeterministicSeed(prompt, identifier, metadata);
+    const dnaPhrase = this.composeProfileDnaPhrase();
+    const promptWithDna = dnaPhrase
+      ? { ...promptWithSeed, prompt: `${promptWithSeed.prompt || ''}${promptWithSeed.prompt ? '\n\n' : ''}${dnaPhrase}` }
+      : promptWithSeed;
     try {
       const result = await adapter.generate(
-        { prompt: promptWithSeed, identifier, jobId, metadata, referenceImages, settings },
+        { prompt: promptWithDna, identifier, jobId, metadata, referenceImages, settings },
         this.getSDWriteHelpers(),
       );
       return result;

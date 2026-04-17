@@ -59,7 +59,8 @@ import {
   ColorScript,
   ColorScriptRequest,
   StoryBeatInput,
-  VisualPlan
+  VisualPlan,
+  computeCharacterIdentityFingerprint,
 } from '../agents/image-team/ImageAgentTeam';
 import type {
   CharacterVisualReference,
@@ -569,7 +570,12 @@ export class FullStoryPipeline {
         error: observation.error,
       });
     });
-    const imageWorkerConcurrency = this.config.generation?.imageWorkerModeEnabled
+    // A5: default image worker mode ON. The per-provider throttle in
+    // ImageGenerationService now enforces its own rate limits per provider,
+    // so running beat image work concurrently is safe and much faster.
+    // A caller can still opt out by explicitly setting `imageWorkerModeEnabled: false`.
+    const imageWorkerModeEnabled = this.config.generation?.imageWorkerModeEnabled !== false;
+    const imageWorkerConcurrency = imageWorkerModeEnabled
       ? Math.max(1, Math.min(4, this.config.generation?.maxParallelScenes ?? CONCURRENCY_DEFAULTS.maxParallelScenes))
       : 1;
     this.imageWorkerQueue = new LocalWorkerQueue(imageWorkerConcurrency);
@@ -622,6 +628,12 @@ export class FullStoryPipeline {
       stableDiffusionSettings: this.config.imageGen?.stableDiffusion,
       failurePolicy: this.getFailurePolicy(),
     });
+    // C4: install the structured art-style profile (if any) so prompt
+    // strengthening can operate bidirectionally on style-inappropriate /
+    // style-positive vocabulary rather than applying only cinematic defaults.
+    if (this.config.imageGen?.artStyleProfile) {
+      this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
+    }
     
     // Initialize audio generation service
     this.audioService = new AudioGenerationService(this.config.narration?.elevenLabsApiKey);
@@ -6036,8 +6048,51 @@ export class FullStoryPipeline {
     worldBible: WorldBible,
     brief: FullCreativeBrief
   ): Promise<void> {
+    // D5: Before spending any budget on master images, drop reference sheets
+    // whose stored identity fingerprint no longer matches the current
+    // character profile. This catches the "author rewrote the character's
+    // appearance between episodes" case — the cached anchor would otherwise
+    // keep pinning new images to the old look. Freshly-generated sheets get
+    // fingerprinted below; pre-D5 cached sheets adopt their current
+    // fingerprint on first seen so drift detection starts from now.
+    // D8: Under QA_MODE=fast/full, emit a structured drift audit BEFORE
+    // invalidating. The audit is a pure fingerprint comparison (no LLM, no
+    // image diff) so it's free to run. Operators can use the report to
+    // decide whether downstream scenes should be regenerated too.
+    const qaModeForDrift = this.config.imageGen?.qa?.qaMode ?? 'off';
+    if (qaModeForDrift !== 'off') {
+      const driftReport = this.imageAgentTeam.auditIdentityDrift(characterBible.characters);
+      if (driftReport.length > 0) {
+        this.emit({
+          type: 'debug',
+          phase: 'images',
+          message: `D8 identity-drift audit (${qaModeForDrift}): ${driftReport.length} character(s) drifted — ${driftReport
+            .map((d) => `${d.characterName}:${d.reason}`)
+            .join(', ')}`,
+        });
+      }
+    }
+
+    const invalidated = this.imageAgentTeam.invalidateStaleReferenceSheets(characterBible.characters);
+    if (invalidated.length > 0) {
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: `D5: invalidated ${invalidated.length} stale reference sheet(s) due to identity change: ${invalidated.join(', ')}`,
+      });
+    }
+
+    // D1: Promote recurring non-protagonist characters to master reference
+    // sheets. In addition to major/core importance, we now include
+    // `supporting` characters — the writer typically tags characters that
+    // appear in multiple scenes at this tier, so they benefit most from a
+    // stable identity anchor. Minor one-off characters are still skipped to
+    // avoid wasting generation budget on throwaway appearances.
     const majorCharacters = characterBible.characters.filter((char) =>
-      char.importance === 'major' || char.importance === 'core' || char.id === brief.protagonist.id
+      char.importance === 'major' ||
+      char.importance === 'core' ||
+      char.importance === 'supporting' ||
+      char.id === brief.protagonist.id
     );
     const majorLocations = worldBible.locations.filter((loc) => {
       const briefLoc = brief.world.keyLocations.find((location) => location.id === loc.id);
@@ -6057,7 +6112,11 @@ export class FullStoryPipeline {
         console.warn(`[Pipeline] Skipping duplicate character ID "${char.id}" (${char.name}) — already generated reference sheet.`);
         continue;
       }
-      const isMajor = char.importance === 'major' || char.importance === 'core' || char.id === brief.protagonist.id;
+      // D1: treat "supporting" the same as "major" for reference-sheet eligibility.
+      const isMajor = char.importance === 'major' ||
+        char.importance === 'core' ||
+        char.importance === 'supporting' ||
+        char.id === brief.protagonist.id;
       const userRefImages = this.findUserReferenceImages(char, brief);
       const hasUserRefs = userRefImages.length > 0;
 
@@ -6069,6 +6128,11 @@ export class FullStoryPipeline {
       if (isMajor || hasUserRefs) {
         processedCharIds.add(char.id);
         await this.generateCharacterReferenceSheet(char, brief, hasUserRefs ? userRefImages : undefined);
+        // D5: tag the freshly-generated reference sheet with the identity
+        // fingerprint that produced it so future runs can detect drift and
+        // invalidate at the top of this phase (see `invalidateStaleReferenceSheets`).
+        const fingerprint = computeCharacterIdentityFingerprint(char);
+        this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
         if (totalMasterAssets > 0) {
           completedMasterAssets += 1;
           this.emitPhaseProgress(
@@ -6931,7 +6995,13 @@ ${clothingRule}
       const scene = sceneContents[sceneIndex];
       const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
       this.emit({ type: 'agent_start', agent: 'ImageAgentTeam', message: `Planning visuals for scene: ${scene.sceneName}...` });
-      
+
+      // D10: drop the previous-scene reference at every scene boundary so the
+      // first beat of the new scene isn't biased by the last beat of the
+      // previous one. Continuation within the scene's beats still benefits
+      // from setGeminiPreviousScene after each successful generation.
+      this.imageService.clearGeminiPreviousScene();
+
       try {
         // Null-safety: guarantee array fields are always arrays before any downstream code touches them
         if (!Array.isArray(scene.moodProgression)) scene.moodProgression = scene.moodProgression ? [scene.moodProgression as unknown as string] : [];
@@ -7149,6 +7219,10 @@ ${clothingRule}
           settingContext: scene.settingContext,
           artStyle: this.config.artStyle,
           colorMood: colorMoodHints,
+          // C2: pass the structured style profile so the deterministic prompt
+          // builder can drop negatives that contradict the chosen aesthetic
+          // and merge the profile's genreNegatives into the final prompt.
+          styleProfile: this.config.imageGen?.artStyleProfile,
         };
 
         // Build beat-level character lookup from our earlier analysis
@@ -7201,6 +7275,34 @@ ${clothingRule}
             .map(id => characterBible.characters.find(c => c.id === id)?.name)
             .filter(Boolean) as string[];
 
+          // B6: Look up per-beat color guidance from the episode color script.
+          const beatColorEntry = (colorScript as any)?.beats?.find(
+            (b: any) => b.beatId === beatId
+          );
+          let beatColorOverride: import('../images/beatPromptBuilder').BeatPromptInput['colorMoodOverride'] | undefined;
+          if (beatColorEntry) {
+            const hues: string[] = Array.isArray(beatColorEntry.dominantHues) ? beatColorEntry.dominantHues : [];
+            const palette = hues.length > 0 ? hues.join(' and ') : undefined;
+            const temperature = typeof beatColorEntry.lightTemp === 'string' ? beatColorEntry.lightTemp : undefined;
+            // Compare to the previous beat's hues to produce a transition note.
+            let transitionNote: string | undefined;
+            if (beatIdx > 0) {
+              const prevEntry = (colorScript as any).beats?.[beatIdx - 1];
+              const prevHues: string[] = Array.isArray(prevEntry?.dominantHues) ? prevEntry.dominantHues : [];
+              if (prevHues.length > 0 && palette) {
+                transitionNote = `transitioning from ${prevHues.join('/')} to ${hues.join('/')}`;
+              }
+            }
+            beatColorOverride = {
+              palette,
+              lighting: typeof beatColorEntry.lightDirection === 'string'
+                ? `${beatColorEntry.lightDirection} light`
+                : undefined,
+              temperature,
+              transitionNote,
+            };
+          }
+
           const beatPromptInput: import('../images/beatPromptBuilder').BeatPromptInput = {
             beatId,
             beatText: beat.text,
@@ -7220,6 +7322,7 @@ ${clothingRule}
             isBranchPayoff: beatIdx === 0 && !!scene.incomingChoiceContext,
             foregroundCharacterNames: isEstablishingBeat ? [] : (beat.foregroundCharacters || shotCharacterNames),
             backgroundCharacterNames: isEstablishingBeat ? [] : beat.backgroundCharacters,
+            colorMoodOverride: beatColorOverride,
           };
 
           let imagePrompt = buildBeatImagePrompt(beatPromptInput, scenePromptCtx);
@@ -10385,7 +10488,31 @@ ${clothingRule}
     if (!family) {
       return references;
     }
-    return buildReferencePack(options.slotId || `${family}:${characterIds.join(',')}`, family, references).references;
+
+    // D3: derive per-character weights from their bible importance. Weights
+    // are multiplied against the profile's maxPerCharacter so major characters
+    // get more ref-pack slots than supporting/minor ones.
+    const characterWeights: Record<string, number> = {};
+    for (const charId of characterIds) {
+      const entry = characterBible.characters.find((c) => c.id === charId);
+      if (!entry) continue;
+      const name = entry.name || charId;
+      const importance = (entry.importance || '').toLowerCase();
+      if (entry.role?.toLowerCase() === 'protagonist' || importance === 'major') {
+        characterWeights[name] = 1.5;
+      } else if (importance === 'supporting') {
+        characterWeights[name] = 1.0;
+      } else if (importance === 'minor') {
+        characterWeights[name] = 0.75;
+      }
+    }
+
+    return buildReferencePack(
+      options.slotId || `${family}:${characterIds.join(',')}`,
+      family,
+      references,
+      { characterWeights },
+    ).references;
   }
 
   /**

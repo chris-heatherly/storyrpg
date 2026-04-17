@@ -6,6 +6,8 @@ import {
   StableDiffusionSettings,
   ImageProvider,
 } from '../config';
+import { resolveImageQaConfig, resolveArtStylePresetProfile } from './imageQaConfig';
+import { resolveArtStyleProfile } from '../images/artStyleProfile';
 import type { GenerationSettings } from '../../components/GenerationSettingsPanel';
 import {
   DEFAULT_LLM_MODELS,
@@ -103,6 +105,9 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
   const selectedLlmApiKey = getSelectedLlmApiKey(input);
   const artStyle = input.artStyle.trim() || undefined;
   const normalizedImageProvider = normalizeImageProvider(input.imageProvider);
+  const env = typeof process !== 'undefined' ? (process.env as Record<string, string | undefined>) : {};
+  const qa = resolveImageQaConfig(env);
+  const artStyleProfile = resolveArtStylePresetProfile(env) ?? (artStyle ? resolveArtStyleProfile(artStyle) : undefined);
 
   return {
     agents: {
@@ -182,9 +187,11 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
       midjourney: normalizedImageProvider === 'midapi' ? input.midjourneySettings : undefined,
       gemini: {
         ...(normalizedImageProvider === 'nano-banana' ? input.geminiSettings : {}),
-        canonicalArtStyle: input.artStyle.trim() || '',
+        canonicalArtStyle: artStyleProfile?.name || input.artStyle.trim() || '',
       },
       stableDiffusion: resolveStableDiffusionSettings(normalizedImageProvider, input.stableDiffusionSettings),
+      qa,
+      artStyleProfile,
     },
     generation: {
       failurePolicy: input.generationSettings.failFastMode ? 'fail_fast' : 'recover',

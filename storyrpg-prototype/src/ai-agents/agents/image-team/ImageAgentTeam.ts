@@ -368,6 +368,51 @@ export {
 // Storage for generated reference sheets (character ID -> sheet with generated images)
 export interface GeneratedReferenceSheet extends CharacterReferenceSheet {
   generatedImages: Map<string, GeneratedImage>; // viewType (or viewType-expressionName) -> image
+  /**
+   * D5: Deterministic fingerprint of the identity fields used when this sheet
+   * was generated (physicalDescription + distinctiveFeatures + typicalAttire,
+   * plus role/name to catch identity swaps). Compared against the current
+   * character profile to decide whether the cached sheet is still valid.
+   * Missing (undefined) on sheets generated before D5 landed — those are
+   * treated as stale only when `computeCharacterIdentityFingerprint` returns
+   * a non-empty value.
+   */
+  identityFingerprint?: string;
+}
+
+/**
+ * D5: Build a compact fingerprint from the identity-relevant fields of a
+ * character. Used to detect when an author has rewritten a character's
+ * physical description between pipeline runs (multi-episode stories) so we
+ * can discard the stale reference sheet and regenerate.
+ *
+ * This is NOT cryptographic — it only needs to change when identity fields
+ * change and stay stable otherwise. We fold all fields to lowercase and
+ * collapse whitespace so semantically-equal rewrites don't thrash the cache.
+ */
+export function computeCharacterIdentityFingerprint(
+  char: Pick<
+    import('../CharacterDesigner').CharacterProfile,
+    'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire'
+  >,
+): string {
+  const norm = (s: string | undefined): string => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const features = (char.distinctiveFeatures || []).map(norm).sort().join('|');
+  const raw = [
+    norm(char.name),
+    norm(char.role),
+    norm(char.physicalDescription),
+    features,
+    norm(char.typicalAttire),
+  ].join('||');
+
+  // FNV-1a 32-bit — small, deterministic, dependency-free.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < raw.length; i++) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
 }
 
 // Storage for generated expression sheets (character ID -> sheet with generated expression images)
@@ -1537,6 +1582,113 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
    */
   clearReferenceSheets(): void {
     this.characterReferenceSheets.clear();
+  }
+
+  /**
+   * D5: Tag a cached reference sheet with the identity fingerprint that was
+   * in effect when it was generated. Callers compute the fingerprint via
+   * `computeCharacterIdentityFingerprint` and pass it in. Safe to call
+   * multiple times; subsequent calls overwrite the stored fingerprint.
+   */
+  setReferenceSheetIdentityFingerprint(characterId: string, fingerprint: string): void {
+    const sheet = this.characterReferenceSheets.get(characterId);
+    if (!sheet) return;
+    sheet.identityFingerprint = fingerprint;
+  }
+
+  /**
+   * D8: Identity drift audit (pairs with QA_MODE=fast/full).
+   *
+   * Non-destructive companion to `invalidateStaleReferenceSheets`. Returns a
+   * structured report of characters whose cached reference-sheet fingerprint
+   * no longer matches the current character profile, WITHOUT dropping the
+   * cached sheet. Use this from the QA pass to emit structured warnings and
+   * let the operator decide whether to kick off a regen.
+   *
+   * This is intentionally a pure comparison — no LLM call, no image diff —
+   * so it can run under `QA_MODE=fast` without inflating generation cost.
+   */
+  auditIdentityDrift(
+    characters: Array<
+      Pick<
+        import('../CharacterDesigner').CharacterProfile,
+        'id' | 'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire'
+      >
+    >,
+  ): Array<{
+    characterId: string;
+    characterName: string;
+    reason: 'no-cached-fingerprint' | 'fingerprint-mismatch';
+    cachedFingerprint?: string;
+    currentFingerprint: string;
+  }> {
+    const report: Array<{
+      characterId: string;
+      characterName: string;
+      reason: 'no-cached-fingerprint' | 'fingerprint-mismatch';
+      cachedFingerprint?: string;
+      currentFingerprint: string;
+    }> = [];
+    for (const char of characters) {
+      const existing = this.characterReferenceSheets.get(char.id);
+      if (!existing) continue; // no sheet => not drift, just not-yet-rendered
+      const currentFingerprint = computeCharacterIdentityFingerprint(char);
+      if (!existing.identityFingerprint) {
+        report.push({
+          characterId: char.id,
+          characterName: char.name,
+          reason: 'no-cached-fingerprint',
+          currentFingerprint,
+        });
+        continue;
+      }
+      if (existing.identityFingerprint !== currentFingerprint) {
+        report.push({
+          characterId: char.id,
+          characterName: char.name,
+          reason: 'fingerprint-mismatch',
+          cachedFingerprint: existing.identityFingerprint,
+          currentFingerprint,
+        });
+      }
+    }
+    return report;
+  }
+
+  /**
+   * D5: Drop any cached reference sheet whose stored `identityFingerprint`
+   * no longer matches the current character profile. This lets multi-episode
+   * pipelines (or resumed runs where the user has rewritten appearance
+   * fields) regenerate stale anchors instead of continuing to render the old
+   * face. Returns the list of character ids that were invalidated.
+   */
+  invalidateStaleReferenceSheets(
+    characters: Array<
+      Pick<
+        import('../CharacterDesigner').CharacterProfile,
+        'id' | 'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire'
+      >
+    >,
+  ): string[] {
+    const invalidated: string[] = [];
+    for (const char of characters) {
+      const existing = this.characterReferenceSheets.get(char.id);
+      if (!existing) continue;
+      const currentFingerprint = computeCharacterIdentityFingerprint(char);
+      if (!existing.identityFingerprint) {
+        // Pre-D5 cached sheet — adopt the current fingerprint so future runs
+        // can detect drift. Do not invalidate: the sheet content is still
+        // whatever the author currently wants (we have no prior basis to
+        // compare).
+        existing.identityFingerprint = currentFingerprint;
+        continue;
+      }
+      if (existing.identityFingerprint !== currentFingerprint) {
+        this.characterReferenceSheets.delete(char.id);
+        invalidated.push(char.id);
+      }
+    }
+    return invalidated;
   }
 
   /**

@@ -43,6 +43,49 @@ export interface BeatPromptInput {
 
   foregroundCharacterNames?: string[];
   backgroundCharacterNames?: string[];
+  /**
+   * D9: Optional explicit staging for group scenes with 3+ foreground characters.
+   * Maps character name -> positional descriptor (e.g. "left", "center",
+   * "right", "background-left"). When omitted, we fall back to deriving
+   * positions from `foregroundCharacterNames` order.
+   */
+  characterStaging?: Record<string, string>;
+  /**
+   * D4: Per-character visual state (wardrobe changes, visible injuries, held
+   * props, emotional-physical tags) that should be honored in this beat. Keys
+   * are character display names (matching `foregroundCharacterNames`) so the
+   * prompt builder can append state clauses without re-resolving IDs.
+   */
+  characterVisualStates?: Record<string, CharacterVisualState>;
+  /**
+   * B6: Beat-specific color mood sourced from the episode color script. When
+   * present, these override the scene-level palette for this beat only,
+   * giving each beat its own color follow-through even when all beats share a
+   * scene. Producers typically hydrate this from `ColorScriptAgent.getMoodSpecForBeat`.
+   */
+  colorMoodOverride?: {
+    palette?: string;
+    lighting?: string;
+    temperature?: string;
+    /** Short color-tension note, e.g. "cool-to-warm transition", "rising red". */
+    transitionNote?: string;
+  };
+}
+
+/**
+ * D4: Mutable visual state that follows a character across beats. Writers
+ * (or pipeline heuristics derived from beat text) populate this as the story
+ * progresses so downstream images keep wardrobe/injuries/props continuous.
+ */
+export interface CharacterVisualState {
+  /** Current worn outfit, e.g. "torn grey cloak over chainmail". */
+  wardrobe?: string;
+  /** Visible wounds or marks, e.g. ["bandaged left hand", "bruised cheek"]. */
+  injuries?: string[];
+  /** Items being held or carried, e.g. ["broken sword", "lantern"]. */
+  heldProps?: string[];
+  /** Short descriptors (e.g. "rain-soaked", "ash on face"). */
+  tags?: string[];
 }
 
 export interface ScenePromptContext {
@@ -58,6 +101,26 @@ export interface ScenePromptContext {
     lighting?: string;
     temperature?: string;
   };
+  /**
+   * C6: Style anchor strength. Controls how many times and how emphatically
+   * the art style is woven into the prompt.
+   *   0 — mention once, no reinforcement (use for styles where over-mention
+   *       destabilizes the reference image signal);
+   *   1 — standard front + end bookends (default, today's behavior);
+   *   2 — front + middle reinforcement + end, with "strictly maintain" phrasing
+   *       (use for highly stylized families like risograph, manga, pixel).
+   * Omit to fall back to 1.
+   */
+  styleAnchorStrength?: 0 | 1 | 2;
+  /**
+   * C2: Structured art-style profile. When provided, the builder uses
+   * `acceptableDeviations` to drop staging/composition negatives that
+   * contradict the style (e.g. "centered composition" is not a negative for
+   * minimalist/storybook), and merges `genreNegatives` into the final
+   * negative prompt. Profile name is NOT emitted as the art-style string —
+   * `artStyle` still wins that slot so existing consumers are unaffected.
+   */
+  styleProfile?: import('./artStyleProfile').ArtStyleProfile;
 }
 
 const BASE_NEGATIVE_PROMPT =
@@ -90,6 +153,109 @@ function buildChoicePayoffPrefix(
     return 'The player chose this action. Show it playing out physically: ';
   }
   return '';
+}
+
+/**
+ * B5: Choice-payoff visual language table.
+ *
+ * Maps choice-text intent keywords to a compact visual-grammar hint that we
+ * append to the prompt. The goal is to make the *kind* of choice readable at
+ * a glance — a "fight" payoff should read differently from a "persuade"
+ * payoff, even if both land on the same beat template. When no category
+ * matches we return empty string and the prompt stays untouched.
+ */
+interface ChoicePayoffVisualRule {
+  keywords: RegExp;
+  label: string;
+  visualLanguage: string;
+}
+
+const CHOICE_PAYOFF_VISUAL_RULES: ChoicePayoffVisualRule[] = [
+  {
+    keywords: /\b(attack|strike|fight|swing|slash|stab|punch|charge|kill)\b/i,
+    label: 'violent',
+    visualLanguage:
+      'Aggressive forward motion, weapon or fist at apex of strike, impact tension in shoulders and jaw.',
+  },
+  {
+    keywords: /\b(defend|parry|block|brace|shield|guard)\b/i,
+    label: 'defensive',
+    visualLanguage:
+      'Braced stance, weight back, arms raised protectively, eyes locked on threat.',
+  },
+  {
+    keywords: /\b(sneak|slip|hide|creep|vanish|conceal|steal)\b/i,
+    label: 'stealthy',
+    visualLanguage:
+      'Low crouched profile, shoulders hunched, partial silhouette against the environment, weight on the ball of the foot.',
+  },
+  {
+    keywords: /\b(flee|run|escape|bolt|retreat|fall back)\b/i,
+    label: 'flight',
+    visualLanguage:
+      'Mid-stride motion blur, body leaning forward, over-the-shoulder glance back, coat or hair trailing from velocity.',
+  },
+  {
+    keywords: /\b(persuade|convince|charm|flatter|sweet[- ]talk|bargain|negotiate)\b/i,
+    label: 'diplomatic',
+    visualLanguage:
+      'Open palm gesture, warm eye contact, body angled toward the other, relaxed but intent shoulders.',
+  },
+  {
+    keywords: /\b(threaten|intimidate|menace|loom|warn)\b/i,
+    label: 'intimidation',
+    visualLanguage:
+      'Full-height forward lean, weight shifted into the other\'s space, jaw set, hands visible and deliberate.',
+  },
+  {
+    keywords: /\b(lie|deceive|bluff|mislead|pretend|fake)\b/i,
+    label: 'deception',
+    visualLanguage:
+      'Micro-tell in the eyes or hands while face performs calm, slight asymmetry between what the mouth and the eyes say.',
+  },
+  {
+    keywords: /\b(investigate|examine|study|search|inspect|read)\b/i,
+    label: 'investigation',
+    visualLanguage:
+      'Close focus on the object or clue, low-light specular highlight, the character mid-thought with tightened brow.',
+  },
+  {
+    keywords: /\b(comfort|console|reassure|embrace|support|hold)\b/i,
+    label: 'tender',
+    visualLanguage:
+      'Gentle contact — hand on arm or shoulder, soft eye contact, weight leaning in, shoulders lowered.',
+  },
+  {
+    keywords: /\b(refuse|reject|turn away|walk out|abandon|quit)\b/i,
+    label: 'refusal',
+    visualLanguage:
+      'Body turned partially away, hand raised in a soft cut-off gesture, eyes cast off-frame from the other character.',
+  },
+  {
+    keywords: /\b(help|rescue|save|protect|shield)\b/i,
+    label: 'protective',
+    visualLanguage:
+      'Character inserting themselves between threat and ally, arm extended outward, legs braced.',
+  },
+  {
+    keywords: /\b(betray|double[- ]cross|backstab|turn on)\b/i,
+    label: 'betrayal',
+    visualLanguage:
+      'Friendly gesture in the foreground while the hidden hand holds a weapon or concealed item behind the back.',
+  },
+];
+
+export function inferChoicePayoffVisualLanguage(choiceText: string | undefined): {
+  label: string;
+  visualLanguage: string;
+} | null {
+  if (!choiceText) return null;
+  for (const rule of CHOICE_PAYOFF_VISUAL_RULES) {
+    if (rule.keywords.test(choiceText)) {
+      return { label: rule.label, visualLanguage: rule.visualLanguage };
+    }
+  }
+  return null;
 }
 
 function synthesizeExpressionFromEmotion(emotionalRead: string): string {
@@ -194,9 +360,10 @@ function buildEstablishingPrompt(
   artStyle: string,
 ): ImagePrompt {
   const coreVisual = beat.visualMoment || beat.beatText;
+  const styleStrength: 0 | 1 | 2 = scene.styleAnchorStrength ?? 1;
 
   const promptParts: string[] = [
-    `Art style: ${artStyle}`,
+    styleStrength === 2 ? `Art style (strict): ${artStyle}` : `Art style: ${artStyle}`,
     'wide establishing shot',
     coreVisual,
     `Scene: ${scene.sceneName}`,
@@ -207,12 +374,20 @@ function buildEstablishingPrompt(
     scene.colorMood?.lighting ? `Lighting: ${scene.colorMood.lighting}` : '',
     beat.mustShowDetail ? `Must include: ${beat.mustShowDetail}` : '',
     'No characters in foreground. Show the environment, atmosphere, and sense of place.',
-    `Maintain art style: ${artStyle}`,
+    styleStrength === 2
+      ? `Strictly maintain art style: ${artStyle}. Do not introduce other aesthetics.`
+      : styleStrength === 1
+        ? `Maintain art style: ${artStyle}`
+        : '',
   ];
 
   return {
     prompt: joinPromptParts(promptParts),
-    negativePrompt: BASE_NEGATIVE_PROMPT + ESTABLISHING_NEGATIVE,
+    negativePrompt: composeNegativePrompt(
+      BASE_NEGATIVE_PROMPT + ESTABLISHING_NEGATIVE,
+      scene.styleProfile,
+      'establishing',
+    ),
     style: artStyle,
     aspectRatio: '9:19.5',
     composition: `Establishing wide shot. Scene: ${scene.sceneName}. Genre: ${scene.genre}, Tone: ${scene.tone}`,
@@ -237,6 +412,12 @@ function buildCharacterPrompt(
     beat.incomingChoiceContext,
     beat.choiceContext,
   );
+  // B5: derive a compact visual-language hint from the incoming choice text
+  // so the rendered payoff reads like the KIND of action the player took
+  // (violent / stealthy / diplomatic / etc.), not just a generic payoff.
+  const choiceVisualRule = beat.isBranchPayoff || beat.isChoicePayoff
+    ? inferChoicePayoffVisualLanguage(beat.incomingChoiceContext || beat.choiceContext)
+    : null;
 
   const coreVisual = beat.visualMoment || beat.beatText;
   const camera = analysis.suggestedCamera;
@@ -253,7 +434,11 @@ function buildCharacterPrompt(
   // imageGenerationService.buildGeminiDirectPrompt). Tokens early in the
   // prompt carry more weight for Gemini; placing style at the end made it
   // easy for the model's own aesthetic bias to override the user's choice.
-  narrativeParts.push(`Art style: ${artStyle}`);
+  // C6: For heavy anchor strength, promote to "strictly" language.
+  const styleStrength: 0 | 1 | 2 = scene.styleAnchorStrength ?? 1;
+  narrativeParts.push(
+    styleStrength === 2 ? `Art style (strict): ${artStyle}` : `Art style: ${artStyle}`
+  );
 
   // Camera + angle opens the frame
   const cameraOpener = camera.movement !== 'Static'
@@ -267,6 +452,13 @@ function buildCharacterPrompt(
   } else {
     narrativeParts.push(coreVisual);
   }
+  // B5: append the choice-kind visual language as its own clause so the
+  // model renders the right physical vocabulary (combat vs. diplomacy etc.).
+  if (choiceVisualRule) {
+    narrativeParts.push(
+      `Choice kind (${choiceVisualRule.label}): ${choiceVisualRule.visualLanguage}`
+    );
+  }
 
   // Characters woven with their emotional/physical state
   if (beat.foregroundCharacterNames?.length) {
@@ -277,6 +469,23 @@ function buildCharacterPrompt(
       narrativeParts.push(`${charPhrase} ${effectiveAction}`);
     } else {
       narrativeParts.push(charPhrase);
+    }
+
+    // D9: For 3+ foreground characters, append an explicit staging clause so
+    // the model doesn't swap/duplicate characters in group compositions.
+    const staging = buildGroupStagingClause(beat.foregroundCharacterNames, beat.characterStaging);
+    if (staging) {
+      narrativeParts.push(staging);
+    }
+
+    // D4: Append per-character visual state so wardrobe/injuries/props carry
+    // across beats. Silently skipped when no state is registered.
+    const stateClause = buildCharacterStateClause(
+      beat.foregroundCharacterNames,
+      beat.characterVisualStates,
+    );
+    if (stateClause) {
+      narrativeParts.push(stateClause);
     }
   } else if (effectiveAction) {
     narrativeParts.push(effectiveAction);
@@ -291,16 +500,28 @@ function buildCharacterPrompt(
     narrativeParts.push(bodyLanguage);
   }
 
-  // Lighting serves the mood — merged with color script
+  // Lighting serves the mood — merged with color script.
+  // B6: prefer beat-level color override when available, falling back to the
+  // scene's overall color mood for continuity.
+  const effectiveColorMood = {
+    palette: beat.colorMoodOverride?.palette ?? scene.colorMood?.palette,
+    lighting: beat.colorMoodOverride?.lighting ?? scene.colorMood?.lighting,
+    temperature: beat.colorMoodOverride?.temperature ?? scene.colorMood?.temperature,
+  };
   const lightingParts: string[] = [analysis.lightingSuggestion];
-  if (scene.colorMood?.lighting) lightingParts.push(scene.colorMood.lighting);
-  if (scene.colorMood?.temperature) lightingParts.push(`${scene.colorMood.temperature} temperature`);
+  if (effectiveColorMood.lighting) lightingParts.push(effectiveColorMood.lighting);
+  if (effectiveColorMood.temperature) lightingParts.push(`${effectiveColorMood.temperature} temperature`);
   narrativeParts.push(lightingParts.filter(Boolean).join(', '));
 
   // Composition
   narrativeParts.push(analysis.compositionNote);
-  if (scene.colorMood?.palette) {
-    narrativeParts.push(`color palette: ${scene.colorMood.palette}`);
+  if (effectiveColorMood.palette) {
+    narrativeParts.push(`color palette: ${effectiveColorMood.palette}`);
+  }
+  // B6: color transition note calls out the shift between beats so the model
+  // renders a palette that visually tracks the emotional arc.
+  if (beat.colorMoodOverride?.transitionNote) {
+    narrativeParts.push(`color progression: ${beat.colorMoodOverride.transitionNote}`);
   }
 
   // Setting adaptation notes
@@ -315,7 +536,18 @@ function buildCharacterPrompt(
   // Repeat the art style as a closing anchor to reinforce it after all the
   // narrative/camera/lighting text. Leading + trailing style = bracketed
   // emphasis, the same pattern used by the direct Gemini prompt builder.
-  narrativeParts.push(`Maintain art style: ${artStyle}`);
+  // C6: anchor strength 0 omits the closing reinforcement; 2 adds a
+  // mid-prompt "Style reminder" before the closing anchor for extra weight.
+  if (styleStrength === 2) {
+    narrativeParts.push(`Style reminder: ${artStyle}`);
+  }
+  if (styleStrength >= 1) {
+    narrativeParts.push(
+      styleStrength === 2
+        ? `Strictly maintain art style: ${artStyle}. Do not introduce other aesthetics.`
+        : `Maintain art style: ${artStyle}`
+    );
+  }
 
   const keyExpression = beat.emotionalRead
     ? synthesizeExpressionFromEmotion(beat.emotionalRead)
@@ -332,7 +564,11 @@ function buildCharacterPrompt(
 
   return {
     prompt: joinPromptParts(narrativeParts),
-    negativePrompt: BASE_NEGATIVE_PROMPT + CHARACTER_NEGATIVE,
+    negativePrompt: composeNegativePrompt(
+      BASE_NEGATIVE_PROMPT + CHARACTER_NEGATIVE,
+      scene.styleProfile,
+      'character',
+    ),
     style: artStyle,
     aspectRatio: '9:19.5',
     composition: compositionIntent,
@@ -420,6 +656,67 @@ function getFocalPointForBeat(beatType: BeatType, beat: BeatPromptInput): string
   }
 }
 
+/**
+ * D9: Build an explicit left/center/right staging clause for group scenes.
+ * Returns empty string for 1-2 character beats (staging is implicit there).
+ * Honors `characterStaging` overrides when provided; otherwise derives
+ * positions deterministically from `foregroundCharacterNames` order.
+ */
+function buildGroupStagingClause(
+  names: string[],
+  staging?: Record<string, string>,
+): string {
+  if (names.length < 3) return '';
+
+  const positionFor = (index: number, total: number): string => {
+    if (total <= 3) return ['left', 'center', 'right'][index] || 'background';
+    if (index === 0) return 'far left';
+    if (index === total - 1) return 'far right';
+    if (index === Math.floor((total - 1) / 2)) return 'center';
+    return index < total / 2 ? 'left of center' : 'right of center';
+  };
+
+  const assignments: string[] = [];
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    const override = staging?.[name];
+    const pos = override || positionFor(i, names.length);
+    assignments.push(`${name} ${pos}`);
+  }
+
+  return `Staging: ${assignments.join(', ')}. Each character clearly distinguishable, no duplication or swapped identities.`;
+}
+
+/**
+ * D4: Flatten a per-character visual-state map into a compact clause like
+ * "Alice in torn grey cloak, bandaged left hand; Bob holding broken sword".
+ * Returns empty string when no foreground character has any state recorded.
+ */
+function buildCharacterStateClause(
+  names: string[],
+  states?: Record<string, CharacterVisualState>,
+): string {
+  if (!states) return '';
+  const clauses: string[] = [];
+  for (const name of names) {
+    const state = states[name];
+    if (!state) continue;
+    const parts: string[] = [];
+    if (state.wardrobe) parts.push(`in ${state.wardrobe}`);
+    if (state.injuries && state.injuries.length > 0) parts.push(state.injuries.join(', '));
+    if (state.heldProps && state.heldProps.length > 0) {
+      parts.push(`holding ${state.heldProps.join(' and ')}`);
+    }
+    if (state.tags && state.tags.length > 0) parts.push(state.tags.join(', '));
+    if (parts.length > 0) {
+      clauses.push(`${name} ${parts.join(', ')}`);
+    }
+  }
+  return clauses.length > 0
+    ? `Current visual state: ${clauses.join('; ')}.`
+    : '';
+}
+
 function joinPromptParts(parts: string[]): string {
   return parts
     .filter(p => p && p.trim().length > 0)
@@ -478,4 +775,57 @@ export function overrideShotFromPlan(
   }
 
   return overridden;
+}
+
+/**
+ * C2: Assemble the final negative prompt, honoring the active art-style
+ * profile. Drops built-in negatives that the profile's `acceptableDeviations`
+ * explicitly permit (e.g. a minimalist / storybook style should not be told
+ * to avoid "centered composition" because that's exactly the look it wants),
+ * and merges `genreNegatives` so style-specific anti-patterns survive into
+ * the final negative-prompt string.
+ */
+function composeNegativePrompt(
+  base: string,
+  profile: import('./artStyleProfile').ArtStyleProfile | undefined,
+  surface: 'character' | 'establishing',
+): string {
+  if (!profile) return base;
+
+  let adjusted = base;
+
+  // Strip "stiff pose"-family negatives when the profile accepts static posing.
+  if (profile.acceptableDeviations.includes('mid-action-posing')) {
+    adjusted = adjusted
+      .replace(/,?\s*stiff pose/gi, '')
+      .replace(/,?\s*characters frozen in place/gi, '')
+      .replace(/,?\s*mannequin pose/gi, '');
+  }
+  if (profile.acceptableDeviations.includes('asymmetric-body-language')) {
+    adjusted = adjusted
+      .replace(/,?\s*symmetrical stance/gi, '')
+      .replace(/,?\s*arms at sides/gi, '')
+      .replace(/,?\s*standing straight/gi, '');
+  }
+  if (profile.acceptableDeviations.includes('no-symmetrical-composition') ||
+      profile.acceptableDeviations.includes('no-dead-center')) {
+    adjusted = adjusted.replace(/,?\s*centered composition/gi, '');
+  }
+  if (profile.acceptableDeviations.includes('thumbnail-readable-expressions')) {
+    adjusted = adjusted.replace(/,?\s*neutral expression/gi, '');
+  }
+
+  adjusted = adjusted.replace(/\s{2,}/g, ' ').replace(/^\s*,+\s*/, '').replace(/\s*,\s*,/g, ',').trim();
+
+  if (profile.genreNegatives.length > 0) {
+    adjusted = `${adjusted}, ${profile.genreNegatives.join(', ')}`;
+  }
+
+  // `surface` is currently used only for future-proofing; different surfaces
+  // could want different deviation sets (e.g. establishing shots may still
+  // want to avoid "character portrait" even for storybook profiles). For now
+  // both surfaces share the same deviation map.
+  void surface;
+
+  return adjusted;
 }

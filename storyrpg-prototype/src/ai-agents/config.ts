@@ -27,6 +27,13 @@ if (typeof global !== 'undefined') {
 
 import { ValidationConfig } from '../types/validation';
 import { CHOICE_DENSITY_DEFAULTS } from '../constants/validation';
+import type { ImageQaConfig } from './config/imageQaConfig';
+import { resolveImageQaConfig, resolveArtStylePresetProfile } from './config/imageQaConfig';
+import type { ArtStyleProfile } from './images/artStyleProfile';
+
+export type { ImageQaConfig, ImagePromptMode, ImageQaMode } from './config/imageQaConfig';
+export { DEFAULT_IMAGE_QA_CONFIG } from './config/imageQaConfig';
+export type { ArtStyleProfile } from './images/artStyleProfile';
 
 export interface AgentConfig {
   provider: 'anthropic' | 'openai' | 'gemini';
@@ -243,6 +250,24 @@ export interface MidjourneySettings extends ImageReferenceSettings {
   fullAppearanceOmniWeight?: number;
   /** Midjourney version (default '7') */
   version?: string;
+  /**
+   * D7: Enable `--cref <url>` and `--sref <url>` flags when reference images
+   * carry an accessible URL. Reference images without a URL fall back to the
+   * existing `--oref`/identity-hint path so this flag is safe to leave on.
+   * Default: false to preserve today's behavior.
+   */
+  enableCrefSref?: boolean;
+  /**
+   * D7: `--cw` character weight (0-100). Controls how strongly Midjourney
+   * locks to the character reference's features vs its clothing/style. 100 =
+   * full locking (face + hair + outfit), 0 = face only. Default 100.
+   */
+  characterWeight?: number;
+  /**
+   * D7: `--sw` style weight (0-1000). How strongly `--sref` biases the final
+   * image toward the style reference. Higher = more style fidelity. Default 100.
+   */
+  styleWeight?: number;
 }
 
 // Default Midjourney settings
@@ -256,6 +281,9 @@ export const DEFAULT_MIDJOURNEY_SETTINGS: Required<MidjourneySettings> = {
   maxRefImagesPerCharacter: 2,
   fullAppearanceOmniWeight: 700,
   version: '7',
+  enableCrefSref: false,
+  characterWeight: 100,
+  styleWeight: 100,
 };
 
 // ========================================
@@ -399,6 +427,19 @@ export interface PipelineConfig {
      * spend when the model cannot stabilize on the reference. Default: 10.
      */
     maxIdentityRegenerations?: number;
+    /**
+     * Two-axis QA/prompt-path toggles (B1). Controls which prompt-building
+     * path runs (deterministic | llm | compare) and which validator cascade
+     * runs afterwards (off | fast | full). See `config/imageQaConfig.ts`.
+     */
+    qa?: ImageQaConfig;
+    /**
+     * Structured art-style profile (C1). When set, replaces the flat
+     * `canonicalArtStyle` string for downstream prompt/validator modulation.
+     * Prompt-assembly code still emits a string derived from `profile.name`
+     * so legacy callers keep working.
+     */
+    artStyleProfile?: ArtStyleProfile;
   };
   
   // Midjourney-specific parameters exposed in settings
@@ -528,6 +569,8 @@ export function loadConfig(): PipelineConfig {
       geminiApiKey: env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY,
       model: env.EXPO_PUBLIC_GEMINI_MODEL || env.GEMINI_MODEL,
       provider: env.EXPO_PUBLIC_IMAGE_PROVIDER || env.IMAGE_PROVIDER || 'nano-banana',
+      qa: resolveImageQaConfig(env),
+      artStyleProfile: resolveArtStylePresetProfile(env),
     },
     videoGen: {
       enabled: env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true' || env.VIDEO_GENERATION_ENABLED === 'true',

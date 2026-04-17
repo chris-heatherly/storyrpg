@@ -12,6 +12,8 @@ import type { SDReferencePurpose } from '../agents/ImageGenerator';
 import { budgetCanonicalPrompt } from '../images/promptComposer';
 import { ProviderPolicy } from '../images/providerPolicy';
 import type { ImageSlotFamily } from '../images/slotTypes';
+import { ProviderThrottle } from './providerThrottle';
+import { getProviderCapabilities } from '../images/providerCapabilities';
 import { createStableDiffusionAdapter } from './stable-diffusion/factory';
 import type { StableDiffusionAdapter } from './stable-diffusion/StableDiffusionAdapter';
 import { SeedRegistry, type SeedKey } from './stable-diffusion/seedRegistry';
@@ -165,6 +167,13 @@ export interface ReferenceImage {
    * Gemini / Atlas / MidAPI consumers.
    */
   purpose?: SDReferencePurpose;
+  /**
+   * D7 / A7: Pre-uploaded HTTP(S) URL for this reference, if known. URL-based
+   * providers (Midjourney `--cref`/`--sref`, Atlas Seedream) prefer URLs over
+   * inline base64. When empty, providers that require URLs fall back to
+   * their legacy identity-hint path.
+   */
+  url?: string;
 }
 
 /**
@@ -236,11 +245,46 @@ export class ImageGenerationService {
   private maxRetries: number;
   private retryDelayMs: number;
   private retryBackoffMultiplier: number;
-  private lastRequestTime: number = 0;
-  private minRequestInterval: number = 3000; // Minimum 3s between requests to same service (20 RPM)
+  /**
+   * Hard cap on exponential-backoff delay (A6). Without this cap a
+   * five-retry schedule could grow to 80s on a single bad prompt, blocking
+   * the provider's semaphore for minutes. Capped at 20s keeps the worst
+   * case bounded while still giving transient failures room to recover.
+   */
+  private maxRetryBackoffMs: number = 20_000;
+  /**
+   * Retry cap for `text_instead_of_image` errors (A6). This is a prompt
+   * problem, not a transient network failure — once a prompt reliably
+   * returns text the provider is unlikely to change its mind on a 5th
+   * attempt, so cut the ladder short.
+   */
+  private maxTextInsteadOfImageRetries: number = 2;
+  /**
+   * Per-provider rate-limiter + concurrency gate. Replaces the previous
+   * single-instance `lastRequestTime` / `_concurrencyLimit` pair that
+   * serialized every provider through one throttle. See
+   * `services/providerThrottle.ts` and `images/providerCapabilities.ts`.
+   */
+  private _throttle = new ProviderThrottle();
+  /**
+   * Inflight dedup (A11). Two concurrent `generateImage` calls with the
+   * same prompt hash share the same promise so we never pay for the same
+   * image twice concurrently. Entries self-clean on settle.
+   */
+  private _inflightGenerations: Map<string, Promise<GeneratedImage>> = new Map();
 
   // Gemini continuity state
   private _geminiSettings: Required<GeminiSettings> = { ...DEFAULT_GEMINI_SETTINGS };
+  /**
+   * C4: Structured art-style profile. Used by `ensureVisualPromptStrength` to
+   * bidirectionally strengthen/soften prompts based on the active style —
+   * strip style-inappropriate vocabulary, inject style-positive vocabulary,
+   * merge style-specific negative prompts, and skip guardrails the style has
+   * explicitly opted out of via `acceptableDeviations`.
+   *
+   * Leave unset to keep today's default-cinematic behavior.
+   */
+  private _artStyleProfile: import('../images/artStyleProfile').ArtStyleProfile | null = null;
   private _midjourneySettings: Required<MidjourneySettings> = { ...DEFAULT_MIDJOURNEY_SETTINGS };
   private _stableDiffusionSettings: StableDiffusionSettings | undefined;
   // Lazily-instantiated Stable Diffusion adapter. Created on first use so
@@ -261,11 +305,6 @@ export class ImageGenerationService {
   private _generatedIdentifiers = new Set<string>();
   private providerPolicy = new ProviderPolicy();
   
-  // Shared efficiency: bounded concurrency
-  private _concurrencyLimit: number = 3;
-  private _activeConcurrency: number = 0;
-  private _concurrencyQueue: Array<() => void> = [];
-
   // Observability counters
   public pipelineMetrics = {
     cacheHits: 0,
@@ -360,16 +399,47 @@ export class ImageGenerationService {
     if (typeof prompt.seed === 'number') return prompt;
     const sceneId = (metadata?.sceneId as string) || undefined;
     const characterName = (metadata?.characterName as string) || (metadata?.characterId as string) || undefined;
+    // D6: callers may opt-in to a specific seed scope (e.g. reference sheets
+    // want the pure `character` scope so the same face/body noise pattern is
+    // reused across every appearance, rather than being scene-salted).
+    const override = metadata?.seedScope as SeedKey['scope'] | undefined;
+    const characterIds: string[] | undefined = Array.isArray(metadata?.characterIds)
+      ? metadata.characterIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+      : undefined;
+    // When multiple characters are in-frame, join their ids deterministically so the
+    // noise pattern depends on the full cast rather than an arbitrary primary pick.
+    const joinedCharacterId = characterIds && characterIds.length > 0
+      ? [...characterIds].sort().join('+')
+      : characterName;
 
     let key: SeedKey;
-    if (sceneId && characterName) {
-      key = { scope: 'characterInScene', sceneId, characterId: characterName };
-    } else if (sceneId) {
-      key = { scope: 'scene', sceneId };
-    } else if (characterName) {
-      key = { scope: 'character', characterId: characterName };
-    } else {
-      key = { scope: 'anchor', raw: identifier };
+    const effectiveScope: SeedKey['scope'] | undefined = override
+      ?? (sceneId && joinedCharacterId
+        ? 'characterInScene'
+        : sceneId
+          ? 'scene'
+          : joinedCharacterId
+            ? 'character'
+            : 'anchor');
+
+    switch (effectiveScope) {
+      case 'character':
+        key = joinedCharacterId
+          ? { scope: 'character', characterId: joinedCharacterId }
+          : { scope: 'anchor', raw: identifier };
+        break;
+      case 'scene':
+        key = sceneId ? { scope: 'scene', sceneId } : { scope: 'anchor', raw: identifier };
+        break;
+      case 'characterInScene':
+        key = sceneId && joinedCharacterId
+          ? { scope: 'characterInScene', sceneId, characterId: joinedCharacterId }
+          : { scope: 'anchor', raw: identifier };
+        break;
+      case 'anchor':
+      default:
+        key = { scope: 'anchor', raw: identifier };
+        break;
     }
     const seed = this._sdSeedRegistry.get(key);
     return { ...prompt, seed };
@@ -403,6 +473,21 @@ export class ImageGenerationService {
     this._geminiSettings = { ...DEFAULT_GEMINI_SETTINGS, ...settings };
   }
 
+  /**
+   * C4: Install the active art-style profile. Pass `null`/`undefined` to fall
+   * back to the default cinematic behavior. Callers typically pull this from
+   * `PipelineConfig.imageGen.artStyleProfile` once per pipeline run.
+   */
+  public setArtStyleProfile(
+    profile: import('../images/artStyleProfile').ArtStyleProfile | null | undefined,
+  ): void {
+    this._artStyleProfile = profile ?? null;
+  }
+
+  public getArtStyleProfile(): import('../images/artStyleProfile').ArtStyleProfile | null {
+    return this._artStyleProfile;
+  }
+
   public getMidjourneySettings(): Required<MidjourneySettings> {
     return this._midjourneySettings;
   }
@@ -413,6 +498,16 @@ export class ImageGenerationService {
 
   public setGeminiPreviousScene(data: string, mimeType: string): void {
     this._geminiPreviousScene = { data, mimeType };
+  }
+
+  /**
+   * D10: Drop the stored "previous scene" reference without touching the
+   * persistent style anchor, chat history, or style reference. Call this at
+   * narrative boundaries (new scene, new encounter branch) where feeding the
+   * previous image into the next generation would misguide the model.
+   */
+  public clearGeminiPreviousScene(): void {
+    this._geminiPreviousScene = null;
   }
 
   public setReferenceSheetStyleAnchor(data: string, mimeType: string): void {
@@ -929,11 +1024,40 @@ export class ImageGenerationService {
       identityHints ? `character identity anchors: ${identityHints}` : '',
     ].filter(Boolean).join(', ');
 
+    // D7: If enabled AND the caller supplied pre-uploaded reference URLs,
+    // use Midjourney's native `--cref` (character) and `--sref` (style)
+    // flags for maximum character/style lock. For non-reference images
+    // (scenes), prefer the highest-priority character ref's URL. For
+    // reference sheets themselves we skip `--cref` because they ARE the
+    // anchor. The existing `--sref <code>` numeric-code path remains as
+    // a fallback when no style-reference URL is available.
+    let crefSrefParams: string[] = [];
+    if (mj.enableCrefSref && !isReferenceLike) {
+      const characterRefUrl = referenceImages
+        ?.find(r => r.url && (r.role === 'character-reference' || r.role === 'master-reference'))
+        ?.url;
+      const styleRefUrl = referenceImages
+        ?.find(r => r.url && r.role === 'style-reference')
+        ?.url;
+      if (characterRefUrl) {
+        crefSrefParams.push(`--cref ${characterRefUrl}`);
+        const cw = Math.max(0, Math.min(100, mj.characterWeight ?? 100));
+        crefSrefParams.push(`--cw ${cw}`);
+      }
+      if (styleRefUrl) {
+        crefSrefParams.push(`--sref ${styleRefUrl}`);
+        const sw = Math.max(0, Math.min(1000, mj.styleWeight ?? 100));
+        crefSrefParams.push(`--sw ${sw}`);
+      }
+    }
+
     const params = [
       `--ar ${aspectRatio}`,
       mj.version ? `--v ${mj.version}` : '',
       typeof stylize === 'number' ? `--stylize ${stylize}` : '',
-      mj.srefCode ? `--sref ${mj.srefCode}` : '',
+      // Prefer URL-based --sref from crefSrefParams; fall back to numeric code.
+      crefSrefParams.some(p => p.startsWith('--sref ')) ? '' : (mj.srefCode ? `--sref ${mj.srefCode}` : ''),
+      ...crefSrefParams,
       speedFlag,
     ].filter(Boolean);
 
@@ -1116,12 +1240,7 @@ export class ImageGenerationService {
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        const now = Date.now();
-        const timeSinceLast = now - this.lastRequestTime;
-        if (timeSinceLast < this.minRequestInterval) {
-          await this.delay(this.minRequestInterval - timeSinceLast);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('nano-banana');
 
         // Build the new user turn
         const userParts: any[] = [];
@@ -1553,27 +1672,46 @@ export class ImageGenerationService {
   }
 
   /**
-   * Bounded concurrency gate: wait until a slot is available.
+   * Wait until the next request against `provider` is allowed by its
+   * per-provider pacing (A1). Replaces the former single-instance
+   * `lastRequestTime` + `minRequestInterval` pair so one provider's rate
+   * ceiling no longer throttles the others.
    */
-  private async acquireConcurrencySlot(): Promise<void> {
-    if (this._activeConcurrency < this._concurrencyLimit) {
-      this._activeConcurrency++;
-      return;
-    }
-    return new Promise<void>((resolve) => {
-      this._concurrencyQueue.push(() => {
-        this._activeConcurrency++;
-        resolve();
-      });
-    });
+  private async waitForProviderPacing(provider: ImageProvider): Promise<void> {
+    await this._throttle.waitForPacing(provider);
   }
 
-  private releaseConcurrencySlot(): void {
-    this._activeConcurrency--;
-    if (this._concurrencyQueue.length > 0) {
-      const next = this._concurrencyQueue.shift();
-      next?.();
-    }
+  /**
+   * A9: Drop references this provider can't meaningfully consume. Returns
+   * a possibly-shorter array; caller should use the result in place of the
+   * original refs. Capacity (`maxRefs`) is enforced here too so a downstream
+   * provider never sees an over-stuffed payload.
+   *
+   * Behavior:
+   * - `maxRefs === 0`: drop everything.
+   * - provider only accepts URL refs and the ref doesn't have a URL-bearing
+   *   external representation: drop it (we don't pre-upload in this pass).
+   * - otherwise: cap to `maxRefs` and preserve ordering (caller has already
+   *   prioritized via the reference pack builder).
+   */
+  private filterReferencesForProvider(
+    provider: ImageProvider,
+    refs: ReferenceImage[] | undefined,
+  ): ReferenceImage[] | undefined {
+    if (!refs || refs.length === 0) return refs;
+    const caps = getProviderCapabilities(provider);
+    if (caps.maxRefs === 0) return [];
+
+    const usable = refs.filter((ref) => {
+      const hasInlineData = typeof ref.data === 'string' && ref.data.length > 0;
+      if (hasInlineData && caps.acceptsInlineRefs) return true;
+      const hasUrl = typeof (ref as any).url === 'string' && (ref as any).url.length > 0;
+      if (hasUrl && (caps.acceptsUrlRefs || caps.usesMidjourneyRefTokens)) return true;
+      return false;
+    });
+
+    if (usable.length <= caps.maxRefs) return usable;
+    return usable.slice(0, caps.maxRefs);
   }
 
   /**
@@ -1667,6 +1805,57 @@ export class ImageGenerationService {
       return { prompt: normalizedPrompt, imagePath: undefined, imageUrl: undefined };
     }
 
+    // A11: Inflight dedup. Two concurrent callers for the same prompt hash
+    // share a single provider round-trip instead of racing each other. Only
+    // applies to first-try generations (regenerations bypass so the caller
+    // always gets a fresh image).
+    if (!metadata?.regeneration) {
+      const inflightKey = this.computePromptHash(normalizedPrompt, metadata);
+      const existingInflight = this._inflightGenerations.get(inflightKey);
+      if (existingInflight) {
+        console.log(`[ImageGenerationService] Inflight dedup for "${identifier}" — awaiting in-progress generation`);
+        return existingInflight;
+      }
+      const work = this.generateImageCore(
+        normalizedPrompt,
+        identifier,
+        jobId,
+        requestStartedAt,
+        metadata,
+        referenceImages,
+      );
+      this._inflightGenerations.set(inflightKey, work);
+      work.finally(() => {
+        if (this._inflightGenerations.get(inflightKey) === work) {
+          this._inflightGenerations.delete(inflightKey);
+        }
+      });
+      return work;
+    }
+
+    return this.generateImageCore(
+      normalizedPrompt,
+      identifier,
+      jobId,
+      requestStartedAt,
+      metadata,
+      referenceImages,
+    );
+  }
+
+  /**
+   * Inner generation path called by `generateImage` after caches and inflight
+   * dedup have been resolved. Factored out so the dedup wrapper doesn't
+   * duplicate the ~250 line generation pipeline.
+   */
+  private async generateImageCore(
+    normalizedPrompt: ImagePrompt,
+    identifier: string,
+    jobId: string,
+    requestStartedAt: number,
+    metadata: Parameters<ImageGenerationService['generateImage']>[2],
+    referenceImages: ReferenceImage[] | undefined,
+  ): Promise<GeneratedImage> {
     const promptArtifact = this.config.savePrompts !== false
       ? await this.savePrompt(normalizedPrompt, identifier, metadata)
       : undefined;
@@ -1691,13 +1880,17 @@ export class ImageGenerationService {
       }
     });
 
-    // Bounded concurrency gate
-    await this.acquireConcurrencySlot();
+    // Resolve provider first so the concurrency gate is per-provider (A1).
     let provider = this.normalizeProvider(this.config.provider);
     const providerFamily = this.getPolicyFamily(metadata?.type);
     if (!this.providerPolicy.canUseProvider(provider, providerFamily) && provider === 'nano-banana' && this.hasAtlasCloudConfigured()) {
       provider = 'atlas-cloud';
     }
+    const releaseProviderSlot = await this._throttle.acquire(provider);
+    // A9: Drop reference images the provider can't meaningfully consume. Avoids
+    // paying the tokenization / upload cost on refs that would have been
+    // silently ignored by the downstream provider.
+    const capabilityFilteredRefs = this.filterReferencesForProvider(provider, referenceImages);
     try {
       let result: GeneratedImage;
       const preferAtlasFirst =
@@ -1708,7 +1901,7 @@ export class ImageGenerationService {
 
       if (preferAtlasFirst) {
         try {
-          result = await this.generateWithAtlasCloud(normalizedPrompt, identifier, jobId, referenceImages, metadata?.type);
+          result = await this.generateWithAtlasCloud(normalizedPrompt, identifier, jobId, capabilityFilteredRefs, metadata?.type);
           if (!result.imageUrl && result.imagePath) {
             result.imageUrl = this.getServedImageUrl(result.imagePath);
           }
@@ -1721,17 +1914,17 @@ export class ImageGenerationService {
           const msg = atlasErr instanceof Error ? atlasErr.message : String(atlasErr);
           console.warn(`[ImageGenerationService] Atlas-first encounter generation failed, using Gemini: ${msg}`);
           this.providerPolicy.observeTransientFailure('atlas-cloud', providerFamily);
-          result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, referenceImages, metadata?.type);
+          result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, this.filterReferencesForProvider('nano-banana', referenceImages), metadata?.type);
         }
       } else switch (provider) {
-        case 'nano-banana': result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, referenceImages, metadata?.type); break;
-        case 'atlas-cloud': result = await this.generateWithAtlasCloud(normalizedPrompt, identifier, jobId, referenceImages, metadata?.type); break;
+        case 'nano-banana': result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, capabilityFilteredRefs, metadata?.type); break;
+        case 'atlas-cloud': result = await this.generateWithAtlasCloud(normalizedPrompt, identifier, jobId, capabilityFilteredRefs, metadata?.type); break;
         case 'midapi':
         case 'useapi':
-          result = await this.generateWithUseapi(normalizedPrompt, identifier, jobId, metadata, referenceImages);
+          result = await this.generateWithUseapi(normalizedPrompt, identifier, jobId, metadata, capabilityFilteredRefs);
           break;
         case 'dall-e': result = await this.generateWithDallE(normalizedPrompt, identifier, jobId); break;
-        case 'stable-diffusion': result = await this.generateWithStableDiffusion(normalizedPrompt, identifier, jobId, referenceImages, metadata); break;
+        case 'stable-diffusion': result = await this.generateWithStableDiffusion(normalizedPrompt, identifier, jobId, capabilityFilteredRefs, metadata); break;
         default:
           if (this.isFailFastEnabled()) {
             throw new Error(`Image provider "${String(this.config.provider || 'placeholder')}" is not available in fail-fast mode`);
@@ -1948,7 +2141,7 @@ export class ImageGenerationService {
       }
       throw err;
     } finally {
-      this.releaseConcurrencySlot();
+      releaseProviderSlot();
     }
   }
 
@@ -2028,12 +2221,7 @@ export class ImageGenerationService {
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        const now = Date.now();
-        const timeSinceLast = now - this.lastRequestTime;
-        if (timeSinceLast < this.minRequestInterval) {
-          await this.delay(this.minRequestInterval - timeSinceLast);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('nano-banana');
 
         const parts: any[] = [];
 
@@ -2316,15 +2504,7 @@ export class ImageGenerationService {
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
         lastAttempt = attempt;
-        // Simple rate limiting: ensure minimum interval between any requests
-        const now = Date.now();
-        const timeSinceLast = now - this.lastRequestTime;
-        if (timeSinceLast < this.minRequestInterval) {
-          const waitTime = this.minRequestInterval - timeSinceLast;
-          console.log(`[ImageGenerationService] Rate limiting: waiting ${waitTime}ms before request...`);
-          await this.delay(waitTime);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('nano-banana');
 
         this.emit({ type: 'job_updated', id: jobId, updates: { status: 'processing', attempts: attempt, progress: (attempt / (this.maxRetries + 1)) * 50 } });
 
@@ -2820,14 +3000,20 @@ export class ImageGenerationService {
         }
         if (errorClass === 'text_instead_of_image') {
           this.pipelineMetrics.transientRetries++;
-          if (attempt < this.maxRetries) {
-            console.log(`[ImageGenerationService] Text-instead-of-image for "${identifier}" — retrying with image-reinforcement directive (attempt ${attempt + 1}/${this.maxRetries})`);
+          // A6: Cap text-instead-of-image retries — once a prompt consistently
+          // returns text, a 5th attempt rarely changes the outcome.
+          if (attempt < Math.min(this.maxRetries, this.maxTextInsteadOfImageRetries)) {
+            console.log(`[ImageGenerationService] Text-instead-of-image for "${identifier}" — retrying with image-reinforcement directive (attempt ${attempt + 1}/${this.maxTextInsteadOfImageRetries})`);
             await this.delay(this.retryDelayMs);
+          } else {
+            console.warn(`[ImageGenerationService] Text-instead-of-image cap (${this.maxTextInsteadOfImageRetries}) reached for "${identifier}" — giving up on this prompt`);
+            break;
           }
         } else {
           this.pipelineMetrics.transientRetries++;
           if (attempt < this.maxRetries) {
-            const backoff = this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
+            const rawBackoff = this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
+            const backoff = Math.min(rawBackoff, this.maxRetryBackoffMs);
             const jitter = Math.floor(Math.random() * 750);
             if (this.shouldTrackEncounterType(imageType) && attempt >= 2) {
               const probe = await this.preflightImageProvider(false);
@@ -3152,10 +3338,19 @@ export class ImageGenerationService {
 
   private ensureVisualPromptStrength(prompt: ImagePrompt): ImagePrompt {
     const result: ImagePrompt = { ...prompt };
+    // C4: Profile-aware guardrails. When a structured `ArtStyleProfile` is
+    // installed, it tells us which default rules to skip (`acceptableDeviations`),
+    // which vocabulary to inject (`positiveVocabulary`), which vocabulary to
+    // strip (`inappropriateVocabulary`), and which extra negatives to merge
+    // (`genreNegatives`). No profile = today's cinematic defaults.
+    const profile = this._artStyleProfile;
+    const allowsDeviation = (rule: import('../images/artStyleProfile').DefaultRuleId): boolean =>
+      !!profile && profile.acceptableDeviations.includes(rule);
+
     const text = `${result.visualNarrative || ''} ${result.emotionalCore || ''} ${result.prompt || ''}`.toLowerCase();
     const hasActionVerb = /\b(grabs?|reaches?|recoils?|steps?|stumbles?|lunges?|turns?|pushes?|pulls?|raises?|lowers?|clenches?|releases?|strikes?|dodges?|embraces?|confronts?|retreats?|advances?|runs?|walks?|leans?|twists?|lifts?|drops?|wrings?|presses?|squeezes?|clutches?|shields?)\b/.test(text);
 
-    if (!hasActionVerb) {
+    if (!hasActionVerb && !allowsDeviation('mid-action-posing') && !allowsDeviation('frozen-moment-of-change')) {
       const fallbackAction = 'Characters are in the middle of a visible action with clear cause and effect, not standing still.';
       result.visualNarrative = result.visualNarrative
         ? `${result.visualNarrative} ${fallbackAction}`
@@ -3175,23 +3370,31 @@ export class ImageGenerationService {
       result.keyExpression = `Expression showing: ${result.emotionalCore}. Show it through specific facial anatomy — brow tension, eye direction, mouth set, jaw position.`;
     }
 
-    // Strengthen vague or missing keyBodyLanguage
-    if (!result.keyBodyLanguage && result.emotionalCore) {
-      result.keyBodyLanguage = `Weight shifted to one foot, body angled with intent. Posture reflects: ${result.emotionalCore}.`;
-    } else if (result.keyBodyLanguage && /^(tense posture|standing close|facing each other|side by side)$/i.test(result.keyBodyLanguage.trim())) {
-      result.keyBodyLanguage = `${result.keyBodyLanguage} — with visible weight shift, one shoulder leading, asymmetric stance showing intent.`;
-      console.warn('[ImageGenerationService] Prompt guardrail: vague keyBodyLanguage; injected specificity');
+    // Strengthen vague or missing keyBodyLanguage.
+    // C4: Styles that allow symmetric/centered composition (storybook, minimalist,
+    // pixel, etc.) opt out of the asymmetric-body-language injection.
+    if (!allowsDeviation('asymmetric-body-language')) {
+      if (!result.keyBodyLanguage && result.emotionalCore) {
+        result.keyBodyLanguage = `Weight shifted to one foot, body angled with intent. Posture reflects: ${result.emotionalCore}.`;
+      } else if (result.keyBodyLanguage && /^(tense posture|standing close|facing each other|side by side)$/i.test(result.keyBodyLanguage.trim())) {
+        result.keyBodyLanguage = `${result.keyBodyLanguage} — with visible weight shift, one shoulder leading, asymmetric stance showing intent.`;
+        console.warn('[ImageGenerationService] Prompt guardrail: vague keyBodyLanguage; injected specificity');
+      }
     }
 
-    // Detect stiff-pose patterns and inject overrides
-    const stiffPatterns = /\b(holding hands?|standing together|standing side by side|facing each other|standing still|posed together)\b/i;
-    const allText = `${result.prompt || ''} ${result.keyGesture || ''} ${result.keyBodyLanguage || ''}`;
-    if (stiffPatterns.test(allText)) {
-      if (!result.keyGesture || stiffPatterns.test(result.keyGesture)) {
-        result.keyGesture = (result.keyGesture || '') +
-          ' — hands must be ACTIVE: gripping something, gesturing, pressing against a surface, reaching, or pulling back. Not passively clasped.';
+    // Detect stiff-pose patterns and inject overrides.
+    // C4: Skip for styles that accept static/posed compositions
+    // (storybook, minimalist, pixel, etc.) via `mid-action-posing` deviation.
+    if (!allowsDeviation('mid-action-posing')) {
+      const stiffPatterns = /\b(holding hands?|standing together|standing side by side|facing each other|standing still|posed together)\b/i;
+      const allText = `${result.prompt || ''} ${result.keyGesture || ''} ${result.keyBodyLanguage || ''}`;
+      if (stiffPatterns.test(allText)) {
+        if (!result.keyGesture || stiffPatterns.test(result.keyGesture)) {
+          result.keyGesture = (result.keyGesture || '') +
+            ' — hands must be ACTIVE: gripping something, gesturing, pressing against a surface, reaching, or pulling back. Not passively clasped.';
+        }
+        console.warn('[ImageGenerationService] Prompt guardrail: stiff-pose pattern detected; injected active gesture directive');
       }
-      console.warn('[ImageGenerationService] Prompt guardrail: stiff-pose pattern detected; injected active gesture directive');
     }
 
     // Strengthen empty or metadata-only composition with actual visual direction
@@ -3224,6 +3427,58 @@ export class ImageGenerationService {
       result.visualNarrative = stripNonDiegetic(result.visualNarrative);
       result.emotionalCore = stripNonDiegetic(result.emotionalCore);
       result.keyGesture = stripNonDiegetic(result.keyGesture);
+    }
+
+    // C4: Bidirectional style-aware vocabulary pass. Strips phrases that
+    // contradict the active style (e.g. "photoreal" in a pixel-art profile)
+    // and ensures at least one style-positive cue is present in the main
+    // prompt so the model commits to the look.
+    if (profile) {
+      if (profile.inappropriateVocabulary.length > 0) {
+        const patterns = profile.inappropriateVocabulary
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0)
+          .map((v) => new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'));
+        if (patterns.length > 0) {
+          const stripInappropriate = (field: string | undefined): string | undefined => {
+            if (!field) return field;
+            let cleaned = field;
+            for (const p of patterns) {
+              cleaned = cleaned.replace(p, '');
+            }
+            cleaned = cleaned.replace(/\s{2,}/g, ' ').replace(/ ,/g, ',').trim();
+            if (cleaned !== field.trim()) {
+              console.warn(
+                `[ImageGenerationService] Prompt guardrail: stripped style-inappropriate vocabulary for profile "${profile.name}"`,
+              );
+            }
+            return cleaned || field;
+          };
+          result.prompt = stripInappropriate(result.prompt) || result.prompt;
+          result.visualNarrative = stripInappropriate(result.visualNarrative);
+          result.composition = stripInappropriate(result.composition);
+          result.keyGesture = stripInappropriate(result.keyGesture);
+          result.keyExpression = stripInappropriate(result.keyExpression);
+        }
+      }
+
+      if (profile.positiveVocabulary.length > 0) {
+        const existing = (result.prompt || '').toLowerCase();
+        const missing = profile.positiveVocabulary.filter(
+          (v) => v && !existing.includes(v.toLowerCase()),
+        );
+        if (missing.length > 0) {
+          const injection = `Style cues: ${missing.join(', ')}.`;
+          result.prompt = result.prompt ? `${result.prompt}\n${injection}` : injection;
+        }
+      }
+
+      if (profile.genreNegatives.length > 0) {
+        const merged = [result.negativePrompt, ...profile.genreNegatives]
+          .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+          .join(', ');
+        if (merged) result.negativePrompt = merged;
+      }
     }
 
     return result;
@@ -3546,12 +3801,7 @@ export class ImageGenerationService {
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        const now = Date.now();
-        const timeSinceLast = now - this.lastRequestTime;
-        if (timeSinceLast < this.minRequestInterval) {
-          await this.delay(this.minRequestInterval - timeSinceLast);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('atlas-cloud');
 
         this.emit({ type: 'job_updated', id: jobId, updates: { status: 'processing', attempts: attempt, progress: 10 } });
 
@@ -3648,7 +3898,8 @@ export class ImageGenerationService {
         }
         this.pipelineMetrics.transientRetries++;
         if (attempt < this.maxRetries) {
-          await this.delay(this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1));
+          const rawBackoff = this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
+          await this.delay(Math.min(rawBackoff, this.maxRetryBackoffMs));
         }
       }
     }
@@ -3723,12 +3974,7 @@ export class ImageGenerationService {
       this.emit({ type: 'job_added', job: { id: batchJobId, identifier: `batch(${chunk.length})`, prompt: 'Batch generation', status: 'pending' } });
 
       try {
-        const now = Date.now();
-        const timeSinceLast = now - this.lastRequestTime;
-        if (timeSinceLast < this.minRequestInterval) {
-          await this.delay(this.minRequestInterval - timeSinceLast);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('atlas-cloud');
 
         const combinedPrompt = chunk.map((p, i) => {
           const batchStyle = this.resolveArtStyle(p.prompt.style);
@@ -3879,12 +4125,7 @@ export class ImageGenerationService {
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
         // Rate limiting
-        const now = Date.now();
-        const timeSinceLastRequest = now - this.lastRequestTime;
-        if (timeSinceLastRequest < this.minRequestInterval) {
-          await this.delay(this.minRequestInterval - timeSinceLastRequest);
-        }
-        this.lastRequestTime = Date.now();
+        await this.waitForProviderPacing('midapi');
 
         console.log(`[ImageGenerationService] Midjourney: Generating image (attempt ${attempt}/${this.maxRetries})`);
         console.log(`[ImageGenerationService] Midjourney: Prompt: ${fullPrompt.substring(0, 100)}...`);
@@ -4037,10 +4278,10 @@ export class ImageGenerationService {
         this.emit({ type: 'job_updated', id: jobId, updates: { error: lastError.message, attempts: attempt } });
         if (attempt < this.maxRetries) {
           // Longer delay for rate limiting errors
-          const delayTime = lastError.message.includes('Rate limited') 
-            ? 15000 * attempt // 15s, 30s, 45s for rate limits (Midjourney is slower)
+          const rawDelayTime = lastError.message.includes('Rate limited')
+            ? 15000 * attempt
             : this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
-          await this.delay(delayTime);
+          await this.delay(Math.min(rawDelayTime, this.maxRetryBackoffMs));
         }
       }
     }

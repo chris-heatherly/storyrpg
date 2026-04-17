@@ -1,5 +1,5 @@
 {
-  "imageProvider": "atlas-cloud",
+  "imageProvider": "nano-banana",
   "imageLlmProvider": "anthropic",
   "imageLlmModel": "claude-sonnet-4-20250514",
   "videoSettings": {

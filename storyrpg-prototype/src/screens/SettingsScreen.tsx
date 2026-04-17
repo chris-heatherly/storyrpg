@@ -507,12 +507,13 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(239, 68, 68, 0.1)',
   },
   storyManageActions: {
-    flexDirection: 'column',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
-    alignItems: 'flex-end',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
   },
   storyActionButton: {
-    minWidth: 92,
     paddingVertical: 8,
     paddingHorizontal: 10,
     borderRadius: 10,

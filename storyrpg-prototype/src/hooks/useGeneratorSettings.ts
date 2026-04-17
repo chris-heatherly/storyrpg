@@ -90,8 +90,11 @@ function getDefaultNarrationSettings(): GeneratorNarrationSettings {
 }
 
 function getDefaultVideoSettings(): GeneratorVideoSettings {
+  // Video generation defaults to OFF. The user must explicitly opt in, and
+  // that preference is then persisted to AsyncStorage and honored on reload
+  // regardless of the legacy EXPO_PUBLIC_VIDEO_GENERATION_ENABLED env flag.
   return {
-    enabled: process.env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true',
+    enabled: false,
     model: process.env.EXPO_PUBLIC_VIDEO_MODEL || DEFAULT_VIDEO_SETTINGS.model,
     durationSeconds: parseInt(process.env.EXPO_PUBLIC_VIDEO_DURATION || '', 10) || DEFAULT_VIDEO_SETTINGS.durationSeconds,
     resolution: process.env.EXPO_PUBLIC_VIDEO_RESOLUTION || DEFAULT_VIDEO_SETTINGS.resolution,
@@ -218,9 +221,10 @@ export function useGeneratorSettings() {
         setNarrationSettings(prev => ({ ...prev, ...ps.narrationSettings }));
       }
       if (ps.videoSettings) {
-        const vs = { ...ps.videoSettings };
-        if (process.env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true') delete (vs as any).enabled;
-        setVideoSettings(prev => ({ ...prev, ...vs }));
+        // The user's saved `enabled` preference always wins. We intentionally
+        // do not let the EXPO_PUBLIC_VIDEO_GENERATION_ENABLED env flag override
+        // a persisted choice so toggling video off stays off across reloads.
+        setVideoSettings(prev => ({ ...prev, ...ps.videoSettings }));
       }
       if (ps.geminiSettings) {
         setGeminiSettings({ ...DEFAULT_GEMINI_SETTINGS, ...ps.geminiSettings });
@@ -401,8 +405,8 @@ export function useGeneratorSettings() {
           if (storedVideoSettings) {
             try {
               const parsedVideoSettings = JSON.parse(storedVideoSettings);
-              const envEnabled = process.env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true';
-              if (envEnabled) delete parsedVideoSettings.enabled;
+              // Always honor the persisted `enabled` flag; the env var is not
+              // allowed to flip a user-chosen off state back on at load time.
               setVideoSettings((current) => ({ ...current, ...parsedVideoSettings }));
             } catch (_) {}
           }

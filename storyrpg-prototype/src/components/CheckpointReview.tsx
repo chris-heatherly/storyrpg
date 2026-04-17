@@ -584,7 +584,7 @@ const styles = StyleSheet.create({
   thumbnail: {
     width: '100%',
     aspectRatio: 9 / 19.5,
-    backgroundColor: TERMINAL.colors.bgDark,
+    backgroundColor: TERMINAL.colors.bgHighlight,
   },
   imageLabel: {
     color: TERMINAL.colors.cyan,

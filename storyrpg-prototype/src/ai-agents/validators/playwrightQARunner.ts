@@ -5,6 +5,8 @@
  * parses structured results, and returns a typed report the pipeline can act on.
  */
 
+import { EXPO_WEB_CONFIG } from '../../config/endpoints';
+
 // Dynamic requires — these modules are only available in Node.js (worker process),
 // not in the Expo/Metro web bundle.
 let nodeChildProcess: any;
@@ -191,7 +193,7 @@ export async function runPlaywrightQA(options: PlaywrightQAOptions): Promise<Pla
     };
   }
 
-  const baseUrl = options.baseUrl || 'http://localhost:8081';
+  const baseUrl = options.baseUrl || EXPO_WEB_CONFIG.getBaseUrl();
   const cwd = options.cwd || nodePath.resolve(__dirname, '../../..');
   const timeoutMs = options.timeoutMs || 300_000;
   const maxBeats = options.maxBeats || 200;
@@ -252,7 +254,7 @@ export async function runPlaywrightQA(options: PlaywrightQAOptions): Promise<Pla
     proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
     proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
 
-    proc.on('close', (code) => {
+    proc.on('close', (code: number | null) => {
       clearTimeout(timer);
 
       if (killed) {
@@ -308,7 +310,7 @@ export async function runPlaywrightQAMultiPath(options: MultiPathQAOptions): Pro
   // Lazy import to avoid circular dependency issues at module load time
   const { analyzeStoryPaths } = await import('./storyPathAnalyzer');
 
-  const baseUrl = options.baseUrl || 'http://localhost:8081';
+  const baseUrl = options.baseUrl || EXPO_WEB_CONFIG.getBaseUrl();
   const cwd = options.cwd || (nodePath ? nodePath.resolve(__dirname, '../../..') : '.');
   const maxParallel = options.maxParallel || 3;
   const maxBeats = options.maxBeats || 200;

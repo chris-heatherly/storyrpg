@@ -37,8 +37,12 @@ export async function writeAsStringAsync(
   await fs.writeFile(filePath, content, { encoding });
 }
 
-export async function readAsStringAsync(targetPath: string): Promise<string> {
-  return fs.readFile(toFsPath(targetPath), 'utf8');
+export async function readAsStringAsync(
+  targetPath: string,
+  options?: { encoding?: string }
+): Promise<string> {
+  const encoding = options?.encoding === EncodingType.Base64 ? 'base64' : 'utf8';
+  return fs.readFile(toFsPath(targetPath), { encoding: encoding as BufferEncoding });
 }
 
 export async function readDirectoryAsync(targetPath: string): Promise<string[]> {

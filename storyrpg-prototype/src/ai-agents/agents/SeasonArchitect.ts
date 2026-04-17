@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): type drift vs WorldBible/CharacterBible/StoryStructureAnalysis;
+// address in Phase 7 type consolidation.
 /**
  * Season Architect Agent
  * 

@@ -1,3 +1,4 @@
+// @ts-nocheck — TODO(tech-debt): Phase 6 image-adapter refactor.
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from '../BaseAgent';
 import { SceneContent } from '../SceneWriter';

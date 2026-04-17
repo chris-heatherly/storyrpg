@@ -10,6 +10,7 @@
  */
 
 import { isWebRuntime } from '../../utils/runtimeEnv';
+import { PROXY_CONFIG } from '../../config/endpoints';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -274,7 +275,7 @@ export class NodeMemoryStore implements MemoryStore {
 export class ProxyMemoryStore implements MemoryStore {
   private proxyUrl: string;
 
-  constructor(proxyUrl: string = 'http://localhost:3001') {
+  constructor(proxyUrl: string = PROXY_CONFIG.getProxyUrl()) {
     this.proxyUrl = proxyUrl;
   }
 

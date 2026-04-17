@@ -649,9 +649,9 @@ export interface IdentityProfile {
 
 State is managed through a three-tier system:
 
-1. **React Context** (gameStore.ts, settingsStore.ts): For UI state and player game state that needs to be accessible across multiple screens.
-2. **Zustand stores**: For complex state with asynchronous operations (generation jobs, image tracking).
-3. **Module stores**: For specialized data (season plans, worker job synchronization).
+1. **React Context** (`gameStore.ts`, `settingsStore.ts`): for UI state and player game state that needs to be accessible across multiple screens. `gameStore` intentionally stays on Context rather than Zustand because it hangs off the React tree via the `GameProvider` wrapper in `App.tsx` and mixes imperative side effects (scene loading, AsyncStorage writes) with React lifecycle. Porting it to Zustand would require teaching the reducer layer about Suspense boundaries and navigation state, which is out of scope for the current refactor pass.
+2. **Zustand stores**: for complex state with asynchronous operations. The simple in-memory job trackers (`imageJobStore`, `videoJobStore`) are produced by the shared `createJobStore<TJob>` factory so their CRUD surface lives in one place. `generationJobStore` keeps its bespoke implementation because it layers AsyncStorage persistence, proxy-server sync, and bounded event retention on top of the CRUD shape; those concerns don't generalize cleanly.
+3. **Module stores**: for specialized data (season plans, worker job synchronization). `seasonPlanStore` is still a hand-rolled pub/sub around AsyncStorage + an async mutex because the plan lifecycle (plan creation → episode generation checkpoints → resume) needs explicit locking. Porting it to Zustand's `persist` middleware is tracked as tech debt — the port is straightforward but risky enough that it should land with dedicated coverage.
 
 ### Persistence Strategy
 

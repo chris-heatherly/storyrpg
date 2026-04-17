@@ -43,6 +43,22 @@ export const PROXY_CONFIG = {
 };
 
 // ========================================
+// EXPO WEB DEV SERVER (for QA tooling / E2E)
+// ========================================
+
+export const EXPO_WEB_CONFIG = {
+  DEFAULT_HOST: 'localhost',
+  DEFAULT_PORT: 8081,
+  getBaseUrl(): string {
+    const explicit = process.env.EXPO_PUBLIC_WEB_URL || process.env.EXPO_WEB_URL;
+    if (explicit && explicit.trim().length > 0) {
+      return explicit.replace(/\/+$/, '');
+    }
+    return `http://${this.DEFAULT_HOST}:${this.DEFAULT_PORT}`;
+  },
+};
+
+// ========================================
 // EXTERNAL API CONFIGURATION
 // ========================================
 

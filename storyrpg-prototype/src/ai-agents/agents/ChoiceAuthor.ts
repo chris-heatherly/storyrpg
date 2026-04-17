@@ -838,7 +838,7 @@ CRITICAL REQUIREMENTS:
         console.warn(`[ChoiceAuthor] Auto-generated text for choice ${choice.id}`);
       }
 
-      let text = typeof choice.text === 'string' ? choice.text : String(choice.text);
+      const text = typeof choice.text === 'string' ? choice.text : String(choice.text);
       
       // Auto-fix too short text
       if (text.length < 5) {

@@ -46,6 +46,14 @@ const PROFILES: Record<ImageSlotFamily, ReferencePackProfile> = {
     includeEnvironmentRef: true,
     reservedSlots: { styleAnchor: 1, location: 1 },
   },
+  'story-beat-panel': {
+    maxTotal: 8,
+    maxPerCharacter: 3,
+    maxExpressionsPerCharacter: 1,
+    includeExpressionRefs: true,
+    includeEnvironmentRef: true,
+    reservedSlots: { styleAnchor: 1, location: 1 },
+  },
   'encounter-setup': {
     maxTotal: 8,
     maxPerCharacter: 3,

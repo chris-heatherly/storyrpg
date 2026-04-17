@@ -44,7 +44,7 @@ export function layoutGraph(
       }
     }
 
-    let episodeStartY = currentY;
+    const episodeStartY = currentY;
 
     for (const sceneId of scenesInEpisode) {
       const layout = sceneLayouts.get(sceneId);

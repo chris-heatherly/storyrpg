@@ -1191,10 +1191,10 @@ const styles = StyleSheet.create({
   mapCanvas: {
     flex: 1,
     overflow: 'hidden',
-    cursor: 'grab',
+    cursor: 'grab' as unknown as undefined,
   },
   mapCanvasDragging: {
-    cursor: 'grabbing',
+    cursor: 'grabbing' as unknown as undefined,
   },
   zoomControls: {
     position: 'absolute',

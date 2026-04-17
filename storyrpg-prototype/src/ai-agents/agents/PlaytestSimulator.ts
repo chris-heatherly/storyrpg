@@ -355,7 +355,7 @@ You automate testing of interactive narratives by simulating player paths throug
   }
 
   private simulateSinglePath(input: PlaytestSimulatorInput, strategy: PlayStrategy): SimulatedPath {
-    let state = this.createInitialState(input);
+    const state = this.createInitialState(input);
     const steps: PathStep[] = [];
     const issues: PathIssue[] = [];
     let stepCount = 0;

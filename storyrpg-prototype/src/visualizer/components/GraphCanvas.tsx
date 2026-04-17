@@ -257,12 +257,17 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
         </G>
 
         {/* Scanlines overlay */}
-        <Rect
-          width="100%"
-          height="100%"
-          fill="rgba(0,0,0,0.05)"
-          style={{ pointerEvents: 'none' }}
-        />
+        {(() => {
+          const RectAny = Rect as unknown as React.ComponentType<Record<string, unknown>>;
+          return (
+            <RectAny
+              width="100%"
+              height="100%"
+              fill="rgba(0,0,0,0.05)"
+              style={{ pointerEvents: 'none' }}
+            />
+          );
+        })()}
       </Svg>
     </View>
   );

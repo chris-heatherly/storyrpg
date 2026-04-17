@@ -63,7 +63,7 @@ function createStory(): Story {
                   },
                 ],
                 choices: [],
-              },
+              } as any,
             ],
           },
         ],
@@ -107,6 +107,6 @@ describe('storyPayloads', () => {
     expect(sanitized.checkpoints).toEqual([{ id: 3 }]);
     expect(sanitized.story?.coverImage).toBe('');
     expect((sanitized.story?.episodes[0].scenes[0].beats[0].image as any).imageData).toBeUndefined();
-    expect((sanitized.story?.episodes[0].scenes[0].beats[0].encounterSequence?.[0] as any).imageData).toBeUndefined();
+    expect(((sanitized.story?.episodes[0].scenes[0].beats[0].encounterSequence as any)?.[0] as any).imageData).toBeUndefined();
   });
 });

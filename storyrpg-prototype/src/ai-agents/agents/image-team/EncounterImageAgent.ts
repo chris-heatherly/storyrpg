@@ -585,7 +585,7 @@ export class EncounterImageAgent extends BaseAgent {
       tilt: frameRole === 'impact' && isAction ? 'dutch_light' : 'straight',
       side: 'left_of_axis',
       lineCross: false,
-      changeLevel: frameRole === 'impact' && isAction ? 'aggressive' : isIntimate ? 'subtle' : 'moderate'
+      changeLevel: (frameRole === 'impact' && isAction ? 'aggressive' : isIntimate ? 'subtle' : 'moderate') as 'static' | 'moderate' | 'aggressive'
     };
   }
 

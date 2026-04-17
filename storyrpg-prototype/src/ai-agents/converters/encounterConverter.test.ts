@@ -22,7 +22,7 @@ function createSceneBlueprint(): SceneBlueprint {
 
 describe('encounterConverter', () => {
   it('preserves partialVictory, style, and authored visual contracts', () => {
-    const structure: EncounterStructure = {
+    const structure = {
       sceneId: 'scene-1',
       encounterType: 'romantic',
       encounterStyle: 'romantic',
@@ -151,21 +151,22 @@ describe('encounterConverter', () => {
       },
     };
 
-    const encounter = convertEncounterStructureToEncounter(structure, createSceneBlueprint());
+    const encounter = convertEncounterStructureToEncounter(structure as unknown as EncounterStructure, createSceneBlueprint());
 
     expect(encounter.type).toBe('romantic');
     expect(encounter.style).toBe('romantic');
-    expect(encounter.phases[0].beats[0].visualContract?.visualMoment).toBe('Two people on the edge of confession.');
-    expect(encounter.phases[0].beats[0].choices[0].outcomes.success.encounterOutcome).toBe('partialVictory');
-    expect(encounter.phases[0].beats[0].choices[0].outcomes.success.visualContract?.keyExpression).toBe('relief mixed with fear');
-    expect(encounter.phases[0].beats[0].choices[0].outcomes.success.cost?.visibleComplication).toBe('They cannot quite meet each other\'s eyes.');
+    const firstBeat = encounter.phases[0].beats[0] as any;
+    expect(firstBeat.visualContract?.visualMoment).toBe('Two people on the edge of confession.');
+    expect(firstBeat.choices[0].outcomes.success.encounterOutcome).toBe('partialVictory');
+    expect(firstBeat.choices[0].outcomes.success.visualContract?.keyExpression).toBe('relief mixed with fear');
+    expect(firstBeat.choices[0].outcomes.success.cost?.visibleComplication).toBe('They cannot quite meet each other\'s eyes.');
     expect(encounter.storylets?.partialVictory?.beats[0].visualContract?.visualMoment).toBe('Bittersweet aftermath.');
     expect(encounter.outcomes.partialVictory?.cost?.domain).toBe('relationship');
     expect(encounter.outcomes.partialVictory?.cost?.visibleComplication).toBe('They stand closer, but with wounded caution.');
   });
 
   it('migrates prose-only partialVictory storylets into a structured cost payload', () => {
-    const structure: EncounterStructure = {
+    const structure = {
       sceneId: 'scene-1',
       encounterType: 'dramatic',
       startingBeatId: 'beat-1',

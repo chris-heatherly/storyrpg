@@ -11,6 +11,9 @@ import {
 } from '../ai-agents/config';
 import { GenerationSettings, DEFAULT_GENERATION_SETTINGS } from '../components/GenerationSettingsPanel';
 import { PROXY_CONFIG } from '../config/endpoints';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('GeneratorSettings');
 import {
   DEFAULT_LLM_MODELS,
   DEFAULT_LLM_PROVIDER,
@@ -146,7 +149,7 @@ function patchProxySettings(patch: Partial<ProxySettingsShape>): void {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }).catch(err => console.log('[GeneratorSettings] Proxy patch failed:', err.message));
+    }).catch(err => log.debug('[GeneratorSettings] Proxy patch failed:', err.message));
   }, 500);
 }
 
@@ -401,7 +404,7 @@ export function useGeneratorSettings() {
           }
         }
       } catch (error) {
-        console.log('Failed to load generator settings from AsyncStorage:', error);
+        log.debug('Failed to load generator settings from AsyncStorage:', error);
       }
     };
 
@@ -427,7 +430,7 @@ export function useGeneratorSettings() {
         await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.llmModel, newModel);
       }
     } catch (error) {
-      console.log('Failed to save LLM provider:', error);
+      log.debug('Failed to save LLM provider:', error);
     }
   }, [llmModel]);
 
@@ -437,7 +440,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.llmModel, model.trim() ? model.trim() : null);
     } catch (error) {
-      console.log('Failed to save LLM model:', error);
+      log.debug('Failed to save LLM model:', error);
     }
   }, []);
 
@@ -455,7 +458,7 @@ export function useGeneratorSettings() {
         await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.imageLlmModel, nextModel);
       }
     } catch (error) {
-      console.log('Failed to save image LLM provider:', error);
+      log.debug('Failed to save image LLM provider:', error);
     }
   }, [imageLlmModel]);
 
@@ -465,7 +468,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.imageLlmModel, model.trim() ? model.trim() : null);
     } catch (error) {
-      console.log('Failed to save image LLM model:', error);
+      log.debug('Failed to save image LLM model:', error);
     }
   }, []);
 
@@ -483,7 +486,7 @@ export function useGeneratorSettings() {
         await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.videoLlmModel, nextModel);
       }
     } catch (error) {
-      console.log('Failed to save video LLM provider:', error);
+      log.debug('Failed to save video LLM provider:', error);
     }
   }, [videoLlmModel]);
 
@@ -493,7 +496,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.videoLlmModel, model.trim() ? model.trim() : null);
     } catch (error) {
-      console.log('Failed to save video LLM model:', error);
+      log.debug('Failed to save video LLM model:', error);
     }
   }, []);
 
@@ -503,7 +506,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.generationMode, mode);
     } catch (error) {
-      console.log('Failed to save generation mode:', error);
+      log.debug('Failed to save generation mode:', error);
     }
   }, []);
 
@@ -512,7 +515,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.anthropicApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save API key:', error);
+      log.debug('Failed to save API key:', error);
     }
   }, []);
 
@@ -521,7 +524,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.geminiApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save Gemini API key:', error);
+      log.debug('Failed to save Gemini API key:', error);
     }
   }, []);
 
@@ -530,7 +533,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.elevenLabsApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save ElevenLabs API key:', error);
+      log.debug('Failed to save ElevenLabs API key:', error);
     }
   }, []);
 
@@ -539,7 +542,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.atlasCloudApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save Atlas Cloud API key:', error);
+      log.debug('Failed to save Atlas Cloud API key:', error);
     }
   }, []);
 
@@ -549,7 +552,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.atlasCloudModel, modelId);
     } catch (error) {
-      console.log('Failed to save Atlas Cloud model:', error);
+      log.debug('Failed to save Atlas Cloud model:', error);
     }
   }, []);
 
@@ -558,7 +561,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.midapiToken, token.trim() ? token : null);
     } catch (error) {
-      console.log('Failed to save MidAPI token:', error);
+      log.debug('Failed to save MidAPI token:', error);
     }
   }, []);
 
@@ -569,7 +572,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.geminiSettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save Gemini settings:', error);
+      log.debug('Failed to save Gemini settings:', error);
     }
   }, [geminiSettings]);
 
@@ -580,7 +583,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.midjourneySettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save Midjourney settings:', error);
+      log.debug('Failed to save Midjourney settings:', error);
     }
   }, [midjourneySettings]);
 
@@ -591,7 +594,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.stableDiffusionSettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save Stable Diffusion settings:', error);
+      log.debug('Failed to save Stable Diffusion settings:', error);
     }
   }, [stableDiffusionSettings]);
 
@@ -601,7 +604,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.imageProvider, provider);
     } catch (error) {
-      console.log('Failed to save image provider:', error);
+      log.debug('Failed to save image provider:', error);
     }
   }, []);
 
@@ -611,7 +614,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.artStyle, style.trim() ? style : null);
     } catch (error) {
-      console.log('Failed to save art style:', error);
+      log.debug('Failed to save art style:', error);
     }
   }, []);
 
@@ -621,7 +624,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.imageStrategy, strategy);
     } catch (error) {
-      console.log('Failed to save image strategy:', error);
+      log.debug('Failed to save image strategy:', error);
     }
   }, []);
 
@@ -631,7 +634,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.generationSettings, JSON.stringify(settings));
     } catch (error) {
-      console.log('Failed to save generation settings:', error);
+      log.debug('Failed to save generation settings:', error);
     }
   }, []);
 
@@ -645,7 +648,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.narrationSettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save narration settings:', error);
+      log.debug('Failed to save narration settings:', error);
     }
   }, [narrationSettings]);
 
@@ -659,7 +662,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.videoSettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save video settings:', error);
+      log.debug('Failed to save video settings:', error);
     }
   }, [videoSettings]);
 

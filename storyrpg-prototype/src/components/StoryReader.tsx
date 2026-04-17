@@ -814,7 +814,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       }
 
       if (currentEpisode && currentScene) {
-        const nextScene = getNextScene(currentEpisode, currentScene.id);
+        const nextScene = getNextScene(currentEpisode, currentScene.id, player);
         const nextBeatId = nextScene?.beats?.[0]?.id;
         if (nextScene && nextBeatId) {
           return { sceneId: nextScene.id, beatId: nextBeatId };
@@ -1246,6 +1246,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
                       type: 'relationship' as const,
                       label: c.dimension,
                       direction: c.direction,
+                      magnitude: 'moderate' as const,
                     }));
                     return (
                       <View key={item.npcId} style={styles.recapCard}>

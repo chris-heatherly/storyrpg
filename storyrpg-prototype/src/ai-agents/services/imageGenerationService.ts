@@ -16,8 +16,14 @@ import { ProviderThrottle } from './providerThrottle';
 import { getProviderCapabilities } from '../images/providerCapabilities';
 import { createStableDiffusionAdapter } from './stable-diffusion/factory';
 import type { StableDiffusionAdapter } from './stable-diffusion/StableDiffusionAdapter';
+import {
+  createDefaultImageProviderRegistry,
+  type ImageProviderRegistry,
+  type ProviderServiceBridge,
+} from './providers';
 import { SeedRegistry, type SeedKey } from './stable-diffusion/seedRegistry';
 import { isNativeRuntime, isWebRuntime } from '../../utils/runtimeEnv';
+import { PROXY_CONFIG } from '../../config/endpoints';
 import { selectStyleAdaptation } from '../utils/styleAdaptation';
 import { ENCOUNTER_VISUAL_PRINCIPLES_COMPACT, STORY_BEAT_VISUAL_PRINCIPLES_COMPACT, getBeatStagingDirection } from '../prompts';
 // E2: pure helper functions moved out of this file. Grow this module
@@ -270,6 +276,23 @@ export class ImageGenerationService {
   // Identifier-based dedup (covers browser runtime where file-existence check is unavailable)
   private _generatedIdentifiers = new Set<string>();
   private providerPolicy = new ProviderPolicy();
+  /**
+   * Provider registry — replaces the legacy `switch (provider)` inside
+   * `generateImageCore`. Each entry is an `ImageProviderAdapter` whose
+   * `generate`/`edit` methods delegate back into this service via the
+   * `ProviderServiceBridge`. Adapter bodies will progressively absorb the
+   * concrete `generateWithX` implementations in future phases.
+   */
+  private providerRegistry: ImageProviderRegistry = createDefaultImageProviderRegistry();
+  private providerBridge: ProviderServiceBridge = {
+    generateWithNanoBanana: (...args) => this.generateWithNanoBanana(...args),
+    generateWithAtlasCloud: (...args) => this.generateWithAtlasCloud(...args),
+    generateWithUseapi: (...args) => this.generateWithUseapi(...args),
+    generateWithDallE: (...args) => this.generateWithDallE(...args),
+    generateWithStableDiffusion: (...args) => this.generateWithStableDiffusion(...args),
+    generatePlaceholder: (...args) => this.generatePlaceholder(...args),
+    preflightImageProvider: (force) => this.preflightImageProvider(force),
+  };
   
   // Observability counters
   public pipelineMetrics = {
@@ -997,7 +1020,7 @@ export class ImageGenerationService {
     // reference sheets themselves we skip `--cref` because they ARE the
     // anchor. The existing `--sref <code>` numeric-code path remains as
     // a fallback when no style-reference URL is available.
-    let crefSrefParams: string[] = [];
+    const crefSrefParams: string[] = [];
     if (mj.enableCrefSref && !isReferenceLike) {
       const characterRefUrl = referenceImages
         ?.find(r => r.url && (r.role === 'character-reference' || r.role === 'master-reference'))
@@ -1569,7 +1592,7 @@ export class ImageGenerationService {
       }
     }
     if (isWebRuntime()) {
-      const response = await fetch('http://localhost:3001/write-file', {
+      const response = await fetch(PROXY_CONFIG.writeFile, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1585,7 +1608,7 @@ export class ImageGenerationService {
       return;
     }
     const options = isBase64 ? { encoding: 'base64' as any } : { encoding: 'utf8' as any };
-    let data = typeof content === 'string' ? content : Buffer.isBuffer(content) ? content.toString('base64') : String(content);
+    const data = typeof content === 'string' ? content : Buffer.isBuffer(content) ? content.toString('base64') : String(content);
     await ExpoFileSystem.writeAsStringAsync(resolvedPath, data, options);
   }
 
@@ -1922,21 +1945,26 @@ export class ImageGenerationService {
           this.providerPolicy.observeTransientFailure('atlas-cloud', providerFamily);
           result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, this.filterReferencesForProvider('nano-banana', referenceImages), metadata?.type);
         }
-      } else switch (provider) {
-        case 'nano-banana': result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, capabilityFilteredRefs, metadata?.type); break;
-        case 'atlas-cloud': result = await this.generateWithAtlasCloud(normalizedPrompt, identifier, jobId, capabilityFilteredRefs, metadata?.type); break;
-        case 'midapi':
-        case 'useapi':
-          result = await this.generateWithUseapi(normalizedPrompt, identifier, jobId, metadata, capabilityFilteredRefs);
-          break;
-        case 'dall-e': result = await this.generateWithDallE(normalizedPrompt, identifier, jobId); break;
-        case 'stable-diffusion': result = await this.generateWithStableDiffusion(normalizedPrompt, identifier, jobId, capabilityFilteredRefs, metadata); break;
-        default:
-          if (this.isFailFastEnabled()) {
-            throw new Error(`Image provider "${String(this.config.provider || 'placeholder')}" is not available in fail-fast mode`);
-          }
-          result = await this.generatePlaceholder(normalizedPrompt, identifier, jobId);
-          break;
+      } else {
+        if (
+          !this.providerRegistry.has(provider) &&
+          provider !== 'placeholder' &&
+          this.isFailFastEnabled()
+        ) {
+          throw new Error(`Image provider "${String(this.config.provider || 'placeholder')}" is not available in fail-fast mode`);
+        }
+        const adapter = this.providerRegistry.get(provider);
+        result = await adapter.generate(
+          {
+            prompt: normalizedPrompt,
+            identifier,
+            jobId,
+            imageType: metadata?.type,
+            referenceImages: capabilityFilteredRefs,
+            metadata,
+          },
+          this.providerBridge,
+        );
       }
 
       if (!result.imageUrl && result.imagePath) {
@@ -2203,7 +2231,7 @@ export class ImageGenerationService {
         data: baseImage.data,
         mimeType: baseImage.mimeType,
         role: 'img2img-init',
-        purpose: 'init',
+        purpose: 'img2img-init',
       };
       const combinedRefs = [initRef, ...(referenceImages || [])];
       return this.generateImage(prompt, identifier, { type: 'scene' }, combinedRefs);
@@ -3545,10 +3573,7 @@ export class ImageGenerationService {
   }
 
   private getAtlasCloudProxyUrl(): string {
-    if (isWebRuntime() && typeof window !== 'undefined') {
-      return `http://${window.location.hostname || 'localhost'}:3001/atlas-cloud-api`;
-    }
-    return 'http://localhost:3001/atlas-cloud-api';
+    return PROXY_CONFIG.atlasCloudApi;
   }
 
   private isSeedreamModel(model?: string): boolean {
@@ -4195,14 +4220,7 @@ export class ImageGenerationService {
         console.log(`[ImageGenerationService] Midjourney: Prompt: ${fullPrompt.substring(0, 100)}...`);
         this.emit({ type: 'job_updated', id: jobId, updates: { progress: 10, attempts: attempt, message: 'Submitting to Midjourney...' } });
 
-        // Use proxy server to avoid CORS issues
-        const getProxyUrl = () => {
-          if (isWebRuntime() && typeof window !== 'undefined') {
-            return `http://${window.location.hostname || 'localhost'}:3001/useapi`;
-          }
-          return 'http://localhost:3001/useapi';
-        };
-        const baseUrl = getProxyUrl();
+        const baseUrl = `${PROXY_CONFIG.getProxyUrl()}/useapi`;
 
         // Step 1: Submit the imagine job
         const submitResponse = await fetch(`${baseUrl}/midjourney/jobs/imagine`, {

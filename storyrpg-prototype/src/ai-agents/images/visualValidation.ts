@@ -168,7 +168,7 @@ export function buildTier2VisionPrompt(
     : `- pose: Is the pose dynamic and purposeful (not stiff, neutral, or mannequin-like)?`;
 
   const styleHeader = styleProfile
-    ? `\nThis scene is rendered in the "${styleProfile.name}" style: ${styleProfile.description}\nEvaluate the images AGAINST THIS STYLE — do not expect photoreal lighting, cinematic depth-of-field, or Hollywood staging unless the style explicitly calls for them.\n`
+    ? `\nThis scene is rendered in the "${styleProfile.name}" style: ${styleProfile.renderingTechnique}\nEvaluate the images AGAINST THIS STYLE — do not expect photoreal lighting, cinematic depth-of-field, or Hollywood staging unless the style explicitly calls for them.\n`
     : '';
 
   const styleSpecificChecks = styleProfile && styleProfile.inappropriateVocabulary.length > 0

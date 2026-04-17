@@ -1,14 +1,12 @@
 {
-  "extends": "./tsconfig.app.json",
+  "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
     "types": ["vitest/globals", "node"]
   },
   "include": [
-    "src/engine/**/*.test.ts",
-    "src/hooks/**/*.test.ts",
-    "src/stores/**/*.test.ts",
-    "src/utils/**/*.test.ts",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
     "test/stubs/**/*.ts"
   ]
 }

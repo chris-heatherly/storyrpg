@@ -14,7 +14,7 @@ describe('IncrementalEncounterValidator', () => {
   it('recurses through branching nextSituation trees and recognizes partialVictory paths', () => {
     const validator = new IncrementalEncounterValidator(['empathy', 'wit']);
 
-    const encounter: EncounterStructure = {
+    const encounter = {
       sceneId: 'scene-7',
       encounterType: 'dramatic',
       encounterStyle: 'dramatic',
@@ -144,7 +144,7 @@ describe('IncrementalEncounterValidator', () => {
       },
     };
 
-    const result = validator.validateEncounter(encounter);
+    const result = validator.validateEncounter(encounter as unknown as EncounterStructure);
 
     expect(result.passed).toBe(true);
     expect(result.hasVictoryPath).toBe(true);
@@ -156,7 +156,7 @@ describe('IncrementalEncounterValidator', () => {
   it('rejects partialVictory paths that lack structured cost and visible-cost contracts', () => {
     const validator = new IncrementalEncounterValidator(['empathy']);
 
-    const encounter: EncounterStructure = {
+    const encounter = {
       sceneId: 'scene-bad',
       encounterType: 'dramatic',
       startingBeatId: 'beat-1',
@@ -212,7 +212,7 @@ describe('IncrementalEncounterValidator', () => {
       informationVisibility: { threatClockVisible: true, npcTellsRevealAt: 'immediate', environmentElementsHidden: [], choiceOutcomesUnknown: false },
     };
 
-    const result = validator.validateEncounter(encounter);
+    const result = validator.validateEncounter(encounter as unknown as EncounterStructure);
 
     expect(result.passed).toBe(false);
     expect(result.issues.some(issue => issue.type === 'invalid_partial_victory')).toBe(true);
@@ -221,7 +221,7 @@ describe('IncrementalEncounterValidator', () => {
   it('warns when relationship-heavy encounters never spend relationship state', () => {
     const validator = new IncrementalEncounterValidator(['empathy']);
 
-    const encounter: EncounterStructure = {
+    const encounter = {
       sceneId: 'scene-relationship-gap',
       encounterType: 'dramatic',
       startingBeatId: 'beat-1',
@@ -282,7 +282,7 @@ describe('IncrementalEncounterValidator', () => {
       informationVisibility: { threatClockVisible: true, npcTellsRevealAt: 'immediate', environmentElementsHidden: [], choiceOutcomesUnknown: false },
     };
 
-    const result = validator.validateEncounter(encounter);
+    const result = validator.validateEncounter(encounter as unknown as EncounterStructure);
 
     expect(result.issues.some(issue => issue.type === 'missing_relationship_payoff')).toBe(true);
   });

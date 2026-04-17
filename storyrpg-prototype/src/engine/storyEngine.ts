@@ -335,7 +335,7 @@ export function executeChoice(
   }
 
   let resolution: ResolutionResult | undefined;
-  let consequences = [...(choice.consequences ?? [])];
+  const consequences = [...(choice.consequences ?? [])];
 
   // Perform stat check if required
   if (choice.statCheck) {

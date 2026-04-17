@@ -26,7 +26,7 @@ export function convertStateChangeToConsequence(sc: StateChange): Consequence | 
   // Try to normalize non-conforming LLM output before validation.
   // The LLM sometimes produces { type: 'attribute', attribute: X, change: N }
   // or { type: 'skill', skill: X, change: N } instead of the canonical format.
-  const raw = sc as Record<string, unknown>;
+  const raw = sc as unknown as Record<string, unknown>;
   if (!isStateChange(sc)) {
     const normalized = tryNormalizeStateChange(raw);
     if (normalized) {

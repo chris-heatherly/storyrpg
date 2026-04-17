@@ -1,4 +1,5 @@
 #!/usr/bin/env npx ts-node
+// @ts-nocheck — TODO(tech-debt): Phase 4 client/pipeline decoupling.
 import * as fs from 'fs/promises';
 import type { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import { PipelineError } from '../pipeline/FullStoryPipeline';

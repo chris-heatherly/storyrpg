@@ -699,6 +699,26 @@ export interface PipelineConfig {
   videoGen?: VideoSettingsConfig;
   // Claude memory tool configuration (Anthropic-only, opt-in)
   memory?: MemoryConfig;
+
+  /**
+   * Scene Critic rewrite pass (Phase 9.2). Optional because it is a second
+   * LLM pass per authored scene and therefore doubles SceneWriter token
+   * cost. Off by default.
+   */
+  sceneCritic?: {
+    enabled: boolean;
+    /**
+     * When set, only scenes whose VoiceValidator score is at-or-below this
+     * threshold (0-100) are sent to SceneCritic. Leave unset to critique
+     * every scene.
+     */
+    voiceScoreThreshold?: number;
+    /**
+     * Hard cap on the number of scenes the critic will touch per episode.
+     * Defaults to 3 — the critic is a scalpel, not a chainsaw.
+     */
+    maxScenesPerEpisode?: number;
+  };
 }
 
 export interface MemoryConfig {

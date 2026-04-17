@@ -24,9 +24,18 @@ export type ValidationCategory =
   | 'stakes_triangle'
   | 'five_factor'
   | 'choice_density'
+  | 'choice_distribution'
   | 'consequence_budget'
   | 'npc_depth'
-  | 'callback_opportunities';
+  | 'callback_opportunities'
+  | 'voice_fidelity'
+  | 'pixar_principles'
+  | 'cliffhanger'
+  | 'setup_payoff'
+  | 'twist_quality'
+  | 'arc_delta'
+  | 'divergence'
+  | 'branch_topology';
 
 // ========================================
 // VALIDATION ISSUES

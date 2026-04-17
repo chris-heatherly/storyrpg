@@ -3960,17 +3960,23 @@ export class ImageGenerationService {
       return this.ensureSeedreamMinSize(seedreamSizeMap[aspectRatio] || '2048*2048');
     }
 
+    // All dimensions must be multiples of 16. Flux (flux-dev, flux-schnell,
+    // flux-dev-lora, flux-kontext-dev-lora, etc.) strictly enforces this at
+    // the Atlas router layer and returns HTTP 400 with an "Invalid request
+    // parameters" message if any dimension is off. Qwen and Wan accept
+    // multiples of 16 fine, so this map is safe for every non-Nano-Banana,
+    // non-Seedream model that flows through here.
     const standardSizeMap: Record<string, string> = {
-      '9:19.5': '936*2028',
+      '9:19.5': '928*2016',
       '9:16': '1152*2048',
       '16:9': '2048*1152',
       '1:1': '1024*1024',
-      '4:3': '1365*1024',
-      '3:4': '1024*1365',
+      '4:3': '1360*1024',
+      '3:4': '1024*1360',
       '3:2': '1536*1024',
       '2:3': '1024*1536',
-      '21:9': '2048*878',
-      '9:21': '878*2048',
+      '21:9': '2048*880',
+      '9:21': '880*2048',
     };
     return standardSizeMap[aspectRatio] || '1024*1024';
   }

@@ -21,3 +21,4 @@ export * from './choice';
 export * from './content';
 export * from './encounter';
 export * from './story';
+export * from './narrativeThread';

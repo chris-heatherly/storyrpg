@@ -80,4 +80,14 @@ export interface Beat {
   intensityTier?: 'dominant' | 'supporting' | 'rest';
 
   allowDiegeticText?: boolean;
+
+  // Narrative thread wiring (Phase 5.3) — set by SceneWriter when this beat
+  // plants a seed/clue/promise/reveal or pays one off.
+  plantsThreadId?: string;
+  paysOffThreadId?: string;
+
+  // Twist / structural plot-point marker (Phase 6.2). Consumed by the
+  // TwistQualityValidator to verify foreshadow → reveal scheduling.
+  plotPointType?: 'setup' | 'payoff' | 'twist' | 'revelation';
+  twistKind?: 'reversal' | 'revelation' | 'betrayal' | 'reframe';
 }

@@ -731,6 +731,10 @@ FullStoryPipeline (orchestrator)
   ├── GrowthNarrativeCritic (Phase 4.5 — growth-arc check on generated prose)
   ├── EncounterArchitect (design complex multi-phase encounters)
   ├── BranchManager (handle story branching and reconvergence)
+  ├── ThreadPlanner (Phase 5 — author NarrativeThread ledger for setup/payoff tracking)
+  ├── TwistArchitect (Phase 6 — schedule per-episode reversal/revelation with foreshadow)
+  ├── CharacterArcTracker (Phase 7 — emit per-episode identity/relationship milestone targets)
+  ├── SceneCritic (Phase 9 — optional subtext/reversals rewrite pass; gated by config.sceneCritic.enabled)
   ├── ImageAgentTeam (coordinate all visual content generation)
   │   ├── CharacterReferenceSheetAgent
   │   ├── StoryboardAgent
@@ -865,6 +869,12 @@ The validation system operates at multiple levels and — for the final playthro
 | `CliffhangerValidator` | Episode ending quality | Episode completion |
 | `ChoiceDistributionValidator` | Choice type variety | Scene completion |
 | `IncrementalValidators` | Voice / stakes / continuity / sensitivity / encounter structure | Per scene |
+| `PixarPrinciplesValidator` | Stakes triangle, surprise (setup/twist/satisfaction), and story-spine checks | Season + encounter |
+| `SetupPayoffValidator` | Every NarrativeThread plant has a payoff beat (Chekhov's-gun / deus-ex-machina) | Post-generation |
+| `TwistQualityValidator` | Episode twist presence + foreshadow-precedes-reveal scheduling | Post-generation |
+| `ArcDeltaValidator` | Start-vs-end identity/relationship deltas match CharacterArcTracker targets | Post-generation |
+| `DivergenceValidator` | Runs a lightweight path simulator; flags cosmetic branching and no-op decision points | Episode-level |
+| `PhaseValidator` | Structural validation of the CharacterBible (and other per-phase artifacts) | Per phase |
 | `BlueprintGrowthCritic` (agent) | Growth-arc legibility in Phase-3 blueprints | Phase 3.5 |
 | `GrowthNarrativeCritic` (agent) | Growth-arc legibility in generated prose | Phase 4.5 |
 | `storyAssetWalker.walkStoryAssets()` | HTTP `HEAD`/`GET` every image slot in the story | Post-assembly (Tier 1) |

@@ -447,3 +447,39 @@ describe('Atlas Cloud resolveAtlasFluxLoras — LoRA payload selection', () => {
     expect(loras).toEqual([{ path: 'characters/vance', scale: 1 }]);
   });
 });
+
+describe('Atlas Cloud mapAspectRatioToSize — Flux dimension alignment', () => {
+  // Flux (flux-dev, flux-schnell, flux-dev-lora, flux-kontext-dev-lora, ...)
+  // rejects requests where either dimension of `size` is not a multiple of 16,
+  // with HTTP 400 `Invalid request parameters`. This spec locks in the
+  // invariant so the standard size map never regresses.
+  const ASPECT_RATIOS = [
+    '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3',
+    '21:9', '9:21', '9:19.5',
+  ];
+
+  it.each(ASPECT_RATIOS)('flux-dev-lora: %s maps to a multiple-of-16 size', (ar) => {
+    const service: any = buildServiceWithAtlasModel('black-forest-labs/flux-dev-lora');
+    const size: string = service.mapAspectRatioToSize(ar, 'black-forest-labs/flux-dev-lora');
+    const match = /^(\d+)\*(\d+)$/.exec(size);
+    expect(match, `size ${size} should be W*H`).toBeTruthy();
+    const w = Number(match![1]);
+    const h = Number(match![2]);
+    expect(w % 16, `width ${w} for ${ar} should be multiple of 16`).toBe(0);
+    expect(h % 16, `height ${h} for ${ar} should be multiple of 16`).toBe(0);
+  });
+
+  it('flux-kontext-dev-lora: 3:4 maps to multiple-of-16 size', () => {
+    const service: any = buildServiceWithAtlasModel('black-forest-labs/flux-kontext-dev-lora');
+    const size: string = service.mapAspectRatioToSize('3:4', 'black-forest-labs/flux-kontext-dev-lora');
+    const [w, h] = size.split('*').map(Number);
+    expect(w % 16).toBe(0);
+    expect(h % 16).toBe(0);
+  });
+
+  it('flux-dev (base): falls back to 1024*1024 for unknown ratio', () => {
+    const service: any = buildServiceWithAtlasModel('black-forest-labs/flux-dev');
+    const size: string = service.mapAspectRatioToSize('bogus', 'black-forest-labs/flux-dev');
+    expect(size).toBe('1024*1024');
+  });
+});

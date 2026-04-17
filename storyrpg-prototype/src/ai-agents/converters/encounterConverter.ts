@@ -524,6 +524,7 @@ export function convertEncounterStructureToEncounter(
     escalationTriggers,
     informationVisibility: structure.informationVisibility,
     pixarStakes: structure.pixarStakes,
+    pixarSurprise: structure.pixarSurprise,
     // Preserve design metadata
     tensionCurve: structure.tensionCurve,
     estimatedDuration: structure.estimatedDuration,

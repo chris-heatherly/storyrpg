@@ -118,11 +118,11 @@ Client reads story files → Story Engine → Player experience
 | `src/engine/growthConsequenceBuilder.ts` | Builds growth consequences for character development. |
 | `src/stores/gameStore.ts` | Player state: attributes, relationships, flags, inventory, progress. **React Context** (not Zustand). Persists to AsyncStorage. |
 | `src/ai-agents/pipeline/FullStoryPipeline.ts` | Main generation orchestrator — wires all agents, validators, and services together. |
-| `src/ai-agents/agents/` | Individual AI agent specialists (WorldBuilder, StoryArchitect, StyleArchitect, SceneWriter, ChoiceAuthor, BranchManager, EncounterArchitect, QA agents, image team). |
+| `src/ai-agents/agents/` | Individual AI agent specialists (WorldBuilder, StoryArchitect, StyleArchitect, SceneWriter, ChoiceAuthor, BranchManager, EncounterArchitect, QA agents, image team). Narrative-quality specialists include `ThreadPlanner` (setup/payoff ledger), `TwistArchitect` (per-episode reversal + foreshadow), `CharacterArcTracker` (identity/relationship milestone targets), and `SceneCritic` (optional subtext rewrite pass, gated by `config.sceneCritic.enabled`). |
 | `src/ai-agents/agents/StyleArchitect.ts` | LLM agent that expands arbitrary art-style strings into a structured `ArtStyleProfile`. Falls back to `buildVerbatimProfile` so unknown styles never inherit cinematic vocabulary. |
 | `src/ai-agents/images/artStyleProfile.ts` | `ArtStyleProfile` interface + heuristic resolvers (`resolveArtStyleProfile`, `buildVerbatimProfile`, `composeCanonicalStyleString`). |
 | `src/ai-agents/images/anchorPrompts.ts` | Shared builders for the three style-bible anchors (character, arc color strip, environment vignette) consumed by both the pipeline and the UI style-setup section. |
-| `src/ai-agents/validators/` | Structural and content validators that run between pipeline stages. |
+| `src/ai-agents/validators/` | Structural and content validators that run between pipeline stages. Narrative-quality validators include `SetupPayoffValidator` (thread Chekhov's-gun checks), `TwistQualityValidator` (foreshadow-precedes-reveal), `ArcDeltaValidator` (identity delta vs `CharacterArcTracker` targets), `DivergenceValidator` (cosmetic-branching detector backed by `pathSimulator.ts`), and `PixarPrinciplesValidator` (stakes triangle / surprise beats). |
 | `src/ai-agents/services/` | Image generation, audio generation, video generation, and LLM service abstractions. |
 | `src/screens/generator/hooks/useStyleSetup.ts` | React hook that owns the inline Style Setup section's state (expanded profile, anchor slot statuses, handoff payload). |
 | `src/screens/generator/StyleSetupSection.tsx` | UI for the inline style-setup section on `analysis_complete`. |

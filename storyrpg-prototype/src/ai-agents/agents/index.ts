@@ -56,6 +56,12 @@ export {
   type ValidationIssue,
 } from './BranchManager';
 
+// Narrative Thread + Twist + Arc planning
+export { ThreadPlanner, type ThreadPlannerInput } from './ThreadPlanner';
+export { TwistArchitect, type TwistArchitectInput, type TwistPlan } from './TwistArchitect';
+export { CharacterArcTracker, type CharacterArcTrackerInput, type CharacterArcTargets } from './CharacterArcTracker';
+export { SceneCritic, type SceneCriticInput, type SceneCritique } from './SceneCritic';
+
 // Encounter Design Agents
 export {
   EncounterArchitect,

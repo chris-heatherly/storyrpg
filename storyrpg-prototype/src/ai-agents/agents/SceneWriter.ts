@@ -83,6 +83,46 @@ export interface SceneWriterInput {
 
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
+
+  // Branch topology context from BranchManager (Phase 1.1).
+  // When provided, SceneWriter knows whether this scene is a bottleneck,
+  // a branch-only scene, or a reconvergence point, and what state differences
+  // must be acknowledged.
+  branchContext?: {
+    role: 'bottleneck' | 'branch' | 'reconvergence' | 'linear';
+    branchPathIds?: string[];
+    incomingBranchIds?: string[];
+    stateReconciliationNotes?: string[];
+    reconvergenceNarrativeAcknowledgment?: string;
+  };
+
+  // Narrative threads active for this scene (Phase 5.3).
+  // SceneWriter must plant or pay off these threads in the beat text
+  // and set `plantsThreadId` / `paysOffThreadId` on the corresponding beat.
+  activeThreads?: Array<{
+    id: string;
+    kind: 'seed' | 'clue' | 'promise' | 'secret' | 'foreshadow';
+    label: string;
+    action: 'plant' | 'payoff' | 'reference';
+    hint?: string;
+  }>;
+
+  // Twist scheduling from TwistArchitect (Phase 6).
+  // When provided, SceneWriter marks the designated beat as a twist or revelation
+  // and drops subtle setup cues in the named setup beats.
+  twistDirectives?: Array<{
+    twistKind: 'reversal' | 'revelation' | 'betrayal' | 'reframe';
+    beatRole: 'setup' | 'twist' | 'satisfaction';
+    hint: string;
+  }>;
+
+  // Character arc milestone targets (Phase 7.1).
+  // When provided, SceneWriter frames beats so protagonist choices can move
+  // identity and relationship dimensions in the direction of these targets.
+  arcTargets?: {
+    identityDeltaHints?: Array<{ dimension: string; direction: 'positive' | 'negative'; magnitude: 'minor' | 'moderate' | 'major' }>;
+    relationshipTrajectory?: Array<{ npcId: string; dimension: string; direction: 'positive' | 'negative'; hint: string }>;
+  };
 }
 
 // Output types
@@ -108,6 +148,12 @@ export interface GeneratedBeat {
   allowDiegeticText?: boolean; // When true, text in the image is permitted (letter, sign, book)
   shotType?: 'establishing' | 'character' | 'action'; // Camera intent: environment-only, character-focused, or physical action
   intensityTier?: 'dominant' | 'supporting' | 'rest'; // Narrative intensity for scene-level pacing
+
+  // Setup-payoff + plot-point metadata (Phases 5, 6)
+  plantsThreadId?: string;
+  paysOffThreadId?: string;
+  plotPointType?: 'setup' | 'payoff' | 'twist' | 'revelation';
+  twistKind?: 'reversal' | 'revelation' | 'betrayal' | 'reframe';
 }
 
 export interface SceneContent {
@@ -129,6 +175,10 @@ export interface SceneContent {
   branchType?: 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption';
   isBottleneck?: boolean;
   isConvergencePoint?: boolean;
+
+  // Threads planted/paid off in this scene (Phase 5.3).
+  plantedThreadIds?: string[];
+  paidOffThreadIds?: string[];
 
   // Choice payoff context — the player choice that led to this scene.
   // Threaded to the image pipeline so the first beat's image reflects the choice.
@@ -937,6 +987,34 @@ Write this scene with the encounter in mind. Every beat should move players emot
 - DO NOT resolve the tension — build it, complicate it, and leave it unresolved for the encounter to detonate
 
 The player should finish this scene feeling that something significant is coming. The encounter should feel INEVITABLE by the time they reach it.
+` : ''}
+${input.branchContext ? `
+## Branch Topology Context
+- **Scene role**: ${input.branchContext.role}
+${input.branchContext.role === 'bottleneck' ? '- This scene is a **bottleneck**: every player path converges here. Acknowledge different prior paths when possible via textVariants.' : ''}
+${input.branchContext.role === 'branch' ? '- This scene is **branch-only**: not every player reaches it. Earn its distinct tone and avoid redundant setup.' : ''}
+${input.branchContext.role === 'reconvergence' ? `- This scene is a **reconvergence point**. Incoming branches: ${(input.branchContext.incomingBranchIds || []).join(', ') || 'multiple'}. Acknowledge different paths via conditional textVariants.` : ''}
+${input.branchContext.stateReconciliationNotes && input.branchContext.stateReconciliationNotes.length > 0 ? `- State reconciliation notes:\n${input.branchContext.stateReconciliationNotes.map(n => `  - ${n}`).join('\n')}` : ''}
+${input.branchContext.reconvergenceNarrativeAcknowledgment ? `- Suggested acknowledgment: "${input.branchContext.reconvergenceNarrativeAcknowledgment}"` : ''}
+` : ''}
+${input.activeThreads && input.activeThreads.length > 0 ? `
+## Active Narrative Threads (setup/payoff)
+You MUST plant or pay off the following threads in this scene. Set \`plantsThreadId\` or \`paysOffThreadId\` on the beat where each action happens.
+${input.activeThreads.map(t => `- [${t.action.toUpperCase()}] thread \`${t.id}\` (${t.kind}): ${t.label}${t.hint ? ` — hint: ${t.hint}` : ''}`).join('\n')}
+- Payoff must feel surprising-but-inevitable — the plant should read as incidental on first encounter.
+- If planting, be subtle: a sensory detail, an off-hand remark, a named object. Never lampshade.
+` : ''}
+${input.twistDirectives && input.twistDirectives.length > 0 ? `
+## Twist / Revelation Directives
+This scene participates in an episode-level twist. Honor the role for each beat and set \`plotPointType\` accordingly.
+${input.twistDirectives.map(d => `- Beat role: **${d.beatRole}** for a \`${d.twistKind}\` — ${d.hint}`).join('\n')}
+- Twist beats MUST be preceded by at least one earlier setup beat in this or an earlier scene.
+` : ''}
+${input.arcTargets && (input.arcTargets.identityDeltaHints?.length || input.arcTargets.relationshipTrajectory?.length) ? `
+## Character Arc Milestone Targets
+Frame beats so the player's available choices can nudge the protagonist toward these milestones.
+${(input.arcTargets.identityDeltaHints || []).map(h => `- Identity dimension \`${h.dimension}\`: target ${h.direction} (${h.magnitude})`).join('\n')}
+${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with ${r.npcId} (${r.dimension}): ${r.direction} — ${r.hint}`).join('\n')}
 ` : ''}
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)

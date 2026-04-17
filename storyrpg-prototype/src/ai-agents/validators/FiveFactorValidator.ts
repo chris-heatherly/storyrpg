@@ -21,6 +21,7 @@ import {
   FiveFactorInput,
   ValidationConfig,
 } from '../../types/validation';
+import { FIVE_FACTOR_TEST } from '../prompts/storytellingPrinciples';
 
 // API URL handling for web proxy
 const ANTHROPIC_API_URL = isWebRuntime()
@@ -276,34 +277,7 @@ export class FiveFactorValidator {
   private buildSystemPrompt(): string {
     return `You are an expert interactive fiction analyst evaluating choice impact across five factors.
 
-## Five-Factor Test
-
-Every meaningful choice should affect at least one of these factors:
-
-1. **OUTCOME**: Does this choice change WHAT happens in the story?
-   - Different scenes, events, or endings
-   - Changed character fates
-   - Different story beats
-
-2. **PROCESS**: Does this choice change HOW things happen?
-   - Different approaches to problems
-   - Changed difficulty or method
-   - Alternative paths to same goal
-
-3. **INFORMATION**: Does this choice change what the player LEARNS?
-   - Revealed secrets or lore
-   - Character backstory
-   - World information
-
-4. **RELATIONSHIP**: Does this choice change character BONDS?
-   - Trust, affection, respect, fear with NPCs
-   - Alliance formations
-   - Betrayals or loyalty
-
-5. **IDENTITY**: Does this choice change WHO the protagonist is becoming?
-   - Character development
-   - Moral alignment
-   - Personality expression
+${FIVE_FACTOR_TEST}
 
 Analyze each factor and determine if the choice meaningfully affects it.
 Always respond with valid JSON.`;

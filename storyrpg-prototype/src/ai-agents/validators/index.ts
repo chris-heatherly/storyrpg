@@ -38,6 +38,18 @@ export { CliffhangerValidator } from './CliffhangerValidator';
 export { PhaseValidator } from './PhaseValidator';
 export { PixarPrinciplesValidator } from './PixarPrinciplesValidator';
 
+// Setup/payoff + twist + arc + divergence validators (Phases 5–8)
+export { SetupPayoffValidator } from './SetupPayoffValidator';
+export type { SetupPayoffInput, SetupPayoffMetrics, SetupPayoffResult } from './SetupPayoffValidator';
+export { TwistQualityValidator } from './TwistQualityValidator';
+export type { TwistQualityInput, TwistQualityMetrics, TwistQualityResult } from './TwistQualityValidator';
+export { ArcDeltaValidator } from './ArcDeltaValidator';
+export type { ArcDeltaInput, ArcDeltaMetrics, ArcDeltaResult } from './ArcDeltaValidator';
+export { DivergenceValidator } from './DivergenceValidator';
+export type { DivergenceInput, DivergenceMetrics, DivergenceResult } from './DivergenceValidator';
+export { simulateEpisodePaths } from './pathSimulator';
+export type { TerminalState, PathSimulationResult, SimulatorOptions } from './pathSimulator';
+
 // Incremental validators (per-scene validation during content generation)
 export {
   IncrementalValidationRunner,

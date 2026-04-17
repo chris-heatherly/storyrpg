@@ -328,6 +328,25 @@ export interface PixarStakes {
   whatPlayerLoses: string;
   oddsAgainstNarrative: string;
   stackedObstacles: string[];
+  /**
+   * Phase 2.3: Three-layer stakes axes (physical/emotional/philosophical)
+   * expected by EncounterView. Optional so older encounters remain valid.
+   */
+  physical?: string;
+  emotional?: string;
+  philosophical?: string;
+}
+
+/**
+ * Pixar Surprise - Rule #16 (setup / twist / satisfaction)
+ * Phase 2.1: Canonical authored shape, persisted on Encounter so the
+ * PixarPrinciplesValidator can verify a twist plus a meaningful setup and
+ * satisfying consequence.
+ */
+export interface PixarSurprise {
+  setup: string;
+  twist: string;
+  satisfaction: string;
 }
 
 // ========================================
@@ -535,6 +554,8 @@ export interface Encounter {
   informationVisibility?: InformationVisibility;
 
   pixarStakes?: PixarStakes;
+  /** Phase 2.1: Pixar surprise structure (setup/twist/satisfaction). */
+  pixarSurprise?: PixarSurprise;
 
   tensionCurve?: Array<{ beatId: string; tensionLevel: number; description: string }>;
   estimatedDuration?: string;

@@ -20,7 +20,11 @@ import { ConsequenceBudgetValidator } from './ConsequenceBudgetValidator';
 import { StakesTriangleValidator } from './StakesTriangleValidator';
 import { FiveFactorValidator } from './FiveFactorValidator';
 import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
-import { NPCTier, RelationshipDimension, Consequence, ReminderPlan } from '../../types';
+import { PixarPrinciplesValidator } from './PixarPrinciplesValidator';
+import { CliffhangerValidator } from './CliffhangerValidator';
+import { NPCTier, RelationshipDimension, Consequence, ReminderPlan, SeasonBible, Episode, EpisodePlan } from '../../types';
+import type { EncounterStructure } from '../agents/EncounterArchitect';
+import type { CharacterBible } from '../agents/CharacterDesigner';
 import { StakesAnnotation } from '../agents/ChoiceAuthor';
 import {
   ValidationIssue,
@@ -108,6 +112,15 @@ export interface ValidationInput {
   // Known flags/scores for callback validation
   knownFlags?: string[];
   knownScores?: string[];
+
+  // Optional encounter structures for Pixar principles validation
+  encounterStructures?: EncounterStructure[];
+
+  // Optional contextual inputs for season/episode-level checks
+  characterBible?: CharacterBible;
+  seasonBible?: SeasonBible;
+  episode?: Episode;
+  episodePlan?: EpisodePlan;
 }
 
 export class IntegratedBestPracticesValidator {
@@ -118,11 +131,12 @@ export class IntegratedBestPracticesValidator {
   private stakesTriangleValidator: StakesTriangleValidator;
   private fiveFactorValidator: FiveFactorValidator;
   private callbackValidator: CallbackOpportunitiesValidator;
+  private pixarValidator: PixarPrinciplesValidator;
+  private cliffhangerValidator: CliffhangerValidator;
 
   constructor(agentConfig: AgentConfig, config?: Partial<ValidationConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
 
-    // Initialize all validators
     this.choiceDensityValidator = new ChoiceDensityValidator(
       this.config.rules.choiceDensity
     );
@@ -141,6 +155,8 @@ export class IntegratedBestPracticesValidator {
       this.config.rules.fiveFactor
     );
     this.callbackValidator = new CallbackOpportunitiesValidator();
+    this.pixarValidator = new PixarPrinciplesValidator();
+    this.cliffhangerValidator = new CliffhangerValidator(agentConfig);
   }
 
   /**
@@ -229,6 +245,49 @@ export class IntegratedBestPracticesValidator {
       });
 
       for (const issue of densityResult.issues) {
+        if (issue.level === 'error') {
+          blockingIssues.push(issue);
+        } else if (issue.level === 'warning') {
+          warningCount++;
+        }
+      }
+    }
+
+    // 5. Consequence Budget — fast, deterministic check for 60/25/10/5 target
+    if (this.config.rules.consequenceBudget.enabled && input.choices.length > 0) {
+      const budgetResult = await this.consequenceBudgetValidator.validate({
+        choices: input.choices.map(c => ({
+          id: c.id,
+          choiceType: c.choiceType,
+          consequences: c.consequences,
+        })),
+      });
+
+      for (const issue of budgetResult.issues) {
+        if (issue.level === 'error') {
+          blockingIssues.push(issue);
+        } else if (issue.level === 'warning') {
+          warningCount++;
+        }
+      }
+    }
+
+    // 6. Callback Opportunities — drive SceneWriter textVariants repair
+    if (input.choices.length > 0) {
+      const callbackResult = await this.callbackValidator.validate({
+        scenes: input.scenes,
+        choices: input.choices.map(c => ({
+          id: c.id,
+          sceneId: c.sceneId || '',
+          text: c.text,
+          consequences: c.consequences,
+          reminderPlan: c.reminderPlan,
+        })),
+        knownFlags: input.knownFlags,
+        knownScores: input.knownScores,
+      });
+
+      for (const issue of callbackResult.issues) {
         if (issue.level === 'error') {
           blockingIssues.push(issue);
         } else if (issue.level === 'warning') {
@@ -427,6 +486,94 @@ export class IntegratedBestPracticesValidator {
       };
     }
 
+    // 7. Pixar Principles Validation (optional — requires seasonBible)
+    if (input.seasonBible) {
+      try {
+        const pixarReport = this.pixarValidator.validateSeason(
+          input.seasonBible,
+          input.characterBible,
+        );
+        // Convert each Pixar issue into a ValidationIssue
+        for (const pxIssue of pixarReport.issues ?? []) {
+          const level: 'error' | 'warning' | 'suggestion' =
+            pxIssue.severity === 'error' || pxIssue.severity === 'critical'
+              ? 'error'
+              : pxIssue.severity === 'warning'
+              ? 'warning'
+              : 'suggestion';
+          allIssues.push({
+            category: 'pixar_principles',
+            level,
+            message:
+              pxIssue.description ||
+              (pxIssue as unknown as { message?: string }).message ||
+              pxIssue.type,
+            location: {
+              sceneId: pxIssue.location?.sceneId,
+              beatId: pxIssue.location?.beatId,
+              choiceId: (pxIssue.location as unknown as { choiceId?: string })?.choiceId,
+            },
+            suggestion: pxIssue.suggestion,
+          });
+        }
+      } catch (err) {
+        // Keep validator non-fatal; Pixar coverage is advisory
+        console.warn('[IBPV] PixarPrinciplesValidator failed:', err);
+      }
+
+      // Encounter-level Pixar surprise checks
+      if (input.encounterStructures && input.encounterStructures.length > 0) {
+        for (const enc of input.encounterStructures) {
+          try {
+            const issues = this.pixarValidator.validateEncounter(
+              enc,
+              enc.sceneId || '',
+            );
+            for (const pxIssue of issues ?? []) {
+              const level: 'error' | 'warning' | 'suggestion' =
+                pxIssue.severity === 'error' || pxIssue.severity === 'critical'
+                  ? 'error'
+                  : pxIssue.severity === 'warning'
+                  ? 'warning'
+                  : 'suggestion';
+              allIssues.push({
+                category: 'pixar_principles',
+                level,
+                message: pxIssue.description || pxIssue.type,
+                location: {
+                  sceneId: pxIssue.location?.sceneId,
+                },
+                suggestion: pxIssue.suggestion,
+              });
+            }
+          } catch (err) {
+            console.warn('[IBPV] PixarPrinciplesValidator.validateEncounter failed:', err);
+          }
+        }
+      }
+    }
+
+    // 8. Cliffhanger Validation (episode-level)
+    if (input.episode && input.episodePlan) {
+      try {
+        const analysis = this.cliffhangerValidator.quickAnalyze(
+          input.episode,
+          input.episodePlan,
+        );
+        if (analysis.quality === 'missing' || analysis.quality === 'weak') {
+          allIssues.push({
+            category: 'cliffhanger',
+            level: analysis.quality === 'missing' ? 'error' : 'warning',
+            message: `Episode cliffhanger is ${analysis.quality} (score ${analysis.score}/100)`,
+            location: { sceneId: undefined },
+            suggestion: analysis.suggestions.join('; '),
+          });
+        }
+      } catch (err) {
+        console.warn('[IBPV] CliffhangerValidator failed:', err);
+      }
+    }
+
     // Categorize issues
     const blockingIssues = allIssues.filter(i => i.level === 'error');
     const warnings = allIssues.filter(i => i.level === 'warning');
@@ -540,6 +687,8 @@ export class IntegratedBestPracticesValidator {
       stakesTriangle: this.stakesTriangleValidator,
       fiveFactor: this.fiveFactorValidator,
       callbackOpportunities: this.callbackValidator,
+      pixarPrinciples: this.pixarValidator,
+      cliffhanger: this.cliffhangerValidator,
     };
   }
 }

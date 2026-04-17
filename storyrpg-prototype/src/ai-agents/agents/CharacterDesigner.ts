@@ -9,6 +9,7 @@
  */
 
 import { AgentConfig } from '../config';
+import { describeTierRequirements } from '../config/tierRequirements';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 
 // Input types
@@ -55,6 +56,22 @@ export interface CharacterProfile {
   pronouns: PronounSet; // Character's pronouns for correct narrative usage
   role: string;
   importance: string;
+
+  /**
+   * First-class NPC tier (Phase 1.3). Authored directly by CharacterDesigner
+   * based on narrative weight (core / supporting / background) rather than
+   * inferred from `role`. Optional for backward compatibility — older
+   * character bibles may omit it and fall back to role-based inference.
+   */
+  tier?: 'core' | 'supporting' | 'background';
+
+  /**
+   * Secrets the character carries. Either a primary `hiddenSecret` (kept for
+   * back-compat) or a list of secrets surfaced across the story. Persisted
+   * into Story.npcs[].secrets so downstream tooling can see them without
+   * reading the CharacterBible.
+   */
+  secrets?: string[];
 
   // Core identity
   overview: string; // 2-3 sentence summary
@@ -222,6 +239,17 @@ The best characters have wants, fears, and flaws that conflict with each other.
 - Relationships should be able to change based on player actions
 - The most interesting NPCs want something FROM the player
 
+### NPC Tier (REQUIRED)
+Every character MUST have a \`tier\` field that classifies them by narrative weight:
+- **core**: Protagonist, primary antagonist, or recurring main cast who carries a full arc. At least one relationship dimension, full voiceProfile, want/fear/flaw, and a secret. Usually 2–4 per story.
+- **supporting**: Named secondary NPCs who appear in multiple scenes, have at least one relationship dimension, and distinct voiceProfile. Usually 3–6 per story.
+- **background**: One-scene or ambient NPCs who add flavor but carry no arc. Voice and personality may be minimal.
+
+Tier is structural, not a rating. An "ally" whose only scene is a brief introduction is \`background\`, not \`core\`.
+
+**Relationship-dimension requirements by tier (enforced by NPCDepthValidator):**
+${describeTierRequirements()}
+
 ### Show, Don't Tell
 - Reveal character through action and dialogue, not description
 - Backstory should be implied, not explained
@@ -384,6 +412,7 @@ ${characterList}
       "overview": "One sentence summary",
       "role": "protagonist/antagonist/ally/neutral",
       "importance": "major/supporting/minor",
+      "tier": "core | supporting | background (NPC tier by narrative weight: 'core' = protagonist, primary antagonist, or recurring main cast with a full arc; 'supporting' = named secondary NPCs who appear in several scenes with a relationship dimension; 'background' = one-scene or ambient NPCs)",
       "physicalDescription": "Brief appearance",
       "want": "What they desire most",
       "fear": "What they're afraid of",

@@ -78,6 +78,33 @@ export interface Story {
     portrait?: string;
     pronouns?: string;
     initialRelationship?: Partial<Relationship>;
+    /**
+     * First-class NPC tier (Phase 1.3). Authored by CharacterDesigner and
+     * persisted here so the runtime, validators, and UI can read it without
+     * re-inferring from `role`.
+     */
+    tier?: NPCTier;
+    /**
+     * Richer NPC fields persisted from CharacterBible (Phase 1.6). Optional
+     * so existing stories remain valid; present for newly generated stories.
+     */
+    want?: string;
+    fear?: string;
+    flaw?: string;
+    voiceProfile?: {
+      writingGuidance?: string;
+      speechPatterns?: string[];
+      vocabularyLevel?: string;
+      whenNervous?: string;
+      whenAngry?: string;
+      whenConfident?: string;
+    };
+    secrets?: string[];
+    arc?: {
+      startState?: string;
+      endState?: string;
+      keyBeats?: string[];
+    };
   }[];
 
   episodes: Episode[];

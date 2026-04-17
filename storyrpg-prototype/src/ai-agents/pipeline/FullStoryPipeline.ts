@@ -39,8 +39,10 @@ import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, QARunnerOptions } from '../agents/QAAgents';
 import { SourceMaterialAnalyzer, SourceMaterialInput } from '../agents/SourceMaterialAnalyzer';
 import { SeasonPlan } from '../../types/seasonPlan';
+import { buildGrowthTemplates, type GrowthCurveEntry } from '../../engine/growthConsequenceBuilder';
 // Types CrossEpisodeBranch, ConsequenceChain, PlannedEncounter used transitively via SeasonPlan
 import { BranchManager, BranchAnalysis, BranchPath, ReconvergencePoint } from '../agents/BranchManager';
+import { SceneCritic } from '../agents/SceneCritic';
 import { 
   EncounterArchitect, 
   EncounterArchitectInput, 
@@ -186,6 +188,7 @@ import {
   aggregateValidationResults,
   PhaseValidator,
   StructuralValidator,
+  ChoiceDistributionValidator,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import {
@@ -591,6 +594,7 @@ export class FullStoryPipeline {
   private qaRunner: QARunner;
   private sourceMaterialAnalyzer: SourceMaterialAnalyzer;
   private branchManager: BranchManager;
+  private sceneCritic?: SceneCritic;
   private encounterArchitect: EncounterArchitect;
   private encounterImageAgent: EncounterImageAgent;
   private imageAgentTeam: ImageAgentTeam;
@@ -603,6 +607,7 @@ export class FullStoryPipeline {
   private integratedValidator: IntegratedBestPracticesValidator;
   private npcDepthValidator: NPCDepthValidator;
   private phaseValidator: PhaseValidator;
+  private distributionValidator: ChoiceDistributionValidator = new ChoiceDistributionValidator();
   
   // Incremental validation (per-scene during content generation)
   private incrementalValidator: IncrementalValidationRunner | null = null;
@@ -761,6 +766,9 @@ export class FullStoryPipeline {
     const sourceMaterialConfig = { ...this.config.agents.storyArchitect, maxTokens: 16384 };
     this.sourceMaterialAnalyzer = new SourceMaterialAnalyzer(sourceMaterialConfig);
     this.branchManager = new BranchManager(this.config.agents.storyArchitect);
+    if (this.config.sceneCritic?.enabled) {
+      this.sceneCritic = new SceneCritic(this.config.agents.sceneWriter);
+    }
     const encounterArchitectConfig = { ...this.config.agents.storyArchitect, maxTokens: 16384 };
     this.encounterArchitect = new EncounterArchitect(encounterArchitectConfig);
     this.encounterImageAgent = new EncounterImageAgent(this.config.agents.storyArchitect, this.config.artStyle);
@@ -1528,6 +1536,72 @@ export class FullStoryPipeline {
         this.addCheckpoint('Character Bible', characterBible, true);
       }
 
+      // === PHASE 2.3: CHARACTER BIBLE STRUCTURAL VALIDATION (Phase 2.5 of plan) ===
+      if (this.phaseValidator.isEnabled() && !resumedCharacterBible) {
+        let charValidation = this.phaseValidator.validateCharacterBible(
+          characterBible,
+          brief.protagonist?.id,
+        );
+        let charRetryCount = 0;
+        const charMaxRetries = this.phaseValidator.getMaxRetries();
+
+        while (
+          !charValidation.canProceed &&
+          this.phaseValidator.canRetry('character_design') &&
+          charRetryCount < charMaxRetries
+        ) {
+          charRetryCount++;
+          this.emit({
+            type: 'regeneration_triggered',
+            phase: 'characters',
+            message: `Character bible validation failed (${charValidation.score}/100), retry ${charRetryCount}/${charMaxRetries}: ${charValidation.summary}`,
+            data: charValidation.issues,
+          });
+
+          try {
+            const retryBible = await this.measurePhase('character_design_retry', () =>
+              this.runCharacterDesign(brief, worldBible),
+            );
+            const retryValidation = this.phaseValidator.validateCharacterBible(
+              retryBible,
+              brief.protagonist?.id,
+            );
+            if (retryValidation.score > charValidation.score) {
+              Object.assign(characterBible, retryBible);
+              charValidation = retryValidation;
+              this.addCheckpoint('Character Bible', characterBible, true);
+            }
+          } catch (retryErr) {
+            this.emit({
+              type: 'warning',
+              phase: 'characters',
+              message: `Character design retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+            });
+            break;
+          }
+        }
+
+        if (!charValidation.canProceed && this.config.validation.mode === 'strict') {
+          throw new ValidationError(
+            'Character bible validation failed',
+            (charValidation.issues || []).map(i => ({
+              category: 'npc_depth' as const,
+              level: i.severity === 'error' ? 'error' : i.severity === 'warning' ? 'warning' : 'suggestion',
+              message: i.message,
+              location: {},
+              suggestion: i.suggestion,
+            })),
+          );
+        } else {
+          this.emit({
+            type: 'checkpoint',
+            phase: 'characters',
+            message: `Character bible validation: ${charValidation.score}/100 ${charValidation.valid ? '(valid)' : '(advisory issues)'}`,
+            data: charValidation,
+          });
+        }
+      }
+
       // === PHASE 2.5: NPC DEPTH VALIDATION ===
       if (this.config.validation.enabled && this.config.validation.rules.npcDepth.enabled) {
         this.emit({ type: 'phase_start', phase: 'npc_validation', message: 'Validating NPC relationship depth' });
@@ -1770,9 +1844,55 @@ export class FullStoryPipeline {
 
         quickValidation = await this.integratedValidator.runQuickValidation(validationInput);
 
+        // Phase 3.3: Treat voice errors above threshold as critical. The
+        // incremental validator already computes per-scene voice scores; if any
+        // scene dips below the configured regeneration threshold we escalate
+        // those into blocking issues so the repair loop below can target a
+        // scoped SceneWriter rewrite (voice_fidelity is in the repairable set).
+        try {
+          const voiceThreshold =
+            (this.config as unknown as { incrementalValidation?: { voiceRegenerationThreshold?: number } })
+              .incrementalValidation?.voiceRegenerationThreshold ?? 50;
+          const criticalVoiceScenes = this.sceneValidationResults.filter(
+            r => r.voice && r.voice.score < voiceThreshold,
+          );
+          if (criticalVoiceScenes.length > 0) {
+            const voiceBlockers = criticalVoiceScenes.map(r => ({
+              category: 'voice_fidelity' as const,
+              level: 'error' as const,
+              message: `Scene ${r.sceneId}: voice fidelity score ${r.voice!.score} below critical threshold (${voiceThreshold})`,
+              location: { sceneId: r.sceneId },
+              suggestion:
+                r.voice!.issues
+                  .slice(0, 3)
+                  .map(i => `${i.characterName}: ${i.suggestion || i.issue}`)
+                  .join('; ') || undefined,
+            }));
+            quickValidation = {
+              canProceed: false,
+              blockingIssues: [...quickValidation.blockingIssues, ...voiceBlockers],
+              warningCount: quickValidation.warningCount,
+            };
+          }
+        } catch (err) {
+          this.emit({
+            type: 'warning',
+            phase: 'quick_validation',
+            message: `Voice-fidelity escalation skipped: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+
         if (!quickValidation.canProceed) {
           // === KARPATHY LOOP: Attempt targeted repair before throwing ===
-          const repairableCategories = new Set(['stakes_triangle', 'five_factor', 'choice_density']);
+          const repairableCategories = new Set([
+            'stakes_triangle',
+            'five_factor',
+            'choice_density',
+            'consequence_budget',
+            'callback_opportunities',
+            'voice_fidelity',
+            'branch_topology',
+          ]);
           const repairableIssues = quickValidation.blockingIssues.filter(
             i => repairableCategories.has(i.category)
           );
@@ -1898,6 +2018,73 @@ export class FullStoryPipeline {
               }
             }
 
+            // Phase 3.3: --- Repair voice_fidelity issues (scoped SceneWriter rewrite) ---
+            const voiceIssues = repairableIssues.filter(i => i.category === 'voice_fidelity');
+            for (const issue of voiceIssues) {
+              const sceneId = issue.location?.sceneId;
+              if (!sceneId) continue;
+              const sceneBlueprint = episodeBlueprint.scenes.find(s => s.id === sceneId);
+              const sceneIdx = sceneContents.findIndex(sc => sc.sceneId === sceneId);
+              if (!sceneBlueprint || sceneIdx === -1 || sceneBlueprint.isEncounter) continue;
+
+              this.emit({
+                type: 'regeneration_triggered',
+                phase: 'quick_validation',
+                message: `Rewriting scene ${sceneId} for voice fidelity: ${issue.message}`,
+              });
+              repairAttempted = true;
+
+              const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
+              const location = worldBible.locations.find(l => l.id === sceneBlueprint.location);
+
+              try {
+                const voiceRepair = await withTimeout(this.sceneWriter.execute({
+                  sceneBlueprint,
+                  storyContext: {
+                    title: brief.story.title,
+                    genre: brief.story.genre,
+                    tone: brief.story.tone,
+                    userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL VOICE FIDELITY FIX:\n${issue.message}\n${issue.suggestion || ''}\n\nRe-author this scene's beats with stricter voice adherence; match each character's vocabulary, formality, sentence length, and avoided-words list.`,
+                    worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
+                  },
+                  protagonistInfo: {
+                    name: brief.protagonist.name,
+                    pronouns: brief.protagonist.pronouns,
+                    description: protagonistProfile?.fullBackground || brief.protagonist.description,
+                    physicalDescription: protagonistProfile?.physicalDescription,
+                  },
+                  npcs: sceneBlueprint.npcsPresent.map(npcId => {
+                    const profile = characterBible.characters.find(c => c.id === npcId);
+                    return {
+                      id: npcId,
+                      name: profile?.name || npcId,
+                      pronouns: profile?.pronouns || 'he/him',
+                      description: profile?.overview || '',
+                      physicalDescription: profile?.physicalDescription,
+                      voiceNotes: profile?.voiceProfile?.writingGuidance || '',
+                      currentMood: profile?.voiceProfile?.whenNervous,
+                    };
+                  }),
+                  relevantFlags: episodeBlueprint.suggestedFlags,
+                  relevantScores: episodeBlueprint.suggestedScores,
+                  targetBeatCount: sceneBlueprint.purpose === 'bottleneck'
+                    ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
+                    : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
+                  dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
+                }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneId} voice-repair)`);
+
+                if (voiceRepair.success && voiceRepair.data) {
+                  sceneContents[sceneIdx] = voiceRepair.data;
+                }
+              } catch (err) {
+                this.emit({
+                  type: 'warning',
+                  phase: 'quick_validation',
+                  message: `Voice repair for ${sceneId} failed: ${err instanceof Error ? err.message : String(err)}`,
+                });
+              }
+            }
+
             if (repairAttempted) {
               const revalidationInput = this.prepareValidationInput(
                 sceneContents,
@@ -1980,6 +2167,43 @@ export class FullStoryPipeline {
               warnings: bestPracticesReport.warnings.length,
               suggestions: bestPracticesReport.suggestions.length,
             },
+          });
+        }
+
+        // Phase 4.3: Wire ChoiceDistributionValidator into FullStoryPipeline
+        try {
+          const distributionInput = {
+            choiceSets: choiceSets.map(cs => ({
+              beatId: cs.beatId,
+              choiceType: cs.choiceType,
+              hasBranching: cs.choices.some(c => c.nextSceneId),
+            })),
+            targets: {
+              expression: this.config.generation?.choiceDistExpression ?? 35,
+              relationship: this.config.generation?.choiceDistRelationship ?? 30,
+              strategic: this.config.generation?.choiceDistStrategic ?? 25,
+              dilemma: this.config.generation?.choiceDistDilemma ?? 10,
+            },
+            maxBranchingChoicesPerEpisode: this.config.generation?.maxBranchingChoicesPerEpisode ?? 3,
+          };
+          const distributionResult = this.distributionValidator.validate(distributionInput);
+          const distributionMetrics = this.distributionValidator.computeMetrics(distributionInput);
+          this.emit({
+            type: 'checkpoint',
+            phase: 'choice_distribution',
+            message:
+              `Choice Distribution: ${distributionResult.score}/100 — ` +
+              Object.entries(distributionMetrics.actualPercentages)
+                .map(([t, pct]) => `${t}: ${pct.toFixed(0)}%`)
+                .join(', ') +
+              ` | branching: ${distributionMetrics.branchingCount}/${distributionMetrics.branchingCap} cap`,
+            data: { distributionResult, metrics: distributionMetrics },
+          });
+        } catch (err) {
+          this.emit({
+            type: 'warning',
+            phase: 'choice_distribution',
+            message: `ChoiceDistributionValidator failed: ${err instanceof Error ? err.message : String(err)}`,
           });
         }
 
@@ -3472,6 +3696,92 @@ export class FullStoryPipeline {
       }
     }
 
+    // Phase 1.1: Build a per-scene branch topology index from BranchManager output.
+    // This is threaded into SceneWriter and ChoiceAuthor so they know whether a
+    // given scene is a bottleneck, branch-only, or reconvergence point, and which
+    // state variables need to be acknowledged at reconvergence.
+    const branchContextByScene: Map<string, {
+      role: 'bottleneck' | 'branch' | 'reconvergence' | 'linear';
+      branchPathIds?: string[];
+      incomingBranchIds?: string[];
+      stateReconciliationNotes?: string[];
+      reconvergenceNarrativeAcknowledgment?: string;
+    }> = new Map();
+    if (branchAnalysis) {
+      const bottlenecks = new Set(blueprint.bottleneckScenes || []);
+      const branchPathsByScene = new Map<string, string[]>();
+      for (const path of branchAnalysis.branchPaths || []) {
+        for (const sid of path.sceneSequence || []) {
+          const arr = branchPathsByScene.get(sid) || [];
+          arr.push(path.id);
+          branchPathsByScene.set(sid, arr);
+        }
+      }
+      const reconvMap = new Map<string, ReconvergencePoint>();
+      for (const rp of branchAnalysis.reconvergencePoints || []) {
+        reconvMap.set(rp.sceneId, rp);
+      }
+      for (const scene of blueprint.scenes) {
+        const paths = branchPathsByScene.get(scene.id) || [];
+        const reconv = reconvMap.get(scene.id);
+        let role: 'bottleneck' | 'branch' | 'reconvergence' | 'linear' = 'linear';
+        if (reconv) role = 'reconvergence';
+        else if (bottlenecks.has(scene.id) || scene.purpose === 'bottleneck') role = 'bottleneck';
+        else if (paths.length === 1) role = 'branch';
+        branchContextByScene.set(scene.id, {
+          role,
+          branchPathIds: paths,
+          incomingBranchIds: reconv?.incomingBranches,
+          stateReconciliationNotes: reconv?.stateReconciliation?.map(
+            r => `${r.stateVariable}: ${r.howToHandle}`
+          ),
+          reconvergenceNarrativeAcknowledgment: reconv?.narrativeAcknowledgment,
+        });
+      }
+      // Emit a warning for any branch without reconvergence (branch_topology repair hint).
+      const allReconvSceneIds = new Set((branchAnalysis.reconvergencePoints || []).map(r => r.sceneId));
+      for (const path of branchAnalysis.branchPaths || []) {
+        const endsAt = path.endSceneId;
+        const endScene = blueprint.scenes.find(s => s.id === endsAt);
+        const endsAtBottleneck = endScene ? (bottlenecks.has(endsAt) || endScene.purpose === 'bottleneck' || (endScene.leadsTo?.length || 0) === 0) : false;
+        if (!allReconvSceneIds.has(endsAt) && !endsAtBottleneck) {
+          this.emit({
+            type: 'warning',
+            phase: 'branch_topology',
+            message: `Branch "${path.id}" ends at scene ${endsAt} without reconvergence; consider adding a bottleneck or reconvergence point`,
+            data: { branchId: path.id, endSceneId: endsAt },
+          });
+        }
+      }
+    }
+
+    // Phase 1.5: Build GrowthTemplate from season plan's growth curve for this
+    // episode. It is attached to the first strategic choice point in the episode
+    // (the "development scene" concept) so ChoiceAuthor can frame skill options
+    // as in-world actions rather than stat labels.
+    let episodeGrowthTemplate: ReturnType<typeof buildGrowthTemplates> | undefined;
+    let growthTemplateAttached = false;
+    try {
+      const currentEpisodeNumber = brief.episode?.number ?? 1;
+      const totalEpisodes = brief.seasonPlan?.episodes?.length ?? 1;
+      const growthCurveEntry = (brief.seasonPlan as unknown as { growthCurve?: GrowthCurveEntry[] })?.growthCurve
+        ?.find((g) => g.episodeNumber === currentEpisodeNumber);
+      if (growthCurveEntry && growthCurveEntry.focusSkills && growthCurveEntry.focusSkills.length > 0) {
+        episodeGrowthTemplate = buildGrowthTemplates(growthCurveEntry, currentEpisodeNumber, totalEpisodes);
+        this.emit({
+          type: 'debug',
+          phase: 'content',
+          message: `Growth template ready: ${episodeGrowthTemplate.skillOptions.length} skill options${episodeGrowthTemplate.mentorship ? ` + mentorship with ${episodeGrowthTemplate.mentorship.npcName}` : ''}`,
+        });
+      }
+    } catch (err) {
+      this.emit({
+        type: 'warning',
+        phase: 'content',
+        message: `Failed to build growth templates: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+
     // Find the primary encounter scene so pre-encounter scenes can be written
     // with the encounter in mind. We take the first encounter scene as the anchor.
     const primaryEncounterScene = blueprint.scenes.find(s => s.isEncounter && s.encounterType);
@@ -3654,6 +3964,7 @@ export class FullStoryPipeline {
               }
             : undefined,
           memoryContext: this.cachedPipelineMemory || undefined,
+          branchContext: branchContextByScene.get(sceneBlueprint.id),
         };
 
         // === KARPATHY LOOP: Best-of-N for critical scenes ===
@@ -3938,6 +4249,31 @@ export class FullStoryPipeline {
               optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
               sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
               memoryContext: this.cachedPipelineMemory || undefined,
+              growthTemplates: (() => {
+                // Attach the episode-level growth template to the FIRST
+                // strategic choice point (the development scene anchor).
+                if (!episodeGrowthTemplate || growthTemplateAttached) return undefined;
+                const isStrategic = sceneBlueprint.choicePoint?.type === 'strategic';
+                const isTransition = sceneBlueprint.purpose === 'transition';
+                if (isStrategic && isTransition) {
+                  growthTemplateAttached = true;
+                  return episodeGrowthTemplate;
+                }
+                return undefined;
+              })(),
+              branchContext: (() => {
+                const bc = branchContextByScene.get(sceneBlueprint.id);
+                if (!bc) return undefined;
+                const leadsToDistinct = new Set(sceneBlueprint.leadsTo || []).size;
+                return {
+                  role: bc.role,
+                  isBranchPoint: leadsToDistinct > 1 || (sceneBlueprint.choicePoint?.type === 'branching'),
+                  expectedBranches: leadsToDistinct > 1 ? leadsToDistinct : undefined,
+                  reconvergenceTargets: bc.incomingBranchIds,
+                  stateReconciliationHints: bc.stateReconciliationNotes,
+                };
+              })(),
+              consequenceBudgetTarget: { callback: 60, tint: 25, branchlet: 10, branch: 5 },
             }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
 
             if (!choiceResult.success || !choiceResult.data) {
@@ -4881,7 +5217,92 @@ export class FullStoryPipeline {
     }
     this.assertSceneDependencyInvariants(blueprint, sceneContents);
 
+    await this.runSceneCriticPass(sceneContents, characterBible);
+
     return { sceneContents, choiceSets, encounters };
+  }
+
+  /**
+   * Optional SceneCritic rewrite pass (Phase 9.2). Re-authors the *text* of
+   * beats in a small number of scenes to improve subtext / reversals /
+   * show-don't-tell. Non-destructive — merges rewritten beats back into the
+   * existing SceneContent objects, preserving structural fields.
+   */
+  private async runSceneCriticPass(
+    sceneContents: SceneContent[],
+    characterBible: CharacterBible,
+  ): Promise<void> {
+    const cfg = this.config.sceneCritic;
+    if (!cfg?.enabled || !this.sceneCritic) return;
+    if (!sceneContents.length) return;
+
+    const maxScenes = Math.max(1, cfg.maxScenesPerEpisode ?? 3);
+    const candidates = [...sceneContents];
+
+    // If a voiceScoreThreshold is configured, prefer scenes with a low score.
+    if (typeof cfg.voiceScoreThreshold === 'number') {
+      const scored = candidates
+        .map(sc => ({
+          sc,
+          score:
+            typeof (sc as unknown as { voiceScore?: number }).voiceScore === 'number'
+              ? (sc as unknown as { voiceScore: number }).voiceScore
+              : 100,
+        }))
+        .filter(entry => entry.score <= cfg.voiceScoreThreshold!)
+        .sort((a, b) => a.score - b.score)
+        .map(entry => entry.sc);
+      candidates.length = 0;
+      candidates.push(...scored);
+    }
+
+    const targets = candidates.slice(0, maxScenes);
+    if (targets.length === 0) return;
+
+    this.emit({
+      type: 'debug',
+      phase: 'scene_critic',
+      message: `SceneCritic pass reviewing ${targets.length} scene(s)`,
+    });
+
+    for (const scene of targets) {
+      try {
+        const critique = await this.sceneCritic.execute({
+          scene,
+          characterBible,
+        });
+        if (!critique.success || !critique.data) continue;
+        const rewrittenById = new Map(critique.data.rewrittenBeats.map(b => [b.id, b]));
+        if (rewrittenById.size === 0) continue;
+        scene.beats = scene.beats.map(b => {
+          const replacement = rewrittenById.get(b.id);
+          if (!replacement) return b;
+          return {
+            ...b,
+            text: replacement.text || b.text,
+            textVariants: replacement.textVariants || b.textVariants,
+            speakerMood: replacement.speakerMood || b.speakerMood,
+          };
+        });
+        this.emit({
+          type: 'checkpoint',
+          phase: 'scene_critic',
+          message: `Rewrote ${rewrittenById.size} beat(s) in scene ${scene.sceneId}`,
+          data: {
+            sceneId: scene.sceneId,
+            beatsRewritten: rewrittenById.size,
+            commentary: critique.data.overallCommentary,
+          },
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.emit({
+          type: 'warning',
+          phase: 'scene_critic',
+          message: `SceneCritic failed for scene ${scene.sceneId}: ${msg}`,
+        });
+      }
+    }
   }
 
   private async runQualityAssurance(
@@ -5291,15 +5712,7 @@ export class FullStoryPipeline {
             const frontImg = refSheet.generatedImages.get('front') || refSheet.generatedImages.get('composite');
             portrait = frontImg?.imageUrl || frontImg?.imagePath;
           }
-          return {
-            id: c.id,
-            name: c.name,
-            description: c.overview,
-            role: c.role,
-            pronouns: c.pronouns,
-            portrait,
-            initialRelationship: c.initialStats,
-          };
+          return this.buildPersistedNpc(c, portrait);
         }),
 
       episodes: [episode],
@@ -5324,6 +5737,62 @@ export class FullStoryPipeline {
   /**
    * Prepare validation input from pipeline data
    */
+  /**
+   * Phase 1.3 / 1.6: Build a runtime-persisted NPC entry from a CharacterProfile.
+   * Preserves first-class `tier`, want/fear/flaw, voice profile slice, secrets,
+   * and arc so the playback runtime, UI, and downstream validators can read
+   * them without re-loading the full CharacterBible.
+   */
+  private buildPersistedNpc(
+    c: CharacterBible['characters'][number],
+    portrait?: string
+  ) {
+    const tier = (c as unknown as { tier?: 'core' | 'supporting' | 'background' }).tier;
+    const voice = c.voiceProfile;
+    const voiceSlice = voice
+      ? {
+          writingGuidance: voice.writingGuidance,
+          speechPatterns: [
+            ...(voice.verbalTics || []),
+            ...(voice.favoriteExpressions || []),
+          ].filter(Boolean),
+          vocabularyLevel: voice.vocabulary,
+          whenNervous: voice.whenNervous,
+          whenAngry: voice.whenAngry,
+          whenConfident: voice.whenHappy,
+        }
+      : undefined;
+    const authoredSecrets = (c as unknown as { secrets?: string[] }).secrets;
+    const secrets = Array.isArray(authoredSecrets) && authoredSecrets.length > 0
+      ? authoredSecrets
+      : c.hiddenSecret
+        ? [c.hiddenSecret]
+        : undefined;
+    const arc = c.arcPotential
+      ? {
+          startState: c.arcPotential.currentState,
+          endState: c.arcPotential.possibleGrowth,
+          keyBeats: c.arcPotential.triggerEvents,
+        }
+      : undefined;
+    return {
+      id: c.id,
+      name: c.name,
+      description: c.overview,
+      role: c.role,
+      pronouns: c.pronouns,
+      portrait,
+      initialRelationship: c.initialStats,
+      tier,
+      want: c.want,
+      fear: c.fear,
+      flaw: c.flaw,
+      voiceProfile: voiceSlice,
+      secrets,
+      arc,
+    };
+  }
+
   private prepareValidationInput(
     sceneContents: SceneContent[],
     choiceSets: ChoiceSet[],
@@ -5344,12 +5813,17 @@ export class FullStoryPipeline {
     const npcs = characterBible.characters
       .filter(c => c.role !== 'protagonist')
       .map(c => {
-        // Infer tier from importance/role
-        let tier: NPCTier = 'background';
-        if (c.role === 'antagonist' || c.role === 'ally') {
-          tier = 'core';
-        } else if (c.role === 'neutral') {
-          tier = 'supporting';
+        // Phase 1.3: Read tier directly from CharacterProfile. Fall back to
+        // role-based inference only when the authored tier is missing (older
+        // character bibles). New runs should always carry an authored tier.
+        let tier: NPCTier;
+        const authoredTier = (c as unknown as { tier?: NPCTier }).tier;
+        if (authoredTier === 'core' || authoredTier === 'supporting' || authoredTier === 'background') {
+          tier = authoredTier;
+        } else {
+          tier = 'background';
+          if (c.role === 'antagonist' || c.role === 'ally') tier = 'core';
+          else if (c.role === 'neutral') tier = 'supporting';
         }
 
         // Determine relationship dimensions from initial stats
@@ -5409,7 +5883,59 @@ export class FullStoryPipeline {
       ) : false,
     })) : [];
 
-    return { scenes, npcs, choices, encounters: encounterValidation };
+    // Phase 1.2: Populate knownFlags/knownScores from beat onShow + choice consequences
+    // so CallbackOpportunitiesValidator can detect "flag set but never referenced".
+    const knownFlagSet = new Set<string>();
+    const knownScoreSet = new Set<string>();
+    const collectFromConsequence = (c: { type?: string; name?: string } | undefined) => {
+      if (!c || !c.name) return;
+      if (c.type === 'setFlag' || c.type === 'flag' || c.type === 'addTag' || c.type === 'removeTag') {
+        knownFlagSet.add(c.name);
+      } else if (c.type === 'changeScore' || c.type === 'score' || c.type === 'attribute') {
+        knownScoreSet.add(c.name);
+      }
+    };
+    for (const sc of sceneContents) {
+      for (const beat of sc.beats) {
+        const onShow = (beat as unknown as { onShow?: Array<{ type?: string; name?: string }> }).onShow;
+        if (Array.isArray(onShow)) for (const c of onShow) collectFromConsequence(c);
+      }
+    }
+    for (const cs of choiceSets) {
+      for (const ch of cs.choices) {
+        const consequences = (ch as unknown as { consequences?: Array<{ type?: string; name?: string }> }).consequences;
+        if (Array.isArray(consequences)) for (const c of consequences) collectFromConsequence(c);
+        const delayed = (ch as unknown as { delayedConsequences?: Array<{ consequence?: { type?: string; name?: string } }> }).delayedConsequences;
+        if (Array.isArray(delayed)) for (const d of delayed) collectFromConsequence(d.consequence);
+      }
+    }
+    if (encounters) {
+      for (const enc of encounters.values()) {
+        for (const beat of enc.beats || []) {
+          for (const ch of beat.choices || []) {
+            for (const tier of ['success', 'complicated', 'failure'] as const) {
+              const out = (ch as unknown as { outcomes?: Record<string, { consequences?: Array<{ type?: string; name?: string }> }> }).outcomes?.[tier];
+              if (out?.consequences) for (const c of out.consequences) collectFromConsequence(c);
+            }
+          }
+        }
+      }
+    }
+    const knownFlags = Array.from(knownFlagSet);
+    const knownScores = Array.from(knownScoreSet);
+
+    // Raw encounter structures (for Pixar principles validation)
+    const encounterStructures = encounters ? Array.from(encounters.values()) : [];
+
+    return {
+      scenes,
+      npcs,
+      choices,
+      encounters: encounterValidation,
+      encounterStructures,
+      knownFlags,
+      knownScores,
+    };
   }
 
   // ==========================================
@@ -5935,15 +6461,7 @@ export class FullStoryPipeline {
               const frontImg = refSheet.generatedImages.get('front') || refSheet.generatedImages.get('composite');
               portrait = frontImg?.imageUrl || frontImg?.imagePath;
             }
-            return {
-              id: c.id,
-              name: c.name,
-              description: c.overview,
-              role: c.role,
-              pronouns: c.pronouns,
-              portrait,
-              initialRelationship: c.initialStats,
-            };
+            return this.buildPersistedNpc(c, portrait);
           }),
         episodes,
         outputDir: outputDirectory,

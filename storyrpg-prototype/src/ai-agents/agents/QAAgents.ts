@@ -75,6 +75,8 @@ export interface ContinuityReport {
 export class ContinuityChecker extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Continuity Checker', config);
+    // Phase 3.4: QA agents should judge against the shared storytelling principles
+    this.includeSystemPrompt = true;
   }
 
   protected getAgentSpecificPrompt(): string {
@@ -326,6 +328,7 @@ export interface VoiceReport {
 export class VoiceValidator extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Voice Validator', config);
+    this.includeSystemPrompt = true;
   }
 
   protected getAgentSpecificPrompt(): string {
@@ -574,6 +577,7 @@ export interface StakesReport {
 export class StakesAnalyzer extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Stakes Analyzer', config);
+    this.includeSystemPrompt = true;
   }
 
   protected getAgentSpecificPrompt(): string {

@@ -2257,7 +2257,16 @@ ${choiceSection}
     "initialOddsAgainst": ${difficultyOdds[input.difficulty]},
     "whatPlayerLoses": "PERSONAL stakes - what ${input.protagonistInfo.name} specifically loses",
     "oddsAgainstNarrative": "Narrative text describing why odds are against them",
-    "stackedObstacles": ["obstacle 1", "obstacle 2", "obstacle 3"]
+    "stackedObstacles": ["obstacle 1", "obstacle 2", "obstacle 3"],
+    "physical": "What body / environment is on the line (e.g. 'The corridor is collapsing, one wrong step and the path is gone')",
+    "emotional": "What heart is on the line (e.g. 'Marcus finally trusts you — betray him and that trust is dead')",
+    "philosophical": "What belief / identity is on the line (e.g. 'If I hurt this stranger to save myself, who am I then?')"
+  },
+
+  "pixarSurprise": {
+    "setup": "What the player currently EXPECTS to happen — the obvious read of the situation (1-2 sentences)",
+    "twist": "What ACTUALLY happens that subverts the setup — a reversal, revelation, betrayal, or reframe (1-2 sentences)",
+    "satisfaction": "Why the twist feels INEVITABLE in hindsight — the earlier detail / behavior that made it earn-able (1-2 sentences)"
   },
   
   "initialVisualState": {

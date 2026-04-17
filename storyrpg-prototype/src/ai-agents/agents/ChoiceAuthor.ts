@@ -22,7 +22,9 @@ import {
   ReminderPlan,
 } from '../../types';
 import { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
-import { STAKES_TRIANGLE, CHOICE_GEOMETRY, FIVE_FACTOR_TEST } from '../prompts/storytellingPrinciples';
+// Phase 1.4: STAKES_TRIANGLE / CHOICE_GEOMETRY / FIVE_FACTOR_TEST are delivered
+// via the shared CORE_STORYTELLING_PROMPT (BaseAgent system prompt) and no
+// longer re-embedded here, to eliminate token duplication and drift risk.
 import { FiveFactorValidator } from '../validators/FiveFactorValidator';
 import { StakesTriangleValidator } from '../validators/StakesTriangleValidator';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
@@ -90,6 +92,33 @@ export interface ChoiceAuthorInput {
       condition: unknown;
       narrativeHook: string;
     };
+  };
+
+  // Branch topology context (Phase 1.1). Tells ChoiceAuthor whether this
+  // beat is a true branch point (needs nextSceneId routing), a tinted choice,
+  // or a reconvergence beat where state reconciliation should be expressed
+  // via conditional text.
+  branchContext?: {
+    role: 'bottleneck' | 'branch' | 'reconvergence' | 'linear';
+    isBranchPoint?: boolean;
+    expectedBranches?: number;
+    reconvergenceTargets?: string[];
+    stateReconciliationHints?: string[];
+  };
+
+  // Consequence budget target (Phase 3.1). Default 60/25/10/5.
+  consequenceBudgetTarget?: {
+    callback: number;
+    tint: number;
+    branchlet: number;
+    branch: number;
+  };
+
+  // Character arc milestone targets (Phase 7.3). ChoiceAuthor aligns
+  // consequence design with planned identity/relationship deltas.
+  arcTargets?: {
+    identityDeltaHints?: Array<{ dimension: string; direction: 'positive' | 'negative'; magnitude: 'minor' | 'moderate' | 'major' }>;
+    relationshipTrajectory?: Array<{ npcId: string; dimension: string; direction: 'positive' | 'negative'; hint: string }>;
   };
 }
 
@@ -172,11 +201,7 @@ export class ChoiceAuthor extends BaseAgent {
 
 You craft the decision points that define the player's journey. Every choice you create should feel meaningful, weighty, and revealing of character.
 
-${STAKES_TRIANGLE}
-
-${CHOICE_GEOMETRY}
-
-${FIVE_FACTOR_TEST}
+(Stakes Triangle, Choice Geometry, and the Five-Factor Test are in the shared system prompt. Apply them rigorously — every choice must name Want/Cost/Identity and move at least one of Outcome/Process/Information/Relationship/Identity.)
 
 ## Choice Types (STRICT CATEGORIZATION)
 Choice types describe the PLAYER EXPERIENCE, not structural routing:
@@ -194,14 +219,6 @@ Branching (routing to different scenes via nextSceneId) is a PROPERTY of a choic
 - Maximum ${this.maxBranchingChoicesPerEpisode} branching choice sets per episode.
 - When the scene blueprint has \`branches: true\`, include nextSceneId on each choice option.
 - Encounter outcomes (victory/defeat/escape) are the PRIMARY branching mechanism.
-
-## The Five-Factor Test
-Every choice (except expression) MUST affect at least one:
-1. **Outcome**: What happens in the story.
-2. **Process**: How it happens.
-3. **Information**: What is learned.
-4. **Relationship**: Bonds with NPCs.
-5. **Identity**: Who the protagonist is becoming.
 
 ## Type-Specific Requirements (ENFORCED)
 - **expression**: Must set at least one flag (e.g., "was_sarcastic", "chose_humor") for callback tracking. NPCs should be able to reference the player's personality later. NEVER include statCheck.
@@ -690,6 +707,29 @@ ${flagList || 'None defined'}
 **Scores**:
 ${scoreList || 'None defined'}
 
+${input.branchContext ? `
+## Branch Topology Context (from Branch Manager)
+- **Beat role**: ${input.branchContext.role}
+${input.branchContext.isBranchPoint ? `- This IS a branch point — include \`nextSceneId\` on at least ${Math.max(2, input.branchContext.expectedBranches || 2)} options.` : '- This is NOT a branch point — choices should be tint choices. Do NOT include \`nextSceneId\` unless the scene blueprint routes to different scenes.'}
+${input.branchContext.reconvergenceTargets && input.branchContext.reconvergenceTargets.length > 0 ? `- Reconvergence targets (if branching): ${input.branchContext.reconvergenceTargets.join(', ')}` : ''}
+${input.branchContext.stateReconciliationHints && input.branchContext.stateReconciliationHints.length > 0 ? `- State reconciliation hints:\n${input.branchContext.stateReconciliationHints.map(h => `  - ${h}`).join('\n')}` : ''}
+` : ''}
+${input.consequenceBudgetTarget ? `
+## Consequence Budget Target (episode-wide 60/25/10/5)
+Across the episode, consequences should follow this distribution:
+- ~${input.consequenceBudgetTarget.callback}% callback / flavor (no branching)
+- ~${input.consequenceBudgetTarget.tint}% tint (state-setting, no routing)
+- ~${input.consequenceBudgetTarget.branchlet}% branchlet (short divergence then reconverge)
+- ~${input.consequenceBudgetTarget.branch}% branch (true routing to different scenes)
+For THIS choice set, bias toward callback/tint unless \`branchContext.isBranchPoint\` is true.
+` : ''}
+${input.arcTargets && (input.arcTargets.identityDeltaHints?.length || input.arcTargets.relationshipTrajectory?.length) ? `
+## Character Arc Milestone Targets (from Arc Tracker)
+Design at least ONE choice whose consequences move the protagonist toward these targets.
+Tag any such consequence with \`arcDriving: true\` so downstream validators can measure it.
+${(input.arcTargets.identityDeltaHints || []).map(h => `- Identity \`${h.dimension}\`: target ${h.direction} (${h.magnitude}). A consequence like \`{ type: "setFlag", name: "arc:${h.dimension}:${h.direction}", arcDriving: true }\` is ideal.`).join('\n')}
+${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with ${r.npcId} (${r.dimension}): ${r.direction} — ${r.hint}`).join('\n')}
+` : ''}
 ## Requirements
 - Create ${input.optionCount} distinct choices
 - Each choice must have the complete Stakes Triangle

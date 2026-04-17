@@ -209,6 +209,54 @@ export class LoraTrainingAgent {
     return { eligible: true };
   }
 
+  /**
+   * Prune cached LoRA artifacts that don't match any of the currently-valid
+   * fingerprints. Modeled on
+   * `ImageAgentTeam.invalidateStaleReferenceSheets`: we compute the
+   * fingerprint each character/style candidate *would* produce on this run
+   * and delete records whose fingerprint isn't in that set.
+   *
+   * Typical callers run this BEFORE `trainAll`, so that renamed characters
+   * or redesigned styles don't leave orphaned .safetensors files littering
+   * `generated-stories/<storyId>/loras/`.
+   *
+   * The registry must have been `load()`-ed first; otherwise the snapshot
+   * is empty and pruning is a no-op.
+   */
+  async invalidateStaleLoras(
+    characters: CharacterTrainingCandidate[],
+    style: StyleTrainingCandidate | undefined,
+  ): Promise<LoraRegistryRecord[]> {
+    const valid = new Set<string>();
+    for (const candidate of characters) {
+      const fp = computeCharacterLoraFingerprint({
+        characterId: candidate.character.id,
+        name: candidate.character.name,
+        identityFingerprint: candidate.identityFingerprint,
+        hyperparameters: this.settings.training,
+      });
+      valid.add(fp);
+    }
+    if (style) {
+      const fp = computeStyleLoraFingerprint({
+        profile: style.profile,
+        anchorHashes: style.anchorHashes,
+        hyperparameters: this.settings.training,
+      });
+      valid.add(fp);
+    }
+    const removed = await this.registry.prune(valid);
+    for (const record of removed) {
+      this.emit({
+        type: 'skip',
+        kind: record.kind,
+        name: record.name,
+        reason: `invalidated: fingerprint ${record.fingerprint} no longer valid`,
+      });
+    }
+    return removed;
+  }
+
   /** Train every eligible character and style candidate, respecting cache hits. */
   async trainAll(
     characters: CharacterTrainingCandidate[],
@@ -245,7 +293,7 @@ export class LoraTrainingAgent {
     candidate: CharacterTrainingCandidate,
   ): Promise<LoraTrainingResultEntry> {
     const eligibility = this.evaluateCharacterEligibility(candidate);
-    if (!eligibility.eligible) {
+    if (eligibility.eligible === false) {
       this.emit({
         type: 'skip',
         kind: 'character',
@@ -300,7 +348,7 @@ export class LoraTrainingAgent {
 
   async trainStyle(candidate: StyleTrainingCandidate): Promise<LoraTrainingResultEntry> {
     const eligibility = this.evaluateStyleEligibility(candidate);
-    if (!eligibility.eligible) {
+    if (eligibility.eligible === false) {
       this.emit({
         type: 'skip',
         kind: 'style',

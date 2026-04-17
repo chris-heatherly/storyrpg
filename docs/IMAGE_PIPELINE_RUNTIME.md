@@ -501,6 +501,98 @@ Wiring surface:
 | Deterministic reproducibility| seed registry (scene, character, character-in-scene scopes)  | `seed` parameter           |
 | Negative stack              | `StableDiffusionSettings.defaultNegativePrompt` + per-prompt  | `negative_prompt`          |
 
+## Auto-Trained LoRAs (Stable Diffusion only)
+
+Stable Diffusion is the only currently-supported provider that can consume
+LoRA adapters, so the pipeline ships an optional **auto-train** subsystem
+that produces per-character and per-episode style LoRAs and merges them
+into `StableDiffusionSettings` before scenes render. For every other
+provider the subsystem is a hard no-op, so flipping
+`EXPO_PUBLIC_LORA_AUTO_TRAIN=true` on a nano-banana / Midjourney / Atlas
+config changes nothing.
+
+Runtime flow:
+
+1. `providerCapabilities.supportsLoraTraining` (`src/ai-agents/images/providerCapabilities.ts`)
+   gates the whole subsystem. Today only `stable-diffusion` returns
+   `true`.
+2. `FullStoryPipeline.runLoraTrainingIfEligible` is invoked from the
+   image phase (`runEpisodeImageGeneration`) right after character
+   reference sheets and the style bible exist — both are prerequisites
+   for a meaningful training dataset.
+3. `LoraTrainingAgent` (`src/ai-agents/agents/image-team/LoraTrainingAgent.ts`)
+   runs `invalidateStaleLoras` to prune cached artifacts whose source
+   fingerprint (character identity fingerprint, or `ArtStyleProfile +
+   anchorFileHashes`) no longer matches, then calls `trainAll` with the
+   current character and style candidates. Cached hits short-circuit;
+   anything new is dispatched to the configured trainer adapter.
+4. `datasetBuilder` (`src/ai-agents/images/datasetBuilder.ts`) assembles
+   the training set purely from assets already produced by the pipeline:
+   character reference sheet variants for identity LoRAs, and the three
+   style-bible anchors for style LoRAs.
+5. `LoraTrainerAdapter` — an abstraction (`src/ai-agents/services/lora-training/`)
+   with a `kohya_ss` implementation (`KohyaAdapter`) selected by
+   `LoraTrainingSettings.backend`. The adapter submits jobs through the
+   `/lora-training/*` proxy mount (`proxy/loraTrainingRoutes.js`),
+   polls for completion, and downloads the resulting safetensors
+   artifact. `installArtifact` then copies the file into the SD host's
+   `models/Lora/` directory.
+6. `LoraRegistry` (`src/ai-agents/images/loraRegistry.ts`) persists the
+   manifest under `generated-stories/<storyId>/loras/registry.json` and
+   merges the successful records into `StableDiffusionSettings.styleLoras`
+   and `StableDiffusionSettings.characterLoraByName` so the existing
+   `buildSDPrompt` path emits the `<lora:...>` tags unchanged.
+
+Eligibility knobs are grouped in
+`LoraTrainingSettings` (`src/ai-agents/config.ts`):
+
+| Field                         | Default      | Notes                                                                 |
+|-------------------------------|--------------|-----------------------------------------------------------------------|
+| `enabled`                     | `false`      | Master switch. Always false unless opted in via env or UI.            |
+| `backend`                     | `'disabled'` | `disabled` | `kohya` | `diffusers` | `replicate`. Only `kohya` is wired today. |
+| `baseUrl` / `apiKey`          | unset        | Overrides `LORA_TRAINER_BASE_URL` / `LORA_TRAINER_API_KEY` per call.  |
+| `characterThresholds.minRefs` | `6`          | Skip training a character until this many reference images exist.     |
+| `characterThresholds.tiers`   | core/major/supporting | Character tiers eligible for training. Minor cast excluded by default. |
+| `characterThresholds.blockScenes` | `true`   | Block scene generation until character LoRAs finish so they're active from beat #1. |
+| `styleThresholds.minEpisodes` | `2`          | Skip style LoRA until the series has at least this many episodes.     |
+| `styleThresholds.forceStyle`  | `false`      | Force a style LoRA even for a single-episode series.                  |
+| `training.*`                  | see defaults | Shared hyperparameters forwarded to the trainer (steps, rank, LR, …). |
+
+Caching is keyed by fingerprint:
+
+- Character LoRAs: `sha1(characterId + name + identityFingerprint +
+  normalizedHyperparams)`.
+- Style LoRAs: `sha1(canonicalStyleString + sortedAnchorHashes +
+  normalizedHyperparams)`.
+
+A fingerprint mismatch triggers `invalidateStaleLoras` to prune the
+stale record and re-train on the next pass. `normalizeHyperparams`
+strips `undefined` / default fields so a no-op config change doesn't
+accidentally invalidate cached artifacts.
+
+UI exposure lives under the Stable Diffusion disclosure on the Generator
+screen: `LORA AUTO-TRAINING` → master enable toggle, backend segmented
+control, trainer base URL / key, character tier chips, style
+thresholds, and the shared hyperparameters. Settings persist via both
+AsyncStorage and the proxy `generatorSettings` disk cache through
+`useGeneratorSettings.handleLoraTrainingSettingsChange`.
+
+Wiring surface:
+
+- proxy mount: `/lora-training/*` forwards to
+  `LORA_TRAINER_BASE_URL` with optional bearer auth. Artifact downloads
+  use an extended timeout and stream binary bodies through untouched
+  (see `proxy/loraTrainingRoutes.js`).
+- env vars: `EXPO_PUBLIC_LORA_AUTO_TRAIN`, `LORA_AUTO_TRAIN`,
+  `LORA_TRAINER_BACKEND`, `EXPO_PUBLIC_LORA_TRAINER_BACKEND`,
+  `LORA_TRAINER_BASE_URL`, `EXPO_PUBLIC_LORA_TRAINER_BASE_URL`,
+  `LORA_TRAINER_API_KEY`, `LORA_TRAINER_AUTH_HEADER`,
+  `LORA_TRAINER_TIMEOUT_MS`, plus per-knob overrides captured in
+  `resolveLoraTrainingSettings`.
+- settings object: `PipelineConfig.imageGen.loraTraining`
+  (`LoraTrainingSettings` in `src/ai-agents/config.ts`).
+- docs: see `docs/LORA_TRAINING.md` for the kohya sidecar contract.
+
 ## PartialVictory Cost Visuals
 
 `partialVictory` art carries a structured `EncounterCost` payload from encounter authoring into runtime prompt assembly.

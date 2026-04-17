@@ -95,7 +95,7 @@ import {
   OutputManifest,
   SourceAnalysisResult,
 } from '../ai-agents/pipeline/FullStoryPipeline';
-import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, DEFAULT_STABLE_DIFFUSION_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
+import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, DEFAULT_STABLE_DIFFUSION_SETTINGS, DEFAULT_LORA_TRAINING_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
 import { STABLE_DIFFUSION_UI_ENABLED } from '../config/generatorLlmOptions';
 import { EndingMode, SourceMaterialAnalysis, StoryEndingTarget } from '../types/sourceAnalysis';
 import { Story } from '../types';
@@ -338,6 +338,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     midjourneySettings,
     geminiSettings,
     stableDiffusionSettings,
+    loraTrainingSettings,
     imageProvider,
     artStyle,
     imageStrategy,
@@ -361,6 +362,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     handleGeminiSettingsChange,
     handleMidjourneySettingsChange,
     handleStableDiffusionSettingsChange,
+    handleLoraTrainingSettingsChange,
     handleImageProviderChange,
     handleArtStyleChange,
     handleGenerationSettingsChange,
@@ -371,6 +373,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [showMjSettings, setShowMjSettings] = useState(false);
   const [showGeminiSettings, setShowGeminiSettings] = useState(false);
   const [showSdSettings, setShowSdSettings] = useState(false);
+  const [showLoraSettings, setShowLoraSettings] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   // Keep STORY open by default (the required prompt/doc lives inside); start
@@ -901,6 +904,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     geminiSettings,
     midjourneySettings,
     stableDiffusionSettings,
+    loraTrainingSettings,
     generationSettings,
     generationMode,
     narrationSettings,
@@ -2522,6 +2526,317 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                         <TouchableOpacity
                           style={styles.inlineResetButton}
                           onPress={() => handleStableDiffusionSettingsChange({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS })}
+                        >
+                          <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
+                          <Text style={styles.inlineResetButtonText}>RESET TO DEFAULTS</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                )}
+
+                {STABLE_DIFFUSION_UI_ENABLED && imageProvider === 'stable-diffusion' && (
+                  <View style={styles.configItem}>
+                    <TouchableOpacity
+                      style={styles.inlineDisclosure}
+                      onPress={() => setShowLoraSettings(!showLoraSettings)}
+                    >
+                      <Cpu size={16} color={TERMINAL.colors.cyan} style={{ marginRight: 8 }} />
+                      <Text style={[styles.configLabel, { color: TERMINAL.colors.cyan }]}>LORA AUTO-TRAINING</Text>
+                      <View style={{ marginLeft: 8 }}>
+                        <Text style={[styles.configHint, { color: loraTrainingSettings.enabled ? TERMINAL.colors.success : TERMINAL.colors.muted }]}>
+                          {loraTrainingSettings.enabled ? 'ON' : 'OFF'}
+                        </Text>
+                      </View>
+                      <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showLoraSettings ? '90deg' : '0deg' }] }} />
+                    </TouchableOpacity>
+                    {showLoraSettings && (
+                      <View style={styles.disclosureBody}>
+                        <Text style={styles.configHint}>
+                          Automatically train per-character and per-episode style LoRAs against the configured
+                          Stable Diffusion model. Training runs alongside scene generation and is cached by
+                          fingerprint so unchanged inputs never re-train. Only active for the Stable Diffusion
+                          provider; the pipeline silently skips this step on every other backend.
+                        </Text>
+
+                        <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <View style={{ flex: 1, paddingRight: 12 }}>
+                            <Text style={styles.configLabel}>ENABLE AUTO-TRAIN</Text>
+                            <Text style={styles.configHint}>
+                              Master switch. When disabled, every training call no-ops regardless of backend.
+                            </Text>
+                          </View>
+                          <Switch
+                            value={!!loraTrainingSettings.enabled}
+                            onValueChange={(value) => handleLoraTrainingSettingsChange({ enabled: value })}
+                            trackColor={{ false: TERMINAL.colors.muted, true: TERMINAL.colors.cyan }}
+                          />
+                        </View>
+
+                        <View style={{ marginTop: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>TRAINER BACKEND</Text>
+                          <View style={styles.segmentedControl}>
+                            {(['disabled', 'kohya', 'diffusers', 'replicate'] as const).map((opt) => (
+                              <TouchableOpacity
+                                key={opt}
+                                style={[styles.segment, loraTrainingSettings.backend === opt && styles.segmentActive]}
+                                onPress={() => handleLoraTrainingSettingsChange({ backend: opt })}
+                              >
+                                <Text style={[styles.segmentText, loraTrainingSettings.backend === opt && styles.segmentTextActive]}>{opt.toUpperCase()}</Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                          <Text style={styles.configHint}>
+                            Only "kohya" is implemented today. The proxy forwards jobs to
+                            LORA_TRAINER_BASE_URL; leave empty to use whatever the proxy env provides.
+                          </Text>
+                        </View>
+
+                        <View style={{ marginTop: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>TRAINER BASE URL (OPTIONAL)</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={loraTrainingSettings.baseUrl || ''}
+                              onChangeText={(v) => handleLoraTrainingSettingsChange({ baseUrl: v })}
+                              placeholder="http://localhost:7861 (overrides LORA_TRAINER_BASE_URL)"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                        </View>
+
+                        <View style={{ marginTop: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>TRAINER API KEY (OPTIONAL)</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={loraTrainingSettings.apiKey || ''}
+                              onChangeText={(v) => handleLoraTrainingSettingsChange({ apiKey: v })}
+                              placeholder="Bearer token for the trainer sidecar"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              secureTextEntry
+                              autoCapitalize="none"
+                            />
+                          </View>
+                        </View>
+
+                        <View style={{ marginTop: 20 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>CHARACTER ELIGIBILITY</Text>
+                          <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>MIN REFS</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.characterThresholds.minRefs ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({
+                                      characterThresholds: { minRefs: Number.isFinite(n) ? n : DEFAULT_LORA_TRAINING_SETTINGS.characterThresholds.minRefs },
+                                    });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.characterThresholds.minRefs)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <Text style={styles.configHint}>
+                            Characters need at least this many distinct reference images before they become
+                            training candidates. Tiers: {loraTrainingSettings.characterThresholds.tiers.join(', ')}.
+                          </Text>
+                          <View style={{ marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                            {(['core', 'major', 'supporting', 'minor'] as const).map((tier) => {
+                              const active = loraTrainingSettings.characterThresholds.tiers.includes(tier);
+                              return (
+                                <TouchableOpacity
+                                  key={tier}
+                                  style={[styles.segment, active && styles.segmentActive, { paddingHorizontal: 12 }]}
+                                  onPress={() => {
+                                    const current = new Set(loraTrainingSettings.characterThresholds.tiers);
+                                    if (active) current.delete(tier); else current.add(tier);
+                                    handleLoraTrainingSettingsChange({
+                                      characterThresholds: { tiers: Array.from(current) as typeof loraTrainingSettings.characterThresholds.tiers },
+                                    });
+                                  }}
+                                >
+                                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{tier.toUpperCase()}</Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                          <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center' }}>
+                            <Switch
+                              value={!!loraTrainingSettings.characterThresholds.blockScenes}
+                              onValueChange={(value) => handleLoraTrainingSettingsChange({ characterThresholds: { blockScenes: value } })}
+                              trackColor={{ false: TERMINAL.colors.muted, true: TERMINAL.colors.cyan }}
+                            />
+                            <Text style={[styles.configLabel, { marginLeft: 8 }]}>BLOCK SCENES UNTIL TRAINED</Text>
+                          </View>
+                          <Text style={styles.configHint}>
+                            When enabled, episode scene generation waits for character LoRA jobs to finish so
+                            they can be applied from beat #1. Disable for a faster-but-less-consistent pass.
+                          </Text>
+                        </View>
+
+                        <View style={{ marginTop: 20 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>STYLE ELIGIBILITY</Text>
+                          <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>MIN EPISODES</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.styleThresholds.minEpisodes ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({
+                                      styleThresholds: { minEpisodes: Number.isFinite(n) ? n : DEFAULT_LORA_TRAINING_SETTINGS.styleThresholds.minEpisodes },
+                                    });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.styleThresholds.minEpisodes)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center' }}>
+                            <Switch
+                              value={!!loraTrainingSettings.styleThresholds.forceStyle}
+                              onValueChange={(value) => handleLoraTrainingSettingsChange({ styleThresholds: { forceStyle: value } })}
+                              trackColor={{ false: TERMINAL.colors.muted, true: TERMINAL.colors.cyan }}
+                            />
+                            <Text style={[styles.configLabel, { marginLeft: 8 }]}>FORCE STYLE LORA</Text>
+                          </View>
+                          <Text style={styles.configHint}>
+                            Force a style LoRA even if the series is shorter than MIN EPISODES. Useful when a
+                            single episode has a very specific, unique style bible.
+                          </Text>
+                        </View>
+
+                        <View style={{ marginTop: 20 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>HYPERPARAMETERS</Text>
+                          <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>STEPS</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.steps ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { steps: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.steps)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>RANK</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.rank ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { rank: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.rank)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>LR</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.learningRate ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseFloat(v);
+                                    handleLoraTrainingSettingsChange({ training: { learningRate: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="decimal-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.learningRate)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <View style={{ marginTop: 12, flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>RESOLUTION</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.resolution ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { resolution: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.resolution)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>BATCH SIZE</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.batchSize ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { batchSize: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.batchSize)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>REPEATS</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.repeats ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { repeats: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.repeats)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <View style={{ marginTop: 12 }}>
+                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>BASE MODEL (OPTIONAL)</Text>
+                            <View style={styles.inputWrapper}>
+                              <TextInput
+                                style={styles.input}
+                                value={loraTrainingSettings.training.baseModel || ''}
+                                onChangeText={(v) => handleLoraTrainingSettingsChange({ training: { baseModel: v } })}
+                                placeholder="Checkpoint the LoRA is fine-tuned on (defaults to SD default model)"
+                                placeholderTextColor={TERMINAL.colors.muted}
+                                autoCapitalize="none"
+                              />
+                            </View>
+                          </View>
+                        </View>
+
+                        <TouchableOpacity
+                          style={[styles.inlineResetButton, { marginTop: 20 }]}
+                          onPress={() => handleLoraTrainingSettingsChange({ ...DEFAULT_LORA_TRAINING_SETTINGS })}
                         >
                           <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
                           <Text style={styles.inlineResetButtonText}>RESET TO DEFAULTS</Text>

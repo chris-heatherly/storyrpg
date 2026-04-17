@@ -26,6 +26,7 @@ docs/
 ├── STORY_AGENT_SYSTEM_DETAIL.md   ← Deep agent system notes
 ├── IMAGE_PIPELINE_AUDIT.md        ← Image pipeline audit documentation
 ├── IMAGE_PIPELINE_RUNTIME.md      ← Image generation runtime behavior
+├── LORA_TRAINING.md               ← Auto-train-LoRA subsystem + kohya sidecar contract
 ├── INCREMENTAL_VALIDATION_PLAN.md ← Validation system design
 ├── QA_FIXES_SUMMARY.md            ← QA fixes and patterns
 ├── MOBILE_REDESIGN.md             ← Mobile-first reader redesign notes
@@ -126,6 +127,11 @@ Client reads story files → Story Engine → Player experience
 | `src/screens/generator/hooks/useStyleSetup.ts` | React hook that owns the inline Style Setup section's state (expanded profile, anchor slot statuses, handoff payload). |
 | `src/screens/generator/StyleSetupSection.tsx` | UI for the inline style-setup section on `analysis_complete`. |
 | `proxy/styleRoutes.js` | Proxy endpoints for persisting UI-approved style-bible anchor images to `generated-stories/<storyId>/style-bible/`. |
+| `src/ai-agents/agents/image-team/LoraTrainingAgent.ts` | Orchestrates auto-train-LoRA eligibility, dataset assembly, dispatch, and cache lookups. Stable-Diffusion-only (gated by `providerCapabilities.supportsLoraTraining`). |
+| `src/ai-agents/images/datasetBuilder.ts` | Pure helpers that turn character reference sheets + style-bible anchors into captioned `LoraTrainingImage[]` training sets. |
+| `src/ai-agents/images/loraRegistry.ts` | Fingerprint-keyed LoRA artifact cache at `generated-stories/<storyId>/loras/registry.json`, with a `mergeIntoStableDiffusionSettings` seam. |
+| `src/ai-agents/services/lora-training/` | `LoraTrainerAdapter` interface, factory, and `KohyaAdapter` implementation for the `kohya_ss` sidecar. |
+| `proxy/loraTrainingRoutes.js` | Proxy mount for `/lora-training/*` — forwards jobs, status polling, artifact downloads, and installation to the configured trainer. |
 | `src/config/endpoints.ts` | All URLs, proxy config, external API endpoints, storage keys, timing defaults. |
 | `proxy-server.js` + `proxy/` | Express routes for Anthropic/OpenRouter proxy, file ops, job management, catalog, ElevenLabs, image APIs. |
 | `App.tsx` | Root component — sets up providers, navigation, story library loading. |
@@ -169,6 +175,10 @@ Defined in `storyrpg-prototype/.env`. Key variables:
 | `STABLE_DIFFUSION_API_KEY` | Optional bearer token forwarded to the SD WebUI |
 | `STABLE_DIFFUSION_BACKEND` | SD adapter backend (only `a1111` is implemented today) |
 | `STABLE_DIFFUSION_DEFAULT_MODEL` | Default SD checkpoint when a request doesn't specify one |
+| `EXPO_PUBLIC_LORA_AUTO_TRAIN` / `LORA_AUTO_TRAIN` | Master switch for the auto-train-LoRA subsystem (Stable Diffusion only) |
+| `LORA_TRAINER_BACKEND` / `EXPO_PUBLIC_LORA_TRAINER_BACKEND` | LoRA trainer backend (`disabled` \| `kohya` \| `diffusers` \| `replicate`; only `kohya` is implemented) |
+| `LORA_TRAINER_BASE_URL` / `EXPO_PUBLIC_LORA_TRAINER_BASE_URL` | Base URL of the LoRA training sidecar |
+| `LORA_TRAINER_API_KEY` | Optional bearer token forwarded to the trainer sidecar |
 | `EXPO_PUBLIC_PROXY_URL` | Override proxy URL (default: `http://localhost:3001`) |
 | `EXPO_PUBLIC_LLM_MODEL` | LLM model selection |
 | `EXPO_PUBLIC_LLM_PROVIDER` | LLM provider selection |
@@ -225,6 +235,7 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/STORY_AGENT_SYSTEM_DETAIL.md` | Deep agent system implementation notes |
 | `docs/IMAGE_PIPELINE_AUDIT.md` | Image pipeline audit documentation |
 | `docs/IMAGE_PIPELINE_RUNTIME.md` | Image generation runtime behavior |
+| `docs/LORA_TRAINING.md` | Auto-train-LoRA subsystem: agents, registry, fingerprinting, kohya sidecar contract, UI exposure |
 | `docs/INCREMENTAL_VALIDATION_PLAN.md` | Validation system design |
 | `docs/QA_FIXES_SUMMARY.md` | QA fixes and recurring patterns |
 | `docs/MOBILE_REDESIGN.md` | Mobile-first reader redesign notes |

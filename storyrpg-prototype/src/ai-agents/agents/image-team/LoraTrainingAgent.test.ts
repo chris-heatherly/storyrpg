@@ -290,6 +290,26 @@ describe('LoraTrainingAgent.trainAll', () => {
     expect(Object.keys(registry.getSnapshot().records)).toHaveLength(1);
   });
 
+  it('invalidateStaleLoras prunes records whose fingerprint no longer matches', async () => {
+    const adapter = makeAdapter();
+    const { agent, registry } = makeAgent(makeSettings(), adapter);
+    await agent.trainAll([makeCharacterCandidate()], undefined);
+    expect(Object.keys(registry.getSnapshot().records)).toHaveLength(1);
+    const renamed = makeCharacterCandidate({ identityFingerprint: 'completely-different' });
+    const removed = await agent.invalidateStaleLoras([renamed], undefined);
+    expect(removed).toHaveLength(1);
+    expect(Object.keys(registry.getSnapshot().records)).toHaveLength(0);
+  });
+
+  it('invalidateStaleLoras keeps records that match the current fingerprint set', async () => {
+    const adapter = makeAdapter();
+    const { agent, registry } = makeAgent(makeSettings(), adapter);
+    await agent.trainAll([makeCharacterCandidate()], undefined);
+    const removed = await agent.invalidateStaleLoras([makeCharacterCandidate()], undefined);
+    expect(removed).toHaveLength(0);
+    expect(Object.keys(registry.getSnapshot().records)).toHaveLength(1);
+  });
+
   it('emits progress events for every lifecycle stage', async () => {
     const events: any[] = [];
     const registry = new LoraRegistry('story-1', '/tmp/story-1/loras', makeMemoryIO());

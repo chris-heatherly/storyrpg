@@ -40,6 +40,11 @@ export interface ContinuityCheckerInput {
     event: string;
     when: string;
   }>;
+
+  // When true, the prompt instructs the checker to focus on cross-scene
+  // inconsistencies (because local/intra-scene checks have already been
+  // performed incrementally during generation).
+  focusCrossScene?: boolean;
 }
 
 export interface ContinuityIssue {
@@ -215,6 +220,31 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
       .map(f => `- ${f}`)
       .join('\n');
 
+    const focusCrossScene = input.focusCrossScene === true;
+    const taskHeader = focusCrossScene
+      ? `## Your Task (Cross-Scene Focus)
+
+Per-scene / local continuity has already been checked incrementally during
+generation. Focus your review on CROSS-SCENE issues that only become visible
+when looking at multiple scenes together:
+
+1. Contradictions between scenes (facts, character behavior, world state)
+2. Characters knowing things they could not have learned yet given scene order
+3. Timeline impossibilities across the episode
+4. State references that rely on setup in a later scene
+5. Cause-effect chains that break across scene boundaries
+
+Do NOT spend effort re-auditing issues that live inside a single scene; the
+incremental validators have already surfaced those.`
+      : `## Your Task
+
+Analyze this content for:
+1. Contradictions between scenes or within scenes
+2. Characters knowing things they shouldn't
+3. Timeline impossibilities
+4. State references without proper setup
+5. Missing cause-effect relationships`;
+
     return `
 Check the following content for continuity issues:
 
@@ -231,19 +261,12 @@ ${factsList || 'None established'}
 ### Character Knowledge
 ${input.characterKnowledge.map(ck =>
   `${ck.characterId}:\n  Knows: ${ck.knows.join(', ')}\n  Doesn't Know: ${ck.doesNotKnow.join(', ')}`
-).join('\n')}
+).join('\n') || 'No character knowledge tracked'}
 
 ## Timeline
 ${input.timelineEvents?.map(e => `- ${e.when}: ${e.event}`).join('\n') || 'No timeline established'}
 
-## Your Task
-
-Analyze this content for:
-1. Contradictions between scenes or within scenes
-2. Characters knowing things they shouldn't
-3. Timeline impossibilities
-4. State references without proper setup
-5. Missing cause-effect relationships
+${taskHeader}
 
 Provide a ContinuityReport with:
 - Overall consistency score (0-100)
@@ -765,6 +788,7 @@ export interface QAInput {
   }>;
   knownFlags: Array<{ name: string; description: string }>;
   knownScores: Array<{ name: string; description: string }>;
+  knownTags?: Array<{ name: string; description: string }>;
   establishedFacts: string[];
   storyThemes: string[];
   targetTone: string;
@@ -773,6 +797,19 @@ export interface QAInput {
     sceneName: string;
     mood: string;
     narrativeFunction: string;
+  }>;
+  // Optional knowledge / timeline feeds for ContinuityChecker.
+  // When omitted, ContinuityChecker falls back to "no character knowledge
+  // tracked" / "no timeline established" prompt stanzas, which is the
+  // previous behaviour.
+  characterKnowledge?: Array<{
+    characterId: string;
+    knows: string[];
+    doesNotKnow: string[];
+  }>;
+  timelineEvents?: Array<{
+    event: string;
+    when: string;
   }>;
 }
 
@@ -802,6 +839,33 @@ export interface QARunnerOptions {
     voiceIssueCount?: number;
     stakesIssueCount?: number;
     continuityIssueCount?: number;
+    /**
+     * Actual aggregated voice issues from incremental validators, each
+     * tagged with the scene they came from. Consumed by the skip stub so
+     * `skippedVoiceReport.issues` reflects real findings rather than an
+     * empty array.
+     */
+    voiceIssues?: Array<{
+      sceneId: string;
+      beatId: string;
+      characterId: string;
+      characterName: string;
+      severity: 'error' | 'warning';
+      issue: string;
+      suggestion?: string;
+    }>;
+    /**
+     * Actual aggregated stakes issues from incremental validators.
+     * Consumed by the skip stub so `skippedStakesReport.issues` reflects
+     * real findings rather than an empty array.
+     */
+    stakesIssues?: Array<{
+      sceneId: string;
+      choiceSetId: string;
+      severity: 'error' | 'warning';
+      issue: string;
+      suggestion?: string;
+    }>;
   };
 }
 
@@ -832,9 +896,11 @@ export class QARunner {
         sceneContents: input.sceneContents,
         knownFlags: input.knownFlags,
         knownScores: input.knownScores,
-        knownTags: [],
+        knownTags: input.knownTags ?? [],
         establishedFacts: input.establishedFacts,
-        characterKnowledge: [],
+        characterKnowledge: input.characterKnowledge ?? [],
+        timelineEvents: input.timelineEvents,
+        focusCrossScene: options.continuityFocusCrossScene === true,
       })
     );
     if (options.continuityFocusCrossScene) {
@@ -881,7 +947,10 @@ export class QARunner {
     let voice: VoiceReport;
     if (options.skipVoiceValidation) {
       // Use a passing default if skipped (incremental caught issues)
-      voice = this.getSkippedVoiceReport(options.incrementalResults?.voiceIssueCount || 0);
+      voice = this.getSkippedVoiceReport(
+        options.incrementalResults?.voiceIssueCount || 0,
+        options.incrementalResults?.voiceIssues,
+      );
     } else {
       const voiceResult = results[voiceIdx] as Awaited<ReturnType<VoiceValidator['execute']>>;
       voice = voiceResult?.data || this.getDefaultVoiceReport();
@@ -890,7 +959,10 @@ export class QARunner {
     let stakes: StakesReport;
     if (options.skipStakesAnalysis) {
       // Use a passing default if skipped (incremental caught issues)
-      stakes = this.getSkippedStakesReport(options.incrementalResults?.stakesIssueCount || 0);
+      stakes = this.getSkippedStakesReport(
+        options.incrementalResults?.stakesIssueCount || 0,
+        options.incrementalResults?.stakesIssues,
+      );
     } else {
       const stakesResult = results[stakesIdx] as Awaited<ReturnType<StakesAnalyzer['execute']>>;
       stakes = stakesResult?.data || this.getDefaultStakesReport();
@@ -934,11 +1006,27 @@ export class QARunner {
   /**
    * Generate a voice report for when validation was skipped (done incrementally)
    */
-  private getSkippedVoiceReport(incrementalIssueCount: number): VoiceReport {
+  private getSkippedVoiceReport(
+    incrementalIssueCount: number,
+    incrementalIssues?: NonNullable<QARunnerOptions['incrementalResults']>['voiceIssues'],
+  ): VoiceReport {
+    const issues: VoiceIssue[] = (incrementalIssues ?? []).map(iss => ({
+      severity: iss.severity,
+      characterId: iss.characterId,
+      characterName: iss.characterName,
+      location: {
+        sceneId: iss.sceneId,
+        beatId: iss.beatId,
+      },
+      dialogueLine: '',
+      issue: iss.issue,
+      suggestion: iss.suggestion ?? '',
+    }));
+
     return {
       overallScore: incrementalIssueCount === 0 ? 95 : Math.max(60, 95 - incrementalIssueCount * 5),
       characterScores: [],
-      issues: [],
+      issues,
       distinctionScore: 85,
       recommendations: incrementalIssueCount > 0 
         ? [`${incrementalIssueCount} voice issue(s) were caught and addressed during incremental validation`]
@@ -949,7 +1037,17 @@ export class QARunner {
   /**
    * Generate a stakes report for when analysis was skipped (done incrementally)
    */
-  private getSkippedStakesReport(incrementalIssueCount: number): StakesReport {
+  private getSkippedStakesReport(
+    incrementalIssueCount: number,
+    incrementalIssues?: NonNullable<QARunnerOptions['incrementalResults']>['stakesIssues'],
+  ): StakesReport {
+    const issues: StakesIssue[] = (incrementalIssues ?? []).map(iss => ({
+      severity: iss.severity,
+      choiceSetId: iss.choiceSetId,
+      issue: iss.issue,
+      suggestion: iss.suggestion ?? '',
+    }));
+
     return {
       overallScore: incrementalIssueCount === 0 ? 95 : Math.max(60, 95 - incrementalIssueCount * 5),
       choiceSetAnalysis: [],
@@ -959,7 +1057,7 @@ export class QARunner {
         dilemmaQuality: 75,
         varietyScore: 80,
       },
-      issues: [],
+      issues,
       strengths: ['Stakes were validated incrementally during content generation'],
       recommendations: incrementalIssueCount > 0
         ? [`${incrementalIssueCount} stakes issue(s) were caught and addressed during incremental validation`]

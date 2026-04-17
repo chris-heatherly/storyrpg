@@ -72,6 +72,15 @@ export interface LlmCallObservation {
   queueWaitMs: number;
   attempt: number;
   error?: string;
+  /**
+   * Token usage reported by the provider, when available. Populated by the
+   * anthropic and gemini transports (OpenAI wire-up is pending). Undefined
+   * when the provider did not return usage data (e.g. on error).
+   */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+  };
 }
 
 export abstract class BaseAgent {
@@ -215,16 +224,21 @@ Do not use markdown code blocks around the JSON.
     for (let attempt = 0; attempt <= retries; attempt++) {
       const { release, queueWaitMs } = await this.acquireGuardrailPermits();
       const callStart = Date.now();
+      // I4: providers write token usage into this capture object when available.
+      // `callLLM` forwards it to the observer so the pipeline can aggregate a
+      // per-agent / per-phase LLM ledger without each caller having to plumb
+      // usage by hand.
+      const usageCapture: { inputTokens?: number; outputTokens?: number } = {};
       try {
         let result: string;
         const signal = options?.signal;
         if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
         if (this.config.provider === 'anthropic' && options?.useMemory) {
-          result = await this.callAnthropicWithMemory(fullMessages);
+          result = await this.callAnthropicWithMemory(fullMessages, usageCapture);
         } else if (this.config.provider === 'anthropic') {
-          result = await this.callAnthropic(fullMessages, signal);
+          result = await this.callAnthropic(fullMessages, signal, usageCapture);
         } else if (this.config.provider === 'gemini') {
-          result = await this.callGemini(fullMessages, signal);
+          result = await this.callGemini(fullMessages, signal, usageCapture);
         } else {
           result = await this.callOpenAI(fullMessages, signal);
         }
@@ -240,6 +254,10 @@ Do not use markdown code blocks around the JSON.
           durationMs: Date.now() - callStart,
           queueWaitMs,
           attempt,
+          usage:
+            typeof usageCapture.inputTokens === 'number' && typeof usageCapture.outputTokens === 'number'
+              ? { inputTokens: usageCapture.inputTokens, outputTokens: usageCapture.outputTokens }
+              : undefined,
         });
         return result;
       } catch (error) {
@@ -322,7 +340,11 @@ Do not use markdown code blocks around the JSON.
     throw lastError || new Error('LLM call failed after retries');
   }
 
-  private async callAnthropic(messages: AgentMessage[], signal?: AbortSignal): Promise<string> {
+  private async callAnthropic(
+    messages: AgentMessage[],
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
     const systemMessage = messages.find((m) => m.role === 'system');
     const otherMessages = messages.filter((m) => m.role !== 'system');
 
@@ -413,6 +435,10 @@ Do not use markdown code blocks around the JSON.
       const outputTokens = data.usage?.output_tokens ?? '?';
       const inputTokens = data.usage?.input_tokens ?? '?';
       log.debug(`[${this.name}] Anthropic response: ${inputTokens} input tokens, ${outputTokens} output tokens, stop_reason: ${stopReason}`);
+      if (usageOut) {
+        if (typeof data.usage?.input_tokens === 'number') usageOut.inputTokens = data.usage.input_tokens;
+        if (typeof data.usage?.output_tokens === 'number') usageOut.outputTokens = data.usage.output_tokens;
+      }
       if (stopReason === 'max_tokens') {
         console.warn(`[${this.name}] ⚠️ RESPONSE TRUNCATED — stop_reason is max_tokens (limit: ${this.config.maxTokens}). Response will be incomplete JSON.`);
       }
@@ -423,7 +449,10 @@ Do not use markdown code blocks around the JSON.
     }
   }
 
-  private async callAnthropicWithMemory(messages: AgentMessage[]): Promise<string> {
+  private async callAnthropicWithMemory(
+    messages: AgentMessage[],
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
     const MAX_MEMORY_ROUNDS = 10;
     const systemMessage = messages.find((m) => m.role === 'system');
     const initialMessages = messages.filter((m) => m.role !== 'system');
@@ -505,6 +534,14 @@ Do not use markdown code blocks around the JSON.
       const outputTokens = data.usage?.output_tokens ?? '?';
       const inputTokens = data.usage?.input_tokens ?? '?';
       log.debug(`[${this.name}] Memory round ${round + 1}: ${inputTokens} in, ${outputTokens} out, stop: ${stopReason}`);
+      if (usageOut) {
+        if (typeof data.usage?.input_tokens === 'number') {
+          usageOut.inputTokens = (usageOut.inputTokens ?? 0) + data.usage.input_tokens;
+        }
+        if (typeof data.usage?.output_tokens === 'number') {
+          usageOut.outputTokens = (usageOut.outputTokens ?? 0) + data.usage.output_tokens;
+        }
+      }
 
       if (stopReason === 'end_turn' || stopReason === 'max_tokens') {
         const textBlock = data.content?.find((b: any) => b.type === 'text');
@@ -615,7 +652,11 @@ Do not use markdown code blocks around the JSON.
     }
   }
 
-  private async callGemini(messages: AgentMessage[], signal?: AbortSignal): Promise<string> {
+  private async callGemini(
+    messages: AgentMessage[],
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
     if (!this.config.apiKey) {
       throw new Error('Gemini API key is missing');
     }
@@ -692,6 +733,12 @@ Do not use markdown code blocks around the JSON.
       const output = parts
         .map((p: any) => (typeof p?.text === 'string' ? p.text : ''))
         .join('');
+      if (usageOut) {
+        const promptTokens = data?.usageMetadata?.promptTokenCount;
+        const candidatesTokens = data?.usageMetadata?.candidatesTokenCount;
+        if (typeof promptTokens === 'number') usageOut.inputTokens = promptTokens;
+        if (typeof candidatesTokens === 'number') usageOut.outputTokens = candidatesTokens;
+      }
       if (!output) {
         throw new Error('Gemini returned empty content');
       }

@@ -972,6 +972,44 @@ The Image Agent Team coordinates visual content generation:
   `Story.styleAnchors`) so replay and analytics always see the exact
   style contract used during generation.
 
+### LoRA Auto-Training (Stable Diffusion only)
+
+An optional subsystem auto-trains character and episode-style LoRAs and
+merges them into `StableDiffusionSettings` so the existing
+`buildSDPrompt` path emits `<lora:...>` tags unchanged. The entire
+subsystem is gated by `ProviderCapabilities.supportsLoraTraining` and
+is a no-op for every provider except `stable-diffusion`.
+
+Core components:
+
+- `LoraTrainingAgent` (`src/ai-agents/agents/image-team/LoraTrainingAgent.ts`)
+  — owns eligibility, dataset assembly, cache lookups, and dispatch.
+- `datasetBuilder` (`src/ai-agents/images/datasetBuilder.ts`) — pure
+  helpers that turn character reference sheets and style-bible anchors
+  into captioned `LoraTrainingImage[]` sets.
+- `LoraRegistry` (`src/ai-agents/images/loraRegistry.ts`) —
+  fingerprint-keyed cache at `generated-stories/<storyId>/loras/` with
+  a `mergeIntoStableDiffusionSettings` seam.
+- `LoraTrainerAdapter` (`src/ai-agents/services/lora-training/`) —
+  backend abstraction. `KohyaAdapter` talks to a `kohya_ss` sidecar via
+  the `/lora-training/*` proxy mount.
+- `proxy/loraTrainingRoutes.js` — forwards training jobs, status
+  polling, cancellation, artifact downloads, and installation to the
+  configured backend.
+
+The pipeline hook is `FullStoryPipeline.runLoraTrainingIfEligible`,
+invoked once per episode after character reference sheets and the
+style bible exist. It first runs `invalidateStaleLoras` to prune
+artifacts whose fingerprint no longer matches (identity or style
+drift), then calls `trainAll` with the current candidates. Cache hits
+resolve synchronously; cache misses dispatch to the adapter. See
+`docs/LORA_TRAINING.md` for the full sidecar contract and
+`docs/IMAGE_PIPELINE_RUNTIME.md` for the runtime flow.
+
+Configuration lives in `LoraTrainingSettings` on
+`PipelineConfig.imageGen.loraTraining` and is surfaced to the Generator
+UI through `useGeneratorSettings.handleLoraTrainingSettingsChange`.
+
 ### Image Quality Feedback
 
 The system includes a feedback loop for image quality:

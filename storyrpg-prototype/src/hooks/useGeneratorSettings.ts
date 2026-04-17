@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   DEFAULT_GEMINI_SETTINGS,
+  DEFAULT_LORA_TRAINING_SETTINGS,
   DEFAULT_MIDJOURNEY_SETTINGS,
   DEFAULT_STABLE_DIFFUSION_SETTINGS,
   DEFAULT_VIDEO_SETTINGS,
   GeminiSettings,
+  LoraTrainingSettings,
   MidjourneySettings,
   StableDiffusionSettings,
 } from '../ai-agents/config';
@@ -64,6 +66,7 @@ export const GENERATOR_STORAGE_KEYS = {
   geminiSettings: '@storyrpg_gemini_settings',
   videoSettings: '@storyrpg_video_settings',
   stableDiffusionSettings: '@storyrpg_stable_diffusion_settings',
+  loraTrainingSettings: '@storyrpg_lora_training_settings',
 } as const;
 
 function isGeneratorLlmProvider(value: string | null | undefined): value is GeneratorLlmProvider {
@@ -122,6 +125,7 @@ interface ProxySettingsShape {
   geminiSettings?: GeminiSettings;
   midjourneySettings?: MidjourneySettings;
   stableDiffusionSettings?: StableDiffusionSettings;
+  loraTrainingSettings?: LoraTrainingSettings;
   atlasCloudModel?: string;
 }
 
@@ -169,6 +173,7 @@ export function useGeneratorSettings() {
   const [midjourneySettings, setMidjourneySettings] = useState<MidjourneySettings>({ ...DEFAULT_MIDJOURNEY_SETTINGS });
   const [geminiSettings, setGeminiSettings] = useState<GeminiSettings>({ ...DEFAULT_GEMINI_SETTINGS });
   const [stableDiffusionSettings, setStableDiffusionSettings] = useState<StableDiffusionSettings>({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS });
+  const [loraTrainingSettings, setLoraTrainingSettings] = useState<LoraTrainingSettings>({ ...DEFAULT_LORA_TRAINING_SETTINGS });
   const [imageProvider, setImageProvider] = useState<GeneratorImageProvider>('nano-banana');
   const [artStyle, setArtStyle] = useState('');
   const [imageStrategy, setImageStrategy] = useState<'selective' | 'all-beats'>('all-beats');
@@ -225,6 +230,9 @@ export function useGeneratorSettings() {
       }
       if (ps.stableDiffusionSettings) {
         setStableDiffusionSettings({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS, ...ps.stableDiffusionSettings });
+      }
+      if (ps.loraTrainingSettings) {
+        setLoraTrainingSettings({ ...DEFAULT_LORA_TRAINING_SETTINGS, ...ps.loraTrainingSettings });
       }
     };
 
@@ -284,6 +292,7 @@ export function useGeneratorSettings() {
           storedNarrationSettings,
           storedVideoSettings,
           storedStableDiffusionSettings,
+          storedLoraTrainingSettings,
         ] = await Promise.all([
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.anthropicApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmGeminiApiKey),
@@ -304,6 +313,7 @@ export function useGeneratorSettings() {
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.narrationSettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.videoSettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.stableDiffusionSettings),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.loraTrainingSettings),
         ]);
 
         if (!isMounted) return;
@@ -400,6 +410,12 @@ export function useGeneratorSettings() {
           if (storedStableDiffusionSettings) {
             try {
               setStableDiffusionSettings({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS, ...JSON.parse(storedStableDiffusionSettings) });
+            } catch (_) {}
+          }
+
+          if (storedLoraTrainingSettings) {
+            try {
+              setLoraTrainingSettings({ ...DEFAULT_LORA_TRAINING_SETTINGS, ...JSON.parse(storedLoraTrainingSettings) });
             } catch (_) {}
           }
         }
@@ -598,6 +614,35 @@ export function useGeneratorSettings() {
     }
   }, [stableDiffusionSettings]);
 
+  // Deep-merges partial LoRA training settings (supports nested `training`
+  // and `characterThresholds` / `styleThresholds` patches). Persists to
+  // both AsyncStorage and the proxy disk cache.
+  const handleLoraTrainingSettingsChange = useCallback(async (newSettings: Partial<LoraTrainingSettings>) => {
+    const updated: LoraTrainingSettings = {
+      ...loraTrainingSettings,
+      ...newSettings,
+      characterThresholds: {
+        ...loraTrainingSettings.characterThresholds,
+        ...(newSettings.characterThresholds || {}),
+      },
+      styleThresholds: {
+        ...loraTrainingSettings.styleThresholds,
+        ...(newSettings.styleThresholds || {}),
+      },
+      training: {
+        ...loraTrainingSettings.training,
+        ...(newSettings.training || {}),
+      },
+    };
+    setLoraTrainingSettings(updated);
+    patchProxySettings({ loraTrainingSettings: updated });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.loraTrainingSettings, JSON.stringify(updated));
+    } catch (error) {
+      log.debug('Failed to save LoRA training settings:', error);
+    }
+  }, [loraTrainingSettings]);
+
   const handleImageProviderChange = useCallback(async (provider: GeneratorImageProvider) => {
     setImageProvider(provider);
     patchProxySettings({ imageProvider: provider });
@@ -682,6 +727,7 @@ export function useGeneratorSettings() {
     midjourneySettings,
     geminiSettings,
     stableDiffusionSettings,
+    loraTrainingSettings,
     imageProvider,
     artStyle,
     imageStrategy,
@@ -705,6 +751,7 @@ export function useGeneratorSettings() {
     handleGeminiSettingsChange,
     handleMidjourneySettingsChange,
     handleStableDiffusionSettingsChange,
+    handleLoraTrainingSettingsChange,
     handleImageProviderChange,
     handleArtStyleChange,
     handleImageStrategyChange,

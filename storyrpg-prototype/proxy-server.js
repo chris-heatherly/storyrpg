@@ -20,6 +20,7 @@ const { createSyncGenerationMirrorFromWorker } = require('./proxy/workerJobSync'
 const { registerCatalogRoutes } = require('./proxy/catalogRoutes');
 const { registerRefImageRoutes } = require('./proxy/refImageRoutes');
 const { registerStableDiffusionRoutes } = require('./proxy/stableDiffusionRoutes');
+const { registerLoraTrainingRoutes } = require('./proxy/loraTrainingRoutes');
 const { registerFileRoutes } = require('./proxy/fileRoutes');
 const { registerStoryMutationRoutes } = require('./proxy/storyMutationRoutes');
 const { registerModelScanRoutes } = require('./proxy/modelScanRoutes');
@@ -101,6 +102,7 @@ registerCatalogRoutes(app, {
 });
 registerRefImageRoutes(app, { refImagesDir: REF_IMAGES_DIR, port: PORT });
 registerStableDiffusionRoutes(app);
+registerLoraTrainingRoutes(app);
 registerFileRoutes(app, {
   rootDir: ROOT_DIR,
   storiesDir: STORIES_DIR,

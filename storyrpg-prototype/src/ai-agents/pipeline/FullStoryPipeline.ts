@@ -45,6 +45,7 @@ import {
   EncounterArchitect, 
   EncounterArchitectInput, 
   EncounterStructure,
+  EncounterTelemetry,
   GeneratedStorylet
 } from '../agents/EncounterArchitect';
 import { StateChange } from '../types/llm-output';
@@ -148,6 +149,17 @@ import {
   anchorIdentifier,
 } from '../images/anchorPrompts';
 import { composeCanonicalStyleString } from '../images/artStyleProfile';
+import {
+  LoraTrainingAgent,
+  type CharacterTrainingCandidate,
+  type StyleTrainingCandidate,
+} from '../agents/image-team/LoraTrainingAgent';
+import {
+  LoraRegistry,
+  createNodeLoraRegistryIO,
+} from '../images/loraRegistry';
+import { createLoraTrainerAdapter } from '../services/lora-training/factory';
+import { providerSupportsLoraTraining } from '../images/providerCapabilities';
 import { buildStoryImageSlotManifest } from '../images/storyImageSlotManifest';
 import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
 import { buildBeatImagePrompt, overrideShotFromPlan } from '../images/beatPromptBuilder';
@@ -516,6 +528,11 @@ export class FullStoryPipeline {
   private incrementalValidator: IncrementalValidationRunner | null = null;
   private sceneValidationResults: SceneValidationResult[] = [];
 
+  // Per-encounter telemetry, populated from EncounterArchitect.execute()'s
+  // response metadata. Persisted via pipelineOutputWriter so we can later
+  // analyze per-phase success rates and LLM cost (I2 instrumentation).
+  private encounterTelemetry: EncounterTelemetry[] = [];
+
   private events: PipelineEvent[] = [];
   private checkpoints: CheckpointData[] = [];
   private eventHandler?: PipelineEventHandler;
@@ -540,6 +557,16 @@ export class FullStoryPipeline {
     arcStrip?: string;
     environment?: string;
   } = {};
+
+  /**
+   * Lazily-created LoRA training plumbing. We construct it the first time a
+   * pipeline run reaches a training trigger, so runs on providers that don't
+   * support LoRAs never pay for the registry filesystem ops.
+   */
+  private _loraTrainingAgent?: LoraTrainingAgent;
+  private _loraRegistry?: LoraRegistry;
+  /** Remembers whether we've already emitted an "enabled/skipped" banner. */
+  private _loraTrainingBanner = false;
 
   // Visual planning outputs collection
   private collectedVisualPlanning: {
@@ -2454,6 +2481,13 @@ export class FullStoryPipeline {
           choiceSets,
           encounters: Array.from(encounters.values()),
           qaReport,
+          incrementalValidationResults: this.sceneValidationResults.length > 0
+            ? this.sceneValidationResults
+            : undefined,
+          encounterTelemetry: this.encounterTelemetry.length > 0
+            ? this.encounterTelemetry
+            : undefined,
+          llmLedger: this.telemetry.getLlmLedger() ?? undefined,
           bestPracticesReport,
           finalStory: story,
           visualPlanning: visualPlanningOutputs,
@@ -3283,6 +3317,8 @@ export class FullStoryPipeline {
     
     // Reset scene validation results
     this.sceneValidationResults = [];
+    // Reset encounter telemetry (I2 — fresh per episode run)
+    this.encounterTelemetry = [];
     
     this.emit({
       type: 'debug',
@@ -4502,6 +4538,7 @@ export class FullStoryPipeline {
         // Only register encounter + run validation if EncounterArchitect succeeded
         if (encounterResult?.success && encounterResult.data) {
           encounters.set(sceneBlueprint.id, encounterResult.data);
+          this.captureEncounterTelemetry(encounterResult.metadata);
           this.emit({
             type: 'agent_complete',
             agent: 'EncounterArchitect',
@@ -4613,6 +4650,7 @@ export class FullStoryPipeline {
                     if (regenValidation.passed ||
                         regenValidation.issues.length < encounterValidation.issues.length) {
                       encounters.set(sceneBlueprint.id, regenEncounterResult.data);
+                      this.captureEncounterTelemetry(regenEncounterResult.metadata);
                       // Update the stored validation result
                       const valIdx = this.sceneValidationResults.findIndex(v => v.sceneId === sceneBlueprint.id);
                       if (valIdx !== -1) {
@@ -4726,7 +4764,40 @@ export class FullStoryPipeline {
     if (skipRedundantQA && this.sceneValidationResults.length > 0) {
       // Calculate issue counts from incremental validation
       const aggregated = aggregateValidationResults(this.sceneValidationResults);
-      
+
+      // Flatten actual incremental issues so the skip stubs carry them into
+      // the QA report instead of reporting `issues: []`. Without this, any
+      // run with `skipRedundantQA: true` silently discards everything that
+      // the incremental validators caught.
+      const voiceIssues: NonNullable<QARunnerOptions['incrementalResults']>['voiceIssues'] = [];
+      const stakesIssues: NonNullable<QARunnerOptions['incrementalResults']>['stakesIssues'] = [];
+      for (const sceneResult of this.sceneValidationResults) {
+        if (sceneResult.voice?.issues) {
+          for (const iss of sceneResult.voice.issues) {
+            voiceIssues.push({
+              sceneId: sceneResult.sceneId,
+              beatId: iss.beatId,
+              characterId: iss.characterId,
+              characterName: iss.characterName,
+              severity: iss.severity,
+              issue: iss.issue,
+              suggestion: iss.suggestion,
+            });
+          }
+        }
+        if (sceneResult.stakes?.issues) {
+          for (const iss of sceneResult.stakes.issues) {
+            stakesIssues.push({
+              sceneId: sceneResult.sceneId,
+              choiceSetId: iss.choiceId,
+              severity: iss.severity,
+              issue: iss.issue,
+              suggestion: iss.suggestion,
+            });
+          }
+        }
+      }
+
       qaOptions.skipVoiceValidation = true;
       qaOptions.skipStakesAnalysis = true;
       qaOptions.continuityFocusCrossScene = true;
@@ -4734,6 +4805,8 @@ export class FullStoryPipeline {
         voiceIssueCount: aggregated.totalIssues.voice,
         stakesIssueCount: aggregated.totalIssues.stakes,
         continuityIssueCount: aggregated.totalIssues.continuity,
+        voiceIssues,
+        stakesIssues,
       };
       
       this.emit({ 
@@ -4745,6 +4818,9 @@ export class FullStoryPipeline {
     this.emitPhaseProgress('qa', 1, qaStepTotal, 'qa:steps', 'QA input bundle prepared');
 
     this.emit({ type: 'agent_start', agent: 'QARunner', message: 'Running quality assurance checks' });
+
+    const characterKnowledge = this.buildContinuityCharacterKnowledge(characterBible);
+    const timelineEvents = this.buildContinuityTimeline(blueprint);
 
     const report = await this.qaRunner.runFullQA({
       sceneContents,
@@ -4765,6 +4841,8 @@ export class FullStoryPipeline {
         mood: s.mood,
         narrativeFunction: s.narrativeFunction,
       })),
+      characterKnowledge,
+      timelineEvents,
     }, qaOptions);
     this.emitPhaseProgress('qa', 2, qaStepTotal, 'qa:steps', 'QA analysis complete');
 
@@ -4780,6 +4858,90 @@ export class FullStoryPipeline {
     this.emitPhaseProgress('qa', 3, qaStepTotal, 'qa:steps', 'QA report finalized');
 
     return report;
+  }
+
+  /**
+   * Pull an `EncounterTelemetry` payload out of an EncounterArchitect
+   * response's metadata (if present) and append it to the run-level
+   * telemetry collector. Silently ignores responses that predate the
+   * telemetry contract.
+   */
+  private captureEncounterTelemetry(metadata: Record<string, unknown> | undefined): void {
+    const raw = metadata?.encounterTelemetry as EncounterTelemetry | undefined;
+    if (raw && typeof raw.sceneId === 'string') {
+      this.encounterTelemetry.push(raw);
+    }
+  }
+
+  /**
+   * Build a best-effort `characterKnowledge` bundle for ContinuityChecker.
+   *
+   * The pipeline does not model first-class "what does this character know
+   * at time T" data, so we populate this from the character bible using
+   * information we DO have:
+   *   - Each character knows their own overview, core want/fear/flaw, and
+   *     any relationships they explicitly hold.
+   *   - Each character is assumed NOT to know the hidden secrets of OTHER
+   *     characters (this is the most common source of "character knows
+   *     something they shouldn't" continuity bugs).
+   *
+   * This is intentionally conservative: we feed the LLM real data where we
+   * have it, and we do not invent knowledge facts we cannot verify.
+   */
+  private buildContinuityCharacterKnowledge(
+    characterBible: CharacterBible
+  ): Array<{ characterId: string; knows: string[]; doesNotKnow: string[] }> {
+    const characters = characterBible.characters ?? [];
+    if (characters.length === 0) return [];
+
+    return characters.map(c => {
+      const knows: string[] = [];
+      if (c.overview) knows.push(c.overview);
+      if (c.want) knows.push(`their own goal: ${c.want}`);
+      if (c.fear) knows.push(`their own fear: ${c.fear}`);
+      const relationships = Array.isArray(c.relationships) ? c.relationships : [];
+      relationships.forEach(r => {
+        if (r.targetName && r.relationshipType) {
+          knows.push(`${r.targetName} (${r.relationshipType})`);
+        }
+      });
+
+      const doesNotKnow: string[] = [];
+      for (const other of characters) {
+        if (other.id === c.id) continue;
+        if (other.hiddenSecret) {
+          doesNotKnow.push(`${other.name}'s secret: ${other.hiddenSecret}`);
+        }
+      }
+
+      return {
+        characterId: c.id,
+        knows,
+        doesNotKnow,
+      };
+    });
+  }
+
+  /**
+   * Build a best-effort `timelineEvents` list for ContinuityChecker from
+   * the episode blueprint's ordered scene list. This gives the LLM a
+   * concrete reference for "what happens when" so it can flag forward
+   * references and impossible knowledge across scenes.
+   */
+  private buildContinuityTimeline(
+    blueprint: EpisodeBlueprint
+  ): Array<{ event: string; when: string }> {
+    const scenes = blueprint.scenes ?? [];
+    if (scenes.length === 0) return [];
+
+    return scenes.map((s, idx) => {
+      const label = s.name || s.id;
+      const details = [s.narrativeFunction, s.mood].filter(Boolean).join(' / ');
+      return {
+        event: details ? `${label} (${details})` : label,
+        when: `Scene ${idx + 1} (${s.id})`,
+      };
+    });
   }
 
   private assembleStory(
@@ -5586,6 +5748,7 @@ export class FullStoryPipeline {
           },
           visualPlanning: visualPlanningOutputs,
           encounterImageDiagnostics: allEncounterImageDiagnostics,
+          llmLedger: this.telemetry.getLlmLedger() ?? undefined,
         }, Date.now() - startTime);
         const partialTimeout = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('Partial save timed out')), 120_000)
@@ -5664,6 +5827,13 @@ export class FullStoryPipeline {
         finalStory: story,
         visualPlanning: visualPlanningOutputs,
         qaReport: aggregatedQAReport,
+        incrementalValidationResults: this.sceneValidationResults.length > 0
+          ? this.sceneValidationResults
+          : undefined,
+        encounterTelemetry: this.encounterTelemetry.length > 0
+          ? this.encounterTelemetry
+          : undefined,
+        llmLedger: this.telemetry.getLlmLedger() ?? undefined,
         bestPracticesReport: aggregatedBPReport,
         encounterImageDiagnostics: allEncounterImageDiagnostics,
       }, Date.now() - startTime);
@@ -7088,6 +7258,21 @@ ${clothingRule}
 
     if (colorScript) {
       styleReferenceStored = await this.generateEpisodeStyleBible(brief, colorScript, characterBible);
+    }
+
+    // LoRA training hook. Runs after the character reference sheets AND the
+    // style-bible anchors are available — both are prerequisites for
+    // meaningful training data. The call is a no-op for providers that
+    // can't consume LoRAs (i.e. anything but Stable Diffusion today) and
+    // whenever the subsystem is disabled in config.
+    try {
+      await this.runLoraTrainingIfEligible(brief, characterBible, outputDirectory);
+    } catch (loraErr) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `LoRA training pass threw (non-fatal, continuing scene generation): ${loraErr instanceof Error ? loraErr.message : String(loraErr)}`,
+      });
     }
     
     // A3 (narrow, opt-in): fan out scene-opening beats in parallel before
@@ -11425,6 +11610,218 @@ ${clothingRule}
       this.emit({ type: 'warning', phase: 'images', message: `Episode style bible generation failed: ${message}` });
       return false;
     }
+  }
+
+  /**
+   * Lazily construct (or return) the `LoraTrainingAgent` for this run.
+   * Returns `undefined` when the active image provider does not support LoRA
+   * inference (non-SD) or when the subsystem is disabled — callers should
+   * treat `undefined` as "skip LoRA training transparently".
+   *
+   * The registry is rooted under the current run's output directory
+   * (`<outputDirectory>/loras/`) so trained artifacts are co-located with
+   * the rest of the generation outputs and can be pruned together.
+   */
+  private getOrCreateLoraTrainingAgent(
+    storyId: string,
+    outputDirectory?: string,
+  ): LoraTrainingAgent | undefined {
+    const settings = this.config.imageGen?.loraTraining;
+    if (!settings || !settings.enabled) return undefined;
+    const provider = (this.config.imageGen?.provider || 'nano-banana') as import('../config').ImageProvider;
+    if (!providerSupportsLoraTraining(provider)) return undefined;
+    if (this._loraTrainingAgent) return this._loraTrainingAgent;
+
+    // Pick a registry root. Prefer `<outputDirectory>/loras/` when we have
+    // one; fall back to a workspace-relative `generated-stories/<storyId>/loras`
+    // directory so callers that never passed outputDirectory still get a
+    // stable path (the registry auto-creates it on first write).
+    const registryRoot = outputDirectory
+      ? (outputDirectory.endsWith('/') ? `${outputDirectory}loras` : `${outputDirectory}/loras`)
+      : `generated-stories/${storyId}/loras`;
+
+    let io;
+    try {
+      io = createNodeLoraRegistryIO();
+    } catch {
+      // Non-Node environments (native RN) can't train LoRAs today — surface
+      // this once as a warning and disable the agent for the run.
+      if (!this._loraTrainingBanner) {
+        this._loraTrainingBanner = true;
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: 'LoRA training enabled but filesystem access is unavailable in this runtime — skipping training.',
+        });
+      }
+      return undefined;
+    }
+
+    const registry = new LoraRegistry(storyId, registryRoot, io);
+    const adapter = createLoraTrainerAdapter({
+      backend: settings.backend,
+      kohya: {
+        proxyBaseUrl: settings.baseUrl,
+        apiKey: settings.apiKey,
+      },
+    });
+    const agent = new LoraTrainingAgent({
+      storyId,
+      provider,
+      settings,
+      adapter,
+      registry,
+      onProgress: (event) => {
+        if (event.type === 'start') {
+          this.emit({ type: 'agent_start', agent: 'LoraTrainingAgent', message: `Training ${event.kind} LoRA for ${event.name}…` });
+        } else if (event.type === 'complete') {
+          this.emit({ type: 'agent_complete', agent: 'LoraTrainingAgent', message: `Trained ${event.kind} LoRA ${event.record.name}.` });
+        } else if (event.type === 'skip') {
+          this.emit({ type: 'debug', phase: 'images', message: `LoRA skip (${event.kind}/${event.name}): ${event.reason}` });
+        } else if (event.type === 'fail') {
+          this.emit({ type: 'warning', phase: 'images', message: `LoRA training failed (${event.kind}/${event.name}): ${event.reason}` });
+        }
+      },
+    });
+    this._loraTrainingAgent = agent;
+    this._loraRegistry = registry;
+    return agent;
+  }
+
+  /**
+   * Trigger character + style LoRA training once the reference sheets and
+   * style-bible anchors exist. Safe to call multiple times per run — the
+   * registry's fingerprint-keyed cache short-circuits anything that was
+   * already trained.
+   *
+   * Newly registered artifacts are merged back into
+   * `StableDiffusionSettings.styleLoras` / `.characterLoraByName` via
+   * `imageService.updateStableDiffusionSettings` so the existing
+   * `buildSDPrompt` path emits `<lora:...>` tags on subsequent scene
+   * generation with no additional surgery.
+   */
+  private async runLoraTrainingIfEligible(
+    brief: FullCreativeBrief,
+    characterBible: CharacterBible,
+    outputDirectory?: string,
+  ): Promise<void> {
+    const storyId = idSlugify(brief.story.title) || 'story';
+    const agent = this.getOrCreateLoraTrainingAgent(storyId, outputDirectory);
+    if (!agent || !agent.shouldRun()) return;
+
+    if (!this._loraTrainingBanner) {
+      this._loraTrainingBanner = true;
+      this.emit({
+        type: 'info',
+        phase: 'images',
+        message: `LoRA training enabled (backend=${agent.settings.backend}); checking candidates…`,
+      });
+    }
+
+    // Load any artifacts persisted by previous runs of the same story.
+    try {
+      await this._loraRegistry?.load();
+    } catch (err) {
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: `LoRA registry load non-fatal: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+
+    // Build character candidates from the cached reference sheets.
+    const seen = new Set<string>();
+    const characters: CharacterTrainingCandidate[] = [];
+    for (const char of characterBible.characters) {
+      if (seen.has(char.id)) continue;
+      seen.add(char.id);
+      const sheet = this.imageAgentTeam.getReferenceSheet(char.id);
+      if (!sheet) continue;
+      const references: { viewKey: string; imagePath?: string }[] = [];
+      for (const [viewKey, image] of sheet.generatedImages.entries()) {
+        if (image?.imagePath) {
+          references.push({ viewKey, imagePath: image.imagePath });
+        }
+      }
+      if (references.length === 0) continue;
+      const identityFingerprint = sheet.identityFingerprint || computeCharacterIdentityFingerprint(char);
+      characters.push({
+        character: {
+          id: char.id,
+          name: char.name,
+          role: char.role,
+          tier: (char.importance || '').toLowerCase(),
+          physicalDescription: char.physicalDescription,
+          distinctiveFeatures: char.distinctiveFeatures,
+          typicalAttire: char.typicalAttire,
+        },
+        identityFingerprint,
+        references,
+      });
+    }
+
+    // Build the style candidate from the current anchor paths. We
+    // fingerprint on the paths themselves (stable across rerenders if the
+    // anchors haven't been regenerated) — a future improvement is to hash
+    // the file bytes directly. `anchorHashes` is intentionally simple here
+    // and stays compatible with `computeStyleLoraFingerprint`.
+    const profile = this.config.imageGen?.artStyleProfile;
+    let style: StyleTrainingCandidate | undefined;
+    if (profile) {
+      const anchors: { role: string; imagePath?: string }[] = [];
+      if (this._styleAnchorPaths.character) anchors.push({ role: 'character', imagePath: this._styleAnchorPaths.character });
+      if (this._styleAnchorPaths.arcStrip) anchors.push({ role: 'arcStrip', imagePath: this._styleAnchorPaths.arcStrip });
+      if (this._styleAnchorPaths.environment) anchors.push({ role: 'environment', imagePath: this._styleAnchorPaths.environment });
+      if (anchors.length > 0) {
+        style = {
+          profile,
+          anchors,
+          anchorHashes: anchors.map((a) => a.imagePath || a.role),
+          episodeCount: this.totalEpisodes,
+        };
+      }
+    }
+
+    if (characters.length === 0 && !style) {
+      this.emit({ type: 'debug', phase: 'images', message: 'LoRA training: no eligible candidates this run.' });
+      return;
+    }
+
+    // Drop any previously-trained artifacts whose fingerprint no longer
+    // matches the current characters/style. Mirrors
+    // `invalidateStaleReferenceSheets` on the character-sheet side.
+    try {
+      const removed = await agent.invalidateStaleLoras(characters, style);
+      if (removed.length > 0) {
+        this.emit({
+          type: 'debug',
+          phase: 'images',
+          message: `LoRA registry: invalidated ${removed.length} stale record(s): ${removed.map((r) => r.name).join(', ')}`,
+        });
+      }
+    } catch (invalidateErr) {
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: `LoRA invalidate pass threw (non-fatal): ${invalidateErr instanceof Error ? invalidateErr.message : String(invalidateErr)}`,
+      });
+    }
+
+    const report = await agent.trainAll(characters, style);
+    if (!report.ran) return;
+
+    // Merge the registry back into SD settings so subsequent scene image
+    // prompts emit `<lora:...>` tags automatically.
+    const existing = this.imageService.getStableDiffusionSettings();
+    const merged = agent.mergeSettings(existing);
+    this.imageService.updateStableDiffusionSettings(merged);
+    this.emit({
+      type: 'debug',
+      phase: 'images',
+      message: `LoRA training report: ${report.entries
+        .map((e) => `${e.kind}/${e.name}=${e.outcome}`)
+        .join(', ')}`,
+    });
   }
 
   /**

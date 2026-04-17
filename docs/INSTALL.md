@@ -299,6 +299,51 @@ STABLE_DIFFUSION_BASE_URL=http://localhost:7860
 
 With `EXPO_PUBLIC_SD_ENABLED=true` the Generator screen exposes an `SD` segment and a parameters panel where you can override base URL, model, sampler, steps, CFG, and negative prompt per session. ControlNet models / IP-Adapter model names, per-character LoRA mappings, and style LoRAs are part of `StableDiffusionSettings` and can be edited via the UI or passed programmatically in `PipelineConfig.imageGen.stableDiffusion`. See `docs/IMAGE_PIPELINE_RUNTIME.md` (Provider Notes → `stable-diffusion`) for the full feature matrix.
 
+### 4.c) Optional — LoRA Auto-Training Sidecar
+
+Stable Diffusion is the only provider that can consume LoRAs, so the
+pipeline ships an **auto-train LoRA** subsystem that produces
+per-character and per-episode style LoRAs on the fly. The subsystem is
+off by default; enabling it requires a LoRA training sidecar
+(`kohya_ss` today) reachable from the proxy.
+
+1. Stand up a `kohya_ss` (or compatible) HTTP sidecar that implements
+   the contract in `docs/LORA_TRAINING.md`.
+2. Add this to `storyrpg-prototype/.env`:
+
+```env
+# --- LoRA auto-training (Stable Diffusion only) ---
+# Master switch for the Generator UI + worker:
+EXPO_PUBLIC_LORA_AUTO_TRAIN=true
+# Also read by the CLI/worker entry point:
+LORA_AUTO_TRAIN=true
+
+# Trainer backend. Only "kohya" is wired today; "diffusers" and
+# "replicate" are reserved for future adapters.
+LORA_TRAINER_BACKEND=kohya
+EXPO_PUBLIC_LORA_TRAINER_BACKEND=kohya
+
+# Sidecar URL (proxied through /lora-training/*):
+LORA_TRAINER_BASE_URL=http://localhost:7861
+EXPO_PUBLIC_LORA_TRAINER_BASE_URL=http://localhost:7861
+
+# Optional bearer token or custom auth header:
+# LORA_TRAINER_API_KEY=your-token-here
+# LORA_TRAINER_AUTH_HEADER=X-Api-Key
+
+# Override the per-request timeout (default 10 minutes, artifact
+# downloads use 15 minutes):
+# LORA_TRAINER_TIMEOUT_MS=600000
+```
+
+3. Trained artifacts and the fingerprint registry are cached under
+   `generated-stories/<storyId>/loras/`. Re-running generation with
+   unchanged character / style inputs hits the cache and does not
+   re-train.
+
+See `docs/LORA_TRAINING.md` for the full sidecar contract, the
+eligibility heuristics, and the Generator UI exposure.
+
 ---
 
 ## 5) Running the Application
@@ -622,6 +667,18 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 # STABLE_DIFFUSION_API_KEY=                  # optional bearer token; sent as x-stable-diffusion-token
 # STABLE_DIFFUSION_BACKEND=a1111             # only 'a1111' is currently implemented
 # STABLE_DIFFUSION_DEFAULT_MODEL=sdxl-base-1.0
+
+# LoRA auto-training (Stable Diffusion only) — off by default.
+# See docs/LORA_TRAINING.md for the kohya sidecar contract.
+# EXPO_PUBLIC_LORA_AUTO_TRAIN=false          # master switch in the Generator UI
+# LORA_AUTO_TRAIN=false                      # same, for CLI/worker entry points
+# LORA_TRAINER_BACKEND=disabled              # disabled | kohya | diffusers | replicate
+# EXPO_PUBLIC_LORA_TRAINER_BACKEND=disabled
+# LORA_TRAINER_BASE_URL=http://localhost:7861
+# EXPO_PUBLIC_LORA_TRAINER_BASE_URL=http://localhost:7861
+# LORA_TRAINER_API_KEY=                      # optional bearer token
+# LORA_TRAINER_AUTH_HEADER=                  # override header name (defaults to Authorization)
+# LORA_TRAINER_TIMEOUT_MS=600000             # default 10 min; artifact downloads use 15 min
 
 # ===================================================================
 # AUDIO / NARRATION (Optional)

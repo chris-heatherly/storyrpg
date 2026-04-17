@@ -152,15 +152,40 @@ opts in:
   scaffolding for further extractions; remaining candidates are listed
   in that file's header comment.
 
+- **A3-narrow / parallel scene-opening beats** — set
+  `EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS=true` to fan out the first
+  beat of every scene in parallel before the main scene loop runs. This
+  overlaps opening-beat latency across scenes (bounded by the
+  per-provider throttle) and then the main loop picks up each
+  prefetched opener and resumes with the subsequent beats sequentially.
+  Preserves D10's per-scene continuity invariant because mid-scene
+  beats are still rendered in order, and scene-opening beats have no
+  previous-beat continuity requirement (D10 clears the reference at
+  every scene boundary). Skipped automatically when `panelMode !==
+  'single'` (panel beats render multiple sub-images and aren't covered
+  by the prefetch) and per-scene when the opener is already resumed
+  from disk or the asset registry. Implementation lives in
+  `FullStoryPipeline.prefetchSceneOpeningBeats`. Default off.
+
 ### Deferred / Future work
 
-- **A3 / parallel beats inside a scene** and **A4 / overlap scenes N and
-  N+1** were explored and explicitly deferred. Both conflict with D10's
-  per-scene continuity invariant (subsequent beats in a scene consume
-  the previous beat's image as a reference). A principled future
-  implementation would fan out only scene-boundary beats (which already
-  break continuity) while keeping mid-scene beats sequential. Left as a
-  design note in `FullStoryPipeline.runEpisodeImageGeneration`.
+- **A3 / parallel beats inside a scene (full)** — fanning out every
+  beat within a scene remains deferred. Mid-scene beats consume the
+  previous beat's image as a continuity reference (via the chat-mode
+  `previous-panel-continuity` role and, for scene-to-scene, the
+  singleton `_geminiPreviousScene`), so they must stay ordered. A
+  future pass could treat sibling beats that don't depend on each
+  other (e.g. parallel narrative threads) as eligible, but needs a
+  more precise dependency analysis than today's strict "beat N depends
+  on beat N-1" model.
+- **A4 / overlap scenes N and N+1** — overlapping a scene's tail with
+  the next scene's head is still deferred. It would require
+  decoupling the per-scene continuity state (`_geminiPreviousScene`,
+  chat sessions) from the `ImageGenerationService` singleton so
+  scenes can render concurrently without racing on that state.
+  A3-narrow captures most of the practical speedup without that
+  refactor because scene openers are the most parallelism-friendly
+  piece of the work.
 
 All improvements preserve today's default behavior — to opt in, set the
 relevant env var / config flag described in each bullet.

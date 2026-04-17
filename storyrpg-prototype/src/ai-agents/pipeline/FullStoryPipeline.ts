@@ -549,6 +549,17 @@ export class FullStoryPipeline {
    * promise when it exists instead of kicking off a fresh call.
    */
   private _preWarmedColorScriptPromise: Promise<ColorScript | undefined> | null = null;
+  /**
+   * A3 (narrow): Results of the optional parallel scene-opening-beat
+   * prefetch phase, keyed by the canonical beat identifier. Populated by
+   * `prefetchSceneOpeningBeats` when
+   * `EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS` is enabled; consumed by the
+   * main scene loop in `runEpisodeImageGeneration` at beat 0 of each
+   * scene. Entries point at resolved `GeneratedImage` objects (the
+   * prefetch phase awaits Promise.allSettled before the main loop runs,
+   * so no live Promises are stored here).
+   */
+  private _openingBeatPrefetch: Map<string, GeneratedImage> = new Map();
   private locationMasterShots = new Map<string, { data: string; mimeType: string }>();
   private assetRegistry: AssetRegistry = new AssetRegistry();
   private completedPhases = new Set<string>();
@@ -7036,14 +7047,31 @@ ${clothingRule}
       styleReferenceStored = await this.generateEpisodeStyleBible(brief, colorScript, characterBible);
     }
     
-    // A3/A4 (deferred): parallelizing beats within a scene, or overlapping
-    // scene N+1 image generation with scene N's tail, would conflict with
-    // D10's per-scene continuity invariant (each subsequent beat consumes
-    // the previous beat's image as a ref). A safe future implementation
-    // would treat scene-boundary beats as parallel-eligible and fan out
-    // only those, keeping mid-scene beats sequential. That refactor is
-    // deliberately out of scope here — see IMAGE_PIPELINE_RUNTIME.md
-    // "Future work" for the design sketch.
+    // A3 (narrow, opt-in): fan out scene-opening beats in parallel before
+    // the main loop runs. Keeps D10's per-scene continuity invariant intact
+    // because mid-scene beats remain strictly sequential inside the loop —
+    // only the FIRST beat of each scene is hoisted, which by definition
+    // has no previous-beat continuity dependency (D10 clears the reference
+    // at every scene boundary). A4 (full overlap of scene N with scene
+    // N+1's tail) remains deferred; see IMAGE_PIPELINE_RUNTIME.md.
+    const imagePipelineEnv = typeof process !== 'undefined' ? process.env : ({} as Record<string, string | undefined>);
+    const parallelSceneStartsEnabled = imagePipelineEnv.EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS === 'true'
+      || imagePipelineEnv.EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS === '1';
+    if (parallelSceneStartsEnabled) {
+      try {
+        await this.prefetchSceneOpeningBeats(sceneContents, brief, characterBible, colorScript, worldBible, outputDirectory);
+      } catch (prefetchErr) {
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: `A3-narrow prefetch phase threw (falling back to inline generation): ${prefetchErr instanceof Error ? prefetchErr.message : String(prefetchErr)}`,
+        });
+        this._openingBeatPrefetch.clear();
+      }
+    } else {
+      this._openingBeatPrefetch.clear();
+    }
+
     for (let sceneIndex = 0; sceneIndex < sceneContents.length; sceneIndex++) {
       await this.checkCancellation();
       const scene = sceneContents[sceneIndex];
@@ -7311,6 +7339,85 @@ ${clothingRule}
             if (beatIdx === 0) sceneImages.set(scopedSceneId, beatResumeImageMap[identifier]);
             globalImageIndex++;
             continue;
+          }
+
+          // A3-narrow: reuse prefetched scene-opening beat if available. The
+          // prefetch phase ran before the main loop and produced a resolved
+          // GeneratedImage for this identifier; mirror the post-generation
+          // bookkeeping here (beatImages / sceneImages / assetRegistry /
+          // resume / style-ref / lastGeneratedImage) so downstream code sees
+          // exactly the same state as if the inline generateImage succeeded.
+          if (beatIdx === 0) {
+            const prefetchLookupKey = identifier.replace(/[^a-zA-Z0-9_\-./]/g, '').replace(/-+/g, '-');
+            const prefetched = this._openingBeatPrefetch.get(prefetchLookupKey);
+            if (prefetched && prefetched.imageUrl) {
+              this._openingBeatPrefetch.delete(prefetchLookupKey);
+              console.log(`[Pipeline] A3-narrow: reusing prefetched opening-beat image for ${identifier}`);
+              const beatMapKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beatId);
+              beatImages.set(beatMapKey, prefetched.imageUrl);
+              sceneImages.set(scopedSceneId, prefetched.imageUrl);
+
+              try {
+                const slotId = resumeSlotId;
+                if (!this.assetRegistry.get(slotId)) {
+                  this.assetRegistry.planSlot({
+                    slotId,
+                    family: 'story-beat',
+                    imageType: 'beat',
+                    sceneId: scene.sceneId,
+                    scopedSceneId,
+                    beatId,
+                    storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beatId}].imageUrl`,
+                    baseIdentifier: identifier,
+                    required: false,
+                    qualityTier: 'standard',
+                    coverageKey: `beat:${scene.sceneId}:${beatId}`,
+                  });
+                }
+                this.assetRegistry.markSuccess(slotId, prefetched);
+                // Mirror the main loop's scene-slot bookkeeping (line 7624-7642).
+                const sceneSlotId = `story-scene:${scene.sceneId}`;
+                if (!this.assetRegistry.get(sceneSlotId)) {
+                  this.assetRegistry.planSlot({
+                    slotId: sceneSlotId,
+                    family: 'story-scene',
+                    imageType: 'scene',
+                    sceneId: scene.sceneId,
+                    scopedSceneId,
+                    beatId,
+                    storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].backgroundImage`,
+                    baseIdentifier: `scene-${scopedSceneId}-bg`,
+                    required: false,
+                    qualityTier: 'standard',
+                    coverageKey: `scene:${scene.sceneId}`,
+                  });
+                }
+                this.assetRegistry.markSuccess(sceneSlotId, prefetched);
+              } catch { /* non-fatal: registry is supplementary to beatImages map */ }
+
+              if (prefetched.imageData && prefetched.mimeType) {
+                lastGeneratedImage = { data: prefetched.imageData, mimeType: prefetched.mimeType };
+              }
+
+              if (!styleReferenceStored && prefetched.imageData && prefetched.mimeType) {
+                this.imageService.setGeminiStyleReference(prefetched.imageData, prefetched.mimeType);
+                styleReferenceStored = true;
+                this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from prefetched opener of scene ${scene.sceneId}` });
+              }
+
+              beatResumeSet.add(identifier);
+              beatResumeImageMap[identifier] = prefetched.imageUrl;
+              persistBeatResume().catch(() => {});
+
+              globalImageIndex++;
+              this.emit({
+                type: 'checkpoint',
+                phase: 'images',
+                message: `Image ${globalImageIndex} of ~${estimatedTotalImages} complete (prefetched)`,
+                data: { imageIndex: globalImageIndex, totalImages: estimatedTotalImages, identifier, sceneId: scene.sceneId, prefetched: true },
+              });
+              continue;
+            }
           }
 
           const isEstablishingBeat = (beat as any).shotType === 'establishing';
@@ -11144,6 +11251,287 @@ ${clothingRule}
       this.emit({ type: 'warning', phase: 'images', message: `Episode style bible generation failed: ${message}` });
       return false;
     }
+  }
+
+  /**
+   * A3 (narrow): optionally prefetch scene-opening beat images in parallel
+   * before the main scene loop runs. This overlaps opening-beat latency
+   * across scenes while keeping D10's per-scene continuity invariant
+   * intact — mid-scene beats (which depend on the previous beat as a
+   * continuity reference) remain strictly sequential inside the main loop.
+   *
+   * Gated on `EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS=true`; defaults off.
+   * Runs fully *before* the main loop begins mutating
+   * `_geminiPreviousScene`, so the prefetch's generateImage calls see the
+   * singleton in a clean null state (which is what a scene-opener expects
+   * — D10 clears the previous-scene ref at every scene boundary).
+   *
+   * Skipped entirely for panel-mode stories (panelMode !== 'single'):
+   * panel beats render multiple sub-images per beat, which the prefetch
+   * doesn't cover. Also skipped per-scene for openers already resumed
+   * from disk or the asset registry.
+   *
+   * Populates `this._openingBeatPrefetch`, a map keyed by beat identifier.
+   * The main loop checks this map at beat 0 of each scene and, when a
+   * prefetched result is present, short-circuits the inline generateImage
+   * call and feeds the prefetched image into the normal post-generation
+   * bookkeeping (beatImages, sceneImages, assetRegistry, beatResume,
+   * styleReferenceStored, lastGeneratedImage).
+   */
+  private async prefetchSceneOpeningBeats(
+    sceneContents: SceneContent[],
+    brief: FullCreativeBrief,
+    characterBible: CharacterBible,
+    colorScript: ColorScript | undefined,
+    worldBible: WorldBible,
+    outputDirectory?: string,
+  ): Promise<void> {
+    this._openingBeatPrefetch.clear();
+
+    const panelMode: PanelMode = this.config.imageGen?.panelMode || 'single';
+    if (panelMode !== 'single') {
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: `A3-narrow prefetch skipped: panelMode="${panelMode}" (prefetch only supports single-image mode).`,
+      });
+      return;
+    }
+
+    type PrefetchItem = {
+      identifier: string;
+      sceneId: string;
+      scopedSceneId: string;
+      beatId: string;
+      work: Promise<GeneratedImage>;
+    };
+    const items: PrefetchItem[] = [];
+    const imageStrategy = this.config.imageGen?.strategy || 'selective';
+
+    for (const scene of sceneContents) {
+      try {
+        const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
+
+        if (!Array.isArray(scene.moodProgression)) scene.moodProgression = [];
+        if (!Array.isArray(scene.keyMoments)) scene.keyMoments = [];
+
+        const beatsToIllustrate = imageStrategy === 'all-beats'
+          ? scene.beats
+          : scene.beats.filter((b, idx) => {
+              const isStartingBeat = b.id === scene.startingBeatId || idx === 0;
+              const isChoicePoint = b.isChoicePoint === true;
+              const isLastBeat = idx === scene.beats.length - 1;
+              const isClimaxBeat = (b as { isClimaxBeat?: boolean }).isClimaxBeat === true;
+              const isKeyStoryBeat = (b as { isKeyStoryBeat?: boolean }).isKeyStoryBeat === true;
+              const isChoicePayoff = (b as { isChoicePayoff?: boolean }).isChoicePayoff === true;
+              const isIntervalBeat = idx % 3 === 0;
+              return isStartingBeat || isChoicePoint || isLastBeat || isClimaxBeat || isKeyStoryBeat || isChoicePayoff || isIntervalBeat;
+            });
+        if (beatsToIllustrate.length === 0) continue;
+
+        const openerBeat = beatsToIllustrate[0];
+        const beatId = openerBeat.id;
+        const rawIdentifier = `beat-${scopedSceneId}-${beatId}`;
+        // Mirror the sanitization the service performs so our map key matches
+        // exactly what the main loop will eventually look up.
+        const identifier = rawIdentifier.replace(/[^a-zA-Z0-9_\-./]/g, '').replace(/-+/g, '-');
+
+        if (outputDirectory) {
+          const sceneSlug = idSlugify(scene.sceneId);
+          const beatResumeLoaded = loadBeatResumeStateSync(outputDirectory, sceneSlug);
+          const beatResumeSet = new Set<string>(beatResumeLoaded?.completedIdentifiers ?? []);
+          if (beatResumeSet.has(identifier) || beatResumeSet.has(rawIdentifier)) continue;
+        }
+
+        const resumeSlotId = `story-beat:${scene.sceneId}::${beatId}`;
+        const existingRecord = this.assetRegistry.getResolvedAsset(resumeSlotId);
+        if (existingRecord?.latestUrl) continue;
+
+        const sceneCharacterIds = this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id);
+        const locationInfo = getLocationInfoForScene(scene, worldBible);
+        const sceneLocationId = locationInfo?.locationId;
+        const sceneContext = this.extractSceneContext(scene, 0, sceneContents.length, worldBible);
+
+        const beatCharContext = this.analyzeBeatCharacters(
+          openerBeat.text,
+          openerBeat.speaker,
+          sceneCharacterIds,
+          characterBible,
+          brief.protagonist.id,
+        );
+        const explicitShotType = (openerBeat as { shotType?: 'establishing' | 'character' | 'action' }).shotType;
+        const isEstablishing = explicitShotType === 'establishing'
+          || (!explicitShotType && this.isEstablishingBeat(openerBeat.text, openerBeat.speaker, openerBeat.primaryAction, beatCharContext));
+        const resolvedShotType: 'establishing' | 'character' | 'action' = explicitShotType
+          || (isEstablishing ? 'establishing' : 'character');
+
+        const sceneColorMood = (colorScript as unknown as { scenes?: Array<Record<string, unknown>> })?.scenes
+          ?.find((cs) => (cs as { sceneId?: string; sceneName?: string }).sceneId === scene.sceneId
+            || (cs as { sceneId?: string; sceneName?: string }).sceneName === scene.sceneName) as Record<string, unknown> | undefined;
+        const colorMoodHints = sceneColorMood ? {
+          palette: (sceneColorMood.palette || sceneColorMood.colorPalette) as string | undefined,
+          lighting: (sceneColorMood.lighting || sceneColorMood.lightingMood) as string | undefined,
+          temperature: sceneColorMood.temperature as string | undefined,
+        } : undefined;
+
+        const sceneMood = scene.moodProgression.length > 0
+          ? scene.moodProgression[0]
+          : (sceneContext.isClimactic ? 'intense' : 'dramatic');
+
+        const scenePromptCtx: import('../images/beatPromptBuilder').ScenePromptContext = {
+          sceneId: scene.sceneId,
+          sceneName: scene.sceneName,
+          genre: brief.story.genre,
+          tone: brief.story.tone,
+          mood: sceneMood,
+          settingContext: scene.settingContext,
+          artStyle: this.config.artStyle,
+          colorMood: colorMoodHints,
+          styleProfile: this.config.imageGen?.artStyleProfile,
+        };
+
+        const beatColorEntry = (colorScript as unknown as { beats?: Array<Record<string, unknown>> })?.beats
+          ?.find((b) => (b as { beatId?: string }).beatId === beatId) as Record<string, unknown> | undefined;
+        let beatColorOverride: import('../images/beatPromptBuilder').BeatPromptInput['colorMoodOverride'] | undefined;
+        if (beatColorEntry) {
+          const hues: string[] = Array.isArray(beatColorEntry.dominantHues) ? beatColorEntry.dominantHues as string[] : [];
+          const palette = hues.length > 0 ? hues.join(' and ') : undefined;
+          const temperature = typeof beatColorEntry.lightTemp === 'string' ? beatColorEntry.lightTemp : undefined;
+          beatColorOverride = {
+            palette,
+            lighting: typeof beatColorEntry.lightDirection === 'string'
+              ? `${beatColorEntry.lightDirection} light`
+              : undefined,
+            temperature,
+            // Beat 0 has no previous beat — no transition note.
+            transitionNote: undefined,
+          };
+        }
+
+        let shotCharacterIds: string[];
+        if (isEstablishing) {
+          shotCharacterIds = [];
+        } else {
+          shotCharacterIds = openerBeat.characters && openerBeat.characters.length > 0
+            ? [...openerBeat.characters]
+            : [...sceneCharacterIds];
+          if (!shotCharacterIds.includes(brief.protagonist.id)) {
+            shotCharacterIds = [brief.protagonist.id, ...shotCharacterIds];
+          }
+        }
+        const shotCharacterNames = shotCharacterIds
+          .map(id => characterBible.characters.find(c => c.id === id)?.name)
+          .filter(Boolean) as string[];
+
+        const beatPromptInput: import('../images/beatPromptBuilder').BeatPromptInput = {
+          beatId,
+          beatText: openerBeat.text,
+          beatIndex: 0,
+          totalBeats: beatsToIllustrate.length,
+          visualMoment: this.sanitizePromptText(openerBeat.visualMoment || '', brief, ''),
+          primaryAction: isEstablishing ? '' : this.sanitizePromptText(openerBeat.primaryAction || '', brief, ''),
+          emotionalRead: isEstablishing ? '' : this.sanitizePromptText(openerBeat.emotionalRead || '', brief, ''),
+          relationshipDynamic: isEstablishing ? '' : this.sanitizePromptText(openerBeat.relationshipDynamic || '', brief, ''),
+          mustShowDetail: this.sanitizePromptText(openerBeat.mustShowDetail || '', brief, ''),
+          shotType: resolvedShotType,
+          isClimaxBeat: openerBeat.isClimaxBeat,
+          isKeyStoryBeat: openerBeat.isKeyStoryBeat,
+          isChoicePayoff: (openerBeat as { isChoicePayoff?: boolean }).isChoicePayoff,
+          choiceContext: this.sanitizePromptText((openerBeat as { choiceContext?: string }).choiceContext || '', brief, ''),
+          incomingChoiceContext: this.sanitizePromptText(scene.incomingChoiceContext || '', brief, ''),
+          isBranchPayoff: !!scene.incomingChoiceContext,
+          foregroundCharacterNames: isEstablishing ? [] : (openerBeat.foregroundCharacters || shotCharacterNames),
+          backgroundCharacterNames: isEstablishing ? [] : openerBeat.backgroundCharacters,
+          colorMoodOverride: beatColorOverride,
+        };
+
+        let imagePrompt = buildBeatImagePrompt(beatPromptInput, scenePromptCtx);
+        imagePrompt = this.sanitizeImagePrompt(imagePrompt, brief);
+
+        const includeExpressionRefs = !!(openerBeat.isClimaxBeat || openerBeat.isKeyStoryBeat);
+        const referenceImages = this.gatherCharacterReferenceImages(
+          shotCharacterIds,
+          characterBible,
+          sceneLocationId,
+          {
+            includeExpressions: includeExpressionRefs,
+            family: 'story-beat',
+            slotId: resumeSlotId,
+          },
+        );
+
+        const work = withTimeout(
+          this.imageService.generateImage(
+            imagePrompt,
+            identifier,
+            {
+              sceneId: scopedSceneId,
+              beatId,
+              type: 'scene' as const,
+              characters: shotCharacterIds,
+              characterNames: shotCharacterNames,
+              characterDescriptions: this.buildCharacterDescriptions(shotCharacterIds, characterBible),
+            },
+            referenceImages.length > 0 ? referenceImages : undefined,
+          ),
+          PIPELINE_TIMEOUTS.imageGeneration,
+          `prefetchOpener(${scopedSceneId}:${beatId})`,
+        );
+
+        items.push({ identifier, sceneId: scene.sceneId, scopedSceneId, beatId, work });
+      } catch (perSceneErr) {
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: `A3-narrow prefetch: setup failed for scene "${scene.sceneId}" (non-fatal): ${perSceneErr instanceof Error ? perSceneErr.message : String(perSceneErr)}`,
+        });
+      }
+    }
+
+    if (items.length === 0) {
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: `A3-narrow prefetch: no eligible scene-opening beats to prefetch.`,
+      });
+      return;
+    }
+
+    this.emit({
+      type: 'agent_start',
+      agent: 'ImageService',
+      message: `A3-narrow: prefetching ${items.length} scene-opening beats in parallel`,
+    });
+
+    const settled = await Promise.allSettled(items.map(i => i.work));
+
+    let successCount = 0;
+    let failCount = 0;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const result = settled[i];
+      if (result.status === 'fulfilled' && (result.value.imageUrl || result.value.imagePath)) {
+        this._openingBeatPrefetch.set(item.identifier, result.value);
+        successCount++;
+      } else {
+        failCount++;
+        const reason = result.status === 'rejected'
+          ? (result.reason instanceof Error ? result.reason.message : String(result.reason))
+          : 'prefetch returned no image';
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: `A3-narrow prefetch missed for ${item.identifier} (will regenerate inline): ${reason}`,
+        });
+      }
+    }
+
+    this.emit({
+      type: 'agent_complete',
+      agent: 'ImageService',
+      message: `A3-narrow prefetch complete: ${successCount}/${items.length} succeeded (${failCount} fell back to inline)`,
+      data: { prefetchSize: items.length, successCount, failCount },
+    });
   }
 
   /**

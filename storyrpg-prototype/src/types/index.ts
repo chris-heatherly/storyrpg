@@ -534,11 +534,23 @@ export interface Beat {
   isKeyStoryBeat?: boolean;
 
   // Beat-level visual contract (authored with prose to reduce downstream visual drift)
+  /** B4: One concrete, observable instant for this beat (named subjects, not generic nouns). */
   visualMoment?: string;
+  /** B4: Verb-led physical action for the primary subject. Leave empty for establishing shots. */
   primaryAction?: string;
+  /** B4: What is visibly readable in face/body language per named character. Empty for establishing. */
   emotionalRead?: string;
+  /** B4: Spatial / power / proximity dynamic between named characters. Empty for establishing. */
   relationshipDynamic?: string;
+  /** B4: Single non-negotiable visual clue the image must include. */
   mustShowDetail?: string;
+  /**
+   * B4: Scene-level pacing signal emitted by SceneWriter. Used by shot
+   * planners (`shotSequencePlanner`) and image QA to bias coverage
+   * decisions. Previously read via `(beat as any).intensityTier` — now
+   * typed so consumers don't silently lose the value.
+   */
+  intensityTier?: 'dominant' | 'supporting' | 'rest';
 
   // When true, text in the image is permitted (e.g., a letter, sign, or book in the scene).
   // Default false: the image QA gate will reject images containing any visible text.

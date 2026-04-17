@@ -542,6 +542,13 @@ export class FullStoryPipeline {
   private imageWorkerQueue: LocalWorkerQueue;
   private audioWorkerQueue: LocalWorkerQueue;
   private videoWorkerQueue: LocalWorkerQueue;
+  /**
+   * A10: Promise for a pre-warmed color script. Seeded before
+   * `runMasterImageGeneration` so the color-script LLM call overlaps with
+   * master image generation. `runEpisodeImageGeneration` consumes the
+   * promise when it exists instead of kicking off a fresh call.
+   */
+  private _preWarmedColorScriptPromise: Promise<ColorScript | undefined> | null = null;
   private locationMasterShots = new Map<string, { data: string; mimeType: string }>();
   private assetRegistry: AssetRegistry = new AssetRegistry();
   private completedPhases = new Set<string>();
@@ -2057,6 +2064,22 @@ export class FullStoryPipeline {
           }
           this.emit({ type: 'debug', phase: 'images', message: `Image output directory: ${imagesDir}` });
           
+          // A10: warm up the color script in parallel with master image
+          // generation. Both are independent (color script is pure text;
+          // master images don't need the script) so overlapping them hides
+          // the color-script latency. `runEpisodeImageGeneration` consumes
+          // the promise below. Failures are swallowed into `undefined` so
+          // the downstream path can still fall back to a fresh call.
+          this._preWarmedColorScriptPromise = this.generateEpisodeColorScript(brief, sceneContents, choiceSets)
+            .catch((err) => {
+              this.emit({
+                type: 'warning',
+                phase: 'images',
+                message: `A10 color-script prewarm failed (will retry inline): ${err instanceof Error ? err.message : String(err)}`,
+              });
+              return undefined;
+            });
+
           // Generate master character/location references
           this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
           await this.imageWorkerQueue.run(() =>
@@ -5782,6 +5805,17 @@ export class FullStoryPipeline {
       if (this.config.imageGen?.enabled) {
         this.emit({ type: 'phase_start', phase: `images_ep_${i}`, message: `Generating visuals for Episode ${i}...` });
         try {
+          // A10: warm up color script in parallel with the episode image
+          // phase so the script latency overlaps master-image work.
+          this._preWarmedColorScriptPromise = this.generateEpisodeColorScript(episodeBrief, sceneContents, choiceSets)
+            .catch((err) => {
+              this.emit({
+                type: 'warning',
+                phase: `images_ep_${i}`,
+                message: `A10 color-script prewarm failed (will retry inline): ${err instanceof Error ? err.message : String(err)}`,
+              });
+              return undefined;
+            });
           imageResults = await this.imageWorkerQueue.run(() =>
             this.measurePhase(
               `episode_${i}_images`,
@@ -6978,8 +7012,20 @@ ${clothingRule}
     let globalImageIndex = 0;
     const estimatedTotalImages = sceneContents.reduce((sum, sc) => sum + (sc.beats?.length || 0), 0);
     
-    // PHASE 1: Generate color script for visual arc consistency
-    const colorScript = await this.generateEpisodeColorScript(brief, sceneContents, choiceSets);
+    // PHASE 1: Generate color script for visual arc consistency.
+    // A10: prefer the pre-warmed promise if the caller kicked one off in
+    // parallel with master-image generation. Fresh inline call is the
+    // fallback (and matches pre-A10 behavior).
+    let colorScript: ColorScript | undefined;
+    if (this._preWarmedColorScriptPromise) {
+      colorScript = await this._preWarmedColorScriptPromise;
+      this._preWarmedColorScriptPromise = null;
+      if (colorScript === undefined) {
+        colorScript = await this.generateEpisodeColorScript(brief, sceneContents, choiceSets);
+      }
+    } else {
+      colorScript = await this.generateEpisodeColorScript(brief, sceneContents, choiceSets);
+    }
     
     // Store color script for saving
     if (colorScript) {
@@ -6990,6 +7036,14 @@ ${clothingRule}
       styleReferenceStored = await this.generateEpisodeStyleBible(brief, colorScript, characterBible);
     }
     
+    // A3/A4 (deferred): parallelizing beats within a scene, or overlapping
+    // scene N+1 image generation with scene N's tail, would conflict with
+    // D10's per-scene continuity invariant (each subsequent beat consumes
+    // the previous beat's image as a ref). A safe future implementation
+    // would treat scene-boundary beats as parallel-eligible and fan out
+    // only those, keeping mid-scene beats sequential. That refactor is
+    // deliberately out of scope here — see IMAGE_PIPELINE_RUNTIME.md
+    // "Future work" for the design sketch.
     for (let sceneIndex = 0; sceneIndex < sceneContents.length; sceneIndex++) {
       await this.checkCancellation();
       const scene = sceneContents[sceneIndex];
@@ -7091,14 +7145,14 @@ ${clothingRule}
           // treated as establishing shots — environment-only, no character poses.
           const explicitShotType = (b as any).shotType as 'establishing' | 'character' | 'action' | undefined;
           const isEstablishing = explicitShotType === 'establishing'
-            || (!explicitShotType && this.isEstablishingBeat(b.text, b.speaker, (b as any).primaryAction, beatCharContext));
+            || (!explicitShotType && this.isEstablishingBeat(b.text, b.speaker, b.primaryAction, beatCharContext));
           const resolvedShotType: 'establishing' | 'character' | 'action' = explicitShotType
             || (isEstablishing ? 'establishing' : 'character');
           return {
             id: b.id,
             text: b.text,
-            isClimaxBeat: (b as { isClimaxBeat?: boolean }).isClimaxBeat,
-            isKeyStoryBeat: (b as { isKeyStoryBeat?: boolean }).isKeyStoryBeat,
+            isClimaxBeat: b.isClimaxBeat,
+            isKeyStoryBeat: b.isKeyStoryBeat,
             // Per-beat character classification — empty for establishing shots so no identity block is injected
             characters: isEstablishing ? [] : beatCharContext.foreground,
             foregroundCharacters: isEstablishing ? [] : beatCharContext.foregroundNames,
@@ -7107,12 +7161,12 @@ ${clothingRule}
             emotionHint: isEstablishing ? undefined : this.mapSpeakerMoodToEmotion(b.speakerMood),
             intensityHint: this.inferIntensity(b.speakerMood, b.text),
             valenceHint: this.inferValence(b.speakerMood, b.text),
-            // Thread SceneWriter-authored visual contract directly to StoryboardAgent
-            visualMoment: (b as any).visualMoment,
-            primaryAction: isEstablishing ? '' : (b as any).primaryAction,
-            emotionalRead: isEstablishing ? '' : (b as any).emotionalRead,
-            relationshipDynamic: isEstablishing ? '' : (b as any).relationshipDynamic,
-            mustShowDetail: (b as any).mustShowDetail,
+            // B4: SceneWriter-authored visual contract fields now typed on Beat.
+            visualMoment: b.visualMoment,
+            primaryAction: isEstablishing ? '' : b.primaryAction,
+            emotionalRead: isEstablishing ? '' : b.emotionalRead,
+            relationshipDynamic: isEstablishing ? '' : b.relationshipDynamic,
+            mustShowDetail: b.mustShowDetail,
             // Shot intent — drives image prompt strategy (establishing = environment-only)
             shotType: resolvedShotType,
           };
@@ -7128,10 +7182,10 @@ ${clothingRule}
             isClimaxBeat: b.isClimaxBeat,
             isKeyStoryBeat: b.isKeyStoryBeat,
             isChoicePayoff: (b as any).isChoicePayoff,
-            emotionalRead: (b as any).emotionalRead,
-            relationshipDynamic: (b as any).relationshipDynamic,
-            primaryAction: (b as any).primaryAction,
-            intensityTier: (b as any).intensityTier,
+            emotionalRead: b.emotionalRead,
+            relationshipDynamic: b.relationshipDynamic,
+            primaryAction: b.primaryAction,
+            intensityTier: b.intensityTier,
           })),
           { genre: brief.story.genre, tone: brief.story.tone },
           panelMode,
@@ -11028,6 +11082,41 @@ ${clothingRule}
         'EpisodeStyleBibleCharacterAnchor'
       );
 
+      // C3: Optional third sample — an environment vignette in the episode's
+      // tone. Locks in texture/atmosphere alongside the character anchor and
+      // color strip. Gated behind EXPO_PUBLIC_STYLE_BIBLE_RICH so teams that
+      // want to spend the extra image budget can opt in; default off.
+      const env = typeof process !== 'undefined' ? process.env : ({} as Record<string, string | undefined>);
+      const richSamplesEnabled = env.EXPO_PUBLIC_STYLE_BIBLE_RICH === 'true' ||
+        env.EXPO_PUBLIC_STYLE_BIBLE_RICH === '1';
+      let environmentAnchorImage: GeneratedImage | undefined;
+      if (richSamplesEnabled) {
+        try {
+          const primaryLocation = brief.world.keyLocations[0];
+          const toneTerms = colorScript.colorDictionary.slice(0, 2).map(e => e.color).join(', ');
+          const environmentPrompt: ImagePrompt = {
+            prompt: `environment vignette of ${primaryLocation?.name || 'the episode\'s primary location'} at the key tonal moment, no people, atmospheric light and texture, the episode palette expressed through ${toneTerms || 'the planned color script'}, designed as a visual style bible anchor for locations, unified single image`,
+            style: this.config.artStyle || undefined,
+            aspectRatio: '16:9',
+            composition: 'Environment-only establishing vignette. No people, no figures, no text. Single cohesive image locking in the episode\'s material palette and lighting.',
+            negativePrompt: 'text, letters, numbers, captions, labels, characters, people, figures, person, woman, man, silhouette of person, portrait, collage, split-screen, multi-panel',
+            visualNarrative: `Episode style bible environment anchor for ${brief.story.title}: locks in the look of ${primaryLocation?.name || 'the primary location'} under the episode's tonal palette.`,
+          };
+          const environmentIdentifier = `style-bible-${idSlugify(brief.story.title)}-environment-anchor`;
+          environmentAnchorImage = await withTimeout(
+            this.imageService.generateImage(environmentPrompt, environmentIdentifier, { type: 'master' as const }),
+            PIPELINE_TIMEOUTS.imageGeneration,
+            'EpisodeStyleBibleEnvironmentAnchor'
+          );
+        } catch (envErr) {
+          this.emit({
+            type: 'warning',
+            phase: 'images',
+            message: `C3 rich style bible: environment anchor failed (non-fatal): ${envErr instanceof Error ? envErr.message : String(envErr)}`,
+          });
+        }
+      }
+
       const preferredAnchor = (anchorImage.imageData && anchorImage.mimeType)
         ? anchorImage
         : (stripImage.imageData && stripImage.mimeType ? stripImage : undefined);
@@ -11045,6 +11134,8 @@ ${clothingRule}
         data: {
           stripGenerated: !!stripImage.imageUrl,
           characterAnchorGenerated: !!anchorImage.imageUrl,
+          environmentAnchorGenerated: !!environmentAnchorImage?.imageUrl,
+          richSamplesEnabled,
         }
       });
       return true;

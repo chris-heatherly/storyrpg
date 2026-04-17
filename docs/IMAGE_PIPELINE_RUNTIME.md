@@ -121,6 +121,46 @@ opts in:
   `regenerate-image.ts` consumes both free-form notes and the
   `imageFeedbackStore`'s structured `reasons` tags to drive directive
   and negative-prompt additions.
+- **A10 / prewarmed color script** — the episode color script now starts
+  LLM generation in parallel with master image generation via
+  `_preWarmedColorScriptPromise` in `FullStoryPipeline`, hiding color-
+  script latency behind the image-phase wall clock. Fully transparent to
+  callers; failures fall back to an inline call.
+- **A7 / reference-URL uploader** — `ImageGenerationService.ensureReferenceUrls`
+  opportunistically uploads inline-only refs via the Atlas uploadMedia
+  endpoint to populate `ReferenceImage.url`. Called from the Midjourney
+  path when D7 `enableCrefSref` is on. Requires an Atlas API key; no-ops
+  cleanly otherwise.
+- **A8 / Atlas Seedream sibling-batch helper** — new
+  `generateSiblingImagesBatched()` + `getMaxBatchSize()` on
+  `ImageGenerationService` for callers with N independent sibling
+  prompts (encounter outcome tiers, storylet variants). Transparently
+  folds into a single Seedream batch call when possible; falls back to
+  sequential generation otherwise.
+- **B4 / typed beat visual contract** — `visualMoment`, `primaryAction`,
+  `emotionalRead`, `relationshipDynamic`, `mustShowDetail`, and
+  `intensityTier` are now typed on `Beat` in `src/types/index.ts`,
+  removing `(b as any)` casts across the pipeline and making SceneWriter
+  drop-outs visible to the type checker.
+- **C3 / optional rich style bible samples** — set
+  `EXPO_PUBLIC_STYLE_BIBLE_RICH=true` to add a third sample (environment
+  vignette) alongside the existing color-strip + character anchor. Costs
+  one extra image per episode; default off.
+- **E2 / pure helpers extracted from `imageGenerationService.ts`** —
+  `normalizeManagedOutputPath` and `detectImageMimeType` now live in
+  `src/ai-agents/services/imageGenerationHelpers.ts`. Migration
+  scaffolding for further extractions; remaining candidates are listed
+  in that file's header comment.
+
+### Deferred / Future work
+
+- **A3 / parallel beats inside a scene** and **A4 / overlap scenes N and
+  N+1** were explored and explicitly deferred. Both conflict with D10's
+  per-scene continuity invariant (subsequent beats in a scene consume
+  the previous beat's image as a reference). A principled future
+  implementation would fan out only scene-boundary beats (which already
+  break continuity) while keeping mid-scene beats sequential. Left as a
+  design note in `FullStoryPipeline.runEpisodeImageGeneration`.
 
 All improvements preserve today's default behavior — to opt in, set the
 relevant env var / config flag described in each bullet.

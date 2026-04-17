@@ -20,6 +20,9 @@ import { SeedRegistry, type SeedKey } from './stable-diffusion/seedRegistry';
 import { isNativeRuntime, isWebRuntime } from '../../utils/runtimeEnv';
 import { selectStyleAdaptation } from '../utils/styleAdaptation';
 import { ENCOUNTER_VISUAL_PRINCIPLES_COMPACT, STORY_BEAT_VISUAL_PRINCIPLES_COMPACT, getBeatStagingDirection } from '../prompts';
+// E2: pure helper functions moved out of this file. Grow this module
+// with additional extractions as the service continues to split.
+import { normalizeManagedOutputPath, detectImageMimeType } from './imageGenerationHelpers';
 
 // Dynamic import for Node.js fs module
 let nodeFs: any;
@@ -131,17 +134,8 @@ type EffectiveRequestMeta = {
   model?: string;
 };
 
-function normalizeManagedOutputPath(filePath: string): string {
-  if (!filePath) return filePath;
-  const normalized = filePath.replace(/\\/g, '/');
-  for (const marker of ['generated-stories/', 'generated-images/', 'generated-videos/', 'ref-images/']) {
-    const idx = normalized.indexOf(marker);
-    if (idx >= 0) {
-      return normalized.slice(idx);
-    }
-  }
-  return filePath;
-}
+// E2: `normalizeManagedOutputPath` moved to ./imageGenerationHelpers.ts.
+// Imported at top alongside `detectImageMimeType`.
 
 export type ImageJobEvent = 
   | { type: 'job_added'; job: any }
@@ -207,35 +201,7 @@ export interface ReferenceThumbnail {
   role: string;
 }
 
-/**
- * Detect the actual MIME type from a base64-encoded image by inspecting magic bytes,
- * or extract it from a data URI prefix. Falls back to 'image/png' when detection fails.
- */
-function detectImageMimeType(output: string): { mimeType: string; extension: string; base64Data: string } {
-  // If the output is a data URI, extract the real MIME type from the prefix
-  const dataUriMatch = output.match(/^data:(image\/[\w+.-]+);base64,/);
-  if (dataUriMatch) {
-    const mimeType = dataUriMatch[1];
-    const base64Data = output.slice(dataUriMatch[0].length);
-    const extension = mimeType.includes('jpeg') || mimeType.includes('jpg') ? 'jpg'
-      : mimeType.includes('webp') ? 'webp'
-      : 'png';
-    return { mimeType, extension, base64Data };
-  }
-
-  // Raw base64 — sniff magic bytes from the first few bytes
-  try {
-    const head = atob(output.slice(0, 16));
-    if (head.charCodeAt(0) === 0xFF && head.charCodeAt(1) === 0xD8) {
-      return { mimeType: 'image/jpeg', extension: 'jpg', base64Data: output };
-    }
-    if (head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP') {
-      return { mimeType: 'image/webp', extension: 'webp', base64Data: output };
-    }
-  } catch (_) { /* atob may fail on non-base64 preamble — fall through */ }
-
-  return { mimeType: 'image/png', extension: 'png', base64Data: output };
-}
+// E2: `detectImageMimeType` moved to ./imageGenerationHelpers.ts.
 
 export class ImageGenerationService {
   private config: ImageGenerationConfig;
@@ -1092,6 +1058,46 @@ export class ImageGenerationService {
   }
 
   private static readonly ATLAS_UPLOAD_PAYLOAD_THRESHOLD = 10 * 1024 * 1024; // 10 MB
+
+  /**
+   * A7: For URL-based providers (notably Midjourney with `--cref`/`--sref`),
+   * ensure each ReferenceImage carries a `url`. Uploads any inline-only
+   * refs via the Atlas uploadMedia endpoint (which returns a public
+   * download URL that Midjourney can fetch). On upload failure the ref
+   * is returned untouched so the prompt builder's fallback path still
+   * runs.
+   *
+   * No-op (returns undefined) if no refs were supplied; returns the input
+   * array untouched if an Atlas API key isn't configured.
+   */
+  private async ensureReferenceUrls(
+    refs: ReferenceImage[] | undefined,
+  ): Promise<ReferenceImage[] | undefined> {
+    if (!refs || refs.length === 0) return refs;
+    const apiKey = this.config.atlasCloudApiKey;
+    if (!apiKey) return refs; // no uploader available
+    const result: ReferenceImage[] = [];
+    for (const ref of refs) {
+      if (ref.url || !ref.data) {
+        result.push(ref);
+        continue;
+      }
+      try {
+        const uploaded = await this.uploadAtlasMedia(ref.data, ref.mimeType, apiKey);
+        // uploadAtlasMedia falls back to `data:...base64,...` on failure;
+        // only record an actual http(s) URL so downstream consumers don't
+        // get a data-URL masquerading as a remote URL.
+        if (/^https?:\/\//i.test(uploaded)) {
+          result.push({ ...ref, url: uploaded });
+        } else {
+          result.push(ref);
+        }
+      } catch {
+        result.push(ref);
+      }
+    }
+    return result;
+  }
 
   /**
    * Upload a base64 image to Atlas Cloud via the uploadMedia proxy route,
@@ -3927,6 +3933,56 @@ export class ImageGenerationService {
   }
 
   /**
+   * A8: Report the batch capability for the active provider/model combo so
+   * callers can decide whether to collect sibling prompts into a single
+   * `generateImageBatch` call. Returns 1 when batching isn't supported
+   * (callers should still use `generateImageBatch` — it transparently
+   * falls back to a sequential loop). Intended as a lightweight capability
+   * probe; not an authoritative rate-limit hint.
+   */
+  getMaxBatchSize(hasRefs: boolean = false): number {
+    const caps = this.modelCapabilities;
+    const canBatch = hasRefs ? caps.supportsBatchEdit : caps.supportsBatch;
+    return canBatch ? caps.maxBatchSize : 1;
+  }
+
+  /**
+   * A8: Thin convenience wrapper for "N independent sibling prompts" —
+   * common patterns include encounter outcome siblings (success /
+   * complicated / failure) and storylet aftermath variants. The wrapper
+   * delegates to `generateImageBatch` so Atlas Seedream can fold the
+   * siblings into a single API call; non-Seedream providers still get a
+   * correct (but sequential) result via the inner fallback.
+   *
+   * Callers supply the full referenceImages up-front because Seedream's
+   * batch-edit call reuses a single ref set across all prompts in the
+   * chunk. Per-prompt ref overrides aren't supported — if a sibling needs
+   * a different ref set, fall back to `generateImage` directly.
+   */
+  async generateSiblingImagesBatched(
+    prompts: { prompt: ImagePrompt; identifier: string; metadata?: any }[],
+    referenceImages?: ReferenceImage[],
+  ): Promise<GeneratedImage[]> {
+    if (prompts.length === 0) return [];
+    const maxBatch = this.getMaxBatchSize(!!(referenceImages && referenceImages.length));
+    if (maxBatch <= 1 || prompts.length === 1) {
+      // No batch gain is available — route through the single-call path
+      // so rate-limit + retry logic stays identical to the legacy flow.
+      const results: GeneratedImage[] = [];
+      for (const p of prompts) {
+        results.push(await this.generateImage(p.prompt, p.identifier, p.metadata, referenceImages));
+      }
+      return results;
+    }
+    this.emit({
+      type: 'debug',
+      phase: 'images',
+      message: `A8 sibling-batch: folding ${prompts.length} prompts into batches of up to ${maxBatch}`,
+    } as any);
+    return this.generateImageBatch(prompts, referenceImages);
+  }
+
+  /**
    * Batch-generate multiple images. When Atlas Cloud + Seedream is active,
    * uses the sequential or edit-sequential variant in a single API call.
    * For all other providers/models, falls back to a sequential loop over generateImage().
@@ -4118,7 +4174,15 @@ export class ImageGenerationService {
 
     this.emit({ type: 'job_updated', id: jobId, updates: { status: 'generating', progress: 5, message: 'Calling Midjourney via useapi.net...' } });
 
-    const fullPrompt = this.buildMidjourneyPrompt(prompt, identifier, metadata, referenceImages);
+    // A7: Midjourney's --cref/--sref flags require public URLs, so opportunistically
+    // pre-upload any references that are still inline-only. If an uploader
+    // endpoint isn't configured we leave the refs untouched and the prompt
+    // builder falls back to the --oref / identity-hint path.
+    const resolvedRefs = this._midjourneySettings.enableCrefSref
+      ? await this.ensureReferenceUrls(referenceImages)
+      : referenceImages;
+
+    const fullPrompt = this.buildMidjourneyPrompt(prompt, identifier, metadata, resolvedRefs);
 
     let lastError: Error | null = null;
 

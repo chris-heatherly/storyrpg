@@ -731,8 +731,18 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
 
           case 'addTag': {
-            newPlayer.tags = new Set(newPlayer.tags).add(consequence.tag);
-            const tagLower = consequence.tag.toLowerCase();
+            const rawTag =
+              consequence.tag ??
+              (consequence as any).value ??
+              (consequence as any).name ??
+              (consequence as any).tagId;
+            const tag = typeof rawTag === 'string' ? rawTag.trim() : '';
+            if (!tag) {
+              console.warn('[GameStore] addTag consequence missing tag field:', consequence);
+              break;
+            }
+            newPlayer.tags = new Set(newPlayer.tags).add(tag);
+            const tagLower = tag.toLowerCase();
             let identityHint: string | undefined;
             if (tagLower.includes('brave') || tagLower.includes('bold')) identityHint = "You're becoming bolder.";
             else if (tagLower.includes('kind') || tagLower.includes('compassionate')) identityHint = "Your compassion defines you.";
@@ -741,7 +751,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             if (identityHint) {
               applied.push({
                 type: 'identity',
-                label: consequence.tag.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                label: tag.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
                 direction: 'up',
                 magnitude: 'minor',
                 narrativeHint: identityHint,
@@ -753,8 +763,18 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
 
           case 'removeTag': {
+            const rawTag =
+              consequence.tag ??
+              (consequence as any).value ??
+              (consequence as any).name ??
+              (consequence as any).tagId;
+            const tag = typeof rawTag === 'string' ? rawTag.trim() : '';
+            if (!tag) {
+              console.warn('[GameStore] removeTag consequence missing tag field:', consequence);
+              break;
+            }
             const newTags = new Set(newPlayer.tags);
-            newTags.delete(consequence.tag);
+            newTags.delete(tag);
             newPlayer.tags = newTags;
             break;
           }

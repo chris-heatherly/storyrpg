@@ -1264,7 +1264,7 @@ export class FullStoryPipeline {
           ? 'encounter-outcome'
           : 'encounter-situation';
     return {
-      slotId: `${family}:${slot.sceneId}::${slot.beatId}::${slot.choiceMapKey || 'root'}::${slot.tier || 'setup'}`,
+      slotId: `${family}:${slot.scopedSceneId}::${slot.beatId}::${slot.choiceMapKey || 'root'}::${slot.tier || 'setup'}`,
       family,
       imageType: slot.kind === 'setup' ? 'encounter-setup' : 'encounter-outcome',
       sceneId: slot.sceneId,
@@ -1347,7 +1347,7 @@ export class FullStoryPipeline {
       const sceneStoryletImages = encounterImageResults?.storyletImages?.get(sceneId);
       for (const slot of manifest.slots) {
         const registrySlot: ImageSlot = {
-          slotId: `storylet-aftermath:${sceneId}::${slot.outcomeName}::${slot.beatId}`,
+          slotId: `storylet-aftermath:${scopedSceneId}::${slot.outcomeName}::${slot.beatId}`,
           family: 'storylet-aftermath',
           imageType: 'storylet-aftermath',
           sceneId,
@@ -7833,7 +7833,7 @@ ${clothingRule}
           });
 
           // Mirror into AssetRegistry so coverage checks + final assembler agree.
-          const heroSlotId = `story-beat:${scene.sceneId}::${beat.id}`;
+          const heroSlotId = `story-beat:${scopedSceneId}::${beat.id}`;
           try {
             if (!this.assetRegistry.get(heroSlotId)) {
               this.assetRegistry.planSlot({
@@ -8205,7 +8205,7 @@ ${clothingRule}
           const identifier = `beat-${scopedSceneId}-${beatId}`;
 
           // Beat resume: if the AssetRegistry already has a successful result for this beat, reuse it
-          const resumeSlotId = `story-beat:${scene.sceneId}::${beatId}`;
+          const resumeSlotId = `story-beat:${scopedSceneId}::${beatId}`;
           const existingRecord = this.assetRegistry.getResolvedAsset(resumeSlotId);
           if (existingRecord?.latestUrl) {
             console.log(`[Pipeline] Beat resume: reusing existing image for ${beatId} from registry`);
@@ -8261,7 +8261,7 @@ ${clothingRule}
                 }
                 this.assetRegistry.markSuccess(slotId, prefetched);
                 // Mirror the main loop's scene-slot bookkeeping (line 7624-7642).
-                const sceneSlotId = `story-scene:${scene.sceneId}`;
+                const sceneSlotId = `story-scene:${scopedSceneId}`;
                 if (!this.assetRegistry.get(sceneSlotId)) {
                   this.assetRegistry.planSlot({
                     slotId: sceneSlotId,
@@ -8393,7 +8393,7 @@ ${clothingRule}
             {
               includeExpressions: includeExpressionRefs,
               family: 'story-beat',
-              slotId: `story-beat:${scene.sceneId}::${beatId}`,
+              slotId: `story-beat:${scopedSceneId}::${beatId}`,
             }
           );
 
@@ -8509,7 +8509,7 @@ ${clothingRule}
                 beatImages.set(beatMapKey, panelUrls[0]);
                 if (beatIdx === 0) sceneImages.set(scopedSceneId, panelUrls[0]);
 
-                const heroSlotId = `story-beat:${scene.sceneId}::${beatId}`;
+                const heroSlotId = `story-beat:${scopedSceneId}::${beatId}`;
                 try {
                   if (!this.assetRegistry.get(heroSlotId)) {
                     this.assetRegistry.planSlot({
@@ -8591,7 +8591,7 @@ ${clothingRule}
               beatImages.set(beatMapKey, result.imageUrl);
 
               // Register with AssetRegistry for durable tracking
-              const slotId = `story-beat:${scene.sceneId}::${beatId}`;
+              const slotId = `story-beat:${scopedSceneId}::${beatId}`;
               try {
                 if (!this.assetRegistry.get(slotId)) {
                   this.assetRegistry.planSlot({
@@ -8613,7 +8613,7 @@ ${clothingRule}
 
               if (beatIdx === 0) {
                 sceneImages.set(scopedSceneId, result.imageUrl);
-                const sceneSlotId = `story-scene:${scene.sceneId}`;
+                const sceneSlotId = `story-scene:${scopedSceneId}`;
                 try {
                   if (!this.assetRegistry.get(sceneSlotId)) {
                     this.assetRegistry.planSlot({
@@ -8738,7 +8738,7 @@ ${clothingRule}
         sceneCharacterIds,
         characterBible,
         undefined,
-        { family: 'story-beat', slotId: `story-scene:${scene.sceneId}` }
+        { family: 'story-beat', slotId: `story-scene:${scopedSceneId}` }
       );
 
       for (const beat of sceneBeats) {
@@ -9690,7 +9690,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
         {
           includeExpressions: this.shouldUseExpressionReferencesForEncounter(encounter),
           family: 'encounter-setup',
-          slotId: `encounter:${sceneId}`,
+          slotId: `encounter:${scopedSceneId}`,
         }
       );
       const encounterCharacterDescriptions = this.buildCharacterDescriptions(encounterCharacterIds, characterBible);
@@ -10064,7 +10064,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
         {
           includeExpressions: this.shouldUseExpressionReferencesForEncounter(encounter),
           family: 'storylet-aftermath',
-          slotId: `storylet:${sceneId}`,
+          slotId: `storylet:${scopedSceneId}`,
         }
       );
       const encounterCharacterDescriptions = this.buildCharacterDescriptions(encounterCharacterIds, characterBible);
@@ -12906,7 +12906,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
           if (beatResumeSet.has(identifier) || beatResumeSet.has(rawIdentifier)) continue;
         }
 
-        const resumeSlotId = `story-beat:${scene.sceneId}::${beatId}`;
+        const resumeSlotId = `story-beat:${scopedSceneId}::${beatId}`;
         const existingRecord = this.assetRegistry.getResolvedAsset(resumeSlotId);
         if (existingRecord?.latestUrl) continue;
 

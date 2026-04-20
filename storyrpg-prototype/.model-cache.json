@@ -1,5 +1,5 @@
 {
-  "scannedAt": 1776451062814,
+  "scannedAt": 1776706724183,
   "providers": {
     "anthropic": [
       {
@@ -402,19 +402,31 @@
         "value": "black-forest-labs/flux-dev",
         "label": "Flux Dev",
         "price": "$0.012/pic",
-        "description": "Flux-dev 12B parameter rectified flow transformer."
+        "description": "Flux-dev 12B parameter rectified flow transformer. Text-to-image only."
       },
       {
         "value": "black-forest-labs/flux-schnell",
         "label": "Flux Schnell",
         "price": "$0.003/pic",
-        "description": "FLUX.1 [schnell] — fastest 12B rectified-flow model, great for drafts."
+        "description": "FLUX.1 [schnell] — fastest 12B rectified-flow model, great for drafts. Text-to-image only."
       },
       {
         "value": "black-forest-labs/flux-dev-lora",
         "label": "Flux Dev LoRA",
         "price": "$0.015/pic",
-        "description": "FLUX.1 [dev] with LoRA support for personalized styles."
+        "description": "FLUX.1 [dev] with LoRA tag support for personalized styles and brands. Text-to-image only."
+      },
+      {
+        "value": "black-forest-labs/flux-kontext-dev",
+        "label": "Flux Kontext Dev",
+        "price": "$0.025/pic",
+        "description": "FLUX.1 Kontext [dev] — image editing via text prompts. Requires a reference image."
+      },
+      {
+        "value": "black-forest-labs/flux-kontext-dev-lora",
+        "label": "Flux Kontext Dev LoRA",
+        "price": "$0.030/pic",
+        "description": "FLUX.1 Kontext [dev] with LoRA support for brand/style-consistent image edits. Requires a reference image."
       },
       {
         "value": "z-image/turbo",

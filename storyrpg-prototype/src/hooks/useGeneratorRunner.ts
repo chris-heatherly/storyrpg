@@ -7,6 +7,7 @@ import { useVideoJobStore } from '../stores/videoJobStore';
 import { PROXY_CONFIG } from '../config/endpoints';
 import type { PipelineEvent } from '../ai-agents/pipeline';
 import { applyWorkerTimelineEvent, normalizeVideoJobStatus } from './workerJobTimeline';
+import { safeParseWorkerFrame } from '../ai-agents/codec/workerEvent';
 
 export function useGeneratorRunner() {
   const { addJob, updateJob, removeJob } = useImageJobStore();
@@ -139,34 +140,42 @@ export function useGeneratorRunner() {
           sseConnected = true;
         });
         eventSource.addEventListener('status', (event: MessageEvent) => {
-          try {
-            const payload = JSON.parse(event.data);
-            onStatusUpdate?.(payload);
-          } catch {}
+          const parsed = safeParseWorkerFrame(event.data, 'status');
+          if (!parsed.ok) {
+            console.error('[useGeneratorRunner] malformed worker status frame:', parsed.error.message);
+            return;
+          }
+          onStatusUpdate?.(parsed.value);
         });
         eventSource.addEventListener('timeline', (event: MessageEvent) => {
-          try {
-            const payload = JSON.parse(event.data);
-            pushWorkerTimelineEvent(payload);
-          } catch {}
+          const parsed = safeParseWorkerFrame(event.data, 'timeline');
+          if (!parsed.ok) {
+            console.error('[useGeneratorRunner] malformed worker timeline frame:', parsed.error.message);
+            return;
+          }
+          pushWorkerTimelineEvent(parsed.value);
         });
         eventSource.addEventListener('snapshot', (event: MessageEvent) => {
-          try {
-            const payload = JSON.parse(event.data);
-            onStatusUpdate?.(payload);
-            const timeline = Array.isArray(payload.timeline) ? payload.timeline : [];
-            if (timeline.length > seenTimeline) {
-              const nextEvents = timeline.slice(seenTimeline);
-              seenTimeline = timeline.length;
-              nextEvents.forEach((nextEvent: any) => pushWorkerTimelineEvent(nextEvent));
-            }
-          } catch {}
+          const parsed = safeParseWorkerFrame(event.data, 'snapshot');
+          if (!parsed.ok) {
+            console.error('[useGeneratorRunner] malformed worker snapshot frame:', parsed.error.message);
+            return;
+          }
+          const payload = parsed.value as Record<string, unknown>;
+          onStatusUpdate?.(payload);
+          const timeline = Array.isArray(payload.timeline) ? (payload.timeline as unknown[]) : [];
+          if (timeline.length > seenTimeline) {
+            const nextEvents = timeline.slice(seenTimeline);
+            seenTimeline = timeline.length;
+            nextEvents.forEach((nextEvent: any) => pushWorkerTimelineEvent(nextEvent));
+          }
         });
         eventSource.onerror = () => {
           // Polling remains the fallback path while EventSource reconnects.
           sseConnected = false;
         };
-      } catch {
+      } catch (err) {
+        console.warn('[useGeneratorRunner] EventSource setup failed, falling back to polling:', err instanceof Error ? err.message : err);
         eventSource = null;
       }
     }
@@ -208,7 +217,33 @@ export function useGeneratorRunner() {
 
       if (statusData.status === 'completed') {
         closeEventSource();
-        return { jobId, result: statusData.result as T };
+        // Per the re-architecture: trust `story.json` on disk, not the
+        // transient `statusData.result` blob. If we have a storyId, fetch
+        // the authoritative story package from /stories/:id and merge it
+        // into the transfer payload. Fall back to the in-band result when
+        // the proxy can't serve the story yet (e.g. legacy worker).
+        const baseResult = (statusData.result ?? {}) as Record<string, unknown>;
+        const storyId =
+          typeof statusData.storyId === 'string' && statusData.storyId
+            ? statusData.storyId
+            : typeof baseResult.storyId === 'string'
+              ? (baseResult.storyId as string)
+              : null;
+        let story = (baseResult as { story?: unknown }).story;
+        if (storyId) {
+          try {
+            const storyResp = await fetch(`${PROXY_CONFIG.getProxyUrl()}/stories/${encodeURIComponent(storyId)}`, {
+              headers: { Accept: 'application/json' },
+            });
+            if (storyResp.ok) {
+              story = await storyResp.json();
+            }
+          } catch (err) {
+            console.warn('[useGeneratorRunner] post-completion /stories/:id fetch failed:', err instanceof Error ? err.message : err);
+          }
+        }
+        const merged = { ...baseResult, ...(story ? { story } : {}) };
+        return { jobId, result: merged as T };
       }
       if (statusData.status === 'failed') {
         closeEventSource();

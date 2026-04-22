@@ -11,6 +11,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicWriteFileSync, atomicWriteJsonSync } = require('./atomicIo');
+const manifestModule = require('./storyManifest');
+const codec = require('./storyCodec');
 
 const DEFAULT_ELEVENLABS_VOICES = {
   narrator: 'onwK4e9ZLuTAKqWW03F9',
@@ -30,13 +33,19 @@ function registerElevenLabsRoutes(app, { audioRootDir, port }) {
       .filter((d) => d.isDirectory())
       .map((d) => d.name);
     for (const dir of dirs) {
-      const storyFile = path.join(audioRootDir, dir, '08-final-story.json');
-      if (!fs.existsSync(storyFile)) continue;
+      const storyDir = path.join(audioRootDir, dir);
+      const primary = manifestModule.resolveStoryFile(storyDir);
+      if (!primary) {
+        if (dir.startsWith(storyId)) return dir;
+        continue;
+      }
       try {
-        const story = JSON.parse(fs.readFileSync(storyFile, 'utf8'));
-        if (story?.id === storyId || dir.startsWith(storyId)) return dir;
+        const parsed = JSON.parse(fs.readFileSync(primary.abs, 'utf8'));
+        const decoded = codec.safeDecodeStory(parsed);
+        if (decoded.ok && decoded.pkg.storyId === storyId) return dir;
+        if (!decoded.ok && dir.startsWith(storyId)) return dir;
       } catch {
-        // Ignore malformed story JSON and continue scanning siblings.
+        if (dir.startsWith(storyId)) return dir;
       }
     }
     return null;
@@ -137,21 +146,18 @@ function registerElevenLabsRoutes(app, { audioRootDir, port }) {
       if (storyId && beatId && storyDir) {
         const audioSubDir = path.join(audioRootDir, storyDir, 'audio');
         if (!fs.existsSync(audioSubDir)) fs.mkdirSync(audioSubDir, { recursive: true });
-        fs.writeFileSync(path.join(audioSubDir, `${beatId}.mp3`), Buffer.from(audioBase64, 'base64'));
+        atomicWriteFileSync(path.join(audioSubDir, `${beatId}.mp3`), Buffer.from(audioBase64, 'base64'));
         if (alignment) {
-          fs.writeFileSync(
+          atomicWriteJsonSync(
             path.join(audioSubDir, `${beatId}.alignment.json`),
-            JSON.stringify(
-              {
-                text,
-                speaker,
-                voiceId: resolvedVoiceId,
-                alignment,
-                generatedAt: new Date().toISOString(),
-              },
-              null,
-              2,
-            ),
+            {
+              text,
+              speaker,
+              voiceId: resolvedVoiceId,
+              alignment,
+              generatedAt: new Date().toISOString(),
+            },
+            { pretty: true },
           );
         }
         return res.json({
@@ -224,21 +230,18 @@ function registerElevenLabsRoutes(app, { audioRootDir, port }) {
             throw new Error(`API error: ${ttsResp.status} - ${errorText}`);
           }
           const ttsData = await ttsResp.json();
-          fs.writeFileSync(audioPath, Buffer.from(ttsData.audio_base64, 'base64'));
+          atomicWriteFileSync(audioPath, Buffer.from(ttsData.audio_base64, 'base64'));
           if (ttsData.alignment) {
-            fs.writeFileSync(
+            atomicWriteJsonSync(
               path.join(audioSubDir, `${beatId}.alignment.json`),
-              JSON.stringify(
-                {
-                  text,
-                  speaker,
-                  voiceId: resolvedVoiceId,
-                  alignment: ttsData.alignment,
-                  generatedAt: new Date().toISOString(),
-                },
-                null,
-                2,
-              ),
+              {
+                text,
+                speaker,
+                voiceId: resolvedVoiceId,
+                alignment: ttsData.alignment,
+                generatedAt: new Date().toISOString(),
+              },
+              { pretty: true },
             );
           }
           results.push({

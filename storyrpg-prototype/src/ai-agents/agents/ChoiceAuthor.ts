@@ -27,6 +27,7 @@ import { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 // longer re-embedded here, to eliminate token duplication and drift risk.
 import { FiveFactorValidator } from '../validators/FiveFactorValidator';
 import { StakesTriangleValidator } from '../validators/StakesTriangleValidator';
+import { buildChoiceAuthorCallbackSection } from '../prompts/callbackPromptSection';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 
 // Input types
@@ -120,6 +121,17 @@ export interface ChoiceAuthorInput {
     identityDeltaHints?: Array<{ dimension: string; direction: 'positive' | 'negative'; magnitude: 'minor' | 'moderate' | 'major' }>;
     relationshipTrajectory?: Array<{ npcId: string; dimension: string; direction: 'positive' | 'negative'; hint: string }>;
   };
+
+  // Unresolved callback hooks from prior episodes (Plan 1: Delayed Consequences).
+  // ChoiceAuthor MAY gate a new choice's `conditions` on one of these flags.
+  // ChoiceAuthor also tags notable new choices with `memorableMoment` for
+  // future episodes to pay off.
+  unresolvedCallbacks?: Array<{
+    id: string;
+    sourceEpisode: number;
+    summary: string;
+    flags: string[];
+  }>;
 }
 
 // Output types
@@ -662,6 +674,18 @@ This beat leads up to the choice:
 
 "${input.beatText}"
 
+${buildChoiceAuthorCallbackSection((input.unresolvedCallbacks || []).map(h => ({
+  id: h.id,
+  sourceEpisode: h.sourceEpisode,
+  sourceSceneId: '',
+  sourceChoiceId: '',
+  flags: h.flags,
+  summary: h.summary,
+  payoffWindow: { minEpisode: 0, maxEpisode: 0 },
+  payoffCount: 0,
+  resolved: false,
+  createdAt: '',
+})), { authorNewHooks: true })}
 ## Choice Point Design
 - **Type**: ${choicePoint.type}
 - **Description**: ${choicePoint.description}
@@ -811,6 +835,11 @@ Think about what the situation DEMANDS:
       },
       "reactionText": "1-2 sentence world reaction (omit if nextSceneId is set).",
       "tintFlag": "tint:bold",
+      "memorableMoment": {
+        "id": "slug-style-id",
+        "summary": "One-sentence past-tense recap.",
+        "flags": ["flag-name"]
+      },
       "stakesAnnotation": {
         "want": "what player wants",
         "cost": "what they risk",

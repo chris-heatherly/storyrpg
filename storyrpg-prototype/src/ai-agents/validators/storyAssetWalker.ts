@@ -19,6 +19,7 @@ import type {
   GeneratedStorylet,
   StoryletBeat,
 } from '../../types';
+import { mediaRefAsString } from '../../assets/assetRef';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,19 +76,19 @@ export function collectImageRefs(story: Story): ImageRef[] {
     refs.push({ url, kind, location });
   };
 
-  push(story.coverImage, 'story-cover', `story:${story.id}`);
+  push(mediaRefAsString(story.coverImage), 'story-cover', `story:${story.id}`);
 
   for (const npc of story.npcs || []) {
-    push(npc.portrait, 'npc-portrait', `npc:${npc.id}`);
+    push(mediaRefAsString(npc.portrait), 'npc-portrait', `npc:${npc.id}`);
   }
 
   for (const episode of story.episodes || []) {
     const epLoc = `episode:${episode.id}`;
-    push(episode.coverImage, 'episode-cover', epLoc);
+    push(mediaRefAsString(episode.coverImage), 'episode-cover', epLoc);
 
     for (const scene of episode.scenes || []) {
       const scLoc = `${epLoc}::scene:${scene.id}`;
-      push(scene.backgroundImage, 'scene-background', scLoc);
+      push(mediaRefAsString(scene.backgroundImage), 'scene-background', scLoc);
 
       collectBeatImages(scene.beats, scLoc, refs);
 
@@ -103,10 +104,12 @@ export function collectImageRefs(story: Story): ImageRef[] {
 function collectBeatImages(beats: Beat[] | undefined, parentLoc: string, refs: ImageRef[]) {
   for (const beat of beats || []) {
     const bLoc = `${parentLoc}::beat:${beat.id}`;
-    if (beat.image) refs.push({ url: beat.image, kind: 'beat-image', location: bLoc });
+    const beatImageStr = mediaRefAsString(beat.image);
+    if (beatImageStr) refs.push({ url: beatImageStr, kind: 'beat-image', location: bLoc });
 
     for (const [idx, panelUrl] of (beat.panelImages || []).entries()) {
-      if (panelUrl) refs.push({ url: panelUrl, kind: 'beat-panel', location: `${bLoc}::panel[${idx}]` });
+      const panelStr = mediaRefAsString(panelUrl);
+      if (panelStr) refs.push({ url: panelStr, kind: 'beat-panel', location: `${bLoc}::panel[${idx}]` });
     }
 
     if (beat.outcomeSequences) {

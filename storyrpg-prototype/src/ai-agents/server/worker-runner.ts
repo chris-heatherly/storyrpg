@@ -3,10 +3,17 @@
 import * as fs from 'fs/promises';
 import type { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import { PipelineError } from '../pipeline/FullStoryPipeline';
-import { sanitizePipelineResultForTransfer } from '../utils/storyPayloads';
+import { atomicWriteJson } from '../utils/atomicIo';
+import {
+  encodeStory,
+  projectForTransfer,
+  StoryValidationError,
+  type StoryPackage,
+} from '../codec/storyCodec';
 import { runStoryAnalysis, runStoryGeneration } from '../services/storyGenerationService';
 import { WorkerPayload, assertValidWorkerPayload } from './workerPayload';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
+import type { Story } from '../../types';
 
 function emit(type: string, payload: Record<string, unknown> = {}) {
   try {
@@ -113,7 +120,7 @@ async function runAnalysis(payload: WorkerPayload) {
     seasonPlan: result.seasonPlan,
     seasonPlanError: result.seasonPlanError,
   };
-  await fs.writeFile(payload.resultPath, JSON.stringify(output), 'utf8');
+  await atomicWriteJson(payload.resultPath, output);
 }
 
 async function runGeneration(payload: WorkerPayload) {
@@ -173,30 +180,81 @@ async function runGeneration(payload: WorkerPayload) {
   });
   emit('step_complete', { step: 'generation', success: result.success });
 
-  // Write result file immediately — this is the authoritative output.
-  // OutputWriter (disk image save) already ran inside the pipeline and is
-  // wrapped in its own try/catch, so it won't block result delivery.
-  const transferableResult = sanitizePipelineResultForTransfer(result as unknown as Record<string, unknown>, {
-    maxEvents: 60,
-    maxCheckpoints: 12,
-  });
+  // Build the authoritative transfer payload via the codec's declarative
+  // `projectForTransfer`. This replaces the old string-matching
+  // `sanitizePipelineResultForTransfer` walk: we emit only documented
+  // transfer fields, and the payload is a projection of the same
+  // `StoryPackage` that was written to disk.
+  //
+  // Note: when generation fails, `result.story` may be partial. We still
+  // attempt to build a `StoryPackage` for transfer; if encoding fails
+  // we fall back to the minimal error shape.
+  const resultObj = result as unknown as Record<string, unknown>;
+  const story = resultObj.story as Story | undefined;
+  let pkg: StoryPackage | null = null;
+  if (story && typeof story === 'object') {
+    try {
+      pkg = encodeStory(story, {
+        assets: {},
+        generator: { version: '3', pipeline: 'FullStoryPipeline' },
+      });
+    } catch (encodeErr) {
+      if (encodeErr instanceof StoryValidationError) {
+        emit('worker_error', {
+          message: `encodeStory: ${encodeErr.message}`,
+          nonFatal: true,
+          issues: encodeErr.issues,
+        });
+      }
+      pkg = null;
+    }
+  }
+
+  const checkpointSummary = Array.isArray(resultObj.checkpoints)
+    ? (resultObj.checkpoints as Array<Record<string, unknown>>).slice(-12).map((cp) => ({
+        phase: String(cp.phase ?? cp.stepId ?? 'unknown'),
+        ts: typeof cp.timestamp === 'string' ? cp.timestamp : new Date().toISOString(),
+      }))
+    : [];
+
+  const transferPayload = pkg
+    ? {
+        ...projectForTransfer(pkg, {
+          events: Array.isArray(resultObj.events) ? (resultObj.events as unknown[]) : [],
+          checkpointSummary,
+          success: result.success === true,
+          error: typeof resultObj.error === 'string' ? (resultObj.error as string) : undefined,
+        }, { maxEvents: 60 }),
+      }
+    : {
+        schemaVersion: 3,
+        storyId: typeof resultObj.storyId === 'string' ? resultObj.storyId : '',
+        story: null,
+        assets: {},
+        events: Array.isArray(resultObj.events) ? (resultObj.events as unknown[]).slice(-60) : [],
+        checkpointSummary,
+        success: result.success === true,
+        error: typeof resultObj.error === 'string' ? (resultObj.error as string) : undefined,
+      };
+
   try {
-    await fs.writeFile(payload.resultPath, JSON.stringify(transferableResult), 'utf8');
+    await atomicWriteJson(payload.resultPath, transferPayload);
   } catch (writeErr) {
     const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
     emit('worker_error', { message: `Failed to write result file: ${msg}`, nonFatal: true });
-    // Attempt an aggressively trimmed write as a final fallback.
     try {
       const stripped = {
-        ...sanitizePipelineResultForTransfer(result as unknown as Record<string, unknown>, {
-          maxEvents: 20,
-          maxCheckpoints: 4,
-        }),
+        schemaVersion: transferPayload.schemaVersion,
+        storyId: transferPayload.storyId,
+        success: transferPayload.success,
+        error: transferPayload.error,
+        events: Array.isArray(transferPayload.events) ? transferPayload.events.slice(-10) : [],
+        checkpointSummary: transferPayload.checkpointSummary?.slice(-4) ?? [],
         _note: 'worker result trimmed after write failure',
       };
-      await fs.writeFile(payload.resultPath, JSON.stringify(stripped), 'utf8');
+      await atomicWriteJson(payload.resultPath, stripped);
     } catch {
-      throw writeErr; // propagate original error
+      throw writeErr;
     }
   }
 }

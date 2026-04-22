@@ -6,6 +6,7 @@
  */
 
 import type { Story } from '../../types';
+import { mediaRefAsString } from '../../assets/assetRef';
 
 let nodeFs: any;
 let nodePath: any;
@@ -81,11 +82,12 @@ function findBeatByPlaythroughIndex(
       for (const beat of scene.beats || []) {
         index++;
         if (index === beatNumber) {
+          const beatImageStr = mediaRefAsString(beat.image);
           return {
-            imageUrl: beat.image,
+            imageUrl: beatImageStr || undefined,
             sceneId: scene.id,
             beatId: beat.id,
-            identifier: beat.image && nodePath ? nodePath.basename(beat.image).replace(/\.[^.]+$/, '') : undefined,
+            identifier: beatImageStr && nodePath ? nodePath.basename(beatImageStr).replace(/\.[^.]+$/, '') : undefined,
           };
         }
       }

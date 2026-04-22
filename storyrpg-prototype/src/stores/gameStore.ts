@@ -17,6 +17,8 @@ import {
   DelayedConsequence,
   DEFAULT_IDENTITY_PROFILE,
   IdentityProfile,
+  VisitRecord,
+  EpisodeCompletion,
 } from '../types';
 import { applyIdentityShifts } from '../engine/identityEngine';
 import { evaluateCondition } from '../engine/conditionEvaluator';
@@ -121,6 +123,16 @@ interface GameActions {
   wasSceneVisited: (sceneId: string) => boolean;
   getBranchToneForScene: (sceneId: string) => 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption' | null;
   getPathToScene: (sceneId: string) => string[];  // Returns scene IDs leading to this scene
+
+  // Plan 2: Visit tracking for post-episode flowchart UI.
+  // `visitBeat` appends a plain visit record when a beat is rendered.
+  // `commitChoice` records the chosen choice against the current beat.
+  // Both are idempotent by (beatId, choiceId) within the same playthrough
+  // so React re-renders don't create duplicate entries.
+  visitBeat: (params: { sceneId: string; beatId: string; episodeId?: string }) => void;
+  commitChoice: (params: { sceneId: string; beatId: string; choiceId: string; episodeId?: string }) => void;
+  getVisitLog: () => VisitRecord[];
+  getEpisodeCompletions: () => EpisodeCompletion[];
 
   // Reset
   resetGame: () => void;
@@ -1179,12 +1191,86 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const completeEpisode = useCallback((episodeId: string) => {
     setPlayer(prev => {
       if (prev.completedEpisodes.includes(episodeId)) return prev;
+      const visitLog = prev.visitLog ?? [];
+      const episodeVisits = visitLog.filter(v => v.episodeId === episodeId);
+      const beatsVisited = new Set(episodeVisits.map(v => v.beatId)).size;
+      const scenesVisited = new Set(episodeVisits.map(v => v.sceneId)).size;
+      const committedChoiceIds = episodeVisits
+        .filter(v => v.choiceId)
+        .map(v => v.choiceId as string);
+      const episode = currentStory?.episodes.find(ep => ep.id === episodeId);
+      const completion: EpisodeCompletion = {
+        episodeId,
+        episodeNumber: episode?.number,
+        storyId: prev.currentStoryId ?? '',
+        completedAt: Date.now(),
+        committedChoiceIds,
+        beatsVisited,
+        scenesVisited,
+      };
       return {
         ...prev,
         completedEpisodes: [...prev.completedEpisodes, episodeId],
+        episodeCompletions: [...(prev.episodeCompletions ?? []), completion],
+      };
+    });
+  }, [currentStory]);
+
+  // Plan 2: visit tracking.
+  const visitBeat = useCallback((params: { sceneId: string; beatId: string; episodeId?: string }) => {
+    setPlayer(prev => {
+      const episodeId = params.episodeId ?? prev.currentEpisodeId ?? '';
+      const visitLog = prev.visitLog ?? [];
+      const last = visitLog[visitLog.length - 1];
+      // Dedupe: if the last record is for this same beat with no choice yet, don't append again.
+      if (last && last.beatId === params.beatId && last.sceneId === params.sceneId && !last.choiceId) {
+        return prev;
+      }
+      return {
+        ...prev,
+        visitLog: [
+          ...visitLog,
+          {
+            episodeId,
+            sceneId: params.sceneId,
+            beatId: params.beatId,
+            visitedAt: Date.now(),
+          },
+        ],
       };
     });
   }, []);
+
+  const commitChoice = useCallback((params: { sceneId: string; beatId: string; choiceId: string; episodeId?: string }) => {
+    setPlayer(prev => {
+      const episodeId = params.episodeId ?? prev.currentEpisodeId ?? '';
+      const visitLog = prev.visitLog ?? [];
+      const lastIndex = visitLog.length - 1;
+      const last = lastIndex >= 0 ? visitLog[lastIndex] : undefined;
+      // If the last record points at the same beat, upgrade it with the choiceId.
+      if (last && last.beatId === params.beatId && last.sceneId === params.sceneId && !last.choiceId) {
+        const copy = visitLog.slice();
+        copy[lastIndex] = { ...last, choiceId: params.choiceId, visitedAt: Date.now() };
+        return { ...prev, visitLog: copy };
+      }
+      return {
+        ...prev,
+        visitLog: [
+          ...visitLog,
+          {
+            episodeId,
+            sceneId: params.sceneId,
+            beatId: params.beatId,
+            choiceId: params.choiceId,
+            visitedAt: Date.now(),
+          },
+        ],
+      };
+    });
+  }, []);
+
+  const getVisitLog = useCallback(() => player.visitLog ?? [], [player]);
+  const getEpisodeCompletions = useCallback(() => player.episodeCompletions ?? [], [player]);
 
   const resetGame = useCallback(async () => {
     setPlayer(createInitialPlayerState());
@@ -1274,6 +1360,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     wasSceneVisited,
     getBranchToneForScene,
     getPathToScene,
+    visitBeat,
+    commitChoice,
+    getVisitLog,
+    getEpisodeCompletions,
     resetGame,
   }), [
     initializeStory,
@@ -1320,6 +1410,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     wasSceneVisited,
     getBranchToneForScene,
     getPathToScene,
+    visitBeat,
+    commitChoice,
+    getVisitLog,
+    getEpisodeCompletions,
     resetGame,
   ]);
 

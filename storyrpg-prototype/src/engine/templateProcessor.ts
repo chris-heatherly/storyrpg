@@ -1,4 +1,5 @@
 import { PlayerState, Story, TextVariant } from '../types';
+import type { ConditionExpression } from '../types';
 import { evaluateCondition } from './conditionEvaluator';
 
 /**
@@ -265,7 +266,40 @@ export function processTemplate(
 }
 
 /**
+ * Count the number of atomic condition clauses in an expression. Callback
+ * variants that gate on more flags / tags / scores win over generic
+ * "always-true" variants. See Plan 1 (docs/PLAN_DELAYED_CONSEQUENCES.md).
+ */
+export function conditionSpecificity(expression: ConditionExpression | undefined): number {
+  if (!expression) return 0;
+  const anyExpr = expression as unknown as {
+    type: string;
+    conditions?: ConditionExpression[];
+    condition?: ConditionExpression;
+  };
+  switch (anyExpr.type) {
+    case 'and':
+    case 'or':
+      return (anyExpr.conditions || []).reduce(
+        (sum, sub) => sum + conditionSpecificity(sub),
+        0,
+      );
+    case 'not':
+      return anyExpr.condition ? conditionSpecificity(anyExpr.condition) : 0;
+    default:
+      return 1;
+  }
+}
+
+/**
  * Select the appropriate text variant based on conditions.
+ *
+ * Previously this returned the FIRST variant whose condition matched. That
+ * biases renderers toward generic variants (e.g. a "always true" condition)
+ * over specific ones (e.g. a 3-flag conjunction pointing at a callback hook).
+ * The new behavior prefers the most specific matching variant — ties broken
+ * by authoring order. Variants referencing a `callbackHookId` receive a +1
+ * specificity boost so they win over same-width conditions.
  */
 export function selectTextVariant(
   baseText: string,
@@ -276,16 +310,21 @@ export function selectTextVariant(
     return baseText;
   }
 
-  // Find the first matching variant
-  for (const variant of variants) {
-    // Only select if condition matches AND there is actual text to show
-    if (variant.text && variant.text.trim().length > 0 && evaluateCondition(variant.condition, player)) {
-      return variant.text;
+  let best: { variant: TextVariant; score: number; index: number } | undefined;
+  for (let i = 0; i < variants.length; i++) {
+    const variant = variants[i];
+    if (!variant.text || variant.text.trim().length === 0) continue;
+    if (!evaluateCondition(variant.condition, player)) continue;
+
+    let score = conditionSpecificity(variant.condition);
+    if (variant.callbackHookId) score += 1;
+
+    if (!best || score > best.score) {
+      best = { variant, score, index: i };
     }
   }
 
-  // Fall back to base text
-  return baseText;
+  return best?.variant.text ?? baseText;
 }
 
 /**

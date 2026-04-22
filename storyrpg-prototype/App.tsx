@@ -11,6 +11,7 @@ import {
   ReadingScreen,
   VisualizerScreen,
   SettingsScreen,
+  EpisodeRecapScreen,
 } from './src/screens';
 import { GeneratorScreen } from './src/screens/GeneratorScreen';
 import { allStories as builtInStories } from './src/data/stories';
@@ -21,6 +22,7 @@ import {
   pipelineClient,
   type PipelineHandle,
 } from './src/ai-agents/pipeline/PipelineClient';
+import { encodeStory } from './src/ai-agents/codec/storyCodec';
 import { loadConfig } from './src/ai-agents/config';
 import { useVideoJobStore } from './src/stores/videoJobStore';
 import { useStoryLibrary } from './src/hooks/useStoryLibrary';
@@ -34,6 +36,7 @@ function AppContent() {
   const [videoGeneratingStoryId, setVideoGeneratingStoryId] = useState<string | null>(null);
   const videoPipelineRef = useRef<PipelineHandle | null>(null);
   const [visualizerStory, setVisualizerStory] = useState<Story | null>(null);
+  const [recapEpisodeId, setRecapEpisodeId] = useState<string | null>(null);
   const currentScreen = useAppNavigationStore((state) => state.currentScreen);
   const showPauseMenu = useAppNavigationStore((state) => state.showPauseMenu);
   const visualizerStoryId = useAppNavigationStore((state) => state.visualizerStoryId);
@@ -84,11 +87,26 @@ function AppContent() {
 
     const saveStories = async () => {
       try {
+        // Persist each client-cached story as a v3 StoryPackage so the
+        // AsyncStorage reader can `decodeStory` it back on the next boot.
+        // encodeStory throws `StoryValidationError` on malformed data —
+        // we skip those (they'd fail to decode anyway).
         const storiesToSave = stories
           .filter((story) => !fileLoadedStoryIds.has(story.id))
           .map((story) => storyCacheRef.current.get(story.id))
           .filter(Boolean)
-          .map((story) => pipelineClient.sanitizeStoryForPersistence(story as unknown as Story));
+          .map((story) => {
+            try {
+              return encodeStory(story as unknown as Story, {
+                assets: {},
+                generator: { version: '3', pipeline: 'client-cache' },
+              });
+            } catch (err) {
+              console.warn('[App] Skipping story that failed encode:', err instanceof Error ? err.message : err);
+              return null;
+            }
+          })
+          .filter((pkg): pkg is NonNullable<typeof pkg> => pkg !== null);
         
         if (storiesToSave.length === 0) return;
 
@@ -187,7 +205,30 @@ function AppContent() {
   };
 
   const handleEpisodeComplete = () => {
+    // Plan 2: show the post-episode flowchart recap before returning the
+    // player to the episode-select screen.
+    if (currentEpisode?.id) {
+      setRecapEpisodeId(currentEpisode.id);
+      navigateTo('recap');
+    } else {
+      navigateTo('episodes');
+    }
+  };
+
+  const handleRecapContinue = () => {
+    setRecapEpisodeId(null);
     navigateTo('episodes');
+  };
+
+  const handleRecapRewind = (target: { episodeId: string; sceneId: string; beatId: string }) => {
+    if (!currentStory) return;
+    const episode = currentStory.episodes.find((e) => e.id === target.episodeId);
+    if (!episode) return;
+    loadEpisode(target.episodeId);
+    loadScene(target.sceneId, episode);
+    setBeat(target.beatId);
+    setRecapEpisodeId(null);
+    navigateTo('reading');
   };
 
   const handlePause = () => {
@@ -551,6 +592,14 @@ function AppContent() {
         <ReadingScreen
           onEpisodeComplete={handleEpisodeComplete}
           onPause={handlePause}
+        />
+      )}
+
+      {currentScreen === 'recap' && recapEpisodeId && (
+        <EpisodeRecapScreen
+          episodeId={recapEpisodeId}
+          onContinue={handleRecapContinue}
+          onRewindToBeat={handleRecapRewind}
         />
       )}
 

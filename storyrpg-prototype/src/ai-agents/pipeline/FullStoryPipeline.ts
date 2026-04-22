@@ -139,6 +139,7 @@ import {
 } from '../encounters/storyletSlotManifest';
 import { EncounterProviderPolicy } from '../encounters/encounterProviderPolicy';
 import { AssetRegistry } from '../images/assetRegistry';
+import { CallbackLedger } from './callbackLedger';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { validateRegistryCoverage } from '../images/coverageValidator';
 import { walkStoryAssets, formatAssetWalkReport } from '../validators/storyAssetWalker';
@@ -706,6 +707,10 @@ export class FullStoryPipeline {
   private _openingBeatPrefetch: Map<string, GeneratedImage> = new Map();
   private locationMasterShots = new Map<string, { data: string; mimeType: string }>();
   private assetRegistry: AssetRegistry = new AssetRegistry();
+  // Callback ledger for Witcher-style delayed consequences (Plan 1). Seeded by
+  // choices' `memorableMoment` fields and consumed as prompt context for
+  // later episodes. Persisted to `09-callback-ledger.json`.
+  private callbackLedger: CallbackLedger = new CallbackLedger();
   private completedPhases = new Set<string>();
   private dependencySchedulerStats = {
     hasCycle: false,
@@ -3948,6 +3953,7 @@ export class FullStoryPipeline {
           }),
           relevantFlags: blueprint.suggestedFlags,
           relevantScores: blueprint.suggestedScores,
+          unresolvedCallbacks: this.getUnresolvedCallbacksForPrompt(brief.episode?.number),
           targetBeatCount: sceneBlueprint.purpose === 'bottleneck' 
             ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
             : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
@@ -4238,6 +4244,7 @@ export class FullStoryPipeline {
               availableFlags: blueprint.suggestedFlags,
               availableScores: blueprint.suggestedScores,
               availableTags: blueprint.suggestedTags,
+              unresolvedCallbacks: this.getUnresolvedCallbacksForPrompt(brief.episode?.number),
               possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
                 const scene = blueprint.scenes.find(s => s.id === id);
                 return {
@@ -6667,6 +6674,32 @@ export class FullStoryPipeline {
           branchAnalysis || undefined
         )
       );
+
+      // Plan 1: Harvest delayed-consequence callbacks from this episode's
+      // choices (seed new hooks) and textVariants (record payoffs). The
+      // ledger is then persisted to the output directory so validators and
+      // the UI can inspect it.
+      try {
+        const { newHooks, payoffs } = this.harvestEpisodeCallbacks({
+          episodeNumber: i,
+          sceneContents: sceneContents as unknown as Parameters<typeof this.harvestEpisodeCallbacks>[0]['sceneContents'],
+          choiceSets: choiceSets as unknown as Parameters<typeof this.harvestEpisodeCallbacks>[0]['choiceSets'],
+        });
+        if (newHooks > 0 || payoffs > 0) {
+          this.emit({
+            type: 'debug',
+            phase: `episode_${i}_callbacks`,
+            message: `Callback ledger: +${newHooks} new hook(s), +${payoffs} payoff(s) this episode; ${this.callbackLedger.size()} total`,
+          });
+        }
+        await saveEarlyDiagnostic(outputDirectory, '09-callback-ledger.json', this.callbackLedger.serialize());
+      } catch (ledgerErr) {
+        this.emit({
+          type: 'warning',
+          phase: `episode_${i}_callbacks`,
+          message: `CallbackLedger harvest failed (non-fatal): ${ledgerErr instanceof Error ? ledgerErr.message : String(ledgerErr)}`,
+        });
+      }
 
       let imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> } | undefined;
       let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
@@ -12041,6 +12074,79 @@ Design the key art. Return STRICT JSON matching the schema.`;
 
   private summarizeEpisode(episode: Episode): string {
     return `${episode.title}: ${episode.synopsis}`;
+  }
+
+  /**
+   * Shape the unresolved callback hooks for SceneWriter/ChoiceAuthor prompts.
+   * Returns `undefined` when there are no hooks, so the prompt section is
+   * skipped cleanly. See Plan 1 (docs/PLAN_DELAYED_CONSEQUENCES.md).
+   */
+  private getUnresolvedCallbacksForPrompt(episodeNumber: number | undefined): Array<{
+    id: string;
+    sourceEpisode: number;
+    summary: string;
+    flags: string[];
+  }> | undefined {
+    if (!episodeNumber || episodeNumber <= 1) return undefined;
+    const hooks = this.callbackLedger.unresolvedFor(episodeNumber);
+    if (hooks.length === 0) return undefined;
+    return hooks.map((hook) => ({
+      id: hook.id,
+      sourceEpisode: hook.sourceEpisode,
+      summary: hook.summary,
+      flags: hook.flags,
+    }));
+  }
+
+  /**
+   * Harvest callback state from a just-generated episode: seed new hooks
+   * from `memorableMoment` choice fields, and record payoffs for any
+   * TextVariants that reference an existing hook id.
+   */
+  private harvestEpisodeCallbacks(params: {
+    episodeNumber: number;
+    sceneContents: Array<{ sceneId: string; beats: Array<{ id?: string; textVariants?: Array<{ callbackHookId?: string }>; choices?: Array<{ id: string; memorableMoment?: { id: string; summary: string; flags?: string[] } }> }> }>;
+    choiceSets: Array<{ sceneId?: string; beatId?: string; choices: Array<{ id: string; memorableMoment?: { id: string; summary: string; flags?: string[] }; consequences?: unknown[] }> }>;
+  }): { newHooks: number; payoffs: number } {
+    let newHooks = 0;
+    let payoffs = 0;
+
+    for (const choiceSet of params.choiceSets) {
+      const sceneId = choiceSet.sceneId || '';
+      for (const choice of choiceSet.choices || []) {
+        if (choice.memorableMoment?.id) {
+          const added = this.callbackLedger.recordChoice({
+            choice: choice as unknown as Choice,
+            episode: params.episodeNumber,
+            sceneId,
+          });
+          if (added) newHooks += 1;
+        }
+      }
+    }
+
+    for (const scene of params.sceneContents) {
+      for (const beat of scene.beats || []) {
+        if (beat.choices) {
+          for (const choice of beat.choices) {
+            if (choice.memorableMoment?.id) {
+              const added = this.callbackLedger.recordChoice({
+                choice: choice as unknown as Choice,
+                episode: params.episodeNumber,
+                sceneId: scene.sceneId,
+              });
+              if (added) newHooks += 1;
+            }
+          }
+        }
+        if (beat.textVariants) {
+          const matched = this.callbackLedger.recordPayoffsFromVariants(beat.textVariants);
+          payoffs += matched.length;
+        }
+      }
+    }
+
+    return { newHooks, payoffs };
   }
 
   /**

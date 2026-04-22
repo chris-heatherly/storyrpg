@@ -14,7 +14,6 @@
  * phase-based runner without changing the client-facing API.
  */
 
-import type { Story } from '../../types';
 import type { PipelineConfig } from '../config';
 import type {
   FullCreativeBrief,
@@ -24,7 +23,6 @@ import type {
   PipelineEvent,
   PipelineEventHandler,
 } from './events';
-import { sanitizeStoryForPersistence } from '../utils/storyPayloads';
 
 type FullStoryPipelineCtor = typeof import('./FullStoryPipeline').FullStoryPipeline;
 
@@ -62,9 +60,6 @@ export interface PipelineClient {
     oldOutputDir: string,
     newTitle: string,
   ): Promise<boolean>;
-
-  /** Strip bulky / non-persistable fields from a Story before writing to storage. */
-  sanitizeStoryForPersistence(story: Story): Story;
 }
 
 /**
@@ -95,8 +90,6 @@ export const pipelineClient: PipelineClient = {
     const { renameStory } = await import('../utils/pipelineOutputWriter');
     return renameStory(storyId, oldOutputDir, newTitle);
   },
-
-  sanitizeStoryForPersistence,
 };
 
 export type { PipelineEvent, PipelineEventHandler };

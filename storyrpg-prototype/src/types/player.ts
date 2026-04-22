@@ -85,6 +85,32 @@ export interface InventoryItem {
   statModifiers?: Partial<PlayerAttributes>;
 }
 
+// Visit tracking (Plan 2: post-episode flowchart).
+// Each record captures one visit to a beat during playthrough. Choice commits
+// attach a `choiceId`; plain advances leave it undefined. These records power
+// the post-episode flowchart recap UI and rewind flow.
+export interface VisitRecord {
+  episodeId: string;
+  sceneId: string;
+  beatId: string;
+  choiceId?: string;   // set when the visit was triggered by a choice commit
+  visitedAt: number;   // Date.now() at visit time
+}
+
+// Summary of a completed episode, surfaced in the recap UI.
+export interface EpisodeCompletion {
+  episodeId: string;
+  episodeNumber?: number;
+  storyId: string;
+  completedAt: number;
+  // Ids of choices the player committed in this episode.
+  committedChoiceIds: string[];
+  // Distinct beats visited in this episode.
+  beatsVisited: number;
+  // Distinct scenes visited in this episode.
+  scenesVisited: number;
+}
+
 // Complete player state
 export interface PlayerState {
   // Character identity
@@ -118,6 +144,16 @@ export interface PlayerState {
   currentEpisodeId: string | null;
   currentSceneId: string | null;
   completedEpisodes: string[];
+
+  // Plan 2: Playback visit log. Append-only during a playthrough; consulted
+  // by the post-episode flowchart and rewind engine. Trimmed on `resetGame`.
+  // Optional so legacy fixtures (and persisted state from before Plan 2)
+  // hydrate without requiring a migration.
+  visitLog?: VisitRecord[];
+
+  // Plan 2: Per-episode completion summaries. One entry per `completeEpisode`
+  // call.
+  episodeCompletions?: EpisodeCompletion[];
 }
 
 // Re-export ConditionExpression so that `PlayerState`-adjacent helpers in

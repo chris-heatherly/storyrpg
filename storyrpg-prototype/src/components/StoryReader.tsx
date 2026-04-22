@@ -38,6 +38,7 @@ import { EncounterView } from './EncounterView';
 import { TERMINAL, RADIUS, TIMING, SPACING, sharedStyles, withAlpha } from '../theme';
 import { EncounterCost, GeneratedStorylet, Scene, StoryletBeat, AppliedConsequence, EncounterOutcome, Relationship, Consequence } from '../types';
 import type { PlayerState } from '../types';
+import { mediaRefAsString } from '../assets/assetRef';
 import { ConsequenceToast } from './ConsequenceToast';
 import { ConsequenceBadgeList } from './ConsequenceBadgeList';
 import { ButterflyBanner } from './ButterflyBanner';
@@ -130,6 +131,8 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     recordBranchChoice,
     getPathToScene,
     clearButterflyFeedback,
+    visitBeat,
+    commitChoice,
   } = useGameActions();
 
   const developerMode = useSettingsStore((state) => state.developerMode);
@@ -233,7 +236,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   // Dev mode: prompt panel should stay in sync with the currently displayed beat image.
   const promptImageUrl = (() => {
-    const raw = processedBeat?.image || currentScene?.backgroundImage;
+    const beatImg = processedBeat?.image;
+    const sceneBg = mediaRefAsString(currentScene?.backgroundImage);
+    const raw = beatImg || sceneBg;
     if (!raw) return undefined;
 
     // If the beat image failed, we display the scene background — keep prompt in sync.
@@ -241,10 +246,10 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       processedBeat &&
       currentScene &&
       imageErrorId === processedBeat.id &&
-      processedBeat.image &&
-      processedBeat.image !== currentScene.backgroundImage
+      beatImg &&
+      beatImg !== sceneBg
     ) {
-      return currentScene.backgroundImage;
+      return sceneBg || undefined;
     }
 
     if (raw.endsWith('.prompt.txt') || raw.endsWith('.txt')) return undefined;
@@ -626,6 +631,16 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       applyConsequences(beat.onShow);
     }
 
+    // Plan 2: record this beat in the visit log so the post-episode recap
+    // flowchart knows what path the player took.
+    if (visitBeat) {
+      visitBeat({
+        sceneId: currentScene.id,
+        beatId: currentBeatId,
+        episodeId: currentEpisode?.id,
+      });
+    }
+
     const processed = processBeat(beat, player, currentStory);
     
     // Add convergence context for branch-aware rendering
@@ -778,6 +793,17 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       return;
     }
 
+    // Plan 2: attach the chosen choice to the current visit record so the
+    // post-episode flowchart can draw the traveled edge.
+    if (commitChoice) {
+      commitChoice({
+        sceneId: currentScene.id,
+        beatId: currentBeatId,
+        choiceId,
+        episodeId: currentEpisode?.id,
+      });
+    }
+
     // Queue any delayed consequences (butterfly effect)
     if (result.delayedConsequences && result.delayedConsequences.length > 0) {
       for (const dc of result.delayedConsequences) {
@@ -925,7 +951,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     } else {
       proceedAfterStatCheck();
     }
-  }, [currentScene, currentBeatId, currentEpisode, currentStory, processedBeat, player, applyConsequences, queueDelayedConsequence]);
+  }, [currentScene, currentBeatId, currentEpisode, currentStory, processedBeat, player, applyConsequences, queueDelayedConsequence, commitChoice]);
 
   // Base choice handler -- triggers selection ceremony, then executes after delay
   const handleChoicePressBase = useCallback((choiceId: string) => {
@@ -1203,7 +1229,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   }
 
   if (episodeRecap) {
-    const recapImageUrl = lastKnownImageRef.current || processedBeat.image || currentScene.backgroundImage;
+    const recapImageUrl = lastKnownImageRef.current || processedBeat.image || mediaRefAsString(currentScene.backgroundImage);
     return (
       <View style={{ flex: 1 }}>
       <ReadingShell imageUrl={recapImageUrl} fadeAnim={fadeAnim} imageOpacity={imageOpacity}>
@@ -1353,9 +1379,10 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       const toneStyle = toneStyles[activeStorylet.tone] || toneStyles.bittersweet;
 
       // Fall back to current scene's background image when the beat has no dedicated image
+      const sceneBgStr = mediaRefAsString(currentScene?.backgroundImage);
       const storyletImageUrl = currentStoryletBeat.image
-        || (currentScene?.backgroundImage && !currentScene.backgroundImage.endsWith('.txt')
-            ? currentScene.backgroundImage
+        || (sceneBgStr && !sceneBgStr.endsWith('.txt')
+            ? sceneBgStr
             : undefined);
       console.log(`[StoryReader] Storylet image: beat.image="${currentStoryletBeat.image || '(none)'}", resolved="${storyletImageUrl || '(none)'}"`);
 
@@ -1414,15 +1441,17 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   // For normal beats, only render beat- or scene-scoped art.
   // Reusing the last image or story cover here smears one fallback across the whole story.
-  const rawImageUrl =
+  const sceneBgUrl = mediaRefAsString(currentScene.backgroundImage);
+  const rawImageUrl: string | undefined =
     processedBeat.image
-    || currentScene.backgroundImage;
-  
+    || sceneBgUrl
+    || undefined;
+
   // Logic to handle missing beat images by falling back to scene background
-  let finalImageUrl = rawImageUrl;
-  if (imageErrorId === processedBeat.id && processedBeat.image && processedBeat.image !== currentScene.backgroundImage) {
+  let finalImageUrl: string | undefined = rawImageUrl;
+  if (imageErrorId === processedBeat.id && processedBeat.image && processedBeat.image !== sceneBgUrl) {
     debugLog(`[StoryReader] Falling back to scene background for beat ${processedBeat.id}`);
-    finalImageUrl = currentScene.backgroundImage;
+    finalImageUrl = sceneBgUrl || undefined;
   }
 
   const originalImageUrl = finalImageUrl;
@@ -1433,10 +1462,10 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     finalImageUrl = regeneratedImageUrl;
   }
 
-  const imageUrl = finalImageUrl && !finalImageUrl.endsWith('.prompt.txt') && !finalImageUrl.endsWith('.txt') 
-    ? finalImageUrl 
+  const imageUrl = finalImageUrl && !finalImageUrl.endsWith('.prompt.txt') && !finalImageUrl.endsWith('.txt')
+    ? finalImageUrl
     : undefined;
-  if (imageUrl && (processedBeat.image || currentScene.backgroundImage)) {
+  if (imageUrl && (processedBeat.image || sceneBgUrl)) {
     lastKnownImageRef.current = imageUrl;
   }
 

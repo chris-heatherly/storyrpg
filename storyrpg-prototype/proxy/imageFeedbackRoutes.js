@@ -15,6 +15,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const manifestModule = require('./storyManifest');
+const codec = require('./storyCodec');
 
 function registerImageFeedbackRoutes(app, { rootDir, storiesDir, cachedJsonStore }) {
   if (!rootDir || !storiesDir || !cachedJsonStore) {
@@ -171,31 +173,30 @@ function registerImageFeedbackRoutes(app, { rootDir, storiesDir, cachedJsonStore
           .map((dirent) => dirent.name);
 
         for (const dir of dirs) {
-          const storyFile = path.join(storiesDir, dir, '08-final-story.json');
-          if (fs.existsSync(storyFile)) {
-            try {
-              const story = JSON.parse(fs.readFileSync(storyFile, 'utf8'));
-              if (story.id === storyId) {
-                const outputDir = path.join(storiesDir, dir);
-                const promptsDir = path.join(outputDir, 'prompts');
-                if (fs.existsSync(promptsDir)) {
-                  const promptFiles = fs.readdirSync(promptsDir);
-                  for (const pf of promptFiles) {
-                    const pfLower = pf.toLowerCase();
-                    if ((beatId && pfLower.includes(beatId.toLowerCase()))
-                      || (sceneId && pfLower.includes(sceneId.toLowerCase()))) {
-                      promptPath = path.join(promptsDir, pf);
-                      const promptData = JSON.parse(fs.readFileSync(promptPath, 'utf8'));
-                      resolvedIdentifier = promptData.identifier || pf.replace('.json', '');
-                      break;
-                    }
-                  }
+          const outputDir = path.join(storiesDir, dir);
+          const primary = manifestModule.resolveStoryFile(outputDir);
+          if (!primary) continue;
+          try {
+            const parsed = JSON.parse(fs.readFileSync(primary.abs, 'utf8'));
+            const decoded = codec.safeDecodeStory(parsed);
+            if (!decoded.ok || decoded.pkg.storyId !== storyId) continue;
+            const promptsDir = path.join(outputDir, 'prompts');
+            if (fs.existsSync(promptsDir)) {
+              const promptFiles = fs.readdirSync(promptsDir);
+              for (const pf of promptFiles) {
+                const pfLower = pf.toLowerCase();
+                if ((beatId && pfLower.includes(beatId.toLowerCase()))
+                  || (sceneId && pfLower.includes(sceneId.toLowerCase()))) {
+                  promptPath = path.join(promptsDir, pf);
+                  const promptData = JSON.parse(fs.readFileSync(promptPath, 'utf8'));
+                  resolvedIdentifier = promptData.identifier || pf.replace('.json', '');
+                  break;
                 }
-                break;
               }
-            } catch (err) {
-              console.error(`[Proxy] Error reading story ${dir}:`, err.message);
             }
+            break;
+          } catch (err) {
+            console.error(`[Proxy] Error reading story ${dir}:`, err.message);
           }
         }
       }

@@ -89,4 +89,14 @@ export interface Choice {
   reactionText?: string;
 
   tintFlag?: string;
+
+  // Optional authored "memorable moment" — a hint to the callback ledger
+  // that this choice is worth remembering across episodes. When present,
+  // FullStoryPipeline seeds a CallbackHook in the ledger after the episode
+  // is generated, so later episodes can author TextVariants that pay it off.
+  memorableMoment?: {
+    id: string;       // slug-style id, e.g. "spared-the-herald"
+    summary: string;  // one-line prose recap, e.g. "You spared the royal herald."
+    flags?: string[]; // optional flag names this hook keys on
+  };
 }

@@ -11,7 +11,7 @@ import type {
   InventoryItem,
   Relationship,
 } from './player';
-import type { Beat } from './content';
+import type { Beat, MediaRef } from './content';
 import type { Encounter, EncounterType } from './encounter';
 import type { ResolutionTier } from './choice';
 
@@ -19,7 +19,7 @@ export interface Scene {
   id: string;
   name: string;
 
-  backgroundImage?: string;
+  backgroundImage?: MediaRef;
   ambientSound?: string;
 
   beats: Beat[];
@@ -43,7 +43,7 @@ export interface Episode {
   number: number;
   title: string;
   synopsis: string;
-  coverImage: string;
+  coverImage: MediaRef;
 
   scenes: Scene[];
   startingSceneId: string;

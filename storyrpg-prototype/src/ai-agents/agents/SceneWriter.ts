@@ -17,6 +17,7 @@ import { Beat, TextVariant, Consequence, TimingMetadata } from '../../types';
 import { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
 import { CHOICE_DENSITY_REQUIREMENTS, NARRATIVE_INTENSITY_RULES } from '../prompts/storytellingPrinciples';
+import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
@@ -123,6 +124,16 @@ export interface SceneWriterInput {
     identityDeltaHints?: Array<{ dimension: string; direction: 'positive' | 'negative'; magnitude: 'minor' | 'moderate' | 'major' }>;
     relationshipTrajectory?: Array<{ npcId: string; dimension: string; direction: 'positive' | 'negative'; hint: string }>;
   };
+
+  // Unresolved callback hooks from prior episodes (Plan 1: Delayed Consequences).
+  // When present, SceneWriter SHOULD author TextVariants that reference one of
+  // these hooks via `callbackHookId`, gated on the hook's flags.
+  unresolvedCallbacks?: Array<{
+    id: string;
+    sourceEpisode: number;
+    summary: string;
+    flags: string[];
+  }>;
 }
 
 // Output types
@@ -1015,7 +1026,18 @@ ${input.arcTargets && (input.arcTargets.identityDeltaHints?.length || input.arcT
 Frame beats so the player's available choices can nudge the protagonist toward these milestones.
 ${(input.arcTargets.identityDeltaHints || []).map(h => `- Identity dimension \`${h.dimension}\`: target ${h.direction} (${h.magnitude})`).join('\n')}
 ${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with ${r.npcId} (${r.dimension}): ${r.direction} — ${r.hint}`).join('\n')}
-` : ''}
+` : ''}${buildSceneWriterCallbackSection((input.unresolvedCallbacks || []).map(h => ({
+  id: h.id,
+  sourceEpisode: h.sourceEpisode,
+  sourceSceneId: '',
+  sourceChoiceId: '',
+  flags: h.flags,
+  summary: h.summary,
+  payoffWindow: { minEpisode: 0, maxEpisode: 0 },
+  payoffCount: 0,
+  resolved: false,
+  createdAt: '',
+})))}
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
 - ${input.dialogueHeavy ? 'This is dialogue-heavy - focus on conversation' : 'Balance description with any dialogue'}
@@ -1041,6 +1063,7 @@ Create the scene content following the SceneContent schema. Include:
 4. Natural flow between beats
 5. textVariants where state should affect content
 6. Full beat visual contract fields (visualMoment, primaryAction, emotionalRead, relationshipDynamic, mustShowDetail, intensityTier) for every beat
+7. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id
 
 Respond with valid JSON matching the SceneContent type.
 `;

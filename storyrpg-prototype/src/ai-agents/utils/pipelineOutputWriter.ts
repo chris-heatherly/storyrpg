@@ -44,6 +44,42 @@ import {
   listCachedOutputManifests,
   readCachedOutputFile,
 } from './webOutputCache';
+import { encodeStory, STORY_SCHEMA_VERSION } from '../codec/storyCodec';
+
+function hasNodeFs(): boolean {
+  return typeof process !== 'undefined'
+    && !!(process as unknown as { versions?: { node?: string } })?.versions?.node
+    && !isWebRuntime();
+}
+
+function nodeRequire<T>(name: string): T {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require(name) as T;
+}
+
+function atomicWriteNodeSync(absPath: string, content: string | Buffer): { sha256: string; bytes: number } {
+  const fs = nodeRequire<typeof import('fs')>('fs');
+  const path = nodeRequire<typeof import('path')>('path');
+  const crypto = nodeRequire<typeof import('crypto')>('crypto');
+  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8');
+  const dir = path.dirname(absPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmp = `${absPath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeSync(fd, buffer);
+      try { fs.fsyncSync(fd); } catch { /* best-effort */ }
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, absPath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
+  return { sha256: crypto.createHash('sha256').update(buffer).digest('hex'), bytes: buffer.length };
+}
 
 export interface AgentWorkingFile {
   agentName: string;
@@ -450,11 +486,96 @@ async function writeJsonFile(path: string, data: unknown): Promise<number> {
     return content.length;
   }
 
+  if (hasNodeFs()) {
+    atomicWriteNodeSync(path, content);
+    return content.length;
+  }
+
   await ExpoFileSystem.writeAsStringAsync(path, content, {
     encoding: 'utf8',
   });
 
   return content.length;
+}
+
+/**
+ * Write a v3 `story.json` package plus a small `manifest.json` next to
+ * it. The manifest records the sha256 of story.json so the catalog
+ * can detect partial writes and the migration tool can verify
+ * integrity.
+ *
+ * We also keep a legacy `08-final-story.json` mirror on disk until
+ * every consumer has migrated to read `story.json`.
+ */
+export async function writeFinalStoryPackage(
+  outputDir: string,
+  story: Story,
+  options?: { generator?: { version?: string; pipeline?: string } },
+): Promise<{ storyJsonPath: string; manifestPath: string; storySize: number }> {
+  const storyJsonPath = outputDir + 'story.json';
+  const manifestPath = outputDir + 'manifest.json';
+  const legacyPath = outputDir + '08-final-story.json';
+
+  const pkg = encodeStory(story, {
+    targetVersion: STORY_SCHEMA_VERSION,
+    generator: options?.generator,
+  });
+
+  const storyJson = JSON.stringify(pkg, null, 2);
+
+  let sha256 = '';
+  let bytes = storyJson.length;
+
+  if (hasNodeFs()) {
+    const result = atomicWriteNodeSync(storyJsonPath, storyJson);
+    sha256 = result.sha256;
+    bytes = result.bytes;
+    atomicWriteNodeSync(legacyPath, JSON.stringify(story, null, 2));
+  } else if (isWebRuntime()) {
+    await fetch(PROXY_CONFIG.writeFile, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: storyJsonPath, content: storyJson }),
+    });
+    await fetch(PROXY_CONFIG.writeFile, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: legacyPath, content: JSON.stringify(story, null, 2) }),
+    });
+    // For web we cannot compute sha256 cheaply here; manifest sha will be empty
+    // but the catalog tolerates missing manifest and falls back to the plain
+    // file read.
+  } else {
+    await ExpoFileSystem.writeAsStringAsync(storyJsonPath, storyJson, { encoding: 'utf8' });
+    await ExpoFileSystem.writeAsStringAsync(legacyPath, JSON.stringify(story, null, 2), { encoding: 'utf8' });
+  }
+
+  const manifest = {
+    schemaVersion: 1,
+    storyId: story.id,
+    storySchemaVersion: STORY_SCHEMA_VERSION,
+    primaryStoryFile: 'story.json',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    generator: options?.generator ?? {},
+    files: {
+      'story.json': { sha256, bytes },
+    },
+  };
+  const manifestContent = JSON.stringify(manifest, null, 2);
+  if (hasNodeFs()) {
+    atomicWriteNodeSync(manifestPath, manifestContent);
+  } else if (isWebRuntime()) {
+    await fetch(PROXY_CONFIG.writeFile, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: manifestPath, content: manifestContent }),
+    });
+  } else {
+    await ExpoFileSystem.writeAsStringAsync(manifestPath, manifestContent, { encoding: 'utf8' });
+  }
+
+  return { storyJsonPath, manifestPath, storySize: bytes };
 }
 
 /**
@@ -1010,11 +1131,18 @@ export async function savePipelineOutputs(
     files.push({ name: 'Validation Metrics', path: validationPath, type: 'validation', size: validationSize });
   }
 
-  // 9. Save Final Story
+  // 9. Save Final Story — atomic write + manifest.json + v3 story.json
+  // The legacy 08-final-story.json stays on disk (produced by
+  // writeFinalStoryPackage) until every reader has migrated.
   if (outputs.finalStory) {
-    const storyPath = outputDir + '08-final-story.json';
-    const storySize = await writeJsonFile(storyPath, outputs.finalStory);
-    files.push({ name: 'Final Story', path: storyPath, type: 'story', size: storySize });
+    const { storyJsonPath, manifestPath: mPath, storySize } =
+      await writeFinalStoryPackage(outputDir, outputs.finalStory, {
+        generator: { pipeline: 'FullStoryPipeline' },
+      });
+    const legacyStoryPath = outputDir + '08-final-story.json';
+    files.push({ name: 'Final Story (v3 package)', path: storyJsonPath, type: 'story', size: storySize });
+    files.push({ name: 'Story Manifest', path: mPath, type: 'manifest', size: 0 });
+    files.push({ name: 'Final Story (legacy)', path: legacyStoryPath, type: 'story', size: storySize });
     
     // 9b. Save beat images as separate files
     if (!isWebRuntime()) {
@@ -1474,10 +1602,32 @@ export async function savePipelineOutputs(
   }
 
   // 11. Save Checkpoints
+  // Primary sink: append to the per-story `checkpoints.jsonl` log. The
+  // legacy `09-checkpoints.json` is still written for back-compat with
+  // external tooling that reads it; the JSONL file is the source of
+  // truth for resume logic going forward.
   if (outputs.checkpoints && outputs.checkpoints.length > 0) {
+    if (hasNodeFs()) {
+      try {
+        // Strip the trailing slash; checkpointLog expects a dir path.
+        const storyDirAbs = outputDir.replace(/\/+$/, '');
+        const ckLog = nodeRequire<typeof import('./checkpointLog')>('./checkpointLog');
+        for (const cp of outputs.checkpoints as Array<Record<string, unknown>>) {
+          ckLog.appendCheckpoint(storyDirAbs, {
+            kind: 'phase',
+            jobId: String(cp.jobId ?? storyId),
+            phase: String(cp.phase ?? cp.stepId ?? 'unknown'),
+            status: cp.status === 'failed' ? 'failed' : 'completed',
+            detail: typeof cp.detail === 'string' ? cp.detail : undefined,
+          } as unknown as import('./checkpointLog').Checkpoint);
+        }
+      } catch (e) {
+        console.warn('[OutputWriter] checkpoints.jsonl append failed:', e instanceof Error ? e.message : e);
+      }
+    }
     const checkpointsPath = outputDir + '09-checkpoints.json';
     const checkpointsSize = await writeJsonFile(checkpointsPath, outputs.checkpoints);
-    files.push({ name: 'Checkpoints', path: checkpointsPath, type: 'checkpoints', size: checkpointsSize });
+    files.push({ name: 'Checkpoints (legacy)', path: checkpointsPath, type: 'checkpoints', size: checkpointsSize });
   }
 
   // Fallback: extract counts from the assembled story when intermediate pipeline data isn't provided

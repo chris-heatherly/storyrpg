@@ -645,7 +645,9 @@ export class StructuralValidator {
                 fixes.push(`Fixed phase ${phase.id} situationImage from first beat success image`);
                 fixedCount++;
               } else if (scene.backgroundImage) {
-                phase.situationImage = scene.backgroundImage;
+                // Both situationImage and backgroundImage are MediaRef;
+                // we can copy the ref directly.
+                phase.situationImage = scene.backgroundImage as typeof phase.situationImage;
                 fixes.push(`Fixed phase ${phase.id} situationImage from scene background`);
                 fixedCount++;
               }

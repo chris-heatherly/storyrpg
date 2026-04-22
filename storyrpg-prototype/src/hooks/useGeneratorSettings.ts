@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   DEFAULT_GEMINI_SETTINGS,
+  DEFAULT_OPENAI_SETTINGS,
   DEFAULT_LORA_TRAINING_SETTINGS,
   DEFAULT_MIDJOURNEY_SETTINGS,
   DEFAULT_STABLE_DIFFUSION_SETTINGS,
@@ -9,6 +10,7 @@ import {
   GeminiSettings,
   LoraTrainingSettings,
   MidjourneySettings,
+  OpenAISettings,
   StableDiffusionSettings,
 } from '../ai-agents/config';
 import { GenerationSettings, DEFAULT_GENERATION_SETTINGS } from '../components/GenerationSettingsPanel';
@@ -65,6 +67,7 @@ export const GENERATOR_STORAGE_KEYS = {
   narrationSettings: '@storyrpg_narration_settings',
   midjourneySettings: '@storyrpg_midjourney_settings',
   geminiSettings: '@storyrpg_gemini_settings',
+  openaiSettings: '@storyrpg_openai_settings',
   videoSettings: '@storyrpg_video_settings',
   stableDiffusionSettings: '@storyrpg_stable_diffusion_settings',
   loraTrainingSettings: '@storyrpg_lora_training_settings',
@@ -74,9 +77,23 @@ function isGeneratorLlmProvider(value: string | null | undefined): value is Gene
   return value === 'anthropic' || value === 'openai' || value === 'gemini';
 }
 
+const INVALID_OPENAI_MODEL_SLUGS = new Set<string>([
+  // Internal Cursor/agent routing slugs that were accidentally seeded as OpenAI API
+  // model IDs. OpenAI's /v1/chat/completions rejects these with 404 model_not_found.
+  'gpt-5.4-medium',
+  'gpt-5.3-codex',
+  'composer-1.5',
+  'composer-2-fast',
+]);
+
 function resolveModelForProvider(provider: GeneratorLlmProvider, model: string | null | undefined): string {
   const trimmed = model?.trim();
-  if (trimmed) return trimmed;
+  if (trimmed) {
+    if (provider === 'openai' && INVALID_OPENAI_MODEL_SLUGS.has(trimmed)) {
+      return DEFAULT_LLM_MODELS[provider];
+    }
+    return trimmed;
+  }
   return DEFAULT_LLM_MODELS[provider];
 }
 
@@ -127,6 +144,7 @@ interface ProxySettingsShape {
   narrationSettings?: GeneratorNarrationSettings;
   videoSettings?: GeneratorVideoSettings;
   geminiSettings?: GeminiSettings;
+  openaiSettings?: OpenAISettings;
   midjourneySettings?: MidjourneySettings;
   stableDiffusionSettings?: StableDiffusionSettings;
   loraTrainingSettings?: LoraTrainingSettings;
@@ -177,6 +195,7 @@ export function useGeneratorSettings() {
   const [midapiToken, setMidapiToken] = useState('');
   const [midjourneySettings, setMidjourneySettings] = useState<MidjourneySettings>({ ...DEFAULT_MIDJOURNEY_SETTINGS });
   const [geminiSettings, setGeminiSettings] = useState<GeminiSettings>({ ...DEFAULT_GEMINI_SETTINGS });
+  const [openaiSettings, setOpenaiSettings] = useState<OpenAISettings>({ ...DEFAULT_OPENAI_SETTINGS });
   const [stableDiffusionSettings, setStableDiffusionSettings] = useState<StableDiffusionSettings>({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS });
   const [loraTrainingSettings, setLoraTrainingSettings] = useState<LoraTrainingSettings>({ ...DEFAULT_LORA_TRAINING_SETTINGS });
   const [imageProvider, setImageProvider] = useState<GeneratorImageProvider>('nano-banana');
@@ -230,6 +249,9 @@ export function useGeneratorSettings() {
       }
       if (ps.geminiSettings) {
         setGeminiSettings({ ...DEFAULT_GEMINI_SETTINGS, ...ps.geminiSettings });
+      }
+      if (ps.openaiSettings) {
+        setOpenaiSettings({ ...DEFAULT_OPENAI_SETTINGS, ...ps.openaiSettings });
       }
       if (ps.midjourneySettings) {
         setMidjourneySettings({ ...DEFAULT_MIDJOURNEY_SETTINGS, ...ps.midjourneySettings });
@@ -292,6 +314,7 @@ export function useGeneratorSettings() {
           storedAtlasModel,
           storedMidapiToken,
           storedGeminiSettings,
+          storedOpenaiSettings,
           storedMidjourneySettings,
           storedImageProvider,
           storedArtStyle,
@@ -314,6 +337,7 @@ export function useGeneratorSettings() {
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.atlasCloudModel),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.midapiToken),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.geminiSettings),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.openaiSettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.midjourneySettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.imageProvider),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.artStyle),
@@ -369,6 +393,11 @@ export function useGeneratorSettings() {
           if (storedGeminiSettings) {
             try {
               setGeminiSettings({ ...DEFAULT_GEMINI_SETTINGS, ...JSON.parse(storedGeminiSettings) });
+            } catch (_) {}
+          }
+          if (storedOpenaiSettings) {
+            try {
+              setOpenaiSettings({ ...DEFAULT_OPENAI_SETTINGS, ...JSON.parse(storedOpenaiSettings) });
             } catch (_) {}
           }
 
@@ -610,6 +639,17 @@ export function useGeneratorSettings() {
     }
   }, [geminiSettings]);
 
+  const handleOpenaiSettingsChange = useCallback(async (newSettings: Partial<OpenAISettings>) => {
+    const updated = { ...openaiSettings, ...newSettings };
+    setOpenaiSettings(updated);
+    patchProxySettings({ openaiSettings: updated });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.openaiSettings, JSON.stringify(updated));
+    } catch (error) {
+      log.debug('Failed to save OpenAI settings:', error);
+    }
+  }, [openaiSettings]);
+
   const handleMidjourneySettingsChange = useCallback(async (newSettings: Partial<MidjourneySettings>) => {
     const updated = { ...midjourneySettings, ...newSettings };
     setMidjourneySettings(updated);
@@ -745,6 +785,7 @@ export function useGeneratorSettings() {
     midapiToken,
     midjourneySettings,
     geminiSettings,
+    openaiSettings,
     stableDiffusionSettings,
     loraTrainingSettings,
     imageProvider,
@@ -769,6 +810,7 @@ export function useGeneratorSettings() {
     handleAtlasCloudModelChange,
     handleMidapiTokenChange,
     handleGeminiSettingsChange,
+    handleOpenaiSettingsChange,
     handleMidjourneySettingsChange,
     handleStableDiffusionSettingsChange,
     handleLoraTrainingSettingsChange,

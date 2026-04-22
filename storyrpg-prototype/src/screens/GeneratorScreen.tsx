@@ -95,8 +95,8 @@ import {
   OutputManifest,
   SourceAnalysisResult,
 } from '../ai-agents/pipeline/FullStoryPipeline';
-import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, DEFAULT_STABLE_DIFFUSION_SETTINGS, DEFAULT_LORA_TRAINING_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
-import { STABLE_DIFFUSION_UI_ENABLED } from '../config/generatorLlmOptions';
+import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, DEFAULT_OPENAI_SETTINGS, DEFAULT_STABLE_DIFFUSION_SETTINGS, DEFAULT_LORA_TRAINING_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
+import { DEFAULT_LLM_MODELS, STABLE_DIFFUSION_UI_ENABLED } from '../config/generatorLlmOptions';
 import { EndingMode, SourceMaterialAnalysis, StoryEndingTarget } from '../types/sourceAnalysis';
 import { Story } from '../types';
 import {
@@ -338,6 +338,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     midapiToken,
     midjourneySettings,
     geminiSettings,
+    openaiSettings,
     stableDiffusionSettings,
     loraTrainingSettings,
     imageProvider,
@@ -362,6 +363,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     handleAtlasCloudModelChange,
     handleMidapiTokenChange,
     handleGeminiSettingsChange,
+    handleOpenaiSettingsChange,
     handleMidjourneySettingsChange,
     handleStableDiffusionSettingsChange,
     handleLoraTrainingSettingsChange,
@@ -374,6 +376,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const { models: availableModels, atlasCloudModels, scannedAt: modelsScanDate, loading: modelsScanLoading, refresh: refreshModels } = useAvailableModels();
   const [showMjSettings, setShowMjSettings] = useState(false);
   const [showGeminiSettings, setShowGeminiSettings] = useState(false);
+  const [showOpenAiSettings, setShowOpenAiSettings] = useState(false);
+  const [showOpenAiImageSettings, setShowOpenAiImageSettings] = useState(false);
   const [showSdSettings, setShowSdSettings] = useState(false);
   const [showLoraSettings, setShowLoraSettings] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
@@ -832,6 +836,15 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     if (provider === 'openai') return openaiApiKey.trim();
     return apiKey.trim();
   }, [apiKey, geminiApiKey, openaiApiKey]);
+  const isOpenAiQuotaError = useCallback((err: unknown): boolean => {
+    const msg = err instanceof Error ? err.message : String(err ?? '');
+    const lower = msg.toLowerCase();
+    return (
+      lower.includes('openai api error: 429') ||
+      lower.includes('insufficient_quota') ||
+      lower.includes('exceeded your current quota')
+    );
+  }, []);
 
   const selectedLlmModel = (
     llmModel.trim() || availableModels[llmProvider][0]?.value || ''
@@ -912,6 +925,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     panelMode: generationSettings.panelMode || 'single',
     artStyle,
     geminiSettings,
+    openaiSettings,
     midjourneySettings,
     stableDiffusionSettings,
     loraTrainingSettings,
@@ -958,6 +972,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         provider: (imageProvider === 'useapi' ? 'midapi' : imageProvider) as any,
         geminiApiKey: geminiApiKey.trim(),
         openaiApiKey: openaiApiKey.trim() || undefined,
+        openaiImageModel: openaiSettings.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel,
+        openaiModeration: openaiSettings.imageModeration || DEFAULT_OPENAI_SETTINGS.imageModeration,
         atlasCloudApiKey: atlasCloudApiKey.trim() || undefined,
         atlasCloudModel: atlasCloudModel.trim() || undefined,
         midapiToken: midapiToken.trim() || undefined,
@@ -1116,8 +1132,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
 
       const config = createPipelineConfig();
       const title = customStoryTitle || parsedDocument?.title || documentBrief?.story.title || 'Untitled Story';
-      const analysisResponse = await runStoryAnalysis({
-        config,
+      let analysisResponse;
+      const runAnalysisWithConfig = async (cfg: PipelineConfig) => runStoryAnalysis({
+        config: cfg,
         sourceText,
         title,
         prompt,
@@ -1136,6 +1153,37 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           timestamp: event.timestamp,
         }),
       });
+
+      try {
+        analysisResponse = await runAnalysisWithConfig(config);
+      } catch (analysisErr) {
+        const fallbackProvider =
+          llmProvider === 'openai' && isOpenAiQuotaError(analysisErr)
+            ? (apiKey.trim()
+                ? 'anthropic'
+                : (geminiApiKey.trim() ? 'gemini' : null))
+            : null;
+        if (!fallbackProvider) throw analysisErr;
+
+        handleEvent({
+          type: 'warning',
+          phase: 'source_analysis',
+          message: `OpenAI quota exceeded; retrying source analysis with ${fallbackProvider.toUpperCase()}.`,
+          timestamp: new Date(),
+        });
+
+        const input = buildPipelineConfigInput();
+        const fallbackInput = {
+          ...input,
+          llmProvider: fallbackProvider,
+          llmModel: DEFAULT_LLM_MODELS[fallbackProvider],
+        };
+        const fallbackConfig = buildPipelineConfig(fallbackInput, {
+          artStyleProfileOverride: styleSetup.handoff.profile,
+          preapprovedStyleAnchors: styleSetup.handoff.preapprovedStyleAnchors,
+        });
+        analysisResponse = await runAnalysisWithConfig(fallbackConfig);
+      }
       const normalizedAnalysis = applyEndingModeToAnalysis(analysisResponse.sourceAnalysis);
       setAnalysisResult(analysisResponse.analysisResult);
       setSourceAnalysis(normalizedAnalysis);
@@ -2038,6 +2086,62 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 </View>
 
                 <View style={styles.configItem}>
+                  <TouchableOpacity
+                    style={styles.inlineDisclosure}
+                    onPress={() => setShowOpenAiSettings(!showOpenAiSettings)}
+                  >
+                    <Settings size={16} color={TERMINAL.colors.cyan} style={{ marginRight: 8 }} />
+                    <Text style={[styles.configLabel, { color: TERMINAL.colors.cyan }]}>OPENAI ADVANCED</Text>
+                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showOpenAiSettings ? '90deg' : '0deg' }] }} />
+                  </TouchableOpacity>
+                  {showOpenAiSettings && (
+                    <View style={styles.disclosureBody}>
+                      <View style={{ marginBottom: 12 }}>
+                        <Text style={[styles.configLabel, { marginBottom: 8 }]}>REASONING EFFORT</Text>
+                        <View style={styles.segmentedControl}>
+                          {(['minimal', 'low', 'medium', 'high'] as const).map((effort) => (
+                            <TouchableOpacity
+                              key={effort}
+                              style={[styles.segment, (openaiSettings.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort) === effort && styles.segmentActive]}
+                              onPress={() => handleOpenaiSettingsChange({ reasoningEffort: effort })}
+                            >
+                              <Text style={[styles.segmentText, (openaiSettings.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort) === effort && styles.segmentTextActive]}>{effort.toUpperCase()}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                        <Text style={[styles.configHint, { marginTop: 8 }]}>
+                          Applies to every OpenAI text/orchestration agent (story, image planning, video planning). Image model settings live in the IMAGES panel.
+                        </Text>
+                      </View>
+
+                      <View style={styles.toggleConfigRow}>
+                        <View style={styles.toggleConfigInfo}>
+                          <Text style={styles.configLabel}>FORCE JSON STRUCTURED OUTPUT</Text>
+                          <Text style={styles.configHint}>Keeps OpenAI agent outputs in JSON mode for robust parser reliability.</Text>
+                        </View>
+                        <Switch
+                          value={openaiSettings.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse}
+                          onValueChange={(v) => handleOpenaiSettingsChange({ forceJsonResponse: v })}
+                          trackColor={{ false: '#333', true: TERMINAL.colors.cyan }}
+                          thumbColor="#fff"
+                        />
+                      </View>
+
+                      <TouchableOpacity
+                        style={styles.inlineResetButton}
+                        onPress={() => handleOpenaiSettingsChange({
+                          reasoningEffort: DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+                          forceJsonResponse: DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
+                        })}
+                      >
+                        <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
+                        <Text style={styles.inlineResetButtonText}>RESET TEXT DEFAULTS</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.configItem}>
                   <Text style={styles.configLabel}>VALIDATION MODE</Text>
                   <Text style={styles.configHint}>
                     Controls how strictly quality checks can block generation.
@@ -2283,6 +2387,68 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       )}
                     </View>
                   </>
+                )}
+
+                {imageProvider === 'dall-e' && (
+                  <View style={styles.configItem}>
+                    <TouchableOpacity
+                      style={styles.inlineDisclosure}
+                      onPress={() => setShowOpenAiImageSettings(!showOpenAiImageSettings)}
+                    >
+                      <Settings size={16} color={TERMINAL.colors.cyan} style={{ marginRight: 8 }} />
+                      <Text style={[styles.configLabel, { color: TERMINAL.colors.cyan }]}>OPENAI IMAGE PARAMETERS</Text>
+                      <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showOpenAiImageSettings ? '90deg' : '0deg' }] }} />
+                    </TouchableOpacity>
+                    {showOpenAiImageSettings && (
+                      <View style={styles.disclosureBody}>
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>IMAGE MODEL</Text>
+                          <ModelDropdown
+                            options={[
+                              { value: 'gpt-image-2', label: 'GPT Image 2', description: 'Strongest character/style consistency and multi-reference editing.' },
+                              { value: 'gpt-image-1.5', label: 'GPT Image 1.5', description: 'Balanced quality and speed.' },
+                              { value: 'gpt-image-1', label: 'GPT Image 1', description: 'General-purpose high quality model.' },
+                              { value: 'gpt-image-1-mini', label: 'GPT Image 1 Mini', description: 'Fastest and lowest cost.' },
+                            ]}
+                            value={openaiSettings.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel}
+                            onSelect={(v) => handleOpenaiSettingsChange({ imageModel: v as any })}
+                          />
+                          <Text style={[styles.configHint, { marginTop: 6 }]}>
+                            Requires OPENAI API KEY in the STORY panel. Used only when OPENAI is the selected image provider here.
+                          </Text>
+                        </View>
+
+                        <View style={{ marginBottom: 8 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>IMAGE MODERATION</Text>
+                          <View style={styles.segmentedControl}>
+                            {(['auto', 'low'] as const).map((mode) => (
+                              <TouchableOpacity
+                                key={mode}
+                                style={[styles.segment, (openaiSettings.imageModeration || DEFAULT_OPENAI_SETTINGS.imageModeration) === mode && styles.segmentActive]}
+                                onPress={() => handleOpenaiSettingsChange({ imageModeration: mode })}
+                              >
+                                <Text style={[styles.segmentText, (openaiSettings.imageModeration || DEFAULT_OPENAI_SETTINGS.imageModeration) === mode && styles.segmentTextActive]}>{mode.toUpperCase()}</Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                          <Text style={[styles.configHint, { marginTop: 6 }]}>
+                            &quot;low&quot; relaxes safety filtering for mature narratives. &quot;auto&quot; uses OpenAI defaults.
+                          </Text>
+                        </View>
+
+                        <TouchableOpacity
+                          style={styles.inlineResetButton}
+                          onPress={() => handleOpenaiSettingsChange({
+                            imageModel: DEFAULT_OPENAI_SETTINGS.imageModel,
+                            imageModeration: DEFAULT_OPENAI_SETTINGS.imageModeration,
+                          })}
+                        >
+                          <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
+                          <Text style={styles.inlineResetButtonText}>RESET IMAGE DEFAULTS</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
                 )}
 
                 {imageProvider === 'midapi' && (

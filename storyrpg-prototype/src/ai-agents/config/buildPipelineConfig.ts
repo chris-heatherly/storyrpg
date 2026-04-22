@@ -4,6 +4,8 @@ import {
   GeminiSettings,
   MidjourneySettings,
   StableDiffusionSettings,
+  OpenAISettings,
+  DEFAULT_OPENAI_SETTINGS,
   ImageProvider,
   LoraTrainingSettings,
   resolveLoraTrainingSettings,
@@ -51,6 +53,7 @@ export interface BuildPipelineConfigInput {
    * env-var defaults apply via `resolveLoraTrainingSettings`.
    */
   loraTrainingSettings?: Partial<LoraTrainingSettings>;
+  openaiSettings?: OpenAISettings;
   generationSettings: GenerationSettings;
   generationMode: GenerationMode;
   narrationSettings: GeneratorNarrationSettings;
@@ -161,6 +164,8 @@ export function buildPipelineConfig(
         apiKey: selectedLlmApiKey,
         maxTokens: 8192,
         temperature: 0.7,
+        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
       },
       sceneWriter: {
         provider: input.llmProvider,
@@ -168,6 +173,8 @@ export function buildPipelineConfig(
         apiKey: selectedLlmApiKey,
         maxTokens: 4096,
         temperature: 0.85,
+        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
       },
       choiceAuthor: {
         provider: input.llmProvider,
@@ -175,6 +182,8 @@ export function buildPipelineConfig(
         apiKey: selectedLlmApiKey,
         maxTokens: 4096,
         temperature: 0.75,
+        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
       },
       imagePlanner: {
         provider: input.imageLlmProvider,
@@ -182,6 +191,8 @@ export function buildPipelineConfig(
         apiKey: getScopedLlmApiKey(input.imageLlmProvider, input),
         maxTokens: 8192,
         temperature: 0.7,
+        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
       },
       videoDirector: {
         provider: input.videoLlmProvider,
@@ -189,6 +200,8 @@ export function buildPipelineConfig(
         apiKey: getScopedLlmApiKey(input.videoLlmProvider, input),
         maxTokens: 8192,
         temperature: 0.7,
+        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
       },
     },
     validation: {
@@ -223,7 +236,8 @@ export function buildPipelineConfig(
       apiKey: input.geminiApiKey.trim(),
       geminiApiKey: input.geminiApiKey.trim(),
       openaiApiKey: (input.openaiApiKey || input.apiKey || '').trim() || undefined,
-      openaiImageModel: 'gpt-image-2',
+      openaiImageModel: input.openaiSettings?.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel,
+      openaiModeration: input.openaiSettings?.imageModeration || DEFAULT_OPENAI_SETTINGS.imageModeration,
       provider: normalizedImageProvider,
       strategy: input.imageStrategy,
       atlasCloudApiKey: input.atlasCloudApiKey.trim() || undefined,

@@ -56,6 +56,10 @@ export interface AgentConfig {
   apiKey: string;
   maxTokens: number;
   temperature: number;
+  /** OpenAI-only hint for reasoning-class models (gpt-5/o-series). */
+  openaiReasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  /** OpenAI-only: force JSON response format for structured agent outputs. */
+  openaiForceJsonResponse?: boolean;
 }
 
 // Generation settings from UI
@@ -270,6 +274,24 @@ export const DEFAULT_GEMINI_SETTINGS: Required<GeminiSettings> = {
   thinkingLevel: 'minimal',
   referenceThinkingLevel: 'high',
   usePreviewForValidation: false,
+};
+
+export interface OpenAISettings {
+  /** OpenAI reasoning effort for text/orchestration agents. */
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  /** Force `response_format: { type: "json_object" }` for structured outputs. */
+  forceJsonResponse?: boolean;
+  /** OpenAI image model used when image provider is OPENAI (`dall-e` id). */
+  imageModel?: 'gpt-image-2' | 'gpt-image-1.5' | 'gpt-image-1' | 'gpt-image-1-mini';
+  /** OpenAI image moderation mode. */
+  imageModeration?: 'auto' | 'low';
+}
+
+export const DEFAULT_OPENAI_SETTINGS: Required<OpenAISettings> = {
+  reasoningEffort: 'medium',
+  forceJsonResponse: true,
+  imageModel: 'gpt-image-2',
+  imageModeration: 'auto',
 };
 
 // Midjourney-specific tuning parameters
@@ -621,6 +643,7 @@ export interface PipelineConfig {
     geminiApiKey?: string;
     openaiApiKey?: string;
     openaiImageModel?: string;
+    openaiModeration?: 'auto' | 'low';
     model?: string;
     provider?: ImageProvider;
     strategy?: 'selective' | 'all-beats';
@@ -693,6 +716,8 @@ export interface PipelineConfig {
   midjourneySettings?: MidjourneySettings;
   // Gemini-specific parameters exposed in settings
   geminiSettings?: GeminiSettings;
+  // OpenAI-specific parameters exposed in settings
+  openaiSettings?: OpenAISettings;
   // Generation settings (beat counts, choice distribution, etc.)
   generation?: GenerationSettingsConfig;
   // Narration/Audio settings
@@ -765,6 +790,16 @@ const defaultValidationConfig: ValidationConfig = {
 // Default configuration - override with environment variables
 export function loadConfig(): PipelineConfig {
   const env = typeof process !== 'undefined' ? process.env : {} as any;
+  const openaiSettingsFromEnv: Required<OpenAISettings> = {
+    reasoningEffort:
+      (env.EXPO_PUBLIC_OPENAI_REASONING_EFFORT || env.OPENAI_REASONING_EFFORT || DEFAULT_OPENAI_SETTINGS.reasoningEffort) as Required<OpenAISettings>['reasoningEffort'],
+    forceJsonResponse:
+      (env.EXPO_PUBLIC_OPENAI_FORCE_JSON_RESPONSE || env.OPENAI_FORCE_JSON_RESPONSE || 'true') !== 'false',
+    imageModel:
+      (env.EXPO_PUBLIC_OPENAI_IMAGE_MODEL || env.OPENAI_IMAGE_MODEL || DEFAULT_OPENAI_SETTINGS.imageModel) as Required<OpenAISettings>['imageModel'],
+    imageModeration:
+      (env.EXPO_PUBLIC_OPENAI_IMAGE_MODERATION || env.OPENAI_IMAGE_MODERATION || DEFAULT_OPENAI_SETTINGS.imageModeration) as Required<OpenAISettings>['imageModeration'],
+  };
   const resolveProviderApiKey = (provider: AgentConfig['provider']): string => {
     if (provider === 'gemini') {
       return env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
@@ -787,6 +822,8 @@ export function loadConfig(): PipelineConfig {
       '',
     maxTokens: 4096,
     temperature: 0.8,
+    openaiReasoningEffort: openaiSettingsFromEnv.reasoningEffort,
+    openaiForceJsonResponse: openaiSettingsFromEnv.forceJsonResponse,
   };
 
   // Parse validation mode from environment
@@ -835,13 +872,15 @@ export function loadConfig(): PipelineConfig {
       apiKey: env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY,
       geminiApiKey: env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY,
       openaiApiKey: env.OPENAI_API_KEY || env.EXPO_PUBLIC_OPENAI_API_KEY,
-      openaiImageModel: env.OPENAI_IMAGE_MODEL || env.EXPO_PUBLIC_OPENAI_IMAGE_MODEL || 'gpt-image-2',
+      openaiImageModel: openaiSettingsFromEnv.imageModel,
+      openaiModeration: openaiSettingsFromEnv.imageModeration,
       model: env.EXPO_PUBLIC_GEMINI_MODEL || env.GEMINI_MODEL,
       provider: env.EXPO_PUBLIC_IMAGE_PROVIDER || env.IMAGE_PROVIDER || 'nano-banana',
       qa: resolveImageQaConfig(env),
       artStyleProfile: resolveArtStylePresetProfile(env),
       loraTraining: resolveLoraTrainingSettings(env),
     },
+    openaiSettings: openaiSettingsFromEnv,
     videoGen: {
       enabled: env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true' || env.VIDEO_GENERATION_ENABLED === 'true',
       model: (env.EXPO_PUBLIC_VIDEO_MODEL || env.VIDEO_MODEL || DEFAULT_VIDEO_SETTINGS.model) as VideoSettingsConfig['model'],

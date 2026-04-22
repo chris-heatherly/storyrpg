@@ -74,6 +74,7 @@ export interface ImageGenerationConfig {
   geminiApiKey?: string;
   openaiApiKey?: string;
   openaiImageModel?: string;
+  openaiModeration?: 'auto' | 'low';
   geminiModel?: 'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview' | 'gemini-3.1-flash-image-preview';
   // Atlas Cloud configuration
   atlasCloudApiKey?: string;
@@ -354,6 +355,7 @@ export class ImageGenerationService {
       geminiApiKey: normalizedGeminiKey,
       openaiApiKey: normalizedOpenAiKey,
       openaiImageModel: (config.openaiImageModel || env?.EXPO_PUBLIC_OPENAI_IMAGE_MODEL || env?.OPENAI_IMAGE_MODEL || 'gpt-image-2').trim(),
+      openaiModeration: (config.openaiModeration || env?.EXPO_PUBLIC_OPENAI_IMAGE_MODERATION || env?.OPENAI_IMAGE_MODERATION || 'auto').trim(),
       provider: this.normalizeProvider(config.provider),
       useapiToken: config.useapiToken || config.midapiToken,
     };
@@ -5074,7 +5076,7 @@ export class ImageGenerationService {
       size: this.mapAspectRatioForOpenAiImage(prompt.aspectRatio),
       quality: this.resolveOpenAiImageQuality(imageType),
       output_format: 'png',
-      moderation: 'auto',
+      moderation: this.config.openaiModeration || 'auto',
     };
     if (useEdit) {
       body.image = inputs;

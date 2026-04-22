@@ -607,10 +607,9 @@ Do not use markdown code blocks around the JSON.
   ): Promise<string> {
     const model = this.config.model || 'gpt-5';
     const isReasoningModel = /^(gpt-5|o1|o3|o4)/i.test(model);
+    const reasoningEffort = this.config.openaiReasoningEffort || 'medium';
     const body: Record<string, unknown> = {
       model,
-      max_tokens: this.config.maxTokens,
-      temperature: this.config.temperature,
       messages: messages.map((m) => {
         if (typeof m.content === 'string') {
           return { role: m.role, content: m.content };
@@ -633,10 +632,30 @@ Do not use markdown code blocks around the JSON.
           }).filter(Boolean)
         };
       }),
-      response_format: { type: 'json_object' },
     };
+    if (this.config.openaiForceJsonResponse !== false) {
+      body.response_format = { type: 'json_object' };
+    }
     if (isReasoningModel) {
-      body.reasoning_effort = 'medium';
+      // Reasoning-class models (gpt-5, o1/o3/o4) require `max_completion_tokens`
+      // instead of `max_tokens`, and reject the `temperature` parameter entirely
+      // (temperature is fixed at 1 for these models). The budget is shared between
+      // hidden reasoning tokens and visible completion tokens, so we enforce a
+      // generous floor — otherwise reasoning alone burns the whole budget and the
+      // visible content comes back empty with finish_reason="length".
+      const reasoningFloorByEffort: Record<string, number> = {
+        minimal: 4096,
+        low: 8192,
+        medium: 16384,
+        high: 32768,
+      };
+      const floor = reasoningFloorByEffort[reasoningEffort] ?? 16384;
+      const budget = Math.max(this.config.maxTokens ?? 0, floor);
+      body.max_completion_tokens = budget;
+      body.reasoning_effort = reasoningEffort;
+    } else {
+      body.max_tokens = this.config.maxTokens;
+      body.temperature = this.config.temperature;
     }
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -661,9 +680,32 @@ Do not use markdown code blocks around the JSON.
         if (typeof data.usage?.prompt_tokens === 'number') usageOut.inputTokens = data.usage.prompt_tokens;
         if (typeof data.usage?.completion_tokens === 'number') usageOut.outputTokens = data.usage.completion_tokens;
       }
-      return data.choices[0].message.content;
+      const choice = data.choices?.[0];
+      const content: string = choice?.message?.content ?? '';
+      const finishReason: string | undefined = choice?.finish_reason;
+
+      if (!content || content.trim().length === 0) {
+        const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens;
+        const completionTokens = data.usage?.completion_tokens;
+        if (isReasoningModel && finishReason === 'length') {
+          throw new Error(
+            `OpenAI returned empty content (finish_reason=length). The reasoning-class model "${model}" consumed the entire ` +
+              `max_completion_tokens budget on internal reasoning ` +
+              `(reasoning_tokens=${reasoningTokens ?? '?'}, completion_tokens=${completionTokens ?? '?'}, ` +
+              `budget=${body.max_completion_tokens}). ` +
+              `Lower REASONING EFFORT in the OPENAI ADVANCED panel, raise maxTokens, or switch to a non-reasoning model like gpt-4o / gpt-4.1.`,
+          );
+        }
+        throw new Error(
+          `OpenAI returned empty content (finish_reason=${finishReason ?? 'unknown'}). Model=${model}. Response: ${text.substring(0, 500)}`,
+        );
+      }
+
+      return content;
     } catch (parseError) {
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
+      // If we already threw a descriptive error above, rethrow it verbatim.
+      if (msg.startsWith('OpenAI returned empty content')) throw parseError;
       throw new Error(`Failed to parse OpenAI response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
     }
   }

@@ -156,6 +156,12 @@ describe('buildPipelineConfig', () => {
       imageStrategy: 'all-beats',
       panelMode: 'all-beats',
       artStyle: '',
+      openaiSettings: {
+        reasoningEffort: 'high',
+        forceJsonResponse: true,
+        imageModel: 'gpt-image-1.5',
+        imageModeration: 'low',
+      },
       geminiSettings: {} as any,
       midjourneySettings: {} as any,
       generationSettings,
@@ -179,13 +185,16 @@ describe('buildPipelineConfig', () => {
 
     expect(config.agents.storyArchitect.provider).toBe('openai');
     expect(config.agents.storyArchitect.apiKey).toBe('openai-key');
+    expect(config.agents.storyArchitect.openaiReasoningEffort).toBe('high');
+    expect(config.agents.storyArchitect.openaiForceJsonResponse).toBe(true);
     expect(config.agents.imagePlanner?.provider).toBe('anthropic');
     expect(config.agents.imagePlanner?.apiKey).toBe('anthropic-key');
     expect(config.agents.videoDirector?.provider).toBe('gemini');
     expect(config.agents.videoDirector?.apiKey).toBe('gemini-key');
     expect(config.imageGen?.provider).toBe('dall-e');
     expect(config.imageGen?.openaiApiKey).toBe('openai-key');
-    expect(config.imageGen?.openaiImageModel).toBe('gpt-image-2');
+    expect(config.imageGen?.openaiImageModel).toBe('gpt-image-1.5');
+    expect(config.imageGen?.openaiModeration).toBe('low');
   });
 
   it('keeps Midjourney settings on the normalized provider config', () => {

@@ -2405,10 +2405,10 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                           <Text style={[styles.configLabel, { marginBottom: 8 }]}>IMAGE MODEL</Text>
                           <ModelDropdown
                             options={[
-                              { value: 'gpt-image-2', label: 'GPT Image 2', description: 'Strongest character/style consistency and multi-reference editing.' },
-                              { value: 'gpt-image-1.5', label: 'GPT Image 1.5', description: 'Balanced quality and speed.' },
-                              { value: 'gpt-image-1', label: 'GPT Image 1', description: 'General-purpose high quality model.' },
-                              { value: 'gpt-image-1-mini', label: 'GPT Image 1 Mini', description: 'Fastest and lowest cost.' },
+                              { value: 'gpt-image-1', label: 'GPT Image 1', description: 'Default. General-purpose high quality, no org verification required.' },
+                              { value: 'gpt-image-1-mini', label: 'GPT Image 1 Mini', description: 'Fastest and lowest cost. No verification required.' },
+                              { value: 'gpt-image-1.5', label: 'GPT Image 1.5 (verified org only)', description: 'Requires OpenAI organization verification.' },
+                              { value: 'gpt-image-2', label: 'GPT Image 2 (verified org only)', description: 'Strongest consistency + multi-ref editing. Requires OpenAI organization verification.' },
                             ]}
                             value={openaiSettings.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel}
                             onSelect={(v) => handleOpenaiSettingsChange({ imageModel: v as any })}

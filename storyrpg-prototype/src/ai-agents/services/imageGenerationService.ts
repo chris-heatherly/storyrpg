@@ -5093,7 +5093,18 @@ export class ImageGenerationService {
     });
     const raw = await response.text();
     if (!response.ok) {
-      const msg = `OpenAI image API error ${response.status}: ${raw.slice(0, 500)}`;
+      let friendly = '';
+      if (response.status === 403 && /must be verified/i.test(raw)) {
+        friendly =
+          ` Your OpenAI organization is not verified for "${model}". ` +
+          `Either (a) visit https://platform.openai.com/settings/organization/general and click "Verify Organization", ` +
+          `then wait up to 15 minutes, or (b) pick gpt-image-1 / gpt-image-1-mini in the IMAGES panel → OPENAI IMAGE PARAMETERS (no verification required).`;
+      } else if (response.status === 401) {
+        friendly = ' Check that your OPENAI API KEY (in the STORY panel) is valid and has image-generation scope.';
+      } else if (response.status === 429) {
+        friendly = ' Your OpenAI key has hit a rate limit or has insufficient quota. Check billing at https://platform.openai.com/settings/organization/billing.';
+      }
+      const msg = `OpenAI image API error ${response.status}: ${raw.slice(0, 500)}${friendly}`;
       this.emit({ type: 'job_updated', id: jobId, updates: { status: 'failed', error: msg, endTime: Date.now() } });
       if (this.isFailFastEnabled()) throw new Error(msg);
       console.error(`[ImageGenerationService] ${msg}`);

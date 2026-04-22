@@ -290,7 +290,11 @@ export interface OpenAISettings {
 export const DEFAULT_OPENAI_SETTINGS: Required<OpenAISettings> = {
   reasoningEffort: 'medium',
   forceJsonResponse: true,
-  imageModel: 'gpt-image-2',
+  // `gpt-image-1` is the broadest-availability tier on the OpenAI API and does
+  // NOT require organization verification. `gpt-image-2` and `gpt-image-1.5`
+  // are gated behind platform.openai.com org verification — pick them explicitly
+  // in the UI only after your org is verified.
+  imageModel: 'gpt-image-1',
   imageModeration: 'auto',
 };
 

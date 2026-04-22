@@ -33,6 +33,7 @@ export interface BuildPipelineConfigInput {
   videoLlmProvider: GeneratorLlmProvider;
   videoLlmModel: string;
   apiKey: string;
+  openaiApiKey?: string;
   geminiApiKey: string;
   elevenLabsApiKey: string;
   atlasCloudApiKey: string;
@@ -60,6 +61,9 @@ function getSelectedLlmApiKey(input: BuildPipelineConfigInput): string {
   if (input.llmProvider === 'gemini') {
     return input.geminiApiKey.trim();
   }
+  if (input.llmProvider === 'openai') {
+    return (input.openaiApiKey || input.apiKey || '').trim();
+  }
 
   return input.apiKey.trim();
 }
@@ -74,6 +78,9 @@ function getScopedLlmApiKey(
 ): string {
   if (provider === 'gemini') {
     return input.geminiApiKey.trim();
+  }
+  if (provider === 'openai') {
+    return (input.openaiApiKey || input.apiKey || '').trim();
   }
 
   return input.apiKey.trim();
@@ -215,6 +222,8 @@ export function buildPipelineConfig(
       enabled: input.generationSettings.generateImages,
       apiKey: input.geminiApiKey.trim(),
       geminiApiKey: input.geminiApiKey.trim(),
+      openaiApiKey: (input.openaiApiKey || input.apiKey || '').trim() || undefined,
+      openaiImageModel: 'gpt-image-2',
       provider: normalizedImageProvider,
       strategy: input.imageStrategy,
       atlasCloudApiKey: input.atlasCloudApiKey.trim() || undefined,

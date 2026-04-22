@@ -71,7 +71,7 @@ describe('providerCapabilities', () => {
 
   describe('providerConsumesRefs', () => {
     it('is false for providers with no refs and true for providers that accept refs', () => {
-      expect(providerConsumesRefs('dall-e')).toBe(false);
+      expect(providerConsumesRefs('dall-e')).toBe(true);
       expect(providerConsumesRefs('placeholder')).toBe(false);
       expect(providerConsumesRefs('nano-banana')).toBe(true);
       expect(providerConsumesRefs('stable-diffusion')).toBe(true);

@@ -119,6 +119,7 @@ describe('Atlas Cloud modelCapabilities — family detection', () => {
 
   describe('GPT Image family (new)', () => {
     for (const slug of [
+      'openai/gpt-image-2/text-to-image',
       'openai/gpt-image-1/text-to-image',
       'openai/gpt-image-1.5/text-to-image',
       'openai/gpt-image-1-mini/text-to-image',
@@ -127,8 +128,8 @@ describe('Atlas Cloud modelCapabilities — family detection', () => {
         const caps = getCaps(buildServiceWithAtlasModel(slug));
         expect(caps.isGptImage).toBe(true);
         expect(caps.supportsEditRefs).toBe(true);
-        expect(caps.maxRefImages).toBe(4);
-        expect(caps.supportsRichPrompt).toBe(false);
+        expect(caps.maxRefImages).toBe(slug.includes('gpt-image-2') ? 16 : 10);
+        expect(caps.supportsRichPrompt).toBe(true);
       });
     }
   });
@@ -215,6 +216,11 @@ describe('Atlas Cloud resolveAtlasCloudModel — endpoint routing', () => {
   });
 
   describe('GPT Image (new)', () => {
+    it('gpt-image-2 toggles between /text-to-image and /edit on refs', () => {
+      const s = buildServiceWithAtlasModel('openai/gpt-image-2/text-to-image');
+      expect(resolve(s, false)).toBe('openai/gpt-image-2/text-to-image');
+      expect(resolve(s, true)).toBe('openai/gpt-image-2/edit');
+    });
     it('toggles between /text-to-image and /edit on refs', () => {
       const s = buildServiceWithAtlasModel('openai/gpt-image-1/text-to-image');
       expect(resolve(s, false)).toBe('openai/gpt-image-1/text-to-image');

@@ -619,6 +619,8 @@ export interface PipelineConfig {
     enabled?: boolean;
     apiKey?: string;
     geminiApiKey?: string;
+    openaiApiKey?: string;
+    openaiImageModel?: string;
     model?: string;
     provider?: ImageProvider;
     strategy?: 'selective' | 'all-beats';
@@ -832,6 +834,8 @@ export function loadConfig(): PipelineConfig {
       enabled: env.EXPO_PUBLIC_IMAGE_GENERATION_ENABLED !== 'false' && env.IMAGE_GENERATION_ENABLED !== 'false',
       apiKey: env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY,
       geminiApiKey: env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY,
+      openaiApiKey: env.OPENAI_API_KEY || env.EXPO_PUBLIC_OPENAI_API_KEY,
+      openaiImageModel: env.OPENAI_IMAGE_MODEL || env.EXPO_PUBLIC_OPENAI_IMAGE_MODEL || 'gpt-image-2',
       model: env.EXPO_PUBLIC_GEMINI_MODEL || env.GEMINI_MODEL,
       provider: env.EXPO_PUBLIC_IMAGE_PROVIDER || env.IMAGE_PROVIDER || 'nano-banana',
       qa: resolveImageQaConfig(env),

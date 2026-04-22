@@ -53,8 +53,15 @@ function hasNodeFs(): boolean {
 }
 
 function nodeRequire<T>(name: string): T {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require(name) as T;
+  // Hidden from Metro's static analyzer. Metro rejects `require(variable)`
+  // because it can't bundle an unknown module; we only call this from Node
+  // branches (hasNodeFs() === true), so indirecting through Function lets
+  // the web bundle build while Node still resolves at runtime.
+  const req = (Function('return typeof require !== "undefined" ? require : null'))() as
+    | ((mod: string) => unknown)
+    | null;
+  if (!req) throw new Error(`nodeRequire called in non-Node runtime for: ${name}`);
+  return req(name) as T;
 }
 
 function atomicWriteNodeSync(absPath: string, content: string | Buffer): { sha256: string; bytes: number } {

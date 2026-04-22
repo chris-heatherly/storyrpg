@@ -104,6 +104,40 @@ async function scanGeminiModels(apiKey) {
   }
 }
 
+async function scanOpenAIModels(apiKey) {
+  if (!apiKey) return [];
+  try {
+    const resp = await fetch('https://api.openai.com/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!resp.ok) {
+      console.warn(`[ModelScan] OpenAI API returned ${resp.status}: ${resp.statusText}`);
+      return [];
+    }
+    const body = await resp.json();
+    const models = (body.data || [])
+      .filter((m) => {
+        const id = (m.id || '').toLowerCase();
+        return (
+          id.startsWith('gpt-') ||
+          id.startsWith('o1') ||
+          id.startsWith('o3') ||
+          id.startsWith('o4')
+        );
+      })
+      .sort((a, b) => (b.id || '').localeCompare(a.id || ''))
+      .map((m) => ({
+        value: m.id,
+        label: formatModelLabel(m.id),
+      }));
+    console.log(`[ModelScan] OpenAI: found ${models.length} models`);
+    return models;
+  } catch (err) {
+    console.warn('[ModelScan] OpenAI scan failed:', err.message);
+    return [];
+  }
+}
+
 // Complete Atlas Cloud text-to-image catalog (kept in sync with
 // https://www.atlascloud.ai/models/list?type=Text-to-Image). When the API
 // /v1/models endpoint returns a list we merge with this so models the API
@@ -121,6 +155,7 @@ function getAtlasCloudImageModels() {
     { value: 'google/imagen3', label: 'Imagen 3', price: '$0.04/pic', description: "Google's prior-generation high-detail text-to-image model." },
     { value: 'google/imagen3-fast', label: 'Imagen 3 Fast', price: '$0.02/pic', description: 'Fast variant of Imagen 3.' },
     // OpenAI
+    { value: 'openai/gpt-image-2/text-to-image', label: 'GPT Image 2', price: '$0.01/pic', description: "OpenAI's latest image model. Strongest character/style consistency with multi-reference edit workflows." },
     { value: 'openai/gpt-image-1.5/text-to-image', label: 'GPT Image 1.5', price: '$0.008/pic', description: "OpenAI's fast, cost-efficient text-to-image. Photorealistic, concept art, stylized. Text only." },
     { value: 'openai/gpt-image-1/text-to-image', label: 'GPT Image 1', price: '$0.009/pic', description: "OpenAI's GPT Image-1. Ideal for creating visual assets." },
     { value: 'openai/gpt-image-1-mini/text-to-image', label: 'GPT Image 1 Mini', price: '$0.004/pic', description: 'Cost-efficient multimodal OpenAI model (GPT-5 guided).' },
@@ -212,9 +247,15 @@ async function performScan(overrideKeys) {
     overrideKeys?.atlasCloudApiKey ||
     process.env.ATLAS_CLOUD_API_KEY ||
     '';
+  const openaiKey =
+    overrideKeys?.openaiApiKey ||
+    process.env.OPENAI_API_KEY ||
+    process.env.EXPO_PUBLIC_OPENAI_API_KEY ||
+    '';
 
-  const [anthropic, gemini, atlasCloud] = await Promise.all([
+  const [anthropic, openai, gemini, atlasCloud] = await Promise.all([
     scanAnthropicModels(anthropicKey),
+    scanOpenAIModels(openaiKey),
     scanGeminiModels(geminiKey),
     scanAtlasCloudModels(atlasKey),
   ]);
@@ -223,6 +264,7 @@ async function performScan(overrideKeys) {
     scannedAt: Date.now(),
     providers: {
       anthropic: anthropic.length > 0 ? anthropic : null,
+      openai: openai.length > 0 ? openai : null,
       gemini: gemini.length > 0 ? gemini : null,
       atlasCloud: atlasCloud.length > 0 ? atlasCloud : null,
     },
@@ -251,6 +293,7 @@ function registerModelScanRoutes(app) {
     try {
       const overrideKeys = {
         anthropicApiKey: req.body?.anthropicApiKey,
+        openaiApiKey: req.body?.openaiApiKey,
         geminiApiKey: req.body?.geminiApiKey,
         atlasCloudApiKey: req.body?.atlasCloudApiKey,
       };

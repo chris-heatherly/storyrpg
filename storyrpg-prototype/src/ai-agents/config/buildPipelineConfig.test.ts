@@ -137,6 +137,57 @@ describe('buildPipelineConfig', () => {
     expect(config.agents.videoDirector?.model).toBe('gemini-2.5-pro');
   });
 
+  it('routes OpenAI providers to the OpenAI key while preserving Anthropic/Gemini keys', () => {
+    const config = buildPipelineConfig({
+      llmProvider: 'openai',
+      llmModel: 'gpt-5',
+      imageLlmProvider: 'anthropic',
+      imageLlmModel: 'claude-3-5-haiku-20241022',
+      videoLlmProvider: 'gemini',
+      videoLlmModel: 'gemini-2.5-flash',
+      apiKey: 'anthropic-key',
+      openaiApiKey: 'openai-key',
+      geminiApiKey: 'gemini-key',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: 'bytedance/seedream-v4.5',
+      midapiToken: '',
+      imageProvider: 'dall-e',
+      imageStrategy: 'all-beats',
+      panelMode: 'all-beats',
+      artStyle: '',
+      geminiSettings: {} as any,
+      midjourneySettings: {} as any,
+      generationSettings,
+      generationMode: 'advisory',
+      narrationSettings: {
+        enabled: false,
+        autoPlay: false,
+        preGenerateAudio: false,
+        voiceId: '',
+        highlightMode: 'word',
+      },
+      videoSettings: {
+        enabled: false,
+        model: 'veo-3.1-fast-generate-preview',
+        durationSeconds: 6,
+        resolution: '1080p',
+        aspectRatio: '9:16',
+        strategy: 'selective',
+      },
+    });
+
+    expect(config.agents.storyArchitect.provider).toBe('openai');
+    expect(config.agents.storyArchitect.apiKey).toBe('openai-key');
+    expect(config.agents.imagePlanner?.provider).toBe('anthropic');
+    expect(config.agents.imagePlanner?.apiKey).toBe('anthropic-key');
+    expect(config.agents.videoDirector?.provider).toBe('gemini');
+    expect(config.agents.videoDirector?.apiKey).toBe('gemini-key');
+    expect(config.imageGen?.provider).toBe('dall-e');
+    expect(config.imageGen?.openaiApiKey).toBe('openai-key');
+    expect(config.imageGen?.openaiImageModel).toBe('gpt-image-2');
+  });
+
   it('keeps Midjourney settings on the normalized provider config', () => {
     const config = buildPipelineConfig({
       llmProvider: 'anthropic',

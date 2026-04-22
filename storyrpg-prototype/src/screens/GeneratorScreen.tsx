@@ -330,6 +330,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     videoLlmProvider,
     videoLlmModel,
     apiKey,
+    openaiApiKey,
     geminiApiKey,
     elevenLabsApiKey,
     atlasCloudApiKey,
@@ -354,6 +355,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     handleVideoLlmModelChange,
     handleGenerationModeChange,
     handleApiKeyChange,
+    handleOpenaiApiKeyChange,
     handleGeminiApiKeyChange,
     handleElevenLabsApiKeyChange,
     handleAtlasCloudApiKeyChange,
@@ -821,8 +823,15 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const selectedLlmApiKey = (
     llmProvider === 'gemini'
       ? geminiApiKey.trim()
+      : llmProvider === 'openai'
+        ? openaiApiKey.trim()
       : apiKey.trim()
   );
+  const resolveLlmProviderKey = useCallback((provider: 'anthropic' | 'openai' | 'gemini') => {
+    if (provider === 'gemini') return geminiApiKey.trim();
+    if (provider === 'openai') return openaiApiKey.trim();
+    return apiKey.trim();
+  }, [apiKey, geminiApiKey, openaiApiKey]);
 
   const selectedLlmModel = (
     llmModel.trim() || availableModels[llmProvider][0]?.value || ''
@@ -892,6 +901,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     videoLlmProvider,
     videoLlmModel,
     apiKey,
+    openaiApiKey,
     geminiApiKey,
     elevenLabsApiKey,
     atlasCloudApiKey,
@@ -947,6 +957,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         enabled: true,
         provider: (imageProvider === 'useapi' ? 'midapi' : imageProvider) as any,
         geminiApiKey: geminiApiKey.trim(),
+        openaiApiKey: openaiApiKey.trim() || undefined,
         atlasCloudApiKey: atlasCloudApiKey.trim() || undefined,
         atlasCloudModel: atlasCloudModel.trim() || undefined,
         midapiToken: midapiToken.trim() || undefined,
@@ -1019,7 +1030,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         'API Key Required',
         llmProvider === 'gemini'
           ? 'Please enter your Gemini LLM API key to continue.'
-          : 'Please enter your Anthropic API key to continue.'
+          : llmProvider === 'openai'
+            ? 'Please enter your OpenAI API key to continue.'
+            : 'Please enter your Anthropic API key to continue.'
       );
       return;
     }
@@ -1165,7 +1178,23 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         'API Key Required',
         llmProvider === 'gemini'
           ? 'Please enter your Gemini LLM API key to continue.'
-          : 'Please enter your Anthropic API key to continue.'
+          : llmProvider === 'openai'
+            ? 'Please enter your OpenAI API key to continue.'
+            : 'Please enter your Anthropic API key to continue.'
+      );
+      return;
+    }
+    const missingScopedKeys: string[] = [];
+    if (generationSettings.generateImages && !resolveLlmProviderKey(imageLlmProvider)) {
+      missingScopedKeys.push(`Image planner (${imageLlmProvider.toUpperCase()})`);
+    }
+    if (videoSettings.enabled && !resolveLlmProviderKey(videoLlmProvider)) {
+      missingScopedKeys.push(`Video planner (${videoLlmProvider.toUpperCase()})`);
+    }
+    if (missingScopedKeys.length > 0) {
+      Alert.alert(
+        'Missing Provider Key',
+        `Configure API keys for: ${missingScopedKeys.join(', ')}.`,
       );
       return;
     }
@@ -1811,18 +1840,22 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     );
   };
 
-  const configuredKeyCount = [apiKey, geminiApiKey, atlasCloudApiKey, midapiToken, elevenLabsApiKey]
+  const configuredKeyCount = [apiKey, openaiApiKey, geminiApiKey, atlasCloudApiKey, midapiToken, elevenLabsApiKey]
     .filter((value) => value.trim().length > 0)
     .length;
   const imageProviderLabel = imageProvider === 'nano-banana'
     ? 'Gemini'
+    : imageProvider === 'dall-e'
+      ? 'OpenAI'
     : imageProvider === 'midapi'
       ? 'MidAPI'
-      : 'Atlas Cloud';
+      : imageProvider === 'stable-diffusion'
+        ? 'Stable Diffusion'
+        : 'Atlas Cloud';
   const storySummaryLines = [
     `Source: ${hasSourceInput ? 'ready' : 'missing'}${customStoryTitle.trim() ? ` • title "${customStoryTitle.trim()}"` : ''}`,
     `Writing: ${llmProvider.toUpperCase()} • ${llmModel}`,
-    `Keys configured: ${configuredKeyCount}/5`,
+    `Keys configured: ${configuredKeyCount}/6`,
   ];
   const imageSummaryLines = [
     `${generationSettings.generateImages ? 'Images enabled' : 'Images disabled'} • ${imageProviderLabel} renderer`,
@@ -1938,6 +1971,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     <TouchableOpacity style={[styles.segment, llmProvider === 'anthropic' && styles.segmentActive]} onPress={() => handleLlmProviderChange('anthropic')}>
                       <Text style={[styles.segmentText, llmProvider === 'anthropic' && styles.segmentTextActive]}>ANTHROPIC</Text>
                     </TouchableOpacity>
+                    <TouchableOpacity style={[styles.segment, llmProvider === 'openai' && styles.segmentActive]} onPress={() => handleLlmProviderChange('openai')}>
+                      <Text style={[styles.segmentText, llmProvider === 'openai' && styles.segmentTextActive]}>OPENAI</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity style={[styles.segment, llmProvider === 'gemini' && styles.segmentActive]} onPress={() => handleLlmProviderChange('gemini')}>
                       <Text style={[styles.segmentText, llmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
                     </TouchableOpacity>
@@ -1948,7 +1984,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                     <Text style={styles.configLabel}>TEXT MODEL</Text>
                     <TouchableOpacity
-                      onPress={() => refreshModels({ anthropicApiKey: apiKey, geminiApiKey, atlasCloudApiKey: atlasCloudApiKey })}
+                      onPress={() => refreshModels({ anthropicApiKey: apiKey, openaiApiKey, geminiApiKey, atlasCloudApiKey: atlasCloudApiKey })}
                       disabled={modelsScanLoading}
                       style={{ flexDirection: 'row', alignItems: 'center', opacity: modelsScanLoading ? 0.5 : 1 }}
                     >
@@ -1974,6 +2010,11 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 <View style={styles.configItem}>
                   <Text style={styles.configLabel}>ANTHROPIC API KEY {apiKey ? '✓' : '*'}</Text>
                   <View style={styles.inputWrapper}><TextInput style={styles.input} value={apiKey} onChangeText={handleApiKeyChange} placeholder="sk-ant-..." placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
+                </View>
+
+                <View style={styles.configItem}>
+                  <Text style={styles.configLabel}>OPENAI API KEY {openaiApiKey ? '✓' : '*'}</Text>
+                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={openaiApiKey} onChangeText={handleOpenaiApiKeyChange} placeholder="sk-proj-... used for ChatGPT story/orchestration and OpenAI images" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
                 </View>
 
                 <View style={styles.configItem}>
@@ -2058,6 +2099,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     <TouchableOpacity style={[styles.segment, imageLlmProvider === 'anthropic' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('anthropic')}>
                       <Text style={[styles.segmentText, imageLlmProvider === 'anthropic' && styles.segmentTextActive]}>ANTHROPIC</Text>
                     </TouchableOpacity>
+                    <TouchableOpacity style={[styles.segment, imageLlmProvider === 'openai' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('openai')}>
+                      <Text style={[styles.segmentText, imageLlmProvider === 'openai' && styles.segmentTextActive]}>OPENAI</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity style={[styles.segment, imageLlmProvider === 'gemini' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('gemini')}>
                       <Text style={[styles.segmentText, imageLlmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
                     </TouchableOpacity>
@@ -2075,6 +2119,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   <View style={styles.segmentedControl}>
                     <TouchableOpacity style={[styles.segment, imageProvider === 'nano-banana' && styles.segmentActive]} onPress={() => handleImageProviderChange('nano-banana')}>
                       <Text style={[styles.segmentText, imageProvider === 'nano-banana' && styles.segmentTextActive]}>GEMINI</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.segment, imageProvider === 'dall-e' && styles.segmentActive]} onPress={() => handleImageProviderChange('dall-e')}>
+                      <Text style={[styles.segmentText, imageProvider === 'dall-e' && styles.segmentTextActive]}>OPENAI</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={[styles.segment, imageProvider === 'midapi' && styles.segmentActive]} onPress={() => handleImageProviderChange('midapi')}>
                       <Text style={[styles.segmentText, imageProvider === 'midapi' && styles.segmentTextActive]}>MIDAPI</Text>
@@ -2866,6 +2913,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     <View style={styles.segmentedControl}>
                       <TouchableOpacity style={[styles.segment, videoLlmProvider === 'anthropic' && styles.segmentActive]} onPress={() => handleVideoLlmProviderChange('anthropic')}>
                         <Text style={[styles.segmentText, videoLlmProvider === 'anthropic' && styles.segmentTextActive]}>ANTHROPIC</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.segment, videoLlmProvider === 'openai' && styles.segmentActive]} onPress={() => handleVideoLlmProviderChange('openai')}>
+                        <Text style={[styles.segmentText, videoLlmProvider === 'openai' && styles.segmentTextActive]}>OPENAI</Text>
                       </TouchableOpacity>
                       <TouchableOpacity style={[styles.segment, videoLlmProvider === 'gemini' && styles.segmentActive]} onPress={() => handleVideoLlmProviderChange('gemini')}>
                         <Text style={[styles.segmentText, videoLlmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>

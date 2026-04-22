@@ -65,6 +65,9 @@ export interface ProviderServiceBridge {
     prompt: ImagePrompt,
     identifier: string,
     jobId: string,
+    referenceImages?: ReferenceImage[],
+    imageType?: ImageType,
+    metadata?: Record<string, unknown>,
   ): Promise<GeneratedImage>;
   generateWithStableDiffusion(
     prompt: ImagePrompt,

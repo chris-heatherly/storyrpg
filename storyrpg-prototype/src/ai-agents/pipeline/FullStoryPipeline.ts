@@ -792,6 +792,8 @@ export class FullStoryPipeline {
     this.imageService = new ImageGenerationService({
       ...(this.config.imageGen || { enabled: false }),
       geminiApiKey: this.config.imageGen?.geminiApiKey || this.config.imageGen?.apiKey,
+      openaiApiKey: this.config.imageGen?.openaiApiKey,
+      openaiImageModel: this.config.imageGen?.openaiImageModel,
       midjourneySettings: this.config.imageGen?.midjourney || this.config.midjourneySettings,
       geminiSettings: this.config.imageGen?.gemini || this.config.geminiSettings,
       stableDiffusionSettings: this.config.imageGen?.stableDiffusion,

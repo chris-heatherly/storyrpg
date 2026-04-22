@@ -805,15 +805,20 @@ function createWorkerLifecycle({
       || process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY
       || process.env.OPENROUTER_API_KEY
       || '';
+    const envOpenAiKey =
+      process.env.OPENAI_API_KEY
+      || process.env.EXPO_PUBLIC_OPENAI_API_KEY
+      || '';
 
-    if (!envAnthropicKey) return payload;
+    if (!envAnthropicKey && !envOpenAiKey) return payload;
 
     for (const agentName of Object.keys(agents)) {
       const agentCfg = agents[agentName];
       if (!agentCfg || typeof agentCfg !== 'object') continue;
-      if (agentCfg.provider !== 'anthropic') continue;
-      if (isMissingApiKey(agentCfg.apiKey)) {
+      if (agentCfg.provider === 'anthropic' && isMissingApiKey(agentCfg.apiKey)) {
         agentCfg.apiKey = envAnthropicKey;
+      } else if (agentCfg.provider === 'openai' && isMissingApiKey(agentCfg.apiKey)) {
+        agentCfg.apiKey = envOpenAiKey;
       }
     }
 

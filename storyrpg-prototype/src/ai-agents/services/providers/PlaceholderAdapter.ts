@@ -32,6 +32,13 @@ export class DallEAdapter implements ImageProviderAdapter {
     request: ProviderGenerateRequest,
     bridge: ProviderServiceBridge,
   ): Promise<GeneratedImage> {
-    return bridge.generateWithDallE(request.prompt, request.identifier, request.jobId);
+    return bridge.generateWithDallE(
+      request.prompt,
+      request.identifier,
+      request.jobId,
+      request.referenceImages,
+      request.imageType,
+      request.metadata,
+    );
   }
 }

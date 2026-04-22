@@ -71,7 +71,10 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
   },
   'atlas-cloud': {
     id: 'atlas-cloud',
-    maxRefs: 14,
+    // Atlas routes multiple model families. Keep this at the highest practical
+    // cap so provider-level filtering doesn't choke newer models (e.g.
+    // openai/gpt-image-2 supports larger multi-ref edit packs).
+    maxRefs: 16,
     acceptsInlineRefs: false,
     acceptsUrlRefs: true,
     supportsBatch: true,
@@ -123,12 +126,12 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
   },
   'dall-e': {
     id: 'dall-e',
-    maxRefs: 0,
-    acceptsInlineRefs: false,
-    acceptsUrlRefs: false,
+    maxRefs: 16,
+    acceptsInlineRefs: true,
+    acceptsUrlRefs: true,
     supportsBatch: false,
     supportsSeed: false,
-    supportsNegativePrompt: false,
+    supportsNegativePrompt: true,
     usesMidjourneyRefTokens: false,
     minRequestIntervalMs: 2000,
     concurrency: 3,

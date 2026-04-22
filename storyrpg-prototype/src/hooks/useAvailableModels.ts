@@ -19,6 +19,7 @@ const FALLBACK_ATLAS_MODELS: ModelOption[] = [
   { value: 'google/imagen4-fast', label: 'Imagen 4 Fast', description: 'Fast variant of Imagen 4 flagship.' },
   { value: 'google/imagen3', label: 'Imagen 3', description: 'Prior-gen high-detail text-to-image model.' },
   { value: 'google/imagen3-fast', label: 'Imagen 3 Fast', description: 'Fast variant of Imagen 3.' },
+  { value: 'openai/gpt-image-2/text-to-image', label: 'GPT Image 2', description: "OpenAI's newest image model. Best identity/style consistency with multi-reference edit flows." },
   { value: 'openai/gpt-image-1.5/text-to-image', label: 'GPT Image 1.5', description: "OpenAI's fast, cost-efficient text-to-image. Photorealistic, concept art. Text only." },
   { value: 'openai/gpt-image-1/text-to-image', label: 'GPT Image 1', description: "OpenAI's GPT Image-1. Ideal for creating visual assets." },
   { value: 'openai/gpt-image-1-mini/text-to-image', label: 'GPT Image 1 Mini', description: 'Cost-efficient multimodal OpenAI model (GPT-5 guided).' },
@@ -77,6 +78,9 @@ export function useAvailableModels(): AvailableModelsState {
       anthropic: result.providers.anthropic?.length
         ? result.providers.anthropic
         : FALLBACK_MODEL_OPTIONS.anthropic,
+      openai: result.providers.openai?.length
+        ? result.providers.openai
+        : FALLBACK_MODEL_OPTIONS.openai,
       gemini: result.providers.gemini?.length
         ? result.providers.gemini
         : FALLBACK_MODEL_OPTIONS.gemini,
@@ -113,7 +117,7 @@ export function useAvailableModels(): AvailableModelsState {
     };
   }, [applyResult]);
 
-  const refresh = useCallback(async (keys?: { anthropicApiKey?: string; geminiApiKey?: string; atlasCloudApiKey?: string }) => {
+  const refresh = useCallback(async (keys?: { anthropicApiKey?: string; openaiApiKey?: string; geminiApiKey?: string; atlasCloudApiKey?: string }) => {
     setLoading(true);
     setError(null);
     try {

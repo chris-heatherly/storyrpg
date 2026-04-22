@@ -72,6 +72,8 @@ export interface ImageGenerationConfig {
   outputDirectory?: string;
   savePrompts?: boolean;
   geminiApiKey?: string;
+  openaiApiKey?: string;
+  openaiImageModel?: string;
   geminiModel?: 'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview' | 'gemini-3.1-flash-image-preview';
   // Atlas Cloud configuration
   atlasCloudApiKey?: string;
@@ -337,14 +339,21 @@ export class ImageGenerationService {
   private encounterDiagnostics: EncounterImageDiagnostic[] = [];
 
   constructor(config: ImageGenerationConfig) {
+    const env = (typeof process !== 'undefined' ? process.env : undefined) as any;
     const normalizedGeminiKey =
       config.geminiApiKey ||
       (config as any).apiKey ||
-      ((typeof process !== 'undefined' ? process.env : undefined) as any)?.EXPO_PUBLIC_GEMINI_API_KEY ||
-      ((typeof process !== 'undefined' ? process.env : undefined) as any)?.GEMINI_API_KEY;
+      env?.EXPO_PUBLIC_GEMINI_API_KEY ||
+      env?.GEMINI_API_KEY;
+    const normalizedOpenAiKey =
+      config.openaiApiKey ||
+      env?.OPENAI_API_KEY ||
+      env?.EXPO_PUBLIC_OPENAI_API_KEY;
     this.config = {
       ...config,
       geminiApiKey: normalizedGeminiKey,
+      openaiApiKey: normalizedOpenAiKey,
+      openaiImageModel: (config.openaiImageModel || env?.EXPO_PUBLIC_OPENAI_IMAGE_MODEL || env?.OPENAI_IMAGE_MODEL || 'gpt-image-2').trim(),
       provider: this.normalizeProvider(config.provider),
       useapiToken: config.useapiToken || config.midapiToken,
     };
@@ -353,7 +362,6 @@ export class ImageGenerationService {
     this.retryDelayMs = config.retryDelayMs ?? 5000; // Increased base delay to 5s
     this.retryBackoffMultiplier = config.retryBackoffMultiplier ?? 2;
     // Resolve model with correct priority: explicit UI setting > top-level config > env var > default
-    const env = typeof process !== 'undefined' ? process.env : {} as any;
     const resolvedModel = (
       config.geminiSettings?.model
       || config.geminiModel
@@ -861,6 +869,10 @@ export class ImageGenerationService {
       if (!this.config.useapiToken && !this.config.midapiToken) return done(false, 'missing MidAPI token');
       return done(true, forceCanary ? 'midapi preflight uses token validation only' : undefined);
     }
+    if (provider === 'dall-e') {
+      if (!this.config.openaiApiKey) return done(false, 'missing OpenAI API key');
+      return done(true, forceCanary ? 'openai preflight uses key validation only' : undefined);
+    }
     if (provider === 'stable-diffusion') {
       const settings = this._stableDiffusionSettings;
       if (!settings || !settings.baseUrl) return done(false, 'missing Stable Diffusion baseUrl');
@@ -1112,6 +1124,14 @@ export class ImageGenerationService {
         identityText += ` Preserve identity but show dynamic poses appropriate to the scene action. Each character appears EXACTLY ONCE.`;
         sections.push(identityText);
       }
+
+      if (this.modelCapabilities.isGptImage && !isReferenceLike) {
+        sections.push(
+          'EDIT INVARIANTS (CRITICAL): Change only the scene action, camera framing, and pose requested in this prompt. ' +
+          'Keep character likeness, facial structure, hair shape/color, age read, and core outfit silhouette consistent with the references. ' +
+          'Do not redesign the character.'
+        );
+      }
     }
 
     sections.push(`STYLE REMINDER: Maintain "${resolvedStyle}" consistently. Every image in this story uses the exact same art style.`);
@@ -1238,7 +1258,33 @@ export class ImageGenerationService {
     if (referenceImages?.length) {
       refs.push(...referenceImages);
     }
-    return refs.slice(0, this.modelCapabilities.maxRefImages);
+
+    const maxRefs = Math.max(0, this.modelCapabilities.maxRefImages);
+    if (maxRefs === 0 || refs.length === 0) return [];
+
+    // Deterministic "consistency-first" packing:
+    // 1) keep one style anchor + one previous-scene continuity frame when present
+    // 2) fill remaining slots with prioritized character/identity refs
+    // This avoids random drift when a scene has many refs and we must truncate.
+    const refKey = (ref: ReferenceImage): string =>
+      `${ref.role || ''}|${ref.characterName || ''}|${ref.viewType || ''}|${ref.url || ''}|${(ref.data || '').slice(0, 48)}`;
+    const pinned: ReferenceImage[] = [];
+    const pinnedKeys = new Set<string>();
+    const pushPinned = (candidate: ReferenceImage | undefined) => {
+      if (!candidate || pinned.length >= maxRefs) return;
+      const key = refKey(candidate);
+      if (pinnedKeys.has(key)) return;
+      pinned.push(candidate);
+      pinnedKeys.add(key);
+    };
+
+    pushPinned(refs.find((r) => r.role === 'style-anchor') || refs.find((r) => r.role === 'style-reference'));
+    pushPinned(refs.find((r) => r.role === 'previous-scene-reference'));
+
+    const remainder = refs.filter((r) => !pinnedKeys.has(refKey(r)));
+    const budget = Math.max(0, maxRefs - pinned.length);
+    const prioritized = this.prioritizeReferenceImages(remainder, budget);
+    return [...pinned, ...prioritized].slice(0, maxRefs);
   }
 
   private static readonly ATLAS_UPLOAD_PAYLOAD_THRESHOLD = 10 * 1024 * 1024; // 10 MB
@@ -3837,8 +3883,10 @@ export class ImageGenerationService {
     const isFluxLoraAny = isFluxDevLora || isFluxKontextLora;
     const isFlux = isFluxSchnell || isFluxDev || isFluxDevLora || isFluxKontextAny;
 
-    // OpenAI GPT Image (1, 1.5, 1-Mini) — separate /text-to-image and /edit endpoints
+    // OpenAI GPT Image family (2, 1.5, 1, 1-Mini) — separate
+    // /text-to-image and /edit endpoints.
     const isGptImage = model.startsWith('openai/gpt-image-');
+    const isGptImage2 = model.startsWith('openai/gpt-image-2');
 
     // Qwen Image 2.0 family (qwen/qwen-image-2.0, qwen/qwen-image-2.0-pro)
     //   — /text-to-image and /edit endpoints
@@ -3876,7 +3924,8 @@ export class ImageGenerationService {
     else if (isNanoBananaStd) maxRefImages = 10;
     else if (isSeedream) maxRefImages = 10;
     else if (isFluxKontextAny) maxRefImages = 1;     // Kontext is single-ref by design
-    else if (isGptImage) maxRefImages = 4;           // gpt-image-1 edit accepts up to ~4 inputs
+    else if (isGptImage2) maxRefImages = 16;         // gpt-image-2 supports larger multi-ref edit packs
+    else if (isGptImage) maxRefImages = 10;          // conservative cap for prior GPT-image variants
     else if (isQwenImage20) maxRefImages = 3;
     else if (isQwenImageAlibaba) maxRefImages = 5;   // edit-plus variants accept more
     else if (isWan) maxRefImages = 3;
@@ -3889,11 +3938,10 @@ export class ImageGenerationService {
       maxBatchSize: isSeedream5 ? 15 : isSeedream ? 14 : 1,
       supportsCharConsistency: isNanoBanana,
       maxConsistentChars: isNanoBanana2 ? 5 : isNanoBananaPro ? 5 : 0,
-      // The labeled-image rich-prompt scaffold (`buildAtlasRichPrompt`) was
-      // tuned for Nano Banana + Seedream. Extending it to GPT Image / Qwen /
-      // Wan / Kontext would be a separate tuning pass — leaving gated for now
-      // so new families use the terser text-only builder until we validate.
-      supportsRichPrompt: isNanoBanana || isSeedream,
+      // Use the labeled-image rich-prompt scaffold for GPT Image too; it is
+      // where we enforce identity + style invariants ("Image N", "change only",
+      // anti-drift constraints) that materially improve recurring characters.
+      supportsRichPrompt: isNanoBanana || isSeedream || isGptImage,
       // LoRA tag payloads (Flux Dev LoRA + Flux Kontext Dev LoRA). The actual
       // payload wiring is deferred — this flag is surfaced so downstream code
       // and tests can assert the family detection.
@@ -3904,6 +3952,7 @@ export class ImageGenerationService {
       isFluxKontext: isFluxKontextAny,
       isFluxLora: isFluxLoraAny,
       isGptImage,
+      isGptImage2,
       isQwenImage,
       isQwenImage20,
       isQwenImageAlibaba,
@@ -4288,6 +4337,16 @@ export class ImageGenerationService {
     return combined.length > 0 ? combined : undefined;
   }
 
+  /**
+   * Atlas/OpenAI quality policy:
+   * - references / cover / key art => high
+   * - regular scene beats => medium (cost/latency balance with good fidelity)
+   */
+  private resolveAtlasOpenAiQuality(imageType?: ImageType): 'high' | 'medium' {
+    if (imageType === 'master' || imageType === 'cover' || imageType === 'expression') return 'high';
+    return 'medium';
+  }
+
   private async generateWithAtlasCloud(
     prompt: ImagePrompt,
     identifier: string,
@@ -4325,6 +4384,13 @@ export class ImageGenerationService {
           model,
           prompt: fullPrompt,
         };
+
+        if (caps.isGptImage) {
+          body.quality = this.resolveAtlasOpenAiQuality(imageType);
+          body.moderation = 'auto';
+          // For gpt-image-2, OpenAI processes image inputs at high fidelity by
+          // default and does not accept `input_fidelity`; intentionally omitted.
+        }
 
         if (caps.isNanoBanana && hasRefs) {
           body.images = await this.prepareAtlasImageRefs(atlasReferenceImages, apiKey);
@@ -4936,11 +5002,140 @@ export class ImageGenerationService {
     return ratioMap[aspectRatio] || '16:9'; // Default to landscape for Midjourney
   }
 
-  private async generateWithDallE(prompt: ImagePrompt, identifier: string, jobId: string): Promise<GeneratedImage> {
-    if (this.isFailFastEnabled()) {
-      throw new Error('DALL-E image generation is not implemented for fail-fast mode');
+  private resolveOpenAiImageQuality(imageType?: ImageType): 'high' | 'medium' {
+    if (imageType === 'master' || imageType === 'cover' || imageType === 'expression') {
+      return 'high';
     }
-    return this.generatePlaceholder(prompt, identifier, jobId);
+    return 'medium';
+  }
+
+  private mapAspectRatioForOpenAiImage(aspectRatio?: string): string {
+    const ratio = (aspectRatio || '16:9').trim();
+    const map: Record<string, string> = {
+      '1:1': '1024x1024',
+      '4:3': '1536x1024',
+      '3:4': '1024x1536',
+      '3:2': '1536x1024',
+      '2:3': '1024x1536',
+      '16:9': '1536x1024',
+      '21:9': '1536x1024',
+      '9:16': '1024x1536',
+      '9:19.5': '1024x1536',
+      '9:21': '1024x1536',
+    };
+    return map[ratio] || '1536x1024';
+  }
+
+  private toOpenAiInputImage(ref: ReferenceImage): { image_url: string } | null {
+    if (ref.data) {
+      const mime = ref.mimeType || 'image/png';
+      return { image_url: `data:${mime};base64,${ref.data}` };
+    }
+    if (ref.url) {
+      return { image_url: ref.url };
+    }
+    return null;
+  }
+
+  private async generateWithDallE(
+    prompt: ImagePrompt,
+    identifier: string,
+    jobId: string,
+    referenceImages?: ReferenceImage[],
+    imageType?: ImageType,
+    _metadata?: Record<string, unknown>,
+  ): Promise<GeneratedImage> {
+    const openaiApiKey = this.config.openaiApiKey;
+    if (!openaiApiKey) {
+      const msg = 'OpenAI image provider selected but OPENAI_API_KEY is missing.';
+      if (this.isFailFastEnabled()) throw new Error(msg);
+      console.warn(`[ImageGenerationService] ${msg} Falling back to placeholder for "${identifier}"`);
+      return this.generatePlaceholder(prompt, identifier, jobId);
+    }
+
+    const model = (this.config.openaiImageModel || 'gpt-image-2').trim();
+    const refs = Array.isArray(referenceImages) ? referenceImages : [];
+    const cappedRefs = refs.slice(0, 16);
+    const inputs = cappedRefs
+      .map((r) => this.toOpenAiInputImage(r))
+      .filter((v): v is { image_url: string } => Boolean(v));
+    const useEdit = inputs.length > 0;
+    const endpoint = useEdit ? 'https://api.openai.com/v1/images/edits' : 'https://api.openai.com/v1/images/generations';
+
+    const composedPrompt = [
+      prompt.prompt,
+      prompt.style ? `Style: ${prompt.style}` : '',
+      prompt.composition ? `Composition: ${prompt.composition}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    const body: Record<string, unknown> = {
+      model,
+      prompt: composedPrompt,
+      size: this.mapAspectRatioForOpenAiImage(prompt.aspectRatio),
+      quality: this.resolveOpenAiImageQuality(imageType),
+      output_format: 'png',
+      moderation: 'auto',
+    };
+    if (useEdit) {
+      body.image = inputs;
+    }
+
+    this.emit({ type: 'job_added', job: { id: jobId, prompt, provider: 'dall-e' as any, status: 'processing', progress: 0 } as any });
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${openaiApiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const raw = await response.text();
+    if (!response.ok) {
+      const msg = `OpenAI image API error ${response.status}: ${raw.slice(0, 500)}`;
+      this.emit({ type: 'job_updated', id: jobId, updates: { status: 'failed', error: msg, endTime: Date.now() } });
+      if (this.isFailFastEnabled()) throw new Error(msg);
+      console.error(`[ImageGenerationService] ${msg}`);
+      return this.generatePlaceholder(prompt, identifier, jobId);
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      const msg = `OpenAI image API returned non-JSON response: ${String(err)}`;
+      if (this.isFailFastEnabled()) throw new Error(msg);
+      console.error(`[ImageGenerationService] ${msg}`);
+      return this.generatePlaceholder(prompt, identifier, jobId);
+    }
+
+    const imageData = parsed?.data?.[0]?.b64_json as string | undefined;
+    if (!imageData) {
+      const msg = 'OpenAI image API returned no image data';
+      if (this.isFailFastEnabled()) throw new Error(msg);
+      console.error(`[ImageGenerationService] ${msg}`);
+      return this.generatePlaceholder(prompt, identifier, jobId);
+    }
+
+    const mimeType = 'image/png';
+    const imagePath = this.joinPath(this.outputDir, `${identifier}.png`);
+    await this.writeFile(imagePath, imageData, true);
+    const imageUrl = this.toImageHttpUrl(imagePath, mimeType, imageData);
+    this.emit({
+      type: 'job_updated',
+      id: jobId,
+      updates: { status: 'completed', progress: 100, imageUrl, endTime: Date.now() },
+    });
+    return {
+      prompt,
+      imagePath,
+      imageUrl,
+      imageData,
+      mimeType,
+      metadata: {
+        provider: 'openai',
+        model,
+      },
+    };
   }
 
   private async generateWithStableDiffusion(

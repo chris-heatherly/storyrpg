@@ -74,7 +74,7 @@ export interface LlmCallObservation {
   error?: string;
   /**
    * Token usage reported by the provider, when available. Populated by the
-   * anthropic and gemini transports (OpenAI wire-up is pending). Undefined
+   * anthropic, gemini, and OpenAI transports. Undefined
    * when the provider did not return usage data (e.g. on error).
    */
   usage?: {
@@ -240,7 +240,7 @@ Do not use markdown code blocks around the JSON.
         } else if (this.config.provider === 'gemini') {
           result = await this.callGemini(fullMessages, signal, usageCapture);
         } else {
-          result = await this.callOpenAI(fullMessages, signal);
+          result = await this.callOpenAI(fullMessages, signal, usageCapture);
         }
         // Success — reset circuit breaker
         if (BaseAgent._cbConsecutiveFailures > 0) {
@@ -600,7 +600,45 @@ Do not use markdown code blocks around the JSON.
     return '';
   }
 
-  private async callOpenAI(messages: AgentMessage[], signal?: AbortSignal): Promise<string> {
+  private async callOpenAI(
+    messages: AgentMessage[],
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
+    const model = this.config.model || 'gpt-5';
+    const isReasoningModel = /^(gpt-5|o1|o3|o4)/i.test(model);
+    const body: Record<string, unknown> = {
+      model,
+      max_tokens: this.config.maxTokens,
+      temperature: this.config.temperature,
+      messages: messages.map((m) => {
+        if (typeof m.content === 'string') {
+          return { role: m.role, content: m.content };
+        }
+
+        return {
+          role: m.role,
+          content: m.content.map(part => {
+            if (part.type === 'text') return part;
+            if (part.type === 'image_url') return part;
+            if (part.type === 'image') {
+              return {
+                type: 'image_url',
+                image_url: {
+                  url: `data:${part.source.media_type};base64,${part.source.data}`
+                }
+              };
+            }
+            return null;
+          }).filter(Boolean)
+        };
+      }),
+      response_format: { type: 'json_object' },
+    };
+    if (isReasoningModel) {
+      body.reasoning_effort = 'medium';
+    }
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -608,33 +646,7 @@ Do not use markdown code blocks around the JSON.
         Authorization: `Bearer ${this.config.apiKey}`,
       },
       ...(signal ? { signal } : {}),
-      body: JSON.stringify({
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-        messages: messages.map((m) => {
-          if (typeof m.content === 'string') {
-            return { role: m.role, content: m.content };
-          }
-          
-          return {
-            role: m.role,
-            content: m.content.map(part => {
-              if (part.type === 'text') return part;
-              if (part.type === 'image_url') return part;
-              if (part.type === 'image') {
-                return {
-                  type: 'image_url',
-                  image_url: {
-                    url: `data:${part.source.media_type};base64,${part.source.data}`
-                  }
-                };
-              }
-              return null;
-            }).filter(Boolean)
-          };
-        }),
-      }),
+      body: JSON.stringify(body),
     });
 
     const text = await response.text();
@@ -645,6 +657,10 @@ Do not use markdown code blocks around the JSON.
 
     try {
       const data = JSON.parse(text);
+      if (usageOut) {
+        if (typeof data.usage?.prompt_tokens === 'number') usageOut.inputTokens = data.usage.prompt_tokens;
+        if (typeof data.usage?.completion_tokens === 'number') usageOut.outputTokens = data.usage.completion_tokens;
+      }
       return data.choices[0].message.content;
     } catch (parseError) {
       const msg = parseError instanceof Error ? parseError.message : String(parseError);

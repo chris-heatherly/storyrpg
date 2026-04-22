@@ -44,6 +44,7 @@ export interface GeneratorVideoSettings {
 
 export const GENERATOR_STORAGE_KEYS = {
   anthropicApiKey: '@storyrpg_anthropic_api_key',
+  openaiApiKey: '@storyrpg_openai_api_key',
   llmGeminiApiKey: '@storyrpg_llm_gemini_api_key',
   elevenLabsApiKey: '@storyrpg_elevenlabs_api_key',
   llmProvider: '@storyrpg_llm_provider',
@@ -70,7 +71,7 @@ export const GENERATOR_STORAGE_KEYS = {
 } as const;
 
 function isGeneratorLlmProvider(value: string | null | undefined): value is GeneratorLlmProvider {
-  return value === 'anthropic' || value === 'gemini';
+  return value === 'anthropic' || value === 'openai' || value === 'gemini';
 }
 
 function resolveModelForProvider(provider: GeneratorLlmProvider, model: string | null | undefined): string {
@@ -168,6 +169,7 @@ export function useGeneratorSettings() {
   const [videoLlmProvider, setVideoLlmProvider] = useState<GeneratorLlmProvider>(DEFAULT_LLM_PROVIDER);
   const [videoLlmModel, setVideoLlmModel] = useState<string>(DEFAULT_LLM_MODELS[DEFAULT_LLM_PROVIDER]);
   const [apiKey, setApiKey] = useState('');
+  const [openaiApiKey, setOpenaiApiKey] = useState('');
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [elevenLabsApiKey, setElevenLabsApiKey] = useState('');
   const [atlasCloudApiKey, setAtlasCloudApiKey] = useState('');
@@ -251,7 +253,7 @@ export function useGeneratorSettings() {
       try {
         const storedLlmProvider = await AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmProvider);
         const resolvedProvider: GeneratorLlmProvider =
-          storedLlmProvider === 'anthropic' || storedLlmProvider === 'gemini'
+          storedLlmProvider === 'anthropic' || storedLlmProvider === 'openai' || storedLlmProvider === 'gemini'
             ? storedLlmProvider
             : DEFAULT_LLM_PROVIDER;
 
@@ -278,6 +280,7 @@ export function useGeneratorSettings() {
 
         const [
           storedAnthropicKey,
+          storedOpenaiApiKey,
           storedLlmGeminiKey,
           storedElevenLabsApiKey,
           storedImageLlmProvider,
@@ -299,6 +302,7 @@ export function useGeneratorSettings() {
           storedLoraTrainingSettings,
         ] = await Promise.all([
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.anthropicApiKey),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.openaiApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmGeminiApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.elevenLabsApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.imageLlmProvider),
@@ -324,6 +328,7 @@ export function useGeneratorSettings() {
 
         // API keys always come from AsyncStorage (never stored on proxy for security)
         if (storedAnthropicKey) setApiKey(storedAnthropicKey);
+        if (storedOpenaiApiKey) setOpenaiApiKey(storedOpenaiApiKey);
         if (storedGeminiKey || storedLlmGeminiKey) {
           setGeminiApiKey(storedGeminiKey || storedLlmGeminiKey || '');
         }
@@ -548,6 +553,15 @@ export function useGeneratorSettings() {
     }
   }, []);
 
+  const handleOpenaiApiKeyChange = useCallback(async (key: string) => {
+    setOpenaiApiKey(key);
+    try {
+      await saveValue(GENERATOR_STORAGE_KEYS.openaiApiKey, key.trim() ? key : null);
+    } catch (error) {
+      log.debug('Failed to save OpenAI API key:', error);
+    }
+  }, []);
+
   const handleElevenLabsApiKeyChange = useCallback(async (key: string) => {
     setElevenLabsApiKey(key);
     try {
@@ -723,6 +737,7 @@ export function useGeneratorSettings() {
     videoLlmProvider,
     videoLlmModel,
     apiKey,
+    openaiApiKey,
     geminiApiKey,
     elevenLabsApiKey,
     atlasCloudApiKey,
@@ -747,6 +762,7 @@ export function useGeneratorSettings() {
     handleVideoLlmModelChange,
     handleGenerationModeChange,
     handleApiKeyChange,
+    handleOpenaiApiKeyChange,
     handleGeminiApiKeyChange,
     handleElevenLabsApiKeyChange,
     handleAtlasCloudApiKeyChange,

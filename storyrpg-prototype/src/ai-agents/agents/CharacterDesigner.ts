@@ -327,6 +327,12 @@ Before finalizing:
       // Normalize arrays that the LLM might return as strings or undefined
       characterBible = this.normalizeCharacterBible(characterBible);
 
+      // Reconcile LLM-returned IDs with the canonical requested IDs. LLMs often
+      // rewrite hyphens to underscores (e.g. "char-mr-green" -> "char-mr_green")
+      // or drop casing. We fuzzy-match each returned character back to the
+      // requested id so downstream references stay valid.
+      this.alignCharacterIds(characterBible, input);
+
       this.validateCharacterBible(characterBible, input);
 
       // Run quality checks and attempt revision if needed
@@ -441,7 +447,7 @@ ${characterList}
 }
 
 CRITICAL REQUIREMENTS:
-1. Each character "id" MUST be EXACTLY one of: ${characterIds}
+1. Each character "id" MUST be EXACTLY one of: ${characterIds} — copy the string VERBATIM. Do NOT substitute underscores for hyphens. Do NOT change case. Do NOT add suffixes. "char-mr-green" is NOT the same as "char-mr_green".
 2. Each character MUST have "pronouns" set to "he/him" or "she/her". Only use "they/them" if the character is explicitly non-binary or transgender. Default to he/him or she/her based on the character's identity.
 3. Each character MUST have want, fear, and flaw filled in
 4. Each voiceProfile MUST have at least 2 greetingExamples and 3 signatureLines
@@ -606,6 +612,71 @@ CRITICAL REQUIREMENTS:
     }
 
     return bible;
+  }
+
+  /**
+   * Reconcile the IDs returned by the LLM with the canonical IDs the pipeline
+   * requested. LLMs frequently rewrite hyphens as underscores, change casing,
+   * or truncate long ids. We:
+   *   1. Accept exact matches as-is.
+   *   2. Try a fuzzy key (stripped of non-alphanumeric chars, lowercased).
+   *   3. If a returned id fuzzy-matches a requested id, rewrite it in place and
+   *      also fix any cross-references in keyDynamics and relationships.
+   *
+   * Characters the LLM invented that don't match any requested id are left
+   * alone so downstream validation can still surface them, but the requested
+   * set is preferred.
+   */
+  private alignCharacterIds(bible: CharacterBible, input: CharacterDesignerInput): void {
+    if (!bible.characters || bible.characters.length === 0) return;
+
+    const fuzzyKey = (s: string): string => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+    const requestedById = new Map<string, { id: string; name: string }>();
+    const requestedByFuzzyId = new Map<string, string>();
+    const requestedByFuzzyName = new Map<string, string>();
+    for (const req of input.charactersToCreate) {
+      requestedById.set(req.id, req);
+      requestedByFuzzyId.set(fuzzyKey(req.id), req.id);
+      if (req.name) requestedByFuzzyName.set(fuzzyKey(req.name), req.id);
+    }
+
+    const idRewrites = new Map<string, string>();
+    for (const character of bible.characters) {
+      const currentId = character.id || '';
+      if (requestedById.has(currentId)) continue;
+
+      const fk = fuzzyKey(currentId);
+      let canonical = requestedByFuzzyId.get(fk);
+      if (!canonical && character.name) {
+        canonical = requestedByFuzzyName.get(fuzzyKey(character.name));
+      }
+      if (canonical && canonical !== currentId) {
+        console.log(`[CharacterDesigner] Re-aligning character id "${currentId}" → "${canonical}"`);
+        idRewrites.set(currentId, canonical);
+        character.id = canonical;
+      }
+    }
+
+    if (idRewrites.size === 0) return;
+
+    // Fix cross-references to the rewritten ids.
+    const rewrite = (v: string): string => idRewrites.get(v) ?? v;
+    for (const dyn of bible.keyDynamics || []) {
+      if (Array.isArray(dyn.characters)) {
+        dyn.characters = dyn.characters.map(rewrite);
+      }
+    }
+    for (const character of bible.characters) {
+      if (Array.isArray(character.relationships)) {
+        for (const rel of character.relationships) {
+          const relId = (rel as { characterId?: string }).characterId;
+          if (relId && idRewrites.has(relId)) {
+            (rel as { characterId?: string }).characterId = idRewrites.get(relId)!;
+          }
+        }
+      }
+    }
   }
 
   private validateCharacterBible(bible: CharacterBible, input: CharacterDesignerInput): void {
@@ -796,6 +867,7 @@ Return ONLY valid JSON, no markdown, no extra text.
       try {
         revisedBible = this.parseJSON<CharacterBible>(response);
         revisedBible = this.normalizeCharacterBible(revisedBible);
+        this.alignCharacterIds(revisedBible, input);
         console.log(`[CharacterDesigner] Revision complete`);
         return revisedBible;
       } catch (parseError) {

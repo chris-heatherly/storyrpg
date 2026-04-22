@@ -1,7 +1,7 @@
 {
-  "imageProvider": "nano-banana",
-  "imageLlmProvider": "gemini",
-  "imageLlmModel": "gemini-2.5-pro",
+  "imageProvider": "dall-e",
+  "imageLlmProvider": "openai",
+  "imageLlmModel": "gpt-5",
   "videoSettings": {
     "enabled": false,
     "model": "veo-3.1-generate-preview",
@@ -10,8 +10,8 @@
     "aspectRatio": "9:16",
     "strategy": "all-beats"
   },
-  "llmProvider": "anthropic",
-  "llmModel": "claude-sonnet-4-20250514",
+  "llmProvider": "openai",
+  "llmModel": "gpt-5",
   "atlasCloudModel": "black-forest-labs/flux-dev-lora",
   "artStyle": "Mid-Century 'Cartoon Modern' animation art style, characterized by a sophisticated, stylized graphical aesthetic. This look features bold, geometric shapes, asymmetrical compositions, minimalist design, and intentionally flattened perspective. Backgrounds are often abstract and non-representational, defined by blocks of muted, flat colors (such as mustard yellow, turquoise, avocado green, and charcoal gray) applied with rough, textured brushstrokes or silkscreen effects. Characters and objects are rendered with dynamic, sketchy line work and energetic movement, often showing exaggerated anatomy or \"broken\" outlines, evoking the hand-drawn energy of 1960s TV animation and jazz album covers.",
   "generationSettings": {
@@ -69,6 +69,7 @@
     "referenceResolution": "2K",
     "coverResolution": "2K",
     "useIndividualCharacterViews": true,
+    "compositeAsStyleAnchor": true,
     "thinkingLevel": "minimal",
     "referenceThinkingLevel": "high",
     "usePreviewForValidation": false

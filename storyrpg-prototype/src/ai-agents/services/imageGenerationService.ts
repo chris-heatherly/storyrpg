@@ -5082,7 +5082,18 @@ export class ImageGenerationService {
       body.image = inputs;
     }
 
-    this.emit({ type: 'job_added', job: { id: jobId, prompt, provider: 'dall-e' as any, status: 'processing', progress: 0 } as any });
+    this.emit({
+      type: 'job_added',
+      job: {
+        id: jobId,
+        identifier: identifier || jobId,
+        prompt: composedPrompt,
+        provider: 'dall-e' as any,
+        status: 'processing',
+        progress: 0,
+        maxRetries: this.maxRetries,
+      } as any,
+    });
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {

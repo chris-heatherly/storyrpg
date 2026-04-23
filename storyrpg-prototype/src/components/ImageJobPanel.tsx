@@ -258,7 +258,7 @@ export const ImageJobPanel: React.FC = () => {
         </View>
         <View style={styles.jobInfo}>
           <Text style={[styles.jobId, isPending && styles.jobIdPending]} numberOfLines={1}>
-            {job.identifier.toUpperCase()}
+            {(job.identifier || job.id || 'UNKNOWN').toUpperCase()}
           </Text>
           <Text
             style={[

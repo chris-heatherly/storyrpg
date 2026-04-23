@@ -164,6 +164,7 @@ import {
 } from '../images/loraRegistry';
 import { createLoraTrainerAdapter } from '../services/lora-training/factory';
 import { providerSupportsLoraTraining } from '../images/providerCapabilities';
+import { getReferenceStrategy } from '../images/referenceStrategy';
 import { buildStoryImageSlotManifest } from '../images/storyImageSlotManifest';
 import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
 import { buildBeatImagePrompt, overrideShotFromPlan } from '../images/beatPromptBuilder';
@@ -7256,11 +7257,40 @@ export class FullStoryPipeline {
         this.emit({ type: 'debug', phase: 'images', message: `Found prior character knowledge for ${char.name} in memory` });
       }
 
-      // Build the reference sheet request from character profile
-      const generateCharRefs = this.config.generation?.generateCharacterRefs ?? true;
-      const generateBodyVocab = this.config.generation?.generateBodyVocabulary ?? isMajorCharacter;
-      const generateExpressions = (this.config.generation?.generateExpressionSheets ?? false) && isMajorCharacter;
+      // Build the reference sheet request from character profile.
+      //
+      // Per-provider reference strategy (see `referenceStrategy.ts`) is the
+      // source of truth for *which artifacts are worth generating at all*.
+      // User-facing toggles (`generateExpressionSheets`, etc.) can only
+      // narrow the strategy — they never override it upward. This is how we
+      // stop paying for composite / three-quarter / profile / expression
+      // sheets on gpt-image-2 (which doesn't meaningfully consume them)
+      // without touching the Gemini path.
+      const refStrategy = getReferenceStrategy(this.config.imageGen?.provider);
+      const userWantsCharRefs = this.config.generation?.generateCharacterRefs ?? true;
+      const userWantsBodyVocab = this.config.generation?.generateBodyVocabulary ?? isMajorCharacter;
+      const userWantsExpressions = this.config.generation?.generateExpressionSheets ?? false;
+      const generateCharRefs = userWantsCharRefs && refStrategy.generateViews.length > 0;
+      const generateBodyVocab = userWantsBodyVocab && refStrategy.generateBodyVocabulary;
+      const generateExpressions =
+        userWantsExpressions && refStrategy.generateExpressions && isMajorCharacter;
+      const generateSilhouette = refStrategy.generateSilhouette;
       const expressionTier = char.id === brief.protagonist.id ? 'core' as const : 'minimal' as const;
+
+      // Surface the resolved strategy so an operator can verify at a glance
+      // that gpt-image-2 is running the trimmed path and not paying for
+      // ignored artifacts.
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message:
+          `Reference strategy for ${char.name} (provider=${this.config.imageGen?.provider || 'placeholder'}): ` +
+          `views=[${refStrategy.generateViews.join(',') || 'none'}] ` +
+          `composite=${refStrategy.generateComposite} ` +
+          `expressions=${generateExpressions} ` +
+          `bodyVocab=${generateBodyVocab} ` +
+          `silhouette=${generateSilhouette}`,
+      });
       
       // Use the first user-provided image as the primary reference for the sheet request
       // All images are passed to the image generation team for multi-reference consistency
@@ -7358,9 +7388,11 @@ export class FullStoryPipeline {
         // Expression references are generated selectively for major recurring characters.
         includeExpressions: generateCharRefs && generateExpressions,
         expressionTier,
-        // Body vocabulary and silhouette for major characters - now configurable
+        // Body vocabulary and silhouette for major characters - now configurable.
+        // The per-provider strategy (see `referenceStrategy.ts`) can zero these
+        // out for providers that don't meaningfully consume them (e.g. gpt-image-2).
         includeBodyVocabulary: generateCharRefs && generateBodyVocab && isMajorCharacter,
-        includeSilhouetteProfile: generateCharRefs && isMajorCharacter,
+        includeSilhouetteProfile: generateCharRefs && isMajorCharacter && generateSilhouette,
         // User-provided reference image for visual guidance (primary image)
         userReferenceImage: primaryUserRef,
         // All user reference images (for multi-reference generation)
@@ -7413,13 +7445,14 @@ export class FullStoryPipeline {
               }
             : this.imageService;
 
-          // Dual-artifact reference generation: always produce BOTH the
-          // individual views (front / three-quarter / profile / face /
-          // expressions — primary identity signal for Gemini, Atlas, SD) and
-          // the composite model sheet (consumed by Midjourney --cref and
-          // used as a low-weight style anchor for Gemini). Per-provider
-          // filtering in imageGenerationService decides which artifact each
-          // downstream call actually receives.
+          // Reference generation scope is driven by the per-provider
+          // strategy (see `referenceStrategy.ts`):
+          //   - Gemini / Atlas: full three-view pack + composite style anchor
+          //   - Midjourney:     composite only (drives --cref); skip views
+          //   - gpt-image-2:    front view only; no composite, no expressions
+          //   - Stable Diffusion: three-view pack (routed via IP-Adapter)
+          // Per-provider filtering in imageGenerationService + filterRefsForProvider
+          // then decides which of these artifacts reach each downstream call.
           const progressCb = (status: string, index: number, total: number) => {
             this.emit({
               type: 'checkpoint',
@@ -7435,6 +7468,10 @@ export class FullStoryPipeline {
               progressCb,
               primaryUserRef,
               userReferenceImages,
+              {
+                allowedViews: refStrategy.generateViews,
+                generateComposite: refStrategy.generateComposite,
+              },
             ),
             PIPELINE_TIMEOUTS.storyboard,
             `FullCharacterReferences(${char.name})`,

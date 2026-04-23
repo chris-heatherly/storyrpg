@@ -605,14 +605,41 @@ function createWorkerLifecycle({
             const imageJobs = currentJob?.imageJobs || [];
             const rawData = evt.data || {};
             if (evt.eventType === 'job_added' && rawData.id) {
+              // Be idempotent: if the worker (or a provider path inside it)
+              // emits `job_added` more than once for the same jobId, merge into
+              // the existing entry instead of pushing a duplicate. Duplicate
+              // entries caused UI image flicker (completed image reverts to
+              // "generating") because the client iterates all entries and the
+              // last one wins.
+              const existingIdx = imageJobs.findIndex((j) => j.id === rawData.id);
               const promptSummary = typeof rawData.prompt === 'string' ? rawData.prompt.slice(0, 200) : undefined;
-              imageJobs.push({ id: rawData.id, identifier: rawData.identifier, status: rawData.status || 'pending', prompt: promptSummary, metadata: rawData.metadata });
+              const addEntry = {
+                id: rawData.id,
+                identifier: rawData.identifier,
+                status: rawData.status || 'pending',
+                prompt: promptSummary,
+                metadata: rawData.metadata,
+              };
+              if (existingIdx >= 0) {
+                imageJobs[existingIdx] = { ...imageJobs[existingIdx], ...addEntry };
+              } else {
+                imageJobs.push(addEntry);
+              }
             } else if (evt.eventType === 'job_updated' && rawData.id) {
               const idx = imageJobs.findIndex((j) => j.id === rawData.id);
               const existingJob = idx >= 0 ? imageJobs[idx] : null;
               const identifier = existingJob?.identifier || rawData.identifier;
               const resolvedUrl = resolveImageUrl(rawData.imageUrl, identifier, imageJobs, port);
-              const safeUpdates = { status: rawData.status, progress: rawData.progress, error: rawData.error, attempts: rawData.attempts, endTime: rawData.endTime };
+              // Only propagate fields that are actually present on the event.
+              // Intermediate updates (e.g. a retry tick that reports only
+              // `{ error, attempts }`) must NOT wipe out a previously-set
+              // `status` or `imageUrl` by merging `undefined` over them.
+              const safeUpdates = {};
+              if (rawData.status !== undefined) safeUpdates.status = rawData.status;
+              if (rawData.progress !== undefined) safeUpdates.progress = rawData.progress;
+              if (rawData.error !== undefined) safeUpdates.error = rawData.error;
+              if (rawData.attempts !== undefined) safeUpdates.attempts = rawData.attempts;
+              if (rawData.endTime !== undefined) safeUpdates.endTime = rawData.endTime;
               if (resolvedUrl !== undefined) safeUpdates.imageUrl = resolvedUrl;
               if (idx >= 0) Object.assign(imageJobs[idx], safeUpdates);
               else imageJobs.push({ id: rawData.id, ...safeUpdates });

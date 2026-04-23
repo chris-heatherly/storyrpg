@@ -1163,9 +1163,29 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     imageService: { generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage> },
     onProgress?: (status: string, index: number, total: number) => void,
     userReferenceImage?: { data: string; mimeType: string },
-    userReferenceImages?: Array<{ data: string; mimeType: string }>
+    userReferenceImages?: Array<{ data: string; mimeType: string }>,
+    options?: {
+      /**
+       * When provided, only these views are generated. Useful for providers
+       * like gpt-image-2 that benefit from a single clean front ref and not
+       * the full three-view pack.
+       */
+      allowedViews?: Array<'front' | 'three-quarter' | 'profile'>;
+      /**
+       * When false, skip the composite-sheet pass entirely. Composite is
+       * only consumed by a subset of providers (Gemini as style anchor,
+       * Midjourney as --cref); for everyone else it's wasted work.
+       */
+      generateComposite?: boolean;
+    }
   ): Promise<GeneratedReferenceSheet> {
-    console.log(`[ImageAgentTeam] Generating FULL character references (individual views + composite) for: ${sheet.characterName}`);
+    const allowedViews = options?.allowedViews;
+    const generateComposite = options?.generateComposite !== false;
+
+    console.log(
+      `[ImageAgentTeam] Generating character references for: ${sheet.characterName} ` +
+      `(views=${allowedViews ? allowedViews.join(',') : 'all'}, composite=${generateComposite})`
+    );
 
     const normalizedUserRefs: Array<{ data: string; mimeType: string }> | undefined =
       userReferenceImages && userReferenceImages.length > 0
@@ -1181,24 +1201,27 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       imageService,
       onProgress,
       normalizedUserRefs,
+      allowedViews,
     );
 
     // Composite generation reuses the same imageService and is additive.
     // Wrap it so a failure here doesn't lose the individual views.
-    try {
-      const compositeSheet = await this.generateCompositeReferenceSheet(
-        sheet,
-        imageService,
-        onProgress,
-        userReferenceImage,
-        userReferenceImages,
-      );
-      const compositeImage = compositeSheet.generatedImages.get('composite');
-      if (compositeImage) {
-        individualSheet.generatedImages.set('composite', compositeImage);
+    if (generateComposite) {
+      try {
+        const compositeSheet = await this.generateCompositeReferenceSheet(
+          sheet,
+          imageService,
+          onProgress,
+          userReferenceImage,
+          userReferenceImages,
+        );
+        const compositeImage = compositeSheet.generatedImages.get('composite');
+        if (compositeImage) {
+          individualSheet.generatedImages.set('composite', compositeImage);
+        }
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Composite reference sheet generation failed for ${sheet.characterName} — proceeding with individual views only:`, err);
       }
-    } catch (err) {
-      console.warn(`[ImageAgentTeam] Composite reference sheet generation failed for ${sheet.characterName} — proceeding with individual views only:`, err);
     }
 
     // Re-cache the merged sheet so getReferenceSheet/getCharacterReferenceImages
@@ -1219,11 +1242,19 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     sheet: CharacterReferenceSheet,
     imageService: { generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage> },
     onProgress?: (status: string, index: number, total: number) => void,
-    userReferenceImages?: Array<{ data: string; mimeType: string }>
+    userReferenceImages?: Array<{ data: string; mimeType: string }>,
+    allowedViews?: Array<'front' | 'three-quarter' | 'profile'>
   ): Promise<GeneratedReferenceSheet> {
     const viewTypes = ['front', 'three-quarter', 'profile'] as const;
+    // Per-provider strategy can narrow the view set (e.g. gpt-image-2 only
+    // wants the front view). `allowedViews` is applied on top of the
+    // default three-view filter.
+    const allowedSet = allowedViews && allowedViews.length > 0
+      ? new Set<string>(allowedViews)
+      : null;
     const viewsToGenerate = sheet.views.filter(v =>
-      viewTypes.includes(v.viewType as typeof viewTypes[number])
+      viewTypes.includes(v.viewType as typeof viewTypes[number]) &&
+      (!allowedSet || allowedSet.has(v.viewType))
     );
 
     if (viewsToGenerate.length === 0) {

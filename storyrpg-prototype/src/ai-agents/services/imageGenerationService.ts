@@ -5082,6 +5082,19 @@ export class ImageGenerationService {
     const useEdit = inputs.length > 0;
     const endpoint = useEdit ? 'https://api.openai.com/v1/images/edits' : 'https://api.openai.com/v1/images/generations';
 
+    // Surface which endpoint path we took and why. Without refs the call
+    // degrades to text-only `/v1/images/generations` and character
+    // identity is not anchored — that's a signal worth seeing in logs.
+    const refSummary = useEdit
+      ? inputs.length === 1
+        ? '1 ref'
+        : `${inputs.length} refs`
+      : 'no refs (text-only)';
+    console.log(
+      `[DALL-E] dispatch model=${model} endpoint=${useEdit ? '/images/edits' : '/images/generations'} ` +
+      `identifier=${identifier} ${refSummary}`
+    );
+
     const composedPrompt = [
       prompt.prompt,
       prompt.style ? `Style: ${prompt.style}` : '',
@@ -5100,17 +5113,15 @@ export class ImageGenerationService {
       body.image = inputs;
     }
 
+    // `generateImageCore` already emitted `job_added` (status: 'pending') for
+    // this jobId before dispatching to the provider. Do NOT emit another
+    // `job_added` here — the proxy's event handler treats each `job_added`
+    // as a new entry, which would duplicate the job in the UI. Instead, just
+    // transition the existing job to `processing` with an update event.
     this.emit({
-      type: 'job_added',
-      job: {
-        id: jobId,
-        identifier: identifier || jobId,
-        prompt: composedPrompt,
-        provider: 'dall-e' as any,
-        status: 'processing',
-        progress: 0,
-        maxRetries: this.maxRetries,
-      } as any,
+      type: 'job_updated',
+      id: jobId,
+      updates: { status: 'processing', progress: 0 },
     });
 
     // HTTP statuses that should trigger a backoff+retry. Everything else is

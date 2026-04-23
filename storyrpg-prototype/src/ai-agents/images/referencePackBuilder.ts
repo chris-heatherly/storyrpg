@@ -1,6 +1,7 @@
 import type { ReferenceImage } from '../services/imageGenerationService';
 import type { ImageSlotFamily, SlotReferencePack } from './slotTypes';
 import type { ImageProvider } from '../config';
+import { getReferenceStrategy } from './referenceStrategy';
 
 export interface ReferencePackProfile {
   maxTotal: number;
@@ -299,7 +300,19 @@ export function getReferencePackProfile(family: ImageSlotFamily): ReferencePackP
  *     (→ --sref). Midjourney only accepts 2 reference slots, and the
  *     composite is the canonical format for --cref. Drop everything else.
  *
- *   dall-e / placeholder:
+ *   dall-e (gpt-image-2):
+ *     gpt-image-2's `/v1/images/edits` endpoint accepts multi-image
+ *     input, but best practice is a tight 1-2 ref pack of clean identity
+ *     signals: the full-body front view (preferred) and optionally a
+ *     tight face crop. Composite turnarounds copy as collages,
+ *     three-quarter / profile add little, expression sheets dilute the
+ *     identity signal. Per-reference strategy (see `referenceStrategy.ts`),
+ *     keep only `character-reference` (front view), `character-reference-face`,
+ *     and `user-provided-character-reference`. Drop composite, 3q/profile
+ *     views, expression refs, style anchors, and location shots. Cap to
+ *     `strategy.maxSceneRefs` (default 2).
+ *
+ *   placeholder:
  *     Drop all refs — the provider does not consume reference images.
  *
  * The original pack is never mutated.
@@ -350,7 +363,42 @@ export function filterRefsForProvider(
       return { refs: kept };
     }
 
-    case 'dall-e':
+    case 'dall-e': {
+      // gpt-image-2: keep only high-signal identity refs. See the
+      // block comment on `filterRefsForProvider` above for rationale.
+      const strategy = getReferenceStrategy('dall-e');
+      const kept: ReferenceImage[] = [];
+      for (const r of refs) {
+        // User-provided photos are the user's explicit identity signal —
+        // always respected when present.
+        if (r.role === 'user-provided-character-reference') {
+          kept.push(r);
+          continue;
+        }
+        // Face crop: always useful for gpt-image-2 (tight identity).
+        if (r.role === 'character-reference-face') {
+          kept.push(r);
+          continue;
+        }
+        // Full-body character ref: keep only the front view. Three-quarter
+        // and profile add little to gpt-image-2 and waste a ref slot.
+        if (r.role === 'character-reference') {
+          if (!r.viewType || r.viewType === 'front') {
+            kept.push(r);
+          }
+          continue;
+        }
+        // Everything else (composite-sheet, style-anchor, location-*,
+        // expression-*, body-vocab, silhouette, previous-view-consistency,
+        // canonical-front-identity, etc.) is dropped.
+      }
+      // Cap to the strategy's explicit max (tighter than provider
+      // capability's maxRefs on purpose — 1-2 clean refs outperforms a
+      // larger noisy pack for gpt-image-2).
+      const capped = kept.slice(0, strategy.maxSceneRefs);
+      return { refs: capped };
+    }
+
     case 'placeholder':
       return { refs: [] };
 

@@ -5110,7 +5110,12 @@ export class ImageGenerationService {
       moderation: this.config.openaiModeration || 'auto',
     };
     if (useEdit) {
-      body.image = inputs;
+      // OpenAI's JSON variant of /v1/images/edits requires the plural `images`
+      // (array of { image_url | file_id }). The singular `image` field is only
+      // valid for the multipart/form-data variant on `dall-e-2`; sending it
+      // with application/json returns 400 "Unknown parameter: 'image'". See
+      // https://platform.openai.com/docs/api-reference/images/createEdit
+      body.images = inputs;
     }
 
     // `generateImageCore` already emitted `job_added` (status: 'pending') for

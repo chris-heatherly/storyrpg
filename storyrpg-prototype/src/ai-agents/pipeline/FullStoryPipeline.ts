@@ -7111,25 +7111,40 @@ export class FullStoryPipeline {
     }
 
     // Process a single eligible character — handles progress emission,
-    // identity fingerprinting, and cancellation. Returns a promise so the
-    // caller can either await serially or Promise.all for parallel runs.
+    // identity fingerprinting, and cancellation. Errors are caught inside
+    // `generateCharacterReferenceSheet`, but we wrap the body in its own
+    // try/catch anyway: when multiple characters run in parallel via
+    // `Promise.allSettled`, we want any rogue rejection to become a logged
+    // warning instead of leaking into the worker's unhandledRejection hook
+    // and killing the pipeline.
     const processCharacter = async ({ char, userRefImages }: EligibleChar): Promise<void> => {
-      await this.checkCancellation();
-      await this.generateCharacterReferenceSheet(char, brief, userRefImages.length > 0 ? userRefImages : undefined);
-      // D5: tag the freshly-generated reference sheet with the identity
-      // fingerprint that produced it so future runs can detect drift and
-      // invalidate at the top of this phase (see `invalidateStaleReferenceSheets`).
-      const fingerprint = computeCharacterIdentityFingerprint(char);
-      this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
-      if (totalMasterAssets > 0) {
-        completedMasterAssets += 1;
-        this.emitPhaseProgress(
-          'master_images',
-          completedMasterAssets,
-          totalMasterAssets,
-          'master-assets',
-          `Master character reference complete for ${char.name}`
-        );
+      try {
+        await this.checkCancellation();
+        await this.generateCharacterReferenceSheet(char, brief, userRefImages.length > 0 ? userRefImages : undefined);
+        // D5: tag the freshly-generated reference sheet with the identity
+        // fingerprint that produced it so future runs can detect drift and
+        // invalidate at the top of this phase (see `invalidateStaleReferenceSheets`).
+        const fingerprint = computeCharacterIdentityFingerprint(char);
+        this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[Pipeline] Character reference generation for "${char.name}" failed (${msg}); continuing with remaining characters.`);
+        this.emit({
+          type: 'warning',
+          phase: 'reference_sheet',
+          message: `Character reference generation failed for ${char.name}: ${msg}`,
+        });
+      } finally {
+        if (totalMasterAssets > 0) {
+          completedMasterAssets += 1;
+          this.emitPhaseProgress(
+            'master_images',
+            completedMasterAssets,
+            totalMasterAssets,
+            'master-assets',
+            `Master character reference complete for ${char.name}`
+          );
+        }
       }
     };
 
@@ -7150,8 +7165,14 @@ export class FullStoryPipeline {
       // concurrency cap (e.g. Gemini: 6) and min-request interval. Firing
       // all characters concurrently here cuts wall-clock time from
       // O(N_characters × per_char_time) to roughly `per_char_time`.
+      //
+      // `Promise.allSettled` (not `Promise.all`) is critical here: if one
+      // character's generation throws, we must still await the others to
+      // completion. Otherwise their eventual rejection becomes an
+      // unhandled promise rejection, which the worker's `unhandledRejection`
+      // handler converts into a pipeline-fatal `worker_error`.
       if (eligibleCharacters.length > 0) {
-        await Promise.all(eligibleCharacters.map(processCharacter));
+        await Promise.allSettled(eligibleCharacters.map(processCharacter));
       }
     }
 

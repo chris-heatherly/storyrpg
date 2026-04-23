@@ -1,5 +1,5 @@
 {
-  "scannedAt": 1776870583819,
+  "scannedAt": 1776957425138,
   "providers": {
     "anthropic": [
       {
@@ -48,6 +48,7 @@
         "createdAt": "2025-05-22T00:00:00Z"
       }
     ],
+    "openai": null,
     "gemini": [
       {
         "value": "nano-banana-pro-preview",
@@ -294,6 +295,12 @@
         "label": "Imagen 3 Fast",
         "price": "$0.02/pic",
         "description": "Fast variant of Imagen 3."
+      },
+      {
+        "value": "openai/gpt-image-2/text-to-image",
+        "label": "GPT Image 2",
+        "price": "$0.01/pic",
+        "description": "OpenAI's latest image model. Strongest character/style consistency with multi-reference edit workflows."
       },
       {
         "value": "openai/gpt-image-1.5/text-to-image",

@@ -1992,7 +1992,25 @@ export class ImageGenerationService {
     if (providerFailureKind === 'safety_block' || providerFailureKind === 'content_policy' || providerFailureKind === 'blocked') {
       return 'permanent';
     }
-    if (msg.includes('rate limit') || msg.includes('429') || msg.includes('timeout') || msg.includes('503') || msg.includes('econnreset') || msg.includes('socket hang up')) {
+    if (
+      msg.includes('rate limit') ||
+      msg.includes('429') ||
+      msg.includes('timeout') ||
+      // OpenAI / upstream 5xx family — all transient by spec. Explicitly listed
+      // so the classification doesn't rely on the default-transient fallback.
+      msg.includes('500') ||
+      msg.includes('502') ||
+      msg.includes('503') ||
+      msg.includes('504') ||
+      msg.includes('server_error') ||
+      msg.includes('server had an error') ||
+      msg.includes('econnreset') ||
+      msg.includes('enetdown') ||
+      msg.includes('enotfound') ||
+      msg.includes('etimedout') ||
+      msg.includes('socket hang up') ||
+      msg.includes('fetch failed')
+    ) {
       return 'transient';
     }
     if (msg.includes('content policy') || msg.includes('blocked') || msg.includes('safety')) {
@@ -5094,72 +5112,159 @@ export class ImageGenerationService {
         maxRetries: this.maxRetries,
       } as any,
     });
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${openaiApiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-    const raw = await response.text();
-    if (!response.ok) {
-      let friendly = '';
-      if (response.status === 403 && /must be verified/i.test(raw)) {
-        friendly =
-          ` Your OpenAI organization is not verified for "${model}". ` +
-          `Either (a) visit https://platform.openai.com/settings/organization/general and click "Verify Organization", ` +
-          `then wait up to 15 minutes, or (b) pick gpt-image-1 / gpt-image-1-mini in the IMAGES panel → OPENAI IMAGE PARAMETERS (no verification required).`;
-      } else if (response.status === 401) {
-        friendly = ' Check that your OPENAI API KEY (in the STORY panel) is valid and has image-generation scope.';
-      } else if (response.status === 429) {
-        friendly = ' Your OpenAI key has hit a rate limit or has insufficient quota. Check billing at https://platform.openai.com/settings/organization/billing.';
+
+    // HTTP statuses that should trigger a backoff+retry. Everything else is
+    // classified as permanent (bad request, missing auth, content policy,
+    // unknown verification state, etc.) and fails fast.
+    const isTransientHttpStatus = (status: number): boolean =>
+      status === 429 || (status >= 500 && status < 600);
+
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= this.maxRetries; attempt += 1) {
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${openaiApiKey}`,
+          },
+          body: JSON.stringify(body),
+        });
+        const raw = await response.text();
+
+        if (!response.ok) {
+          let friendly = '';
+          if (response.status === 403 && /must be verified/i.test(raw)) {
+            friendly =
+              ` Your OpenAI organization is not verified for "${model}". ` +
+              `Either (a) visit https://platform.openai.com/settings/organization/general and click "Verify Organization", ` +
+              `then wait up to 15 minutes, or (b) pick gpt-image-1 / gpt-image-1-mini in the IMAGES panel → OPENAI IMAGE PARAMETERS (no verification required).`;
+          } else if (response.status === 401) {
+            friendly = ' Check that your OPENAI API KEY (in the STORY panel) is valid and has image-generation scope.';
+          } else if (response.status === 429) {
+            friendly = ' Your OpenAI key has hit a rate limit or has insufficient quota. Check billing at https://platform.openai.com/settings/organization/billing.';
+          }
+          const msg = `OpenAI image API error ${response.status}: ${raw.slice(0, 500)}${friendly}`;
+
+          if (isTransientHttpStatus(response.status) && attempt < this.maxRetries) {
+            // Transient: backoff and retry. OpenAI recommends exponential backoff
+            // on 429/5xx, and 500s in particular are often cleared by a single retry.
+            this.pipelineMetrics.transientRetries++;
+            const rawBackoff = this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
+            const backoff = Math.min(rawBackoff, this.maxRetryBackoffMs);
+            const jitter = Math.floor(Math.random() * 750);
+            console.warn(`[ImageGenerationService] ${msg} — retrying attempt ${attempt + 1}/${this.maxRetries} in ${backoff + jitter}ms`);
+            this.emit({ type: 'job_updated', id: jobId, updates: { error: msg, attempts: attempt } });
+            lastError = new Error(msg);
+            await this.delay(backoff + jitter);
+            continue;
+          }
+
+          // Either permanent or out of retries — report and exit the loop.
+          this.emit({ type: 'job_updated', id: jobId, updates: { status: 'failed', error: msg, endTime: Date.now() } });
+          if (isTransientHttpStatus(response.status)) {
+            this.pipelineMetrics.transientRetries++;
+            console.error(`[ImageGenerationService] ${msg} — giving up after ${this.maxRetries} attempts`);
+          } else {
+            this.pipelineMetrics.permanentFailures++;
+          }
+          if (this.isFailFastEnabled()) throw new Error(msg);
+          console.error(`[ImageGenerationService] ${msg}`);
+          return this.generatePlaceholder(prompt, identifier, jobId);
+        }
+
+        let parsed: any;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (err) {
+          const msg = `OpenAI image API returned non-JSON response: ${String(err)}`;
+          if (this.isFailFastEnabled()) throw new Error(msg);
+          console.error(`[ImageGenerationService] ${msg}`);
+          return this.generatePlaceholder(prompt, identifier, jobId);
+        }
+
+        const imageData = parsed?.data?.[0]?.b64_json as string | undefined;
+        if (!imageData) {
+          const msg = 'OpenAI image API returned no image data';
+          // Empty responses on the OpenAI path are occasionally transient (the
+          // server sometimes replies with 200 + empty data during incidents).
+          // Retry once before giving up, same as HTTP 5xx.
+          if (attempt < this.maxRetries) {
+            this.pipelineMetrics.transientRetries++;
+            const backoff = Math.min(
+              this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1),
+              this.maxRetryBackoffMs,
+            );
+            console.warn(`[ImageGenerationService] ${msg} — retrying attempt ${attempt + 1}/${this.maxRetries} in ${backoff}ms`);
+            lastError = new Error(msg);
+            await this.delay(backoff);
+            continue;
+          }
+          if (this.isFailFastEnabled()) throw new Error(msg);
+          console.error(`[ImageGenerationService] ${msg}`);
+          return this.generatePlaceholder(prompt, identifier, jobId);
+        }
+
+        const mimeType = 'image/png';
+        const imagePath = this.joinPath(this.outputDir, `${identifier}.png`);
+        await this.writeFile(imagePath, imageData, true);
+        const imageUrl = this.toImageHttpUrl(imagePath, mimeType, imageData);
+        this.emit({
+          type: 'job_updated',
+          id: jobId,
+          updates: { status: 'completed', progress: 100, imageUrl, endTime: Date.now() },
+        });
+        return {
+          prompt,
+          imagePath,
+          imageUrl,
+          imageData,
+          mimeType,
+          metadata: {
+            provider: 'openai',
+            model,
+            attempts: attempt,
+          },
+        };
+      } catch (err) {
+        // Network-level failures (DNS, reset, abort) reach us here. Treat them
+        // the same as a transient HTTP 5xx: backoff and retry until the budget
+        // is exhausted.
+        const message = err instanceof Error ? err.message : String(err);
+        lastError = err instanceof Error ? err : new Error(message);
+
+        // If we already threw our own synthesized error above (fail-fast path),
+        // don't swallow it via retry — propagate it immediately.
+        if (message.startsWith('OpenAI image API error')) {
+          throw lastError;
+        }
+
+        if (attempt < this.maxRetries) {
+          this.pipelineMetrics.transientRetries++;
+          const backoff = Math.min(
+            this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1),
+            this.maxRetryBackoffMs,
+          );
+          console.warn(`[ImageGenerationService] OpenAI image request failed (${message}) — retrying attempt ${attempt + 1}/${this.maxRetries} in ${backoff}ms`);
+          this.emit({ type: 'job_updated', id: jobId, updates: { error: message, attempts: attempt } });
+          await this.delay(backoff);
+          continue;
+        }
+
+        this.emit({ type: 'job_updated', id: jobId, updates: { status: 'failed', error: message, endTime: Date.now() } });
+        if (this.isFailFastEnabled()) throw lastError;
+        console.error(`[ImageGenerationService] OpenAI image request failed after ${this.maxRetries} attempts: ${message}`);
+        return this.generatePlaceholder(prompt, identifier, jobId);
       }
-      const msg = `OpenAI image API error ${response.status}: ${raw.slice(0, 500)}${friendly}`;
-      this.emit({ type: 'job_updated', id: jobId, updates: { status: 'failed', error: msg, endTime: Date.now() } });
-      if (this.isFailFastEnabled()) throw new Error(msg);
-      console.error(`[ImageGenerationService] ${msg}`);
-      return this.generatePlaceholder(prompt, identifier, jobId);
     }
 
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      const msg = `OpenAI image API returned non-JSON response: ${String(err)}`;
-      if (this.isFailFastEnabled()) throw new Error(msg);
-      console.error(`[ImageGenerationService] ${msg}`);
-      return this.generatePlaceholder(prompt, identifier, jobId);
-    }
-
-    const imageData = parsed?.data?.[0]?.b64_json as string | undefined;
-    if (!imageData) {
-      const msg = 'OpenAI image API returned no image data';
-      if (this.isFailFastEnabled()) throw new Error(msg);
-      console.error(`[ImageGenerationService] ${msg}`);
-      return this.generatePlaceholder(prompt, identifier, jobId);
-    }
-
-    const mimeType = 'image/png';
-    const imagePath = this.joinPath(this.outputDir, `${identifier}.png`);
-    await this.writeFile(imagePath, imageData, true);
-    const imageUrl = this.toImageHttpUrl(imagePath, mimeType, imageData);
-    this.emit({
-      type: 'job_updated',
-      id: jobId,
-      updates: { status: 'completed', progress: 100, imageUrl, endTime: Date.now() },
-    });
-    return {
-      prompt,
-      imagePath,
-      imageUrl,
-      imageData,
-      mimeType,
-      metadata: {
-        provider: 'openai',
-        model,
-      },
-    };
+    // Retry budget exhausted without a success or a terminal error — this path
+    // is only reachable if every attempt hit a transient status but we ran out
+    // of retries without throwing inside the loop.
+    const finalMsg = lastError?.message || `OpenAI image generation failed for "${identifier}" after ${this.maxRetries} attempts`;
+    this.emit({ type: 'job_updated', id: jobId, updates: { status: 'failed', error: finalMsg, endTime: Date.now() } });
+    if (this.isFailFastEnabled()) throw lastError || new Error(finalMsg);
+    return this.generatePlaceholder(prompt, identifier, jobId);
   }
 
   private async generateWithStableDiffusion(

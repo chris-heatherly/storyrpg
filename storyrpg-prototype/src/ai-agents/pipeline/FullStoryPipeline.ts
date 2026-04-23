@@ -7077,8 +7077,16 @@ export class FullStoryPipeline {
 
     // Generate reference sheets for major characters (deduplicate by ID to prevent double composites)
     const processedCharIds = new Set<string>();
+
+    // Collect eligible characters first so we can parallelize the bulk work.
+    // The single character who runs serially first establishes the
+    // global style anchor (`setReferenceSheetStyleAnchor`) that subsequent
+    // characters use as a consistency reference. Protagonist is preferred
+    // so the anchor reflects the story's primary visual lead; otherwise
+    // the first eligible character wins, matching prior behaviour.
+    type EligibleChar = { char: CharacterProfile; userRefImages: Array<{ data: string; mimeType: string }> };
+    const eligibleCharacters: EligibleChar[] = [];
     for (const char of characterBible.characters) {
-      await this.checkCancellation();
       if (processedCharIds.has(char.id)) {
         console.warn(`[Pipeline] Skipping duplicate character ID "${char.id}" (${char.name}) — already generated reference sheet.`);
         continue;
@@ -7098,22 +7106,52 @@ export class FullStoryPipeline {
 
       if (isMajor || hasUserRefs) {
         processedCharIds.add(char.id);
-        await this.generateCharacterReferenceSheet(char, brief, hasUserRefs ? userRefImages : undefined);
-        // D5: tag the freshly-generated reference sheet with the identity
-        // fingerprint that produced it so future runs can detect drift and
-        // invalidate at the top of this phase (see `invalidateStaleReferenceSheets`).
-        const fingerprint = computeCharacterIdentityFingerprint(char);
-        this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
-        if (totalMasterAssets > 0) {
-          completedMasterAssets += 1;
-          this.emitPhaseProgress(
-            'master_images',
-            completedMasterAssets,
-            totalMasterAssets,
-            'master-assets',
-            `Master character reference complete for ${char.name}`
-          );
-        }
+        eligibleCharacters.push({ char, userRefImages: hasUserRefs ? userRefImages : [] });
+      }
+    }
+
+    // Process a single eligible character — handles progress emission,
+    // identity fingerprinting, and cancellation. Returns a promise so the
+    // caller can either await serially or Promise.all for parallel runs.
+    const processCharacter = async ({ char, userRefImages }: EligibleChar): Promise<void> => {
+      await this.checkCancellation();
+      await this.generateCharacterReferenceSheet(char, brief, userRefImages.length > 0 ? userRefImages : undefined);
+      // D5: tag the freshly-generated reference sheet with the identity
+      // fingerprint that produced it so future runs can detect drift and
+      // invalidate at the top of this phase (see `invalidateStaleReferenceSheets`).
+      const fingerprint = computeCharacterIdentityFingerprint(char);
+      this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
+      if (totalMasterAssets > 0) {
+        completedMasterAssets += 1;
+        this.emitPhaseProgress(
+          'master_images',
+          completedMasterAssets,
+          totalMasterAssets,
+          'master-assets',
+          `Master character reference complete for ${char.name}`
+        );
+      }
+    };
+
+    if (eligibleCharacters.length > 0) {
+      // Pick the style-anchor character: prefer the protagonist, else fall
+      // back to the first eligible character. This one must run before the
+      // others so `setReferenceSheetStyleAnchor` is stamped with the chosen
+      // lead's front view before other characters' generation kicks off.
+      const anchorIdx = Math.max(
+        0,
+        eligibleCharacters.findIndex(({ char }) => char.id === brief.protagonist.id),
+      );
+      const [anchorEntry] = eligibleCharacters.splice(anchorIdx, 1);
+      await processCharacter(anchorEntry);
+
+      // Remaining characters run in parallel — `ImageGenerationService`
+      // routes through `ProviderThrottle`, which enforces the per-provider
+      // concurrency cap (e.g. Gemini: 6) and min-request interval. Firing
+      // all characters concurrently here cuts wall-clock time from
+      // O(N_characters × per_char_time) to roughly `per_char_time`.
+      if (eligibleCharacters.length > 0) {
+        await Promise.all(eligibleCharacters.map(processCharacter));
       }
     }
 

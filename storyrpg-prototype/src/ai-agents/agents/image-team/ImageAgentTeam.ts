@@ -1429,53 +1429,56 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       }
     }
 
-    for (let i = 0; i < sheet.expressions.length; i++) {
-      const exprView = sheet.expressions[i];
-      // Use expressionName field (the actual emotion like 'happy', 'angry'), fallback to viewName or index
-      const expressionName = exprView.expressionName || exprView.viewName || `expression-${i}`;
-      
-      onProgress?.(expressionName, i + 1, sheet.expressions.length);
-      console.log(`[ImageAgentTeam] Generating expression ${i + 1}/${sheet.expressions.length}: ${expressionName}`);
-      console.log(`[ImageAgentTeam] Expression prompt preview: ${exprView.prompt?.prompt?.substring(0, 100)}...`);
+    // Expressions have NO inter-dependency (see note below about not chaining
+    // generated expression outputs). Fire them concurrently — per-provider
+    // `ProviderThrottle` enforces the concurrency cap (Gemini: 6) and the
+    // min-request interval, so we don't need an additional hard-coded sleep.
+    //
+    // Do not chain generated expression outputs back into later prompts.
+    // If an early expression drifts, feeding it forward contaminates the
+    // rest of the expression sheet. User refs + canonical pose refs are enough.
+    let completed = 0;
+    const expressionResults = await Promise.all(
+      sheet.expressions.map(async (exprView, i) => {
+        const expressionName = exprView.expressionName || exprView.viewName || `expression-${i}`;
+        const identifier = `expr_${sheet.characterId}_${expressionName}`;
 
-      const identifier = `expr_${sheet.characterId}_${expressionName}`;
-      
-      try {
-        const result = await imageService.generateImage(
-          exprView.prompt,
-          identifier,
-          { 
-            type: 'expression', 
-            characterId: sheet.characterId, 
-            expressionName,
-            characterName: sheet.characterName
-          },
-          referenceImages.length > 0 ? referenceImages : undefined
-        );
+        try {
+          const result = await imageService.generateImage(
+            exprView.prompt,
+            identifier,
+            {
+              type: 'expression',
+              characterId: sheet.characterId,
+              expressionName,
+              characterName: sheet.characterName,
+            },
+            referenceImages.length > 0 ? referenceImages : undefined,
+          );
+          completed += 1;
+          onProgress?.(expressionName, completed, sheet.expressions.length);
+          console.log(`[ImageAgentTeam] Expression ${completed}/${sheet.expressions.length} ready: ${expressionName}`);
+          return { index: i, expressionName, prompt: exprView.prompt, generatedImage: result };
+        } catch (error) {
+          completed += 1;
+          onProgress?.(expressionName, completed, sheet.expressions.length);
+          console.error(`[ImageAgentTeam] Failed to generate expression ${expressionName}:`, error);
+          return { index: i, expressionName, prompt: exprView.prompt, generatedImage: undefined };
+        }
+      }),
+    );
 
-        generatedImages.set(expressionName, result);
-        expressions.push({
-          expressionName,
-          prompt: exprView.prompt,
-          generatedImage: result
-        });
-
-        // Do not chain generated expression outputs back into later prompts.
-        // If an early expression drifts into a scene, feeding it forward contaminates
-        // the rest of the expression sheet. User refs + canonical pose refs are enough.
-      } catch (error) {
-        console.error(`[ImageAgentTeam] Failed to generate expression ${expressionName}:`, error);
-        expressions.push({
-          expressionName,
-          prompt: exprView.prompt,
-          generatedImage: undefined
-        });
+    // Preserve original expression ordering regardless of completion order.
+    expressionResults.sort((a, b) => a.index - b.index);
+    for (const r of expressionResults) {
+      if (r.generatedImage) {
+        generatedImages.set(r.expressionName, r.generatedImage);
       }
-
-      // Small delay between generations to avoid rate limits
-      if (i < sheet.expressions.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 1500));
-      }
+      expressions.push({
+        expressionName: r.expressionName,
+        prompt: r.prompt,
+        generatedImage: r.generatedImage,
+      });
     }
 
     // Create the generated expression sheet

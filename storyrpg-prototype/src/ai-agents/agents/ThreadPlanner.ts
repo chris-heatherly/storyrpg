@@ -14,6 +14,11 @@ import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { EpisodeBlueprint } from './StoryArchitect';
 import { SeasonBible, NarrativeThread, ThreadLedger } from '../../types';
+import type {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
 
 export interface ThreadPlannerInput {
   episodeBlueprint: EpisodeBlueprint;
@@ -24,6 +29,24 @@ export interface ThreadPlannerInput {
    * always inventing new ones.
    */
   priorThreads?: NarrativeThread[];
+
+  /**
+   * Season-level narrative anchors. Every planted promise SHOULD map to
+   * one of these anchors so the payoff pressure flows toward the season
+   * Climax. Optional so older callers still typecheck.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /** Season-level 7-point beat map. */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Which beat(s) of the season this episode carries. Determines whether
+   * threads planted in this episode should aim to pay off within the
+   * same episode (Climax / Pinch 2 beats) or defer across episodes
+   * (Hook / Rising beats).
+   */
+  episodeStructuralRole?: StructuralRole[];
 }
 
 export class ThreadPlanner extends BaseAgent {

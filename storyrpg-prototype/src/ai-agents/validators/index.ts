@@ -47,6 +47,11 @@ export { ArcDeltaValidator } from './ArcDeltaValidator';
 export type { ArcDeltaInput, ArcDeltaMetrics, ArcDeltaResult } from './ArcDeltaValidator';
 export { DivergenceValidator } from './DivergenceValidator';
 export type { DivergenceInput, DivergenceMetrics, DivergenceResult } from './DivergenceValidator';
+export {
+  SevenPointCoverageValidator,
+  seasonPlanToCoverageInput,
+} from './SevenPointCoverageValidator';
+export type { SevenPointCoverageInput } from './SevenPointCoverageValidator';
 export { simulateEpisodePaths } from './pathSimulator';
 export type { TerminalState, PathSimulationResult, SimulatorOptions } from './pathSimulator';
 

@@ -19,6 +19,11 @@ import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SeasonBible, IdentityProfile } from '../../types';
 import { EpisodeBlueprint } from './StoryArchitect';
 import { CharacterBible } from './CharacterDesigner';
+import type {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
 
 export interface IdentityAxisTarget {
   /** Identity axis key (e.g., "mercy_justice"). Must match IdentityProfile. */
@@ -71,6 +76,22 @@ export interface CharacterArcTrackerInput {
   /** Episode index (1-based) for arc-phase reasoning. */
   episodeIndex: number;
   totalEpisodes: number;
+
+  /**
+   * Season narrative anchors. Identity deltas should move the protagonist
+   * toward (or away from) the season Goal / Stakes, not drift randomly.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /** Season-level 7-point beat map. */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Structural beat(s) this episode carries. Midpoint episodes should
+   * emit a `turning_point` milestone; Climax episodes should emit
+   * `commitment` or `resolution` milestones.
+   */
+  episodeStructuralRole?: StructuralRole[];
 }
 
 export class CharacterArcTracker extends BaseAgent {

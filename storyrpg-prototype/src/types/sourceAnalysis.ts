@@ -6,6 +6,81 @@
  */
 
 // ========================================
+// 7-POINT STORY STRUCTURE
+// ========================================
+
+/**
+ * The four narrative anchors that define every story at the season / top level.
+ *
+ * - {@link StoryAnchors.stakes}     - the person, people, place, thing, or concept
+ *                                     the Protagonist cares about most
+ * - {@link StoryAnchors.goal}       - what the Protagonist feels compelled to achieve
+ * - {@link StoryAnchors.incitingIncident} - the event that sets the story in motion
+ * - {@link StoryAnchors.climax}     - the turning-point confrontation where the
+ *                                     Protagonist faces their greatest challenge
+ *
+ * These are the shared reference points every narrative-quality agent aligns to.
+ * When source material does not already supply them, SourceMaterialAnalyzer
+ * infers them. Path B's StorySchema authoring tool writes them directly.
+ */
+export interface StoryAnchors {
+  stakes: string;
+  goal: string;
+  incitingIncident: string;
+  climax: string;
+}
+
+/**
+ * The season-level 3-act / 7-point structural contract.
+ *
+ * Each string names the beat at the season level. Individual episodes carry
+ * one or more of these beats as their structural role (see
+ * {@link EpisodeOutline.structuralRole}). The `climax` field here SHOULD
+ * match the {@link StoryAnchors.climax} anchor either exactly or as a
+ * recognizable rephrasing; `SevenPointCoverageValidator` enforces this.
+ */
+export interface SevenPointStructure {
+  hook: string;
+  plotTurn1: string;
+  pinch1: string;
+  midpoint: string;
+  pinch2: string;
+  climax: string;
+  resolution: string;
+}
+
+/**
+ * Which beat of the 7-point structure a given episode carries.
+ *
+ * `rising` and `falling` are non-beat buffer slots used when an episode sits
+ * BETWEEN two named beats and purely escalates / de-escalates tension.
+ */
+export type StructuralRole =
+  | 'hook'
+  | 'plotTurn1'
+  | 'pinch1'
+  | 'midpoint'
+  | 'pinch2'
+  | 'climax'
+  | 'resolution'
+  | 'rising'
+  | 'falling';
+
+/**
+ * The seven "real" beats (excluding rising / falling buffers). Exported so
+ * validators can iterate the required set.
+ */
+export const SEVEN_POINT_BEATS: ReadonlyArray<Exclude<StructuralRole, 'rising' | 'falling'>> = [
+  'hook',
+  'plotTurn1',
+  'pinch1',
+  'midpoint',
+  'pinch2',
+  'climax',
+  'resolution',
+] as const;
+
+// ========================================
 // STORY STRUCTURE TYPES
 // ========================================
 
@@ -210,7 +285,26 @@ export interface EpisodeOutline {
   // Estimated scope
   estimatedSceneCount: number;
   estimatedChoiceCount: number;
-  // Narrative arc within episode
+
+  /**
+   * Which beat(s) of the season's {@link SevenPointStructure} this episode
+   * carries. A single episode may fuse multiple beats (e.g. `['hook','plotTurn1']`
+   * in a short 3-episode season) or sit BETWEEN beats as a `rising` / `falling`
+   * buffer in a long season.
+   *
+   * Populated by SeasonPlannerAgent; validated by SevenPointCoverageValidator
+   * (every beat in the season's sevenPoint must be carried by >=1 episode).
+   * Drives arc tone, difficultyTier, branch placement, twist landing, and
+   * character-arc milestones.
+   */
+  structuralRole?: StructuralRole[];
+
+  /**
+   * @deprecated in favor of {@link structuralRole} + season-level sevenPoint.
+   * Retained so existing SourceMaterialAnalyzer output still typechecks; new
+   * code should read `structuralRole` and consult the season's `sevenPoint`
+   * for the beat text.
+   */
   narrativeFunction: {
     setup: string;
     conflict: string;
@@ -253,6 +347,21 @@ export interface SourceMaterialAnalysis {
 
   // Overall story arcs
   storyArcs: StoryArc[];
+
+  /**
+   * Four narrative anchors that ground every downstream agent
+   * (protagonist Stakes, Goal, Inciting Incident, Climax).
+   * Inferred by SourceMaterialAnalyzer when the caller does not supply them.
+   */
+  anchors: StoryAnchors;
+
+  /**
+   * The season-level 3-act / 7-point beat map. Inferred by
+   * SourceMaterialAnalyzer; each episode carries one or more of these beats
+   * via {@link EpisodeOutline.structuralRole}. Validated for coverage and
+   * anchor-consistency by SevenPointCoverageValidator.
+   */
+  sevenPoint: SevenPointStructure;
 
   // Ending analysis
   detectedEndingMode?: EndingMode;

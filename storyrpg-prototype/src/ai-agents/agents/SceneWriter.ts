@@ -14,9 +14,18 @@ import { AgentConfig, GenerationSettingsConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import { Beat, TextVariant, Consequence, TimingMetadata } from '../../types';
-import { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
+import {
+  SourceMaterialAnalysis,
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
-import { CHOICE_DENSITY_REQUIREMENTS, NARRATIVE_INTENSITY_RULES } from '../prompts/storytellingPrinciples';
+import {
+  CHOICE_DENSITY_REQUIREMENTS,
+  NARRATIVE_INTENSITY_RULES,
+  buildStructuralContextSection,
+} from '../prompts/storytellingPrinciples';
 import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
@@ -71,6 +80,25 @@ export interface SceneWriterInput {
 
   // Source material analysis for IP fidelity (optional)
   sourceAnalysis?: SourceMaterialAnalysis;
+
+  /**
+   * Season-level narrative anchors (from SeasonPlan.anchors).
+   * When present, SceneWriter keeps every prose beat grounded in the
+   * shared Stakes / Goal / Inciting Incident / Climax anchors.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /**
+   * Season-level 7-point beat map (from SeasonPlan.sevenPoint). Used to
+   * tell SceneWriter where this scene sits on the season's dramatic curve.
+   */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Which beat(s) of the season this episode is carrying (from
+   * SeasonEpisode.structuralRole). Drives scene mood / intensity defaults.
+   */
+  episodeStructuralRole?: StructuralRole[];
 
   // Context about the episode's climactic encounter that this scene is building toward.
   // Provided for all non-encounter scenes so the writer can plant seeds, establish stakes,
@@ -931,11 +959,17 @@ ${input.sourceAnalysis.adaptationGuidance ? `
 `;
     }
 
+    const structuralContext = buildStructuralContextSection({
+      anchors: input.seasonAnchors,
+      sevenPoint: input.seasonSevenPoint,
+      episodeStructuralRole: input.episodeStructuralRole,
+    });
+
     return `
 Write the scene content for the following scene blueprint:
 
 ${sourceContextStr}
-
+${structuralContext}
 ## Story Context
 - **Title**: ${input.storyContext.title}
 - **Genre**: ${input.storyContext.genre}

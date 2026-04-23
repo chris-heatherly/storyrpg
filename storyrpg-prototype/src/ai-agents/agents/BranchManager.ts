@@ -12,6 +12,11 @@ import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import { ChoiceType, Consequence } from '../../types';
+import type {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
 
 // Input types
 export interface BranchManagerInput {
@@ -35,6 +40,23 @@ export interface BranchManagerInput {
     genre: string;
     tone: string;
   };
+
+  /**
+   * Season narrative anchors. Branch reconvergence bottlenecks should
+   * funnel every path back toward the season Climax and honour the
+   * Stakes anchor.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /** Season 7-point beat map. */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Structural beat(s) this episode carries. Midpoint and Plot Turn 2
+   * episodes are the best homes for high-cost, high-divergence branches.
+   * Hook / Resolution episodes should keep branches tight.
+   */
+  episodeStructuralRole?: StructuralRole[];
 }
 
 // Output types

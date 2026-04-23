@@ -11,6 +11,10 @@
 import { AgentConfig } from '../config';
 import { describeTierRequirements } from '../config/tierRequirements';
 import { BaseAgent, AgentResponse } from './BaseAgent';
+import type {
+  StoryAnchors,
+  SevenPointStructure,
+} from '../../types/sourceAnalysis';
 
 // Input types
 export interface CharacterDesignerInput {
@@ -45,6 +49,16 @@ export interface CharacterDesignerInput {
 
   // Pipeline memory context (optimization hints from prior runs, Claude only)
   memoryContext?: string;
+
+  /**
+   * Season-level narrative anchors. The protagonist's internal + external
+   * arc should be grounded in these anchors so character design serves
+   * the story spine.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /** Season-level 7-point beat map (for long-arc character planning). */
+  seasonSevenPoint?: SevenPointStructure;
 }
 
 // Output types

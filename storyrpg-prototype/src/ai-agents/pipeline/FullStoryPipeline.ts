@@ -3440,6 +3440,8 @@ export class FullStoryPipeline {
       culturalNotes: worldBible.customs,
       rawDocument: brief.rawDocument,
       memoryContext: this.cachedPipelineMemory || undefined,
+      seasonAnchors: brief.seasonPlan?.anchors,
+      seasonSevenPoint: brief.seasonPlan?.sevenPoint,
     }), PIPELINE_TIMEOUTS.llmAgent, 'CharacterDesigner.execute');
 
     if (!result.success || !result.data) {
@@ -3491,6 +3493,11 @@ export class FullStoryPipeline {
       });
     }
 
+    // Look up the season-level structural context so StoryArchitect can
+    // populate its episode arc block against the correct beat(s).
+    const seasonPlan = brief.seasonPlan;
+    const seasonEpisode = seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number);
+
     const result = await withTimeout(this.storyArchitect.execute({
       storyTitle: brief.story.title,
       genre: brief.story.genre,
@@ -3517,6 +3524,9 @@ export class FullStoryPipeline {
       majorChoiceCount: brief.multiEpisode?.preferences?.targetChoicesPerEpisode || this.config.generation?.majorChoiceCount || brief.options?.majorChoiceCount || 2,
       pacing: brief.multiEpisode?.preferences?.pacing,
       seasonPlanDirectives,
+      seasonAnchors: seasonPlan?.anchors,
+      seasonSevenPoint: seasonPlan?.sevenPoint,
+      episodeStructuralRole: seasonEpisode?.structuralRole,
       memoryContext: this.cachedPipelineMemory || undefined,
     }), PIPELINE_TIMEOUTS.llmAgent, 'StoryArchitect.execute');
 
@@ -3554,6 +3564,11 @@ export class FullStoryPipeline {
     this.emit({ type: 'agent_start', agent: 'BranchManager', message: 'Analyzing branch structure' });
 
     try {
+      const currentEpisodeNumber = brief.episode?.number;
+      const structuralRoleForEpisode = currentEpisodeNumber
+        ? brief.seasonPlan?.episodes?.find(e => e.episodeNumber === currentEpisodeNumber)?.structuralRole
+        : undefined;
+
       const result = await withTimeout(this.branchManager.execute({
         episodeId: blueprint.episodeId,
         episodeTitle: blueprint.title,
@@ -3568,6 +3583,9 @@ export class FullStoryPipeline {
           genre: brief.story.genre,
           tone: brief.story.tone,
         },
+        seasonAnchors: brief.seasonPlan?.anchors,
+        seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+        episodeStructuralRole: structuralRoleForEpisode,
       }), PIPELINE_TIMEOUTS.llmAgent, 'BranchManager.execute');
 
       if (!result.success || !result.data) {
@@ -3973,6 +3991,11 @@ export class FullStoryPipeline {
             : undefined,
           memoryContext: this.cachedPipelineMemory || undefined,
           branchContext: branchContextByScene.get(sceneBlueprint.id),
+          seasonAnchors: brief.seasonPlan?.anchors,
+          seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+          episodeStructuralRole: brief.seasonPlan?.episodes.find(
+            (e) => e.episodeNumber === brief.episode.number,
+          )?.structuralRole,
         };
 
         // === KARPATHY LOOP: Best-of-N for critical scenes ===
@@ -4283,6 +4306,11 @@ export class FullStoryPipeline {
                 };
               })(),
               consequenceBudgetTarget: { callback: 60, tint: 25, branchlet: 10, branch: 5 },
+              seasonAnchors: brief.seasonPlan?.anchors,
+              seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+              episodeStructuralRole: brief.seasonPlan?.episodes.find(
+                (e) => e.episodeNumber === brief.episode.number,
+              )?.structuralRole,
             }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
 
             if (!choiceResult.success || !choiceResult.data) {
@@ -4898,6 +4926,11 @@ export class FullStoryPipeline {
           defeatNextSceneId,
           priorStateContext,
           memoryContext: this.cachedPipelineMemory || undefined,
+          seasonAnchors: brief.seasonPlan?.anchors,
+          seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+          episodeStructuralRole: brief.seasonPlan?.episodes.find(
+            (e) => e.episodeNumber === brief.episode.number,
+          )?.structuralRole,
         };
 
         const encounterInputSummary = {

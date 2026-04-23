@@ -16,6 +16,11 @@ import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { EpisodeBlueprint } from './StoryArchitect';
 import { SeasonBible, ThreadLedger } from '../../types';
+import type {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
 
 export type TwistKind = 'reversal' | 'revelation' | 'betrayal' | 'reframe';
 
@@ -50,6 +55,21 @@ export interface TwistArchitectInput {
   episodeBlueprint: EpisodeBlueprint;
   seasonBible?: SeasonBible;
   threadLedger?: ThreadLedger;
+
+  /**
+   * Season-level narrative anchors. Twists SHOULD reframe one of these
+   * (especially Stakes or Goal) rather than inventing unrelated reveals.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /** Season-level 7-point beat map for placing foreshadow + reveal. */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * The beat(s) this episode carries. Episodes carrying Midpoint or
+   * Plot Turn 2 are natural homes for the season's biggest twists.
+   */
+  episodeStructuralRole?: StructuralRole[];
 }
 
 export class TwistArchitect extends BaseAgent {

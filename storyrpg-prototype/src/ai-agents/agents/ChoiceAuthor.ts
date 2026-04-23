@@ -21,13 +21,19 @@ import {
   FiveFactorImpact,
   ReminderPlan,
 } from '../../types';
-import { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
+import {
+  SourceMaterialAnalysis,
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
 // Phase 1.4: STAKES_TRIANGLE / CHOICE_GEOMETRY / FIVE_FACTOR_TEST are delivered
 // via the shared CORE_STORYTELLING_PROMPT (BaseAgent system prompt) and no
 // longer re-embedded here, to eliminate token duplication and drift risk.
 import { FiveFactorValidator } from '../validators/FiveFactorValidator';
 import { StakesTriangleValidator } from '../validators/StakesTriangleValidator';
 import { buildChoiceAuthorCallbackSection } from '../prompts/callbackPromptSection';
+import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 
 // Input types
@@ -78,6 +84,25 @@ export interface ChoiceAuthorInput {
 
   // Source material analysis for IP fidelity (optional)
   sourceAnalysis?: SourceMaterialAnalysis;
+
+  /**
+   * Season-level narrative anchors (from SeasonPlan.anchors). Keeps the
+   * Stakes Triangle on every choice rooted in the SAME shared stakes as
+   * the rest of the season.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /**
+   * Season-level 7-point beat map. ChoiceAuthor uses it to calibrate
+   * choice weight: choices in the Climax / Pinch beats should be more
+   * consequential than choices in Rising / Hook beats.
+   */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Which beat(s) of the season this episode carries.
+   */
+  episodeStructuralRole?: StructuralRole[];
 
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
@@ -654,11 +679,17 @@ ${directFragments}
 
     const choicePoint = input.sceneBlueprint.choicePoint!;
 
+    const structuralContext = buildStructuralContextSection({
+      anchors: input.seasonAnchors,
+      sevenPoint: input.seasonSevenPoint,
+      episodeStructuralRole: input.episodeStructuralRole,
+    });
+
     return `
 Create player choices for the following decision point:
 
 ${sourceContextStr}
-
+${structuralContext}
 ## Story Context
 - **Title**: ${input.storyContext.title}
 - **Genre**: ${input.storyContext.genre}

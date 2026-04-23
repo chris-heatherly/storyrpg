@@ -276,15 +276,34 @@ const BlueprintPreview: React.FC<{ data: Record<string, unknown> }> = ({ data })
     purpose: string;
     choicePoint?: { type: string };
   }>) || [];
-  const arc = data.arc as { hook: string; climax: string } | undefined;
+  const arc = data.arc as {
+    hook?: string;
+    plotTurn1?: string;
+    pinch1?: string;
+    midpoint?: string;
+    pinch2?: string;
+    climax?: string;
+    resolution?: string;
+  } | undefined;
+  const structuralRole = data.structuralRole as string[] | undefined;
 
   return (
     <View>
       {arc && (
         <>
-          <Text style={styles.sectionTitle}>NARRATIVE ARC</Text>
-          <Text style={styles.listItem}>Hook: {arc.hook}</Text>
-          <Text style={styles.listItem}>Climax: {arc.climax}</Text>
+          <Text style={styles.sectionTitle}>NARRATIVE ARC (7-POINT)</Text>
+          {structuralRole && structuralRole.length > 0 && (
+            <Text style={styles.listItem}>
+              This episode carries: {structuralRole.join(', ')}
+            </Text>
+          )}
+          {arc.hook ? <Text style={styles.listItem}>Hook: {arc.hook}</Text> : null}
+          {arc.plotTurn1 ? <Text style={styles.listItem}>Plot Turn 1: {arc.plotTurn1}</Text> : null}
+          {arc.pinch1 ? <Text style={styles.listItem}>Pinch 1: {arc.pinch1}</Text> : null}
+          {arc.midpoint ? <Text style={styles.listItem}>Midpoint: {arc.midpoint}</Text> : null}
+          {arc.pinch2 ? <Text style={styles.listItem}>Pinch 2: {arc.pinch2}</Text> : null}
+          {arc.climax ? <Text style={styles.listItem}>Climax: {arc.climax}</Text> : null}
+          {arc.resolution ? <Text style={styles.listItem}>Resolution: {arc.resolution}</Text> : null}
         </>
       )}
 

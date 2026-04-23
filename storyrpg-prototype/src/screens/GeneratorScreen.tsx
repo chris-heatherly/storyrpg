@@ -3308,6 +3308,78 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   </View>
                 )}
 
+                {/* Narrative Anchors (Stakes / Goal / Inciting Incident / Climax) */}
+                {sourceAnalysis?.anchors && (
+                  <View style={styles.analysisCard}>
+                    <View style={styles.analysisCardHeader}>
+                      <Layers size={14} color={TERMINAL.colors.amber} />
+                      <Text style={styles.analysisCardTitle}>NARRATIVE ANCHORS</Text>
+                    </View>
+                    {sourceAnalysis.anchors.stakes ? (
+                      <View style={styles.arcItem}>
+                        <Text style={styles.arcName}>STAKES</Text>
+                        <Text style={styles.arcDescription} numberOfLines={3}>
+                          {sourceAnalysis.anchors.stakes}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {sourceAnalysis.anchors.goal ? (
+                      <View style={styles.arcItem}>
+                        <Text style={styles.arcName}>GOAL</Text>
+                        <Text style={styles.arcDescription} numberOfLines={3}>
+                          {sourceAnalysis.anchors.goal}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {sourceAnalysis.anchors.incitingIncident ? (
+                      <View style={styles.arcItem}>
+                        <Text style={styles.arcName}>INCITING INCIDENT</Text>
+                        <Text style={styles.arcDescription} numberOfLines={3}>
+                          {sourceAnalysis.anchors.incitingIncident}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {sourceAnalysis.anchors.climax ? (
+                      <View style={styles.arcItem}>
+                        <Text style={styles.arcName}>CLIMAX</Text>
+                        <Text style={styles.arcDescription} numberOfLines={3}>
+                          {sourceAnalysis.anchors.climax}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                )}
+
+                {/* 7-Point Structure */}
+                {sourceAnalysis?.sevenPoint && (
+                  <View style={styles.analysisCard}>
+                    <View style={styles.analysisCardHeader}>
+                      <Layers size={14} color={TERMINAL.colors.cyan} />
+                      <Text style={styles.analysisCardTitle}>7-POINT STRUCTURE</Text>
+                    </View>
+                    {(
+                      [
+                        ['HOOK', sourceAnalysis.sevenPoint.hook],
+                        ['PLOT TURN 1', sourceAnalysis.sevenPoint.plotTurn1],
+                        ['PINCH 1', sourceAnalysis.sevenPoint.pinch1],
+                        ['MIDPOINT', sourceAnalysis.sevenPoint.midpoint],
+                        ['PINCH 2', sourceAnalysis.sevenPoint.pinch2],
+                        ['CLIMAX', sourceAnalysis.sevenPoint.climax],
+                        ['RESOLUTION', sourceAnalysis.sevenPoint.resolution],
+                      ] as Array<[string, string | undefined]>
+                    ).map(([label, value], idx) =>
+                      value ? (
+                        <View key={idx} style={styles.arcItem}>
+                          <Text style={styles.arcName}>{label}</Text>
+                          <Text style={styles.arcDescription} numberOfLines={3}>
+                            {value}
+                          </Text>
+                        </View>
+                      ) : null,
+                    )}
+                  </View>
+                )}
+
                 {/* Locations */}
                 {sourceAnalysis?.keyLocations && sourceAnalysis.keyLocations.length > 0 && (
                   <View style={styles.analysisCard}>

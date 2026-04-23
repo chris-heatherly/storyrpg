@@ -19,7 +19,27 @@ import {
   StoryArc,
   PlotPoint,
   EndingMode,
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+  SEVEN_POINT_BEATS,
 } from '../../types/sourceAnalysis';
+import {
+  distributeSevenPoints,
+  describeDistribution,
+  checkSevenPointCoverage,
+} from '../utils/sevenPointDistribution';
+
+/**
+ * Render the default beat-to-episode distribution as a bulleted summary
+ * for inlining into LLM prompts. We deliberately expose this as a
+ * module-local helper so the prompt template can stay a plain tagged
+ * template literal.
+ */
+function describeSuggestedDistribution(totalEpisodes: number): string {
+  const entries = distributeSevenPoints(totalEpisodes);
+  return describeDistribution(entries);
+}
 import {
   buildAnalysisFromEndingSeeds,
   normalizeEndingTargets,
@@ -107,6 +127,18 @@ interface StoryStructureAnalysis {
     estimatedEpisodes: number;
     reasoning: string;
   };
+  /**
+   * Four narrative anchors inferred from the source material. Optional on
+   * the LLM response shape because older saved responses predate this
+   * field; {@link assembleAnalysis} backfills a best-effort anchor block
+   * from the plot-point list when the LLM omits it.
+   */
+  anchors?: StoryAnchors;
+  /**
+   * 3-act / 7-point beat map inferred from the source material. Same
+   * optional-with-backfill contract as {@link anchors}.
+   */
+  sevenPoint?: SevenPointStructure;
   endingAnalysis?: {
     detectedMode: EndingMode;
     reasoning: string;
@@ -140,6 +172,13 @@ interface EpisodeBreakdownResponse {
       conflict: string;
       resolution: string;
     };
+    /**
+     * LLM-assigned 7-point beat(s) this episode carries. Optional because
+     * older LLM responses predate the field; backfilled by
+     * {@link SourceMaterialAnalyzer.assembleAnalysis} from the default
+     * distribution table when absent.
+     */
+    structuralRole?: StructuralRole[];
   }>;
   totalEpisodes: number;
   breakdownNotes: string;
@@ -341,6 +380,21 @@ Analyze this text and respond with JSON:
     "estimatedEpisodes": <number>,
     "reasoning": "<why this estimate>"
   },
+  "anchors": {
+    "stakes": "<what the protagonist cares about most — person, people, place, thing, or concept — in 1-2 sentences>",
+    "goal": "<what the protagonist feels compelled to achieve, in 1-2 sentences>",
+    "incitingIncident": "<the event that sets the story in motion, in 1-2 sentences>",
+    "climax": "<the turning-point confrontation where the protagonist faces their greatest challenge, in 1-2 sentences>"
+  },
+  "sevenPoint": {
+    "hook": "<ordinary world that introduces the protagonist and the core value at stake>",
+    "plotTurn1": "<the inciting incident / world-disruption — must match the incitingIncident anchor above>",
+    "pinch1": "<first major setback against the antagonizing force; protagonist on the defensive>",
+    "midpoint": "<commitment / reversal / path-to-victory discovered; protagonist moves from reactive to proactive>",
+    "pinch2": "<crisis and transformation culmination; everything seems lost>",
+    "climax": "<decisive confrontation — must match the climax anchor above>",
+    "resolution": "<aftermath + legacy; ordinary world changed>"
+  },
   "endingAnalysis": {
     "detectedMode": "<single/multiple based on the source material itself>",
     "reasoning": "<why the source implies one ending or several materially distinct endings>",
@@ -416,6 +470,11 @@ ${structure.majorPlotPoints.map(pp => `- [${pp.type}] ${pp.description} (${pp.ap
 - Major plot points should be episode climaxes
 - Leave room for player agency
 
+**Default 7-Point Beat Distribution (HINT — override only when the source demands it):**
+${describeSuggestedDistribution(estimatedEpisodes)}
+Every canonical beat (hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution)
+MUST land on at least one episode across the season and must appear in canonical order.
+
 ${truncatedText ? `**Source Material Reference**:
 ${truncatedText}` : ''}
 
@@ -435,7 +494,8 @@ Create ${estimatedEpisodes} episode outlines. Respond with JSON:
         "setup": "<how episode begins>",
         "conflict": "<central tension>",
         "resolution": "<how episode ends - can be cliffhanger>"
-      }
+      },
+      "structuralRole": ["<which 7-point beat(s) this episode carries — choose from: hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution, rising, falling. Most episodes carry exactly one beat; very short seasons may fuse beats on one episode.>"]
     }
   ],
   "totalEpisodes": ${estimatedEpisodes},
@@ -463,6 +523,17 @@ Return ONLY valid JSON.
     structure: StoryStructureAnalysis,
     breakdown: EpisodeBreakdownResponse
   ): SourceMaterialAnalysis {
+    const totalEpisodes = breakdown.totalEpisodes;
+
+    // Default structuralRole distribution — used as a fallback when the LLM
+    // did not tag an episode with its own structuralRole array, and as the
+    // seed when the LLM's coverage is incomplete.
+    const defaultDistribution = distributeSevenPoints(totalEpisodes);
+    const defaultRoleFor = (episodeNumber: number): StructuralRole[] => {
+      const entry = defaultDistribution.find((e) => e.episodeNumber === episodeNumber);
+      return entry ? [...entry.structuralRole] : ['rising'];
+    };
+
     // Convert episode breakdown to full outlines
     const episodeOutlines: EpisodeOutline[] = breakdown.episodes.map((ep, idx) => {
       // Find plot points for this episode
@@ -474,6 +545,15 @@ Return ONLY valid JSON.
         targetEpisode: ep.episodeNumber,
         charactersInvolved: ep.mainCharacters,
       }));
+
+      // Pull an LLM-assigned structuralRole if present, otherwise backfill
+      // from the default distribution. Invalid values are filtered out so
+      // downstream validators see a clean StructuralRole[] only.
+      const llmRoles = Array.isArray(ep.structuralRole)
+        ? ep.structuralRole.filter((r): r is StructuralRole =>
+            typeof r === 'string' && (SEVEN_POINT_BEATS as readonly string[]).concat(['rising', 'falling']).includes(r))
+        : [];
+      const structuralRole = llmRoles.length > 0 ? llmRoles : defaultRoleFor(ep.episodeNumber);
 
       return {
         episodeNumber: ep.episodeNumber,
@@ -487,9 +567,30 @@ Return ONLY valid JSON.
         locations: ep.locations,
         estimatedSceneCount: input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode,
         estimatedChoiceCount: input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode,
+        structuralRole,
         narrativeFunction: ep.narrativeArc,
       };
     });
+
+    // If coverage is incomplete, rewrite the distribution to the default so
+    // every beat is guaranteed to land somewhere. This is a safety net for
+    // LLMs that drop beats when the episode count is tight.
+    const coverageIssues = checkSevenPointCoverage(episodeOutlines);
+    if (coverageIssues.length > 0) {
+      for (const outline of episodeOutlines) {
+        outline.structuralRole = defaultRoleFor(outline.episodeNumber);
+      }
+    }
+
+    // Anchors + sevenPoint: prefer the LLM's, fall back to plot-point
+    // inference using approximatePosition labels from the structure pass.
+    const anchors: StoryAnchors = structure.anchors && hasAllAnchorFields(structure.anchors)
+      ? structure.anchors
+      : inferAnchorsFromStructure(structure);
+
+    const sevenPoint: SevenPointStructure = structure.sevenPoint && hasAllBeatFields(structure.sevenPoint)
+      ? structure.sevenPoint
+      : inferSevenPointFromStructure(structure, anchors);
 
     // Convert story arcs with episode ranges
     const storyArcs: StoryArc[] = structure.storyArcs.map((arc, idx) => ({
@@ -561,6 +662,9 @@ Return ONLY valid JSON.
       tone: structure.tone,
       themes: structure.themes,
       setting: structure.setting,
+
+      anchors,
+      sevenPoint,
 
       storyArcs,
       detectedEndingMode: endingFields.detectedEndingMode,
@@ -777,4 +881,72 @@ Respond with JSON only:
       };
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Anchor + sevenPoint inference helpers
+//
+// When the LLM drops the anchors / sevenPoint blocks (older models,
+// truncated responses, aggressive compression), we fall back to deriving
+// them from the existing `protagonist.arc`, `storyArcs`, and
+// `majorPlotPoints` fields. This keeps Path A's "7-points are always
+// first-class" guarantee intact without requiring a second LLM call.
+// ---------------------------------------------------------------------------
+
+function hasAllAnchorFields(anchors: Partial<StoryAnchors> | undefined): anchors is StoryAnchors {
+  if (!anchors) return false;
+  return !!(anchors.stakes && anchors.goal && anchors.incitingIncident && anchors.climax);
+}
+
+function hasAllBeatFields(sp: Partial<SevenPointStructure> | undefined): sp is SevenPointStructure {
+  if (!sp) return false;
+  return SEVEN_POINT_BEATS.every((b) => typeof sp[b] === 'string' && (sp[b] as string).trim().length > 0);
+}
+
+function inferAnchorsFromStructure(structure: StoryStructureAnalysis): StoryAnchors {
+  const plotPoints = structure.majorPlotPoints || [];
+  const byType = (type: string) => plotPoints.find((p) => (p.type || '').toLowerCase().includes(type));
+  const incitingPoint = byType('inciting') || byType('rising') || plotPoints[0];
+  const climaxPoint = byType('climax') || byType('twist') || plotPoints[plotPoints.length - 1];
+
+  const protagonistName = structure.protagonist?.name || 'the protagonist';
+  return {
+    stakes: structure.themes?.[0]
+      ? `What ${protagonistName} values most in this story, especially as it relates to ${structure.themes[0]}.`
+      : `What ${protagonistName} values most and stands to lose.`,
+    goal: structure.protagonist?.arc
+      ? `${protagonistName}'s drive throughout the story: ${structure.protagonist.arc}`
+      : `${protagonistName}'s core objective.`,
+    incitingIncident: incitingPoint?.description || 'The event that disrupts the ordinary world and sets the story in motion.',
+    climax: climaxPoint?.description || 'The decisive confrontation where the protagonist faces the final test.',
+  };
+}
+
+function inferSevenPointFromStructure(
+  structure: StoryStructureAnalysis,
+  anchors: StoryAnchors,
+): SevenPointStructure {
+  const plotPoints = structure.majorPlotPoints || [];
+  const byTypeOrPosition = (typeHint: string, positionHint?: number): string | undefined => {
+    const typed = plotPoints.find((p) => (p.type || '').toLowerCase().includes(typeHint));
+    if (typed) return typed.description;
+    if (positionHint !== undefined && plotPoints.length > 0) {
+      const idx = Math.min(plotPoints.length - 1, Math.floor(positionHint * plotPoints.length));
+      return plotPoints[idx]?.description;
+    }
+    return undefined;
+  };
+
+  const protagonistName = structure.protagonist?.name || 'the protagonist';
+  const primaryArcDesc = structure.storyArcs?.[0]?.description || '';
+
+  return {
+    hook: byTypeOrPosition('opening', 0) || `${protagonistName} in the ordinary world before the story begins. ${primaryArcDesc}`.trim(),
+    plotTurn1: anchors.incitingIncident,
+    pinch1: byTypeOrPosition('rising', 0.35) || `First major setback against the antagonizing force; ${protagonistName} is forced on the defensive.`,
+    midpoint: byTypeOrPosition('midpoint', 0.5) || `${protagonistName} commits fully to the goal after a revelation or reversal.`,
+    pinch2: byTypeOrPosition('twist', 0.7) || `Crisis that appears to undo everything ${protagonistName} has gained; the final transformation begins here.`,
+    climax: anchors.climax,
+    resolution: byTypeOrPosition('resolution', 1) || `The aftermath and legacy of the climax; the ordinary world is visibly changed.`,
+  };
 }

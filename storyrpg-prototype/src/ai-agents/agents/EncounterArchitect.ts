@@ -25,6 +25,12 @@ import {
   NPCDisposition,
   Relationship,
 } from '../../types';
+import {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
+import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 
 import { GeneratedStoryletDraft as GeneratedStorylet, StoryletBeatDraft as StoryletBeat } from '../types/encounterDraft';
 import { StateChange } from '../types/llm-output';
@@ -108,6 +114,20 @@ export interface EncounterArchitectInput {
   // Scene connections for storylets
   victoryNextSceneId?: string;
   defeatNextSceneId?: string;
+
+  /**
+   * Season-level narrative anchors (from SeasonPlan.anchors). Lets the
+   * encounter's dramatic weight align with the season's core Stakes and
+   * point toward the season Climax anchor when this IS the climactic
+   * encounter.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /** Season-level 7-point beat map. */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /** Which beat(s) of the season this episode carries. */
+  episodeStructuralRole?: StructuralRole[];
 
   // Pre-encounter state context: flags and relationship thresholds from earlier scenes
   // that are designed to echo inside this encounter as narrative shading, unlocked choices,
@@ -2140,9 +2160,15 @@ RULES:
       extreme: 85
     };
 
+    const structuralContext = buildStructuralContextSection({
+      anchors: input.seasonAnchors,
+      sevenPoint: input.seasonSevenPoint,
+      episodeStructuralRole: input.episodeStructuralRole,
+    });
+
     return `
 Design a COMPLETE encounter structure for the following scene:
-
+${structuralContext}
 ## Story Context
 - **Title**: ${input.storyContext.title}
 - **Genre**: ${input.storyContext.genre}

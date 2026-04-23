@@ -1,10 +1,27 @@
 /**
  * Per-provider capability table.
  *
- * Centralizes what each image provider can consume so upstream code
+ * Centralizes what each image provider CAN consume at the transport layer
+ * (max refs, inline vs URL, seed support, concurrency) so upstream code
  * (reference pack builder, pre-upload logic, batch router, rate limiter)
  * can make uniform decisions without scattered `if (provider === ...)`
  * checks. Adding a new provider means adding one row here.
+ *
+ * Relationship to `referenceStrategy.ts`:
+ *   - `providerCapabilities` = facts about the API (what it accepts)
+ *   - `referenceStrategy`    = opinions about content (what's worth sending)
+ *
+ * For example, gpt-image-2's capability row declares maxRefs: 16 (the API
+ * limit), but the strategy row caps scene refs at 2 (empirical best
+ * practice — more refs dilute identity signal). The two tables are kept
+ * separate so transport facts don't drift into policy tuning.
+ *
+ * Per-provider reference strategy summary (see referenceStrategy.ts for details):
+ *   - nano-banana / atlas-cloud: full three-view pack + composite style anchor + expressions
+ *   - dall-e (gpt-image-2):     front view only; one clean identity ref, no composite/expressions
+ *   - midapi (Midjourney):      composite (--cref) + style anchor (--sref); 2 refs total
+ *   - stable-diffusion:         three-view pack routed via ControlNet/IP-Adapter
+ *   - placeholder:              nothing
  *
  * Consumed by:
  * - imageGenerationService (rate limits, concurrency, inline-vs-URL refs)

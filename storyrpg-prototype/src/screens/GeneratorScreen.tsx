@@ -2260,11 +2260,11 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     <View style={[styles.booleanToggle, generationSettings.generateCharacterRefs && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, generationSettings.generateCharacterRefs && styles.booleanToggleKnobActive]} /></View>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateGenerationSetting('generateExpressionSheets', !generationSettings.generateExpressionSheets)}>
-                    <View><Text style={styles.configLabel}>EXPRESSION SHEETS</Text><Text style={styles.toggleActionHint}>Create alternate emotion references.</Text></View>
+                    <View><Text style={styles.configLabel}>EXPRESSION SHEETS</Text><Text style={styles.toggleActionHint}>Create alternate emotion references.{imageProvider === 'dall-e' ? ' Ignored when provider is DALL-E (gpt-image-2).' : ''}</Text></View>
                     <View style={[styles.booleanToggle, generationSettings.generateExpressionSheets && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, generationSettings.generateExpressionSheets && styles.booleanToggleKnobActive]} /></View>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateGenerationSetting('generateBodyVocabulary', !generationSettings.generateBodyVocabulary)}>
-                    <View><Text style={styles.configLabel}>BODY VOCABULARY</Text><Text style={styles.toggleActionHint}>Generate pose and silhouette references.</Text></View>
+                    <View><Text style={styles.configLabel}>BODY VOCABULARY</Text><Text style={styles.toggleActionHint}>Generate pose and silhouette references.{imageProvider === 'dall-e' ? ' Ignored when provider is DALL-E (gpt-image-2).' : ''}</Text></View>
                     <View style={[styles.booleanToggle, generationSettings.generateBodyVocabulary && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, generationSettings.generateBodyVocabulary && styles.booleanToggleKnobActive]} /></View>
                   </TouchableOpacity>
                 </View>

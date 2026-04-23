@@ -1182,7 +1182,7 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     const allowedViews = options?.allowedViews;
     const generateComposite = options?.generateComposite !== false;
 
-    console.log(
+    console.info(
       `[ImageAgentTeam] Generating character references for: ${sheet.characterName} ` +
       `(views=${allowedViews ? allowedViews.join(',') : 'all'}, composite=${generateComposite})`
     );

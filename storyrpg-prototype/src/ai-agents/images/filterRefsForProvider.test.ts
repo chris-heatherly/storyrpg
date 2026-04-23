@@ -81,12 +81,60 @@ describe('filterRefsForProvider', () => {
     });
   });
 
-  describe('providers that do not consume refs', () => {
-    it('returns empty refs for dall-e', () => {
-      const out = filterRefsForProvider([composite, front, face], 'dall-e');
+  describe('dall-e (gpt-image-2)', () => {
+    // gpt-image-2 accepts refs via /v1/images/edits but needs a tight pack:
+    // one front view + face crop is best practice. Composite, 3q, and
+    // profile dilute identity signal or copy as collages.
+    const threeQuarter = ref('character-reference', { characterName: 'Aoi', viewType: 'three-quarter' });
+    const profile = ref('character-reference', { characterName: 'Aoi', viewType: 'profile' });
+    const expression = ref('character-reference-face-happy', { characterName: 'Aoi' });
+    const userProvided = ref('user-provided-character-reference');
+
+    it('keeps the front view', () => {
+      const out = filterRefsForProvider([front], 'dall-e');
+      expect(out.refs).toContain(front);
+    });
+
+    it('keeps the face crop', () => {
+      const out = filterRefsForProvider([face], 'dall-e');
+      expect(out.refs).toContain(face);
+    });
+
+    it('keeps user-provided reference images', () => {
+      const out = filterRefsForProvider([userProvided], 'dall-e');
+      expect(out.refs).toContain(userProvided);
+    });
+
+    it('drops the composite sheet', () => {
+      const out = filterRefsForProvider([composite, front], 'dall-e');
+      expect(out.refs).not.toContain(composite);
+    });
+
+    it('drops three-quarter and profile views', () => {
+      const out = filterRefsForProvider([front, threeQuarter, profile], 'dall-e');
+      expect(out.refs).toContain(front);
+      expect(out.refs).not.toContain(threeQuarter);
+      expect(out.refs).not.toContain(profile);
+    });
+
+    it('drops expression-sheet refs and location/style anchors', () => {
+      const out = filterRefsForProvider([expression, styleAnchor, location], 'dall-e');
       expect(out.refs).toEqual([]);
     });
 
+    it('caps to the strategy max (2 refs)', () => {
+      // front + face + user-provided = 3 candidates; should cap at 2.
+      const out = filterRefsForProvider([front, face, userProvided], 'dall-e');
+      expect(out.refs.length).toBeLessThanOrEqual(2);
+    });
+
+    it('does not set extractedComposite for dall-e', () => {
+      const out = filterRefsForProvider([composite, front], 'dall-e');
+      expect(out.extractedComposite).toBeUndefined();
+    });
+  });
+
+  describe('placeholder', () => {
     it('returns empty refs for placeholder', () => {
       const out = filterRefsForProvider([composite, front], 'placeholder');
       expect(out.refs).toEqual([]);

@@ -5090,7 +5090,7 @@ export class ImageGenerationService {
         ? '1 ref'
         : `${inputs.length} refs`
       : 'no refs (text-only)';
-    console.log(
+    console.info(
       `[DALL-E] dispatch model=${model} endpoint=${useEdit ? '/images/edits' : '/images/generations'} ` +
       `identifier=${identifier} ${refSummary}`
     );

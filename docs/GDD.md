@@ -1,7 +1,7 @@
 # StoryRPG - Game Design Document
 
-**Version:** 3.0 (Comprehensive Reference Edition)  
-**Last Updated:** April 16, 2026  
+**Version:** 3.1 (Comprehensive Reference Edition)  
+**Last Updated:** April 23, 2026  
 **Status:** Active Development
 
 ---
@@ -750,19 +750,21 @@ Story generation happens in phases, with specialized AI agents responsible for e
 - **CharacterDesigner:** Designs NPCs with motivations, voices, relationships
 
 #### Phase 2: Structure
-- **SeasonArchitect:** Plans episode outlines and story arcs
-- **StoryArchitect:** Creates scene-by-scene structure with branching points
+- **SeasonPlannerAgent:** Plans episode outlines and story arcs along the 3-act / 7-point spine
+- **StoryArchitect:** Creates scene-by-scene structure with branching points and scene blueprints
+- **ThreadPlanner:** Authors the NarrativeThread ledger for setup/payoff and delayed consequences
+- **TwistArchitect:** Schedules each episode's reversal/revelation and its foreshadow beats
+- **CharacterArcTracker:** Emits per-episode identity/relationship milestone targets
 - **EncounterArchitect:** Designs multi-beat interactive sequences
 
 #### Phase 3: Content
-- **SceneWriter:** Generates narrative prose for each scene
-- **BeatWriter:** Creates individual story beats with appropriate pacing
-- **ChoiceAuthor:** Writes meaningful choices with multiple outcome tiers
-- **DialogueSpecialist:** Refines character voices and conversations
+- **SceneWriter:** Generates narrative prose, beats, and dialogue for each scene (absorbs the former BeatWriter / DialogueSpecialist / ScriptCompiler / ResolutionDesigner roles)
+- **ChoiceAuthor:** Writes meaningful choices with multiple outcome tiers and inline resolution checks
+- **SceneCritic (optional):** Rewrites scenes for subtext and reversals when enabled
 
 #### Phase 4: Polish
-- **QAAgents:** Validate pacing, consequence coverage, character consistency
-- **GrowthCritics:** Ensure encounters have growth potential for player attributes
+- **QAAgents:** Validate pacing, consequence coverage, character voice, tone, sensitivity, continuity
+- **ArcDeltaValidator + CharacterArcTracker:** Ensure start-vs-end identity/relationship deltas match the planned arc (replaces the old Blueprint/Growth Narrative Critics)
 - **BranchManager:** Verify all story paths are complete and tested
 
 #### Phase 5: Assets

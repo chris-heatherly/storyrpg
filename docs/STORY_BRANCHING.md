@@ -2,7 +2,12 @@
 
 How StoryRPG creates, manages, and constrains story branches.
 
-**Last Updated:** December 2024
+**Last Updated:** April 2026
+
+See also the companion design plans that extend this system:
+- `PLAN_DELAYED_CONSEQUENCES.md` — how the callback ledger and delayed consequences layer on top of branching
+- `PLAN_MULTI_SCENE_BRANCH_ZONES.md` — proposed multi-scene branch zones between bottlenecks
+- `PLAN_POST_EPISODE_FLOWCHART.md` — post-episode flowchart and ending-mode planning
 
 ---
 

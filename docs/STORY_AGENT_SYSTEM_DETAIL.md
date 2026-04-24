@@ -105,19 +105,19 @@ Always respond with valid JSON that matches the requested schema.
 | Agent | File | Role | Temperature |
 |---|---|---|---|
 | **Story Architect** | `StoryArchitect.ts` | Episode blueprints, scene graphs, branch-and-bottleneck structure, encounter placement | 0.7 |
-| **Scene Writer** | `SceneWriter.ts` | Prose content for beats, atmosphere, dialogue, text variants | 0.85 |
-| **Beat Writer** | `BeatWriter.ts` | Beat-level content generation | 0.85 |
-| **Choice Author** | `ChoiceAuthor.ts` | Player choices, consequences, stat checks, branching routing | 0.75 |
+| **Scene Writer** | `SceneWriter.ts` | Prose content for beats, atmosphere, dialogue, text variants. Absorbs the former `BeatWriter`, `DialogueSpecialist`, and `ScriptCompiler` roles. | 0.85 |
+| **Scene Critic** | `SceneCritic.ts` | Optional Phase-9 subtext / reversals rewrite pass; gated by `config.sceneCritic.enabled`. | 0.7 |
+| **Choice Author** | `ChoiceAuthor.ts` | Player choices, consequences, stat checks, branching routing. Resolution-check difficulty now authored inline (the old `ResolutionDesigner` is gone). | 0.75 |
 | **Branch Manager** | `BranchManager.ts` | Branch analysis, reconvergence validation, state tracking | 0.7 |
 | **Encounter Architect** | `EncounterArchitect.ts` | Encounter structure, skill challenges, decision trees, storylets | 0.75 |
-| **Resolution Designer** | `ResolutionDesigner.ts` | Stat check design, difficulty calibration | 0.7 |
 | **World Builder** | `WorldBuilder.ts` | World bible, locations, cultures, history | 0.8 |
 | **Character Designer** | `CharacterDesigner.ts` | NPC profiles, want/fear/flaw, voice, relationships | 0.8 |
-| **Dialogue Specialist** | `DialogueSpecialist.ts` | Dialogue variants per relationship state, emotional subtext | 0.85 |
-| **Season Architect** | `SeasonArchitect.ts` | Season-level narrative arc planning | 0.7 |
-| **Season Planner** | `SeasonPlannerAgent.ts` | Episode-by-episode plan within a season | 0.7 |
-| **Source Material Analyzer** | `SourceMaterialAnalyzer.ts` | IP analysis for adapted properties | 0.6 |
-| **Script Compiler** | `ScriptCompiler.ts` | Final script assembly | 0.5 |
+| **Thread Planner** | `ThreadPlanner.ts` | Authors the `NarrativeThread` ledger driving setup/payoff tracking and delayed consequences | 0.7 |
+| **Twist Architect** | `TwistArchitect.ts` | Schedules per-episode reversal/revelation with the required foreshadow beat(s) | 0.75 |
+| **Character Arc Tracker** | `CharacterArcTracker.ts` | Per-episode identity/relationship milestone targets consumed by `ArcDeltaValidator` | 0.7 |
+| **Style Architect** | `StyleArchitect.ts` | Expands arbitrary art-style strings into a structured `ArtStyleProfile`; falls back to `buildVerbatimProfile` so unknown styles never inherit cinematic vocabulary | 0.7 |
+| **Season Planner** | `SeasonPlannerAgent.ts` | Season-level planning along the 3-act / 7-point spine (authoritative; replaces the old `SeasonArchitect`) | 0.7 |
+| **Source Material Analyzer** | `SourceMaterialAnalyzer.ts` | IP analysis for adapted properties; emits anchors, seven-point, and episode breakdown | 0.6 |
 
 #### QA and Analysis Agents
 
@@ -125,15 +125,8 @@ Always respond with valid JSON that matches the requested schema.
 |---|---|---|
 | **QA Agents** | `QAAgents.ts` | `ContinuityChecker`, `VoiceValidator`, `StakesAnalyzer`, `QARunner` |
 | **Extended QA** | `QAAgents.ts` | `PlotHoleDetector`, `ToneAnalyzer`, `PacingAuditor`, `SensitivityReviewer`, `ExtendedQARunner` |
-| **Variable Tracker** | `VariableTracker.ts` | State variable tracking across scenes |
-| **Playtest Simulator** | `PlaytestSimulator.ts` | Automated playtest simulation |
 
-#### Growth Agents
-
-| Agent | File | Role |
-|---|---|---|
-| **Blueprint Growth Critic** | `BlueprintGrowthCritic.ts` | Growth arc validation in episode blueprints |
-| **Growth Narrative Critic** | `GrowthNarrativeCritic.ts` | Character growth validation in generated content |
+> **Removed in April 2026** (consolidated into `SceneWriter` or superseded by new structural agents): `BeatWriter`, `DialogueSpecialist`, `ScriptCompiler`, `ResolutionDesigner`, `VariableTracker`, `PlaytestSimulator`, `BlueprintGrowthCritic`, `GrowthNarrativeCritic`, `SeasonArchitect`. Growth-arc legibility is now covered by `CharacterArcTracker` + `ArcDeltaValidator`; variable tracking moved into `IncrementalContinuityChecker`.
 
 #### Image Team Agents
 
@@ -146,12 +139,15 @@ Always respond with valid JSON that matches the requested schema.
 | **Character Reference Sheet** | `image-team/CharacterReferenceSheetAgent.ts` | Reference sheets, expression sheets, body vocabulary, acting direction |
 | **Color Script Agent** | `image-team/ColorScriptAgent.ts` | Episode color arc and thumbnails |
 | **Video Director** | `image-team/VideoDirectorAgent.ts` | Video direction for Veo pipeline |
+| **LoRA Training Agent** | `image-team/LoraTrainingAgent.ts` | Orchestrates auto-train-LoRA eligibility, dataset assembly, dispatch, and cache lookups (Stable-Diffusion-only) |
 | **Image Generator** | `ImageGenerator.ts` | Unified image prompt generation |
 
 #### Image QA Validators
 
 | Agent | File |
 |---|---|
+| **Visual Quality Judge** | `image-team/VisualQualityJudge.ts` — replaces the older `VisualNarrativeValidator` + `DramaExtractionAgent` pair |
+| **Composition Check** | `image-team/visualChecks/CompositionCheck.ts` — modular check invoked by `VisualQualityJudge` |
 | **Consistency Scorer** | `image-team/ConsistencyScorerAgent.ts` |
 | **Composition Validator** | `image-team/CompositionValidatorAgent.ts` |
 | **Transition Validator** | `image-team/TransitionValidator.ts` |
@@ -159,10 +155,9 @@ Always respond with valid JSON that matches the requested schema.
 | **Expression Validator** | `image-team/ExpressionValidator.ts` |
 | **Body Language Validator** | `image-team/BodyLanguageValidator.ts` |
 | **Lighting Color Validator** | `image-team/LightingColorValidator.ts` |
-| **Visual Narrative Validator** | `image-team/VisualNarrativeValidator.ts` |
 | **Visual Storytelling Validator** | `image-team/VisualStorytellingValidator.ts` |
-| **Drama Extraction Agent** | `image-team/DramaExtractionAgent.ts` |
-| **Asset Auditor** | `image-team/AssetAuditorAgent.ts` |
+
+> Removed in April 2026: `AssetAuditorAgent`, `DramaExtractionAgent`, and `VisualNarrativeValidator` were all replaced by `VisualQualityJudge` plus the modular `visualChecks/` directory.
 
 #### Additional Support Agents
 
@@ -634,8 +629,7 @@ Includes verb conjugation for pronoun substitution and unresolved token fallback
 | **ToneAnalyzer** | Tone consistency across the episode |
 | **PacingAuditor** | Narrative rhythm and flow |
 | **SensitivityReviewer** | Content appropriateness |
-| **BlueprintGrowthCritic** | Growth-arc legibility in Phase-3 scene blueprints |
-| **GrowthNarrativeCritic** | Growth-arc legibility in generated prose & choices |
+| **CharacterArcTracker + ArcDeltaValidator** | Growth-arc legibility across blueprint → prose (replaces the former `BlueprintGrowthCritic` / `GrowthNarrativeCritic` pair) |
 
 ### 13.3 Two-Tier Final QA
 
@@ -773,8 +767,12 @@ interface GenerationSettingsConfig {
 - `src/ai-agents/agents/EncounterArchitect.ts` — Encounter design
 - `src/ai-agents/agents/WorldBuilder.ts` — World building
 - `src/ai-agents/agents/CharacterDesigner.ts` — NPC design
-- `src/ai-agents/agents/BlueprintGrowthCritic.ts` — Phase-3.5 growth critic
-- `src/ai-agents/agents/GrowthNarrativeCritic.ts` — Phase-4.5 growth critic
+- `src/ai-agents/agents/ThreadPlanner.ts` — NarrativeThread ledger (setup/payoff, delayed consequences)
+- `src/ai-agents/agents/TwistArchitect.ts` — Per-episode reversal + foreshadow scheduling
+- `src/ai-agents/agents/CharacterArcTracker.ts` — Per-episode identity/relationship milestones
+- `src/ai-agents/agents/StyleArchitect.ts` — Art-style string → ArtStyleProfile expansion
+- `src/ai-agents/agents/SceneCritic.ts` — Optional Phase-9 subtext/reversals rewrite
+- `src/ai-agents/agents/SeasonPlannerAgent.ts` — Season planning along the 3-act / 7-point spine
 
 ### 17.2.1 Validator & QA Files
 

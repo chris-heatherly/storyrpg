@@ -328,11 +328,9 @@ Full visual QA can trigger targeted regeneration using guidance from:
 - `BodyLanguageValidator` — body-language validation
 - `LightingColorValidator` — lighting/color validation
 - `VisualStorytellingValidator` — broad visual storytelling QA with `validateSequence`
-- `VisualNarrativeValidator` — Eisner-style narrative validation
+- `VisualQualityJudge` + modular `visualChecks/` (e.g. `CompositionCheck`) — unified Eisner-style narrative / drama / asset audit pass that replaced the older `VisualNarrativeValidator`, `DramaExtractionAgent`, and `AssetAuditorAgent` trio
 - `TransitionValidator` — beat-to-beat transition validation
 - `ConsistencyScorerAgent` — image/reference consistency scoring
-- `AssetAuditorAgent` — asset audit reports
-- `DramaExtractionAgent` — dramatic structure extraction for images
 
 ## Encounter Image Runtime
 
@@ -614,8 +612,10 @@ Wiring surface:
 | `src/ai-agents/agents/image-team/ColorScriptAgent.ts` | Color script and thumbnails |
 | `src/ai-agents/agents/image-team/CharacterReferenceSheetAgent.ts` | Character references, expressions, body vocabulary |
 | `src/ai-agents/agents/image-team/VideoDirectorAgent.ts` | Video direction for Veo pipeline |
+| `src/ai-agents/agents/image-team/LoraTrainingAgent.ts` | Auto-train-LoRA orchestrator (SD only; gated by `providerCapabilities.supportsLoraTraining`) |
 | `src/ai-agents/agents/image-team/ConsistencyScorerAgent.ts` | Image/reference consistency scoring |
-| `src/ai-agents/agents/image-team/DramaExtractionAgent.ts` | Dramatic structure extraction for images |
+| `src/ai-agents/agents/image-team/VisualQualityJudge.ts` | Unified visual QA judge (replaces `VisualNarrativeValidator`, `DramaExtractionAgent`, `AssetAuditorAgent`) |
+| `src/ai-agents/agents/image-team/visualChecks/CompositionCheck.ts` | Modular composition check invoked by `VisualQualityJudge` |
 
 ### Image QA Validators
 
@@ -627,9 +627,7 @@ Wiring surface:
 | `src/ai-agents/agents/image-team/ExpressionValidator.ts` | Expression/pacing validation |
 | `src/ai-agents/agents/image-team/BodyLanguageValidator.ts` | Body language QA |
 | `src/ai-agents/agents/image-team/LightingColorValidator.ts` | Lighting/color QA |
-| `src/ai-agents/agents/image-team/VisualNarrativeValidator.ts` | Eisner-style narrative validation |
 | `src/ai-agents/agents/image-team/VisualStorytellingValidator.ts` | Broad visual storytelling QA |
-| `src/ai-agents/agents/image-team/AssetAuditorAgent.ts` | Asset audit reports |
 
 ### Visual Systems (Non-Agent)
 

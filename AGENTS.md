@@ -30,7 +30,11 @@ docs/
 ├── INCREMENTAL_VALIDATION_PLAN.md ← Validation system design
 ├── QA_FIXES_SUMMARY.md            ← QA fixes and patterns
 ├── MOBILE_REDESIGN.md             ← Mobile-first reader redesign notes
-├── PARALLEL_GENERATION.md         ← Parallel generation status
+├── PARALLEL_GENERATION.md         ← Parallel generation status (ParallelStoryPipeline has been removed)
+├── PLAN_DELAYED_CONSEQUENCES.md   ← Design plan: delayed consequences / callback ledger
+├── PLAN_MULTI_SCENE_BRANCH_ZONES.md ← Design plan: multi-scene branch zones
+├── PLAN_POST_EPISODE_FLOWCHART.md ← Design plan: post-episode flowchart
+├── WEEKLY_SUMMARY_2026-04-23.md   ← Weekly change summary (Apr 16–23, 2026)
 ├── visual_storytelling_guide.md   ← Visual storytelling design guide
 ├── visual_storytelling_quick_reference.md
 ├── sample-story.md                ← Example story structure
@@ -53,7 +57,7 @@ storyrpg-prototype/
 │   ├── components/                ← Reusable UI components
 │   ├── engine/                    ← Deterministic playback: storyEngine, conditionEvaluator, resolutionEngine, identityEngine, templateProcessor, growthConsequenceBuilder
 │   ├── stores/                    ← Zustand stores: settingsStore, generationJobStore, seasonPlanStore, imageFeedbackStore, imageJobStore, videoJobStore, appNavigationStore, encounterStatePersistence, playerStatePersistence. Note: `gameStore` in this directory is **React Context**, not Zustand.
-│   ├── types/                     ← Canonical data model (Story, Episode, Scene, Beat, Choice, PlayerState, Encounter, etc.)
+│   ├── types/                     ← Canonical data model split across topic modules (story, choice, conditions, consequences, content, encounter, player, narrativeThread, seasonPlan, sourceAnalysis, generationJob, validation, common). `index.ts` is a barrel re-export for backward compatibility.
 │   ├── ai-agents/                 ← AI generation pipeline (see below)
 │   ├── config/                    ← endpoints.ts (all URLs), generatorLlmOptions.ts
 │   ├── hooks/                     ← React hooks
@@ -109,7 +113,8 @@ Client reads story files → Story Engine → Player experience
 
 | File | Purpose |
 |---|---|
-| `src/types/index.ts` | **Start here for data model.** Defines Story, Episode, Scene, Beat, Choice, PlayerState, Encounter, NPC, and all related types. This is the contract between generation and playback. |
+| `src/types/index.ts` | **Start here for data model.** Barrel re-export of the topic-oriented type modules below. |
+| `src/types/story.ts`, `episode.ts`, `scene.ts`, `player.ts`, `choice.ts`, `encounter.ts`, etc. | Topic-oriented canonical data model (split from the old monolithic `index.ts`). These files are the contract between generation and playback. |
 | `src/engine/storyEngine.ts` | Core playback logic — navigates stories, evaluates conditions, resolves choices, applies consequences. |
 | `src/engine/conditionEvaluator.ts` | Evaluates conditional logic (flags, stats, relationships) to gate content. |
 | `src/engine/resolutionEngine.ts` | Fiction-first skill/stat checks with narrative outcomes. |
@@ -251,8 +256,12 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/LORA_TRAINING.md` | Auto-train-LoRA subsystem: agents, registry, fingerprinting, kohya sidecar contract, UI exposure |
 | `docs/INCREMENTAL_VALIDATION_PLAN.md` | Validation system design |
 | `docs/QA_FIXES_SUMMARY.md` | QA fixes and recurring patterns |
-| `docs/MOBILE_REDESIGN.md` | Mobile-first reader redesign notes |
-| `docs/PARALLEL_GENERATION.md` | Parallel generation status |
+| `docs/MOBILE_REDESIGN.md` | Mobile-first reader redesign notes + April 2026 unified reader/settings UX primitives |
+| `docs/PARALLEL_GENERATION.md` | Parallel generation status (ParallelStoryPipeline removed; concurrency lives in `FullStoryPipeline`) |
+| `docs/PLAN_DELAYED_CONSEQUENCES.md` | Design plan for delayed consequences and the callback ledger |
+| `docs/PLAN_MULTI_SCENE_BRANCH_ZONES.md` | Design plan for multi-scene branch zones |
+| `docs/PLAN_POST_EPISODE_FLOWCHART.md` | Design plan for the post-episode flowchart |
+| `docs/WEEKLY_SUMMARY_2026-04-23.md` | Weekly change summary (Apr 16–23, 2026) — see for recent architectural shifts |
 | `docs/visual_storytelling_guide.md` | Visual storytelling design principles |
 | `docs/reference/` | Original reference materials (PDF text extracts) |
 | `.cursor/skills/` | Cursor agent skills: pipeline debugging, validation, orchestration, agent development, image generation, story playback, proxy server, audio narration, testing tooling, UX design, story structure rules, update docs |

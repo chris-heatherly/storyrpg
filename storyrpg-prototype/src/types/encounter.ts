@@ -87,6 +87,56 @@ export interface EncounterVisualContract {
   includeExpressionRefs?: boolean;
 }
 
+export type EncounterStoryboardFrameRole =
+  | 'establish'
+  | 'pressureReveal'
+  | 'commit'
+  | 'exchange'
+  | 'reversal'
+  | 'opening'
+  | 'decisiveMove'
+  | 'fallout'
+  | 'aftermath';
+
+export interface EncounterStoryboardFrame {
+  id: string;
+  role: EncounterStoryboardFrameRole;
+  title: string;
+  purpose: string;
+  visualMoment: string;
+  tacticalFunction: string;
+  emotionalState: string;
+  continuityState: {
+    characterPositions?: Record<string, string>;
+    characterConditions?: Record<string, string>;
+    relationshipDistance?: string;
+    propsInPlay?: string[];
+    environmentChanges?: string[];
+    lighting?: string;
+  };
+  decisionWindow?: boolean;
+  allowedApproaches?: EncounterApproach[];
+  payoffRefs?: string[];
+}
+
+export interface EncounterStoryboard {
+  spine: EncounterStoryboardFrame[];
+  styleNotes: string;
+  convergencePlan: string;
+  mechanicsVisibility: 'current_clocks_only';
+}
+
+export interface EncounterPayoffContext {
+  consumedFlags?: Array<{ flag: string; effect: string }>;
+  relationshipPayoffs?: Array<{ npcId: string; dimension: string; effect: string }>;
+  identityPayoffs?: Array<{ axis: string; effect: string }>;
+  skillPayoffs?: Array<{ skill: string; effect: string }>;
+  inventoryPayoffs?: Array<{ itemId: string; effect: string }>;
+  priorFailurePayoffs?: Array<{ source: string; effect: string }>;
+  promisePayoffs?: Array<{ promise: string; effect: string }>;
+  aftermathEchoes?: string[];
+}
+
 // Clock system inspired by Blades in the Dark
 export interface EncounterClock {
   id: string;
@@ -126,6 +176,10 @@ export interface EncounterChoiceOutcome {
   visualStateChanges?: VisualStateChange[];
 
   visualDirection?: OutcomeVisualDirection;
+
+  storyboardFrameId?: string;
+  nextStoryboardFrameId?: string;
+  tacticalEffect?: string;
 }
 
 // Embedded choice for branching tree (avoids circular reference)
@@ -229,6 +283,9 @@ export interface EncounterBeat {
   visualDirection?: OutcomeVisualDirection;
 
   inheritedVisualState?: EncounterVisualState;
+
+  storyboardFrameId?: string;
+  storyboardRole?: EncounterStoryboardFrameRole;
 }
 
 export interface EncounterPhase {
@@ -564,4 +621,6 @@ export interface Encounter {
 
   cameraEscalation?: CameraEscalationCurve;
   initialVisualState?: EncounterVisualState;
+  storyboard?: EncounterStoryboard;
+  payoffContext?: EncounterPayoffContext;
 }

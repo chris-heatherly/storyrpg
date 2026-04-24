@@ -27,6 +27,7 @@ import {
   buildStructuralContextSection,
 } from '../prompts/storytellingPrinciples';
 import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
+import { SCENE_WRITER_BEAT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
@@ -207,6 +208,8 @@ export interface SceneContent {
   moodProgression: string[];
   charactersInvolved: string[];
   keyMoments: string[];
+  sceneTakeaways?: string[];
+  transitionIn?: string;
 
   // Continuity notes
   continuityNotes: string[];
@@ -288,6 +291,16 @@ You are a master prose writer who brings scene blueprints to life with vivid, im
 - Match prose length to moment importance.
 - Quick beats for tension, longer for reflection.
 - Vary the rhythm within scenes.
+
+### Scene Craft
+- Every scene needs a purpose players can feel: plot pressure, relationship movement, theme pressure, information gain, or meaningful aftermath.
+- Identify the scene's key moment and build the beat sequence toward it.
+- Include scene takeaways: what the player should learn, feel, or understand by the end.
+- Use natural transition phrasing in continuityNotes or transitionIn ("Later that night", "Back at the observatory") when time or place shifts.
+- End the final beat with forward pressure into the next beat, choice, scene, or episode.
+- Keep dialogue concise, pointed, and subtextual; characters may disagree, tease, avoid, or reveal, but not every conversation needs to become an argument.
+- Use selective interiority when it deepens player connection, but avoid over-defining the player character's identity.
+- Do not use film/camera direction terms in player-facing prose. Visual metadata may still use the required shotType and visualContinuity fields.
 
 ${NARRATIVE_INTENSITY_RULES}
 
@@ -429,6 +442,8 @@ Avoid abstract-only phrases like "tension rises" or "emotion deepens." Describe 
 
 **CHARACTER APPEARANCE CONSISTENCY (CRITICAL)**: When describing characters in beat text, visual contract fields, or any visual/descriptive context, you MUST use their canonical Physical Appearance as listed in the Characters section. NEVER invent or change hair color, eye color, body type, or other physical attributes. If a character has "blonde hair" in their physical description, ALWAYS write "blonde hair", NEVER "dark hair" or any other variant. The Physical Appearance entries are the source of truth.
 
+${SCENE_WRITER_BEAT_EXAMPLE}
+
 ## Quality Standards
 
 Before finalizing:
@@ -557,6 +572,16 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       content.continuityNotes = [];
     } else if (!Array.isArray(content.continuityNotes)) {
       content.continuityNotes = [content.continuityNotes as unknown as string];
+    }
+
+    if (!content.sceneTakeaways) {
+      content.sceneTakeaways = [];
+    } else if (!Array.isArray(content.sceneTakeaways)) {
+      content.sceneTakeaways = [content.sceneTakeaways as unknown as string];
+    }
+
+    if (content.transitionIn && typeof content.transitionIn !== 'string') {
+      content.transitionIn = String(content.transitionIn);
     }
 
     if (!content.beats) {
@@ -987,6 +1012,12 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 - **Purpose**: ${input.sceneBlueprint.purpose}
 - **Narrative Function**: ${input.sceneBlueprint.narrativeFunction}
 
+### Scene Craft Targets
+- Define 1-4 sceneTakeaways in the output: what the player learns, feels, or understands.
+- If this scene begins after a time/place shift, include transitionIn with a short natural phrase.
+- keyMoments should name the emotional or narrative payoff, not just a location or mood.
+- moodProgression should show the scene's tension or emotional movement from start to finish.
+
 ### Expert Design Template
 - **Dramatic Question**: ${input.sceneBlueprint.dramaticQuestion}
 - **Want vs Need**: ${input.sceneBlueprint.wantVsNeed}
@@ -1101,6 +1132,7 @@ Create the scene content following the SceneContent schema. Include:
 6. Full beat visual contract fields (visualMoment, primaryAction, emotionalRead, relationshipDynamic, mustShowDetail, intensityTier) for every beat
 7. Optional visualContinuity metadata when it clarifies beat-to-beat flow; keep panelMode as "single" unless an explicit UX/config flag says otherwise
 8. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id
+9. sceneTakeaways and transitionIn when they clarify purpose and flow
 
 Respond with valid JSON matching the SceneContent type.
 `;
@@ -1413,6 +1445,9 @@ Respond with valid JSON matching the SceneContent type.
 
       if (wordCount > maxWords || sentenceCount > MAX_SENTENCES) {
         longBeats.push(`Beat "${beat.id}" (${beat.isClimaxBeat ? 'climax' : beat.isKeyStoryBeat ? 'key' : 'standard'}): ${wordCount} words, ${sentenceCount} sentences (cap: ${maxWords} words)`);
+      }
+      if (/\{[A-Z][A-Za-z0-9]*\}/.test(text)) {
+        issues.push(`SCHEMA PLACEHOLDER LEAK - Beat "${beat.id}" contains an unresolved {Variable} placeholder. Rewrite it as concrete player-facing prose.`);
       }
     }
     if (climaxCount > 2) {

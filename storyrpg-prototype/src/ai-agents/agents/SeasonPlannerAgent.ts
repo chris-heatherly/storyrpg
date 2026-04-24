@@ -35,6 +35,7 @@ import {
   distributeSevenPoints,
   describeDistribution,
 } from '../utils/sevenPointDistribution';
+import { SEASON_PLANNER_CRAFT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import {
   SevenPointCoverageValidator,
   seasonPlanToCoverageInput,
@@ -224,6 +225,21 @@ Every canonical beat MUST land on at least one episode in canonical order.
 Every \`episodeEncounters\` entry should reflect the difficulty implied by
 the beats its episode carries (Midpoint / Pinch 2 / Climax episodes are
 the hardest).
+
+## Story Craft Guidance
+Use the source analysis as the authority, but learn from reusable structure:
+- Establish ordinary world, protagonist core value, and a stronger motivated antagonizing force.
+- Escalate pressure toward the shared Stakes and Goal without assuming every story needs combat.
+- Pressure can be physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure.
+- Make plans go partly wrong often enough that choices require improvisation.
+- After the Climax, resolve quickly: show what was saved or changed, then show future cost, identity change, or legacy.
+
+${analysis.schemaAbstraction ? `## Reusable Pattern Abstraction
+- Archetype: ${analysis.schemaAbstraction.archetype}
+- Mode: ${analysis.schemaAbstraction.adaptationMode}
+- Pattern: ${analysis.schemaAbstraction.reusablePatternSummary}
+- Guidance: ${analysis.schemaAbstraction.generalizationGuidance.join('; ')}
+` : ''}${SEASON_PLANNER_CRAFT_EXAMPLE}
 
 ## Episode Breakdown
 ${episodeSummaries}

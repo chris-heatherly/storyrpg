@@ -57,6 +57,14 @@ describe('ChoiceAuthor.validateChoices', () => {
   const author = new ChoiceAuthor(config);
   const input = makeInput();
 
+  it('includes StoryRPG-shaped choice residue example without stat-visible prose', () => {
+    const prompt = (author as any).getAgentSpecificPrompt();
+    expect(prompt).toContain('Example: StoryRPG Choice Residue');
+    expect(prompt).toContain('want, cost, identity');
+    expect(prompt).toContain('without exposing stats');
+    expect(prompt).not.toContain('schema_chapters');
+  });
+
   it('throws on fewer than 2 choices', () => {
     const choiceSet = makeChoiceSet({
       choices: [{ id: 'c1', text: 'Only one', choiceType: 'expression', consequences: [] }],

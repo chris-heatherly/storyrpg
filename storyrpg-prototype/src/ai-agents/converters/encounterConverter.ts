@@ -304,6 +304,9 @@ function convertOutcome(
     outcomeImage: llmOutcome.outcomeImage,
     cinematicDescription: llmOutcome.cinematicDescription,
     visualContract: (llmOutcome as any).visualContract,
+    storyboardFrameId: (llmOutcome as any).storyboardFrameId,
+    nextStoryboardFrameId: (llmOutcome as any).nextStoryboardFrameId,
+    tacticalEffect: (llmOutcome as any).tacticalEffect,
     isTerminal: llmOutcome.isTerminal,
     encounterOutcome: normalizedOutcome,
     consequences: convertedConsequences,
@@ -422,6 +425,8 @@ export function convertEncounterStructureToEncounter(
       escalationText: beat.escalationText,
       escalationImage: beat.escalationImage,
       cinematicSetup: beat.cinematicSetup,
+      storyboardFrameId: (beat as any).storyboardFrameId,
+      storyboardRole: (beat as any).storyboardRole,
     };
   });
 
@@ -530,5 +535,7 @@ export function convertEncounterStructureToEncounter(
     estimatedDuration: structure.estimatedDuration,
     replayability: structure.replayability,
     designNotes: structure.designNotes,
+    storyboard: (structure as any).storyboard,
+    payoffContext: (structure as any).payoffContext,
   };
 }

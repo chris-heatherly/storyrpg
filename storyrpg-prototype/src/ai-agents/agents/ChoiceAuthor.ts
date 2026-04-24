@@ -34,6 +34,7 @@ import { FiveFactorValidator } from '../validators/FiveFactorValidator';
 import { StakesTriangleValidator } from '../validators/StakesTriangleValidator';
 import { buildChoiceAuthorCallbackSection } from '../prompts/callbackPromptSection';
 import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
+import { CHOICE_AUTHOR_RESIDUE_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 
 // Input types
@@ -328,6 +329,8 @@ For meaningful choices, some consequences should NOT fire immediately. Instead, 
 "Marcus is trapped, but the diamond is right there..."
 - Save Marcus (Want: loyalty | Cost: the score | Identity: puts people first)
 - Grab the diamond (Want: the job | Cost: a friend | Identity: the mission matters more)
+
+${CHOICE_AUTHOR_RESIDUE_EXAMPLE}
 
 ## Character Names and Pronouns
 

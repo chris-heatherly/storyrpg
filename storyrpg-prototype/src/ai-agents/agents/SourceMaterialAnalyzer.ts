@@ -21,6 +21,7 @@ import {
   EndingMode,
   StoryAnchors,
   SevenPointStructure,
+  StorySchemaAbstraction,
   StructuralRole,
   SEVEN_POINT_BEATS,
 } from '../../types/sourceAnalysis';
@@ -49,6 +50,7 @@ import {
   STAKES_TRIANGLE,
   CHOICE_DENSITY_REQUIREMENTS,
 } from '../prompts/storytellingPrinciples';
+import { SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 
 // Input for the analyzer
 export interface SourceMaterialInput {
@@ -139,6 +141,7 @@ interface StoryStructureAnalysis {
    * optional-with-backfill contract as {@link anchors}.
    */
   sevenPoint?: SevenPointStructure;
+  schemaAbstraction?: StorySchemaAbstraction;
   endingAnalysis?: {
     detectedMode: EndingMode;
     reasoning: string;
@@ -240,6 +243,24 @@ When breaking down source material:
 2. Second Pass: Map plot points and character beats
 3. Third Pass: Chunk into episode-sized narrative units
 4. Final Pass: Verify each episode has proper stakes and structure
+
+## Reusable Story Abstraction
+
+When analyzing a known story, infer transferable story patterns without
+creating a second runtime schema. Capture archetype, reusable variables, and
+generalization guidance as optional analysis metadata that feeds StoryRPG's
+existing SourceMaterialAnalysis, SeasonPlan, Episode, Scene, Beat, Choice, and
+Encounter contracts.
+
+- Preserve StoryRPG's anchors and sevenPoint fields as the authoritative macro structure.
+- Use PascalCase names for reusable variables.
+- Include variables such as ProtagonistRole, Stakes, Goal, IncitingIncident,
+  AntagonizingForce, CoreValue, EmotionalAnchor, Temptation, FalseVictory,
+  Cost, Climax, and Legacy when they apply.
+- Generalize time/place/IP-specific elements into flexible roles.
+- Never let {Variable} placeholders appear in final player-facing prose.
+
+${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
 `;
   }
 
@@ -395,6 +416,21 @@ Analyze this text and respond with JSON:
     "climax": "<decisive confrontation — must match the climax anchor above>",
     "resolution": "<aftermath + legacy; ordinary world changed>"
   },
+  "schemaAbstraction": {
+    "archetype": "<core reusable archetype, e.g. Temptation and Moral Cost, Forbidden Love, Coming of Age>",
+    "adaptationMode": "<source_faithful/inspired_by/original>",
+    "schemaVariables": [
+      {
+        "name": "<PascalCase variable name, no braces>",
+        "description": "<what this replaceable story function means>",
+        "examples": ["<optional source-specific examples>"]
+      }
+    ],
+    "generalizationGuidance": [
+      "<how to preserve the story pattern without copying time/place/IP-specific details>"
+    ],
+    "reusablePatternSummary": "<1-2 sentence summary of the transferable story engine>"
+  },
   "endingAnalysis": {
     "detectedMode": "<single/multiple based on the source material itself>",
     "reasoning": "<why the source implies one ending or several materially distinct endings>",
@@ -455,6 +491,9 @@ ${userPrompt}
 - Protagonist: ${structure.protagonist.name} - ${structure.protagonist.arc}
 - Estimated Episodes: ${estimatedEpisodes}
 - Complexity: ${structure.estimatedScope.complexity}
+${structure.schemaAbstraction ? `- Archetype: ${structure.schemaAbstraction.archetype}
+- Reusable Pattern: ${structure.schemaAbstraction.reusablePatternSummary}
+- Generalization Guidance: ${structure.schemaAbstraction.generalizationGuidance.join('; ')}` : ''}
 
 **Story Arcs**:
 ${structure.storyArcs.map(arc => `- ${arc.name}: ${arc.description}`).join('\n')}
@@ -469,6 +508,9 @@ ${structure.majorPlotPoints.map(pp => `- [${pp.type}] ${pp.description} (${pp.ap
 - Each episode needs: setup → conflict → resolution
 - Major plot points should be episode climaxes
 - Leave room for player agency
+- Show escalating pressure from Inciting Incident through Climax, but use genre-appropriate pressure rather than defaulting to combat.
+- Plans should often go partly wrong, forcing character improvisation and meaningful player choices.
+- After the Climax, move quickly: first show what was saved or changed, then show future cost, identity change, or legacy.
 
 **Default 7-Point Beat Distribution (HINT — override only when the source demands it):**
 ${describeSuggestedDistribution(estimatedEpisodes)}
@@ -665,6 +707,7 @@ Return ONLY valid JSON.
 
       anchors,
       sevenPoint,
+      schemaAbstraction: normalizeSchemaAbstraction(structure.schemaAbstraction, anchors),
 
       storyArcs,
       detectedEndingMode: endingFields.detectedEndingMode,
@@ -948,5 +991,74 @@ function inferSevenPointFromStructure(
     pinch2: byTypeOrPosition('twist', 0.7) || `Crisis that appears to undo everything ${protagonistName} has gained; the final transformation begins here.`,
     climax: anchors.climax,
     resolution: byTypeOrPosition('resolution', 1) || `The aftermath and legacy of the climax; the ordinary world is visibly changed.`,
+  };
+}
+
+export function normalizeSchemaVariableName(name: string): string {
+  const cleaned = String(name || '')
+    .replace(/[{}]/g, ' ')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim();
+
+  if (!cleaned) return 'StoryVariable';
+
+  return cleaned
+    .split(/\s+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
+}
+
+export function containsSchemaPlaceholder(text: string): boolean {
+  return /\{[A-Z][A-Za-z0-9]*\}/.test(text);
+}
+
+export function normalizeSchemaAbstraction(
+  abstraction: StorySchemaAbstraction | undefined,
+  anchors: StoryAnchors,
+): StorySchemaAbstraction | undefined {
+  if (!abstraction) return undefined;
+
+  const seen = new Set<string>();
+  const requiredVariables: StorySchemaAbstraction['schemaVariables'] = [
+    { name: 'Stakes', description: anchors.stakes },
+    { name: 'Goal', description: anchors.goal },
+    { name: 'IncitingIncident', description: anchors.incitingIncident },
+    { name: 'Climax', description: anchors.climax },
+  ];
+
+  const sourceVariables = Array.isArray(abstraction.schemaVariables)
+    ? abstraction.schemaVariables
+    : [];
+
+  const schemaVariables = [...sourceVariables, ...requiredVariables]
+    .map((variable) => ({
+      ...variable,
+      name: normalizeSchemaVariableName(variable.name),
+      description: String(variable.description || '').replace(/\{([A-Z][A-Za-z0-9]*)\}/g, '$1'),
+      examples: Array.isArray(variable.examples)
+        ? variable.examples.map((example) => String(example).replace(/\{([A-Z][A-Za-z0-9]*)\}/g, '$1'))
+        : undefined,
+    }))
+    .filter((variable) => {
+      if (seen.has(variable.name)) return false;
+      seen.add(variable.name);
+      return true;
+    });
+
+  const mode = abstraction.adaptationMode;
+  const adaptationMode: StorySchemaAbstraction['adaptationMode'] =
+    mode === 'source_faithful' || mode === 'inspired_by' || mode === 'original'
+      ? mode
+      : 'inspired_by';
+
+  return {
+    archetype: abstraction.archetype || 'General Story Pattern',
+    adaptationMode,
+    schemaVariables,
+    generalizationGuidance: Array.isArray(abstraction.generalizationGuidance)
+      ? abstraction.generalizationGuidance.map((guidance) =>
+          String(guidance).replace(/\{([A-Z][A-Za-z0-9]*)\}/g, '$1'))
+      : [],
+    reusablePatternSummary: String(abstraction.reusablePatternSummary || ''),
   };
 }

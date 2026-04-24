@@ -5,8 +5,8 @@
 
 import { getEncounterBeats, type EncounterLike } from '../utils/encounterImageCoverage';
 
-/** Must match historical pipeline behavior (nested nextSituation chains). */
-export const ENCOUNTER_TREE_MAX_DEPTH = 5;
+/** Controlled branching cap: enough for tactical payoff, low enough to prevent image explosions. */
+export const ENCOUNTER_TREE_MAX_DEPTH = 3;
 
 /** Matches ImageGenerationService.generateImage identifier sanitization (stable filenames). */
 export function sanitizeEncounterIdentifier(raw: string): string {

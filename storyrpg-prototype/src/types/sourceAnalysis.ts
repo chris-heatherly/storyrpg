@@ -50,6 +50,25 @@ export interface SevenPointStructure {
 }
 
 /**
+ * Optional reusable-story abstraction metadata inferred from a known story or
+ * source prompt. This is analysis/planning data only: it helps agents learn
+ * transferable structure without introducing a second runtime story format.
+ */
+export interface StorySchemaVariable {
+  name: string;
+  description: string;
+  examples?: string[];
+}
+
+export interface StorySchemaAbstraction {
+  archetype: string;
+  adaptationMode: 'source_faithful' | 'inspired_by' | 'original';
+  schemaVariables: StorySchemaVariable[];
+  generalizationGuidance: string[];
+  reusablePatternSummary: string;
+}
+
+/**
  * Which beat of the 7-point structure a given episode carries.
  *
  * `rising` and `falling` are non-beat buffer slots used when an episode sits
@@ -362,6 +381,13 @@ export interface SourceMaterialAnalysis {
    * anchor-consistency by SevenPointCoverageValidator.
    */
   sevenPoint: SevenPointStructure;
+
+  /**
+   * Optional reusable-story abstraction. Downstream agents may consult this
+   * for archetype and transferable structure, but runtime output remains the
+   * StoryRPG Story/Episode/Scene/Beat/Choice schema.
+   */
+  schemaAbstraction?: StorySchemaAbstraction;
 
   // Ending analysis
   detectedEndingMode?: EndingMode;

@@ -1737,28 +1737,33 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
               if (playerFacingBadges.length > 0) {
                 setShowBadges(true);
               }
-              const badgeDelay = playerFacingBadges.length > 0 ? 1200 : 0;
-              const readingPause = 1500;
-              setTimeout(() => {
-                transitionTo(() => {
-                  setScreenState({
-                    type: 'active',
-                    situation: pendingNextSituation,
-                    phaseId: pendingPhaseId,
-                  });
-                  setIsAnimating(true);
-                  setShowChoices(false);
-                  setShowBadges(false);
-                  setConsequenceFeedback([]);
-                  scrollViewRef.current?.scrollTo({ y: 0, animated: true });
-                });
-              }, badgeDelay + readingPause);
             }}
           />
 
           {showBadges && playerFacingBadges.length > 0 && (
             <ConsequenceToast consequences={playerFacingBadges} />
           )}
+
+          <ContinueButton
+            copyKey="default"
+            disabled={isAnimating}
+            testID="encounter-outcome-continue"
+            onPress={() => {
+              if (isAnimating) return;
+              transitionTo(() => {
+                setScreenState({
+                  type: 'active',
+                  situation: pendingNextSituation,
+                  phaseId: pendingPhaseId,
+                });
+                setIsAnimating(true);
+                setShowChoices(false);
+                setShowBadges(false);
+                setConsequenceFeedback([]);
+                scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+              });
+            }}
+          />
         </View>
       </ReadingShell>
     );

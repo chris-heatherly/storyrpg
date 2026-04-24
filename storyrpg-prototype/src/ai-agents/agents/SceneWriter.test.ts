@@ -3,6 +3,21 @@ import { describe, expect, it } from 'vitest';
 import { SceneWriter } from './SceneWriter';
 
 describe('SceneWriter structural guards', () => {
+  it('includes adapted scene-craft guidance and StoryRPG-shaped few-shot example', () => {
+    const writer = new SceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const prompt = (writer as any).getAgentSpecificPrompt();
+    expect(prompt).toContain('scene takeaways');
+    expect(prompt).toContain('Do not use film/camera direction terms in player-facing prose');
+    expect(prompt).toContain('Example: StoryRPG SceneWriter Beat Scale');
+  });
+
   it('expands underspecified choice scenes into a stable three-beat structure', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',
@@ -82,5 +97,74 @@ describe('SceneWriter structural guards', () => {
     expect(normalized.beats[0].nextBeatId).toBe('beat-2');
     expect(normalized.beats[1].nextBeatId).toBe('beat-3');
     expect(normalized.beats[2].nextBeatId).toBeUndefined();
+  });
+
+  it('normalizes optional sceneTakeaways and transitionIn metadata', () => {
+    const writer = new SceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const normalized = (writer as any).normalizeContent({
+      sceneId: 'scene-1',
+      sceneName: 'A Clean Exit',
+      beats: [],
+      startingBeatId: '',
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+      sceneTakeaways: 'Mara learns the safe route was sold.',
+      transitionIn: 42,
+    });
+
+    expect(normalized.sceneTakeaways).toEqual(['Mara learns the safe route was sold.']);
+    expect(normalized.transitionIn).toBe('42');
+  });
+
+  it('flags unresolved schema variables in player-facing beat text', () => {
+    const writer = new SceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const issues = (writer as any).collectIssues(
+      {
+        sceneId: 'scene-1',
+        sceneName: 'Placeholder Leak',
+        beats: [{ id: 'beat-1', text: '{Protagonist} reaches the tower.' }],
+        startingBeatId: 'beat-1',
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      {
+        sceneBlueprint: {
+          id: 'scene-1',
+          name: 'Placeholder Leak',
+          description: 'A bad placeholder leaks into prose.',
+          location: 'tower',
+          mood: 'tense',
+          purpose: 'bottleneck',
+          narrativeFunction: 'Test.',
+          dramaticQuestion: 'Will it leak?',
+          wantVsNeed: 'Fix vs fail',
+          conflictEngine: 'The prompt.',
+          npcsPresent: [],
+          keyBeats: [],
+          leadsTo: [],
+        },
+        targetBeatCount: 1,
+      },
+    );
+
+    expect(issues.join('\n')).toContain('SCHEMA PLACEHOLDER LEAK');
   });
 });

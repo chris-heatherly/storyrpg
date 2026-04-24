@@ -75,6 +75,10 @@ describe('EncounterArchitect deterministic fallback', () => {
     expect(() => (architect as any).validateStructure(normalized, input)).not.toThrow();
     expect(normalized.storylets?.victory).toBeDefined();
     expect(normalized.storylets?.defeat).toBeDefined();
+    expect(normalized.storyboard?.spine.length).toBeGreaterThanOrEqual(7);
+    expect(normalized.storyboard?.mechanicsVisibility).toBe('current_clocks_only');
+    expect(normalized.payoffContext?.skillPayoffs?.some((p: any) => p.skill === 'persuasion')).toBe(true);
+    expect(normalized.beats[0].storyboardFrameId).toBeDefined();
   });
 
   it('uses NPC names and skills from input in fallback narrative', () => {
@@ -98,6 +102,9 @@ describe('EncounterArchitect reliable prompt', () => {
     expect(reliable).toContain(input.sceneId);
     expect(reliable).toContain('beat-1');
     expect(reliable).toContain('beat-2');
+    expect(reliable).toContain('storyboard');
+    expect(reliable).toContain('current_clocks_only');
+    expect(reliable).toContain('position, leverage, information');
     // Should NOT contain the heavy structural fields
     expect(reliable).not.toContain('pixarStakes');
     expect(reliable).not.toContain('cinematicSetup');

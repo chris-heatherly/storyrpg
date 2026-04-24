@@ -48,6 +48,18 @@ export interface TextVariant {
   callbackHookId?: string;
 }
 
+export interface VisualContinuityHint {
+  shotType?: string;
+  cameraAngle?: string;
+  focalCharacterId?: string;
+  blocking?: string;
+  proximity?: string;
+  motifOrProp?: string;
+  previousBeatId?: string;
+  transitionIntent?: string;
+  panelMode?: 'single' | 'special-beats' | 'all-beats';
+}
+
 // A beat is a unit of content within a scene
 export interface Beat {
   id: string;
@@ -96,6 +108,7 @@ export interface Beat {
   relationshipDynamic?: string;
   mustShowDetail?: string;
   intensityTier?: 'dominant' | 'supporting' | 'rest';
+  visualContinuity?: VisualContinuityHint;
 
   allowDiegeticText?: boolean;
 

@@ -191,6 +191,7 @@ import {
   PhaseValidator,
   StructuralValidator,
   ChoiceDistributionValidator,
+  runNarrativeDiagnostics,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import {
@@ -6872,6 +6873,33 @@ export class FullStoryPipeline {
         encounters,
         encounterImageResults
       );
+
+      try {
+        const narrativeDiagnostics = runNarrativeDiagnostics({
+          episodeNumber: i,
+          totalEpisodes: brief.seasonPlan?.episodes?.length ?? i,
+          sceneContents,
+          episode,
+          callbackLedger: this.callbackLedger.serialize(),
+        });
+        await saveEarlyDiagnostic(outputDirectory, `episode-${i}-narrative-diagnostics.json`, narrativeDiagnostics);
+
+        const activeChecks = narrativeDiagnostics.checks
+          .map((check) => `${check.name}:${check.status}${typeof check.score === 'number' ? `(${check.score})` : ''}`)
+          .join(', ');
+        this.emit({
+          type: narrativeDiagnostics.overallStatus === 'passed' ? 'debug' : 'warning',
+          phase: `episode_${i}_narrative_diagnostics`,
+          message: `Narrative diagnostics ${narrativeDiagnostics.overallStatus}: ${activeChecks}`,
+          data: narrativeDiagnostics,
+        });
+      } catch (diagErr) {
+        this.emit({
+          type: 'warning',
+          phase: `episode_${i}_narrative_diagnostics`,
+          message: `Narrative diagnostics failed (non-fatal): ${diagErr instanceof Error ? diagErr.message : String(diagErr)}`,
+        });
+      }
 
       // Per-episode QA pass (mirrors Phase 5 from single-episode generate())
       let qaReport: QAReport | undefined;

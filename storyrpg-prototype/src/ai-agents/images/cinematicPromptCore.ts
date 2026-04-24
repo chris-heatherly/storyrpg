@@ -25,9 +25,13 @@ import type { ArtStyleProfile } from './artStyleProfile';
  * multimodal input budget for actual content.
  */
 export const UNIVERSAL_NEGATIVE_PROMPT =
-  'collage, split-screen, picture-in-picture, composite image, floating portrait, ' +
+  'triptych, diptych, collage, split-screen, multi-panel, comic panels, storyboard cells, ' +
+  'picture-in-picture, composite image, floating portrait, ' +
   'overlaid text, captions, speech bubbles, watermarks, signatures, sound effects, ' +
   'blurry, low quality';
+
+export const SINGLE_FRAME_IMAGE_DIRECTIVE =
+  'One full-screen continuous image from a single camera, no panels, no collage, no split-screen';
 
 /** Additional negatives when the beat subject is a character interaction. */
 export const CHARACTER_NEGATIVE_OVERLAY =

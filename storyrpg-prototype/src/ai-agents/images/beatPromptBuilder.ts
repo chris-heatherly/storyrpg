@@ -22,6 +22,7 @@ import {
 } from '../agents/image-team/CinematicBeatAnalyzer';
 import {
   UNIVERSAL_NEGATIVE_PROMPT,
+  SINGLE_FRAME_IMAGE_DIRECTIVE,
   CHARACTER_NEGATIVE_OVERLAY,
   ESTABLISHING_NEGATIVE_OVERLAY,
   composeNegativePrompt as composeNegativePromptShared,
@@ -363,6 +364,7 @@ function buildEstablishingPrompt(
 
   const promptParts: string[] = [
     styleStrength === 2 ? `Art style (strict): ${artStyle}` : `Art style: ${artStyle}`,
+    SINGLE_FRAME_IMAGE_DIRECTIVE,
     'wide establishing shot',
     coreVisual,
     `Scene: ${scene.sceneName}`,
@@ -438,6 +440,7 @@ function buildCharacterPrompt(
   narrativeParts.push(
     styleStrength === 2 ? `Art style (strict): ${artStyle}` : `Art style: ${artStyle}`
   );
+  narrativeParts.push(SINGLE_FRAME_IMAGE_DIRECTIVE);
 
   // Camera + angle opens the frame
   const cameraOpener = camera.movement !== 'Static'

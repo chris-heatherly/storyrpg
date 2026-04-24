@@ -187,6 +187,7 @@ export interface GeneratedBeat {
   allowDiegeticText?: boolean; // When true, text in the image is permitted (letter, sign, book)
   shotType?: 'establishing' | 'character' | 'action'; // Camera intent: environment-only, character-focused, or physical action
   intensityTier?: 'dominant' | 'supporting' | 'rest'; // Narrative intensity for scene-level pacing
+  visualContinuity?: Beat['visualContinuity']; // Optional beat-to-beat flow metadata
 
   // Setup-payoff + plot-point metadata (Phases 5, 6)
   plantsThreadId?: string;
@@ -422,6 +423,7 @@ For each beat object, include these fields so image agents do not have to guess:
 - "relationshipDynamic": Power/proximity/tension between named characters. Leave empty ("") for "establishing" shots.
 - "mustShowDetail": One specific visual clue that must appear.
 - "intensityTier": REQUIRED. One of "dominant", "supporting", or "rest". Assign based on the Narrative Intensity Tiering rules above. A scene needs 1-2 dominant beats, 1-2 rest beats, and the remainder as supporting. Vary the intensity across the scene.
+- "visualContinuity": OPTIONAL but encouraged. Use it to make this beat flow from the previous beat as the next full-screen image: shotType, cameraAngle, focalCharacterId, blocking, proximity, motifOrProp, previousBeatId, transitionIntent, panelMode. Default panelMode is "single". Do NOT request panels, collages, split screens, contact sheets, or multiple moments inside the same image.
 
 Avoid abstract-only phrases like "tension rises" or "emotion deepens." Describe what is physically visible. ALWAYS use character names — never generic references.
 
@@ -1097,7 +1099,8 @@ Create the scene content following the SceneContent schema. Include:
 4. Natural flow between beats
 5. textVariants where state should affect content
 6. Full beat visual contract fields (visualMoment, primaryAction, emotionalRead, relationshipDynamic, mustShowDetail, intensityTier) for every beat
-7. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id
+7. Optional visualContinuity metadata when it clarifies beat-to-beat flow; keep panelMode as "single" unless an explicit UX/config flag says otherwise
+8. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id
 
 Respond with valid JSON matching the SceneContent type.
 `;

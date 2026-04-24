@@ -41,6 +41,30 @@ export interface ChoiceFeedbackCue {
   checkClass?: 'dramatic' | 'retryable';
 }
 
+export interface MoralContract {
+  valueA: string;
+  valueB: string;
+  unavoidableCost: string;
+  benefits: string[];
+  harms: string[];
+  uncertainty: string;
+}
+
+export interface ChoiceResidueHint {
+  kind:
+    | 'immediate_prose_echo'
+    | 'later_text_variant'
+    | 'relationship_behavior'
+    | 'encounter_advantage'
+    | 'encounter_complication'
+    | 'visual_staging'
+    | 'recap_summary';
+  description: string;
+  targetEpisode?: number;
+  targetNpcId?: string;
+  callbackHookId?: string;
+}
+
 // A single choice option
 export interface Choice {
   id: string;
@@ -66,6 +90,9 @@ export interface Choice {
   consequenceDomain?: ConsequenceDomain;
   reminderPlan?: ReminderPlan;
   feedbackCue?: ChoiceFeedbackCue;
+  moralContract?: MoralContract;
+  residueHints?: ChoiceResidueHint[];
+  visualResidueHint?: string;
 
   consequences?: Consequence[];
 

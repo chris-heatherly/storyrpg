@@ -19,6 +19,14 @@ export { StakesTriangleValidator } from './StakesTriangleValidator';
 export { FiveFactorValidator } from './FiveFactorValidator';
 
 export { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
+export {
+  runNarrativeDiagnostics,
+  type NarrativeDiagnosticCheck,
+  type NarrativeDiagnosticIssue,
+  type NarrativeDiagnosticsInput,
+  type NarrativeDiagnosticsReport,
+  type NarrativeDiagnosticStatus,
+} from './narrativeDiagnostics';
 
 export { IntegratedBestPracticesValidator } from './IntegratedBestPracticesValidator';
 export type { ValidationInput } from './IntegratedBestPracticesValidator';

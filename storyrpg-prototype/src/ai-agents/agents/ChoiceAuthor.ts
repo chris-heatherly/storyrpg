@@ -258,6 +258,9 @@ Branching (routing to different scenes via nextSceneId) is a PROPERTY of a choic
 - Encounter outcomes (victory/defeat/escape) are the PRIMARY branching mechanism.
 
 ## Type-Specific Requirements (ENFORCED)
+- **dilemma** choices must include a \`moralContract\` object. It names competing value A, competing value B, the unavoidable cost, who benefits, who is harmed, and what remains uncertain. Dilemmas are not good/bad or optimal/suboptimal; each option protects one value under pressure and sacrifices another.
+- Every meaningful non-expression choice must leave at least one residue through \`residueHints\`: immediate prose echo, later textVariant, relationship behavior, encounter advantage/complication, visual staging hint, or recap summary. Keep residue sparse and fictional, not mechanical.
+- Hidden capability should appear as affordance, not visible stats: empathy reveals emotional tells, wit reveals contradictions, courage unlocks bold action, resolve unlocks endurance/refusal, resourcefulness reveals improvised paths, charm unlocks social openings. Do not expose numbers, odds, dice, or stat names in player-facing prose.
 - **expression**: Must set at least one flag (e.g., "was_sarcastic", "chose_humor") for callback tracking. NPCs should be able to reference the player's personality later. NEVER include statCheck.
 - **relationship**: Must include at least one consequence of type "relationship" (shifting trust, affection, respect, or fear with a specific NPC).
 - **strategic**: Must include statCheck on at least one option (attribute or skill check with difficulty). The player's build should matter.
@@ -815,6 +818,22 @@ Provide a \`tintFlag\` string like \`"tint:mercy"\`, \`"tint:reckless"\`, \`"tin
 \`"tint:honest"\`, \`"tint:defiant"\`, etc. that best characterises the tone this choice sets.
 Branching choices (those with \`nextSceneId\`) do NOT need a \`tintFlag\`.
 
+## Moral Contract (REQUIRED for dilemma choices)
+
+Every dilemma option must include \`moralContract\`:
+- \`valueA\` and \`valueB\`: the two values in real conflict
+- \`unavoidableCost\`: what cannot be protected no matter what the player chooses
+- \`benefits\`: who gains or is protected
+- \`harms\`: who pays, loses trust, loses safety, or is exposed
+- \`uncertainty\`: what the player cannot know yet
+
+## Residue Hints (REQUIRED for meaningful non-expression choices)
+
+Every relationship, strategic, or dilemma choice must include at least one \`residueHints\` item.
+Use these to tell later systems how the choice should echo without forcing a graph branch.
+Valid kinds: \`immediate_prose_echo\`, \`later_text_variant\`, \`relationship_behavior\`,
+\`encounter_advantage\`, \`encounter_complication\`, \`visual_staging\`, \`recap_summary\`.
+
 ## Stat Check (REQUIRED for relationship, strategic, dilemma)
 
 Each stat check defines a CHALLENGE GEOMETRY — the combination of skills the situation demands.
@@ -866,6 +885,22 @@ Think about what the situation DEMANDS:
       },
       "reactionText": "1-2 sentence world reaction (omit if nextSceneId is set).",
       "tintFlag": "tint:bold",
+      "moralContract": {
+        "valueA": "protect the vulnerable",
+        "valueB": "tell the truth",
+        "unavoidableCost": "Someone loses safety or trust either way.",
+        "benefits": ["npc-id-or-group"],
+        "harms": ["npc-id-or-group"],
+        "uncertainty": "The player cannot know whether the lie will hold."
+      },
+      "residueHints": [
+        {
+          "kind": "later_text_variant",
+          "description": "Later, this NPC notices whether the player protected them.",
+          "targetNpcId": "npc-id"
+        }
+      ],
+      "visualResidueHint": "The NPC stands closer or farther away in the next shared image.",
       "memorableMoment": {
         "id": "slug-style-id",
         "summary": "One-sentence past-tense recap.",
@@ -895,8 +930,10 @@ CRITICAL REQUIREMENTS:
 6. Every choice MUST have outcomeTexts (success, partial, failure) — original prose, not the choice text
 7. Non-branching choices MUST have reactionText and tintFlag
 8. relationship/strategic/dilemma choices MUST have statCheck
-9. Meaningful choices should include consequenceDomain, reminderPlan, and feedbackCue
-10. Return ONLY valid JSON, no markdown, no extra text
+9. Dilemma choices MUST include moralContract with competing values and unavoidable cost
+10. Meaningful non-expression choices MUST include at least one residueHints item
+11. Meaningful choices should include consequenceDomain, reminderPlan, and feedbackCue
+12. Return ONLY valid JSON, no markdown, no extra text
 `;
   }
 
@@ -1184,6 +1221,34 @@ CRITICAL REQUIREMENTS:
           `Dilemma choices should set tint flags (e.g., {type:"setFlag", flag:"tint:mercy", value:true}) ` +
           `so subsequent scenes can adapt their tone via textVariants.`
         );
+      }
+
+      for (const choice of choiceSet.choices) {
+        if (!choice.moralContract) {
+          choice.moralContract = {
+            valueA: choice.stakesAnnotation?.want || choiceSet.overallStakes?.want || 'protect one value',
+            valueB: choice.stakesAnnotation?.identity || choiceSet.overallStakes?.identity || 'protect a competing value',
+            unavoidableCost: choice.stakesAnnotation?.cost || choiceSet.overallStakes?.cost || 'Someone pays a cost either way.',
+            benefits: [],
+            harms: [],
+            uncertainty: 'The full consequence is not yet visible.',
+          };
+          console.warn(`[ChoiceAuthor] Dilemma choice "${choice.id}" missing moralContract — added advisory fallback.`);
+        }
+      }
+    }
+
+    for (const choice of choiceSet.choices) {
+      if (choiceSet.choiceType !== 'expression' && (!choice.residueHints || choice.residueHints.length === 0)) {
+        choice.residueHints = [{
+          kind: choice.reminderPlan?.later ? 'later_text_variant' : 'immediate_prose_echo',
+          description:
+            choice.reminderPlan?.later ||
+            choice.reminderPlan?.shortTerm ||
+            choice.feedbackCue?.progressSummary ||
+            'Let this choice echo in later prose, relationship behavior, or recap language.',
+        }];
+        console.warn(`[ChoiceAuthor] Meaningful choice "${choice.id}" missing residueHints — added advisory fallback.`);
       }
     }
   }

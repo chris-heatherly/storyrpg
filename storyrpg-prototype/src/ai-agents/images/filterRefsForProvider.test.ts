@@ -13,7 +13,10 @@ function ref(role: string, opts: Partial<ReferenceImage> = {}): ReferenceImage {
 
 const composite = ref('composite-sheet', { characterName: 'Aoi', viewType: 'composite' });
 const front = ref('character-reference', { characterName: 'Aoi', viewType: 'front' });
+const threeQuarter = ref('character-reference', { characterName: 'Aoi', viewType: 'three-quarter' });
+const profile = ref('character-reference', { characterName: 'Aoi', viewType: 'profile' });
 const face = ref('character-reference-face', { characterName: 'Aoi' });
+const expression = ref('character-reference-face-happy', { characterName: 'Aoi' });
 const styleAnchor = ref('style-anchor');
 const location = ref('location-master-shot');
 
@@ -41,6 +44,16 @@ describe('filterRefsForProvider', () => {
       const out = filterRefsForProvider([front, face], 'nano-banana');
       expect(out.refs).toEqual([front, face]);
       expect(out.extractedComposite).toBeUndefined();
+    });
+
+    it('drops legacy side/profile/expression refs for nano-banana', () => {
+      const out = filterRefsForProvider([front, face, threeQuarter, profile, expression, location], 'nano-banana');
+      expect(out.refs).toContain(front);
+      expect(out.refs).toContain(face);
+      expect(out.refs).toContain(location);
+      expect(out.refs).not.toContain(threeQuarter);
+      expect(out.refs).not.toContain(profile);
+      expect(out.refs).not.toContain(expression);
     });
   });
 
@@ -85,9 +98,6 @@ describe('filterRefsForProvider', () => {
     // gpt-image-2 accepts refs via /v1/images/edits but needs a tight pack:
     // one front view + face crop is best practice. Composite, 3q, and
     // profile dilute identity signal or copy as collages.
-    const threeQuarter = ref('character-reference', { characterName: 'Aoi', viewType: 'three-quarter' });
-    const profile = ref('character-reference', { characterName: 'Aoi', viewType: 'profile' });
-    const expression = ref('character-reference-face-happy', { characterName: 'Aoi' });
     const userProvided = ref('user-provided-character-reference');
 
     it('keeps the front view', () => {

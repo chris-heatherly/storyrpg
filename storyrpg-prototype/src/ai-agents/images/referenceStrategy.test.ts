@@ -25,23 +25,25 @@ describe('getReferenceStrategy', () => {
   });
 
   describe('nano-banana', () => {
-    it('keeps the full three-view pack + composite + expressions + silhouette', () => {
+    it('uses the same front-only identity strategy as gpt-image-2', () => {
       const s = getReferenceStrategy('nano-banana');
-      expect(s.generateViews).toEqual(['front', 'three-quarter', 'profile']);
-      expect(s.generateComposite).toBe(true);
-      expect(s.generateExpressions).toBe(true);
-      expect(s.generateBodyVocabulary).toBe(true);
-      expect(s.generateSilhouette).toBe(true);
-      expect(s.sceneRefs).toBe('all-views');
+      expect(s.generateViews).toEqual(['front']);
+      expect(s.generateComposite).toBe(false);
+      expect(s.generateExpressions).toBe(false);
+      expect(s.generateBodyVocabulary).toBe(false);
+      expect(s.generateSilhouette).toBe(false);
+      expect(s.sceneRefs).toBe('front+face');
+      expect(s.maxSceneRefs).toBeLessThanOrEqual(2);
     });
   });
 
   describe('atlas-cloud', () => {
-    it('matches the Gemini-family behavior', () => {
+    it('uses front-only refs so Atlas-hosted GPT Image 2 avoids turnarounds', () => {
       const s = getReferenceStrategy('atlas-cloud');
-      expect(s.generateViews.length).toBe(3);
-      expect(s.generateComposite).toBe(true);
-      expect(s.sceneRefs).toBe('all-views');
+      expect(s.generateViews).toEqual(['front']);
+      expect(s.generateComposite).toBe(false);
+      expect(s.sceneRefs).toBe('front+face');
+      expect(s.maxSceneRefs).toBeLessThanOrEqual(2);
     });
   });
 

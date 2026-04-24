@@ -17,8 +17,8 @@
  * separate so transport facts don't drift into policy tuning.
  *
  * Per-provider reference strategy summary (see referenceStrategy.ts for details):
- *   - nano-banana / atlas-cloud: full three-view pack + composite style anchor + expressions
- *   - dall-e (gpt-image-2):     front view only; one clean identity ref, no composite/expressions
+ *   - nano-banana / atlas-cloud: front view + derived face crop; no composite/side/profile by default
+ *   - dall-e (gpt-image-2):     front view + derived face crop; one clean identity path, no composite/expressions
  *   - midapi (Midjourney):      composite (--cref) + style anchor (--sref); 2 refs total
  *   - stable-diffusion:         three-view pack routed via ControlNet/IP-Adapter
  *   - placeholder:              nothing

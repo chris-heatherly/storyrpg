@@ -283,11 +283,10 @@ export function getReferencePackProfile(family: ImageSlotFamily): ReferencePackP
  * Per-provider rules:
  *
  *   nano-banana / atlas-cloud:
- *     Drop the composite sheet from the flat ref list — Gemini and
- *     multi-image URL providers echo collage layouts into their outputs
- *     when a turnaround is passed as a regular ref. The composite is
- *     surfaced separately via `extractedComposite` so the caller can set
- *     it as the style anchor via `setReferenceSheetStyleAnchor`.
+ *     Keep a tight front-view identity pack: full-body front view, derived
+ *     face crop, user-provided refs, plus non-character refs such as location
+ *     masters. Drop composite turnarounds, side/profile/3q views, and
+ *     expression sheets so providers don't copy sheet layouts or side views.
  *
  *   stable-diffusion:
  *     Drop the composite. IP-Adapter averages a collage into a muddy
@@ -343,7 +342,7 @@ export function filterRefsForProvider(
     case 'nano-banana':
     case 'atlas-cloud':
       return {
-        refs: nonComposite,
+        refs: nonComposite.filter(isFrontIdentityOrNonCharacterRef),
         extractedComposite: composite,
       };
 
@@ -406,4 +405,14 @@ export function filterRefsForProvider(
       // Unknown provider: return refs unchanged so callers still function.
       return { refs };
   }
+}
+
+function isFrontIdentityOrNonCharacterRef(ref: ReferenceImage): boolean {
+  if (ref.role === 'user-provided-character-reference') return true;
+  if (ref.role === 'character-reference-face') return true;
+  if (ref.role === 'character-reference') {
+    return !ref.viewType || ref.viewType === 'front';
+  }
+  if (ref.role.startsWith('character-reference-face-')) return false;
+  return ref.role !== 'character-reference';
 }

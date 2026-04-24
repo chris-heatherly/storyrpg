@@ -467,6 +467,11 @@ function buildCharacterPrompt(
     const charPhrase = beat.foregroundCharacterNames.length === 1
       ? beat.foregroundCharacterNames[0]
       : beat.foregroundCharacterNames.join(' and ');
+    const visibleNames = [
+      ...beat.foregroundCharacterNames,
+      ...(beat.backgroundCharacterNames || []),
+    ];
+    narrativeParts.push(`Visible shot cast: ${visibleNames.join(', ')} only. Do not add other scene-present characters.`);
     if (effectiveAction) {
       narrativeParts.push(`${charPhrase} ${effectiveAction}`);
     } else {

@@ -169,6 +169,7 @@ import { buildStoryImageSlotManifest } from '../images/storyImageSlotManifest';
 import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
 import { buildBeatImagePrompt, overrideShotFromPlan } from '../images/beatPromptBuilder';
 import { planShotSequence, type ShotPlan, type PanelMode } from '../images/shotSequencePlanner';
+import { resolveShotCast } from '../images/shotCastResolver';
 import {
   runTier1Checks,
   checkStructuralDiversity,
@@ -7292,8 +7293,7 @@ export class FullStoryPipeline {
       // User-facing toggles (`generateExpressionSheets`, etc.) can only
       // narrow the strategy — they never override it upward. This is how we
       // stop paying for composite / three-quarter / profile / expression
-      // sheets on gpt-image-2 (which doesn't meaningfully consume them)
-      // without touching the Gemini path.
+      // sheets on providers that only need a clean front identity anchor.
       const refStrategy = getReferenceStrategy(this.config.imageGen?.provider);
       const userWantsCharRefs = this.config.generation?.generateCharacterRefs ?? true;
       const userWantsBodyVocab = this.config.generation?.generateBodyVocabulary ?? isMajorCharacter;
@@ -7306,8 +7306,8 @@ export class FullStoryPipeline {
       const expressionTier = char.id === brief.protagonist.id ? 'core' as const : 'minimal' as const;
 
       // Surface the resolved strategy so an operator can verify at a glance
-      // that gpt-image-2 is running the trimmed path and not paying for
-      // ignored artifacts.
+      // that front-only providers are running the trimmed path and not
+      // paying for ignored artifacts.
       this.emit({
         type: 'debug',
         phase: 'images',
@@ -7475,9 +7475,9 @@ export class FullStoryPipeline {
 
           // Reference generation scope is driven by the per-provider
           // strategy (see `referenceStrategy.ts`):
-          //   - Gemini / Atlas: full three-view pack + composite style anchor
+          //   - Gemini / Atlas: front view + derived face crop
           //   - Midjourney:     composite only (drives --cref); skip views
-          //   - gpt-image-2:    front view only; no composite, no expressions
+          //   - gpt-image-2:    front view + derived face crop; no composite, no expressions
           //   - Stable Diffusion: three-view pack (routed via IP-Adapter)
           // Per-provider filtering in imageGenerationService + filterRefsForProvider
           // then decides which of these artifacts reach each downstream call.
@@ -7508,7 +7508,7 @@ export class FullStoryPipeline {
           this.emit({
             type: 'agent_complete',
             agent: 'CharacterReferenceSheetAgent',
-            message: `Character references complete for ${char.name}: ${generatedSheet.generatedImages.size} artifacts (views + composite)`,
+            message: `Character references complete for ${char.name}: ${generatedSheet.generatedImages.size} artifact(s)`,
             data: {
               characterId: char.id,
               viewCount: generatedSheet.generatedImages.size,
@@ -7635,6 +7635,10 @@ export class FullStoryPipeline {
           simpleProgressCb,
           primaryUserRef,
           userReferenceImages,
+          {
+            allowedViews: refStrategy.generateViews,
+            generateComposite: refStrategy.generateComposite,
+          },
         ),
         PIPELINE_TIMEOUTS.storyboard,
         `FullCharacterReferences(${char.name})`,
@@ -7643,7 +7647,7 @@ export class FullStoryPipeline {
       this.emit({
         type: 'agent_complete',
         agent: 'CharacterReferenceSheetAgent',
-        message: `Character references complete for ${char.name}: ${generatedSheet.generatedImages.size} artifacts (views + composite)`,
+        message: `Character references complete for ${char.name}: ${generatedSheet.generatedImages.size} artifact(s)`,
         data: {
           characterId: char.id,
           viewCount: generatedSheet.generatedImages.size,
@@ -8253,15 +8257,28 @@ ${clothingRule}
             || (!explicitShotType && this.isEstablishingBeat(b.text, b.speaker, b.primaryAction, beatCharContext));
           const resolvedShotType: 'establishing' | 'character' | 'action' = explicitShotType
             || (isEstablishing ? 'establishing' : 'character');
+          const shotCast = resolveShotCast({
+            beat: { ...b, shotType: resolvedShotType },
+            sceneCharacterIds,
+            characters: characterBible.characters.map(c => ({ id: c.id, name: c.name })),
+            protagonistId: brief.protagonist.id,
+          });
+          const visibleCharacterIds = [
+            ...shotCast.requiredForegroundCharacterIds,
+            ...shotCast.optionalBackgroundCharacterIds,
+          ];
+          const getName = (id: string) => characterBible.characters.find(c => c.id === id)?.name || id;
           return {
             id: b.id,
             text: b.text,
             isClimaxBeat: b.isClimaxBeat,
             isKeyStoryBeat: b.isKeyStoryBeat,
-            // Per-beat character classification — empty for establishing shots so no identity block is injected
-            characters: isEstablishing ? [] : beatCharContext.foreground,
-            foregroundCharacters: isEstablishing ? [] : beatCharContext.foregroundNames,
-            backgroundCharacters: isEstablishing ? [] : beatCharContext.backgroundNames,
+            // Per-beat shot cast: scene-present characters remain offscreen unless the beat needs them.
+            characters: isEstablishing ? [] : visibleCharacterIds,
+            foregroundCharacters: isEstablishing ? [] : shotCast.requiredForegroundCharacterIds.map(getName),
+            backgroundCharacters: isEstablishing ? [] : shotCast.optionalBackgroundCharacterIds.map(getName),
+            offscreenCharacters: shotCast.offscreenCharacterIds,
+            shotCastReason: shotCast.shotCastReason,
             // Map speakerMood to emotional hints for visual generation
             emotionHint: isEstablishing ? undefined : this.mapSpeakerMoodToEmotion(b.speakerMood),
             intensityHint: this.inferIntensity(b.speakerMood, b.text),
@@ -8504,14 +8521,16 @@ ${clothingRule}
           } else {
             shotCharacterIds = beat.characters && beat.characters.length > 0
               ? beat.characters
-              : sceneCharacterIds;
-            if (!shotCharacterIds.includes(brief.protagonist.id)) {
-              shotCharacterIds = [brief.protagonist.id, ...shotCharacterIds];
-            }
+              : [];
           }
           const shotCharacterNames = shotCharacterIds
             .map(id => characterBible.characters.find(c => c.id === id)?.name)
             .filter(Boolean) as string[];
+          this.emit({
+            type: 'debug',
+            phase: 'images',
+            message: `Shot cast for ${scene.sceneId}:${beatId}: ${shotCharacterNames.join(', ') || 'no visible characters'} (${beat.shotCastReason || 'resolved'})`,
+          });
 
           // B6: Look up per-beat color guidance from the episode color script.
           const beatColorEntry = (colorScript as any)?.beats?.find(
@@ -8926,17 +8945,44 @@ ${clothingRule}
       });
 
       const sceneCharacterIds = this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id);
-      const referenceImages = this.gatherCharacterReferenceImages(
-        sceneCharacterIds,
-        characterBible,
-        undefined,
-        { family: 'story-beat', slotId: `story-scene:${scopedSceneId}` }
-      );
 
       for (const beat of sceneBeats) {
         try {
+          const beatCharContext = this.analyzeBeatCharacters(
+            beat.text,
+            beat.speaker,
+            sceneCharacterIds,
+            characterBible,
+            brief.protagonist.id,
+          );
+          const explicitShotType = (beat as { shotType?: 'establishing' | 'character' | 'action' }).shotType;
+          const isEstablishing = explicitShotType === 'establishing'
+            || (!explicitShotType && this.isEstablishingBeat(beat.text, beat.speaker, beat.primaryAction, beatCharContext));
+          const resolvedShotType: 'establishing' | 'character' | 'action' = explicitShotType
+            || (isEstablishing ? 'establishing' : 'character');
+          const shotCast = resolveShotCast({
+            beat: { ...beat, shotType: resolvedShotType },
+            sceneCharacterIds,
+            characters: characterBible.characters.map(c => ({ id: c.id, name: c.name })),
+            protagonistId: brief.protagonist.id,
+          });
+          const shotCharacterIds = isEstablishing
+            ? []
+            : [...shotCast.requiredForegroundCharacterIds, ...shotCast.optionalBackgroundCharacterIds];
+          const shotCharacterNames = shotCharacterIds
+            .map(id => characterBible.characters.find(c => c.id === id)?.name)
+            .filter(Boolean) as string[];
+          const visibleCastClause = shotCharacterNames.length > 0
+            ? ` Visible characters in this shot: ${shotCharacterNames.join(', ')}. Do not include other scene-present characters.`
+            : ' No characters are visible in this establishing shot.';
+          const referenceImages = this.gatherCharacterReferenceImages(
+            shotCharacterIds,
+            characterBible,
+            undefined,
+            { family: 'story-beat', slotId: `story-beat:${scopedSceneId}::${beat.id}:recovery` }
+          );
           const fallbackPrompt: ImagePrompt = this.withSettingAwarePrompt({
-            prompt: `${this.sanitizePromptText(beat.text, brief, '')} Show exactly one concrete story moment in a single continuous frame from one camera angle. Do not show multiple moments, repeated figures, or stacked scenes inside the image.`,
+            prompt: `${this.sanitizePromptText(beat.text, brief, '')}${visibleCastClause} Show exactly one concrete story moment in a single continuous frame from one camera angle. Do not show multiple moments, repeated figures, or stacked scenes inside the image.`,
             style: this.config.artStyle || undefined,
             aspectRatio: '9:19.5',
             composition: `Scene: ${scene.sceneName}. Genre: ${brief.story.genre}, Tone: ${brief.story.tone}. Generate exactly ONE single full-bleed image with ONE unified scene and ONE camera angle. No split-screen, no diptych, no stacked panels, no repeated subject, no image-within-image.`,
@@ -8945,7 +8991,15 @@ ${clothingRule}
           const identifier = `beat-${scopedSceneId}-${beat.id}-recovery`;
           const result = await withTimeout(this.imageService.generateImage(
             fallbackPrompt, identifier,
-            { sceneId: scopedSceneId, beatId: beat.id, type: 'scene', characters: sceneCharacterIds },
+            {
+              sceneId: scopedSceneId,
+              beatId: beat.id,
+              type: 'scene',
+              characters: shotCharacterIds,
+              characterNames: shotCharacterNames,
+              characterDescriptions: this.buildCharacterDescriptions(shotCharacterIds, characterBible),
+              shotCastReason: shotCast.shotCastReason,
+            },
             referenceImages.length > 0 ? referenceImages : undefined
           ), PIPELINE_TIMEOUTS.imageGeneration, `recoveryFallback(${scopedSceneId}:${beat.id})`);
           if (result.imageUrl) {
@@ -13192,6 +13246,17 @@ Design the key art. Return STRICT JSON matching the schema.`;
           || (!explicitShotType && this.isEstablishingBeat(openerBeat.text, openerBeat.speaker, openerBeat.primaryAction, beatCharContext));
         const resolvedShotType: 'establishing' | 'character' | 'action' = explicitShotType
           || (isEstablishing ? 'establishing' : 'character');
+        const openerShotCast = resolveShotCast({
+          beat: { ...openerBeat, shotType: resolvedShotType },
+          sceneCharacterIds,
+          characters: characterBible.characters.map(c => ({ id: c.id, name: c.name })),
+          protagonistId: brief.protagonist.id,
+        });
+        const openerVisibleCharacterIds = [
+          ...openerShotCast.requiredForegroundCharacterIds,
+          ...openerShotCast.optionalBackgroundCharacterIds,
+        ];
+        const getShotName = (id: string) => characterBible.characters.find(c => c.id === id)?.name || id;
 
         const sceneColorMood = (colorScript as unknown as { scenes?: Array<Record<string, unknown>> })?.scenes
           ?.find((cs) => (cs as { sceneId?: string; sceneName?: string }).sceneId === scene.sceneId
@@ -13240,12 +13305,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
         if (isEstablishing) {
           shotCharacterIds = [];
         } else {
-          shotCharacterIds = openerBeat.characters && openerBeat.characters.length > 0
-            ? [...openerBeat.characters]
-            : [...sceneCharacterIds];
-          if (!shotCharacterIds.includes(brief.protagonist.id)) {
-            shotCharacterIds = [brief.protagonist.id, ...shotCharacterIds];
-          }
+          shotCharacterIds = openerVisibleCharacterIds;
         }
         const shotCharacterNames = shotCharacterIds
           .map(id => characterBible.characters.find(c => c.id === id)?.name)
@@ -13268,8 +13328,8 @@ Design the key art. Return STRICT JSON matching the schema.`;
           choiceContext: this.sanitizePromptText((openerBeat as { choiceContext?: string }).choiceContext || '', brief, ''),
           incomingChoiceContext: this.sanitizePromptText(scene.incomingChoiceContext || '', brief, ''),
           isBranchPayoff: !!scene.incomingChoiceContext,
-          foregroundCharacterNames: isEstablishing ? [] : (openerBeat.foregroundCharacters || shotCharacterNames),
-          backgroundCharacterNames: isEstablishing ? [] : openerBeat.backgroundCharacters,
+          foregroundCharacterNames: isEstablishing ? [] : openerShotCast.requiredForegroundCharacterIds.map(getShotName),
+          backgroundCharacterNames: isEstablishing ? [] : openerShotCast.optionalBackgroundCharacterIds.map(getShotName),
           colorMoodOverride: beatColorOverride,
         };
 

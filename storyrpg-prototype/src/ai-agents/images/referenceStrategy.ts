@@ -18,11 +18,11 @@
  * Current matrix:
  *
  *   nano-banana / atlas-cloud
- *     Gemini-family providers excel at multi-view consistency. Generate
- *     the full front / three-quarter / profile pack, plus a composite
- *     turnaround (installed as a low-weight style anchor via
- *     `setReferenceSheetStyleAnchor`), plus an expression sheet for
- *     major characters. Scene refs: all views + face crop.
+ *     Gemini-family providers and Atlas-hosted GPT Image 2 runs now use the
+ *     same tight character-reference policy as gpt-image-2: generate one
+ *     clean front view plus a derived face crop. Do not generate side/profile
+ *     views, composite turnarounds, or expression sheets by default; those
+ *     artifacts are expensive and can leak as collage / side-view layouts.
  *
  *   dall-e (gpt-image-2)
  *     The `/v1/images/edits` endpoint accepts multi-image input, but
@@ -59,7 +59,7 @@ import type { ImageProvider } from '../config';
  * `filterRefsForProvider` will *retain* for the provider at scene time.
  * Different providers prefer different shapes:
  *
- *   - `front`            : single front view only. Best for gpt-image-2.
+ *   - `front`            : single front view only.
  *   - `front+face`       : front view + tight face crop. Two clean signals.
  *   - `composite-anchor` : the composite sheet (turnaround), used as --cref
  *                          on Midjourney or as a style anchor on Gemini.
@@ -87,8 +87,7 @@ export interface ReferenceStrategy {
 
   /**
    * Generate a composite turnaround sheet after individual views? Only
-   * useful for providers that consume it specifically (Midjourney
-   * `--cref`, Gemini style anchor).
+   * useful for providers that consume it specifically (Midjourney `--cref`).
    */
   generateComposite: boolean;
 
@@ -126,22 +125,22 @@ export interface ReferenceStrategy {
 
 const STRATEGIES: Record<ImageProvider, ReferenceStrategy> = {
   'nano-banana': {
-    generateViews: ['front', 'three-quarter', 'profile'],
-    generateComposite: true,
-    generateExpressions: true,
-    generateBodyVocabulary: true,
-    generateSilhouette: true,
-    sceneRefs: 'all-views',
-    maxSceneRefs: 10,
+    generateViews: ['front'],
+    generateComposite: false,
+    generateExpressions: false,
+    generateBodyVocabulary: false,
+    generateSilhouette: false,
+    sceneRefs: 'front+face',
+    maxSceneRefs: 2,
   },
   'atlas-cloud': {
-    generateViews: ['front', 'three-quarter', 'profile'],
-    generateComposite: true,
-    generateExpressions: true,
-    generateBodyVocabulary: true,
-    generateSilhouette: true,
-    sceneRefs: 'all-views',
-    maxSceneRefs: 16,
+    generateViews: ['front'],
+    generateComposite: false,
+    generateExpressions: false,
+    generateBodyVocabulary: false,
+    generateSilhouette: false,
+    sceneRefs: 'front+face',
+    maxSceneRefs: 2,
   },
   midapi: {
     // Midjourney consumes the composite (--cref) and style-anchor (--sref);

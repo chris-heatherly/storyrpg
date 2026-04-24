@@ -233,11 +233,9 @@ export interface GeminiSettings extends ImageReferenceSettings {
   /** Resolution for cover art and master location images (default: '2K') */
   coverResolution?: ImageResolution;
   /**
-   * @deprecated As of the dual-artifact routing change, character reference
-   * generation always produces BOTH individual views and the composite
-   * sheet; per-provider filtering picks the right artifact per downstream
-   * call. Kept here for back-compat with persisted settings — the flag is
-   * read but no longer gates generation.
+   * @deprecated Character reference generation is provider-strategy driven.
+   * Front-only providers generate one clean front view + derived face crop;
+   * Midjourney may generate a composite; legacy persisted values are ignored.
    */
   useIndividualCharacterViews?: boolean;
   /**
@@ -246,6 +244,7 @@ export interface GeminiSettings extends ImageReferenceSettings {
    * being passed as a regular character-reference. This prevents the
    * "collage leak" where Gemini echoes the turnaround layout into scene
    * outputs while still letting the palette/silhouette inform style.
+   * No-op when the active provider strategy does not generate composites.
    */
   compositeAsStyleAnchor?: boolean;
   /** Thinking level for scene/beat images (default: 'minimal') */

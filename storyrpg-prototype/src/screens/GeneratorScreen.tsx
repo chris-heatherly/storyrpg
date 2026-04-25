@@ -57,6 +57,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import { TERMINAL } from '../theme';
 import { PipelineProgress } from '../components/PipelineProgress';
+import type { PipelineRuntimeSnapshot } from '../components/PipelineProgress';
 import { CheckpointReview } from '../components/CheckpointReview';
 import { ImageJobPanel } from '../components/ImageJobPanel';
 import { VideoJobPanel } from '../components/VideoJobPanel';
@@ -294,6 +295,41 @@ type FailureWorkspaceState = {
   error: string | null;
 };
 
+const buildPipelineRuntimeSnapshot = (
+  statusData: any,
+  fallbackJobId?: string | null,
+): PipelineRuntimeSnapshot => {
+  const progress = Math.max(0, Math.min(100, Number(statusData?.progress ?? 0)));
+  const currentPhase = typeof statusData?.currentPhase === 'string' ? statusData.currentPhase : undefined;
+  const imageProgress =
+    statusData?.imageProgress && typeof statusData.imageProgress.current === 'number'
+      ? { current: statusData.imageProgress.current, total: statusData.imageProgress.total || 0 }
+      : typeof statusData?.currentItem === 'number' && typeof statusData?.totalItems === 'number'
+        ? { current: statusData.currentItem, total: statusData.totalItems || 0 }
+        : null;
+
+  return {
+    jobId: statusData?.id || fallbackJobId || undefined,
+    status: statusData?.status,
+    currentPhase,
+    progress,
+    phaseProgress: typeof statusData?.phaseProgress === 'number' ? statusData.phaseProgress : undefined,
+    startedAt: statusData?.startedAt || statusData?.createdAt,
+    updatedAt: statusData?.updatedAt,
+    elapsedSeconds: typeof statusData?.elapsedSeconds === 'number' ? statusData.elapsedSeconds : undefined,
+    etaSeconds: typeof statusData?.etaSeconds === 'number' || statusData?.etaSeconds === null ? statusData.etaSeconds : undefined,
+    currentItem: typeof statusData?.currentItem === 'number' ? statusData.currentItem : undefined,
+    totalItems: typeof statusData?.totalItems === 'number' ? statusData.totalItems : undefined,
+    subphaseLabel: typeof statusData?.subphaseLabel === 'string' ? statusData.subphaseLabel : undefined,
+    imageProgress,
+    imageJobs: Array.isArray(statusData?.imageJobs) ? statusData.imageJobs : [],
+    resumeFromJobId: statusData?.resumeFromJobId,
+    outputDirectory:
+      statusData?.checkpoint?.resumeContext?.outputDirectory ||
+      statusData?.checkpoint?.outputs?.output_directory?.outputDirectory,
+  };
+};
+
 export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStoryGenerated, onPlayStory, onViewLibrary, resumeJobId, onCancelExternalPipeline }) => {
   const [state, setState] = useState<GeneratorState>('idle');
   const [events, setEvents] = useState<PipelineEvent[]>([]);
@@ -310,6 +346,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [liveProgress, setLiveProgress] = useState(0);
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
   const [imageProgress, setImageProgress] = useState<{ current: number; total: number } | null>(null);
+  const [pipelineRuntime, setPipelineRuntime] = useState<PipelineRuntimeSnapshot | null>(null);
   const seenManifestIdsRef = useRef<Set<string>>(new Set());
   const seenImageJobIdsRef = useRef<Set<string>>(new Set());
   const generationStartedAtRef = useRef<number>(Date.now());
@@ -584,6 +621,78 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     if (!jobId) return;
     void loadFailureWorkspace(jobId);
   }, [currentJobId, historyJob?.id, historyJob?.status, loadFailureWorkspace, state]);
+
+  useEffect(() => {
+    if (!USE_SERVER_WORKER || state !== 'running' || !currentJobId) return;
+    let cancelled = false;
+
+    const applyWorkerStatus = async () => {
+      try {
+        const response = await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}`);
+        const statusData = await response.json().catch(() => null);
+        if (cancelled || !response.ok || !statusData) return;
+
+        const progress = Math.max(0, Math.min(100, Number(statusData.progress ?? 0)));
+        const phase = typeof statusData.currentPhase === 'string' ? statusData.currentPhase : undefined;
+        setPipelineRuntime(buildPipelineRuntimeSnapshot(statusData, currentJobId));
+        if (phase) setCurrentPhase(phase);
+        setLiveProgress(progress);
+
+        if (typeof statusData.etaSeconds === 'number' || statusData.etaSeconds === null) {
+          setEtaSeconds(statusData.etaSeconds);
+        }
+        if (typeof statusData.currentItem === 'number' && typeof statusData.totalItems === 'number') {
+          setImageProgress({ current: statusData.currentItem, total: statusData.totalItems || 0 });
+        }
+
+        if (Array.isArray(statusData.timeline) && statusData.timeline.length > 0) {
+          const mappedEvents = statusData.timeline.slice(-80).map((entry: any): PipelineEvent => ({
+            type: entry.type === 'pipeline_event'
+              ? (entry.eventType || 'debug')
+              : entry.type === 'image_job_event'
+                ? 'debug'
+                : entry.type === 'stderr'
+                  ? 'warning'
+                  : 'debug',
+            phase: entry.phase || phase,
+            agent: entry.agent,
+            message: entry.message || entry.data?.identifier || entry.eventType || entry.type || 'worker update',
+            timestamp: entry.timestamp ? new Date(entry.timestamp) : new Date(),
+            telemetry: entry.telemetry,
+          }));
+          setEvents(mappedEvents);
+        }
+
+        await updateGenJob(currentJobId, {
+          status: (statusData.status as any) || 'running',
+          currentPhase: phase || 'processing',
+          progress,
+          etaSeconds: typeof statusData.etaSeconds === 'number' || statusData.etaSeconds === null ? statusData.etaSeconds : undefined,
+          currentItem: typeof statusData.currentItem === 'number' ? statusData.currentItem : undefined,
+          totalItems: typeof statusData.totalItems === 'number' ? statusData.totalItems : undefined,
+          subphaseLabel: typeof statusData.subphaseLabel === 'string' ? statusData.subphaseLabel : undefined,
+        });
+
+        if (statusData.status === 'failed') {
+          setError(statusData.error || 'Generation failed');
+          setState('error');
+          void loadFailureWorkspace(currentJobId);
+        } else if (statusData.status === 'completed') {
+          setLiveProgress(100);
+          setState('complete');
+        }
+      } catch (pollErr) {
+        console.warn('[GeneratorScreen] Failed to poll worker status:', pollErr);
+      }
+    };
+
+    void applyWorkerStatus();
+    const interval = setInterval(() => { void applyWorkerStatus(); }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [currentJobId, loadFailureWorkspace, state, updateGenJob]);
 
   useEffect(() => {
     if (analysisCharacters.length === 0) {
@@ -1275,6 +1384,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     setLiveProgress(0);
     setEtaSeconds(null);
     setImageProgress(null);
+    setPipelineRuntime(null);
     seenManifestIdsRef.current.clear();
     seenImageJobIdsRef.current.clear();
     generationStartedAtRef.current = Date.now();
@@ -1310,6 +1420,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         (statusData) => {
           const progress = Math.max(0, Math.min(100, Number(statusData?.progress ?? 0)));
           const currentPhaseFromStatus = statusData?.currentPhase;
+          setPipelineRuntime(buildPipelineRuntimeSnapshot(statusData, workerJobIdForUpdates));
           if (typeof currentPhaseFromStatus === 'string' && currentPhaseFromStatus.length > 0) {
             setCurrentPhase(currentPhaseFromStatus);
           }
@@ -1667,6 +1778,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       setLiveProgress(0);
       setEtaSeconds(null);
       setImageProgress(null);
+      setPipelineRuntime(null);
       setError(null);
       setState('running');
     } catch (resumeErr) {
@@ -1702,7 +1814,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     setState('idle'); setEvents([]); setCurrentCheckpoint(null); setGeneratedStory(null); setGeneratedCode(null); setError(null); setCustomStoryTitle('');
     setOutputManifest(null); setOutputDirectory(null); pipelineRef.current = null; clearDocument();
     setCurrentJobId(null); setActiveJobId(null);
-    setLiveProgress(0); setEtaSeconds(null);
+    setLiveProgress(0); setEtaSeconds(null); setImageProgress(null); setPipelineRuntime(null);
     setIsViewingHistory(false); setHistoryJob(undefined);
   };
 
@@ -3281,7 +3393,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         {state === 'analyzing' && (
           <View style={styles.section}>
             <View style={styles.sectionHeaderRow}><Search size={18} color={TERMINAL.colors.amber} /><Text style={[styles.sectionTitle, { color: TERMINAL.colors.amber }]}>SOURCE ANALYSIS IN PROGRESS</Text></View>
-            <View style={styles.progressPlaceholder}><PipelineProgress events={events} currentPhase="source_analysis" isRunning={true} progress={liveProgress} etaSeconds={etaSeconds} /></View>
+            <View style={styles.progressPlaceholder}><PipelineProgress events={events} currentPhase="source_analysis" isRunning={true} progress={liveProgress} etaSeconds={etaSeconds} runtime={pipelineRuntime} /></View>
           </View>
         )}
         {state === 'analysis_complete' && (
@@ -3647,7 +3759,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         {(state === 'running' || state === 'checkpoint') && (
           <View style={styles.runningSection}>
             <ProgressStep>
-              <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} />
+              <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} runtime={pipelineRuntime} />
               <View style={styles.runningActions}>
                 <TouchableOpacity style={styles.cancelButton} onPress={cancelGeneration}>
                   <StopCircle size={18} color={TERMINAL.colors.error} />
@@ -3783,7 +3895,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             {/* Pipeline Progress / Event Log */}
             {events.length > 0 && (
               <View style={styles.historyProgressSection}>
-                <PipelineProgress events={events} currentPhase={currentPhase} isRunning={false} progress={historyJob.progress} etaSeconds={null} />
+                <PipelineProgress events={events} currentPhase={currentPhase} isRunning={false} progress={historyJob.progress} etaSeconds={null} runtime={pipelineRuntime} />
               </View>
             )}
 

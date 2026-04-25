@@ -59,7 +59,18 @@ export interface PipelineRuntimeSnapshot {
     status?: string;
     progress?: number;
     imageUrl?: string;
-    metadata?: Record<string, unknown>;
+    metadata?: {
+      sceneId?: string;
+      beatId?: string;
+      type?: string;
+      [key: string]: unknown;
+    };
+  }>;
+  imageManifest?: Array<{
+    identifier?: string;
+    sceneId?: string;
+    beatId?: string;
+    description?: string;
   }>;
   resumeFromJobId?: string;
   outputDirectory?: string;
@@ -235,6 +246,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   const effectiveEta = runtime?.etaSeconds ?? etaSeconds;
   const effectiveImageProgress = runtime?.imageProgress || imageProgress;
   const imageJobs = runtime?.imageJobs || [];
+  const imageManifest = runtime?.imageManifest || [];
   const imageCounts = imageJobs.reduce(
     (acc, job) => {
       const status = job.status || 'unknown';
@@ -249,6 +261,37 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   const activeImageJob = [...imageJobs].reverse().find((job) => job.status === 'processing')
     || [...imageJobs].reverse().find((job) => job.status === 'pending');
   const cacheHits = events.filter((event) => /cache HIT/i.test(String(event.message || ''))).length;
+  const getBeatKey = (item: {
+    sceneId?: string;
+    beatId?: string;
+    identifier?: string;
+    metadata?: { sceneId?: string; beatId?: string; [key: string]: unknown };
+  }) => {
+    const sceneId = item.sceneId || item.metadata?.sceneId;
+    const beatId = item.beatId || item.metadata?.beatId;
+    if (sceneId && beatId) return `${sceneId}:${beatId}`;
+    return item.identifier;
+  };
+  const plannedBeatKeys = new Set<string>();
+  for (const item of imageManifest) {
+    const key = getBeatKey(item);
+    if (key) plannedBeatKeys.add(key);
+  }
+  for (const job of imageJobs) {
+    const key = getBeatKey(job);
+    if (key) plannedBeatKeys.add(key);
+  }
+  const completedBeatKeys = new Set<string>();
+  for (const job of imageJobs) {
+    const key = getBeatKey(job);
+    if (key && (job.status === 'completed' || !!job.imageUrl)) completedBeatKeys.add(key);
+  }
+  const plannedBeatCount = plannedBeatKeys.size;
+  const completedBeatCount = completedBeatKeys.size;
+  const slotTotal = Math.max(
+    typeof telemetryItemTotal === 'number' ? telemetryItemTotal : 0,
+    imageJobs.length,
+  );
   const lastUpdateAgeSeconds = runtime?.updatedAt
     ? Math.max(0, Math.round((Date.now() - new Date(runtime.updatedAt).getTime()) / 1000))
     : undefined;
@@ -367,6 +410,32 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
               <Text style={styles.opsQueueText}>
                 {imageCounts.completed} done / {imageCounts.processing} active / {imageCounts.pending} queued / {imageCounts.failed} failed
                 {cacheHits > 0 ? ` / ${cacheHits} cache hit event(s)` : ''}
+              </Text>
+            </View>
+          )}
+
+          {(plannedBeatCount > 0 || slotTotal > 0) && (
+            <View style={styles.workPlan}>
+              <View style={styles.workPlanHeader}>
+                <Text style={styles.workPlanTitle}>MASTER WORK PLAN</Text>
+                <Text style={styles.workPlanValue}>
+                  {completedBeatCount}/{plannedBeatCount || completedBeatCount} BEATS IMAGED
+                </Text>
+              </View>
+              {plannedBeatCount > 0 && (
+                <View style={styles.workPlanTrack}>
+                  <View
+                    style={[
+                      styles.workPlanFill,
+                      { width: `${Math.min(100, Math.round((completedBeatCount / plannedBeatCount) * 100))}%` },
+                    ]}
+                  />
+                </View>
+              )}
+              <Text style={styles.workPlanMeta}>
+                {slotTotal > 0
+                  ? `${imageCounts.completed}/${slotTotal} IMAGE SLOTS COMPLETE`
+                  : `${imageManifest.length} PLANNED IMAGE SLOT${imageManifest.length === 1 ? '' : 'S'}`}
               </Text>
             </View>
           )}
@@ -670,6 +739,50 @@ const styles = StyleSheet.create({
     color: TERMINAL.colors.muted,
     fontSize: 9,
     marginTop: 4,
+    fontWeight: '800',
+    letterSpacing: 0,
+  },
+  workPlan: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.08)',
+  },
+  workPlanHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  workPlanTitle: {
+    color: TERMINAL.colors.primary,
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  workPlanValue: {
+    color: 'white',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  workPlanTrack: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    overflow: 'hidden',
+    marginTop: 8,
+  },
+  workPlanFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: TERMINAL.colors.cyan,
+  },
+  workPlanMeta: {
+    color: TERMINAL.colors.muted,
+    fontSize: 9,
+    lineHeight: 14,
+    marginTop: 6,
     fontWeight: '800',
     letterSpacing: 0,
   },

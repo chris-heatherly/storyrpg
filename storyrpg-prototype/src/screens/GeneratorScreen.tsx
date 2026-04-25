@@ -323,6 +323,7 @@ const buildPipelineRuntimeSnapshot = (
     subphaseLabel: typeof statusData?.subphaseLabel === 'string' ? statusData.subphaseLabel : undefined,
     imageProgress,
     imageJobs: Array.isArray(statusData?.imageJobs) ? statusData.imageJobs : [],
+    imageManifest: Array.isArray(statusData?.imageManifest) ? statusData.imageManifest : [],
     resumeFromJobId: statusData?.resumeFromJobId,
     outputDirectory:
       statusData?.checkpoint?.resumeContext?.outputDirectory ||

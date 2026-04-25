@@ -122,6 +122,20 @@ function createStoryCatalog(storiesDir, port) {
     }
 
     const pkg = decoded.pkg;
+    if (!Array.isArray(pkg.story?.episodes) || pkg.story.episodes.length === 0) {
+      const e = {
+        kind: 'empty_story',
+        message: 'story has no episodes; likely a failed partial generation package',
+      };
+      console.error(`[StoryCatalog] ${dirName}/${primary.filename} has no episodes — refusing to list as playable`);
+      storyJsonCache.set(cacheKey, { pkg: null, mtimeMs: stats.mtimeMs, manifestVerified, error: e });
+      return {
+        pkg: null, rawStory: null, dirName,
+        storyFile: primary.abs, primaryFilename: primary.filename,
+        mtimeMs: stats.mtimeMs, manifestVerified, error: e,
+      };
+    }
+
     storyJsonCache.set(cacheKey, { pkg, mtimeMs: stats.mtimeMs, manifestVerified });
     return {
       pkg,

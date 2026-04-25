@@ -959,9 +959,13 @@ function createWorkerLifecycle({
     });
 
     app.get('/worker-jobs/:jobId/failure-context', (req, res) => {
-      const job = loadWorkerJobs().find((j) => j.id === req.params.jobId);
+      const job = loadWorkerJobs().find((j) => j.id === req.params.jobId)
+        || loadJobs().find((j) => j.id === req.params.jobId);
       if (!job) return res.status(404).json({ error: 'Worker job not found' });
-      const checkpoint = hydrateCheckpointOutputs(loadCheckpoints().find((c) => c.jobId === job.id));
+      const checkpoint = hydrateCheckpointOutputs(
+        loadCheckpoints().find((c) => c.jobId === job.id)
+        || job.checkpoint
+      );
       res.json({
         jobId: job.id,
         status: job.status,
@@ -1073,9 +1077,13 @@ function createWorkerLifecycle({
     });
 
     app.post('/worker-jobs/:jobId/resume', (req, res) => {
-      const sourceJob = loadWorkerJobs().find((j) => j.id === req.params.jobId);
+      const sourceJob = loadWorkerJobs().find((j) => j.id === req.params.jobId)
+        || loadJobs().find((j) => j.id === req.params.jobId);
       if (!sourceJob) return res.status(404).json({ error: 'Worker job not found' });
-      const hydratedCheckpoint = hydrateCheckpointOutputs(loadCheckpoints().find((c) => c.jobId === sourceJob.id));
+      const hydratedCheckpoint = hydrateCheckpointOutputs(
+        loadCheckpoints().find((c) => c.jobId === sourceJob.id)
+        || sourceJob.checkpoint
+      );
       const resumeContext = hydratedCheckpoint?.resumeContext || {};
       const basePayload = resumeContext.requestPayload;
       if (!basePayload || typeof basePayload !== 'object') {

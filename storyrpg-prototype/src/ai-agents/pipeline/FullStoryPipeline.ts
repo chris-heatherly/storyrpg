@@ -6514,6 +6514,7 @@ export class FullStoryPipeline {
 
       // Overlay images from AssetRegistry into the assembled story
       story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
+      this.addCheckpoint('Final Story', story, false);
 
       // 6. Save results (using outputDirectory created earlier)
       // Prepare visual planning outputs for saving

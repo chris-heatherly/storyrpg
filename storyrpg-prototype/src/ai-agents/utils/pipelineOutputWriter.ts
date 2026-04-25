@@ -53,6 +53,14 @@ function hasNodeFs(): boolean {
 }
 
 function nodeRequire<T>(name: string): T {
+  const getBuiltinModule = (typeof process !== 'undefined'
+    ? (process as unknown as { getBuiltinModule?: (mod: string) => unknown }).getBuiltinModule
+    : undefined);
+  if (typeof getBuiltinModule === 'function') {
+    const builtin = getBuiltinModule(name);
+    if (builtin) return builtin as T;
+  }
+
   // Hidden from Metro's static analyzer. Metro rejects `require(variable)`
   // because it can't bundle an unknown module; we only call this from Node
   // branches (hasNodeFs() === true), so indirecting through Function lets

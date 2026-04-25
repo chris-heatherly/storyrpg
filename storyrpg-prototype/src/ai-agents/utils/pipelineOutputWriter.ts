@@ -784,6 +784,26 @@ export async function saveEarlyDiagnostic(
   }
 }
 
+export function loadEarlyDiagnosticSync<T = unknown>(
+  outputDir: string,
+  filename: string,
+): T | null {
+  let nodeFs: { existsSync: (p: string) => boolean; readFileSync: (p: string, enc: BufferEncoding) => string } | undefined;
+  try {
+    nodeFs = nodeRequire<typeof import('fs')>('fs');
+  } catch {
+    /* non-Node */
+  }
+  if (!nodeFs?.existsSync || !nodeFs.readFileSync) return null;
+  const fullPath = outputDir + filename;
+  try {
+    if (!nodeFs.existsSync(fullPath)) return null;
+    return JSON.parse(nodeFs.readFileSync(fullPath, 'utf8')) as T;
+  } catch {
+    return null;
+  }
+}
+
 /** Persisted list of completed encounter slot base identifiers for resume across pipeline runs. */
 export interface EncounterResumeStateV1 {
   version: 1;

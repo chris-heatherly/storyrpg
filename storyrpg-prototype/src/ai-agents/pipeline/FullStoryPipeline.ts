@@ -106,6 +106,7 @@ import {
   saveEncounterImageDiagnosticsLog,
   saveVideoDiagnosticsLog,
   saveEncounterResumeState,
+  loadEarlyDiagnosticSync,
   loadEncounterResumeStateSync,
   saveBeatResumeState,
   loadBeatResumeStateSync,
@@ -1204,6 +1205,59 @@ export class FullStoryPipeline {
   ): T | undefined {
     if (resumeCheckpoint?.steps?.[stepId]?.status !== 'completed') return undefined;
     return resumeCheckpoint.outputs?.[stepId] as T | undefined;
+  }
+
+  private episodeCheckpointFile(episodeNumber: number, kind: string, id?: string): string {
+    const safeKind = String(kind || 'artifact').replace(/[^a-z0-9._-]+/gi, '-');
+    const safeId = id ? String(id).replace(/[^a-z0-9._-]+/gi, '-') : undefined;
+    return `checkpoints/episode-${episodeNumber}/${safeId ? `${safeKind}-${safeId}` : safeKind}.json`;
+  }
+
+  private async saveResumeUnit<T>(
+    outputDirectory: string | undefined,
+    unitId: string,
+    artifactPath: string,
+    data: T,
+  ): Promise<void> {
+    if (!outputDirectory) return;
+    await saveEarlyDiagnostic(outputDirectory, artifactPath, data);
+    const manifestPath = 'checkpoints/checkpoint-manifest.json';
+    const manifest = loadEarlyDiagnosticSync<{
+      version: 1;
+      generatedAt: string;
+      updatedAt: string;
+      units: Record<string, { status: 'completed'; artifactPath: string; updatedAt: string }>;
+    }>(outputDirectory, manifestPath) || {
+      version: 1 as const,
+      generatedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      units: {},
+    };
+    manifest.updatedAt = new Date().toISOString();
+    manifest.units[unitId] = {
+      status: 'completed',
+      artifactPath,
+      updatedAt: manifest.updatedAt,
+    };
+    await saveEarlyDiagnostic(outputDirectory, manifestPath, manifest);
+  }
+
+  private loadResumeUnit<T>(
+    outputDirectory: string | undefined,
+    unitId: string,
+    artifactPath: string,
+  ): T | undefined {
+    if (!outputDirectory) return undefined;
+    const data = loadEarlyDiagnosticSync<T>(outputDirectory, artifactPath);
+    if (data) {
+      this.emit({
+        type: 'debug',
+        phase: 'resume',
+        message: `Resumed ${unitId} from ${artifactPath}`,
+      });
+      return data;
+    }
+    return undefined;
   }
 
   private getEpisodeScopedSceneId(brief: FullCreativeBrief, sceneId: string): string {
@@ -3666,7 +3720,9 @@ export class FullStoryPipeline {
     worldBible: WorldBible,
     characterBible: CharacterBible,
     blueprint: EpisodeBlueprint,
-    branchAnalysis?: BranchAnalysis
+    branchAnalysis?: BranchAnalysis,
+    outputDirectory?: string,
+    episodeNumber?: number
   ): Promise<{ sceneContents: SceneContent[]; choiceSets: ChoiceSet[]; encounters: Map<string, EncounterStructure> }> {
     const sceneContents: SceneContent[] = [];
     const choiceSets: ChoiceSet[] = [];
@@ -3871,6 +3927,12 @@ export class FullStoryPipeline {
       await this.checkCancellation();
       const sceneBlueprint = sceneOrder[i];
       const previousScene = i > 0 ? sceneContents[i - 1] : undefined;
+      const sceneUnitId = episodeNumber ? `scene_content:episode-${episodeNumber}:${sceneBlueprint.id}` : '';
+      const choiceUnitId = episodeNumber ? `choice_set:episode-${episodeNumber}:${sceneBlueprint.id}` : '';
+      const encounterUnitId = episodeNumber ? `encounter:episode-${episodeNumber}:${sceneBlueprint.id}` : '';
+      const sceneCheckpointPath = episodeNumber ? this.episodeCheckpointFile(episodeNumber, 'scene', sceneBlueprint.id) : '';
+      const choiceCheckpointPath = episodeNumber ? this.episodeCheckpointFile(episodeNumber, 'choices', sceneBlueprint.id) : '';
+      const encounterCheckpointPath = episodeNumber ? this.episodeCheckpointFile(episodeNumber, 'encounter', sceneBlueprint.id) : '';
       const requiredScenes = new Set<string>([
         ...(sceneBlueprint.requires || []),
         ...((dependencyGraph.nodes.get(sceneBlueprint.id)?.predecessors || [])),
@@ -3882,6 +3944,33 @@ export class FullStoryPipeline {
           'content_generation',
           { context: { sceneId: sceneBlueprint.id, unresolvedDeps } }
         );
+      }
+
+      if (outputDirectory && episodeNumber) {
+        const resumedScene = this.loadResumeUnit<SceneContent>(outputDirectory, sceneUnitId, sceneCheckpointPath);
+        const resumedChoice = sceneBlueprint.choicePoint
+          ? this.loadResumeUnit<ChoiceSet>(outputDirectory, choiceUnitId, choiceCheckpointPath)
+          : undefined;
+        const resumedEncounter = sceneBlueprint.isEncounter && sceneBlueprint.encounterType
+          ? this.loadResumeUnit<EncounterStructure>(outputDirectory, encounterUnitId, encounterCheckpointPath)
+          : undefined;
+        const hasRequiredChoice = !sceneBlueprint.choicePoint || Boolean(resumedChoice);
+        const hasRequiredEncounter = !(sceneBlueprint.isEncounter && sceneBlueprint.encounterType) || Boolean(resumedEncounter);
+        if (resumedScene && hasRequiredChoice && hasRequiredEncounter) {
+          sceneContents.push(resumedScene);
+          if (resumedChoice) choiceSets.push(resumedChoice);
+          if (resumedEncounter) encounters.set(sceneBlueprint.id, resumedEncounter);
+          contentWorkCompleted += 1 + (resumedChoice ? 1 : 0) + (resumedEncounter ? 1 : 0);
+          finalizedScenes.add(sceneBlueprint.id);
+          this.emitPhaseProgress(
+            'content',
+            contentWorkCompleted,
+            contentWorkTotal,
+            'content:work',
+            `Resumed completed content for ${sceneBlueprint.id}`
+          );
+          continue;
+        }
       }
 
       // Filter protagonist from npcsPresent — the protagonist is always implicit,
@@ -5215,6 +5304,20 @@ export class FullStoryPipeline {
           `Encounter pass complete for ${sceneBlueprint.id}`
         );
       }
+      const completedScene = sceneContents.find((sc) => sc.sceneId === sceneBlueprint.id);
+      if (completedScene && outputDirectory && episodeNumber) {
+        await this.saveResumeUnit(outputDirectory, sceneUnitId, sceneCheckpointPath, completedScene);
+        const completedChoice = choiceSets.find((cs) =>
+          completedScene.beats.some((beat) => beat.id === cs.beatId)
+        );
+        if (completedChoice) {
+          await this.saveResumeUnit(outputDirectory, choiceUnitId, choiceCheckpointPath, completedChoice);
+        }
+        const completedEncounter = encounters.get(sceneBlueprint.id);
+        if (completedEncounter) {
+          await this.saveResumeUnit(outputDirectory, encounterUnitId, encounterCheckpointPath, completedEncounter);
+        }
+      }
       finalizedScenes.add(sceneBlueprint.id);
     }
 
@@ -6502,6 +6605,12 @@ export class FullStoryPipeline {
       // Overlay images from AssetRegistry into the assembled story
       story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
       this.addCheckpoint('Final Story', story, false);
+      await this.saveResumeUnit(
+        outputDirectory,
+        'final_story_package',
+        'checkpoints/final-story-before-save.json',
+        story,
+      );
 
       // 6. Save results (using outputDirectory created earlier)
       // Prepare visual planning outputs for saving
@@ -6687,9 +6796,21 @@ export class FullStoryPipeline {
         }
       };
 
-      const blueprint = await this.measurePhase(`episode_${i}_architecture`, () => this.runEpisodeArchitecture(episodeBrief, worldBible, characterBible));
+      const blueprintPath = this.episodeCheckpointFile(i, 'blueprint');
+      const blueprint = this.loadResumeUnit<EpisodeBlueprint>(
+        outputDirectory,
+        `episode_blueprint:episode-${i}`,
+        blueprintPath,
+      ) || await this.measurePhase(`episode_${i}_architecture`, () => this.runEpisodeArchitecture(episodeBrief, worldBible, characterBible));
+      await this.saveResumeUnit(outputDirectory, `episode_blueprint:episode-${i}`, blueprintPath, blueprint);
       await saveEarlyDiagnostic(outputDirectory, `episode-${i}-blueprint.json`, blueprint);
-      const branchAnalysis = await this.measurePhase(`episode_${i}_branch_analysis`, () => this.runBranchAnalysis(episodeBrief, blueprint));
+      const branchPath = this.episodeCheckpointFile(i, 'branch-analysis');
+      const branchAnalysis = this.loadResumeUnit<BranchAnalysis | null>(
+        outputDirectory,
+        `branch_analysis:episode-${i}`,
+        branchPath,
+      ) ?? await this.measurePhase(`episode_${i}_branch_analysis`, () => this.runBranchAnalysis(episodeBrief, blueprint));
+      await this.saveResumeUnit(outputDirectory, `branch_analysis:episode-${i}`, branchPath, branchAnalysis);
       const { sceneContents, choiceSets, encounters } = await this.measurePhase(
         `episode_${i}_content`,
         () => this.runContentGeneration(
@@ -6697,7 +6818,9 @@ export class FullStoryPipeline {
           worldBible,
           characterBible,
           blueprint,
-          branchAnalysis || undefined
+          branchAnalysis || undefined,
+          outputDirectory,
+          i
         )
       );
 

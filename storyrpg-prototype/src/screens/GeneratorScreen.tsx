@@ -285,6 +285,7 @@ interface GeneratorScreenProps {
 type FailureWorkspaceState = {
   failureContext: Record<string, unknown> | null;
   checkpoint: Record<string, unknown> | null;
+  resumePlan: Record<string, unknown> | null;
   tab: 'failure' | 'fix' | 'resume';
   payloadPatchJson: string;
   outputsPatchJson: string;
@@ -473,6 +474,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [failureWorkspace, setFailureWorkspace] = useState<FailureWorkspaceState>({
     failureContext: null,
     checkpoint: null,
+    resumePlan: null,
     tab: 'failure',
     payloadPatchJson: '{}',
     outputsPatchJson: '{}',
@@ -540,16 +542,23 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const loadFailureWorkspace = useCallback(async (jobId: string) => {
     setFailureWorkspace((prev) => ({ ...prev, loading: true, error: null }));
     try {
-      const response = await fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/failure-context`);
+      const [response, resumePlanResponse] = await Promise.all([
+        fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/failure-context`),
+        fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/resume-plan`),
+      ]);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data?.error || 'Failed to load failure context.');
       }
+      const resumePlan = resumePlanResponse.ok
+        ? await resumePlanResponse.json().catch(() => null)
+        : null;
       setFailureWorkspace((prev) => ({
         ...prev,
         loading: false,
         failureContext: (data?.failureContext || null) as Record<string, unknown> | null,
         checkpoint: (data?.checkpoint || null) as Record<string, unknown> | null,
+        resumePlan: (resumePlan || null) as Record<string, unknown> | null,
         tab: 'failure',
         error: null,
       }));
@@ -1765,6 +1774,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     const failure = failureWorkspace.failureContext;
     if (!failure) return null;
 
+    const resumePlan = failureWorkspace.resumePlan;
     const resumeFrom = typeof failure.resumeFromStepId === 'string' ? failure.resumeFromStepId : 'last durable checkpoint';
     const blockedAction = typeof failure.failureArtifactKey === 'string' ? failure.failureArtifactKey : 'credit-spending recovery';
 
@@ -1860,8 +1870,21 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
 
         {failureWorkspace.tab === 'resume' && (
           <View style={styles.failurePanel}>
+            {resumePlan && (
+              <>
+                <Text style={styles.failureLabel}>RESUME STRATEGY</Text>
+                <Text style={styles.failureValue}>{String(resumePlan.strategy || 'generation').toUpperCase()}</Text>
+                <Text style={styles.failureLabel}>REUSABLE WORK</Text>
+                <Text style={styles.failureMessage}>
+                  {String(resumePlan.reusableUnitCount ?? 0)} checkpoint unit(s)
+                </Text>
+                {typeof resumePlan.humanSummary === 'string' && (
+                  <Text style={styles.failureMessage}>{resumePlan.humanSummary}</Text>
+                )}
+              </>
+            )}
             <Text style={styles.failureLabel}>RESUME FROM</Text>
-            <Text style={styles.failureValue}>{resumeFrom}</Text>
+            <Text style={styles.failureValue}>{String(resumePlan?.resumeFromUnit || resumeFrom)}</Text>
             <Text style={styles.failureLabel}>CURRENT FAILURE POLICY</Text>
             <Text style={styles.failureValue}>{generationSettings.failFastMode ? 'FAIL FAST' : 'RECOVER'}</Text>
             <Text style={styles.failureLabel}>PATCHABLE INPUTS</Text>
@@ -1880,7 +1903,15 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             disabled={failureWorkspace.resuming}
           >
             <Text style={styles.executeButtonText}>
-              {failureWorkspace.resuming ? 'RESUMING...' : 'RESUME FROM FAILURE'}
+              {failureWorkspace.resuming
+                ? 'RESUMING...'
+                : failureWorkspace.resumePlan?.strategy === 'scene'
+                  ? `RESUME AT ${String(failureWorkspace.resumePlan.resumeFromUnit || 'FAILED SCENE').toUpperCase()}`
+                  : failureWorkspace.resumePlan?.strategy === 'images'
+                    ? 'RESUME MISSING IMAGES'
+                    : failureWorkspace.resumePlan?.strategy === 'save'
+                      ? 'RETRY FINAL SAVE'
+                      : 'RESUME FROM FAILURE'}
             </Text>
           </TouchableOpacity>
         </View>

@@ -267,6 +267,84 @@ function createWorkerLifecycle({
     return { ...checkpoint, outputs: hydratedOutputs };
   }
 
+  function getOutputDirectoryFromCheckpoint(checkpoint) {
+    return checkpoint?.resumeContext?.outputDirectory
+      || checkpoint?.outputs?.output_directory?.outputDirectory
+      || checkpoint?.failureContext?.context?.outputDirectory;
+  }
+
+  function resolveOutputDirectory(outputDirectory) {
+    if (!outputDirectory || typeof outputDirectory !== 'string') return null;
+    return path.isAbsolute(outputDirectory)
+      ? outputDirectory
+      : path.resolve(rootDir, outputDirectory);
+  }
+
+  function loadResumeManifest(checkpoint) {
+    const outputDirectory = getOutputDirectoryFromCheckpoint(checkpoint);
+    const outputDirAbs = resolveOutputDirectory(outputDirectory);
+    if (!outputDirAbs) return { outputDirectory, manifest: null };
+    const manifestPath = path.join(outputDirAbs, 'checkpoints', 'checkpoint-manifest.json');
+    try {
+      if (!fs.existsSync(manifestPath)) return { outputDirectory, manifest: null };
+      return { outputDirectory, manifest: JSON.parse(fs.readFileSync(manifestPath, 'utf8')) };
+    } catch (err) {
+      return {
+        outputDirectory,
+        manifest: null,
+        manifestError: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  function buildResumePlan(job, checkpoint) {
+    const failure = job.failureContext || checkpoint?.failureContext || {};
+    const message = String(failure.message || job.error || '');
+    const { outputDirectory, manifest, manifestError } = loadResumeManifest(checkpoint);
+    const units = manifest?.units && typeof manifest.units === 'object' ? manifest.units : {};
+    const unitIds = Object.keys(units);
+    const reusableUnits = unitIds.filter((id) => units[id]?.status === 'completed');
+    let strategy = 'generation';
+    let failedUnit = failure.failureStepId || failure.failurePhase || job.currentPhase || 'generation';
+    let resumeFromUnit = failure.resumeFromStepId || failedUnit;
+
+    const sceneMatch = message.match(/SceneWriter\.execute\(([^)\s]+)\)/i)
+      || message.match(/scene\s+([a-z0-9._-]+)/i);
+    if (/final.*save|story package|manifest|writeFinalStoryPackage|nodeRequire/i.test(message)) {
+      strategy = 'save';
+      failedUnit = 'final_story_package';
+      resumeFromUnit = 'final_story_package';
+    } else if (/image|encounter_images|images_ep/i.test(message) || /image/i.test(String(failure.failurePhase || ''))) {
+      strategy = 'images';
+      failedUnit = String(failure.failurePhase || 'image_generation');
+      resumeFromUnit = 'missing_or_failed_image_slots';
+    } else if (sceneMatch?.[1]) {
+      strategy = 'scene';
+      failedUnit = `scene_content:${sceneMatch[1]}`;
+      resumeFromUnit = failedUnit;
+    }
+
+    return {
+      jobId: job.id,
+      status: job.status,
+      strategy,
+      failedUnit,
+      resumeFromUnit,
+      outputDirectory,
+      reusableUnitCount: reusableUnits.length,
+      reusableUnits: reusableUnits.slice(0, 50),
+      manifestAvailable: Boolean(manifest),
+      manifestError,
+      humanSummary: strategy === 'scene'
+        ? `Resume will reuse ${reusableUnits.length} completed checkpoint unit(s) and restart around ${resumeFromUnit}.`
+        : strategy === 'images'
+          ? `Resume will reuse story/text checkpoints where available and image cache entries in the existing output directory.`
+          : strategy === 'save'
+            ? `Resume should only rewrite the final story package if a final-story checkpoint is available.`
+            : `Resume will reuse durable checkpoints where available; older jobs may restart broad phases.`,
+    };
+  }
+
   function buildFailureContextFromEvent(evt, job) {
     return stripLargeValues({
       message: evt.message || job?.error || 'Worker job failed',
@@ -972,6 +1050,17 @@ function createWorkerLifecycle({
         failureContext: job.failureContext || checkpoint?.failureContext || null,
         checkpoint,
       });
+    });
+
+    app.get('/worker-jobs/:jobId/resume-plan', (req, res) => {
+      const job = loadWorkerJobs().find((j) => j.id === req.params.jobId)
+        || loadJobs().find((j) => j.id === req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'Worker job not found' });
+      const checkpoint = hydrateCheckpointOutputs(
+        loadCheckpoints().find((c) => c.jobId === job.id)
+        || job.checkpoint
+      );
+      res.json(buildResumePlan(job, checkpoint));
     });
 
     app.patch('/worker-jobs/:jobId/failure-context', (req, res) => {

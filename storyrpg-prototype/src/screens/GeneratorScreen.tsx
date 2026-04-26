@@ -351,6 +351,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const seenManifestIdsRef = useRef<Set<string>>(new Set());
   const seenImageJobIdsRef = useRef<Set<string>>(new Set());
   const generationStartedAtRef = useRef<number>(Date.now());
+  const resumePlanUnavailableRef = useRef(false);
 
   // Pipeline reference for checkpoint continuation
   const pipelineRef = useRef<FullStoryPipeline | null>(null);
@@ -580,17 +581,24 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const loadFailureWorkspace = useCallback(async (jobId: string) => {
     setFailureWorkspace((prev) => ({ ...prev, loading: true, error: null }));
     try {
-      const [response, resumePlanResponse] = await Promise.all([
-        fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/failure-context`),
-        fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/resume-plan`),
-      ]);
+      const response = await fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/failure-context`);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data?.error || 'Failed to load failure context.');
       }
-      const resumePlan = resumePlanResponse.ok
-        ? await resumePlanResponse.json().catch(() => null)
-        : null;
+      let resumePlan: Record<string, unknown> | null = null;
+      if (!resumePlanUnavailableRef.current) {
+        try {
+          const resumePlanResponse = await fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/resume-plan`);
+          if (resumePlanResponse.ok) {
+            resumePlan = await resumePlanResponse.json().catch(() => null);
+          } else if (resumePlanResponse.status === 404) {
+            resumePlanUnavailableRef.current = true;
+          }
+        } catch {
+          resumePlanUnavailableRef.current = true;
+        }
+      }
       setFailureWorkspace((prev) => ({
         ...prev,
         loading: false,

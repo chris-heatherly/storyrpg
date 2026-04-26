@@ -244,6 +244,9 @@ export function buildPipelineConfig(
       atlasCloudModel: input.atlasCloudModel.trim() || undefined,
       midapiToken: input.midapiToken.trim() || undefined,
       panelMode: input.panelMode || 'single',
+      requireCharacterRefsForVisibleCharacters: true,
+      minRefsPerVisibleCharacter: 1,
+      allowTextOnlyCharacterImages: false,
       midjourney: normalizedImageProvider === 'midapi' ? input.midjourneySettings : undefined,
       gemini: {
         ...(normalizedImageProvider === 'nano-banana' ? input.geminiSettings : {}),

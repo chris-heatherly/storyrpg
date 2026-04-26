@@ -68,6 +68,34 @@ export interface StorySchemaAbstraction {
   reusablePatternSummary: string;
 }
 
+export interface WritingStyleGuide {
+  source: 'explicit_prompt' | 'inferred_from_material';
+  summary: string;
+  narrativeVoice: string;
+  sentenceRhythm: string;
+  diction: string;
+  dialogueStyle: string;
+  povAndDistance: string;
+  imageryAndSensoryFocus: string;
+  pacing: string;
+  doList: string[];
+  avoidList: string[];
+  evidence?: string[];
+}
+
+export interface DirectLanguageFragment {
+  text: string;
+  context: string;
+  speaker?: string;
+  episode?: number;
+}
+
+export interface DirectLanguageFragmentGroups {
+  dialogue: string[];
+  prose: string[];
+  terminology: string[];
+}
+
 /**
  * Which beat of the 7-point structure a given episode carries.
  *
@@ -389,6 +417,13 @@ export interface SourceMaterialAnalysis {
    */
   schemaAbstraction?: StorySchemaAbstraction;
 
+  /**
+   * Prose contract for generated beats. If the user explicitly requested a
+   * writing style in the prompt, that instruction is authoritative; otherwise
+   * SourceMaterialAnalyzer infers this guide from the supplied material.
+   */
+  writingStyleGuide?: WritingStyleGuide;
+
   // Ending analysis
   detectedEndingMode?: EndingMode;
   resolvedEndingMode?: EndingMode;
@@ -432,12 +467,7 @@ export interface SourceMaterialAnalysis {
   warnings: string[]; // Any issues or ambiguities found
 
   // Direct language fragments from source (for authentic voice)
-  directLanguageFragments?: Array<{
-    text: string;
-    context: string;
-    speaker?: string;
-    episode?: number;
-  }>;
+  directLanguageFragments?: DirectLanguageFragment[] | DirectLanguageFragmentGroups;
 
   // Adaptation guidance
   adaptationGuidance?: {
@@ -446,6 +476,12 @@ export interface SourceMaterialAnalysis {
     narrativeVoice: string;
     elementsToPreserve: string[];
     elementsToAdapt: string[];
+    /**
+     * Legacy fields emitted by older SourceMaterialAnalyzer prompts. Kept so
+     * old checkpoints and partially generated jobs remain readable.
+     */
+    keyThemesToPreserve?: string[];
+    iconicMoments?: string[];
   };
 }
 

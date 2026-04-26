@@ -37,6 +37,19 @@ import { buildStructuralContextSection } from '../prompts/storytellingPrinciples
 import { CHOICE_AUTHOR_RESIDUE_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 
+function flattenDirectLanguageFragments(sourceAnalysis?: SourceMaterialAnalysis): string[] {
+  const fragments = sourceAnalysis?.directLanguageFragments;
+  if (!fragments) return [];
+  if (Array.isArray(fragments)) {
+    return fragments.map((fragment) => fragment.text).filter(Boolean);
+  }
+  return [
+    ...(Array.isArray(fragments.dialogue) ? fragments.dialogue : []),
+    ...(Array.isArray(fragments.prose) ? fragments.prose : []),
+    ...(Array.isArray(fragments.terminology) ? fragments.terminology : []),
+  ].filter(Boolean);
+}
+
 // Input types
 export interface ChoiceAuthorInput {
   // Scene context
@@ -668,9 +681,10 @@ Before finalizing:
       .join('\n');
 
     let sourceContextStr = '';
-    if (input.sourceAnalysis?.directLanguageFragments?.length) {
-      const directFragments = input.sourceAnalysis.directLanguageFragments
-        .map(fragment => `- "${fragment.text}"`)
+    const directFragments = flattenDirectLanguageFragments(input.sourceAnalysis);
+    if (directFragments.length) {
+      const directFragmentList = directFragments
+        .map(fragment => `- "${fragment}"`)
         .join('\n');
 
       sourceContextStr = `
@@ -679,7 +693,7 @@ The following iconic language and style fragments have been identified from the 
 **Use this specific terminology and character voice when writing choice text.**
 
 ### Iconic Dialogue Fragments
-${directFragments}
+${directFragmentList}
 `;
     }
 

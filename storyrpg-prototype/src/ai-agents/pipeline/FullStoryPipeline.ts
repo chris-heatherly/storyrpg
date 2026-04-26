@@ -6141,6 +6141,12 @@ export class FullStoryPipeline {
         totalEpisodes: analysis.totalEstimatedEpisodes,
         complexity: analysis.confidenceScore,
         warnings: analysis.warnings,
+        writingStyleGuide: analysis.writingStyleGuide
+          ? {
+              source: analysis.writingStyleGuide.source,
+              summary: analysis.writingStyleGuide.summary,
+            }
+          : undefined,
       },
     });
 
@@ -8285,7 +8291,12 @@ ${clothingRule}
 
         console.log(`[Pipeline] 🖼 Image generation step 1/6: gathering characters for scene "${scene.sceneId}"`);
         // Collect character IDs present in this scene for reference image gathering
-        const sceneCharacterIds = this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id);
+        const sceneCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
+          this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id),
+          characterBible,
+          brief,
+          `scene:${scopedSceneId}`
+        );
         
         console.log(`[Pipeline] 🖼 Image generation step 2/6: body vocabularies for scene "${scene.sceneId}"`);
         // Get body vocabularies for characters in scene (for pose consistency)
@@ -8310,7 +8321,12 @@ ${clothingRule}
         const sceneLocationId = locationInfo?.locationId;
         const imageServiceWithRefs = {
           generateImage: async (prompt: ImagePrompt, identifier: string, metadata?: any) => {
-            const shotCharacterIds = metadata?.characters || sceneCharacterIds;
+            const shotCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
+              metadata?.characters || sceneCharacterIds,
+              characterBible,
+              brief,
+              `slot:${identifier}`
+            );
             const referenceImages = this.gatherCharacterReferenceImages(
               shotCharacterIds,
               characterBible,
@@ -8634,6 +8650,12 @@ ${clothingRule}
               ? beat.characters
               : [];
           }
+          shotCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
+            shotCharacterIds,
+            characterBible,
+            brief,
+            `beat:${scopedSceneId}:${beatId}`
+          );
           const shotCharacterNames = shotCharacterIds
             .map(id => characterBible.characters.find(c => c.id === id)?.name)
             .filter(Boolean) as string[];
@@ -9055,7 +9077,12 @@ ${clothingRule}
         message: `Recovery: generating fallback images for ${scene.sceneName} (0/${sceneBeats.length} beats had images)`,
       });
 
-      const sceneCharacterIds = this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id);
+      const sceneCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
+        this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id),
+        characterBible,
+        brief,
+        `recovery-scene:${scopedSceneId}`
+      );
 
       for (const beat of sceneBeats) {
         try {
@@ -9077,9 +9104,15 @@ ${clothingRule}
             characters: characterBible.characters.map(c => ({ id: c.id, name: c.name })),
             protagonistId: brief.protagonist.id,
           });
-          const shotCharacterIds = isEstablishing
+          let shotCharacterIds = isEstablishing
             ? []
             : [...shotCast.requiredForegroundCharacterIds, ...shotCast.optionalBackgroundCharacterIds];
+          shotCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
+            shotCharacterIds,
+            characterBible,
+            brief,
+            `recovery-beat:${scopedSceneId}:${beat.id}`
+          );
           const shotCharacterNames = shotCharacterIds
             .map(id => characterBible.characters.find(c => c.id === id)?.name)
             .filter(Boolean) as string[];
@@ -10038,8 +10071,15 @@ Design the key art. Return STRICT JSON matching the schema.`;
 
       try {
       // Gather character references and physical descriptions for this encounter
-      const encounterCharacterIds = encounter.npcStates?.map(npc => npc.npcId) || [];
-      encounterCharacterIds.push(brief.protagonist.id);
+      const encounterCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
+        [
+          ...(encounter.npcStates?.map(npc => npc.npcId || npc.name).filter(Boolean) || []),
+          brief.protagonist.id,
+        ],
+        characterBible,
+        brief,
+        `encounter:${scopedSceneId}`
+      );
       const referenceImages = this.gatherCharacterReferenceImages(
         encounterCharacterIds,
         characterBible,
@@ -10413,7 +10453,12 @@ Design the key art. Return STRICT JSON matching the schema.`;
       if (storyletManifest.slots.length === 0) continue;
 
       const sceneStoryletImages = new Map<string, Map<string, string>>();
-      const encounterCharacterIds = Array.from(new Set([...(encounter.npcStates?.map(npc => npc.npcId) || []), brief.protagonist.id]));
+      const encounterCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
+        Array.from(new Set([...(encounter.npcStates?.map(npc => npc.npcId || npc.name).filter(Boolean) || []), brief.protagonist.id])),
+        characterBible,
+        brief,
+        `storylet:${scopedSceneId}`
+      );
       const referenceImages = this.gatherCharacterReferenceImages(
         encounterCharacterIds,
         characterBible,
@@ -11352,6 +11397,84 @@ Design the key art. Return STRICT JSON matching the schema.`;
     };
   }
 
+  private resolveCharacterId(idOrName: string, characterBible: CharacterBible): string | null {
+    const raw = String(idOrName || '').trim();
+    if (!raw) return null;
+    const normalize = (value: string) => value
+      .toLowerCase()
+      .replace(/^char[-_]/, '')
+      .replace(/\s*\([^)]*\)\s*/g, ' ')
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const rawNorm = normalize(raw);
+    const direct = characterBible.characters.find((c) => c.id === raw || c.name === raw);
+    if (direct) return direct.id;
+    const fuzzy = characterBible.characters.find((c) =>
+      normalize(c.id) === rawNorm ||
+      normalize(c.name) === rawNorm ||
+      normalize(c.name).includes(rawNorm) ||
+      rawNorm.includes(normalize(c.name))
+    );
+    return fuzzy?.id || null;
+  }
+
+  private normalizeCharacterIds(ids: string[] | undefined, characterBible: CharacterBible): string[] {
+    const normalized = new Set<string>();
+    for (const value of ids || []) {
+      const resolved = this.resolveCharacterId(value, characterBible);
+      if (resolved) normalized.add(resolved);
+    }
+    return [...normalized];
+  }
+
+  private async ensureCharacterReferencesForVisibleCharacters(
+    ids: string[] | undefined,
+    characterBible: CharacterBible,
+    brief: FullCreativeBrief,
+    contextLabel: string,
+  ): Promise<string[]> {
+    const characterIds = this.normalizeCharacterIds(ids, characterBible);
+    if (
+      characterIds.length === 0 ||
+      this.config.imageGen?.requireCharacterRefsForVisibleCharacters === false ||
+      this.config.imageGen?.enabled === false
+    ) {
+      return characterIds;
+    }
+
+    const missing = characterIds.filter((id) => !this.imageAgentTeam.hasReferenceSheet(id));
+    if (missing.length === 0) return characterIds;
+
+    this.emit({
+      type: 'warning',
+      phase: 'images',
+      message: `Character continuity refs missing for ${contextLabel}: ${missing
+        .map((id) => characterBible.characters.find((c) => c.id === id)?.name || id)
+        .join(', ')}. Generating references before story images continue.`,
+    });
+
+    for (const id of missing) {
+      const char = characterBible.characters.find((c) => c.id === id);
+      if (!char) continue;
+      await this.generateCharacterReferenceSheet(char, brief);
+      const fingerprint = computeCharacterIdentityFingerprint(char);
+      this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
+      if (!this.imageAgentTeam.hasReferenceSheet(char.id)) {
+        const msg = `Character continuity refs still missing for ${char.name} after reference generation (${contextLabel}).`;
+        this.emit({ type: 'error', phase: 'images', message: msg });
+        if (this.config.imageGen?.allowTextOnlyCharacterImages !== true) {
+          throw new PipelineError(msg, 'images', {
+            agent: 'ImageAgentTeam',
+            context: { characterId: char.id, characterName: char.name, contextLabel, failureKind: 'missing_character_reference' },
+          });
+        }
+      }
+    }
+
+    return characterIds;
+  }
+
   private makeEncounterVisualSceneDescription(narrativeText: string): string {
     const cleaned = (narrativeText || '').trim();
     if (!cleaned) return 'A high-stakes encounter moment with visible action and reaction.';
@@ -12016,7 +12139,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
     characterBible: CharacterBible
   ): CharacterAppearanceDescription[] {
     const descs: CharacterAppearanceDescription[] = [];
-    for (const charId of characterIds) {
+    for (const charId of this.normalizeCharacterIds(characterIds, characterBible)) {
       const c = characterBible.characters.find(ch => ch.id === charId);
       if (!c) continue;
 
@@ -12029,7 +12152,9 @@ Design the key art. Return STRICT JSON matching the schema.`;
       const consistencyInfo = this.imageAgentTeam.getCharacterConsistencyInfo(c.id);
 
       const parts: string[] = [];
-      if (hasSilhouette) {
+      if (consistencyInfo?.visualAnchors?.length) {
+        parts.push(consistencyInfo.visualAnchors.join(', '));
+      } else if (hasSilhouette) {
         parts.push(silhouette!.silhouetteHooks!.join(', '));
       } else if (c.physicalDescription) {
         parts.push(c.physicalDescription);
@@ -12045,9 +12170,9 @@ Design the key art. Return STRICT JSON matching the schema.`;
       // LLM's tendency to drop or paraphrase critical attributes (hair color,
       // eye color, distinguishing marks).
       const sources: string[] = [
-        c.physicalDescription || '',
-        ...(silhouette?.silhouetteHooks || []),
         ...(consistencyInfo?.visualAnchors || []),
+        ...(silhouette?.silhouetteHooks || []),
+        c.physicalDescription || '',
       ].filter(Boolean);
       const canonicalAppearance = this.extractCanonicalAppearance(
         sources,
@@ -12153,7 +12278,9 @@ Design the key art. Return STRICT JSON matching the schema.`;
     // correctly (Midjourney --cref, Gemini style-anchor).
     const preferIndividualViews = true;
     
-    for (const charId of characterIds) {
+    const normalizedCharacterIds = this.normalizeCharacterIds(characterIds, characterBible);
+
+    for (const charId of normalizedCharacterIds) {
       if (references.length >= MAX_TOTAL_REFS) break;
       const remaining = MAX_TOTAL_REFS - references.length;
       const charRefs = this.imageAgentTeam.getCharacterReferenceImages(
@@ -12243,7 +12370,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
     // are multiplied against the profile's maxPerCharacter so major characters
     // get more ref-pack slots than supporting/minor ones.
     const characterWeights: Record<string, number> = {};
-    for (const charId of characterIds) {
+    for (const charId of normalizedCharacterIds) {
       const entry = characterBible.characters.find((c) => c.id === charId);
       if (!entry) continue;
       const name = entry.name || charId;
@@ -13340,7 +13467,12 @@ Design the key art. Return STRICT JSON matching the schema.`;
         const existingRecord = this.assetRegistry.getResolvedAsset(resumeSlotId);
         if (existingRecord?.latestUrl) continue;
 
-        const sceneCharacterIds = this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id);
+        const sceneCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
+          this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id),
+          characterBible,
+          brief,
+          `prefetch-scene:${scopedSceneId}`
+        );
         const locationInfo = getLocationInfoForScene(scene, worldBible);
         const sceneLocationId = locationInfo?.locationId;
         const sceneContext = this.extractSceneContext(scene, 0, sceneContents.length, worldBible);
@@ -13418,6 +13550,12 @@ Design the key art. Return STRICT JSON matching the schema.`;
         } else {
           shotCharacterIds = openerVisibleCharacterIds;
         }
+        shotCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
+          shotCharacterIds,
+          characterBible,
+          brief,
+          `prefetch-beat:${scopedSceneId}:${beatId}`
+        );
         const shotCharacterNames = shotCharacterIds
           .map(id => characterBible.characters.find(c => c.id === id)?.name)
           .filter(Boolean) as string[];

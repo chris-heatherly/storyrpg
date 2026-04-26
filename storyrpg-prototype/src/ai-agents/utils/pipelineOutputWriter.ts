@@ -189,6 +189,11 @@ export interface EncounterImageRunDiagnostic {
   promptChars: number;
   negativeChars: number;
   refCount: number;
+  visibleCharacters?: string[];
+  expectedCharacterRefs?: Record<string, number>;
+  effectiveCharacterRefs?: Record<string, number>;
+  missingReferenceCharacters?: string[];
+  referenceRoute?: 'text-only' | 'inline-refs' | 'url-refs' | 'edit-with-refs' | 'lora';
   effectivePromptChars?: number;
   effectiveNegativeChars?: number;
   effectiveRefCount?: number;

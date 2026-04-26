@@ -678,6 +678,18 @@ export interface PipelineConfig {
      */
     maxIdentityRegenerations?: number;
     /**
+     * Require every character-visible shot to carry at least one usable
+     * character reference per visible character. Default: true.
+     */
+    requireCharacterRefsForVisibleCharacters?: boolean;
+    /** Minimum provider-usable refs expected per visible character. Default: 1. */
+    minRefsPerVisibleCharacter?: number;
+    /**
+     * Permit text-only image generation for character-visible shots when refs
+     * are missing or dropped by provider filtering. Default: false.
+     */
+    allowTextOnlyCharacterImages?: boolean;
+    /**
      * Two-axis QA/prompt-path toggles (B1). Controls which prompt-building
      * path runs (deterministic | llm | compare) and which validator cascade
      * runs afterwards (off | fast | full). See `config/imageQaConfig.ts`.
@@ -879,6 +891,9 @@ export function loadConfig(): PipelineConfig {
       openaiModeration: openaiSettingsFromEnv.imageModeration,
       model: env.EXPO_PUBLIC_GEMINI_MODEL || env.GEMINI_MODEL,
       provider: env.EXPO_PUBLIC_IMAGE_PROVIDER || env.IMAGE_PROVIDER || 'nano-banana',
+      requireCharacterRefsForVisibleCharacters: env.IMAGE_REQUIRE_CHARACTER_REFS !== 'false',
+      minRefsPerVisibleCharacter: Number.parseInt(env.IMAGE_MIN_REFS_PER_VISIBLE_CHARACTER || '1', 10) || 1,
+      allowTextOnlyCharacterImages: env.IMAGE_ALLOW_TEXT_ONLY_CHARACTER_IMAGES === 'true',
       qa: resolveImageQaConfig(env),
       artStyleProfile: resolveArtStylePresetProfile(env),
       loraTraining: resolveLoraTrainingSettings(env),

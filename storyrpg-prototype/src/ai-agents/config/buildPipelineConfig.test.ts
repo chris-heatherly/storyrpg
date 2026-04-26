@@ -90,6 +90,9 @@ describe('buildPipelineConfig', () => {
     expect(config.agents.videoDirector?.provider).toBe('anthropic');
     expect(config.agents.videoDirector?.model).toBe('claude-3-5-haiku-20241022');
     expect(config.agents.videoDirector?.apiKey).toBe('anthropic-key');
+    expect(config.imageGen?.requireCharacterRefsForVisibleCharacters).toBe(true);
+    expect(config.imageGen?.minRefsPerVisibleCharacter).toBe(1);
+    expect(config.imageGen?.allowTextOnlyCharacterImages).toBe(false);
   });
 
   it('falls back to the image gemini key for scoped gemini llms', () => {

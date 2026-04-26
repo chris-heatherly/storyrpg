@@ -32,6 +32,88 @@ import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
 
+function normalizeSourceFragments(sourceAnalysis?: SourceMaterialAnalysis): {
+  dialogue: string[];
+  prose: string[];
+  terminology: string[];
+} {
+  const fragments = sourceAnalysis?.directLanguageFragments;
+  if (!fragments) return { dialogue: [], prose: [], terminology: [] };
+
+  if (Array.isArray(fragments)) {
+    return {
+      dialogue: fragments.map((fragment) => fragment.text).filter(Boolean),
+      prose: fragments
+        .filter((fragment) => fragment.context && !fragment.speaker)
+        .map((fragment) => fragment.text)
+        .filter(Boolean),
+      terminology: [],
+    };
+  }
+
+  return {
+    dialogue: Array.isArray(fragments.dialogue) ? fragments.dialogue.filter(Boolean) : [],
+    prose: Array.isArray(fragments.prose) ? fragments.prose.filter(Boolean) : [],
+    terminology: Array.isArray(fragments.terminology) ? fragments.terminology.filter(Boolean) : [],
+  };
+}
+
+export function buildSourceMaterialFidelitySection(sourceAnalysis?: SourceMaterialAnalysis): string {
+  if (!sourceAnalysis) return '';
+
+  const fragments = normalizeSourceFragments(sourceAnalysis);
+  const guide = sourceAnalysis.writingStyleGuide;
+  const guidance = sourceAnalysis.adaptationGuidance;
+  const elementsToPreserve = Array.isArray(guidance?.elementsToPreserve) ? guidance.elementsToPreserve : [];
+  const elementsToAdapt = Array.isArray(guidance?.elementsToAdapt) ? guidance.elementsToAdapt : [];
+  const themes = Array.isArray(guidance?.keyThemesToPreserve)
+    ? guidance.keyThemesToPreserve
+    : elementsToPreserve;
+  const moments = Array.isArray(guidance?.iconicMoments) ? guidance.iconicMoments : [];
+
+  return `
+## Source Material Fidelity (IP Research)
+The following language, terminology, and prose-style rules have been identified from the source material.
+**Prioritize this writing contract when drafting player-facing prose.**
+
+${guide ? `### Writing Style Guide (${guide.source})
+- **Summary**: ${guide.summary}
+- **Narrative Voice**: ${guide.narrativeVoice}
+- **Sentence Rhythm**: ${guide.sentenceRhythm}
+- **Diction**: ${guide.diction}
+- **Dialogue Style**: ${guide.dialogueStyle}
+- **POV / Distance**: ${guide.povAndDistance}
+- **Imagery / Sensory Focus**: ${guide.imageryAndSensoryFocus}
+- **Pacing**: ${guide.pacing}
+- **Do**: ${guide.doList.join('; ')}
+- **Avoid**: ${guide.avoidList.join('; ')}
+${guide.evidence?.length ? `- **Evidence**: ${guide.evidence.join('; ')}` : ''}
+` : ''}
+
+${fragments.dialogue.length ? `### Iconic Dialogue
+${fragments.dialogue.map(d => `- "${d}"`).join('\n')}
+` : ''}
+
+${fragments.prose.length ? `### Notable Prose & Style
+${fragments.prose.map(p => `- ${p}`).join('\n')}
+` : ''}
+
+${fragments.terminology.length ? `### Key Terminology
+${fragments.terminology.join(', ')}
+` : ''}
+
+${guidance ? `### Adaptation Guidance
+- **Narrative Voice**: ${guidance.narrativeVoice}
+- **Tone Notes**: ${guidance.toneNotes}
+- **Dialogue Style**: ${guidance.dialogueStyle}
+- **Elements to Preserve**: ${elementsToPreserve.join(', ')}
+${elementsToAdapt.length ? `- **Elements to Adapt**: ${elementsToAdapt.join(', ')}` : ''}
+${themes.length ? `- **Themes to Preserve**: ${themes.join(', ')}` : ''}
+${moments.length ? `- **Iconic Moments**: ${moments.join(', ')}` : ''}
+` : ''}
+`;
+}
+
 // Input types
 export interface SceneWriterInput {
   // Scene blueprint from Story Architect
@@ -961,30 +1043,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       ? input.relevantFlags.map(f => `- ${f.name}: ${f.description}`).join('\n')
       : 'None specified';
 
-    let sourceContextStr = '';
-    if (input.sourceAnalysis) {
-      sourceContextStr = `
-## Source Material Fidelity (IP Research)
-The following iconic language and style fragments have been identified from the source IP. 
-**PRIORITIZE using this exact language, terminology, and tone where appropriate.**
-
-### Iconic Dialogue
-${input.sourceAnalysis.directLanguageFragments.dialogue.map(d => `- "${d}"`).join('\n')}
-
-### Notable Prose & Style
-${input.sourceAnalysis.directLanguageFragments.prose.map(p => `- ${p}`).join('\n')}
-
-### Key Terminology
-${input.sourceAnalysis.directLanguageFragments.terminology.join(', ')}
-
-${input.sourceAnalysis.adaptationGuidance ? `
-### Adaptation Guidance
-- **Narrative Voice**: ${input.sourceAnalysis.adaptationGuidance.narrativeVoice}
-- **Themes to Preserve**: ${input.sourceAnalysis.adaptationGuidance.keyThemesToPreserve.join(', ')}
-- **Iconic Moments**: ${input.sourceAnalysis.adaptationGuidance.iconicMoments.join(', ')}
-` : ''}
-`;
-    }
+    const sourceContextStr = buildSourceMaterialFidelitySection(input.sourceAnalysis);
 
     const structuralContext = buildStructuralContextSection({
       anchors: input.seasonAnchors,

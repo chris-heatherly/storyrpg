@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { SceneWriter } from './SceneWriter';
+import { buildSourceMaterialFidelitySection, SceneWriter } from './SceneWriter';
+import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 
 describe('SceneWriter structural guards', () => {
   it('includes adapted scene-craft guidance and StoryRPG-shaped few-shot example', () => {
@@ -166,5 +167,48 @@ describe('SceneWriter structural guards', () => {
     );
 
     expect(issues.join('\n')).toContain('SCHEMA PLACEHOLDER LEAK');
+  });
+});
+
+describe('buildSourceMaterialFidelitySection', () => {
+  it('includes the new writing style guide in scene-writing context', () => {
+    const section = buildSourceMaterialFidelitySection({
+      writingStyleGuide: {
+        source: 'explicit_prompt',
+        summary: 'Spare noir prose.',
+        narrativeVoice: 'Dry, watchful, close to the protagonist.',
+        sentenceRhythm: 'Short lines with occasional hard pivots.',
+        diction: 'Plain words, street-level metaphors.',
+        dialogueStyle: 'Clipped and evasive.',
+        povAndDistance: 'Close third person.',
+        imageryAndSensoryFocus: 'Rain, neon, stale coffee.',
+        pacing: 'Fast through action, slower on suspicion.',
+        doList: ['Use concrete noir detail.'],
+        avoidList: ['Avoid purple prose.'],
+        evidence: ['Write in spare noir prose.'],
+      },
+      directLanguageFragments: {
+        dialogue: ['Everyone owes someone.'],
+        prose: ['Rain turned the harbor lights into bruises.'],
+        terminology: ['dockside'],
+      },
+    } as SourceMaterialAnalysis);
+
+    expect(section).toContain('Writing Style Guide (explicit_prompt)');
+    expect(section).toContain('Spare noir prose.');
+    expect(section).toContain('Everyone owes someone.');
+    expect(section).toContain('dockside');
+  });
+
+  it('handles legacy flat direct-language fragments without crashing', () => {
+    const section = buildSourceMaterialFidelitySection({
+      directLanguageFragments: [
+        { text: 'The old road remembered every footstep.', context: 'prose' },
+        { text: 'Stay behind me.', context: 'dialogue', speaker: 'Ari' },
+      ],
+    } as SourceMaterialAnalysis);
+
+    expect(section).toContain('The old road remembered every footstep.');
+    expect(section).toContain('Stay behind me.');
   });
 });

@@ -130,6 +130,47 @@ describe('ImageGenerationService stable-diffusion wiring', () => {
   });
 });
 
+describe('ImageGenerationService character reference audit', () => {
+  it('marks DALL-E character-visible shots as edit-with-refs when usable refs survive filtering', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const audit = (service as any).buildCharacterReferenceAudit(
+      'dall-e',
+      { characterNames: ['Mr. Boddy'], type: 'encounter-outcome' },
+      [{ data: 'abc', mimeType: 'image/png', role: 'character-reference', characterName: 'Mr. Boddy', viewType: 'front' }],
+      [{ data: 'abc', mimeType: 'image/png', role: 'character-reference', characterName: 'Mr. Boddy', viewType: 'front' }],
+    );
+
+    expect(audit.referenceRoute).toBe('edit-with-refs');
+    expect(audit.effectiveCharacterRefs['Mr. Boddy']).toBe(1);
+    expect(audit.missingReferenceCharacters).toEqual([]);
+  });
+
+  it('reports missing visible characters when provider filtering drops refs', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const audit = (service as any).buildCharacterReferenceAudit(
+      'dall-e',
+      { characterNames: ['Detective Riley Kane', 'Mr. Boddy'], type: 'encounter-outcome' },
+      [{ data: 'abc', mimeType: 'image/png', role: 'character-reference', characterName: 'Detective Riley Kane', viewType: 'front' }],
+      [],
+    );
+
+    expect(audit.referenceRoute).toBe('text-only');
+    expect(audit.missingReferenceCharacters).toEqual(['Detective Riley Kane', 'Mr. Boddy']);
+  });
+});
+
 describe('ImageGenerationService prompt cache hashing', () => {
   it('separates deep encounter branches by choice path and base slot identity', () => {
     const service = new ImageGenerationService({

@@ -104,6 +104,9 @@ export interface ImageGenerationConfig {
   midjourneySettings?: MidjourneySettings;
   stableDiffusionSettings?: StableDiffusionSettings;
   failurePolicy?: 'fail_fast' | 'recover';
+  requireCharacterRefsForVisibleCharacters?: boolean;
+  minRefsPerVisibleCharacter?: number;
+  allowTextOnlyCharacterImages?: boolean;
 }
 
 export interface EncounterImageDiagnostic {
@@ -128,6 +131,11 @@ export interface EncounterImageDiagnostic {
   promptChars: number;
   negativeChars: number;
   refCount: number;
+  visibleCharacters?: string[];
+  expectedCharacterRefs?: Record<string, number>;
+  effectiveCharacterRefs?: Record<string, number>;
+  missingReferenceCharacters?: string[];
+  referenceRoute?: 'text-only' | 'inline-refs' | 'url-refs' | 'edit-with-refs' | 'lora';
   effectivePromptChars?: number;
   effectiveNegativeChars?: number;
   effectiveRefCount?: number;
@@ -173,6 +181,14 @@ type EffectiveRequestMeta = {
   blockReason?: string;
   responseExcerpt?: string;
   model?: string;
+};
+
+type CharacterReferenceAudit = {
+  visibleCharacters: string[];
+  expectedCharacterRefs: Record<string, number>;
+  effectiveCharacterRefs: Record<string, number>;
+  missingReferenceCharacters: string[];
+  referenceRoute: NonNullable<EncounterImageDiagnostic['referenceRoute']>;
 };
 
 // E2: `normalizeManagedOutputPath` moved to ./imageGenerationHelpers.ts.
@@ -358,6 +374,9 @@ export class ImageGenerationService {
       openaiModeration: (config.openaiModeration || env?.EXPO_PUBLIC_OPENAI_IMAGE_MODERATION || env?.OPENAI_IMAGE_MODERATION || 'auto').trim(),
       provider: this.normalizeProvider(config.provider),
       useapiToken: config.useapiToken || config.midapiToken,
+      requireCharacterRefsForVisibleCharacters: config.requireCharacterRefsForVisibleCharacters !== false,
+      minRefsPerVisibleCharacter: Math.max(1, config.minRefsPerVisibleCharacter || 1),
+      allowTextOnlyCharacterImages: config.allowTextOnlyCharacterImages === true,
     };
     this.outputDir = config.outputDirectory || './generated-images';
     this.maxRetries = config.maxRetries ?? 5; // Increased retries
@@ -655,6 +674,77 @@ export class ImageGenerationService {
       case 'expression': return 'expression';
       default: return undefined;
     }
+  }
+
+  private normalizeCharacterNameForRefs(name: unknown): string {
+    return String(name || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^char[-_]/, '')
+      .replace(/\s*\([^)]*\)\s*/g, ' ')
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private buildCharacterReferenceAudit(
+    provider: ImageProvider,
+    metadata: Parameters<ImageGenerationService['generateImage']>[2],
+    originalRefs: ReferenceImage[] | undefined,
+    effectiveRefs: ReferenceImage[] | undefined,
+  ): CharacterReferenceAudit {
+    const visibleCharacters = Array.from(new Set<string>(
+      (Array.isArray((metadata as any)?.characterNames) ? (metadata as any).characterNames : [])
+        .map((name: unknown) => String(name || '').trim())
+        .filter(Boolean)
+    ));
+    const minRefs = Math.max(1, this.config.minRefsPerVisibleCharacter || 1);
+    const expectedCharacterRefs: Record<string, number> = {};
+    const effectiveCharacterRefs: Record<string, number> = {};
+
+    for (const name of visibleCharacters) {
+      expectedCharacterRefs[name] = minRefs;
+      effectiveCharacterRefs[name] = 0;
+    }
+
+    const normalizedToVisible = new Map<string, string>();
+    for (const name of visibleCharacters) {
+      normalizedToVisible.set(this.normalizeCharacterNameForRefs(name), name);
+    }
+
+    for (const ref of effectiveRefs || []) {
+      const refName = this.normalizeCharacterNameForRefs(ref.characterName);
+      const visibleName = normalizedToVisible.get(refName);
+      if (visibleName) {
+        effectiveCharacterRefs[visibleName] = (effectiveCharacterRefs[visibleName] || 0) + 1;
+      }
+    }
+
+    const missingReferenceCharacters = visibleCharacters.filter((name) =>
+      (effectiveCharacterRefs[name] || 0) < minRefs
+    );
+
+    const hasEffectiveRefs = (effectiveRefs?.length || 0) > 0;
+    const hasOriginalRefs = (originalRefs?.length || 0) > 0;
+    let referenceRoute: CharacterReferenceAudit['referenceRoute'] = 'text-only';
+    if (provider === 'stable-diffusion' && hasEffectiveRefs) {
+      referenceRoute = 'lora';
+    } else if (provider === 'dall-e' && hasEffectiveRefs) {
+      referenceRoute = 'edit-with-refs';
+    } else if (hasEffectiveRefs) {
+      const caps = getProviderCapabilities(provider);
+      referenceRoute = caps.acceptsInlineRefs ? 'inline-refs' : 'url-refs';
+    } else if (hasOriginalRefs) {
+      referenceRoute = 'text-only';
+    }
+
+    return {
+      visibleCharacters,
+      expectedCharacterRefs,
+      effectiveCharacterRefs,
+      missingReferenceCharacters,
+      referenceRoute,
+    };
   }
 
   private static withProviderErrorMeta(error: Error, meta: GeminiResponseMeta & { providerAttemptCount?: number; effectivePromptChars?: number; effectiveNegativeChars?: number; effectiveRefCount?: number; model?: string }): Error {
@@ -2172,7 +2262,22 @@ export class ImageGenerationService {
     // paying the tokenization / upload cost on refs that would have been
     // silently ignored by the downstream provider.
     const capabilityFilteredRefs = this.filterReferencesForProvider(provider, referenceImages);
+    const referenceAudit = this.buildCharacterReferenceAudit(provider, metadata, referenceImages, capabilityFilteredRefs);
     try {
+      if (
+        this.config.requireCharacterRefsForVisibleCharacters !== false &&
+        this.config.allowTextOnlyCharacterImages !== true &&
+        referenceAudit.visibleCharacters.length > 0 &&
+        referenceAudit.missingReferenceCharacters.length > 0
+      ) {
+        const message =
+          `Character reference continuity blocked "${identifier}": missing usable refs for ` +
+          `${referenceAudit.missingReferenceCharacters.join(', ')} after ${provider} filtering ` +
+          `(route=${referenceAudit.referenceRoute}, refs=${capabilityFilteredRefs?.length || 0}/${referenceImages?.length || 0}).`;
+        this.emit({ type: 'job_updated', id: jobId, updates: { status: 'failed', error: message, endTime: Date.now() } });
+        throw new Error(message);
+      }
+
       let result: GeneratedImage;
       const preferAtlasFirst =
         !!metadata?.preferAtlasFirst &&
@@ -2257,6 +2362,11 @@ export class ImageGenerationService {
             promptChars: normalizedPrompt.prompt?.length || 0,
             negativeChars: normalizedPrompt.negativePrompt?.length || 0,
             refCount: referenceImages?.length || 0,
+            visibleCharacters: referenceAudit.visibleCharacters,
+            expectedCharacterRefs: referenceAudit.expectedCharacterRefs,
+            effectiveCharacterRefs: referenceAudit.effectiveCharacterRefs,
+            missingReferenceCharacters: referenceAudit.missingReferenceCharacters,
+            referenceRoute: referenceAudit.referenceRoute,
             effectivePromptChars: effectiveMeta.effectivePromptChars,
             effectiveNegativeChars: effectiveMeta.effectiveNegativeChars,
             effectiveRefCount: effectiveMeta.effectiveRefCount,
@@ -2301,6 +2411,11 @@ export class ImageGenerationService {
           promptChars: normalizedPrompt.prompt?.length || 0,
           negativeChars: normalizedPrompt.negativePrompt?.length || 0,
           refCount: referenceImages?.length || 0,
+          visibleCharacters: referenceAudit.visibleCharacters,
+          expectedCharacterRefs: referenceAudit.expectedCharacterRefs,
+          effectiveCharacterRefs: referenceAudit.effectiveCharacterRefs,
+          missingReferenceCharacters: referenceAudit.missingReferenceCharacters,
+          referenceRoute: referenceAudit.referenceRoute,
           effectivePromptChars: effectiveMeta.effectivePromptChars,
           effectiveNegativeChars: effectiveMeta.effectiveNegativeChars,
           effectiveRefCount: effectiveMeta.effectiveRefCount,
@@ -2367,6 +2482,11 @@ export class ImageGenerationService {
               promptChars: normalizedPrompt.prompt?.length || 0,
               negativeChars: normalizedPrompt.negativePrompt?.length || 0,
               refCount: referenceImages?.length || 0,
+              visibleCharacters: referenceAudit.visibleCharacters,
+              expectedCharacterRefs: referenceAudit.expectedCharacterRefs,
+              effectiveCharacterRefs: referenceAudit.effectiveCharacterRefs,
+              missingReferenceCharacters: referenceAudit.missingReferenceCharacters,
+              referenceRoute: referenceAudit.referenceRoute,
               effectivePromptChars: effectiveMeta.effectivePromptChars,
               effectiveNegativeChars: effectiveMeta.effectiveNegativeChars,
               effectiveRefCount: effectiveMeta.effectiveRefCount,
@@ -2412,6 +2532,11 @@ export class ImageGenerationService {
           promptChars: normalizedPrompt.prompt?.length || 0,
           negativeChars: normalizedPrompt.negativePrompt?.length || 0,
           refCount: referenceImages?.length || 0,
+          visibleCharacters: referenceAudit.visibleCharacters,
+          expectedCharacterRefs: referenceAudit.expectedCharacterRefs,
+          effectiveCharacterRefs: referenceAudit.effectiveCharacterRefs,
+          missingReferenceCharacters: referenceAudit.missingReferenceCharacters,
+          referenceRoute: referenceAudit.referenceRoute,
           effectivePromptChars: effectiveMeta.effectivePromptChars,
           effectiveNegativeChars: effectiveMeta.effectiveNegativeChars,
           effectiveRefCount: effectiveMeta.effectiveRefCount,
@@ -5240,6 +5365,7 @@ export class ImageGenerationService {
             provider: 'openai',
             model,
             attempts: attempt,
+            effectiveRefCount: inputs.length,
           },
         };
       } catch (err) {

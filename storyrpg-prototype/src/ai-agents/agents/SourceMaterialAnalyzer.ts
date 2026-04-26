@@ -22,6 +22,8 @@ import {
   StoryAnchors,
   SevenPointStructure,
   StorySchemaAbstraction,
+  WritingStyleGuide,
+  DirectLanguageFragmentGroups,
   StructuralRole,
   SEVEN_POINT_BEATS,
 } from '../../types/sourceAnalysis';
@@ -110,9 +112,14 @@ interface StoryStructureAnalysis {
   };
   adaptationGuidance?: {
     narrativeVoice: string;
+    dialogueStyle?: string;
+    toneNotes?: string;
     keyThemesToPreserve: string[];
     iconicMoments: string[];
+    elementsToPreserve?: string[];
+    elementsToAdapt?: string[];
   };
+  writingStyleGuide?: Partial<WritingStyleGuide>;
   storyArcs: Array<{
     name: string;
     description: string;
@@ -274,7 +281,13 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
     try {
       // Step 1: Analyze overall story structure
       console.log(`[SourceMaterialAnalyzer] Step 1: Analyzing story structure...`);
-      const structureAnalysis = await this.analyzeStoryStructure(input.sourceText || '', input.title, input.userPrompt);
+      const explicitWritingStyleInstruction = detectExplicitWritingStyleInstruction(input.userPrompt);
+      const structureAnalysis = await this.analyzeStoryStructure(
+        input.sourceText || '',
+        input.title,
+        input.userPrompt,
+        explicitWritingStyleInstruction
+      );
 
       console.log(`[SourceMaterialAnalyzer] Found ${structureAnalysis.majorPlotPoints.length} major plot points`);
       console.log(`[SourceMaterialAnalyzer] Estimated complexity: ${structureAnalysis.estimatedScope.complexity}`);
@@ -318,7 +331,8 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
   private async analyzeStoryStructure(
     sourceText: string,
     title?: string,
-    userPrompt?: string
+    userPrompt?: string,
+    explicitWritingStyleInstruction?: string
   ): Promise<StoryStructureAnalysis> {
     // Truncate source text if too long for single analysis
     const maxChars = 100000; // ~25k tokens
@@ -335,6 +349,12 @@ ${userPrompt ? `**User Instructions/Prompt**:
 ${userPrompt}
 
 ` : ''}
+**Writing Style Detection**:
+${explicitWritingStyleInstruction
+  ? `The user explicitly described the prose/writing style. Treat this as AUTHORITATIVE and preserve it in writingStyleGuide.source = "explicit_prompt".
+Explicit prose instruction: "${explicitWritingStyleInstruction}"`
+  : `No explicit prose/writing-style instruction was detected in the user prompt. Infer a writing style guide from the supplied material, direct language, genre, tone, and narrative voice; set writingStyleGuide.source = "inferred_from_material".`}
+
 ${truncatedText ? `**Source Material**:
 ${truncatedText}` : '*(No source material provided, use the User Instructions/Prompt as the only source)*'}
 
@@ -378,8 +398,26 @@ Analyze this text and respond with JSON:
   },
   "adaptationGuidance": {
     "narrativeVoice": "<describe the unique authorial voice/style to replicate>",
+    "toneNotes": "<how the tone should feel in prose>",
+    "dialogueStyle": "<how characters should speak>",
     "keyThemesToPreserve": ["<theme 1>", "<theme 2>", ...],
-    "iconicMoments": ["<list must-have moments from source>", ...]
+    "iconicMoments": ["<list must-have moments from source>", ...],
+    "elementsToPreserve": ["<voice/story elements to preserve>", ...],
+    "elementsToAdapt": ["<elements that should be adapted for interactive fiction>", ...]
+  },
+  "writingStyleGuide": {
+    "source": "${explicitWritingStyleInstruction ? 'explicit_prompt' : 'inferred_from_material'}",
+    "summary": "<one-sentence prose style contract>",
+    "narrativeVoice": "<authorial stance, texture, emotional register>",
+    "sentenceRhythm": "<typical sentence length, cadence, variation>",
+    "diction": "<word choice: plain/literary/period/slang/technical/etc.>",
+    "dialogueStyle": "<dialogue texture and subtext rules>",
+    "povAndDistance": "<point of view and closeness to protagonist interiority>",
+    "imageryAndSensoryFocus": "<dominant sensory palette and image logic>",
+    "pacing": "<how prose should move during action, quiet moments, reveals>",
+    "doList": ["<specific prose move to use>", "<specific prose move to use>"],
+    "avoidList": ["<specific prose habit to avoid>", "<specific prose habit to avoid>"],
+    "evidence": ["<short source/prompt evidence for the style decision>"]
   },
   "storyArcs": [
     {
@@ -708,6 +746,16 @@ Return ONLY valid JSON.
       anchors,
       sevenPoint,
       schemaAbstraction: normalizeSchemaAbstraction(structure.schemaAbstraction, anchors),
+      writingStyleGuide: normalizeWritingStyleGuide(
+        structure.writingStyleGuide,
+        detectExplicitWritingStyleInstruction(input.userPrompt),
+        {
+          genre: structure.genre,
+          tone: structure.tone,
+          narrativeVoice: structure.adaptationGuidance?.narrativeVoice,
+          dialogueStyle: structure.adaptationGuidance?.dialogueStyle,
+        },
+      ),
 
       storyArcs,
       detectedEndingMode: endingFields.detectedEndingMode,
@@ -731,6 +779,8 @@ Return ONLY valid JSON.
       analysisTimestamp: new Date(),
       confidenceScore,
       warnings,
+      directLanguageFragments: normalizeDirectLanguageFragments(structure.directLanguageFragments),
+      adaptationGuidance: normalizeAdaptationGuidance(structure.adaptationGuidance),
     };
   }
 
@@ -991,6 +1041,128 @@ function inferSevenPointFromStructure(
     pinch2: byTypeOrPosition('twist', 0.7) || `Crisis that appears to undo everything ${protagonistName} has gained; the final transformation begins here.`,
     climax: anchors.climax,
     resolution: byTypeOrPosition('resolution', 1) || `The aftermath and legacy of the climax; the ordinary world is visibly changed.`,
+  };
+}
+
+const WRITING_STYLE_PATTERN =
+  /\b(?:write|written|prose|narrative voice|narration|narrator|style|voice|tone|dialogue|dialog)\b/i;
+
+const EXPLICIT_STYLE_TRIGGERS = [
+  /\bwrite\s+(?:it|this|the story|the prose|the narration)?\s*(?:in|with|like|as)\b/i,
+  /\b(?:writing|prose|narrative|narration|dialogue|dialog)\s+style\s*(?:should|must|is|:|-)\b/i,
+  /\bnarrative\s+voice\s*(?:should|must|is|:|-)\b/i,
+  /\b(?:use|give\s+it|make\s+it)\s+(?:a\s+)?(?:terse|spare|literary|lyrical|noir|hardboiled|pulp|storybook|epistolary|first-person|second-person|third-person|omniscient|close|minimalist|maximalist|wry|satirical|gothic|poetic)\b/i,
+  /\b(?:dialogue|dialog)\s+should\b/i,
+  /\bin\s+the\s+style\s+of\b/i,
+];
+
+/**
+ * Deterministically detect explicit prose-style instructions in the user
+ * prompt. This intentionally avoids generic story-tone requests unless they
+ * are phrased as writing/prose/narration/dialogue instructions.
+ */
+export function detectExplicitWritingStyleInstruction(userPrompt?: string): string | undefined {
+  const prompt = String(userPrompt || '').trim();
+  if (!prompt || !WRITING_STYLE_PATTERN.test(prompt)) return undefined;
+
+  const sentences = prompt
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  const matches = sentences.filter((sentence) => {
+    const lower = sentence.toLowerCase();
+    if (/\b(?:art|visual|image|illustration|illustrated|drawing|painting)\s+style\b/.test(lower)) {
+      return false;
+    }
+    return EXPLICIT_STYLE_TRIGGERS.some((pattern) => pattern.test(sentence));
+  });
+
+  if (matches.length === 0) return undefined;
+  return matches.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+}
+
+export function normalizeDirectLanguageFragments(
+  fragments: StoryStructureAnalysis['directLanguageFragments'] | undefined,
+): DirectLanguageFragmentGroups {
+  return {
+    dialogue: asStringArray(fragments?.dialogue),
+    prose: asStringArray(fragments?.prose),
+    terminology: asStringArray(fragments?.terminology),
+  };
+}
+
+export function normalizeAdaptationGuidance(
+  guidance: StoryStructureAnalysis['adaptationGuidance'] | undefined,
+): SourceMaterialAnalysis['adaptationGuidance'] | undefined {
+  if (!guidance) return undefined;
+
+  return {
+    toneNotes: String(guidance.toneNotes || '').trim() || String(guidance.narrativeVoice || '').trim(),
+    dialogueStyle: String(guidance.dialogueStyle || '').trim() || 'Match each character voice to the analyzed source style.',
+    narrativeVoice: String(guidance.narrativeVoice || '').trim() || 'Use the analyzed source voice while keeping player-facing prose clear.',
+    elementsToPreserve: asStringArray(guidance.elementsToPreserve).length > 0
+      ? asStringArray(guidance.elementsToPreserve)
+      : [...asStringArray(guidance.keyThemesToPreserve), ...asStringArray(guidance.iconicMoments)],
+    elementsToAdapt: asStringArray(guidance.elementsToAdapt),
+    keyThemesToPreserve: asStringArray(guidance.keyThemesToPreserve),
+    iconicMoments: asStringArray(guidance.iconicMoments),
+  };
+}
+
+export function normalizeWritingStyleGuide(
+  guide: Partial<WritingStyleGuide> | undefined,
+  explicitInstruction: string | undefined,
+  fallback: {
+    genre?: string;
+    tone?: string;
+    narrativeVoice?: string;
+    dialogueStyle?: string;
+  } = {},
+): WritingStyleGuide {
+  const source: WritingStyleGuide['source'] = explicitInstruction
+    ? 'explicit_prompt'
+    : 'inferred_from_material';
+
+  const summary = String(guide?.summary || '').trim()
+    || (explicitInstruction
+      ? `Follow the user's explicit prose instruction: ${explicitInstruction}`
+      : `Use an inferred ${fallback.tone || 'story-appropriate'} ${fallback.genre || 'interactive fiction'} prose style.`);
+
+  return {
+    source,
+    summary,
+    narrativeVoice: String(guide?.narrativeVoice || fallback.narrativeVoice || '').trim()
+      || 'Clear, immersive narration focused on concrete action and emotional consequence.',
+    sentenceRhythm: String(guide?.sentenceRhythm || '').trim()
+      || 'Vary short, playable beats with occasional longer reflective lines for emphasis.',
+    diction: String(guide?.diction || '').trim()
+      || 'Use genre-appropriate vocabulary without exposing mechanics or numbers.',
+    dialogueStyle: String(guide?.dialogueStyle || fallback.dialogueStyle || '').trim()
+      || 'Keep dialogue concise, character-specific, and rich with subtext.',
+    povAndDistance: String(guide?.povAndDistance || '').trim()
+      || 'Stay close enough to the protagonist for immediacy without over-defining the player character.',
+    imageryAndSensoryFocus: String(guide?.imageryAndSensoryFocus || '').trim()
+      || 'Favor specific sensory details that reveal mood, stakes, and setting.',
+    pacing: String(guide?.pacing || '').trim()
+      || 'Move quickly through action and linger briefly on choices, revelations, and consequences.',
+    doList: asStringArray(guide?.doList).length > 0
+      ? asStringArray(guide?.doList)
+      : ['Express mechanics through fiction-first prose.', 'Preserve the established tone and narrative voice.'],
+    avoidList: asStringArray(guide?.avoidList).length > 0
+      ? asStringArray(guide?.avoidList)
+      : ['Do not expose stats, dice rolls, or numeric mechanics.', 'Do not drift into generic cinematic summary.'],
+    evidence: asStringArray(guide?.evidence).length > 0
+      ? asStringArray(guide?.evidence)
+      : explicitInstruction
+        ? [explicitInstruction]
+        : undefined,
   };
 }
 

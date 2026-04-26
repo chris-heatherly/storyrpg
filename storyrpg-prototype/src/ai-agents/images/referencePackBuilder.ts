@@ -308,8 +308,10 @@ export function getReferencePackProfile(family: ImageSlotFamily): ReferencePackP
  *     identity signal. Per-reference strategy (see `referenceStrategy.ts`),
  *     keep only `character-reference` (front view), `character-reference-face`,
  *     and `user-provided-character-reference`. Drop composite, 3q/profile
- *     views, expression refs, style anchors, and location shots. Cap to
- *     `strategy.maxSceneRefs` (default 2).
+ *     views, expression refs, style anchors, and location shots. Keep at
+ *     least one clean identity ref per character when present; then add
+ *     second refs up to the provider capability. This prevents group shots
+ *     from silently dropping one character's identity anchor.
  *
  *   placeholder:
  *     Drop all refs — the provider does not consume reference images.
@@ -391,11 +393,50 @@ export function filterRefsForProvider(
         // expression-*, body-vocab, silhouette, previous-view-consistency,
         // canonical-front-identity, etc.) is dropped.
       }
-      // Cap to the strategy's explicit max (tighter than provider
-      // capability's maxRefs on purpose — 1-2 clean refs outperforms a
-      // larger noisy pack for gpt-image-2).
-      const capped = kept.slice(0, strategy.maxSceneRefs);
-      return { refs: capped };
+      const perCharacter = new Map<string, ReferenceImage[]>();
+      const noCharacter: ReferenceImage[] = [];
+      for (const r of kept) {
+        const key = r.characterName || '';
+        if (!key) {
+          noCharacter.push(r);
+          continue;
+        }
+        const bucket = perCharacter.get(key) || [];
+        bucket.push(r);
+        perCharacter.set(key, bucket);
+      }
+
+      const ordered: ReferenceImage[] = [];
+      const maxRefs = 16;
+      const addUnique = (r: ReferenceImage | undefined) => {
+        if (!r || ordered.includes(r) || ordered.length >= maxRefs) return;
+        ordered.push(r);
+      };
+
+      for (const bucket of perCharacter.values()) {
+        addUnique(
+          bucket.find((r) => r.role === 'user-provided-character-reference') ||
+          bucket.find((r) => r.role === 'character-reference-face') ||
+          bucket.find((r) => r.role === 'character-reference' && (!r.viewType || r.viewType === 'front'))
+        );
+        if (ordered.length >= maxRefs) break;
+      }
+
+      const targetRefs = Math.max(strategy.maxSceneRefs, perCharacter.size);
+      for (const bucket of perCharacter.values()) {
+        if (ordered.length >= Math.min(maxRefs, targetRefs)) break;
+        for (const r of bucket) {
+          addUnique(r);
+          if (ordered.length >= Math.min(maxRefs, targetRefs)) break;
+        }
+      }
+
+      for (const r of noCharacter) {
+        addUnique(r);
+        if (ordered.length >= Math.min(maxRefs, targetRefs)) break;
+      }
+
+      return { refs: ordered.slice(0, Math.min(maxRefs, targetRefs)) };
     }
 
     case 'placeholder':

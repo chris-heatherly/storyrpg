@@ -132,8 +132,18 @@ describe('filterRefsForProvider', () => {
       expect(out.refs).toEqual([]);
     });
 
-    it('caps to the strategy max (2 refs)', () => {
-      // front + face + user-provided = 3 candidates; should cap at 2.
+    it('keeps at least one clean identity ref per character in group shots', () => {
+      const brunoFront = ref('character-reference', { characterName: 'Bruno', viewType: 'front' });
+      const brunoFace = ref('character-reference-face', { characterName: 'Bruno' });
+      const caraFront = ref('character-reference', { characterName: 'Cara', viewType: 'front' });
+      const out = filterRefsForProvider([front, face, brunoFront, brunoFace, caraFront], 'dall-e');
+      expect(out.refs.some(r => r.characterName === 'Aoi')).toBe(true);
+      expect(out.refs.some(r => r.characterName === 'Bruno')).toBe(true);
+      expect(out.refs.some(r => r.characterName === 'Cara')).toBe(true);
+    });
+
+    it('keeps the tight strategy max for a single character', () => {
+      // front + face + user-provided = 3 candidates; single-character shots still cap at 2.
       const out = filterRefsForProvider([front, face, userProvided], 'dall-e');
       expect(out.refs.length).toBeLessThanOrEqual(2);
     });

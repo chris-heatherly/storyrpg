@@ -2268,11 +2268,11 @@ export class ImageGenerationService {
         this.config.requireCharacterRefsForVisibleCharacters !== false &&
         this.config.allowTextOnlyCharacterImages !== true &&
         referenceAudit.visibleCharacters.length > 0 &&
-        referenceAudit.missingReferenceCharacters.length > 0
+        referenceAudit.referenceRoute === 'text-only'
       ) {
         const message =
           `Character reference continuity blocked "${identifier}": missing usable refs for ` +
-          `${referenceAudit.missingReferenceCharacters.join(', ')} after ${provider} filtering ` +
+          `${referenceAudit.missingReferenceCharacters.join(', ') || referenceAudit.visibleCharacters.join(', ')} after ${provider} filtering ` +
           `(route=${referenceAudit.referenceRoute}, refs=${capabilityFilteredRefs?.length || 0}/${referenceImages?.length || 0}).`;
         this.emit({ type: 'job_updated', id: jobId, updates: { status: 'failed', error: message, endTime: Date.now() } });
         throw new Error(message);

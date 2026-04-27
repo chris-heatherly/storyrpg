@@ -2083,6 +2083,13 @@ export class ImageGenerationService {
       return 'permanent';
     }
     if (
+      msg.includes('moderation_blocked') ||
+      msg.includes('image_generation_user_error') ||
+      msg.includes('request was rejected by the safety system')
+    ) {
+      return 'permanent';
+    }
+    if (
       msg.includes('rate limit') ||
       msg.includes('429') ||
       msg.includes('timeout') ||
@@ -2110,6 +2117,37 @@ export class ImageGenerationService {
       return 'transient';
     }
     return 'transient';
+  }
+
+  private isOpenAiModerationBlock(status: number, raw: string): boolean {
+    if (status !== 400) return false;
+    return /moderation_blocked|image_generation_user_error|request was rejected by the safety system/i.test(raw);
+  }
+
+  private buildOpenAiSafetyRetryPrompt(composedPrompt: string): string {
+    const replacements: Array<[RegExp, string]> = [
+      [/\bdead body\b/gi, 'mystery victim'],
+      [/\bcorpse\b/gi, 'mystery victim'],
+      [/\bblood(?:y|shed|stained)?\b/gi, 'dramatic red lighting'],
+      [/\bgore|gory|viscera|dismember(?:ed|ment)?\b/gi, 'dramatic evidence'],
+      [/\bkill(?:ed|ing)?|murder(?:ed|ing)?\b/gi, 'grave mystery'],
+      [/\bstab(?:bed|bing)?|slash(?:ed|ing)?\b/gi, 'sudden confrontation'],
+      [/\bchok(?:e|ed|ing)|strangl(?:e|ed|ing)\b/gi, 'physical struggle'],
+      [/\bgun(?:shot|fire)?|pistol|revolver|rifle\b/gi, 'ominous object'],
+      [/\bknife|dagger|blade\b/gi, 'sharp silhouette'],
+      [/\bnude|naked|explicit|erotic\b/gi, 'intimate but fully clothed'],
+      [/\bseduction|seductive\b/gi, 'charged romantic tension'],
+    ];
+    let sanitized = composedPrompt;
+    for (const [pattern, replacement] of replacements) {
+      sanitized = sanitized.replace(pattern, replacement);
+    }
+
+    return [
+      'Create a safe, PG-13 visual adaptation of this story moment.',
+      'Use implication, posture, distance, expression, lighting, props, and environment instead of graphic injury, explicit sexuality, or direct harm.',
+      sanitized,
+    ].join('\n\n');
   }
 
   async generateImage(
@@ -5261,6 +5299,7 @@ export class ImageGenerationService {
       status === 429 || (status >= 500 && status < 600);
 
     let lastError: Error | null = null;
+    let openAiSafetyRetryAttempted = false;
     for (let attempt = 1; attempt <= this.maxRetries; attempt += 1) {
       try {
         const response = await fetch(endpoint, {
@@ -5274,6 +5313,7 @@ export class ImageGenerationService {
         const raw = await response.text();
 
         if (!response.ok) {
+          const isModerationBlock = this.isOpenAiModerationBlock(response.status, raw);
           let friendly = '';
           if (response.status === 403 && /must be verified/i.test(raw)) {
             friendly =
@@ -5286,6 +5326,26 @@ export class ImageGenerationService {
             friendly = ' Your OpenAI key has hit a rate limit or has insufficient quota. Check billing at https://platform.openai.com/settings/organization/billing.';
           }
           const msg = `OpenAI image API error ${response.status}: ${raw.slice(0, 500)}${friendly}`;
+
+          if (isModerationBlock && !openAiSafetyRetryAttempted) {
+            openAiSafetyRetryAttempted = true;
+            body.prompt = this.buildOpenAiSafetyRetryPrompt(composedPrompt);
+            this.pipelineMetrics.permanentFailures++;
+            const retryMsg = `${msg} Retrying once with a provider-safe visual rewrite.`;
+            console.warn(`[ImageGenerationService] ${retryMsg}`);
+            this.emit({ type: 'job_updated', id: jobId, updates: { error: retryMsg, attempts: attempt } });
+            lastError = ImageGenerationService.withProviderErrorMeta(new Error(msg), {
+              providerFailureKind: 'content_policy',
+              providerAttemptCount: attempt,
+              effectivePromptChars: String(body.prompt).length,
+              effectiveNegativeChars: prompt.negativePrompt?.length || 0,
+              effectiveRefCount: inputs.length,
+              blockReason: 'moderation_blocked',
+              responseExcerpt: raw.slice(0, 500),
+              model,
+            });
+            continue;
+          }
 
           if (isTransientHttpStatus(response.status) && attempt < this.maxRetries) {
             // Transient: backoff and retry. OpenAI recommends exponential backoff
@@ -5308,6 +5368,21 @@ export class ImageGenerationService {
             console.error(`[ImageGenerationService] ${msg} — giving up after ${this.maxRetries} attempts`);
           } else {
             this.pipelineMetrics.permanentFailures++;
+          }
+          if (isModerationBlock) {
+            const placeholder = await this.generatePlaceholder(prompt, identifier, jobId);
+            placeholder.metadata = {
+              ...(placeholder.metadata || {}),
+              provider: 'openai',
+              model,
+              attempts: attempt,
+              providerFailureKind: 'content_policy',
+              blockReason: 'moderation_blocked',
+              responseExcerpt: raw.slice(0, 500),
+              effectiveRefCount: inputs.length,
+            };
+            console.error(`[ImageGenerationService] ${msg} — using prompt placeholder for "${identifier}" so the pipeline can continue.`);
+            return placeholder;
           }
           if (this.isFailFastEnabled()) throw new Error(msg);
           console.error(`[ImageGenerationService] ${msg}`);

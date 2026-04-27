@@ -32,9 +32,35 @@ describe('ImageGenerationService.classifyError', () => {
     expect(ImageGenerationService.classifyError(err)).toBe('permanent');
   });
 
+  it('treats OpenAI moderation blocks as permanent per-slot failures', () => {
+    const err = new Error('OpenAI image API error 400: {"error":{"message":"Your request was rejected by the safety system.","type":"image_generation_user_error","code":"moderation_blocked"}}');
+    expect(ImageGenerationService.classifyError(err)).toBe('permanent');
+  });
+
   it('keeps text-instead-of-image distinct from other transient failures', () => {
     expect(ImageGenerationService.classifyError(new Error('Gemini returned text instead of image: hello')))
       .toBe('text_instead_of_image');
+  });
+});
+
+describe('ImageGenerationService OpenAI safety rewrite', () => {
+  it('rewrites commonly blocked graphic terms while preserving the scene request', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const rewritten = (service as any).buildOpenAiSafetyRetryPrompt(
+      'Detective Riley Kane finds a dead body with bloody evidence after a murder. Style: noir.'
+    );
+
+    expect(rewritten).toContain('safe, PG-13 visual adaptation');
+    expect(rewritten).toContain('Detective Riley Kane');
+    expect(rewritten).not.toMatch(/\bdead body\b/i);
+    expect(rewritten).not.toMatch(/\bbloody\b/i);
+    expect(rewritten).not.toMatch(/\bmurder\b/i);
   });
 });
 

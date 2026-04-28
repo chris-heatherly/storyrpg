@@ -13,7 +13,7 @@
   "llmProvider": "anthropic",
   "llmModel": "claude-sonnet-4-20250514",
   "atlasCloudModel": "black-forest-labs/flux-dev-lora",
-  "artStyle": "A glossy, cinematic anime hero portrait style combining modern gacha game splash art, web novel protagonist aesthetics, and high-contrast magical fantasy lighting to create an instantly recognizable “main character with hidden power” image.",
+  "artStyle": "Modern isekai anime art style, ultra-detailed illustration, polished cel-shading, vibrant fantasy color palette, cinematic lighting, dramatic atmosphere, crisp clean linework, expressive character design, dynamic composition, rich environmental detail, soft bloom highlights, depth of field, layered backgrounds, glossy rendering, premium light novel cover aesthetic, high-end Japanese fantasy anime key visual, elegant costume detailing, magical ambience, epic sense of scale, immersive worldbuilding tone, trending anime fantasy style, sharp focus, masterpiece quality.",
   "generationSettings": {
     "targetSceneCount": 6,
     "majorChoiceCount": 3,

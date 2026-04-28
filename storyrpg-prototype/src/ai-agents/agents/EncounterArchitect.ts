@@ -20,11 +20,20 @@ import {
   EncounterApproach, 
   EncounterNarrativeStyle,
   EncounterOutcome,
+  EncounterPayoffContext,
+  EncounterStoryboard,
+  EncounterStoryboardFrameRole,
   EncounterVisualContract,
   EncounterType,
   NPCDisposition,
   Relationship,
 } from '../../types';
+import {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
+import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 
 import { GeneratedStoryletDraft as GeneratedStorylet, StoryletBeatDraft as StoryletBeat } from '../types/encounterDraft';
 import { StateChange } from '../types/llm-output';
@@ -108,6 +117,20 @@ export interface EncounterArchitectInput {
   // Scene connections for storylets
   victoryNextSceneId?: string;
   defeatNextSceneId?: string;
+
+  /**
+   * Season-level narrative anchors (from SeasonPlan.anchors). Lets the
+   * encounter's dramatic weight align with the season's core Stakes and
+   * point toward the season Climax anchor when this IS the climactic
+   * encounter.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /** Season-level 7-point beat map. */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /** Which beat(s) of the season this episode carries. */
+  episodeStructuralRole?: StructuralRole[];
 
   // Pre-encounter state context: flags and relationship thresholds from earlier scenes
   // that are designed to echo inside this encounter as narrative shading, unlocked choices,
@@ -238,6 +261,47 @@ export interface Phase3Result {
   }>;
 }
 
+/**
+ * Structured per-encounter telemetry (I2 from the determinism / LLM
+ * instrumentation plan). Emitted alongside each EncounterArchitect run
+ * so we can measure per-phase success rates, LLM cost, and wall-clock
+ * time across real runs before deciding on any phase-architecture
+ * changes.
+ */
+export interface EncounterTelemetry {
+  sceneId: string;
+  /**
+   * phased_success   — phased path, every phase returned data
+   * phased_with_gaps — phased path, at least one phase null/failed
+   * lean             — phased path threw; legacy lean prompt succeeded
+   * deterministic    — both lean attempts failed; deterministic fallback
+   *                    used instead
+   */
+  mode: 'phased_success' | 'phased_with_gaps' | 'lean' | 'deterministic';
+  phase1Ok: boolean;
+  /** success per opening-beat choice, in choice order */
+  phase2: boolean[];
+  phase3Ran: boolean;
+  phase3Ok: boolean;
+  phase4Ok: boolean;
+  /**
+   * Number of LLM calls issued during this encounter generation.
+   * Phased path is 1 (Phase 1) + N (Phase 2, one per choice) + 0/1 (Phase 3)
+   * + 1 (Phase 4). Lean path is 1 or 2. Deterministic path is 0.
+   */
+  llmCallCount: number;
+  msElapsed: number;
+  /**
+   * Outcome slots whose emitted prose matched the `createDefaultStorylet`
+   * fallback text hash-for-hash (I3 instrumentation). Populated for all
+   * paths; empty array means all storylets were LLM-authored. Non-empty
+   * for phased runs usually signals Phase 4 failed or returned partial
+   * output; non-empty for lean runs signals the LLM omitted a slot and
+   * `normalizeStructure` filled it with a default.
+   */
+  phase4DefaultCollisions: Array<'victory' | 'partialVictory' | 'defeat' | 'escape'>;
+}
+
 /** Phase 4 output: storylets */
 export interface Phase4Result {
   victory: GeneratedStorylet;
@@ -309,6 +373,10 @@ export interface EncounterChoiceOutcome {
     shotType: 'dramatic_closeup' | 'action_wide' | 'reaction_medium' | 'impact_freeze';
     mood: 'triumphant' | 'tense' | 'desperate' | 'bittersweet';
   };
+
+  storyboardFrameId?: string;
+  nextStoryboardFrameId?: string;
+  tacticalEffect?: string;
 }
 
 export interface SkillAdvantage {
@@ -404,6 +472,9 @@ export interface EncounterBeat {
   // Escalation text when threat is high (>=50%)
   escalationText?: string;
   escalationImage?: string;
+
+  storyboardFrameId?: string;
+  storyboardRole?: EncounterStoryboardFrameRole;
 }
 
 export interface SkillChallenge {
@@ -593,6 +664,9 @@ export interface EncounterStructure {
   estimatedDuration: string;
   replayability: string;
   designNotes: string;
+
+  storyboard?: EncounterStoryboard;
+  payoffContext?: EncounterPayoffContext;
 }
 
 export interface TensionPoint {
@@ -610,6 +684,108 @@ export class EncounterArchitect extends BaseAgent {
     return 2;
   }
 
+  private readonly defaultStoryboardRoles: EncounterStoryboardFrameRole[] = [
+    'establish',
+    'pressureReveal',
+    'commit',
+    'exchange',
+    'reversal',
+    'opening',
+    'decisiveMove',
+    'fallout',
+    'aftermath',
+  ];
+
+  private describeEncounterStyleFocus(style?: EncounterNarrativeStyle, type?: EncounterType): string {
+    const resolved = style || (type === 'combat' || type === 'chase' ? 'action' : type === 'stealth' || type === 'heist' ? 'stealth' : type === 'investigation' || type === 'puzzle' ? 'mystery' : type === 'romantic' ? 'romantic' : type === 'social' || type === 'negotiation' ? 'social' : type === 'survival' || type === 'exploration' ? 'adventure' : 'dramatic');
+    switch (resolved) {
+      case 'action':
+        return 'movement, impact, wounds, footing, weapons, terrain, and threat scale';
+      case 'social':
+        return 'posture, public pressure, tells, proximity, exposed truths, leverage, and rupture';
+      case 'romantic':
+        return 'gaze, hesitation, consent, vulnerability, interruption, distance, and emotional risk';
+      case 'stealth':
+        return 'sightlines, cover, timing windows, tools, evidence left behind, patrol pressure, and near-discovery';
+      case 'mystery':
+        return 'clue discovery, false leads, suspect tells, environmental detail, missing context, and realization';
+      case 'adventure':
+        return 'terrain, exhaustion, narrowing exits, sacrifice, resource pressure, and escape windows';
+      case 'dramatic':
+        return 'emotional pressure, identity tests, relationship distance, irreversible words, and visible cost';
+      default:
+        return 'clear pressure, tactical position, emotional stakes, visible consequences, and decisive choices';
+    }
+  }
+
+  private buildDefaultStoryboard(input: EncounterArchitectInput, structure: EncounterStructure): EncounterStoryboard {
+    const styleFocus = this.describeEncounterStyleFocus(input.encounterStyle, input.encounterType);
+    const frames = this.defaultStoryboardRoles.map((role, index) => {
+      const beat = structure.beats[index] || structure.beats[Math.min(index, Math.max(0, structure.beats.length - 1))];
+      const hasDecision = role === 'commit' || role === 'exchange' || role === 'opening' || role === 'decisiveMove';
+      return {
+        id: `${input.sceneId}-storyboard-${role}`,
+        role,
+        title: role.replace(/([A-Z])/g, ' $1').replace(/^./, ch => ch.toUpperCase()),
+        purpose: hasDecision
+          ? 'Create a tactical decision window that pays off prior story state while preserving cinematic continuity.'
+          : 'Advance the encounter spine through a readable visual/emotional state change.',
+        visualMoment: beat?.setupText || beat?.description || input.encounterDescription || input.sceneDescription,
+        tacticalFunction: hasDecision
+          ? 'Player choice can change position, leverage, information, exposure, relationship pressure, resource state, clocks, cost, or storylet outcome.'
+          : 'No new mechanical UI; show pressure and consequence through the fiction and current clock feedback only.',
+        emotionalState: role === 'aftermath' || role === 'fallout'
+          ? 'The cost or relief of the encounter is visible.'
+          : input.sceneMood || 'tense',
+        continuityState: {
+          relationshipDistance: styleFocus,
+          propsInPlay: input.encounterRelevantSkills?.slice(0, 3) || [],
+          environmentChanges: role === 'fallout' || role === 'aftermath' ? ['visible consequences of the encounter'] : [],
+          lighting: role === 'pressureReveal' || role === 'reversal' ? 'heightened contrast' : 'consistent with scene mood',
+        },
+        decisionWindow: hasDecision,
+        allowedApproaches: hasDecision
+          ? (['aggressive', 'cautious', 'clever'] as EncounterApproach[])
+          : undefined,
+        payoffRefs: input.priorStateContext
+          ? [
+              ...input.priorStateContext.relevantFlags.map(f => f.name),
+              ...input.priorStateContext.relevantRelationships.map(r => `${r.npcId}:${r.dimension}`),
+            ].slice(0, 5)
+          : undefined,
+      };
+    });
+
+    return {
+      spine: frames,
+      styleNotes: `Storyboard frames should emphasize ${styleFocus}.`,
+      convergencePlan: 'Outcome variants can differ sharply in posture, leverage, cost, and clock movement, but should converge back to the cinematic spine when dramatically appropriate.',
+      mechanicsVisibility: 'current_clocks_only',
+    };
+  }
+
+  private buildDefaultPayoffContext(input: EncounterArchitectInput): EncounterPayoffContext {
+    const ctx = input.priorStateContext;
+    return {
+      consumedFlags: ctx?.relevantFlags.map(flag => ({
+        flag: flag.name,
+        effect: flag.alreadySet
+          ? `Use as a potential unlock, lock, setup variant, hidden advantage, or aftermath echo: ${flag.description}`
+          : `Do not use as a current choice condition; reserve for replay shading/statBonus only: ${flag.description}`,
+      })),
+      relationshipPayoffs: ctx?.relevantRelationships.map(rel => ({
+        npcId: rel.npcId,
+        dimension: rel.dimension,
+        effect: `Can alter setup text, disposition, availability, advantage, visible cost, or storylet echo when ${rel.npcName} ${rel.dimension} ${rel.operator} ${rel.threshold}. ${rel.description}`,
+      })),
+      skillPayoffs: input.encounterRelevantSkills?.map(skill => ({
+        skill,
+        effect: 'Use as a fiction-first tactical lever for choice outcomes, hidden advantage, growth, or aftermath learning.',
+      })),
+      aftermathEchoes: ctx?.significantChoices,
+    };
+  }
+
   constructor(config: AgentConfig) {
     super('Encounter Architect', config);
     this.includeSystemPrompt = true;
@@ -619,7 +795,11 @@ export class EncounterArchitect extends BaseAgent {
     return `
 ## Your Role: Encounter Architect
 
-You design BRANCHING TREE encounters where every choice outcome leads to a genuinely DIFFERENT future. This is NOT a linear sequence - it's an action movie where success and failure create completely different situations.
+You design STORYBOARD-DRIVEN encounters where choices and hidden mechanics play out as a cinematic sequence of visual beats. Encounters are not just combat: they include heated arguments, seduction, stealth infiltration, chases, heists, investigations, survival scenes, and emotional confrontations.
+
+The player should feel a storyboard rhythm: establish → pressure reveal → commit → exchange → reversal → opening → decisive move → fallout → aftermath. Decisions from the whole journey culminate here through unlocked choices, altered setup text, hidden advantages, NPC disposition shifts, visible costs, and aftermath echoes.
+
+Preserve gameplay. Goal/threat clocks, current clock visualization, success/complicated/failure tiers, costs, consequences, environmental elements, NPC tells, escalation triggers, stat bonuses, locked choices, and storylets must remain meaningful. Do not add new visible mechanics, progress indicators, dice, raw stats, or extra meters.
 
 ## CRITICAL: ACTION → REACTION FLOW
 
@@ -629,14 +809,25 @@ You design BRANCHING TREE encounters where every choice outcome leads to a genui
 3. **SEE THE RESULT** - The image shows your leg sweep connecting (or missing)
 4. **NEW SITUATION + NEW CHOICES** - "He crashes to the ground, but shouts for help. You hear boots in the corridor."
 
-**CRITICAL**: The outcome of each choice creates a DIFFERENT next situation:
-- SUCCESS at the leg sweep → He's down, you have a moment → different choices
-- FAILURE at the leg sweep → He dodges, you're off-balance → different choices
-- COMPLICATED → He falls but grabs your ankle → different choices
+**CRITICAL**: The outcome of each choice creates a tactically and emotionally different panel:
+- SUCCESS → stronger position, leverage, information, closeness, cover, opening, or momentum
+- FAILURE → exposure, setback, distance, danger, public pressure, misread clue, or lost timing
+- COMPLICATED → objective progress plus visible cost, mixed signal, new pressure, or hard tradeoff
+
+Outcome branches should not explode into unrelated scenes. They should preserve character/location continuity and converge back to the storyboard spine when dramatically appropriate.
 
 **This is NOT**: choice → result → same next beat for everyone
 
-## BRANCHING TREE STRUCTURE (Not Linear Beats)
+## STORYBOARD SPINE + CONTROLLED TACTICAL BRANCHING
+
+Every encounter should include a \`storyboard\` object with 7-9 frames:
+\`establish\`, \`pressureReveal\`, \`commit\`, \`exchange\`, \`reversal\`, \`opening\`, \`decisiveMove\`, \`fallout\`, \`aftermath\`.
+
+Each frame needs: visual moment, tactical function, emotional state, continuity state, and whether it is a decision window. Place 2-4 meaningful tactical decision windows across the spine.
+
+Each choice must change at least one: position, leverage, information, exposure, relationship pressure, resource state, threat clock, goal clock, cost domain, or later storylet.
+
+## CONTROLLED TREE STRUCTURE
 
 Instead of beats pointing to the same next beat, EACH OUTCOME contains its own embedded \`nextSituation\`:
 
@@ -665,7 +856,15 @@ Every choice has three possible outcomes that lead to DIFFERENT situations:
 2. **COMPLICATED**: Partial success with cost - leads to challenging new situation
 3. **FAILURE**: Setback - leads to disadvantageous new situation
 
-**Each outcome's nextSituation has DIFFERENT choices reflecting the new reality.**
+**Each outcome's nextSituation has DIFFERENT choices reflecting the new reality, but it should still feel like the next panel of the same storyboard.**
+
+### Style-Specific Visual Priorities
+- Combat/action: movement, impact, wounds, footing, weapons, terrain, threat scale.
+- Social/heated fights: posture, public pressure, tells, proximity, exposed truths, leverage, rupture.
+- Romance/seduction: gaze, hesitation, consent, vulnerability, interruption, distance, emotional risk.
+- Stealth/heist: sightlines, cover, timing windows, tools, evidence left behind, patrol pressure, near-discovery.
+- Investigation/mystery: clue discovery, false leads, suspect tells, environmental detail, missing context, realization.
+- Chase/survival/adventure: terrain, exhaustion, narrowing exits, sacrifice, resource pressure, escape windows.
 
 ### Dual Clock System (Blades in the Dark inspired)
 - **Goal Clock**: Player's objective progress (typically 6 segments)
@@ -906,6 +1105,7 @@ Outcomes should include consequences that match the skill being tested:
     allNpcs?: NPCInfo[],
   ): Promise<AgentResponse<EncounterStructure>> {
     console.log(`[EncounterArchitect] Designing encounter for scene: ${input.sceneId}`);
+    const execStart = Date.now();
 
     try {
       return await this.executePhased(input, playerRelationships, allNpcs);
@@ -928,20 +1128,52 @@ Outcomes should include consequences that match the skill being tested:
       error?: string;
     }> = [];
 
+    const buildLeanTelemetry = (
+      llmCalls: number,
+      structure: EncounterStructure,
+    ): EncounterTelemetry => ({
+      sceneId: input.sceneId,
+      mode: 'lean',
+      phase1Ok: false,
+      phase2: [],
+      phase3Ran: false,
+      phase3Ok: false,
+      phase4Ok: false,
+      llmCallCount: llmCalls,
+      msElapsed: Date.now() - execStart,
+      phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+    });
+
     const leanResult = await this.tryLLMAttempt(input, 1, 'lean', minimumBeatCount, attemptSummaries, lastError, lastRawResponse);
-    if (leanResult.success && leanResult.data) return leanResult;
+    if (leanResult.success && leanResult.data) {
+      return { ...leanResult, metadata: { ...(leanResult.metadata ?? {}), encounterTelemetry: buildLeanTelemetry(1, leanResult.data) } };
+    }
     lastError = leanResult.error;
     lastRawResponse = leanResult.rawResponse;
 
     const retryResult = await this.tryLLMAttempt(input, 2, 'lean_retry', minimumBeatCount, attemptSummaries, lastError, lastRawResponse);
-    if (retryResult.success && retryResult.data) return retryResult;
+    if (retryResult.success && retryResult.data) {
+      return { ...retryResult, metadata: { ...(retryResult.metadata ?? {}), encounterTelemetry: buildLeanTelemetry(2, retryResult.data) } };
+    }
 
     console.warn(`[EncounterArchitect] All LLM attempts failed for ${input.sceneId}. Building deterministic fallback.`);
     try {
       let structure = this.buildDeterministicFallback(input);
       structure = this.normalizeStructure(structure, input);
       this.validateStructure(structure, input);
-      return { success: true, data: structure };
+      const telemetry: EncounterTelemetry = {
+        sceneId: input.sceneId,
+        mode: 'deterministic',
+        phase1Ok: false,
+        phase2: [],
+        phase3Ran: false,
+        phase3Ok: false,
+        phase4Ok: false,
+        llmCallCount: 2, // Both lean attempts were made
+        msElapsed: Date.now() - execStart,
+        phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+      };
+      return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
     } catch (fallbackError) {
       const fbMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
       return { success: false, error: `All attempts exhausted including fallback: ${fbMsg}` };
@@ -1077,6 +1309,7 @@ Please try again. Key rules:
     const beatPlan = (input.encounterBeatPlan && input.encounterBeatPlan.length > 0)
       ? input.encounterBeatPlan.map((b, i) => `  ${i + 1}. ${b}`).join('\n')
       : '  1. Opening pressure\n  2. Crisis and resolution';
+    const styleFocus = this.describeEncounterStyleFocus(input.encounterStyle, input.encounterType);
 
     const priorCtx = input.priorStateContext ? `
 ## Prior Story Context (reference these in your narrative)
@@ -1123,6 +1356,9 @@ ${priorCtx}
 - setupText: 30-50 words setting the situation
 - narrativeText: 30-60 words showing THE RESULT of the action (not the action itself)
 - Each beat's choices must cover aggressive, cautious, and clever approaches
+- This is storyboard-driven, not combat-only. For this encounter emphasize: ${styleFocus}
+- Choices must change at least one tactical state: position, leverage, information, exposure, relationship pressure, resource state, threat clock, goal clock, cost domain, or later storylet
+- Keep mechanics fiction-first. Preserve existing clock feedback, but do not add visible stats, dice, numbers, panel markers, or extra meters
 
 ## JSON STRUCTURE (flat with nextBeatId — system converts to tree)
 
@@ -1130,6 +1366,48 @@ ${priorCtx}
   "sceneId": "${input.sceneId}",
   "encounterType": "${input.encounterType}",
   "encounterStyle": "${input.encounterStyle || 'auto'}",
+  "storyboard": {
+    "spine": [
+      {
+        "id": "${input.sceneId}-storyboard-establish",
+        "role": "establish",
+        "title": "Establish",
+        "purpose": "Set the visual situation and stakes",
+        "visualMoment": "single-panel image description",
+        "tacticalFunction": "what state this frame creates or clarifies",
+        "emotionalState": "what the player should read emotionally",
+        "continuityState": {
+          "characterPositions": { "protagonist": "where they are", "npc-id": "where they are" },
+          "relationshipDistance": "physical/emotional distance",
+          "propsInPlay": ["important prop/tool/clue"],
+          "environmentChanges": [],
+          "lighting": "scene lighting"
+        },
+        "decisionWindow": false
+      },
+      {
+        "id": "${input.sceneId}-storyboard-commit",
+        "role": "commit",
+        "title": "Commit",
+        "purpose": "First meaningful player decision",
+        "visualMoment": "single-panel image description",
+        "tacticalFunction": "choice can alter position/leverage/information/exposure/relationship pressure/clocks/cost",
+        "emotionalState": "tense",
+        "continuityState": { "relationshipDistance": "current distance or leverage" },
+        "decisionWindow": true,
+        "allowedApproaches": ["aggressive", "cautious", "clever"]
+      }
+    ],
+    "styleNotes": "Use 7-9 frames total across establish, pressureReveal, commit, exchange, reversal, opening, decisiveMove, fallout, aftermath. Emphasize ${styleFocus}.",
+    "convergencePlan": "Outcome variants alter the next panel and mechanics, then converge back to the cinematic spine when appropriate.",
+    "mechanicsVisibility": "current_clocks_only"
+  },
+  "payoffContext": {
+    "consumedFlags": [],
+    "relationshipPayoffs": [],
+    "skillPayoffs": [],
+    "aftermathEchoes": []
+  },
   "goalClock": { "name": "string", "segments": 6, "description": "string" },
   "threatClock": { "name": "string", "segments": 4, "description": "string" },
   "stakes": { "victory": "string", "defeat": "string" },
@@ -1137,6 +1415,8 @@ ${priorCtx}
     {
       "id": "beat-1",
       "phase": "setup",
+      "storyboardFrameId": "${input.sceneId}-storyboard-commit",
+      "storyboardRole": "commit",
       "name": "string",
       "description": "string",
       "setupText": "30-50 words: the situation the player faces",
@@ -1148,9 +1428,9 @@ ${priorCtx}
           "impliedApproach": "aggressive",
           "primarySkill": "${skill1}",
           "outcomes": {
-            "success": { "tier": "success", "narrativeText": "string", "goalTicks": 2, "threatTicks": 0, "nextBeatId": "beat-2" },
-            "complicated": { "tier": "complicated", "narrativeText": "string", "goalTicks": 1, "threatTicks": 1, "nextBeatId": "beat-2" },
-            "failure": { "tier": "failure", "narrativeText": "string", "goalTicks": 0, "threatTicks": 2, "nextBeatId": "beat-2" }
+            "success": { "tier": "success", "narrativeText": "string", "goalTicks": 2, "threatTicks": 0, "nextBeatId": "beat-2", "tacticalEffect": "stronger position/leverage/info/etc." },
+            "complicated": { "tier": "complicated", "narrativeText": "string", "goalTicks": 1, "threatTicks": 1, "nextBeatId": "beat-2", "tacticalEffect": "progress plus visible cost/tradeoff" },
+            "failure": { "tier": "failure", "narrativeText": "string", "goalTicks": 0, "threatTicks": 2, "nextBeatId": "beat-2", "tacticalEffect": "worse position/exposure/distance/etc." }
           }
         },
         {
@@ -1267,7 +1547,9 @@ RULES:
 3. setupText = the situation BEFORE the choice (vivid, 30-50 words)
 4. Return ONLY the JSON object — no markdown, no backticks, no explanation
 5. "beats" array MUST have at least ${this.getMinimumRequiredBeatCount(input)} beats
-6. Each outcome on beat-2 MUST have "isTerminal": true and an "encounterOutcome"`;
+6. Each outcome on beat-2 MUST have "isTerminal": true and an "encounterOutcome"
+7. Storyboard spine should have 7-9 frames; if you only provide 2 sample frames above, still output the full spine
+8. Prior story context must be spent as payoffContext plus at least one setupTextVariant, condition, statBonus, disposition shift, cost, or storylet echo when available`;
   }
 
   /**
@@ -1655,6 +1937,71 @@ RULES:
     // This ensures both the main prompt and simplified fallback produce
     // encounters that use the tree rendering path in the UI.
     this.convertFlatToTree(structure);
+
+    if (!structure.payoffContext) {
+      structure.payoffContext = this.buildDefaultPayoffContext(input);
+    }
+    if (!structure.storyboard?.spine?.length) {
+      structure.storyboard = this.buildDefaultStoryboard(input, structure);
+    } else if (!structure.storyboard.mechanicsVisibility) {
+      structure.storyboard.mechanicsVisibility = 'current_clocks_only';
+    }
+
+    const spine = structure.storyboard?.spine || [];
+    const decisionFrames = spine.filter(frame => frame.decisionWindow);
+    const fallbackFrame = (index: number) => spine[index] || spine[Math.min(index, Math.max(0, spine.length - 1))];
+    structure.beats.forEach((beat, index) => {
+      const frame = decisionFrames[index] || fallbackFrame(index);
+      if (frame) {
+        beat.storyboardFrameId = beat.storyboardFrameId || frame.id;
+        beat.storyboardRole = beat.storyboardRole || frame.role;
+        beat.visualContract = {
+          ...beat.visualContract,
+          visualMoment: beat.visualContract?.visualMoment || frame.visualMoment,
+          primaryAction: beat.visualContract?.primaryAction || frame.tacticalFunction,
+          emotionalRead: beat.visualContract?.emotionalRead || frame.emotionalState,
+          relationshipDynamic: beat.visualContract?.relationshipDynamic || frame.continuityState.relationshipDistance,
+          visualNarrative: beat.visualContract?.visualNarrative || frame.purpose,
+        };
+      }
+    });
+
+    const assignOutcomeStoryboard = (
+      choices?: Array<EncounterChoice | EmbeddedEncounterChoice>,
+      depth = 0,
+    ): void => {
+      for (const choice of choices || []) {
+        if (!choice.outcomes) continue;
+        for (const tier of ['success', 'complicated', 'failure'] as const) {
+          const outcome = choice.outcomes[tier];
+          if (!outcome) continue;
+          const frame = spine.find(f => f.role === (
+            outcome.isTerminal
+              ? 'fallout'
+              : tier === 'success'
+                ? 'opening'
+                : tier === 'failure'
+                  ? 'reversal'
+                  : 'exchange'
+          )) || fallbackFrame(Math.min(depth + 3, spine.length - 1));
+          if (frame) {
+            outcome.storyboardFrameId = outcome.storyboardFrameId || frame.id;
+            outcome.tacticalEffect = outcome.tacticalEffect
+              || `This ${tier} changes tactical/emotional position while preserving the encounter spine.`;
+            if (outcome.nextSituation) {
+              outcome.nextStoryboardFrameId = outcome.nextStoryboardFrameId || frame.id;
+            }
+          }
+          if (outcome.nextSituation?.choices?.length) {
+            assignOutcomeStoryboard(outcome.nextSituation.choices, depth + 1);
+          }
+        }
+      }
+    };
+
+    for (const beat of structure.beats) {
+      assignOutcomeStoryboard(beat.choices);
+    }
 
     for (const storylet of Object.values(structure.storylets || {})) {
       if (!storylet) continue;
@@ -2066,9 +2413,15 @@ RULES:
       extreme: 85
     };
 
+    const structuralContext = buildStructuralContextSection({
+      anchors: input.seasonAnchors,
+      sevenPoint: input.seasonSevenPoint,
+      episodeStructuralRole: input.episodeStructuralRole,
+    });
+
     return `
 Design a COMPLETE encounter structure for the following scene:
-
+${structuralContext}
 ## Story Context
 - **Title**: ${input.storyContext.title}
 - **Genre**: ${input.storyContext.genre}
@@ -2156,12 +2509,47 @@ ${relSection}
 ${choiceSection}
 `;
 })() : ''}
-## REQUIRED JSON STRUCTURE - BRANCHING TREE
+## REQUIRED JSON STRUCTURE - STORYBOARD SPINE + CONTROLLED TACTICAL TREE
 
 {
   "sceneId": "${input.sceneId}",
   "encounterType": "${input.encounterType}",
   "encounterStyle": "${input.encounterStyle || 'auto'}",
+  "storyboard": {
+    "spine": [
+      {
+        "id": "${input.sceneId}-storyboard-establish",
+        "role": "establish",
+        "title": "Establish",
+        "purpose": "What this visual frame accomplishes",
+        "visualMoment": "Single-panel visual moment",
+        "tacticalFunction": "How this frame changes or clarifies position, leverage, information, exposure, relationship pressure, resource state, clocks, cost, or storylet trajectory",
+        "emotionalState": "Readable emotional pressure",
+        "continuityState": {
+          "characterPositions": { "protagonist": "where they are" },
+          "relationshipDistance": "physical/emotional distance or leverage",
+          "propsInPlay": ["important prop/tool/clue"],
+          "environmentChanges": [],
+          "lighting": "consistent scene lighting"
+        },
+        "decisionWindow": false,
+        "allowedApproaches": []
+      }
+    ],
+    "styleNotes": "7-9 frames across establish, pressureReveal, commit, exchange, reversal, opening, decisiveMove, fallout, aftermath. For this encounter emphasize ${this.describeEncounterStyleFocus(input.encounterStyle, input.encounterType)}.",
+    "convergencePlan": "Outcome variants alter the next panel, hidden mechanics, and available choices, then converge back to the cinematic spine when appropriate.",
+    "mechanicsVisibility": "current_clocks_only"
+  },
+  "payoffContext": {
+    "consumedFlags": [],
+    "relationshipPayoffs": [],
+    "identityPayoffs": [],
+    "skillPayoffs": [],
+    "inventoryPayoffs": [],
+    "priorFailurePayoffs": [],
+    "promisePayoffs": [],
+    "aftermathEchoes": []
+  },
   
   "goalClock": {
     "name": "Objective name (e.g., 'Escape the Manor')",
@@ -2183,7 +2571,16 @@ ${choiceSection}
     "initialOddsAgainst": ${difficultyOdds[input.difficulty]},
     "whatPlayerLoses": "PERSONAL stakes - what ${input.protagonistInfo.name} specifically loses",
     "oddsAgainstNarrative": "Narrative text describing why odds are against them",
-    "stackedObstacles": ["obstacle 1", "obstacle 2", "obstacle 3"]
+    "stackedObstacles": ["obstacle 1", "obstacle 2", "obstacle 3"],
+    "physical": "What body / environment is on the line (e.g. 'The corridor is collapsing, one wrong step and the path is gone')",
+    "emotional": "What heart is on the line (e.g. 'Marcus finally trusts you — betray him and that trust is dead')",
+    "philosophical": "What belief / identity is on the line (e.g. 'If I hurt this stranger to save myself, who am I then?')"
+  },
+
+  "pixarSurprise": {
+    "setup": "What the player currently EXPECTS to happen — the obvious read of the situation (1-2 sentences)",
+    "twist": "What ACTUALLY happens that subverts the setup — a reversal, revelation, betrayal, or reframe (1-2 sentences)",
+    "satisfaction": "Why the twist feels INEVITABLE in hindsight — the earlier detail / behavior that made it earn-able (1-2 sentences)"
   },
   
   "initialVisualState": {
@@ -2202,6 +2599,8 @@ ${choiceSection}
     {
       "id": "beat-1",
       "phase": "setup",
+      "storyboardFrameId": "${input.sceneId}-storyboard-commit",
+      "storyboardRole": "commit",
       "name": "Opening Moment",
       "description": "The initial situation",
       "setupText": "2-3 sentences (~30-50 words). Establish the situation the player must react to.",
@@ -2244,6 +2643,7 @@ ${choiceSection}
               "narrativeText": "THE ACTION RESULT: 2-3 sentences showing the strike landing, the opponent reeling",
               "goalTicks": 2,
               "threatTicks": 0,
+              "tacticalEffect": "Describe the changed position/leverage/information/exposure/relationship pressure/resource state/clocks/cost/storylet trajectory",
               "cinematicDescription": {
                 "sceneDescription": "The IMPACT - protagonist's attack SUCCEEDS",
                 "focusSubject": "the moment of impact",
@@ -2516,10 +2916,11 @@ ${choiceSection}
 
 ## CRITICAL REQUIREMENTS FOR BRANCHING TREES
 
-1. **BRANCHING IS MANDATORY**: Each outcome (success/complicated/failure) MUST lead to a DIFFERENT nextSituation with DIFFERENT choices
-2. **ACTION RESULT VISUALS**: The narrativeText and cinematicDescription show THE RESULT of the player's action (sword hitting/missing, plea accepted/rejected)
-3. **DEPTH LIMIT**: Generate 2-3 layers of choices. Every situation at every depth MUST have at least 3 choices.
-4. **NO nextBeatId**: Do NOT use nextBeatId. Use nextSituation with embedded choices instead.
+1. **STORYBOARD IS MANDATORY**: Include 7-9 storyboard frames; place 2-4 decision windows inside the cinematic spine.
+2. **CONTROLLED BRANCHING**: Each outcome should change tactical/emotional state and usually the next panel, but converge back to the spine when dramatically appropriate.
+3. **ACTION/DRAMA RESULT VISUALS**: The narrativeText and cinematicDescription show THE RESULT of the player's action (hit/miss, confession received/rejected, patrol almost spotting them, clue recontextualized).
+4. **DEPTH LIMIT**: Generate 1-2 layers of choices unless the scene truly needs more. Every situation with choices should have at least 3 choices.
+4. **Prefer nextSituation for meaningful panel changes**. Use convergence to avoid runaway deep trees.
 5. **TERMINAL OUTCOMES**: When goal/threat clocks would fill, mark outcome as terminal with appropriate encounterOutcome
 6. **CONSEQUENCES DIFFER**: Success branches should trend toward victory, failure branches toward defeat - but not linearly
 7. **THREE-APPROACH MANDATE**: Each set of 3+ choices should cover distinct approaches — one aggressive/direct, one cautious/methodical, one clever/unconventional. This ensures the player always has meaningfully different paths, not just variations on the same tactic.
@@ -2527,6 +2928,7 @@ ${choiceSection}
 8. ALL THREE STORYLETS (victory, defeat, escape) MUST be defined
 9. Text length: setupText ~30-50 words, narrativeText ~30-60 words
 10. Return ONLY valid JSON, no markdown
+11. Do not add any new visible mechanics beyond the current encounter clock visualization.
 
 ## CHARACTER NAME TEMPLATES (CRITICAL)
 
@@ -2838,6 +3240,21 @@ CRITICAL RULES:
       structure.storylets.partialVictory = this.createDefaultStorylet('partialVictory', input);
     }
 
+    const storyboardFrames = structure.storyboard?.spine || [];
+    if (storyboardFrames.length > 0) {
+      const decisionWindows = storyboardFrames.filter(frame => frame.decisionWindow).length;
+      if (storyboardFrames.length < 7) {
+        console.warn(`[EncounterArchitect] Storyboard has ${storyboardFrames.length} frame(s); target is 7-9 for cinematic encounter flow.`);
+      }
+      if (decisionWindows < 2) {
+        console.warn(`[EncounterArchitect] Storyboard has ${decisionWindows} decision window(s); target is 2-4 meaningful tactical windows.`);
+      }
+      if (structure.storyboard?.mechanicsVisibility !== 'current_clocks_only') {
+        console.warn('[EncounterArchitect] Storyboard mechanicsVisibility must remain current_clocks_only; normalizing.');
+        structure.storyboard!.mechanicsVisibility = 'current_clocks_only';
+      }
+    }
+
     // Check beat flow
     const beatIds = new Set(structure.beats.map(b => b.id));
     for (const beat of structure.beats) {
@@ -2930,7 +3347,19 @@ CRITICAL RULES:
       let structure = this.buildDeterministicFallback(input);
       structure = this.normalizeStructure(structure, input);
       this.validateStructure(structure, input);
-      return { success: true, data: structure };
+      const telemetry: EncounterTelemetry = {
+        sceneId: input.sceneId,
+        mode: 'deterministic',
+        phase1Ok: false,
+        phase2: [],
+        phase3Ran: false,
+        phase3Ok: false,
+        phase4Ok: false,
+        llmCallCount: 1, // Phase 1 was attempted
+        msElapsed: Date.now() - phasedStart,
+        phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+      };
+      return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
     }
 
     // ---- Phases 2, 3, 4 in parallel ----
@@ -2941,7 +3370,8 @@ CRITICAL RULES:
       })
     );
 
-    const phase3Promise = input.priorStateContext
+    const phase3Ran = !!input.priorStateContext;
+    const phase3Promise = phase3Ran
       ? this.runPhase3(input, phase1).catch(err => {
           console.warn(`[EncounterArchitect] Phase 3 failed: ${err instanceof Error ? err.message : err}`);
           return null;
@@ -2969,7 +3399,28 @@ CRITICAL RULES:
     const totalMs = Date.now() - phasedStart;
     console.log(`[EncounterArchitect] Phased generation complete in ${totalMs}ms for ${input.sceneId}`);
 
-    return { success: true, data: structure };
+    const phase2Ok = phase2Results.map(r => r !== null);
+    const phase3Ok = phase3Result !== null;
+    const phase4Ok = phase4Result !== null;
+    const anyGap = phase2Ok.some(ok => !ok) || (phase3Ran && !phase3Ok) || !phase4Ok;
+    const telemetry: EncounterTelemetry = {
+      sceneId: input.sceneId,
+      mode: anyGap ? 'phased_with_gaps' : 'phased_success',
+      phase1Ok: true,
+      phase2: phase2Ok,
+      phase3Ran,
+      phase3Ok,
+      phase4Ok,
+      llmCallCount:
+        1 /* phase 1 */ +
+        phase2Promises.length /* one call per opening-beat choice */ +
+        (phase3Ran ? 1 : 0) /* phase 3 only runs when priorStateContext */ +
+        1 /* phase 4 */,
+      msElapsed: totalMs,
+      phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+    };
+
+    return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
   }
 
   // ---- Phase 1: Opening Beat ----
@@ -3362,7 +3813,16 @@ Return ONLY the JSON object.`;
     } as EncounterBeat;
 
     // Build storylets from Phase 4 or use minimal defaults
-    const storylets = phase4Result || this.buildDefaultStorylets(input);
+    let storylets: Phase4Result;
+    if (phase4Result) {
+      storylets = phase4Result;
+    } else {
+      console.warn(
+        `[EncounterArchitect] Phase 4 unavailable for ${input.sceneId}; ` +
+        `using createDefaultStorylet fallback (victory/defeat/escape)`
+      );
+      storylets = this.buildDefaultStorylets(input);
+    }
 
     return {
       sceneId: phase1.sceneId || input.sceneId,
@@ -3493,41 +3953,60 @@ Return ONLY the JSON object.`;
     }
   }
 
+  /**
+   * Compares each emitted storylet's beat prose against the text that
+   * `createDefaultStorylet` would produce for that outcome, and returns
+   * the list of outcome slots whose content is a byte-for-byte collision
+   * with the fallback (I3 instrumentation).
+   *
+   * A storylet is considered a default collision when the concatenated
+   * beat text (joined by '\n') exactly matches what the default builder
+   * would emit for the same `(outcome, input)` pair. This signal lets
+   * later analysis distinguish "LLM authored everything" from "we
+   * silently shipped fallback prose".
+   */
+  private detectDefaultStoryletCollisions(
+    structure: EncounterStructure,
+    input: EncounterArchitectInput,
+  ): Array<'victory' | 'partialVictory' | 'defeat' | 'escape'> {
+    const collisions: Array<'victory' | 'partialVictory' | 'defeat' | 'escape'> = [];
+    const slots: Array<'victory' | 'partialVictory' | 'defeat' | 'escape'> = [
+      'victory', 'partialVictory', 'defeat', 'escape',
+    ];
+    const storylets = structure.storylets ?? {};
+    const joinBeats = (beats: Array<{ text?: string }> | undefined): string =>
+      (beats ?? []).map(b => b?.text ?? '').join('\n');
+
+    for (const slot of slots) {
+      const emitted = (storylets as Record<string, GeneratedStorylet | undefined>)[slot];
+      if (!emitted) continue;
+      const defaultStorylet = this.createDefaultStorylet(slot, input);
+      if (joinBeats(emitted.beats) === joinBeats(defaultStorylet.beats)) {
+        collisions.push(slot);
+      }
+    }
+    return collisions;
+  }
+
+  /**
+   * Fallback storylets used by `assemblePhasedEncounter` when Phase 4's
+   * LLM call fails (timeout, parse error, empty response, etc.).
+   *
+   * Historically this produced single-beat, placeholder-style prose
+   * (e.g. "{{player.name}} overcame the challenge. The victory is
+   * earned.") that subsequently shipped verbatim in player-facing
+   * stories because `normalizeStructure` / `validateStructure` only
+   * *add* missing storylets and do not *replace* existing ones.
+   *
+   * We now delegate to `createDefaultStorylet` so both the phased
+   * fallback and the lean / deterministic fallbacks emit the same
+   * richer default content (multi-beat, with consequences and flags).
+   */
   private buildDefaultStorylets(input: EncounterArchitectInput): Phase4Result {
     return {
-      victory: {
-        id: `${input.sceneId}-sv`,
-        name: 'Victory',
-        triggerOutcome: 'victory',
-        tone: 'triumphant',
-        narrativeFunction: 'Celebrate the achievement',
-        beats: [{ id: `${input.sceneId}-sv-1`, text: `{{player.name}} overcame the challenge. The victory is earned.`, isTerminal: true }],
-        startingBeatId: `${input.sceneId}-sv-1`,
-        consequences: [],
-        nextSceneId: input.victoryNextSceneId,
-      } as GeneratedStorylet,
-      defeat: {
-        id: `${input.sceneId}-sd`,
-        name: 'Defeat',
-        triggerOutcome: 'defeat',
-        tone: 'somber',
-        narrativeFunction: 'Process the failure',
-        beats: [{ id: `${input.sceneId}-sd-1`, text: `It wasn't enough. {{player.name}} must find another way.`, isTerminal: true }],
-        startingBeatId: `${input.sceneId}-sd-1`,
-        consequences: [],
-        nextSceneId: input.defeatNextSceneId,
-      } as GeneratedStorylet,
-      escape: {
-        id: `${input.sceneId}-se`,
-        name: 'Escape',
-        triggerOutcome: 'escape',
-        tone: 'relieved',
-        narrativeFunction: 'Narrow escape and taking stock',
-        beats: [{ id: `${input.sceneId}-se-1`, text: `{{player.name}} got away, but the challenge remains.`, isTerminal: true }],
-        startingBeatId: `${input.sceneId}-se-1`,
-        consequences: [],
-        nextSceneId: input.victoryNextSceneId,
-      } as GeneratedStorylet,
+      victory: this.createDefaultStorylet('victory', input),
+      defeat: this.createDefaultStorylet('defeat', input),
+      escape: this.createDefaultStorylet('escape', input),
     };
   }
 }

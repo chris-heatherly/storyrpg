@@ -14,7 +14,7 @@ import {
   TextInput,
   ActivityIndicator,
 } from 'react-native';
-import { ArrowLeft, ArrowRight, ChevronRight, User, ThumbsUp, ThumbsDown, RefreshCw, X, MessageSquare, FileText } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, User, ThumbsUp, ThumbsDown, RefreshCw, X, MessageSquare, FileText } from 'lucide-react-native';
 import {
   useGameActions,
   useGamePlayerState,
@@ -38,12 +38,15 @@ import { EncounterView } from './EncounterView';
 import { TERMINAL, RADIUS, TIMING, SPACING, sharedStyles, withAlpha } from '../theme';
 import { EncounterCost, GeneratedStorylet, Scene, StoryletBeat, AppliedConsequence, EncounterOutcome, Relationship, Consequence } from '../types';
 import type { PlayerState } from '../types';
+import { mediaRefAsString } from '../assets/assetRef';
 import { ConsequenceToast } from './ConsequenceToast';
 import { ConsequenceBadgeList } from './ConsequenceBadgeList';
 import { ButterflyBanner } from './ButterflyBanner';
 import { OutcomeHeader } from './OutcomeHeader';
 import { StatCheckOverlay } from './StatCheckOverlay';
 import { ReadingShell } from './ReadingShell';
+import { ContinueButton } from './ContinueButton';
+import { CONTINUE_COPY, EYEBROWS } from '../theme/copy';
 import { haptics } from '../utils/haptics';
 import { useClickDebounce } from '../utils/useDebounce';
 import { PROXY_CONFIG } from '../config/endpoints';
@@ -128,6 +131,8 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     recordBranchChoice,
     getPathToScene,
     clearButterflyFeedback,
+    visitBeat,
+    commitChoice,
   } = useGameActions();
 
   const developerMode = useSettingsStore((state) => state.developerMode);
@@ -231,7 +236,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   // Dev mode: prompt panel should stay in sync with the currently displayed beat image.
   const promptImageUrl = (() => {
-    const raw = processedBeat?.image || currentScene?.backgroundImage;
+    const beatImg = processedBeat?.image;
+    const sceneBg = mediaRefAsString(currentScene?.backgroundImage);
+    const raw = beatImg || sceneBg;
     if (!raw) return undefined;
 
     // If the beat image failed, we display the scene background — keep prompt in sync.
@@ -239,10 +246,10 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       processedBeat &&
       currentScene &&
       imageErrorId === processedBeat.id &&
-      processedBeat.image &&
-      processedBeat.image !== currentScene.backgroundImage
+      beatImg &&
+      beatImg !== sceneBg
     ) {
-      return currentScene.backgroundImage;
+      return sceneBg || undefined;
     }
 
     if (raw.endsWith('.prompt.txt') || raw.endsWith('.txt')) return undefined;
@@ -624,6 +631,16 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       applyConsequences(beat.onShow);
     }
 
+    // Plan 2: record this beat in the visit log so the post-episode recap
+    // flowchart knows what path the player took.
+    if (visitBeat) {
+      visitBeat({
+        sceneId: currentScene.id,
+        beatId: currentBeatId,
+        episodeId: currentEpisode?.id,
+      });
+    }
+
     const processed = processBeat(beat, player, currentStory);
     
     // Add convergence context for branch-aware rendering
@@ -776,6 +793,17 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       return;
     }
 
+    // Plan 2: attach the chosen choice to the current visit record so the
+    // post-episode flowchart can draw the traveled edge.
+    if (commitChoice) {
+      commitChoice({
+        sceneId: currentScene.id,
+        beatId: currentBeatId,
+        choiceId,
+        episodeId: currentEpisode?.id,
+      });
+    }
+
     // Queue any delayed consequences (butterfly effect)
     if (result.delayedConsequences && result.delayedConsequences.length > 0) {
       for (const dc of result.delayedConsequences) {
@@ -812,7 +840,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       }
 
       if (currentEpisode && currentScene) {
-        const nextScene = getNextScene(currentEpisode, currentScene.id);
+        const nextScene = getNextScene(currentEpisode, currentScene.id, player);
         const nextBeatId = nextScene?.beats?.[0]?.id;
         if (nextScene && nextBeatId) {
           return { sceneId: nextScene.id, beatId: nextBeatId };
@@ -923,7 +951,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     } else {
       proceedAfterStatCheck();
     }
-  }, [currentScene, currentBeatId, currentEpisode, currentStory, processedBeat, player, applyConsequences, queueDelayedConsequence]);
+  }, [currentScene, currentBeatId, currentEpisode, currentStory, processedBeat, player, applyConsequences, queueDelayedConsequence, commitChoice]);
 
   // Base choice handler -- triggers selection ceremony, then executes after delay
   const handleChoicePressBase = useCallback((choiceId: string) => {
@@ -1201,12 +1229,12 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   }
 
   if (episodeRecap) {
-    const recapImageUrl = lastKnownImageRef.current || processedBeat.image || currentScene.backgroundImage;
+    const recapImageUrl = lastKnownImageRef.current || processedBeat.image || mediaRefAsString(currentScene.backgroundImage);
     return (
       <View style={{ flex: 1 }}>
       <ReadingShell imageUrl={recapImageUrl} fadeAnim={fadeAnim} imageOpacity={imageOpacity}>
             <View style={styles.textPanel}>
-              <Text style={styles.recapEyebrow}>EPISODE RECAP</Text>
+              <Text style={styles.recapEyebrow}>{EYEBROWS.episodeRecap}</Text>
               <Text style={styles.recapTitle}>{episodeRecap.episodeTitle}</Text>
 
               {episodeRecap.youChose.length > 0 && (
@@ -1244,6 +1272,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
                       type: 'relationship' as const,
                       label: c.dimension,
                       direction: c.direction,
+                      magnitude: 'moderate' as const,
                     }));
                     return (
                       <View key={item.npcId} style={styles.recapCard}>
@@ -1260,16 +1289,13 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
               )}
             </View>
 
-            <TouchableOpacity
-              style={styles.continueButton}
+            <ContinueButton
+              copyKey="recap"
               onPress={() => {
                 setEpisodeRecap(null);
                 onEpisodeComplete?.();
               }}
-            >
-              <Text style={styles.continueText}>CONTINUE</Text>
-              <ChevronRight size={16} color="white" />
-            </TouchableOpacity>
+            />
       </ReadingShell>
       {renderDevBadgeOverlay()}
       {renderDevNavOverlay()}
@@ -1320,10 +1346,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
             </View>
 
             {growthBadgesVisible && (
-              <TouchableOpacity style={styles.continueButton} onPress={dismissGrowthSummary}>
-                <Text style={styles.continueText}>CONTINUE</Text>
-                <ChevronRight size={16} color="white" />
-              </TouchableOpacity>
+              <ContinueButton copyKey="growth" onPress={dismissGrowthSummary} />
             )}
       </ReadingShell>
       {renderDevBadgeOverlay()}
@@ -1356,106 +1379,79 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       const toneStyle = toneStyles[activeStorylet.tone] || toneStyles.bittersweet;
 
       // Fall back to current scene's background image when the beat has no dedicated image
+      const sceneBgStr = mediaRefAsString(currentScene?.backgroundImage);
       const storyletImageUrl = currentStoryletBeat.image
-        || (currentScene?.backgroundImage && !currentScene.backgroundImage.endsWith('.txt')
-            ? currentScene.backgroundImage
+        || (sceneBgStr && !sceneBgStr.endsWith('.txt')
+            ? sceneBgStr
             : undefined);
       console.log(`[StoryReader] Storylet image: beat.image="${currentStoryletBeat.image || '(none)'}", resolved="${storyletImageUrl || '(none)'}"`);
 
       return (
-        <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-          {/* Background image — same structure as regular beats */}
-          <View style={styles.imageContainer}>
-            {storyletImageUrl ? (
-              <Image
-                source={{ uri: storyletImageUrl }}
-                style={styles.fullBleedImage}
-                resizeMode="cover"
-                onLoad={() => console.log(`[StoryReader] Storylet image loaded: ${storyletImageUrl}`)}
-                onError={(e) => console.warn(`[StoryReader] Storylet image FAILED: ${storyletImageUrl}`, e.nativeEvent)}
-              />
-            ) : (
-              (() => { console.warn('[StoryReader] Storylet beat has NO image — showing placeholder'); return null; })(),
-              <View style={styles.placeholderBackground} />
-            )}
-            <View style={styles.gradientOverlay} />
-          </View>
-
-          {/* Overlay content — matches regular beat layout */}
-          <View style={styles.uiOverlay}>
-            <ScrollView
-              style={styles.contentScrollView}
-              contentContainerStyle={styles.contentContainer}
-              showsVerticalScrollIndicator={false}
-            >
-              {/* Text panel — same dark rounded card as regular beats */}
-              <View style={styles.textPanel}>
-                {/* Tone badge inside the panel */}
-                <View style={[styles.storyletToneBadge, { borderColor: toneStyle.borderColor }]}>
-                  <Text style={[styles.storyletToneLabel, { color: toneStyle.labelColor }]}>
-                    {toneStyle.labelText}
-                  </Text>
-                </View>
-
-                <NarrativeText
-                  text={processTemplate(currentStoryletBeat.text, player, currentStory)}
-                  speaker={currentStoryletBeat.speaker}
-                  speakerMood={currentStoryletBeat.speakerMood}
-                  animate={isStoryletAnimating}
-                  onAnimationComplete={handleStoryletAnimationComplete}
-                />
+        <View style={{ flex: 1 }}>
+          <ReadingShell
+            imageUrl={storyletImageUrl}
+            fadeAnim={fadeAnim}
+            imageOpacity={imageOpacity}
+            placeholderWatermark
+          >
+            <View style={styles.textPanel}>
+              <View style={[styles.storyletToneBadge, { borderColor: toneStyle.borderColor }]}>
+                <Text style={[styles.storyletToneLabel, { color: toneStyle.labelColor }]}>
+                  {toneStyle.labelText}
+                </Text>
               </View>
 
-              {/* Storylet choices */}
-              {showStoryletChoices && currentStoryletBeat.choices && currentStoryletBeat.choices.length > 0 && (
-                <View style={styles.choicesList}>
-                  {currentStoryletBeat.choices.map((choice, idx) => (
-                    <ChoiceButton
-                      key={choice.id}
-                      variant="minimal"
-                      choice={{
-                        id: choice.id,
-                        text: processTemplate(choice.text, player, currentStory),
-                        isLocked: false,
-                        hasStatCheck: false,
-                      }}
-                      index={idx}
-                      onPress={() => handleStoryletChoice(choice.id)}
-                    />
-                  ))}
-                </View>
-              )}
+              <NarrativeText
+                text={processTemplate(currentStoryletBeat.text, player, currentStory)}
+                speaker={currentStoryletBeat.speaker}
+                speakerMood={currentStoryletBeat.speakerMood}
+                animate={isStoryletAnimating}
+                onAnimationComplete={handleStoryletAnimationComplete}
+              />
+            </View>
 
-              {/* Continue button */}
-              {!isStoryletAnimating && (!currentStoryletBeat.choices || currentStoryletBeat.choices.length === 0) && (
-                <TouchableOpacity
-                  style={styles.storyletContinueButton}
-                  onPress={handleStoryletContinue}
-                >
-                  <Text style={styles.storyletContinueText}>CONTINUE</Text>
-                </TouchableOpacity>
-              )}
-            </ScrollView>
-          </View>
+            {showStoryletChoices && currentStoryletBeat.choices && currentStoryletBeat.choices.length > 0 && (
+              <View style={styles.choicesList}>
+                {currentStoryletBeat.choices.map((choice, idx) => (
+                  <ChoiceButton
+                    key={choice.id}
+                    choice={{
+                      id: choice.id,
+                      text: processTemplate(choice.text, player, currentStory),
+                      isLocked: false,
+                      hasStatCheck: false,
+                    }}
+                    index={idx}
+                    onPress={() => handleStoryletChoice(choice.id)}
+                  />
+                ))}
+              </View>
+            )}
 
+            {!isStoryletAnimating && (!currentStoryletBeat.choices || currentStoryletBeat.choices.length === 0) && (
+              <ContinueButton copyKey="storylet" onPress={handleStoryletContinue} />
+            )}
+          </ReadingShell>
           {renderDevBadgeOverlay()}
           {renderDevNavOverlay()}
-        </Animated.View>
+        </View>
       );
     }
   }
 
   // For normal beats, only render beat- or scene-scoped art.
   // Reusing the last image or story cover here smears one fallback across the whole story.
-  const rawImageUrl =
+  const sceneBgUrl = mediaRefAsString(currentScene.backgroundImage);
+  const rawImageUrl: string | undefined =
     processedBeat.image
-    || currentScene.backgroundImage;
-  
+    || sceneBgUrl
+    || undefined;
+
   // Logic to handle missing beat images by falling back to scene background
-  let finalImageUrl = rawImageUrl;
-  if (imageErrorId === processedBeat.id && processedBeat.image && processedBeat.image !== currentScene.backgroundImage) {
+  let finalImageUrl: string | undefined = rawImageUrl;
+  if (imageErrorId === processedBeat.id && processedBeat.image && processedBeat.image !== sceneBgUrl) {
     debugLog(`[StoryReader] Falling back to scene background for beat ${processedBeat.id}`);
-    finalImageUrl = currentScene.backgroundImage;
+    finalImageUrl = sceneBgUrl || undefined;
   }
 
   const originalImageUrl = finalImageUrl;
@@ -1466,10 +1462,10 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     finalImageUrl = regeneratedImageUrl;
   }
 
-  const imageUrl = finalImageUrl && !finalImageUrl.endsWith('.prompt.txt') && !finalImageUrl.endsWith('.txt') 
-    ? finalImageUrl 
+  const imageUrl = finalImageUrl && !finalImageUrl.endsWith('.prompt.txt') && !finalImageUrl.endsWith('.txt')
+    ? finalImageUrl
     : undefined;
-  if (imageUrl && (processedBeat.image || currentScene.backgroundImage)) {
+  if (imageUrl && (processedBeat.image || sceneBgUrl)) {
     lastKnownImageRef.current = imageUrl;
   }
 
@@ -1584,9 +1580,8 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   // Get all feedback categories for the UI
   const feedbackCategoryEntries = Object.entries(FEEDBACK_CATEGORIES) as [string, { label: string; reasons: FeedbackReason[] }][];
 
-  return (
-    <Animated.View style={[styles.container, { opacity: fadeAnim, transform: [{ translateX: slideAnim }] }]}>
-      {/* Stat Check Overlay (skill flash + tier tint) */}
+  const beatVignette = (
+    <>
       {statCheckSkill && statCheckTier && (
         <StatCheckOverlay
           skillName={statCheckSkill}
@@ -1598,160 +1593,116 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           }}
         />
       )}
-
-      {/* Butterfly Effect Banner */}
-      {butterflyFeedback.length > 0 && (
-        <ButterflyBanner
-          items={butterflyFeedback}
-          onDismiss={clearButterflyFeedback}
-        />
-      )}
-
-      {/* Progress Bar */}
-      <View style={styles.progressBarContainer}>
-        <View style={[styles.progressBar, { width: `${progress * 100}%` }]} />
-      </View>
-      
-      {/* Pre-Choice Indicator - subtle glow when approaching a decision point */}
       {isApproachingChoice && (
-        <Animated.View 
+        <Animated.View
           style={[
             styles.preChoiceIndicator,
             { opacity: choiceIndicatorAnim },
             { pointerEvents: 'none' as const },
-          ]} 
+          ]}
         />
       )}
+    </>
+  );
 
-      {/* Background Image / Video */}
-      <Animated.View style={[styles.imageContainer, { opacity: imageOpacity }]}>
-        {videoUrl && Platform.OS === 'web' && preferVideo && allowVideoPlayback ? (
-          <video
-            src={videoUrl}
-            autoPlay
-            loop
-            muted
-            playsInline
-            style={{
-              width: '100%',
-              height: '100%',
-              objectFit: 'cover',
-              position: 'absolute' as any,
-              top: 0,
-              left: 0,
-            }}
-            onLoadedData={() => debugLog(`[StoryReader] Video loaded: ${videoUrl}`)}
-            onError={() => console.warn(`[StoryReader] Video failed to load: ${videoUrl}`)}
+  const beatChromeTop = (
+    <View style={styles.progressBarContainer}>
+      <View style={[styles.progressBar, { width: `${progress * 100}%` }]} />
+    </View>
+  );
+
+  const beatChromeBottom = butterflyFeedback.length > 0 ? (
+    <ButterflyBanner items={butterflyFeedback} onDismiss={clearButterflyFeedback} />
+  ) : null;
+
+  return (
+    <View style={{ flex: 1 }}>
+      <ReadingShell
+        imageUrl={imageUrl}
+        videoUrl={videoUrl}
+        preferVideo={preferVideo}
+        allowVideoPlayback={allowVideoPlayback}
+        fadeAnim={fadeAnim}
+        slideAnim={slideAnim}
+        imageOpacity={imageOpacity}
+        chromeTop={beatChromeTop}
+        chromeBottom={beatChromeBottom}
+        vignette={beatVignette}
+        placeholderWatermark
+        onImageError={(e) => {
+          console.warn(`[StoryReader] Image failed to load: ${imageUrl}`, e?.nativeEvent);
+          if (processedBeat && imageUrl === processedBeat.image) {
+            setImageErrorId(processedBeat.id);
+          }
+        }}
+      >
+        {choiceFeedback && (
+          <ConsequenceToast
+            consequences={choiceFeedback.consequences}
+            onDismiss={() => setChoiceFeedback(null)}
           />
-        ) : imageUrl ? (
-          <Image
-            source={{ 
-              uri: imageUrl,
-              headers: { 'Accept': 'image/*' }
-            }} 
-            style={styles.fullBleedImage}
-            resizeMode="cover"
-            crossOrigin="anonymous"
-            onLoad={() => debugLog(`[StoryReader] Image loaded: ${imageUrl}`)}
-            onError={(e) => {
-              console.warn(`[StoryReader] Image failed to load: ${imageUrl}`, e.nativeEvent);
-              if (processedBeat && imageUrl === processedBeat.image) {
-                setImageErrorId(processedBeat.id);
-              }
-            }}
-          />
-        ) : (
-          <View style={styles.placeholderBackground}>
-             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-               <Text style={{ color: 'rgba(255,255,255,0.2)', fontSize: 24, fontWeight: '900' }}>STORYRPG</Text>
-             </View>
+        )}
+
+        {recentChoiceEcho &&
+          recentChoiceEcho.targetSceneId === currentScene?.id &&
+          recentChoiceEcho.targetBeatId === currentBeatId && (
+          <View style={styles.echoPanel}>
+            <Text style={styles.echoSummaryText}>{recentChoiceEcho.summary}</Text>
+            {recentChoiceEcho.progress && (
+              <Text style={styles.echoProgressText}>{recentChoiceEcho.progress}</Text>
+            )}
+            {recentChoiceEcho.feedback.length > 0 && (
+              <ConsequenceBadgeList consequences={recentChoiceEcho.feedback} staggerDelay={60} />
+            )}
           </View>
         )}
-        <View style={styles.gradientOverlay} />
-      </Animated.View>
 
-      {/* Content */}
-      <View style={styles.uiOverlay}>
-        <ScrollView
-          style={styles.contentScrollView}
-          contentContainerStyle={styles.contentContainer}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Consequence feedback -- badge toast shown immediately on the choice beat */}
-          {choiceFeedback && (
-            <ConsequenceToast
-              consequences={choiceFeedback.consequences}
-              onDismiss={() => setChoiceFeedback(null)}
-            />
+        <View style={styles.textPanel}>
+          {choiceOutcomeHeader && (
+            <OutcomeHeader tier={choiceOutcomeHeader.tier} context="story" text={choiceOutcomeHeader.text} />
           )}
+          <NarrativeText
+            text={processedBeat.text}
+            speaker={processedBeat.speaker}
+            speakerMood={processedBeat.speakerMood}
+            animate={!devSkipAnimationsOnce}
+            onAnimationComplete={handleAnimationComplete}
+          />
+        </View>
 
-          {recentChoiceEcho &&
-            recentChoiceEcho.targetSceneId === currentScene?.id &&
-            recentChoiceEcho.targetBeatId === currentBeatId && (
-            <View style={styles.echoPanel}>
-              <Text style={styles.echoSummaryText}>{recentChoiceEcho.summary}</Text>
-              {recentChoiceEcho.progress && (
-                <Text style={styles.echoProgressText}>{recentChoiceEcho.progress}</Text>
-              )}
-              {recentChoiceEcho.feedback.length > 0 && (
-                <ConsequenceBadgeList consequences={recentChoiceEcho.feedback} staggerDelay={60} />
-              )}
-            </View>
-          )}
-
-          {/* Narrative/Dialogue */}
-          <View style={styles.textPanel}>
+        {resolutionText && (
+          <View style={styles.resolutionPanel}>
             {choiceOutcomeHeader && (
               <OutcomeHeader tier={choiceOutcomeHeader.tier} context="story" text={choiceOutcomeHeader.text} />
             )}
-            <NarrativeText
-              text={processedBeat.text}
-              speaker={processedBeat.speaker}
-              speakerMood={processedBeat.speakerMood}
-              animate={!devSkipAnimationsOnce}
-              onAnimationComplete={handleAnimationComplete}
-            />
+            <Text style={styles.resolutionText}>{resolutionText}</Text>
           </View>
+        )}
 
-          {/* Resolution */}
-          {resolutionText && (
-            <View style={styles.resolutionPanel}>
-              {choiceOutcomeHeader && (
-                <OutcomeHeader tier={choiceOutcomeHeader.tier} context="story" text={choiceOutcomeHeader.text} />
-              )}
-              <Text style={styles.resolutionText}>{resolutionText}</Text>
-            </View>
-          )}
+        {showChoices && processedBeat.hasChoices && (
+          <View style={styles.choicesList}>
+            {processedBeat.choices.map((choice, index) => (
+              <ChoiceButton
+                key={choice.id}
+                choice={choice}
+                index={index}
+                onPress={handleChoicePress}
+                isSelected={selectedChoiceId === choice.id}
+                isDeselected={selectedChoiceId !== null && selectedChoiceId !== choice.id}
+              />
+            ))}
+          </View>
+        )}
 
-          {/* Choices */}
-          {showChoices && processedBeat.hasChoices && (
-            <View style={styles.choicesList}>
-              {processedBeat.choices.map((choice, index) => (
-                <ChoiceButton
-                  key={choice.id}
-                  choice={choice}
-                  index={index}
-                  onPress={handleChoicePress}
-                  isSelected={selectedChoiceId === choice.id}
-                  isDeselected={selectedChoiceId !== null && selectedChoiceId !== choice.id}
-                />
-              ))}
-            </View>
-          )}
+        {!isAnimating && !processedBeat.hasChoices && !resolutionText && (
+          <ContinueButton copyKey="default" onPress={handleContinue} />
+        )}
+      </ReadingShell>
 
-          {/* Continue Button */}
-          {!isAnimating && !processedBeat.hasChoices && !resolutionText && (
-            <TouchableOpacity style={styles.continueButton} onPress={handleContinue}>
-              <Text style={styles.continueText}>CONTINUE</Text>
-              <ChevronRight size={16} color="white" />
-            </TouchableOpacity>
-          )}
-        </ScrollView>
+      {renderDevBadgeOverlay()}
 
-        {renderDevBadgeOverlay()}
-
-        {/* Dev Mode: Toolbar (rendered inside uiOverlay, after ScrollView, so it wins stacking on web) */}
-        {developerMode && imageUrl && (
+      {/* Dev Mode: Toolbar (rendered as overlay so it wins stacking on web) */}
+      {developerMode && imageUrl && (
           <View style={styles.feedbackToolbar}>
             {isRegenerating ? (
               <View style={styles.regeneratingIndicator}>
@@ -1879,7 +1830,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
             )}
           </View>
         )}
-      </View>
 
       {/* Dev Mode: Prompt overlay panel over the image (scrollable) */}
       {showPromptOverlay && (
@@ -2020,7 +1970,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           </View>
         </View>
       </Modal>
-    </Animated.View>
+    </View>
   );
 };
 

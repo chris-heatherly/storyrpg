@@ -15,6 +15,9 @@ import {
   PlannedEncounter,
   EndingMode,
   StoryEndingTarget,
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
 } from './sourceAnalysis';
 
 // ========================================
@@ -69,6 +72,13 @@ export interface SeasonArc {
     description: string;
     importance: 'critical' | 'major' | 'minor';
   }>;
+  /**
+   * Which 7-point structural beats this arc is responsible for landing.
+   * Optional so legacy plans that predate Path A still deserialize cleanly.
+   * Populated by SeasonPlannerAgent from the season's sevenPoint map + the
+   * per-episode structuralRole assignments that fall inside episodeRange.
+   */
+  beats?: StructuralRole[];
   // Status based on episode completion
   status: 'not_started' | 'in_progress' | 'completed';
   completionPercentage: number;
@@ -100,6 +110,20 @@ export interface SeasonPlan {
   
   // Story arcs spanning the season
   arcs: SeasonArc[];
+
+  /**
+   * Season-wide narrative anchors (stakes / goal / inciting incident / climax).
+   * Mirrors SourceMaterialAnalysis.anchors so every agent downstream of
+   * SeasonPlanner can access them without re-reading the analysis blob.
+   */
+  anchors: StoryAnchors;
+
+  /**
+   * Season-level 7-point beat map. Mirrors SourceMaterialAnalysis.sevenPoint
+   * so downstream agents don't need the source analysis to look up the
+   * textual description of a beat carried by a given episode.
+   */
+  sevenPoint: SevenPointStructure;
 
   // Ending targets the season is steering toward
   endingMode: EndingMode;

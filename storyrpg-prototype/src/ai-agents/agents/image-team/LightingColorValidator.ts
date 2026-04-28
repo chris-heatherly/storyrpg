@@ -463,7 +463,7 @@ Return a JSON LightingColorValidationReport:
 
     // Check arc consistency (simplified - just verify it's not wildly different from neighbors)
     const beatIndex = colorScript.beats.findIndex(b => b.beatId === beatId);
-    let matchesOverallArc = true;
+    const matchesOverallArc = true;
 
     if (beatIndex > 0) {
       const prevBeat = colorScript.beats[beatIndex - 1];

@@ -36,7 +36,7 @@ export function buildStoryImageSlotManifest(
   const firstBeat = scene.beats?.[0];
 
   slots.push({
-    slotId: `story-scene:${scene.sceneId}`,
+    slotId: `story-scene:${scopedSceneId}`,
     family: 'story-scene',
     imageType: 'scene',
     sceneId: scene.sceneId,
@@ -47,7 +47,7 @@ export function buildStoryImageSlotManifest(
     required: false,
     qualityTier: 'standard',
     coverageKey: storySceneCoverageKey(scene.sceneId),
-    continuitySourceSlotId: firstBeat ? `story-beat:${scene.sceneId}::${firstBeat.id}` : undefined,
+    continuitySourceSlotId: firstBeat ? `story-beat:${scopedSceneId}::${firstBeat.id}` : undefined,
     metadata: {
       firstBeatId: firstBeat?.id,
       startingBeatId: scene.startingBeatId,
@@ -56,7 +56,7 @@ export function buildStoryImageSlotManifest(
 
   for (const beat of scene.beats || []) {
     slots.push({
-      slotId: `story-beat:${scene.sceneId}::${beat.id}`,
+      slotId: `story-beat:${scopedSceneId}::${beat.id}`,
       family: 'story-beat',
       imageType: 'beat',
       sceneId: scene.sceneId,
@@ -69,8 +69,8 @@ export function buildStoryImageSlotManifest(
       coverageKey: storyBeatCoverageKey(scene.sceneId, beat.id),
       metadata: {
         isChoicePoint: beat.isChoicePoint === true,
-        isClimaxBeat: beat.isClimaxBeat === true,
-        isKeyStoryBeat: beat.isKeyStoryBeat === true,
+        isClimaxBeat: (beat as unknown as Record<string, unknown>).isClimaxBeat === true,
+        isKeyStoryBeat: (beat as unknown as Record<string, unknown>).isKeyStoryBeat === true,
       },
     });
   }

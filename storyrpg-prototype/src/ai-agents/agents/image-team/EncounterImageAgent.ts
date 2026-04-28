@@ -172,6 +172,10 @@ export class EncounterImageAgent extends BaseAgent {
       contract.relationshipDynamic ? `Relationship dynamic (locked): ${contract.relationshipDynamic}` : '',
       contract.visibleCost ? `Visible cost (locked): ${contract.visibleCost}` : '',
       contract.mustShowDetail ? `Must-show detail: ${contract.mustShowDetail}` : '',
+      contract.keyExpression ? `Expression continuity: ${contract.keyExpression}` : '',
+      contract.keyGesture ? `Gesture continuity: ${contract.keyGesture}` : '',
+      contract.keyBodyLanguage ? `Body-language continuity: ${contract.keyBodyLanguage}` : '',
+      contract.visualNarrative ? `Panel narrative: ${contract.visualNarrative}` : '',
     ].filter(Boolean).join('. ') : '';
     const costLines = input.cost ? [
       input.outcomeType === 'partialVictory' ? 'Partial victory rule: the objective is visibly achieved, but the price must be equally readable in the same frame.' : '',
@@ -229,7 +233,8 @@ export class EncounterImageAgent extends BaseAgent {
         ? 'Do not stage this as a clean triumph. Show success and sacrifice simultaneously through expression, posture, props, or relationship distance.'
         : '',
       // Explicit anti-generic directive
-      'Show the action result and relational tension in this exact moment, not a static setup portrait.',
+      'Show this as one readable storyboard panel in the same ongoing encounter, not an isolated poster or static setup portrait.',
+      'Preserve continuity of characters, location, props, emotional distance, injuries or costs, cover/disguise/evidence, and lighting from the surrounding panels.',
     ];
 
     promptParts.push('Maintain the specified art style consistently.');
@@ -585,7 +590,7 @@ export class EncounterImageAgent extends BaseAgent {
       tilt: frameRole === 'impact' && isAction ? 'dutch_light' : 'straight',
       side: 'left_of_axis',
       lineCross: false,
-      changeLevel: frameRole === 'impact' && isAction ? 'aggressive' : isIntimate ? 'subtle' : 'moderate'
+      changeLevel: (frameRole === 'impact' && isAction ? 'aggressive' : isIntimate ? 'subtle' : 'moderate') as 'static' | 'moderate' | 'aggressive'
     };
   }
 

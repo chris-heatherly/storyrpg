@@ -30,9 +30,16 @@ export const CONCURRENCY_DEFAULTS = {
   llmBackoffJitterRatio: 0.15,
 };
 
-// Timing constants for rate limiting and delays
+// Timing constants for rate limiting and delays.
+// A2: `rateLimitDelayMs` is intentionally 0. Previously every post-success
+// beat image paused this many ms "just in case", but the per-provider
+// throttle (`services/providerThrottle.ts`) already enforces the right gap
+// BEFORE each request. Paying the delay after a successful call just added
+// latency without improving success rate. Kept as an exported constant so
+// the ten FullStoryPipeline.ts call sites don't need to be rewritten — they
+// just sleep(0) and fall through.
 export const TIMING_DEFAULTS = {
-  rateLimitDelayMs: 1000,
+  rateLimitDelayMs: 0,
   imagePollingIntervalMs: 2000,
   retryDelayMs: 5000,
   minRequestIntervalMs: 3000,

@@ -9,8 +9,15 @@
  */
 
 import { AgentConfig, GenerationSettingsConfig } from '../config';
+import {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+  SEVEN_POINT_BEATS,
+} from '../../types/sourceAnalysis';
 import { BaseAgent, AgentResponse, AgentMessage } from './BaseAgent';
 import { BRANCH_AND_BOTTLENECK } from '../prompts/storytellingPrinciples';
+import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType } from '../../types';
 import type { EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 
@@ -53,6 +60,27 @@ export interface StoryArchitectInput {
 
   // User instructions
   userPrompt?: string;
+
+  /**
+   * Season-level narrative anchors (from SeasonPlan.anchors). When present,
+   * StoryArchitect keeps the episode's drama grounded to the same stakes,
+   * goal, and final climax the rest of the pipeline targets.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /**
+   * Season-level 7-point beat map (from SeasonPlan.sevenPoint). Gives
+   * StoryArchitect the text of every beat so it can weave the correct
+   * beat into this episode's arc block.
+   */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Which beat(s) of the season sevenPoint this specific episode carries
+   * (from SeasonEpisode.structuralRole). Drives which `arc.*` fields are
+   * required vs. optional and what dramatic function the episode serves.
+   */
+  episodeStructuralRole?: StructuralRole[];
 
   // Season plan data (encounter and branching directives from the master blueprint)
   seasonPlanDirectives?: {
@@ -208,13 +236,38 @@ export interface EpisodeBlueprint {
   title: string;
   synopsis: string;
 
-  // Narrative arc
+  /**
+   * Episode-level 7-point arc summary.
+   *
+   * This is a REPLACEMENT for the old `{ hook, risingAction, climax, resolution }`
+   * shape. `risingAction` is no longer captured as a single field; the
+   * progressive tension is now carried by the dedicated beat fields below.
+   * `plotTurn2` is intentionally fused into `climax` (the season's Plot Turn 2
+   * IS the decisive confrontation), matching how the season-level
+   * {@link SevenPointStructure} is laid out.
+   *
+   * For buffer episodes (episodes with `structuralRole` of `rising` or
+   * `falling`), the writer fills the 1-2 beats the episode actually lands and
+   * leaves the others as empty strings. The SevenPointCoverageValidator only
+   * enforces coverage at the SEASON level.
+   */
   arc: {
-    hook: string;
-    risingAction: string;
-    climax: string;
-    resolution: string;
+    hook: string;          // Ordinary world + core value introduced
+    plotTurn1: string;     // Inciting incident / world-disruption
+    pinch1: string;        // First major setback against the antagonizing force
+    midpoint: string;      // Commitment / reversal / path-to-victory discovered
+    pinch2: string;        // Crisis + transformation culmination
+    climax: string;        // Decisive confrontation (fuses PT2 + Climax)
+    resolution: string;    // Aftermath + legacy
   };
+
+  /**
+   * Which beats of the season-level sevenPoint this episode is responsible
+   * for landing. Copied through from the SeasonPlannerAgent's assignment so
+   * validators can assert the episode's arc fields are populated for the
+   * beats it owns.
+   */
+  structuralRole?: StructuralRole[];
 
   // Themes to weave through
   themes: string[];
@@ -727,14 +780,37 @@ REQUIREMENTS:
         blueprint.synopsis = '';
       }
 
-      // Ensure arc object exists
+      // Ensure arc object exists with the full 7-point shape. Missing fields
+      // are backfilled to '' so downstream code can rely on their presence;
+      // SevenPointCoverageValidator enforces that episodes actually populate
+      // the beats their structuralRole claims to cover.
       if (!blueprint.arc) {
         blueprint.arc = {
           hook: '',
-          risingAction: '',
+          plotTurn1: '',
+          pinch1: '',
+          midpoint: '',
+          pinch2: '',
           climax: '',
-          resolution: ''
+          resolution: '',
         };
+      } else {
+        const a: Partial<EpisodeBlueprint['arc']> = blueprint.arc as Partial<EpisodeBlueprint['arc']>;
+        blueprint.arc = {
+          hook: a.hook ?? '',
+          plotTurn1: a.plotTurn1 ?? '',
+          pinch1: a.pinch1 ?? '',
+          midpoint: a.midpoint ?? '',
+          pinch2: a.pinch2 ?? '',
+          climax: a.climax ?? '',
+          resolution: a.resolution ?? '',
+        };
+      }
+
+      // Propagate the caller's structuralRole assignment so validators and
+      // downstream writers can see which beats this episode owns.
+      if (!blueprint.structuralRole && input.episodeStructuralRole) {
+        blueprint.structuralRole = [...input.episodeStructuralRole];
       }
 
       // Log choice point info BEFORE validation
@@ -850,7 +926,13 @@ ${input.memoryContext}
 - Use branch-and-bottleneck structure
 - Every major choice needs WANT, COST, and IDENTITY stakes
 - **Intensity guidance in keyBeats**: For each scene, indicate which keyBeats are the dominant peak(s) (prefix with "PEAK:") and suggest where rest/breathing beats should fall (prefix with "REST:"). The SceneWriter uses this to shape the intensity arc. Example: ["REST: the quiet village at dawn", "PEAK: confrontation erupts at the market", "the aftermath settles"]
+- **Pressure, not mandatory combat**: Every scene should create story pressure, but the pressure must match the genre and moment. Use physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure as appropriate.
+- **Decisive beats**: keyBeats should include specific actions, surprising complications, character development, visible consequences, and forward pressure.
+- **Plans go wrong**: When characters follow a plan, include a plausible complication that forces improvisation unless the scene is deliberately a rest beat.
+- **No arbitrary escalation treadmill**: Escalate the episode's overall pressure, but do not make every conversation an argument or every beat more dangerous than everything before it.
+${STORY_ARCHITECT_BLUEPRINT_EXAMPLE}
 ${this.buildSeasonPlanDirectivesSection(input)}
+${this.buildStructuralContextSection(input)}
 
 ## Required JSON Structure
 
@@ -859,10 +941,13 @@ ${this.buildSeasonPlanDirectivesSection(input)}
   "title": "Episode Title",
   "synopsis": "Brief episode summary",
   "arc": {
-    "hook": "Opening hook description",
-    "risingAction": "Rising action description",
-    "climax": "Climax description",
-    "resolution": "Resolution description"
+    "hook": "Ordinary world + core value introduced (fill if this episode carries the 'hook' beat)",
+    "plotTurn1": "Inciting incident / world-disruption (fill if this episode carries 'plotTurn1')",
+    "pinch1": "First major setback against the antagonizing force (fill if this episode carries 'pinch1')",
+    "midpoint": "Commitment / reversal / path-to-victory discovered (fill if this episode carries 'midpoint')",
+    "pinch2": "Crisis + transformation culmination (fill if this episode carries 'pinch2')",
+    "climax": "Decisive confrontation that fuses PT2 and the season Climax (fill if this episode carries 'climax')",
+    "resolution": "Aftermath and legacy (fill if this episode carries 'resolution')"
   },
   "themes": ["theme1", "theme2"],
   "scenes": [
@@ -998,6 +1083,52 @@ SCENE LINKING & CONTINUITY (CRITICAL):
 17. Naming: Use consistent IDs like scene-1, scene-2, scene-3a, scene-3b, etc.
 
 If you don't include enough choice points, the story will be rejected as non-interactive.
+`;
+  }
+
+  /**
+   * Surface the season-level anchors, the full 7-point map, and the beats
+   * this episode is responsible for landing. The 7-point / anchor data
+   * drives the `arc.*` fields and the dramatic function of every scene.
+   */
+  private buildStructuralContextSection(input: StoryArchitectInput): string {
+    const { seasonAnchors, seasonSevenPoint, episodeStructuralRole } = input;
+    if (!seasonAnchors && !seasonSevenPoint && (!episodeStructuralRole || episodeStructuralRole.length === 0)) {
+      return '';
+    }
+
+    const anchorLines = seasonAnchors
+      ? [
+          `- Stakes: ${seasonAnchors.stakes}`,
+          `- Goal: ${seasonAnchors.goal}`,
+          `- Inciting Incident: ${seasonAnchors.incitingIncident}`,
+          `- Climax: ${seasonAnchors.climax}`,
+        ].join('\n')
+      : '';
+
+    const beatLines = seasonSevenPoint
+      ? SEVEN_POINT_BEATS.map((beat) => `- ${beat}: ${seasonSevenPoint[beat]}`).join('\n')
+      : '';
+
+    const roleLine = episodeStructuralRole && episodeStructuralRole.length > 0
+      ? episodeStructuralRole.join(', ')
+      : '(not assigned — treat as a rising / falling buffer episode)';
+
+    return `
+## Season Anchors (shared reference — every beat must serve these)
+${anchorLines || '(none supplied)'}
+
+## Season 7-Point Beat Map
+${beatLines || '(none supplied)'}
+
+## This Episode's Structural Role
+${roleLine}
+
+Populate \`arc.<beat>\` ONLY for beats listed in this episode's structural role.
+Leave the other \`arc.*\` fields as empty strings — the season sevenPoint above
+already carries them at other episodes. The \`arc.climax\` field MUST, when
+filled, reference or rephrase the season Climax anchor above so the season
+reads as a single story.
 `;
   }
 

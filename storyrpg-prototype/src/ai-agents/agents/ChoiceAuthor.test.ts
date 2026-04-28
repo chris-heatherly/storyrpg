@@ -57,6 +57,14 @@ describe('ChoiceAuthor.validateChoices', () => {
   const author = new ChoiceAuthor(config);
   const input = makeInput();
 
+  it('includes StoryRPG-shaped choice residue example without stat-visible prose', () => {
+    const prompt = (author as any).getAgentSpecificPrompt();
+    expect(prompt).toContain('Example: StoryRPG Choice Residue');
+    expect(prompt).toContain('want, cost, identity');
+    expect(prompt).toContain('without exposing stats');
+    expect(prompt).not.toContain('schema_chapters');
+  });
+
   it('throws on fewer than 2 choices', () => {
     const choiceSet = makeChoiceSet({
       choices: [{ id: 'c1', text: 'Only one', choiceType: 'expression', consequences: [] }],
@@ -104,6 +112,27 @@ describe('ChoiceAuthor.validateChoices', () => {
     expect(choiceSet.choices[0].statCheck).toBeDefined();
     expect(choiceSet.choices[0].statCheck.skillWeights).toEqual({ survival: 1.0 });
     expect(choiceSet.choices[0].statCheck.difficulty).toBe(60);
+  });
+
+  it('adds an advisory moral contract to dilemma choices missing one', () => {
+    const choiceSet = makeChoiceSet({ choiceType: 'dilemma' });
+    (author as any).validateChoices(choiceSet, input);
+    expect(choiceSet.choices[0].moralContract).toMatchObject({
+      valueA: 'win',
+      valueB: 'learn',
+      unavoidableCost: 'lose',
+    });
+  });
+
+  it('adds residue hints for meaningful non-expression choices missing them', () => {
+    const choiceSet = makeChoiceSet({ choiceType: 'relationship' });
+    (author as any).validateChoices(choiceSet, input);
+    expect(choiceSet.choices[0].residueHints).toEqual([
+      expect.objectContaining({
+        kind: 'immediate_prose_echo',
+        description: expect.stringContaining('echo'),
+      }),
+    ]);
   });
 
   it('does not inject statCheck for expression type', () => {

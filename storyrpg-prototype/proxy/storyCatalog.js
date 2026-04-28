@@ -1,50 +1,14 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+
+const codec = require('./storyCodec');
+const manifestModule = require('./storyManifest');
 
 function createStoryCatalog(storiesDir, port) {
   const storyJsonCache = new Map();
-  const STORY_FILENAME = '08-final-story.json';
-
-  function getRequestBaseUrl(req) {
-    const protoHeader = req.headers['x-forwarded-proto'];
-    const proto = Array.isArray(protoHeader) ? protoHeader[0] : (protoHeader || req.protocol || 'http');
-    const hostHeader = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${port}`;
-    const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
-    return `${proto}://${host}`;
-  }
-
-  function normalizeAssetUrlForRequest(value, req) {
-    if (!value || typeof value !== 'string') return value || '';
-    if (value.startsWith('data:')) return value;
-
-    const baseUrl = getRequestBaseUrl(req);
-    if (/^https?:\/\/[^/]+\/generated-stories\//i.test(value) || /^https?:\/\/[^/]+\/ref-images\//i.test(value)) {
-      return value.replace(/^https?:\/\/[^/]+/i, baseUrl);
-    }
-    if (value.startsWith('generated-stories/') || value.startsWith('ref-images/')) {
-      return `${baseUrl}/${value.replace(/^\/+/, '')}`;
-    }
-    return value;
-  }
-
-  function normalizeNestedMedia(value, req) {
-    if (!value || typeof value !== 'object') return value;
-    if (Array.isArray(value)) {
-      return value.map((item) => normalizeNestedMedia(item, req));
-    }
-
-    const next = { ...value };
-    for (const [key, raw] of Object.entries(next)) {
-      if (typeof raw === 'string' && /(image|video|portrait)$/i.test(key)) {
-        next[key] = normalizeAssetUrlForRequest(raw, req);
-        continue;
-      }
-      if (raw && typeof raw === 'object') {
-        next[key] = normalizeNestedMedia(raw, req);
-      }
-    }
-    return next;
-  }
+  const LEGACY_STORY_FILENAME = '08-final-story.json';
+  const MODERN_STORY_FILENAME = 'story.json';
 
   function listStoryDirectories() {
     if (!fs.existsSync(storiesDir)) return [];
@@ -55,112 +19,182 @@ function createStoryCatalog(storiesDir, port) {
       .reverse();
   }
 
-  function getStoryRecord(dirName) {
-    const storyFile = path.join(storiesDir, dirName, STORY_FILENAME);
-    if (!fs.existsSync(storyFile)) return null;
+  function resolvePrimaryStoryFile(dirAbs) {
+    const manifest = manifestModule.readManifest(dirAbs);
+    if (manifest) {
+      const primary = path.join(dirAbs, manifest.primaryStoryFile);
+      if (fs.existsSync(primary)) return { filename: manifest.primaryStoryFile, abs: primary, manifest };
+    }
+    // Fallback order: modern → legacy. Anything else = no story here.
+    for (const name of [MODERN_STORY_FILENAME, LEGACY_STORY_FILENAME]) {
+      const abs = path.join(dirAbs, name);
+      if (fs.existsSync(abs)) return { filename: name, abs, manifest: null };
+    }
+    return null;
+  }
 
-    const stats = fs.statSync(storyFile);
-    const cached = storyJsonCache.get(storyFile);
+  function getStoryRecord(dirName) {
+    const dirAbs = path.join(storiesDir, dirName);
+    const primary = resolvePrimaryStoryFile(dirAbs);
+    if (!primary) return null;
+
+    const stats = fs.statSync(primary.abs);
+    const cacheKey = primary.abs;
+    const cached = storyJsonCache.get(cacheKey);
     if (cached && cached.mtimeMs === stats.mtimeMs) {
       return {
-        story: cached.story,
+        pkg: cached.pkg,
+        rawStory: cached.pkg?.story,
         dirName,
-        storyFile,
+        storyFile: primary.abs,
+        primaryFilename: primary.filename,
         mtimeMs: cached.mtimeMs,
+        manifestVerified: cached.manifestVerified,
+        error: cached.error || null,
       };
     }
 
+    let raw;
     try {
-      const raw = fs.readFileSync(storyFile, 'utf8');
-      const story = JSON.parse(raw);
-      storyJsonCache.set(storyFile, { story, mtimeMs: stats.mtimeMs });
-      return {
-        story,
-        dirName,
-        storyFile,
-        mtimeMs: stats.mtimeMs,
-      };
+      raw = fs.readFileSync(primary.abs, 'utf8');
     } catch (err) {
-      console.warn(`[StoryCatalog] Skipping ${dirName}: ${err.message}`);
-      return null;
+      const errRecord = {
+        pkg: null,
+        rawStory: null,
+        dirName,
+        storyFile: primary.abs,
+        primaryFilename: primary.filename,
+        mtimeMs: stats.mtimeMs,
+        manifestVerified: false,
+        error: { kind: 'read_failed', message: err.message },
+      };
+      console.error(`[StoryCatalog] Failed to read ${dirName}/${primary.filename}: ${err.message}`);
+      storyJsonCache.set(cacheKey, { pkg: null, mtimeMs: stats.mtimeMs, manifestVerified: false, error: errRecord.error });
+      return errRecord;
     }
-  }
 
-  function listLatestStoryRecords() {
-    const storyMap = new Map();
-    for (const dirName of listStoryDirectories()) {
-      const record = getStoryRecord(dirName);
-      if (!record?.story?.id || storyMap.has(record.story.id)) continue;
-      storyMap.set(record.story.id, record);
+    let manifestVerified = false;
+    if (primary.manifest) {
+      const entry = primary.manifest.files[primary.filename];
+      if (entry && typeof entry.sha256 === 'string') {
+        const onDiskSha = crypto.createHash('sha256').update(raw).digest('hex');
+        if (onDiskSha !== entry.sha256) {
+          const err = { kind: 'manifest_sha_mismatch', message: `manifest=${entry.sha256} disk=${onDiskSha}` };
+          console.error(`[StoryCatalog] ${dirName}/${primary.filename} sha256 mismatch (${err.message}) — refusing to serve until next write`);
+          storyJsonCache.set(cacheKey, { pkg: null, mtimeMs: stats.mtimeMs, manifestVerified: false, error: err });
+          return {
+            pkg: null, rawStory: null, dirName,
+            storyFile: primary.abs, primaryFilename: primary.filename,
+            mtimeMs: stats.mtimeMs, manifestVerified: false, error: err,
+          };
+        }
+        manifestVerified = true;
+      }
     }
-    return Array.from(storyMap.values());
-  }
 
-  function createStoryCatalogEntry(record, req) {
-    const { story, dirName, mtimeMs } = record;
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      const e = { kind: 'invalid_json', message: err.message };
+      console.error(`[StoryCatalog] ${dirName}/${primary.filename} is not valid JSON: ${err.message}`);
+      storyJsonCache.set(cacheKey, { pkg: null, mtimeMs: stats.mtimeMs, manifestVerified, error: e });
+      return {
+        pkg: null, rawStory: null, dirName,
+        storyFile: primary.abs, primaryFilename: primary.filename,
+        mtimeMs: stats.mtimeMs, manifestVerified, error: e,
+      };
+    }
+
+    const decoded = codec.safeDecodeStory(parsed);
+    if (!decoded.ok) {
+      const issues = Array.isArray(decoded.error?.issues)
+        ? decoded.error.issues.map((i) => `${i.path}: ${i.message}`)
+        : [{ path: '(root)', message: decoded.error?.message || 'unknown' }];
+      const e = { kind: 'codec_validation_failed', message: issues.map((i) => `${i.path}: ${i.message}`).join('; '), issues };
+      console.error(`[StoryCatalog] ${dirName}/${primary.filename} failed codec validation: ${e.message}`);
+      storyJsonCache.set(cacheKey, { pkg: null, mtimeMs: stats.mtimeMs, manifestVerified, error: e });
+      return {
+        pkg: null, rawStory: null, dirName,
+        storyFile: primary.abs, primaryFilename: primary.filename,
+        mtimeMs: stats.mtimeMs, manifestVerified, error: e,
+      };
+    }
+
+    const pkg = decoded.pkg;
+    if (!Array.isArray(pkg.story?.episodes) || pkg.story.episodes.length === 0) {
+      const e = {
+        kind: 'empty_story',
+        message: 'story has no episodes; likely a failed partial generation package',
+      };
+      console.error(`[StoryCatalog] ${dirName}/${primary.filename} has no episodes — refusing to list as playable`);
+      storyJsonCache.set(cacheKey, { pkg: null, mtimeMs: stats.mtimeMs, manifestVerified, error: e });
+      return {
+        pkg: null, rawStory: null, dirName,
+        storyFile: primary.abs, primaryFilename: primary.filename,
+        mtimeMs: stats.mtimeMs, manifestVerified, error: e,
+      };
+    }
+
+    storyJsonCache.set(cacheKey, { pkg, mtimeMs: stats.mtimeMs, manifestVerified });
     return {
-      id: story.id,
-      title: story.title,
-      genre: story.genre,
-      synopsis: story.synopsis,
-      coverImage: normalizeAssetUrlForRequest(story.coverImage || '', req),
-      author: story.author,
-      tags: story.tags,
-      outputDir: `generated-stories/${dirName}/`,
-      isBuiltIn: story.isBuiltIn === true,
-      updatedAt: new Date(mtimeMs).toISOString(),
-      fullStoryUrl: `${getRequestBaseUrl(req)}/stories/${encodeURIComponent(story.id)}`,
-      episodeCount: Array.isArray(story.episodes) ? story.episodes.length : 0,
-      episodes: Array.isArray(story.episodes)
-        ? story.episodes.map((episode) => ({
-            id: episode.id,
-            number: episode.number,
-            title: episode.title,
-            synopsis: episode.synopsis,
-            coverImage: normalizeAssetUrlForRequest(episode.coverImage || '', req),
-          }))
-        : [],
+      pkg,
+      rawStory: pkg.story,
+      dirName,
+      storyFile: primary.abs,
+      primaryFilename: primary.filename,
+      mtimeMs: stats.mtimeMs,
+      manifestVerified,
+      error: null,
     };
   }
 
+  function listLatestStoryRecords({ includeInvalid = false } = {}) {
+    const storyMap = new Map();
+    const seen = new Map();
+    const invalid = [];
+    for (const dirName of listStoryDirectories()) {
+      const record = getStoryRecord(dirName);
+      if (!record) continue;
+      if (record.error) {
+        invalid.push(record);
+        continue;
+      }
+      if (!record.pkg?.storyId) continue;
+      const id = record.pkg.storyId;
+      const prior = seen.get(id);
+      if (!prior || record.mtimeMs > prior.mtimeMs) {
+        // Fail-closed dedupe: log when we replace a record so the
+        // operator sees that two directories claim the same storyId.
+        if (prior) {
+          console.error(`[StoryCatalog] duplicate storyId="${id}": dropping "${prior.dirName}" in favour of "${dirName}" (newer mtime)`);
+        }
+        storyMap.set(id, record);
+        seen.set(id, { dirName, mtimeMs: record.mtimeMs });
+      }
+    }
+    const valid = Array.from(storyMap.values());
+    return includeInvalid ? { valid, invalid } : valid;
+  }
+
+  function createStoryCatalogEntry(record, req) {
+    return codec.projectForCatalog(record.pkg, {
+      req,
+      port,
+      dirName: record.dirName,
+      mtimeMs: record.mtimeMs,
+    });
+  }
+
   function createFullStoryResponse(record, req) {
-    const story = JSON.parse(JSON.stringify(record.story));
-    const outputDir = `generated-stories/${record.dirName}/`;
-    story.outputDir = outputDir;
-    story.coverImage = normalizeAssetUrlForRequest(story.coverImage || '', req);
-    if (Array.isArray(story.npcs)) {
-      story.npcs = story.npcs.map((npc) => ({
-        ...npc,
-        portrait: normalizeAssetUrlForRequest(npc.portrait || '', req),
-      }));
-    }
-    if (Array.isArray(story.episodes)) {
-      story.episodes = story.episodes.map((episode) => ({
-        ...episode,
-        coverImage: normalizeAssetUrlForRequest(episode.coverImage || '', req),
-        scenes: Array.isArray(episode.scenes)
-          ? episode.scenes.map((scene) => ({
-              ...scene,
-              backgroundImage: normalizeAssetUrlForRequest(scene.backgroundImage || '', req),
-              beats: Array.isArray(scene.beats)
-                ? scene.beats.map((beat) => ({
-                    ...beat,
-                    image: normalizeAssetUrlForRequest(beat.image || '', req),
-                    video: normalizeAssetUrlForRequest(beat.video || '', req),
-                  }))
-                : [],
-              encounter: scene.encounter ? normalizeNestedMedia(scene.encounter, req) : scene.encounter,
-            }))
-          : [],
-      }));
-    }
-    return story;
+    return codec.projectForFullResponse(record.pkg, { req, port, dirName: record.dirName });
   }
 
   return {
     listLatestStoryRecords,
     createStoryCatalogEntry,
     createFullStoryResponse,
+    getStoryRecord,
   };
 }
 

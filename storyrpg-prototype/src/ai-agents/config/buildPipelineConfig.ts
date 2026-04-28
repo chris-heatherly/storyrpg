@@ -3,8 +3,18 @@ import {
   VideoSettingsConfig,
   GeminiSettings,
   MidjourneySettings,
+  StableDiffusionSettings,
+  OpenAISettings,
+  DEFAULT_OPENAI_SETTINGS,
   ImageProvider,
+  LoraTrainingSettings,
+  resolveLoraTrainingSettings,
 } from '../config';
+import { resolveImageQaConfig, resolveArtStylePresetProfile } from './imageQaConfig';
+import { resolveArtStyleProfile, composeCanonicalStyleString } from '../images/artStyleProfile';
+import type { ArtStyleProfile } from '../images/artStyleProfile';
+import { StyleArchitect } from '../agents/StyleArchitect';
+import type { PreapprovedAnchor } from '../config';
 import type { GenerationSettings } from '../../components/GenerationSettingsPanel';
 import {
   DEFAULT_LLM_MODELS,
@@ -25,6 +35,7 @@ export interface BuildPipelineConfigInput {
   videoLlmProvider: GeneratorLlmProvider;
   videoLlmModel: string;
   apiKey: string;
+  openaiApiKey?: string;
   geminiApiKey: string;
   elevenLabsApiKey: string;
   atlasCloudApiKey: string;
@@ -36,6 +47,13 @@ export interface BuildPipelineConfigInput {
   artStyle: string;
   geminiSettings: GeminiSettings;
   midjourneySettings: MidjourneySettings;
+  stableDiffusionSettings?: StableDiffusionSettings;
+  /**
+   * Optional UI overrides for the auto-train LoRA subsystem. When omitted,
+   * env-var defaults apply via `resolveLoraTrainingSettings`.
+   */
+  loraTrainingSettings?: Partial<LoraTrainingSettings>;
+  openaiSettings?: OpenAISettings;
   generationSettings: GenerationSettings;
   generationMode: GenerationMode;
   narrationSettings: GeneratorNarrationSettings;
@@ -45,6 +63,9 @@ export interface BuildPipelineConfigInput {
 function getSelectedLlmApiKey(input: BuildPipelineConfigInput): string {
   if (input.llmProvider === 'gemini') {
     return input.geminiApiKey.trim();
+  }
+  if (input.llmProvider === 'openai') {
+    return (input.openaiApiKey || input.apiKey || '').trim();
   }
 
   return input.apiKey.trim();
@@ -60,6 +81,9 @@ function getScopedLlmApiKey(
 ): string {
   if (provider === 'gemini') {
     return input.geminiApiKey.trim();
+  }
+  if (provider === 'openai') {
+    return (input.openaiApiKey || input.apiKey || '').trim();
   }
 
   return input.apiKey.trim();
@@ -77,11 +101,60 @@ function normalizeImageProvider(provider: GeneratorImageProvider | 'useapi'): Im
   return provider;
 }
 
-export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineConfig {
+function resolveStableDiffusionSettings(
+  provider: ImageProvider,
+  overrides: StableDiffusionSettings | undefined,
+): StableDiffusionSettings | undefined {
+  if (provider !== 'stable-diffusion' && !overrides) return undefined;
+  const env = typeof process !== 'undefined' ? process.env : ({} as any);
+  const baseUrl = (overrides?.baseUrl || env.STABLE_DIFFUSION_BASE_URL || env.EXPO_PUBLIC_STABLE_DIFFUSION_BASE_URL || '').trim();
+  const apiKey = (overrides?.apiKey || env.STABLE_DIFFUSION_API_KEY || env.EXPO_PUBLIC_STABLE_DIFFUSION_API_KEY || '').trim();
+  const defaultModel = (overrides?.defaultModel || env.STABLE_DIFFUSION_DEFAULT_MODEL || env.EXPO_PUBLIC_STABLE_DIFFUSION_DEFAULT_MODEL || '').trim();
+  const backend = (overrides?.backend || (env.STABLE_DIFFUSION_BACKEND as any) || 'a1111') as StableDiffusionSettings['backend'];
+  return {
+    ...overrides,
+    baseUrl: baseUrl || overrides?.baseUrl,
+    apiKey: apiKey || overrides?.apiKey,
+    defaultModel: defaultModel || overrides?.defaultModel,
+    backend,
+  };
+}
+
+/**
+ * Optional extras an async/UI-driven caller can supply to short-circuit
+ * the heuristic style-resolution step and thread pre-approved style-bible
+ * anchors into the pipeline.
+ */
+export interface PipelineConfigExtras {
+  /**
+   * A fully-formed profile the caller already resolved (e.g. via
+   * StyleArchitect, or via the UI style-setup section where the user
+   * edited individual DNA fields). When present, this wins over the
+   * preset-based or keyword-based heuristic.
+   */
+  artStyleProfileOverride?: ArtStyleProfile;
+  /** Anchor images the user approved in the UI. */
+  preapprovedStyleAnchors?: {
+    character?: PreapprovedAnchor;
+    arcStrip?: PreapprovedAnchor;
+    environment?: PreapprovedAnchor;
+  };
+}
+
+export function buildPipelineConfig(
+  input: BuildPipelineConfigInput,
+  extras?: PipelineConfigExtras,
+): PipelineConfig {
   const selectedLlmModel = getSelectedLlmModel(input);
   const selectedLlmApiKey = getSelectedLlmApiKey(input);
   const artStyle = input.artStyle.trim() || undefined;
   const normalizedImageProvider = normalizeImageProvider(input.imageProvider);
+  const env = typeof process !== 'undefined' ? (process.env as Record<string, string | undefined>) : {};
+  const qa = resolveImageQaConfig(env);
+  const artStyleProfile =
+    extras?.artStyleProfileOverride ??
+    resolveArtStylePresetProfile(env) ??
+    (artStyle ? resolveArtStyleProfile(artStyle) : undefined);
 
   return {
     agents: {
@@ -91,6 +164,8 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
         apiKey: selectedLlmApiKey,
         maxTokens: 8192,
         temperature: 0.7,
+        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
       },
       sceneWriter: {
         provider: input.llmProvider,
@@ -98,6 +173,8 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
         apiKey: selectedLlmApiKey,
         maxTokens: 4096,
         temperature: 0.85,
+        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
       },
       choiceAuthor: {
         provider: input.llmProvider,
@@ -105,6 +182,8 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
         apiKey: selectedLlmApiKey,
         maxTokens: 4096,
         temperature: 0.75,
+        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
       },
       imagePlanner: {
         provider: input.imageLlmProvider,
@@ -112,6 +191,8 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
         apiKey: getScopedLlmApiKey(input.imageLlmProvider, input),
         maxTokens: 8192,
         temperature: 0.7,
+        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
       },
       videoDirector: {
         provider: input.videoLlmProvider,
@@ -119,6 +200,8 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
         apiKey: getScopedLlmApiKey(input.videoLlmProvider, input),
         maxTokens: 8192,
         temperature: 0.7,
+        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
       },
     },
     validation: {
@@ -152,17 +235,29 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
       enabled: input.generationSettings.generateImages,
       apiKey: input.geminiApiKey.trim(),
       geminiApiKey: input.geminiApiKey.trim(),
+      openaiApiKey: (input.openaiApiKey || input.apiKey || '').trim() || undefined,
+      openaiImageModel: input.openaiSettings?.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel,
+      openaiModeration: input.openaiSettings?.imageModeration || DEFAULT_OPENAI_SETTINGS.imageModeration,
       provider: normalizedImageProvider,
       strategy: input.imageStrategy,
       atlasCloudApiKey: input.atlasCloudApiKey.trim() || undefined,
       atlasCloudModel: input.atlasCloudModel.trim() || undefined,
       midapiToken: input.midapiToken.trim() || undefined,
       panelMode: input.panelMode || 'single',
+      requireCharacterRefsForVisibleCharacters: true,
+      minRefsPerVisibleCharacter: 1,
+      allowTextOnlyCharacterImages: false,
       midjourney: normalizedImageProvider === 'midapi' ? input.midjourneySettings : undefined,
       gemini: {
         ...(normalizedImageProvider === 'nano-banana' ? input.geminiSettings : {}),
-        canonicalArtStyle: input.artStyle.trim() || '',
+        canonicalArtStyle:
+          composeCanonicalStyleString(artStyleProfile) || input.artStyle.trim() || '',
       },
+      stableDiffusion: resolveStableDiffusionSettings(normalizedImageProvider, input.stableDiffusionSettings),
+      qa,
+      artStyleProfile,
+      preapprovedStyleAnchors: extras?.preapprovedStyleAnchors,
+      loraTraining: resolveLoraTrainingSettings(env, input.loraTrainingSettings),
     },
     generation: {
       failurePolicy: input.generationSettings.failFastMode ? 'fail_fast' : 'recover',
@@ -221,4 +316,50 @@ export function buildPipelineConfig(input: BuildPipelineConfigInput): PipelineCo
       apiKey: input.geminiApiKey.trim() || undefined,
     },
   };
+}
+
+/**
+ * Async variant of `buildPipelineConfig` that first asks the `StyleArchitect`
+ * LLM to expand the user's raw art-style string into a full `ArtStyleProfile`.
+ * Falls back to the keyword heuristic on any failure. Callers that already
+ * have a profile (for example, the UI's style-setup section where the user
+ * edited DNA fields manually) should skip this and pass the profile via
+ * `extras.artStyleProfileOverride` on the sync builder instead.
+ */
+export async function buildPipelineConfigAsync(
+  input: BuildPipelineConfigInput,
+  extras?: PipelineConfigExtras,
+): Promise<PipelineConfig> {
+  if (extras?.artStyleProfileOverride) {
+    return buildPipelineConfig(input, extras);
+  }
+
+  const rawStyle = input.artStyle.trim();
+  if (!rawStyle) {
+    return buildPipelineConfig(input, extras);
+  }
+
+  const selectedLlmApiKey = getSelectedLlmApiKey(input);
+  const architectConfig = {
+    provider: input.llmProvider,
+    model: getSelectedLlmModel(input),
+    apiKey: selectedLlmApiKey,
+    maxTokens: 1024,
+    temperature: 0.4,
+  };
+
+  try {
+    const architect = new StyleArchitect(architectConfig);
+    const profile = await architect.expand({ artStyle: rawStyle });
+    return buildPipelineConfig(input, {
+      ...extras,
+      artStyleProfileOverride: profile,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[buildPipelineConfigAsync] StyleArchitect failed for "${rawStyle}" (${message}); using heuristic resolution.`,
+    );
+    return buildPipelineConfig(input, extras);
+  }
 }

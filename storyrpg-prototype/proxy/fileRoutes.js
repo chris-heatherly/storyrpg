@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { atomicWriteFileSync } = require('./atomicIo');
 
 function createSafeWritePathResolver({ rootDir, allowedRoots }) {
   return function assertSafeWritePath(requestedPath) {
@@ -39,10 +40,10 @@ function registerFileRoutes(app, { rootDir, storiesDir, refImagesDir, pipelineMe
 
       if (isBase64) {
         const buffer = Buffer.from(content, 'base64');
-        fs.writeFileSync(absolutePath, buffer);
+        atomicWriteFileSync(absolutePath, buffer);
         console.log(`[Proxy] Wrote binary file (${buffer.length} bytes): ${filePath}`);
       } else {
-        fs.writeFileSync(absolutePath, content, 'utf8');
+        atomicWriteFileSync(absolutePath, Buffer.from(String(content), 'utf8'));
       }
       res.json({ success: true });
     } catch (error) {

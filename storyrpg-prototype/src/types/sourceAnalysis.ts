@@ -6,6 +6,128 @@
  */
 
 // ========================================
+// 7-POINT STORY STRUCTURE
+// ========================================
+
+/**
+ * The four narrative anchors that define every story at the season / top level.
+ *
+ * - {@link StoryAnchors.stakes}     - the person, people, place, thing, or concept
+ *                                     the Protagonist cares about most
+ * - {@link StoryAnchors.goal}       - what the Protagonist feels compelled to achieve
+ * - {@link StoryAnchors.incitingIncident} - the event that sets the story in motion
+ * - {@link StoryAnchors.climax}     - the turning-point confrontation where the
+ *                                     Protagonist faces their greatest challenge
+ *
+ * These are the shared reference points every narrative-quality agent aligns to.
+ * When source material does not already supply them, SourceMaterialAnalyzer
+ * infers them. Path B's StorySchema authoring tool writes them directly.
+ */
+export interface StoryAnchors {
+  stakes: string;
+  goal: string;
+  incitingIncident: string;
+  climax: string;
+}
+
+/**
+ * The season-level 3-act / 7-point structural contract.
+ *
+ * Each string names the beat at the season level. Individual episodes carry
+ * one or more of these beats as their structural role (see
+ * {@link EpisodeOutline.structuralRole}). The `climax` field here SHOULD
+ * match the {@link StoryAnchors.climax} anchor either exactly or as a
+ * recognizable rephrasing; `SevenPointCoverageValidator` enforces this.
+ */
+export interface SevenPointStructure {
+  hook: string;
+  plotTurn1: string;
+  pinch1: string;
+  midpoint: string;
+  pinch2: string;
+  climax: string;
+  resolution: string;
+}
+
+/**
+ * Optional reusable-story abstraction metadata inferred from a known story or
+ * source prompt. This is analysis/planning data only: it helps agents learn
+ * transferable structure without introducing a second runtime story format.
+ */
+export interface StorySchemaVariable {
+  name: string;
+  description: string;
+  examples?: string[];
+}
+
+export interface StorySchemaAbstraction {
+  archetype: string;
+  adaptationMode: 'source_faithful' | 'inspired_by' | 'original';
+  schemaVariables: StorySchemaVariable[];
+  generalizationGuidance: string[];
+  reusablePatternSummary: string;
+}
+
+export interface WritingStyleGuide {
+  source: 'explicit_prompt' | 'inferred_from_material';
+  summary: string;
+  narrativeVoice: string;
+  sentenceRhythm: string;
+  diction: string;
+  dialogueStyle: string;
+  povAndDistance: string;
+  imageryAndSensoryFocus: string;
+  pacing: string;
+  doList: string[];
+  avoidList: string[];
+  evidence?: string[];
+}
+
+export interface DirectLanguageFragment {
+  text: string;
+  context: string;
+  speaker?: string;
+  episode?: number;
+}
+
+export interface DirectLanguageFragmentGroups {
+  dialogue: string[];
+  prose: string[];
+  terminology: string[];
+}
+
+/**
+ * Which beat of the 7-point structure a given episode carries.
+ *
+ * `rising` and `falling` are non-beat buffer slots used when an episode sits
+ * BETWEEN two named beats and purely escalates / de-escalates tension.
+ */
+export type StructuralRole =
+  | 'hook'
+  | 'plotTurn1'
+  | 'pinch1'
+  | 'midpoint'
+  | 'pinch2'
+  | 'climax'
+  | 'resolution'
+  | 'rising'
+  | 'falling';
+
+/**
+ * The seven "real" beats (excluding rising / falling buffers). Exported so
+ * validators can iterate the required set.
+ */
+export const SEVEN_POINT_BEATS: ReadonlyArray<Exclude<StructuralRole, 'rising' | 'falling'>> = [
+  'hook',
+  'plotTurn1',
+  'pinch1',
+  'midpoint',
+  'pinch2',
+  'climax',
+  'resolution',
+] as const;
+
+// ========================================
 // STORY STRUCTURE TYPES
 // ========================================
 
@@ -210,7 +332,26 @@ export interface EpisodeOutline {
   // Estimated scope
   estimatedSceneCount: number;
   estimatedChoiceCount: number;
-  // Narrative arc within episode
+
+  /**
+   * Which beat(s) of the season's {@link SevenPointStructure} this episode
+   * carries. A single episode may fuse multiple beats (e.g. `['hook','plotTurn1']`
+   * in a short 3-episode season) or sit BETWEEN beats as a `rising` / `falling`
+   * buffer in a long season.
+   *
+   * Populated by SeasonPlannerAgent; validated by SevenPointCoverageValidator
+   * (every beat in the season's sevenPoint must be carried by >=1 episode).
+   * Drives arc tone, difficultyTier, branch placement, twist landing, and
+   * character-arc milestones.
+   */
+  structuralRole?: StructuralRole[];
+
+  /**
+   * @deprecated in favor of {@link structuralRole} + season-level sevenPoint.
+   * Retained so existing SourceMaterialAnalyzer output still typechecks; new
+   * code should read `structuralRole` and consult the season's `sevenPoint`
+   * for the beat text.
+   */
   narrativeFunction: {
     setup: string;
     conflict: string;
@@ -253,6 +394,35 @@ export interface SourceMaterialAnalysis {
 
   // Overall story arcs
   storyArcs: StoryArc[];
+
+  /**
+   * Four narrative anchors that ground every downstream agent
+   * (protagonist Stakes, Goal, Inciting Incident, Climax).
+   * Inferred by SourceMaterialAnalyzer when the caller does not supply them.
+   */
+  anchors: StoryAnchors;
+
+  /**
+   * The season-level 3-act / 7-point beat map. Inferred by
+   * SourceMaterialAnalyzer; each episode carries one or more of these beats
+   * via {@link EpisodeOutline.structuralRole}. Validated for coverage and
+   * anchor-consistency by SevenPointCoverageValidator.
+   */
+  sevenPoint: SevenPointStructure;
+
+  /**
+   * Optional reusable-story abstraction. Downstream agents may consult this
+   * for archetype and transferable structure, but runtime output remains the
+   * StoryRPG Story/Episode/Scene/Beat/Choice schema.
+   */
+  schemaAbstraction?: StorySchemaAbstraction;
+
+  /**
+   * Prose contract for generated beats. If the user explicitly requested a
+   * writing style in the prompt, that instruction is authoritative; otherwise
+   * SourceMaterialAnalyzer infers this guide from the supplied material.
+   */
+  writingStyleGuide?: WritingStyleGuide;
 
   // Ending analysis
   detectedEndingMode?: EndingMode;
@@ -297,12 +467,7 @@ export interface SourceMaterialAnalysis {
   warnings: string[]; // Any issues or ambiguities found
 
   // Direct language fragments from source (for authentic voice)
-  directLanguageFragments?: Array<{
-    text: string;
-    context: string;
-    speaker?: string;
-    episode?: number;
-  }>;
+  directLanguageFragments?: DirectLanguageFragment[] | DirectLanguageFragmentGroups;
 
   // Adaptation guidance
   adaptationGuidance?: {
@@ -311,6 +476,12 @@ export interface SourceMaterialAnalysis {
     narrativeVoice: string;
     elementsToPreserve: string[];
     elementsToAdapt: string[];
+    /**
+     * Legacy fields emitted by older SourceMaterialAnalyzer prompts. Kept so
+     * old checkpoints and partially generated jobs remain readable.
+     */
+    keyThemesToPreserve?: string[];
+    iconicMoments?: string[];
   };
 }
 

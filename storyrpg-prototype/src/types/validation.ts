@@ -24,9 +24,18 @@ export type ValidationCategory =
   | 'stakes_triangle'
   | 'five_factor'
   | 'choice_density'
+  | 'choice_distribution'
   | 'consequence_budget'
   | 'npc_depth'
-  | 'callback_opportunities';
+  | 'callback_opportunities'
+  | 'voice_fidelity'
+  | 'pixar_principles'
+  | 'cliffhanger'
+  | 'setup_payoff'
+  | 'twist_quality'
+  | 'arc_delta'
+  | 'divergence'
+  | 'branch_topology';
 
 // ========================================
 // VALIDATION ISSUES
@@ -209,6 +218,16 @@ export interface ValidationRuleConfig {
 export interface ValidationConfig {
   enabled: boolean;
   mode: 'strict' | 'advisory' | 'disabled';
+  /** Run HTTP HEAD checks against every image URL after assembly (default: true) */
+  assetHttpCheck?: boolean;
+  /** Treat asset HTTP failures as a hard pipeline error (default: false) */
+  assetHttpCheckFailFast?: boolean;
+  /** Run a Playwright browser playthrough after save to verify images render (default: true when proxy+app are running) */
+  playwrightQA?: boolean;
+  /** Max remediation+retest cycles when Playwright finds issues (default: 1) */
+  playwrightQAMaxRetries?: number;
+  /** Encounter tiers to test across retries (default: ['success','failure']) */
+  playwrightQAEncounterTiers?: ('success' | 'complicated' | 'failure')[];
   rules: {
     stakesTriangle: ValidationRuleConfig;
     fiveFactor: ValidationRuleConfig;

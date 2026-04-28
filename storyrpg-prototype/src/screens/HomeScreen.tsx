@@ -24,7 +24,9 @@ import { useGameActions, useGamePlayerState, useGameStoryState } from '../stores
 import { StoryCatalogEntry } from '../types';
 import { TERMINAL } from '../theme';
 import { useSettingsStore } from '../stores/settingsStore';
+import { APP_FOOTER_LINE_1, APP_FOOTER_LINE_2 } from '../config/version';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ConfirmDialog } from '../components/ui';
 
 const { width } = Dimensions.get('window');
 
@@ -48,6 +50,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const { resetGame } = useGameActions();
   const fonts = useSettingsStore((state) => state.getFontSizes());
   const [isWiping, setIsWiping] = useState(false);
+  const [confirmWipe, setConfirmWipe] = useState(false);
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
 
   // Placeholder image for when cover images fail to load
@@ -55,18 +58,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
   const hasSavedGame = currentStory !== null && player.currentEpisodeId !== null;
 
-  const handleWipeCache = async () => {
-    if (confirm('WIPE ALL CACHE? This will clear all generated stories and save data from browser storage.')) {
-      setIsWiping(true);
-      try {
-        await AsyncStorage.clear();
-        alert('Cache wiped. Restarting...');
+  const handleWipeCache = () => {
+    setConfirmWipe(true);
+  };
+
+  const performWipeCache = async () => {
+    setConfirmWipe(false);
+    setIsWiping(true);
+    try {
+      await AsyncStorage.clear();
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.location.reload();
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setIsWiping(false);
       }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsWiping(false);
     }
   };
 
@@ -161,12 +168,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   setFailedImages(prev => new Set(prev).add(story.id));
                 }}
               />
+              <View style={styles.storyBadge}>
+                <Text style={styles.storyBadgeText}>{(story.genre || 'unknown').toUpperCase()}</Text>
+              </View>
+              <View pointerEvents="none" style={styles.storyOverlayFadeFaint} />
+              <View pointerEvents="none" style={styles.storyOverlayFadeMid} />
+              <View pointerEvents="none" style={styles.storyOverlayFadeStrong} />
               <View style={styles.storyOverlay}>
-                <View style={styles.storyBadge}>
-                  <Text style={styles.storyBadgeText}>{(story.genre || 'unknown').toUpperCase()}</Text>
-                </View>
-                <Text style={styles.storyCardTitle}>{(story.title || 'Untitled').toUpperCase()}</Text>
-                <Text style={styles.storyCardMeta}>{story.episodeCount} EPISODES</Text>
+                <Text style={[styles.storyCardTitle, { fontSize: fonts.large }]}>{(story.title || 'Untitled').toUpperCase()}</Text>
+                <Text style={[styles.storyCardMeta, { fontSize: fonts.small }]}>{story.episodeCount} EPISODES</Text>
                 <View style={styles.playButtonMini}>
                   <Play size={12} color="white" fill="white" />
                   <Text style={styles.playButtonMiniText}>START</Text>
@@ -184,14 +194,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </View>
 
         <Text style={styles.footerText}>
-          STORYRPG MOBILE • ALPHA VER 1.0.0{'\n'}
-          © 2024 STORYRPG SYSTEMS
+          {APP_FOOTER_LINE_1}{'\n'}
+          {APP_FOOTER_LINE_2}
         </Text>
 
         <TouchableOpacity 
           style={styles.wipeButton} 
           onPress={handleWipeCache}
           disabled={isWiping}
+          accessibilityRole="button"
+          accessibilityLabel="Wipe storage cache"
+          accessibilityState={{ disabled: isWiping }}
         >
           <RotateCcw size={12} color={TERMINAL.colors.error} />
           <Text style={styles.wipeButtonText}>
@@ -199,6 +212,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </Text>
         </TouchableOpacity>
       </ScrollView>
+
+      <ConfirmDialog
+        visible={confirmWipe}
+        title="Wipe all cache?"
+        message="This clears all generated stories and save data from browser storage. This action cannot be undone."
+        confirmLabel="Wipe"
+        cancelLabel="Cancel"
+        destructive
+        onConfirm={performWipeCache}
+        onCancel={() => setConfirmWipe(false)}
+        testID="home-wipe-dialog"
+      />
     </SafeAreaView>
   );
 };
@@ -327,7 +352,7 @@ const styles = StyleSheet.create({
   },
   storyCard: {
     width: (width - 56) / 2,
-    height: 240,
+    height: 312,
     borderRadius: 24,
     overflow: 'hidden',
     backgroundColor: '#1e2229',
@@ -335,13 +360,38 @@ const styles = StyleSheet.create({
   storyImage: {
     width: '100%',
     height: '100%',
-    opacity: 0.6,
   },
   storyOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
     padding: 16,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(15, 17, 21, 0.4)',
+  },
+  storyOverlayFadeFaint: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 140,
+    backgroundColor: 'rgba(15, 17, 21, 0.25)',
+  },
+  storyOverlayFadeMid: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 90,
+    backgroundColor: 'rgba(15, 17, 21, 0.45)',
+  },
+  storyOverlayFadeStrong: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 50,
+    backgroundColor: 'rgba(15, 17, 21, 0.6)',
   },
   storyBadge: {
     position: 'absolute',
@@ -351,6 +401,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
+    zIndex: 2,
   },
   storyBadgeText: {
     fontSize: 8,
@@ -384,7 +435,7 @@ const styles = StyleSheet.create({
   },
   lockedCard: {
     width: (width - 56) / 2,
-    height: 240,
+    height: 312,
     borderRadius: 24,
     borderWidth: 2,
     borderStyle: 'dashed',

@@ -19,6 +19,10 @@ import {
   PlannedEncounter,
   EncounterCategory,
   EndingMode,
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+  SEVEN_POINT_BEATS,
 } from '../../types/sourceAnalysis';
 import {
   SeasonPlan,
@@ -27,6 +31,15 @@ import {
   EpisodeRecommendation,
   EpisodeSelectionState,
 } from '../../types/seasonPlan';
+import {
+  distributeSevenPoints,
+  describeDistribution,
+} from '../utils/sevenPointDistribution';
+import { SEASON_PLANNER_CRAFT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
+import {
+  SevenPointCoverageValidator,
+  seasonPlanToCoverageInput,
+} from '../validators/SevenPointCoverageValidator';
 
 // ========================================
 // INPUT TYPES
@@ -174,6 +187,21 @@ Your plans must define:
       })
       .join('\n');
 
+    const anchors = analysis.anchors;
+    const sp = analysis.sevenPoint;
+    const anchorBlock = anchors
+      ? [
+          `- Stakes: ${anchors.stakes}`,
+          `- Goal: ${anchors.goal}`,
+          `- Inciting Incident: ${anchors.incitingIncident}`,
+          `- Climax: ${anchors.climax}`,
+        ].join('\n')
+      : '(not yet derived — inherit from episode breakdown)';
+    const sevenPointBlock = sp
+      ? SEVEN_POINT_BEATS.map((b) => `- ${b}: ${sp[b]}`).join('\n')
+      : '(not yet derived — inherit from episode breakdown)';
+    const distributionHint = describeDistribution(distributeSevenPoints(analysis.totalEstimatedEpisodes));
+
     return `
 Create a comprehensive MASTER SEASON PLAN for this interactive fiction series.
 This plan is the BLUEPRINT that guides ALL episode generation - encounters, branches, and consequences.
@@ -184,6 +212,34 @@ This plan is the BLUEPRINT that guides ALL episode generation - encounters, bran
 - **Tone**: ${analysis.tone}
 - **Themes**: ${analysis.themes.join(', ')}
 - **Total Episodes**: ${analysis.totalEstimatedEpisodes}
+
+## Season Narrative Anchors (MUST be honoured end-to-end)
+${anchorBlock}
+
+## Season 7-Point Beat Map
+${sevenPointBlock}
+
+## Default Beat Distribution (HINT — override if the source demands it)
+${distributionHint}
+Every canonical beat MUST land on at least one episode in canonical order.
+Every \`episodeEncounters\` entry should reflect the difficulty implied by
+the beats its episode carries (Midpoint / Pinch 2 / Climax episodes are
+the hardest).
+
+## Story Craft Guidance
+Use the source analysis as the authority, but learn from reusable structure:
+- Establish ordinary world, protagonist core value, and a stronger motivated antagonizing force.
+- Escalate pressure toward the shared Stakes and Goal without assuming every story needs combat.
+- Pressure can be physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure.
+- Make plans go partly wrong often enough that choices require improvisation.
+- After the Climax, resolve quickly: show what was saved or changed, then show future cost, identity change, or legacy.
+
+${analysis.schemaAbstraction ? `## Reusable Pattern Abstraction
+- Archetype: ${analysis.schemaAbstraction.archetype}
+- Mode: ${analysis.schemaAbstraction.adaptationMode}
+- Pattern: ${analysis.schemaAbstraction.reusablePatternSummary}
+- Guidance: ${analysis.schemaAbstraction.generalizationGuidance.join('; ')}
+` : ''}${SEASON_PLANNER_CRAFT_EXAMPLE}
 
 ## Episode Breakdown
 ${episodeSummaries}
@@ -658,6 +714,21 @@ CRITICAL RULES:
       }
     }
 
+    // Build the season's structuralRole map. Prefer the structuralRole
+    // already present on each EpisodeOutline (set by SourceMaterialAnalyzer
+    // when the source material implied one). Otherwise use the default
+    // distribution so the SevenPointCoverageValidator sees full coverage.
+    const defaultDistribution = distributeSevenPoints(analysis.totalEstimatedEpisodes);
+    const structuralRoleByEpisode = new Map<number, StructuralRole[]>();
+    for (const entry of defaultDistribution) {
+      structuralRoleByEpisode.set(entry.episodeNumber, [...entry.structuralRole]);
+    }
+    for (const ep of analysis.episodeBreakdown) {
+      if (ep.structuralRole && ep.structuralRole.length > 0) {
+        structuralRoleByEpisode.set(ep.episodeNumber, [...ep.structuralRole]);
+      }
+    }
+
     // Build SeasonEpisode objects with encounter data
     const episodes: SeasonEpisode[] = analysis.episodeBreakdown.map(ep => {
       const deps = dependenciesMap[ep.episodeNumber] || 
@@ -700,8 +771,13 @@ CRITICAL RULES:
         .filter(f => f.checkedInEpisodes.includes(ep.episodeNumber))
         .map(f => ({ flag: f.flag, ifTrue: f.description, ifFalse: `No ${f.flag}` }));
 
+      const structuralRole = structuralRoleByEpisode.get(ep.episodeNumber)
+        ?? ep.structuralRole
+        ?? (defaultDistribution.find((e) => e.episodeNumber === ep.episodeNumber)?.structuralRole ?? []);
+
       return {
         ...ep,
+        structuralRole,
         status: 'planned' as const,
         dependsOn: deps,
         setupsForEpisodes: setupsFor,
@@ -720,7 +796,11 @@ CRITICAL RULES:
       };
     });
 
-    // Build arcs from LLM output or source analysis
+    // Build arcs from LLM output or source analysis. Each arc receives a
+    // `beats` array computed from the structuralRoles that fall inside its
+    // episodeRange — this makes it easy for downstream agents (validators,
+    // UI, checkpoint review) to answer "which beats does this arc own?"
+    // without recomputing from the per-episode map.
     const arcs: SeasonArc[] = (planData.arcs || analysis.storyArcs.map(arc => ({
       id: arc.id,
       name: arc.name,
@@ -729,11 +809,23 @@ CRITICAL RULES:
       keyMoments: [],
       status: 'not_started' as const,
       completionPercentage: 0,
-    }))).map(arc => ({
-      ...arc,
-      status: 'not_started' as const,
-      completionPercentage: 0,
-    }));
+    }))).map(arc => {
+      const beats: StructuralRole[] = [];
+      if (arc.episodeRange) {
+        for (let epNum = arc.episodeRange.start; epNum <= arc.episodeRange.end; epNum++) {
+          const roles = structuralRoleByEpisode.get(epNum) || [];
+          for (const r of roles) {
+            if (r !== 'rising' && r !== 'falling' && !beats.includes(r)) beats.push(r);
+          }
+        }
+      }
+      return {
+        ...arc,
+        status: 'not_started' as const,
+        completionPercentage: 0,
+        beats: beats.length > 0 ? beats : undefined,
+      };
+    });
 
     // Build character introductions
     const characterIntroductions = (planData as any).characterIntroductions || 
@@ -752,7 +844,7 @@ CRITICAL RULES:
         introducedInEpisode: loc.firstAppearance,
       }));
 
-    return {
+    const plan: SeasonPlan = {
       id: planId,
       sourceTitle: analysis.sourceTitle,
       sourceAuthor: analysis.sourceAuthor,
@@ -767,6 +859,8 @@ CRITICAL RULES:
       tone: analysis.tone,
       themes: analysis.themes,
       arcs,
+      anchors: analysis.anchors,
+      sevenPoint: analysis.sevenPoint,
       endingMode: preferences?.endingMode || analysis.resolvedEndingMode || analysis.detectedEndingMode || 'single',
       resolvedEndings: analysis.resolvedEndings || [],
       episodes,
@@ -808,6 +902,20 @@ CRITICAL RULES:
       }),
       notes: [],
     };
+
+    // Run the 7-point coverage validator as a DIAGNOSTIC gate. Errors are
+    // surfaced as plan.warnings so the pipeline's Karpathy retry layer can
+    // re-prompt; warnings are accumulated silently. We deliberately do NOT
+    // throw here because the pipeline already has a plan-level fallback
+    // path that should remain callable even when the validator is unhappy.
+    const coverageResult = new SevenPointCoverageValidator().validate(
+      seasonPlanToCoverageInput(plan),
+    );
+    for (const issue of coverageResult.issues) {
+      plan.warnings.push(`[SevenPointCoverage:${issue.severity}] ${issue.message}`);
+    }
+
+    return plan;
   }
 
   private validateEndingPlan(input: {

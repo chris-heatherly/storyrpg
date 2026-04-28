@@ -304,6 +304,9 @@ function convertOutcome(
     outcomeImage: llmOutcome.outcomeImage,
     cinematicDescription: llmOutcome.cinematicDescription,
     visualContract: (llmOutcome as any).visualContract,
+    storyboardFrameId: (llmOutcome as any).storyboardFrameId,
+    nextStoryboardFrameId: (llmOutcome as any).nextStoryboardFrameId,
+    tacticalEffect: (llmOutcome as any).tacticalEffect,
     isTerminal: llmOutcome.isTerminal,
     encounterOutcome: normalizedOutcome,
     consequences: convertedConsequences,
@@ -340,7 +343,6 @@ function convertEmbeddedChoice(llmChoice: LLMEmbeddedEncounterChoice): EmbeddedE
     text: llmChoice.text,
     approach: llmChoice.approach,
     primarySkill: llmChoice.primarySkill,
-    skillAdvantage: llmChoice.skillAdvantage,
     outcomes: {
       success: convertOutcome(llmChoice.outcomes?.success, 'success', { goalTicks: 2, threatTicks: 0, narrativeText: 'Success!' }),
       complicated: convertOutcome(llmChoice.outcomes?.complicated, 'complicated', { goalTicks: 1, threatTicks: 1, narrativeText: 'Partial success...' }),
@@ -423,6 +425,8 @@ export function convertEncounterStructureToEncounter(
       escalationText: beat.escalationText,
       escalationImage: beat.escalationImage,
       cinematicSetup: beat.cinematicSetup,
+      storyboardFrameId: (beat as any).storyboardFrameId,
+      storyboardRole: (beat as any).storyboardRole,
     };
   });
 
@@ -525,10 +529,13 @@ export function convertEncounterStructureToEncounter(
     escalationTriggers,
     informationVisibility: structure.informationVisibility,
     pixarStakes: structure.pixarStakes,
+    pixarSurprise: structure.pixarSurprise,
     // Preserve design metadata
     tensionCurve: structure.tensionCurve,
     estimatedDuration: structure.estimatedDuration,
     replayability: structure.replayability,
     designNotes: structure.designNotes,
+    storyboard: (structure as any).storyboard,
+    payoffContext: (structure as any).payoffContext,
   };
 }

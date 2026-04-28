@@ -12,6 +12,11 @@ import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import { ChoiceType, Consequence } from '../../types';
+import type {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
 
 // Input types
 export interface BranchManagerInput {
@@ -35,6 +40,23 @@ export interface BranchManagerInput {
     genre: string;
     tone: string;
   };
+
+  /**
+   * Season narrative anchors. Branch reconvergence bottlenecks should
+   * funnel every path back toward the season Climax and honour the
+   * Stakes anchor.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /** Season 7-point beat map. */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Structural beat(s) this episode carries. Midpoint and Plot Turn 2
+   * episodes are the best homes for high-cost, high-divergence branches.
+   * Hook / Resolution episodes should keep branches tight.
+   */
+  episodeStructuralRole?: StructuralRole[];
 }
 
 // Output types
@@ -107,25 +129,10 @@ export class BranchManager extends BaseAgent {
 
 You are the narrative flow architect who ensures branching stories remain coherent and satisfying. You analyze scene graphs, track state implications, and validate that all paths lead to meaningful outcomes.
 
-## Branch-and-Bottleneck Principles
-
-### Bottleneck Scenes
-- Key story moments ALL players must experience
-- Use for crucial plot points, revelations, emotional peaks
-- Typically 2-3 per episode
-- Must be reachable from all branches
-
-### Branch Scenes
-- Points where player choice leads to different experiences
-- Should eventually reconverge at bottlenecks
-- Each branch should feel meaningfully different
-- State changes in branches must be reconcilable
-
-### Reconvergence
-- Where multiple branches meet back together
-- Must acknowledge different paths taken
-- State reconciliation is critical here
-- Use conditional text based on flags/scores
+(The BRANCH-AND-BOTTLENECK framework — bottleneck scenes, branch zones,
+reconvergence rules, distinct-experience rule — is already provided in the
+shared system prompt. Apply it here; do NOT repeat the framework definitions.
+Your job is to USE those principles to analyze a concrete scene graph.)
 
 ## State Tracking Responsibilities
 

@@ -4,6 +4,69 @@
  * These principles are embedded into every agent's system prompt.
  */
 
+import type {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
+import { SEVEN_POINT_BEATS } from '../../types/sourceAnalysis';
+
+/**
+ * Build a reusable prompt section that gives a narrative agent the
+ * season-level anchors, the 7-point beat map, and which beat(s) the
+ * current episode carries. Call from any agent's prompt builder; returns
+ * an empty string when no structural context is supplied so the agent's
+ * existing behavior is preserved for callers that predate Path A.
+ *
+ * Every downstream narrative writer (SceneWriter, ChoiceAuthor,
+ * EncounterArchitect, ThreadPlanner, TwistArchitect, CharacterArcTracker,
+ * BranchManager, CharacterDesigner) should include this section so the
+ * episode reads as a single story at the season level.
+ */
+export function buildStructuralContextSection(params: {
+  anchors?: StoryAnchors;
+  sevenPoint?: SevenPointStructure;
+  episodeStructuralRole?: StructuralRole[];
+}): string {
+  const { anchors, sevenPoint, episodeStructuralRole } = params;
+  if (!anchors && !sevenPoint && (!episodeStructuralRole || episodeStructuralRole.length === 0)) {
+    return '';
+  }
+
+  const anchorLines = anchors
+    ? [
+        `- Stakes: ${anchors.stakes}`,
+        `- Goal: ${anchors.goal}`,
+        `- Inciting Incident: ${anchors.incitingIncident}`,
+        `- Climax: ${anchors.climax}`,
+      ].join('\n')
+    : '';
+
+  const beatLines = sevenPoint
+    ? SEVEN_POINT_BEATS.map((beat) => `- ${beat}: ${sevenPoint[beat]}`).join('\n')
+    : '';
+
+  const roleLine = episodeStructuralRole && episodeStructuralRole.length > 0
+    ? episodeStructuralRole.join(', ')
+    : '(rising / falling buffer — no named beat lands here)';
+
+  return `
+## Season Anchors (shared reference — every beat, scene, and choice must serve these)
+${anchorLines || '(none supplied)'}
+
+## Season 7-Point Beat Map
+${beatLines || '(none supplied)'}
+
+## This Episode's Structural Role
+${roleLine}
+
+Keep every line of prose, every choice, and every consequence grounded in
+these anchors. When this episode carries the Climax beat, the narrative
+must land the same event described in the Climax anchor above. When it
+carries a Pinch, the setback must pressure the Stakes anchor directly.
+`;
+}
+
 export const FICTION_FIRST_PHILOSOPHY = `
 ## Fiction-First Philosophy
 
@@ -322,6 +385,7 @@ ${STAKES_TRIANGLE}
 ${CHOICE_GEOMETRY}
 ${CONSEQUENCE_BUDGETING}
 ${THREE_LAYER_MEMORY}
+${BRANCH_AND_BOTTLENECK}
 ${FIVE_FACTOR_TEST}
 ${NPC_DEPTH_TIERING}
 ${CHOICE_DENSITY_REQUIREMENTS}

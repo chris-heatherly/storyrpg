@@ -116,4 +116,14 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
     expect(result).toContain('DEVELOPMENT SCENES');
     expect(result).toContain('FAILURE-RECOVERY BRANCH');
   });
+
+  it('includes adapted story-craft guidance without requiring combat-only pressure', () => {
+    const input = makeInput();
+    const result = (architect as any).buildPrompt(input);
+
+    expect(result).toContain('Pressure, not mandatory combat');
+    expect(result).toContain('romantic vulnerability');
+    expect(result).toContain('Plans go wrong');
+    expect(result).toContain('Do not require every conversation to become an argument');
+  });
 });

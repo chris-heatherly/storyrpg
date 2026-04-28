@@ -13,6 +13,7 @@ import {
 import { evaluateCondition } from './conditionEvaluator';
 import { resolveStatCheck, ResolutionTracker, normalizeStatCheck, applyUseBasedGrowth } from './resolutionEngine';
 import { processText, processTemplate } from './templateProcessor';
+import { mediaRefAsString } from '../assets/assetRef';
 
 // Session-scoped fairness tracker for resolution streaks
 const _resolutionTracker = new ResolutionTracker();
@@ -213,16 +214,16 @@ export function processBeat(
   debugLog(`[StoryEngine]   - hasChoices: ${hasChoices}, autoAdvance: ${autoAdvance}`);
 
   // Get image - EncounterBeat uses situationImage, Beat uses image
-  const image = isEncounter ? beat.situationImage : (beat as Beat).image;
-  const video = !isEncounter ? (beat as Beat).video : undefined;
+  const image = mediaRefAsString(isEncounter ? beat.situationImage : (beat as Beat).image);
+  const video = mediaRefAsString(!isEncounter ? (beat as Beat).video : undefined);
 
   return {
     id: beat.id,
     text,
     speaker,
     speakerMood: !isEncounter ? (beat as Beat).speakerMood : undefined,
-    image,
-    video,
+    image: image || undefined,
+    video: video || undefined,
     choices,
     hasChoices,
     autoAdvance,
@@ -335,7 +336,7 @@ export function executeChoice(
   }
 
   let resolution: ResolutionResult | undefined;
-  let consequences = [...(choice.consequences ?? [])];
+  const consequences = [...(choice.consequences ?? [])];
 
   // Perform stat check if required
   if (choice.statCheck) {

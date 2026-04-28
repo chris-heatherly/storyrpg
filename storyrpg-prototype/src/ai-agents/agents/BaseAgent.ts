@@ -8,10 +8,14 @@ import { CORE_STORYTELLING_PROMPT } from '../prompts/storytellingPrinciples';
 import { isWebRuntime } from '../../utils/runtimeEnv';
 import { AsyncSemaphore } from '../utils/concurrency';
 import { getMemoryStore, type MemoryCommand } from '../utils/memoryStore';
+import { PROXY_CONFIG } from '../../config/endpoints';
+import { createLogger } from '../../utils/logger';
+
+const log = createLogger('BaseAgent');
 
 // Use proxy server for web to avoid CORS issues
 const ANTHROPIC_API_URL = isWebRuntime()
-  ? 'http://localhost:3001/v1/messages'  // Local proxy
+  ? `${PROXY_CONFIG.getProxyUrl()}/v1/messages`  // Local proxy
   : 'https://api.anthropic.com/v1/messages';  // Direct API for native
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -68,6 +72,15 @@ export interface LlmCallObservation {
   queueWaitMs: number;
   attempt: number;
   error?: string;
+  /**
+   * Token usage reported by the provider, when available. Populated by the
+   * anthropic, gemini, and OpenAI transports. Undefined
+   * when the provider did not return usage data (e.g. on error).
+   */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+  };
 }
 
 export abstract class BaseAgent {
@@ -211,22 +224,27 @@ Do not use markdown code blocks around the JSON.
     for (let attempt = 0; attempt <= retries; attempt++) {
       const { release, queueWaitMs } = await this.acquireGuardrailPermits();
       const callStart = Date.now();
+      // I4: providers write token usage into this capture object when available.
+      // `callLLM` forwards it to the observer so the pipeline can aggregate a
+      // per-agent / per-phase LLM ledger without each caller having to plumb
+      // usage by hand.
+      const usageCapture: { inputTokens?: number; outputTokens?: number } = {};
       try {
         let result: string;
         const signal = options?.signal;
         if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
         if (this.config.provider === 'anthropic' && options?.useMemory) {
-          result = await this.callAnthropicWithMemory(fullMessages);
+          result = await this.callAnthropicWithMemory(fullMessages, usageCapture);
         } else if (this.config.provider === 'anthropic') {
-          result = await this.callAnthropic(fullMessages, signal);
+          result = await this.callAnthropic(fullMessages, signal, usageCapture);
         } else if (this.config.provider === 'gemini') {
-          result = await this.callGemini(fullMessages, signal);
+          result = await this.callGemini(fullMessages, signal, usageCapture);
         } else {
-          result = await this.callOpenAI(fullMessages, signal);
+          result = await this.callOpenAI(fullMessages, signal, usageCapture);
         }
         // Success — reset circuit breaker
         if (BaseAgent._cbConsecutiveFailures > 0) {
-          console.log(`[${this.name}] LLM call succeeded — circuit breaker reset (was at ${BaseAgent._cbConsecutiveFailures} failures)`);
+          log.debug(`[${this.name}] LLM call succeeded — circuit breaker reset (was at ${BaseAgent._cbConsecutiveFailures} failures)`);
         }
         BaseAgent._cbConsecutiveFailures = 0;
         BaseAgent._observer?.({
@@ -236,6 +254,10 @@ Do not use markdown code blocks around the JSON.
           durationMs: Date.now() - callStart,
           queueWaitMs,
           attempt,
+          usage:
+            typeof usageCapture.inputTokens === 'number' && typeof usageCapture.outputTokens === 'number'
+              ? { inputTokens: usageCapture.inputTokens, outputTokens: usageCapture.outputTokens }
+              : undefined,
         });
         return result;
       } catch (error) {
@@ -318,13 +340,17 @@ Do not use markdown code blocks around the JSON.
     throw lastError || new Error('LLM call failed after retries');
   }
 
-  private async callAnthropic(messages: AgentMessage[], signal?: AbortSignal): Promise<string> {
+  private async callAnthropic(
+    messages: AgentMessage[],
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
     const systemMessage = messages.find((m) => m.role === 'system');
     const otherMessages = messages.filter((m) => m.role !== 'system');
 
     const totalInputChars = (typeof systemMessage?.content === 'string' ? systemMessage.content.length : 0)
       + otherMessages.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0);
-    console.log(`[${this.name}] Calling Anthropic API via ${isWebRuntime() ? 'proxy' : 'direct'}... (input ~${Math.round(totalInputChars / 4)} tokens, maxTokens: ${this.config.maxTokens})`);
+    log.debug(`[${this.name}] Calling Anthropic API via ${isWebRuntime() ? 'proxy' : 'direct'}... (input ~${Math.round(totalInputChars / 4)} tokens, maxTokens: ${this.config.maxTokens})`);
 
     const body: any = {
       model: this.config.model,
@@ -408,7 +434,11 @@ Do not use markdown code blocks around the JSON.
       const stopReason = data.stop_reason;
       const outputTokens = data.usage?.output_tokens ?? '?';
       const inputTokens = data.usage?.input_tokens ?? '?';
-      console.log(`[${this.name}] Anthropic response: ${inputTokens} input tokens, ${outputTokens} output tokens, stop_reason: ${stopReason}`);
+      log.debug(`[${this.name}] Anthropic response: ${inputTokens} input tokens, ${outputTokens} output tokens, stop_reason: ${stopReason}`);
+      if (usageOut) {
+        if (typeof data.usage?.input_tokens === 'number') usageOut.inputTokens = data.usage.input_tokens;
+        if (typeof data.usage?.output_tokens === 'number') usageOut.outputTokens = data.usage.output_tokens;
+      }
       if (stopReason === 'max_tokens') {
         console.warn(`[${this.name}] ⚠️ RESPONSE TRUNCATED — stop_reason is max_tokens (limit: ${this.config.maxTokens}). Response will be incomplete JSON.`);
       }
@@ -419,7 +449,10 @@ Do not use markdown code blocks around the JSON.
     }
   }
 
-  private async callAnthropicWithMemory(messages: AgentMessage[]): Promise<string> {
+  private async callAnthropicWithMemory(
+    messages: AgentMessage[],
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
     const MAX_MEMORY_ROUNDS = 10;
     const systemMessage = messages.find((m) => m.role === 'system');
     const initialMessages = messages.filter((m) => m.role !== 'system');
@@ -432,7 +465,7 @@ Do not use markdown code blocks around the JSON.
 
     const totalInputChars = systemText.length
       + initialMessages.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0);
-    console.log(`[${this.name}] Calling Anthropic API with memory via ${isWebRuntime() ? 'proxy' : 'direct'}... (input ~${Math.round(totalInputChars / 4)} tokens)`);
+    log.debug(`[${this.name}] Calling Anthropic API with memory via ${isWebRuntime() ? 'proxy' : 'direct'}... (input ~${Math.round(totalInputChars / 4)} tokens)`);
 
     const conversationMessages: any[] = initialMessages.map((m) => {
       if (typeof m.content === 'string') {
@@ -500,7 +533,15 @@ Do not use markdown code blocks around the JSON.
       const stopReason = data.stop_reason;
       const outputTokens = data.usage?.output_tokens ?? '?';
       const inputTokens = data.usage?.input_tokens ?? '?';
-      console.log(`[${this.name}] Memory round ${round + 1}: ${inputTokens} in, ${outputTokens} out, stop: ${stopReason}`);
+      log.debug(`[${this.name}] Memory round ${round + 1}: ${inputTokens} in, ${outputTokens} out, stop: ${stopReason}`);
+      if (usageOut) {
+        if (typeof data.usage?.input_tokens === 'number') {
+          usageOut.inputTokens = (usageOut.inputTokens ?? 0) + data.usage.input_tokens;
+        }
+        if (typeof data.usage?.output_tokens === 'number') {
+          usageOut.outputTokens = (usageOut.outputTokens ?? 0) + data.usage.output_tokens;
+        }
+      }
 
       if (stopReason === 'end_turn' || stopReason === 'max_tokens') {
         const textBlock = data.content?.find((b: any) => b.type === 'text');
@@ -510,7 +551,7 @@ Do not use markdown code blocks around the JSON.
         for (const tb of toolBlocks) {
           try {
             await memoryStore.execute(tb.input as MemoryCommand);
-            console.log(`[${this.name}] Memory write (final): ${tb.input.command} ${tb.input.path || tb.input.old_path || ''}`);
+            log.debug(`[${this.name}] Memory write (final): ${tb.input.command} ${tb.input.path || tb.input.old_path || ''}`);
           } catch (err) {
             console.warn(`[${this.name}] Memory write failed (final):`, err);
           }
@@ -533,7 +574,7 @@ Do not use markdown code blocks around the JSON.
 
         const toolResults: any[] = [];
         for (const tb of toolBlocks) {
-          console.log(`[${this.name}] Memory: ${tb.input.command} ${tb.input.path || tb.input.old_path || ''}`);
+          log.debug(`[${this.name}] Memory: ${tb.input.command} ${tb.input.path || tb.input.old_path || ''}`);
           let result: string;
           try {
             result = await memoryStore.execute(tb.input as MemoryCommand);
@@ -559,7 +600,64 @@ Do not use markdown code blocks around the JSON.
     return '';
   }
 
-  private async callOpenAI(messages: AgentMessage[], signal?: AbortSignal): Promise<string> {
+  private async callOpenAI(
+    messages: AgentMessage[],
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
+    const model = this.config.model || 'gpt-5';
+    const isReasoningModel = /^(gpt-5|o1|o3|o4)/i.test(model);
+    const reasoningEffort = this.config.openaiReasoningEffort || 'medium';
+    const body: Record<string, unknown> = {
+      model,
+      messages: messages.map((m) => {
+        if (typeof m.content === 'string') {
+          return { role: m.role, content: m.content };
+        }
+
+        return {
+          role: m.role,
+          content: m.content.map(part => {
+            if (part.type === 'text') return part;
+            if (part.type === 'image_url') return part;
+            if (part.type === 'image') {
+              return {
+                type: 'image_url',
+                image_url: {
+                  url: `data:${part.source.media_type};base64,${part.source.data}`
+                }
+              };
+            }
+            return null;
+          }).filter(Boolean)
+        };
+      }),
+    };
+    if (this.config.openaiForceJsonResponse !== false) {
+      body.response_format = { type: 'json_object' };
+    }
+    if (isReasoningModel) {
+      // Reasoning-class models (gpt-5, o1/o3/o4) require `max_completion_tokens`
+      // instead of `max_tokens`, and reject the `temperature` parameter entirely
+      // (temperature is fixed at 1 for these models). The budget is shared between
+      // hidden reasoning tokens and visible completion tokens, so we enforce a
+      // generous floor — otherwise reasoning alone burns the whole budget and the
+      // visible content comes back empty with finish_reason="length".
+      const reasoningFloorByEffort: Record<string, number> = {
+        minimal: 4096,
+        low: 8192,
+        medium: 16384,
+        high: 32768,
+      };
+      const floor = reasoningFloorByEffort[reasoningEffort] ?? 16384;
+      const budget = Math.max(this.config.maxTokens ?? 0, floor);
+      body.max_completion_tokens = budget;
+      body.reasoning_effort = reasoningEffort;
+    } else {
+      body.max_tokens = this.config.maxTokens;
+      body.temperature = this.config.temperature;
+    }
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -567,33 +665,7 @@ Do not use markdown code blocks around the JSON.
         Authorization: `Bearer ${this.config.apiKey}`,
       },
       ...(signal ? { signal } : {}),
-      body: JSON.stringify({
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-        messages: messages.map((m) => {
-          if (typeof m.content === 'string') {
-            return { role: m.role, content: m.content };
-          }
-          
-          return {
-            role: m.role,
-            content: m.content.map(part => {
-              if (part.type === 'text') return part;
-              if (part.type === 'image_url') return part;
-              if (part.type === 'image') {
-                return {
-                  type: 'image_url',
-                  image_url: {
-                    url: `data:${part.source.media_type};base64,${part.source.data}`
-                  }
-                };
-              }
-              return null;
-            }).filter(Boolean)
-          };
-        }),
-      }),
+      body: JSON.stringify(body),
     });
 
     const text = await response.text();
@@ -604,14 +676,45 @@ Do not use markdown code blocks around the JSON.
 
     try {
       const data = JSON.parse(text);
-      return data.choices[0].message.content;
+      if (usageOut) {
+        if (typeof data.usage?.prompt_tokens === 'number') usageOut.inputTokens = data.usage.prompt_tokens;
+        if (typeof data.usage?.completion_tokens === 'number') usageOut.outputTokens = data.usage.completion_tokens;
+      }
+      const choice = data.choices?.[0];
+      const content: string = choice?.message?.content ?? '';
+      const finishReason: string | undefined = choice?.finish_reason;
+
+      if (!content || content.trim().length === 0) {
+        const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens;
+        const completionTokens = data.usage?.completion_tokens;
+        if (isReasoningModel && finishReason === 'length') {
+          throw new Error(
+            `OpenAI returned empty content (finish_reason=length). The reasoning-class model "${model}" consumed the entire ` +
+              `max_completion_tokens budget on internal reasoning ` +
+              `(reasoning_tokens=${reasoningTokens ?? '?'}, completion_tokens=${completionTokens ?? '?'}, ` +
+              `budget=${body.max_completion_tokens}). ` +
+              `Lower REASONING EFFORT in the OPENAI ADVANCED panel, raise maxTokens, or switch to a non-reasoning model like gpt-4o / gpt-4.1.`,
+          );
+        }
+        throw new Error(
+          `OpenAI returned empty content (finish_reason=${finishReason ?? 'unknown'}). Model=${model}. Response: ${text.substring(0, 500)}`,
+        );
+      }
+
+      return content;
     } catch (parseError) {
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
+      // If we already threw a descriptive error above, rethrow it verbatim.
+      if (msg.startsWith('OpenAI returned empty content')) throw parseError;
       throw new Error(`Failed to parse OpenAI response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
     }
   }
 
-  private async callGemini(messages: AgentMessage[], signal?: AbortSignal): Promise<string> {
+  private async callGemini(
+    messages: AgentMessage[],
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
     if (!this.config.apiKey) {
       throw new Error('Gemini API key is missing');
     }
@@ -688,6 +791,12 @@ Do not use markdown code blocks around the JSON.
       const output = parts
         .map((p: any) => (typeof p?.text === 'string' ? p.text : ''))
         .join('');
+      if (usageOut) {
+        const promptTokens = data?.usageMetadata?.promptTokenCount;
+        const candidatesTokens = data?.usageMetadata?.candidatesTokenCount;
+        if (typeof promptTokens === 'number') usageOut.inputTokens = promptTokens;
+        if (typeof candidatesTokens === 'number') usageOut.outputTokens = candidatesTokens;
+      }
       if (!output) {
         throw new Error('Gemini returned empty content');
       }
@@ -703,19 +812,19 @@ Do not use markdown code blocks around the JSON.
    */
   protected parseJSON<T>(response: string): T {
     // Strip markdown code blocks with regex for more robust handling
-    let cleaned = this.stripMarkdownCodeBlocks(response);
+    const cleaned = this.stripMarkdownCodeBlocks(response);
 
     // First attempt: try parsing as-is
     try {
       return JSON.parse(cleaned) as T;
     } catch (firstError) {
-      console.log(`[${this.name}] Initial JSON parse failed, attempting repair...`);
+      log.debug(`[${this.name}] Initial JSON parse failed, attempting repair...`);
 
       // Second attempt: try repairing common JSON errors
       try {
         const repaired = this.repairJSON(cleaned);
         const result = JSON.parse(repaired) as T;
-        console.log(`[${this.name}] JSON repair successful`);
+        log.debug(`[${this.name}] JSON repair successful`);
         return result;
       } catch (repairError) {
         // Both attempts failed - throw original error with context
@@ -778,7 +887,7 @@ Do not use markdown code blocks around the JSON.
       // In this case, do NOT strip to the first { (that would grab a nested brace).
       // Instead, prepend { and let repairJSON handle the rest.
       if (/^"[^"]+"\s*[,:]/.test(trimmedCleaned)) {
-        console.log(`[BaseAgent] Response looks like JSON missing opening brace — prepending {`);
+        log.debug(`[BaseAgent] Response looks like JSON missing opening brace — prepending {`);
         cleaned = '{' + trimmedCleaned;
       } else {
         // Pattern 4b: Prose before JSON — find the first { or [ that starts a JSON structure
@@ -790,7 +899,7 @@ Do not use markdown code blocks around the JSON.
         if (jsonStart > 0) {
           const preamble = cleaned.substring(0, jsonStart).trim();
           if (preamble.length > 0) {
-            console.log(`[BaseAgent] Stripped ${preamble.length} chars of preamble text before JSON`);
+            log.debug(`[BaseAgent] Stripped ${preamble.length} chars of preamble text before JSON`);
             cleaned = cleaned.substring(jsonStart);
           }
         }
@@ -817,26 +926,26 @@ Do not use markdown code blocks around the JSON.
       // Case A: Starts with a quoted string followed by : (missing opening brace)
       // e.g., "episodeId":"ep-1",... -> {"episodeId":"ep-1",...
       if (/^"[^"]+"\s*:/.test(repaired)) {
-        console.log(`[BaseAgent] Fixing missing opening brace (case A)`);
+        log.debug(`[BaseAgent] Fixing missing opening brace (case A)`);
         repaired = '{' + repaired;
       }
       // Case B: Starts with a quoted value followed by comma and property name
       // e.g., "episode-1","title":"..." -> {"episodeId":"episode-1","title":"..."
       // This happens when LLM outputs a value instead of key:value
       else if (/^"[^"]+"\s*,\s*"[^"]+"\s*:/.test(repaired)) {
-        console.log(`[BaseAgent] Fixing orphan value at start (case B) - prepending episodeId key`);
+        log.debug(`[BaseAgent] Fixing orphan value at start (case B) - prepending episodeId key`);
         repaired = '{"episodeId":' + repaired;
       }
       // Case C: Starts with a bare number followed by comma and property name
       // e.g., 1,"title":"The Client"... -> {"episodeNumber":1,"title":"The Client"...
       else if (/^\d+\s*,\s*"[^"]+"\s*:/.test(repaired)) {
-        console.log(`[BaseAgent] Fixing missing opening brace and key (case C)`);
+        log.debug(`[BaseAgent] Fixing missing opening brace and key (case C)`);
         repaired = '{"episodeNumber":' + repaired;
       }
       // Case D: Starts with a bare number followed by colon (numeric key without brace)
       // e.g., 1: "value" -> {1: "value"} - rare but possible
       else if (/^\d+\s*:/.test(repaired)) {
-        console.log(`[BaseAgent] Fixing missing opening brace (case D) - numeric key`);
+        log.debug(`[BaseAgent] Fixing missing opening brace (case D) - numeric key`);
         repaired = '{' + repaired;
       }
     }
@@ -849,7 +958,7 @@ Do not use markdown code blocks around the JSON.
       // Check if the first "value" doesn't have a colon after it (it's an orphan value)
       const afterFirstQuote = repaired.match(/^\{\s*"[^"]+"\s*([,}])/);
       if (afterFirstQuote && afterFirstQuote[1] === ',') {
-        console.log(`[BaseAgent] Fixing orphan value after opening brace - inserting "episodeId" key`);
+        log.debug(`[BaseAgent] Fixing orphan value after opening brace - inserting "episodeId" key`);
         repaired = repaired.replace(/^\{\s*"/, '{"episodeId":"');
       }
     }
@@ -882,7 +991,7 @@ Do not use markdown code blocks around the JSON.
       return json;
     }
 
-    console.log(`[BaseAgent] Detected truncated response, attempting recovery...`);
+    log.debug(`[BaseAgent] Detected truncated response, attempting recovery...`);
 
     // Find the last complete array element (for shots arrays)
     // Look for the pattern: }, { or }, ] which indicates a complete object in an array
@@ -893,7 +1002,7 @@ Do not use markdown code blocks around the JSON.
       if (lastCompletePos > 0) {
         // Truncate after the last complete object
         const truncated = json.slice(0, lastCompletePos + 1);
-        console.log(`[BaseAgent] Truncated to last complete object at position ${lastCompletePos}`);
+        log.debug(`[BaseAgent] Truncated to last complete object at position ${lastCompletePos}`);
         return truncated;
       }
     }
@@ -926,7 +1035,7 @@ Do not use markdown code blocks around the JSON.
           }
           if (truncateAt > 0) {
             const truncated = json.slice(0, truncateAt).replace(/,\s*$/, '');
-            console.log(`[BaseAgent] Truncated before incomplete property at position ${truncateAt}`);
+            log.debug(`[BaseAgent] Truncated before incomplete property at position ${truncateAt}`);
             return truncated;
           }
         }

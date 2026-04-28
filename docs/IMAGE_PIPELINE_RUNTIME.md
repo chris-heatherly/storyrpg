@@ -12,13 +12,215 @@ This document captures the live runtime behavior of the StoryRPG image pipeline.
 - Use model-specific controls when they improve results.
 - Enforce encounter image completeness as a pipeline invariant.
 
+## Recent Improvements (April 2026)
+
+The image pipeline has been extended with several foundational and
+pillar-specific improvements. All of them are gated behind explicit
+configuration so existing stories render identically unless the operator
+opts in:
+
+- **B1 / two-axis QA toggles** — `EXPO_PUBLIC_IMAGE_PROMPT_MODE`
+  (`deterministic` | `llm` | `compare`) and `EXPO_PUBLIC_IMAGE_QA_MODE`
+  (`off` | `fast` | `full`) let prompt-building and QA rigor be tuned
+  independently. See `src/ai-agents/config/imageQaConfig.ts`.
+- **C1 / ArtStyleProfile** — structured replacement for the flat
+  `canonicalArtStyle` string. Captures rendering technique, color
+  philosophy, lighting, acceptable deviations, genre negatives, and
+  positive vocabulary so prompt building and validators can modulate to
+  the active style. Resolved via `resolveArtStyleProfile` and presets in
+  `src/ai-agents/config/artStylePresets.ts`.
+- **E4 / ProviderCapabilities table** — central table describing whether
+  each provider accepts inline vs URL references, supports batches,
+  speaks Midjourney ref tokens, etc. Powers A1/A7/A8/A9/D7.
+- **A1 / per-provider throttle** — replaces a global rate-limit delay
+  with a per-provider concurrency + inter-request spacing controller
+  (`src/ai-agents/services/providerThrottle.ts`).
+- **A9 / skip refs provider can't consume** — callers no longer pay the
+  payload cost for refs the active provider will drop.
+- **A11 / inflight dedup** — identical prompts submitted while an earlier
+  request is still in flight now share the single result.
+- **A6 / tamed retry ladder** — retry cap reduced to 2 and back-off
+  capped at 20s for text-class errors.
+- **A2 / post-success `rateLimitDelayMs` dropped** — the per-provider
+  throttle handles spacing without a blanket post-success sleep.
+- **C2 / style-aware negatives** — deterministic prompts now drop
+  default negatives that the active style explicitly permits
+  (e.g. "centered composition" for a minimalist preset) and merge the
+  profile's `genreNegatives` into the final string.
+- **C4 / bidirectional style-aware prompt strength** —
+  `ensureVisualPromptStrength` in `ImageGenerationService` now skips
+  guardrails allowed by the profile, strips inappropriate vocabulary
+  from the prompt, and injects the profile's positive vocabulary.
+- **C5 / style-aware validators** — `checkStructuralDiversity` and
+  `buildTier2VisionPrompt` adapt their rubric when a profile whitelists
+  static pose / centered composition so intentional stylistic stasis is
+  not flagged as a failure.
+- **C6 / style anchor strength knob** — optional per-profile
+  `anchorWeight` controls how aggressively the text prompt defers to the
+  style-reference image.
+- **C7 / preset library** — 6+ curated `ArtStyleProfile` presets
+  selectable via `EXPO_PUBLIC_ART_STYLE_PRESET`.
+- **B2 / scene-level sequence grammar pass** — after the beat-local
+  planner, a scene-wide pass in `shotSequencePlanner` enforces varied
+  opening shots in longer scenes, climax-adjacent shot demotion, and
+  contrast in 2-beat scenes.
+- **B3 / compressed universal prompt skeleton** — shrinks the shared
+  negative-prompt floor and single-lines the canonical section headers
+  in `promptComposer`. Saves ~60% of the boilerplate tokens per prompt.
+- **B5 / choice-payoff visual language** — choice kind (combat /
+  diplomacy / stealth / etc.) now emits a concrete visual-language
+  clause in the prompt so the rendered beat matches the narrative
+  intent.
+- **B6 / color-script follow-through per beat** — per-beat color-script
+  hints flow into the prompt so palette shifts are honored across the
+  sequence rather than only at scene boundaries.
+- **B7 / coverage profile knob** — `CoverageProfile` biases the ratio
+  of dominant / supporting / rest shots per scene; exposed via config.
+- **B8 / CinematicPromptCore** — shared module
+  (`src/ai-agents/images/cinematicPromptCore.ts`) hosts the universal
+  negative floor, the character/establishing overlays, and
+  `composeNegativePrompt` so both the deterministic and LLM paths pull
+  from one source of truth.
+- **D1 / supporting-character master refs** — characters tagged
+  `supporting` are now promoted to master reference sheets (not just
+  major/core), preventing identity drift on recurring side cast.
+- **D2 / reserved ref-pack slots** — location and style-anchor slots
+  are reserved in the reference pack so high-priority anchors can't be
+  crowded out by low-priority character refs.
+- **D3 / per-character ref pack weight** — character refs now carry a
+  weight so the most important face wins when the pack is over budget.
+- **D4 / wardrobe & state tracking** — `CharacterVisualState` tracks
+  wardrobe, injuries, and held props across a scene and feeds them into
+  the prompt's identity block.
+- **D5 / anchor regen on identity change** — reference sheets store an
+  `identityFingerprint` (FNV-1a hash of the character's identity
+  fields). `invalidateStaleReferenceSheets` prunes mismatched sheets at
+  the top of the master-images phase.
+- **D6 / stable SD seeds per character** — `SeedRegistry` produces
+  deterministic seeds per character/scene for Stable Diffusion so a
+  retry produces the same face.
+- **D7 / Midjourney `--cref` / `--sref`** — when reference images carry
+  a pre-uploaded URL (`ReferenceImage.url`) and
+  `midjourneySettings.enableCrefSref` is on, the Midjourney prompt
+  builder emits native `--cref <url>`, `--sref <url>`, `--cw`, `--sw`
+  flags. Falls back cleanly to the existing `--oref`/identity-hint path
+  when no URL is available.
+- **D8 / identity-drift audit** — `auditIdentityDrift` on
+  `ImageAgentTeam` is a non-destructive companion to the D5 invalidator.
+  Runs under QA_MODE=fast/full and emits a structured warning listing
+  characters whose cached sheet fingerprint no longer matches the
+  current profile, so the operator can decide whether to regenerate
+  downstream scenes.
+- **D9 / group-scene disambiguation** — multi-character beats emit an
+  explicit per-character block so the model doesn't conflate
+  similarly-built characters.
+- **D10 / scoped previous-panel continuity** — the
+  previous-panel-continuity reference is now only injected for direct
+  continuations, preventing cross-branch bleed.
+- **E3 / structured feedback in regen prompts** —
+  `regenerate-image.ts` consumes both free-form notes and the
+  `imageFeedbackStore`'s structured `reasons` tags to drive directive
+  and negative-prompt additions.
+- **A10 / prewarmed color script** — the episode color script now starts
+  LLM generation in parallel with master image generation via
+  `_preWarmedColorScriptPromise` in `FullStoryPipeline`, hiding color-
+  script latency behind the image-phase wall clock. Fully transparent to
+  callers; failures fall back to an inline call.
+- **A7 / reference-URL uploader** — `ImageGenerationService.ensureReferenceUrls`
+  opportunistically uploads inline-only refs via the Atlas uploadMedia
+  endpoint to populate `ReferenceImage.url`. Called from the Midjourney
+  path when D7 `enableCrefSref` is on. Requires an Atlas API key; no-ops
+  cleanly otherwise.
+- **A8 / Atlas Seedream sibling-batch helper** — new
+  `generateSiblingImagesBatched()` + `getMaxBatchSize()` on
+  `ImageGenerationService` for callers with N independent sibling
+  prompts (encounter outcome tiers, storylet variants). Transparently
+  folds into a single Seedream batch call when possible; falls back to
+  sequential generation otherwise.
+- **B4 / typed beat visual contract** — `visualMoment`, `primaryAction`,
+  `emotionalRead`, `relationshipDynamic`, `mustShowDetail`, and
+  `intensityTier` are now typed on `Beat` in `src/types/index.ts`,
+  removing `(b as any)` casts across the pipeline and making SceneWriter
+  drop-outs visible to the type checker.
+- **C3 / optional rich style bible samples** — set
+  `EXPO_PUBLIC_STYLE_BIBLE_RICH=true` to add a third sample (environment
+  vignette) alongside the existing color-strip + character anchor. Costs
+  one extra image per episode; default off.
+- **E2 / pure helpers extracted from `imageGenerationService.ts`** —
+  `normalizeManagedOutputPath` and `detectImageMimeType` now live in
+  `src/ai-agents/services/imageGenerationHelpers.ts`. Migration
+  scaffolding for further extractions; remaining candidates are listed
+  in that file's header comment.
+
+- **A3-narrow / parallel scene-opening beats** — set
+  `EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS=true` to fan out the first
+  beat of every scene in parallel before the main scene loop runs. This
+  overlaps opening-beat latency across scenes (bounded by the
+  per-provider throttle) and then the main loop picks up each
+  prefetched opener and resumes with the subsequent beats sequentially.
+  Preserves D10's per-scene continuity invariant because mid-scene
+  beats are still rendered in order, and scene-opening beats have no
+  previous-beat continuity requirement (D10 clears the reference at
+  every scene boundary). Skipped automatically when `panelMode !==
+  'single'` (panel beats render multiple sub-images and aren't covered
+  by the prefetch) and per-scene when the opener is already resumed
+  from disk or the asset registry. Implementation lives in
+  `FullStoryPipeline.prefetchSceneOpeningBeats`. Default off.
+
+### Deferred / Future work
+
+- **A3 / parallel beats inside a scene (full)** — fanning out every
+  beat within a scene remains deferred. Mid-scene beats consume the
+  previous beat's image as a continuity reference (via the chat-mode
+  `previous-panel-continuity` role and, for scene-to-scene, the
+  singleton `_geminiPreviousScene`), so they must stay ordered. A
+  future pass could treat sibling beats that don't depend on each
+  other (e.g. parallel narrative threads) as eligible, but needs a
+  more precise dependency analysis than today's strict "beat N depends
+  on beat N-1" model.
+- **A4 / overlap scenes N and N+1** — overlapping a scene's tail with
+  the next scene's head is still deferred. It would require
+  decoupling the per-scene continuity state (`_geminiPreviousScene`,
+  chat sessions) from the `ImageGenerationService` singleton so
+  scenes can render concurrently without racing on that state.
+  A3-narrow captures most of the practical speedup without that
+  refactor because scene openers are the most parallelism-friendly
+  piece of the work.
+
+All improvements preserve today's default behavior — to opt in, set the
+relevant env var / config flag described in each bullet.
+
 ## Current Runtime Flow
 
+0. **Style Setup (pre-pipeline, UI-driven).** Before the generator is
+   kicked off, the `analysis_complete` screen renders the inline
+   **Style Setup section**. It lets the operator:
+   - Expand the raw art-style string into a full `ArtStyleProfile` via
+     `StyleArchitect` (LLM). The heuristic `buildVerbatimProfile`
+     remains the fallback when the LLM is unavailable so unknown
+     styles never inherit cinematic vocabulary.
+   - Edit any DNA field (rendering technique, color philosophy,
+     lighting, line weight, composition, mood, positive/inappropriate
+     vocabulary).
+   - Generate, preview, and approve the three style-bible anchors
+     (character portrait, arc color strip, environment vignette) using
+     the same builders the pipeline uses (`src/ai-agents/images/anchorPrompts.ts`).
+   - Persist approved anchors to
+     `generated-stories/<storyId>/style-bible/<role>.<ext>` via the
+     `/style-anchor/save` proxy route so the worker can read them off
+     disk.
+   - Opt out via the **Use defaults (skip preview)** toggle, in which
+     case the pipeline builds the style bible from scratch the old way.
+   The handoff flows through `PipelineConfigExtras` →
+   `imageGen.artStyleProfile` and `imageGen.preapprovedStyleAnchors` so
+   the worker skips in-pipeline anchor generation for slots the UI
+   already locked in.
 1. `FullStoryPipeline` generates character references and body-language assets during the master-images phase.
 2. `ColorScriptAgent` creates the episode color arc.
 3. The pipeline generates an episode style bible before scene renders begin:
-   - an abstract color-script strip
-   - a controlled character-in-style anchor image
+   - an abstract color-script strip (skipped if pre-approved via the UI)
+   - a controlled character-in-style anchor image (skipped if pre-approved via the UI)
+   - an optional environment vignette anchor (skipped if pre-approved via the UI)
 4. The best style-bible image becomes the primary style anchor for downstream image generation.
 5. `StoryboardAgent` plans shot rhythm, transitions, color/mood, motifs, and beat locks.
 6. `VisualIllustratorAgent` converts shots into structured image prompts.
@@ -126,11 +328,9 @@ Full visual QA can trigger targeted regeneration using guidance from:
 - `BodyLanguageValidator` — body-language validation
 - `LightingColorValidator` — lighting/color validation
 - `VisualStorytellingValidator` — broad visual storytelling QA with `validateSequence`
-- `VisualNarrativeValidator` — Eisner-style narrative validation
+- `VisualQualityJudge` + modular `visualChecks/` (e.g. `CompositionCheck`) — unified Eisner-style narrative / drama / asset audit pass that replaced the older `VisualNarrativeValidator`, `DramaExtractionAgent`, and `AssetAuditorAgent` trio
 - `TransitionValidator` — beat-to-beat transition validation
 - `ConsistencyScorerAgent` — image/reference consistency scoring
-- `AssetAuditorAgent` — asset audit reports
-- `DramaExtractionAgent` — dramatic structure extraction for images
 
 ## Encounter Image Runtime
 
@@ -257,9 +457,139 @@ Notes:
 - local character refs still cannot be passed as native Midjourney reference URLs in this path
 - identity is therefore reinforced through reference-sheet generation, textual identity anchors, and `--sref`
 
-### `dall-e` / `stable-diffusion`
+### `dall-e`
 
-These remain placeholder providers in the current runtime and should not be treated as production-ready image backends.
+Remains a placeholder provider in the current runtime and should not be treated as a production-ready image backend.
+
+### `stable-diffusion`
+
+Runs through a swappable adapter so we can target different SD hosts without touching `ImageGenerationService`. Today only the AUTOMATIC1111 / Forge WebUI backend is implemented (`A1111Adapter`); the adapter factory accepts `a1111`, `comfy`, `replicate`, `stability`, and `fal` but throws a clear error for anything except `a1111`.
+
+Runtime features in use:
+
+- text-to-image and image-to-image dispatch (init image is auto-promoted from any reference tagged `purpose: 'img2img-init'` or heuristically from `previous-panel-continuity` refs)
+- inline LoRA tags (`<lora:name:weight>`) from both prompt-level LoRAs and the settings-level style / per-character LoRA registry (prompt wins on duplicates, weights clamped to `[-2, 2]`)
+- ControlNet stack via the `sd-webui-controlnet` extension (`alwayson_scripts.controlnet.args[]`):
+  - depth auto-wired from references tagged `purpose: 'controlnet-depth'` or any environment / scene-master ref when `controlNetModels.depth` is configured
+  - canny / reference-only wired the same way from their respective purposes
+  - explicit prompt-level `ImagePromptControlNet[]` always take precedence
+- IP-Adapter (face identity) wired from references tagged `purpose: 'ip-adapter'`, or any `character-reference-face` ref when `ipAdapterModel` is configured
+- deterministic seed registry (`SeedRegistry`) inside `ImageGenerationService` — caller metadata (`sceneId`, `characterName` / `characterId`) hashes into a stable 32-bit seed so the same shot reproduces across runs; `prompt.seed` always overrides
+- preflight canary via `GET /sdapi/v1/sd-models` (service branch `preflightImageProvider('stable-diffusion')`)
+- optional img2img mask (`purpose: 'inpaint-mask'`) for inpainting flows
+- editImage uses the adapter's `edit()` (img2img) path and folds the base image into references with `purpose: 'img2img-init'`
+
+Wiring surface:
+
+- proxy mount: `/sd-api/*` forwards to `STABLE_DIFFUSION_BASE_URL` with optional bearer auth (`x-stable-diffusion-token`)
+- env vars: `STABLE_DIFFUSION_BASE_URL`, `STABLE_DIFFUSION_API_KEY`, `STABLE_DIFFUSION_BACKEND`, `STABLE_DIFFUSION_DEFAULT_MODEL`, `EXPO_PUBLIC_SD_ENABLED` (gates the UI segment)
+- settings object: `PipelineConfig.imageGen.stableDiffusion` (`StableDiffusionSettings` in `src/ai-agents/config.ts`)
+- UI: the GeneratorScreen exposes an `SD` segment plus a Stable Diffusion parameters disclosure (base URL, model, sampler, steps, CFG, negative prompt) when `EXPO_PUBLIC_SD_ENABLED=true`
+
+#### Consistency Feature Matrix (SD)
+
+| Consistency Anchor          | Source                                                        | SD Lever                   |
+|-----------------------------|---------------------------------------------------------------|----------------------------|
+| Global art style            | `StableDiffusionSettings.styleLoras`                          | Inline `<lora:...>` tag    |
+| Per-character identity (LoRA)| `StableDiffusionSettings.characterLoraByName[name]`          | Inline `<lora:...>` tag    |
+| Per-character identity (face)| `character-reference-face` ref + `settings.ipAdapterModel`   | IP-Adapter via ControlNet  |
+| Environment / layout        | `scene-master-environment` ref + `controlNetModels.depth`     | ControlNet depth           |
+| Silhouette / pose           | ref with `purpose: 'controlnet-canny'`                        | ControlNet canny           |
+| Previous-panel continuity   | `previous-panel-continuity` ref                               | img2img init image         |
+| Deterministic reproducibility| seed registry (scene, character, character-in-scene scopes)  | `seed` parameter           |
+| Negative stack              | `StableDiffusionSettings.defaultNegativePrompt` + per-prompt  | `negative_prompt`          |
+
+## Auto-Trained LoRAs (Stable Diffusion only)
+
+Stable Diffusion is the only currently-supported provider that can consume
+LoRA adapters, so the pipeline ships an optional **auto-train** subsystem
+that produces per-character and per-episode style LoRAs and merges them
+into `StableDiffusionSettings` before scenes render. For every other
+provider the subsystem is a hard no-op, so flipping
+`EXPO_PUBLIC_LORA_AUTO_TRAIN=true` on a nano-banana / Midjourney / Atlas
+config changes nothing.
+
+Runtime flow:
+
+1. `providerCapabilities.supportsLoraTraining` (`src/ai-agents/images/providerCapabilities.ts`)
+   gates the whole subsystem. Today only `stable-diffusion` returns
+   `true`.
+2. `FullStoryPipeline.runLoraTrainingIfEligible` is invoked from the
+   image phase (`runEpisodeImageGeneration`) right after character
+   reference sheets and the style bible exist — both are prerequisites
+   for a meaningful training dataset.
+3. `LoraTrainingAgent` (`src/ai-agents/agents/image-team/LoraTrainingAgent.ts`)
+   runs `invalidateStaleLoras` to prune cached artifacts whose source
+   fingerprint (character identity fingerprint, or `ArtStyleProfile +
+   anchorFileHashes`) no longer matches, then calls `trainAll` with the
+   current character and style candidates. Cached hits short-circuit;
+   anything new is dispatched to the configured trainer adapter.
+4. `datasetBuilder` (`src/ai-agents/images/datasetBuilder.ts`) assembles
+   the training set purely from assets already produced by the pipeline:
+   character reference sheet variants for identity LoRAs, and the three
+   style-bible anchors for style LoRAs.
+5. `LoraTrainerAdapter` — an abstraction (`src/ai-agents/services/lora-training/`)
+   with a `kohya_ss` implementation (`KohyaAdapter`) selected by
+   `LoraTrainingSettings.backend`. The adapter submits jobs through the
+   `/lora-training/*` proxy mount (`proxy/loraTrainingRoutes.js`),
+   polls for completion, and downloads the resulting safetensors
+   artifact. `installArtifact` then copies the file into the SD host's
+   `models/Lora/` directory.
+6. `LoraRegistry` (`src/ai-agents/images/loraRegistry.ts`) persists the
+   manifest under `generated-stories/<storyId>/loras/registry.json` and
+   merges the successful records into `StableDiffusionSettings.styleLoras`
+   and `StableDiffusionSettings.characterLoraByName` so the existing
+   `buildSDPrompt` path emits the `<lora:...>` tags unchanged.
+
+Eligibility knobs are grouped in
+`LoraTrainingSettings` (`src/ai-agents/config.ts`):
+
+| Field                         | Default      | Notes                                                                 |
+|-------------------------------|--------------|-----------------------------------------------------------------------|
+| `enabled`                     | `false`      | Master switch. Always false unless opted in via env or UI.            |
+| `backend`                     | `'disabled'` | `disabled` | `kohya` | `diffusers` | `replicate`. Only `kohya` is wired today. |
+| `baseUrl` / `apiKey`          | unset        | Overrides `LORA_TRAINER_BASE_URL` / `LORA_TRAINER_API_KEY` per call.  |
+| `characterThresholds.minRefs` | `6`          | Skip training a character until this many reference images exist.     |
+| `characterThresholds.tiers`   | core/major/supporting | Character tiers eligible for training. Minor cast excluded by default. |
+| `characterThresholds.blockScenes` | `true`   | Block scene generation until character LoRAs finish so they're active from beat #1. |
+| `styleThresholds.minEpisodes` | `2`          | Skip style LoRA until the series has at least this many episodes.     |
+| `styleThresholds.forceStyle`  | `false`      | Force a style LoRA even for a single-episode series.                  |
+| `training.*`                  | see defaults | Shared hyperparameters forwarded to the trainer (steps, rank, LR, …). |
+
+Caching is keyed by fingerprint:
+
+- Character LoRAs: `sha1(characterId + name + identityFingerprint +
+  normalizedHyperparams)`.
+- Style LoRAs: `sha1(canonicalStyleString + sortedAnchorHashes +
+  normalizedHyperparams)`.
+
+A fingerprint mismatch triggers `invalidateStaleLoras` to prune the
+stale record and re-train on the next pass. `normalizeHyperparams`
+strips `undefined` / default fields so a no-op config change doesn't
+accidentally invalidate cached artifacts.
+
+UI exposure lives under the Stable Diffusion disclosure on the Generator
+screen: `LORA AUTO-TRAINING` → master enable toggle, backend segmented
+control, trainer base URL / key, character tier chips, style
+thresholds, and the shared hyperparameters. Settings persist via both
+AsyncStorage and the proxy `generatorSettings` disk cache through
+`useGeneratorSettings.handleLoraTrainingSettingsChange`.
+
+Wiring surface:
+
+- proxy mount: `/lora-training/*` forwards to
+  `LORA_TRAINER_BASE_URL` with optional bearer auth. Artifact downloads
+  use an extended timeout and stream binary bodies through untouched
+  (see `proxy/loraTrainingRoutes.js`).
+- env vars: `EXPO_PUBLIC_LORA_AUTO_TRAIN`, `LORA_AUTO_TRAIN`,
+  `LORA_TRAINER_BACKEND`, `EXPO_PUBLIC_LORA_TRAINER_BACKEND`,
+  `LORA_TRAINER_BASE_URL`, `EXPO_PUBLIC_LORA_TRAINER_BASE_URL`,
+  `LORA_TRAINER_API_KEY`, `LORA_TRAINER_AUTH_HEADER`,
+  `LORA_TRAINER_TIMEOUT_MS`, plus per-knob overrides captured in
+  `resolveLoraTrainingSettings`.
+- settings object: `PipelineConfig.imageGen.loraTraining`
+  (`LoraTrainingSettings` in `src/ai-agents/config.ts`).
+- docs: see `docs/LORA_TRAINING.md` for the kohya sidecar contract.
 
 ## PartialVictory Cost Visuals
 
@@ -282,8 +612,10 @@ These remain placeholder providers in the current runtime and should not be trea
 | `src/ai-agents/agents/image-team/ColorScriptAgent.ts` | Color script and thumbnails |
 | `src/ai-agents/agents/image-team/CharacterReferenceSheetAgent.ts` | Character references, expressions, body vocabulary |
 | `src/ai-agents/agents/image-team/VideoDirectorAgent.ts` | Video direction for Veo pipeline |
+| `src/ai-agents/agents/image-team/LoraTrainingAgent.ts` | Auto-train-LoRA orchestrator (SD only; gated by `providerCapabilities.supportsLoraTraining`) |
 | `src/ai-agents/agents/image-team/ConsistencyScorerAgent.ts` | Image/reference consistency scoring |
-| `src/ai-agents/agents/image-team/DramaExtractionAgent.ts` | Dramatic structure extraction for images |
+| `src/ai-agents/agents/image-team/VisualQualityJudge.ts` | Unified visual QA judge (replaces `VisualNarrativeValidator`, `DramaExtractionAgent`, `AssetAuditorAgent`) |
+| `src/ai-agents/agents/image-team/visualChecks/CompositionCheck.ts` | Modular composition check invoked by `VisualQualityJudge` |
 
 ### Image QA Validators
 
@@ -295,9 +627,7 @@ These remain placeholder providers in the current runtime and should not be trea
 | `src/ai-agents/agents/image-team/ExpressionValidator.ts` | Expression/pacing validation |
 | `src/ai-agents/agents/image-team/BodyLanguageValidator.ts` | Body language QA |
 | `src/ai-agents/agents/image-team/LightingColorValidator.ts` | Lighting/color QA |
-| `src/ai-agents/agents/image-team/VisualNarrativeValidator.ts` | Eisner-style narrative validation |
 | `src/ai-agents/agents/image-team/VisualStorytellingValidator.ts` | Broad visual storytelling QA |
-| `src/ai-agents/agents/image-team/AssetAuditorAgent.ts` | Asset audit reports |
 
 ### Visual Systems (Non-Agent)
 

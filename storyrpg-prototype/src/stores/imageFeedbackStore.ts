@@ -11,6 +11,7 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
+import { PROXY_CONFIG } from '../config/endpoints';
 
 const FEEDBACK_STORAGE_KEY = '@storyrpg_image_feedback';
 
@@ -169,12 +170,7 @@ interface ImageFeedbackStore {
   getPreferenceSummary: () => string; // Human-readable summary for prompting
 }
 
-const getProxyHost = () => {
-  if (Platform.OS === 'web' && typeof window !== 'undefined') {
-    return `http://${window.location.hostname || 'localhost'}:3001`;
-  }
-  return 'http://localhost:3001';
-};
+const getProxyHost = () => PROXY_CONFIG.getProxyUrl();
 
 export const useImageFeedbackStore = create<ImageFeedbackStore>((set, get) => ({
   feedback: [],

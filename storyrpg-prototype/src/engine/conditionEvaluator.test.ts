@@ -31,8 +31,8 @@ function createPlayer(overrides?: Partial<PlayerState>): PlayerState {
     },
     pendingConsequences: [],
     inventory: [
-      { itemId: 'sword', quantity: 1 },
-      { itemId: 'potion', quantity: 3 },
+      { itemId: 'sword', name: 'Sword', description: 'A blade.', quantity: 1 },
+      { itemId: 'potion', name: 'Potion', description: 'A vial.', quantity: 3 },
     ],
     currentStoryId: null,
     currentEpisodeId: null,

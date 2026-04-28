@@ -5,18 +5,13 @@
  * Used by the FullStoryPipeline to enable cancellation and progress tracking.
  */
 
-import { isWebRuntime } from '../../utils/runtimeEnv';
 import { GenerationJob, JobStatus } from '../../types/generationJob';
+import { PROXY_CONFIG } from '../../config/endpoints';
 
 export type GenerationJobUpdate = Partial<GenerationJob>;
 export type NewGenerationJob = Omit<GenerationJob, 'updatedAt'>;
 
-const getProxyHost = () => {
-  if (isWebRuntime() && typeof window !== 'undefined') {
-    return `http://${window.location.hostname || 'localhost'}:3001`;
-  }
-  return 'http://localhost:3001';
-};
+const getProxyHost = (): string => PROXY_CONFIG.getProxyUrl();
 
 /**
  * Register a new generation job with the server

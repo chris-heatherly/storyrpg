@@ -1,7 +1,12 @@
 {
-  "scannedAt": 1776180423755,
+  "scannedAt": 1777327785422,
   "providers": {
     "anthropic": [
+      {
+        "value": "claude-opus-4-7",
+        "label": "Claude Opus 4.7",
+        "createdAt": "2026-04-14T00:00:00Z"
+      },
       {
         "value": "claude-sonnet-4-6",
         "label": "Claude Sonnet 4.6",
@@ -41,13 +46,9 @@
         "value": "claude-sonnet-4-20250514",
         "label": "Claude Sonnet 4",
         "createdAt": "2025-05-22T00:00:00Z"
-      },
-      {
-        "value": "claude-3-haiku-20240307",
-        "label": "Claude Haiku 3",
-        "createdAt": "2024-03-07T00:00:00Z"
       }
     ],
+    "openai": null,
     "gemini": [
       {
         "value": "nano-banana-pro-preview",
@@ -140,6 +141,11 @@
         "description": "Gemini 3.1 Pro Preview"
       },
       {
+        "value": "gemini-3.1-flash-tts-preview",
+        "label": "Gemini 3.1 Flash TTS Preview",
+        "description": "Gemini 3.1 Flash TTS Preview"
+      },
+      {
         "value": "gemini-3.1-flash-lite-preview",
         "label": "Gemini 3.1 Flash Lite Preview",
         "description": "Gemini 3.1 Flash Lite Preview"
@@ -223,14 +229,24 @@
         "value": "deep-research-pro-preview-12-2025",
         "label": "Deep Research Pro Preview (Dec-12-2025)",
         "description": "Preview release (December 12th, 2025) of Deep Research Pro"
+      },
+      {
+        "value": "deep-research-preview-04-2026",
+        "label": "Deep Research Preview (Apr-21-2026)",
+        "description": "Preview release (April 21th, 2026) of Deep Research"
+      },
+      {
+        "value": "deep-research-max-preview-04-2026",
+        "label": "Deep Research Max Preview (Apr-21-2026)",
+        "description": "Preview release (April 21st, 2026) of Deep Research Max"
       }
     ],
     "atlasCloud": [
       {
         "value": "google/nano-banana-2/text-to-image",
         "label": "Nano Banana 2",
-        "price": "$0.072/pic",
-        "description": "Google NB2. 14 ref images, 5-char consistency, 4K, auto /edit routing. Best for StoryRPG."
+        "price": "$0.08/pic",
+        "description": "Google's lightweight yet powerful model. 14 ref images, 5-char consistency, 4K, auto /edit routing. Best for StoryRPG."
       },
       {
         "value": "google/nano-banana-pro/text-to-image",
@@ -239,22 +255,106 @@
         "description": "Google NB Pro. 10 ref images, 5-char consistency, native 2K/4K. Premium quality."
       },
       {
-        "value": "bytedance/seedream-v5.0-lite",
-        "label": "Seedream v5.0 Lite",
-        "price": "$0.035/pic",
-        "description": "ByteDance latest. Visual CoT, 14 ref images, batch up to 15, 4K."
+        "value": "google/nano-banana-pro/text-to-image-ultra",
+        "label": "Nano Banana Pro Ultra",
+        "price": "$0.15/pic",
+        "description": "Next-gen Nano Banana Pro (Ultra). Sharpest detail, richest color control, faster diffusion."
       },
       {
-        "value": "bytedance/seedream-v4.5",
-        "label": "Seedream v4.5",
+        "value": "google/nano-banana/text-to-image",
+        "label": "Nano Banana",
         "price": "$0.038/pic",
-        "description": "High quality, batch + edit support, 10 ref images."
+        "description": "Google's state-of-the-art image generation and editing model."
+      },
+      {
+        "value": "google/imagen4-ultra",
+        "label": "Imagen 4 Ultra",
+        "price": "$0.06/pic",
+        "description": "Google's highest-quality image generation model."
+      },
+      {
+        "value": "google/imagen4",
+        "label": "Imagen 4",
+        "price": "$0.04/pic",
+        "description": "Google's Imagen 4 flagship model."
+      },
+      {
+        "value": "google/imagen4-fast",
+        "label": "Imagen 4 Fast",
+        "price": "$0.02/pic",
+        "description": "Fast variant of Google's Imagen 4 flagship."
+      },
+      {
+        "value": "google/imagen3",
+        "label": "Imagen 3",
+        "price": "$0.04/pic",
+        "description": "Google's prior-generation high-detail text-to-image model."
+      },
+      {
+        "value": "google/imagen3-fast",
+        "label": "Imagen 3 Fast",
+        "price": "$0.02/pic",
+        "description": "Fast variant of Imagen 3."
+      },
+      {
+        "value": "openai/gpt-image-2/text-to-image",
+        "label": "GPT Image 2",
+        "price": "$0.01/pic",
+        "description": "OpenAI's latest image model. Strongest character/style consistency with multi-reference edit workflows."
       },
       {
         "value": "openai/gpt-image-1.5/text-to-image",
         "label": "GPT Image 1.5",
         "price": "$0.008/pic",
-        "description": "OpenAI fast text-to-image. Photorealistic, concept art, stylized. Text only."
+        "description": "OpenAI's fast, cost-efficient text-to-image. Photorealistic, concept art, stylized. Text only."
+      },
+      {
+        "value": "openai/gpt-image-1/text-to-image",
+        "label": "GPT Image 1",
+        "price": "$0.009/pic",
+        "description": "OpenAI's GPT Image-1. Ideal for creating visual assets."
+      },
+      {
+        "value": "openai/gpt-image-1-mini/text-to-image",
+        "label": "GPT Image 1 Mini",
+        "price": "$0.004/pic",
+        "description": "Cost-efficient multimodal OpenAI model (GPT-5 guided)."
+      },
+      {
+        "value": "bytedance/seedream-v5.0-lite",
+        "label": "Seedream v5.0 Lite",
+        "price": "$0.032/pic",
+        "description": "ByteDance latest. Visual CoT, 14 ref images, 4K."
+      },
+      {
+        "value": "bytedance/seedream-v5.0-lite/sequential",
+        "label": "Seedream v5.0 Lite Sequential",
+        "price": "$0.032/pic",
+        "description": "Seedream v5.0 Lite batch mode — up to 15 related images per request."
+      },
+      {
+        "value": "bytedance/seedream-v4.5",
+        "label": "Seedream v4.5",
+        "price": "$0.036/pic",
+        "description": "High quality, batch + edit support, 10 ref images."
+      },
+      {
+        "value": "bytedance/seedream-v4.5/sequential",
+        "label": "Seedream v4.5 Sequential",
+        "price": "$0.036/pic",
+        "description": "Seedream v4.5 batch mode — up to 15 images per request."
+      },
+      {
+        "value": "bytedance/seedream-v4",
+        "label": "Seedream v4.0",
+        "price": "$0.024/pic",
+        "description": "Good quality, lower cost."
+      },
+      {
+        "value": "bytedance/seedream-v4/sequential",
+        "label": "Seedream v4.0 Sequential",
+        "price": "$0.024/pic",
+        "description": "Seedream v4 batch mode."
       },
       {
         "value": "qwen/qwen-image-2.0/text-to-image",
@@ -269,6 +369,24 @@
         "description": "Professional-grade. Superior quality, advanced prompt understanding."
       },
       {
+        "value": "alibaba/qwen-image/text-to-image-max",
+        "label": "Qwen-Image Max",
+        "price": "$0.052/pic",
+        "description": "General-purpose Qwen-Image. Great for complex text rendering."
+      },
+      {
+        "value": "alibaba/qwen-image/text-to-image-plus",
+        "label": "Qwen-Image Plus",
+        "price": "$0.021/pic",
+        "description": "Good text rendering in images."
+      },
+      {
+        "value": "atlascloud/qwen-image/text-to-image",
+        "label": "Qwen-Image (Atlas)",
+        "price": "$0.02/pic",
+        "description": "Qwen-Image 20B MMDiT model."
+      },
+      {
         "value": "alibaba/wan-2.7/text-to-image",
         "label": "Wan-2.7",
         "price": "$0.03/pic",
@@ -281,22 +399,58 @@
         "description": "Higher fidelity, 4K-ready workflows."
       },
       {
-        "value": "bytedance/seedream-v4",
-        "label": "Seedream v4.0",
-        "price": "$0.026/pic",
-        "description": "Good quality, lower cost."
+        "value": "alibaba/wan-2.6/text-to-image",
+        "label": "Wan-2.6",
+        "price": "$0.021/pic",
+        "description": "Supports various artistic styles and realistic photographic effects."
+      },
+      {
+        "value": "alibaba/wan-2.5/text-to-image",
+        "label": "Wan-2.5",
+        "price": "$0.021/pic",
+        "description": "Alibaba WAN 2.5 general text-to-image."
+      },
+      {
+        "value": "black-forest-labs/flux-dev",
+        "label": "Flux Dev",
+        "price": "$0.012/pic",
+        "description": "Flux-dev 12B parameter rectified flow transformer. Text-to-image only."
+      },
+      {
+        "value": "black-forest-labs/flux-schnell",
+        "label": "Flux Schnell",
+        "price": "$0.003/pic",
+        "description": "FLUX.1 [schnell] — fastest 12B rectified-flow model, great for drafts. Text-to-image only."
+      },
+      {
+        "value": "black-forest-labs/flux-dev-lora",
+        "label": "Flux Dev LoRA",
+        "price": "$0.015/pic",
+        "description": "FLUX.1 [dev] with LoRA tag support for personalized styles and brands. Text-to-image only."
+      },
+      {
+        "value": "black-forest-labs/flux-kontext-dev",
+        "label": "Flux Kontext Dev",
+        "price": "$0.025/pic",
+        "description": "FLUX.1 Kontext [dev] — image editing via text prompts. Requires a reference image."
+      },
+      {
+        "value": "black-forest-labs/flux-kontext-dev-lora",
+        "label": "Flux Kontext Dev LoRA",
+        "price": "$0.030/pic",
+        "description": "FLUX.1 Kontext [dev] with LoRA support for brand/style-consistent image edits. Requires a reference image."
       },
       {
         "value": "z-image/turbo",
         "label": "Z-Image Turbo",
         "price": "$0.01/pic",
-        "description": "Sub-second generation, great for testing. Text only."
+        "description": "Sub-second 6B text-to-image model, great for testing. Text only."
       },
       {
-        "value": "alibaba/qwen-image/text-to-image-plus",
-        "label": "Qwen-Image Plus",
-        "price": "$0.021/pic",
-        "description": "Good text rendering in images."
+        "value": "baidu/ERNIE-Image-Turbo/text-to-image",
+        "label": "ERNIE Image Turbo",
+        "price": "FREE",
+        "description": "Baidu ERNIE Image, low-latency turbo variant. Free tier."
       }
     ]
   }

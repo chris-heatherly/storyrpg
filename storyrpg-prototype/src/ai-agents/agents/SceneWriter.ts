@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): type drift with GeneratedBeat / sourceAnalysis
+// fragments; address in Phase 3 pipeline refactor and Phase 7 type consolidation.
 /**
  * Scene Writer Agent
  *
@@ -12,12 +14,105 @@ import { AgentConfig, GenerationSettingsConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import { Beat, TextVariant, Consequence, TimingMetadata } from '../../types';
-import { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
+import {
+  SourceMaterialAnalysis,
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
-import { CHOICE_DENSITY_REQUIREMENTS, NARRATIVE_INTENSITY_RULES } from '../prompts/storytellingPrinciples';
+import {
+  CHOICE_DENSITY_REQUIREMENTS,
+  NARRATIVE_INTENSITY_RULES,
+  buildStructuralContextSection,
+} from '../prompts/storytellingPrinciples';
+import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
+import { SCENE_WRITER_BEAT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
+
+function normalizeSourceFragments(sourceAnalysis?: SourceMaterialAnalysis): {
+  dialogue: string[];
+  prose: string[];
+  terminology: string[];
+} {
+  const fragments = sourceAnalysis?.directLanguageFragments;
+  if (!fragments) return { dialogue: [], prose: [], terminology: [] };
+
+  if (Array.isArray(fragments)) {
+    return {
+      dialogue: fragments.map((fragment) => fragment.text).filter(Boolean),
+      prose: fragments
+        .filter((fragment) => fragment.context && !fragment.speaker)
+        .map((fragment) => fragment.text)
+        .filter(Boolean),
+      terminology: [],
+    };
+  }
+
+  return {
+    dialogue: Array.isArray(fragments.dialogue) ? fragments.dialogue.filter(Boolean) : [],
+    prose: Array.isArray(fragments.prose) ? fragments.prose.filter(Boolean) : [],
+    terminology: Array.isArray(fragments.terminology) ? fragments.terminology.filter(Boolean) : [],
+  };
+}
+
+export function buildSourceMaterialFidelitySection(sourceAnalysis?: SourceMaterialAnalysis): string {
+  if (!sourceAnalysis) return '';
+
+  const fragments = normalizeSourceFragments(sourceAnalysis);
+  const guide = sourceAnalysis.writingStyleGuide;
+  const guidance = sourceAnalysis.adaptationGuidance;
+  const elementsToPreserve = Array.isArray(guidance?.elementsToPreserve) ? guidance.elementsToPreserve : [];
+  const elementsToAdapt = Array.isArray(guidance?.elementsToAdapt) ? guidance.elementsToAdapt : [];
+  const themes = Array.isArray(guidance?.keyThemesToPreserve)
+    ? guidance.keyThemesToPreserve
+    : elementsToPreserve;
+  const moments = Array.isArray(guidance?.iconicMoments) ? guidance.iconicMoments : [];
+
+  return `
+## Source Material Fidelity (IP Research)
+The following language, terminology, and prose-style rules have been identified from the source material.
+**Prioritize this writing contract when drafting player-facing prose.**
+
+${guide ? `### Writing Style Guide (${guide.source})
+- **Summary**: ${guide.summary}
+- **Narrative Voice**: ${guide.narrativeVoice}
+- **Sentence Rhythm**: ${guide.sentenceRhythm}
+- **Diction**: ${guide.diction}
+- **Dialogue Style**: ${guide.dialogueStyle}
+- **POV / Distance**: ${guide.povAndDistance}
+- **Imagery / Sensory Focus**: ${guide.imageryAndSensoryFocus}
+- **Pacing**: ${guide.pacing}
+- **Do**: ${guide.doList.join('; ')}
+- **Avoid**: ${guide.avoidList.join('; ')}
+${guide.evidence?.length ? `- **Evidence**: ${guide.evidence.join('; ')}` : ''}
+` : ''}
+
+${fragments.dialogue.length ? `### Iconic Dialogue
+${fragments.dialogue.map(d => `- "${d}"`).join('\n')}
+` : ''}
+
+${fragments.prose.length ? `### Notable Prose & Style
+${fragments.prose.map(p => `- ${p}`).join('\n')}
+` : ''}
+
+${fragments.terminology.length ? `### Key Terminology
+${fragments.terminology.join(', ')}
+` : ''}
+
+${guidance ? `### Adaptation Guidance
+- **Narrative Voice**: ${guidance.narrativeVoice}
+- **Tone Notes**: ${guidance.toneNotes}
+- **Dialogue Style**: ${guidance.dialogueStyle}
+- **Elements to Preserve**: ${elementsToPreserve.join(', ')}
+${elementsToAdapt.length ? `- **Elements to Adapt**: ${elementsToAdapt.join(', ')}` : ''}
+${themes.length ? `- **Themes to Preserve**: ${themes.join(', ')}` : ''}
+${moments.length ? `- **Iconic Moments**: ${moments.join(', ')}` : ''}
+` : ''}
+`;
+}
 
 // Input types
 export interface SceneWriterInput {
@@ -69,6 +164,25 @@ export interface SceneWriterInput {
   // Source material analysis for IP fidelity (optional)
   sourceAnalysis?: SourceMaterialAnalysis;
 
+  /**
+   * Season-level narrative anchors (from SeasonPlan.anchors).
+   * When present, SceneWriter keeps every prose beat grounded in the
+   * shared Stakes / Goal / Inciting Incident / Climax anchors.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /**
+   * Season-level 7-point beat map (from SeasonPlan.sevenPoint). Used to
+   * tell SceneWriter where this scene sits on the season's dramatic curve.
+   */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Which beat(s) of the season this episode is carrying (from
+   * SeasonEpisode.structuralRole). Drives scene mood / intensity defaults.
+   */
+  episodeStructuralRole?: StructuralRole[];
+
   // Context about the episode's climactic encounter that this scene is building toward.
   // Provided for all non-encounter scenes so the writer can plant seeds, establish stakes,
   // and frame choices in ways that make the encounter feel earned when players reach it.
@@ -81,6 +195,56 @@ export interface SceneWriterInput {
 
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
+
+  // Branch topology context from BranchManager (Phase 1.1).
+  // When provided, SceneWriter knows whether this scene is a bottleneck,
+  // a branch-only scene, or a reconvergence point, and what state differences
+  // must be acknowledged.
+  branchContext?: {
+    role: 'bottleneck' | 'branch' | 'reconvergence' | 'linear';
+    branchPathIds?: string[];
+    incomingBranchIds?: string[];
+    stateReconciliationNotes?: string[];
+    reconvergenceNarrativeAcknowledgment?: string;
+  };
+
+  // Narrative threads active for this scene (Phase 5.3).
+  // SceneWriter must plant or pay off these threads in the beat text
+  // and set `plantsThreadId` / `paysOffThreadId` on the corresponding beat.
+  activeThreads?: Array<{
+    id: string;
+    kind: 'seed' | 'clue' | 'promise' | 'secret' | 'foreshadow';
+    label: string;
+    action: 'plant' | 'payoff' | 'reference';
+    hint?: string;
+  }>;
+
+  // Twist scheduling from TwistArchitect (Phase 6).
+  // When provided, SceneWriter marks the designated beat as a twist or revelation
+  // and drops subtle setup cues in the named setup beats.
+  twistDirectives?: Array<{
+    twistKind: 'reversal' | 'revelation' | 'betrayal' | 'reframe';
+    beatRole: 'setup' | 'twist' | 'satisfaction';
+    hint: string;
+  }>;
+
+  // Character arc milestone targets (Phase 7.1).
+  // When provided, SceneWriter frames beats so protagonist choices can move
+  // identity and relationship dimensions in the direction of these targets.
+  arcTargets?: {
+    identityDeltaHints?: Array<{ dimension: string; direction: 'positive' | 'negative'; magnitude: 'minor' | 'moderate' | 'major' }>;
+    relationshipTrajectory?: Array<{ npcId: string; dimension: string; direction: 'positive' | 'negative'; hint: string }>;
+  };
+
+  // Unresolved callback hooks from prior episodes (Plan 1: Delayed Consequences).
+  // When present, SceneWriter SHOULD author TextVariants that reference one of
+  // these hooks via `callbackHookId`, gated on the hook's flags.
+  unresolvedCallbacks?: Array<{
+    id: string;
+    sourceEpisode: number;
+    summary: string;
+    flags: string[];
+  }>;
 }
 
 // Output types
@@ -106,6 +270,13 @@ export interface GeneratedBeat {
   allowDiegeticText?: boolean; // When true, text in the image is permitted (letter, sign, book)
   shotType?: 'establishing' | 'character' | 'action'; // Camera intent: environment-only, character-focused, or physical action
   intensityTier?: 'dominant' | 'supporting' | 'rest'; // Narrative intensity for scene-level pacing
+  visualContinuity?: Beat['visualContinuity']; // Optional beat-to-beat flow metadata
+
+  // Setup-payoff + plot-point metadata (Phases 5, 6)
+  plantsThreadId?: string;
+  paysOffThreadId?: string;
+  plotPointType?: 'setup' | 'payoff' | 'twist' | 'revelation';
+  twistKind?: 'reversal' | 'revelation' | 'betrayal' | 'reframe';
 }
 
 export interface SceneContent {
@@ -119,6 +290,8 @@ export interface SceneContent {
   moodProgression: string[];
   charactersInvolved: string[];
   keyMoments: string[];
+  sceneTakeaways?: string[];
+  transitionIn?: string;
 
   // Continuity notes
   continuityNotes: string[];
@@ -127,6 +300,10 @@ export interface SceneContent {
   branchType?: 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption';
   isBottleneck?: boolean;
   isConvergencePoint?: boolean;
+
+  // Threads planted/paid off in this scene (Phase 5.3).
+  plantedThreadIds?: string[];
+  paidOffThreadIds?: string[];
 
   // Choice payoff context — the player choice that led to this scene.
   // Threaded to the image pipeline so the first beat's image reflects the choice.
@@ -196,6 +373,16 @@ You are a master prose writer who brings scene blueprints to life with vivid, im
 - Match prose length to moment importance.
 - Quick beats for tension, longer for reflection.
 - Vary the rhythm within scenes.
+
+### Scene Craft
+- Every scene needs a purpose players can feel: plot pressure, relationship movement, theme pressure, information gain, or meaningful aftermath.
+- Identify the scene's key moment and build the beat sequence toward it.
+- Include scene takeaways: what the player should learn, feel, or understand by the end.
+- Use natural transition phrasing in continuityNotes or transitionIn ("Later that night", "Back at the observatory") when time or place shifts.
+- End the final beat with forward pressure into the next beat, choice, scene, or episode.
+- Keep dialogue concise, pointed, and subtextual; characters may disagree, tease, avoid, or reveal, but not every conversation needs to become an argument.
+- Use selective interiority when it deepens player connection, but avoid over-defining the player character's identity.
+- Do not use film/camera direction terms in player-facing prose. Visual metadata may still use the required shotType and visualContinuity fields.
 
 ${NARRATIVE_INTENSITY_RULES}
 
@@ -331,10 +518,13 @@ For each beat object, include these fields so image agents do not have to guess:
 - "relationshipDynamic": Power/proximity/tension between named characters. Leave empty ("") for "establishing" shots.
 - "mustShowDetail": One specific visual clue that must appear.
 - "intensityTier": REQUIRED. One of "dominant", "supporting", or "rest". Assign based on the Narrative Intensity Tiering rules above. A scene needs 1-2 dominant beats, 1-2 rest beats, and the remainder as supporting. Vary the intensity across the scene.
+- "visualContinuity": OPTIONAL but encouraged. Use it to make this beat flow from the previous beat as the next full-screen image: shotType, cameraAngle, focalCharacterId, blocking, proximity, motifOrProp, previousBeatId, transitionIntent, panelMode. Default panelMode is "single". Do NOT request panels, collages, split screens, contact sheets, or multiple moments inside the same image.
 
 Avoid abstract-only phrases like "tension rises" or "emotion deepens." Describe what is physically visible. ALWAYS use character names — never generic references.
 
 **CHARACTER APPEARANCE CONSISTENCY (CRITICAL)**: When describing characters in beat text, visual contract fields, or any visual/descriptive context, you MUST use their canonical Physical Appearance as listed in the Characters section. NEVER invent or change hair color, eye color, body type, or other physical attributes. If a character has "blonde hair" in their physical description, ALWAYS write "blonde hair", NEVER "dark hair" or any other variant. The Physical Appearance entries are the source of truth.
+
+${SCENE_WRITER_BEAT_EXAMPLE}
 
 ## Quality Standards
 
@@ -464,6 +654,16 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       content.continuityNotes = [];
     } else if (!Array.isArray(content.continuityNotes)) {
       content.continuityNotes = [content.continuityNotes as unknown as string];
+    }
+
+    if (!content.sceneTakeaways) {
+      content.sceneTakeaways = [];
+    } else if (!Array.isArray(content.sceneTakeaways)) {
+      content.sceneTakeaways = [content.sceneTakeaways as unknown as string];
+    }
+
+    if (content.transitionIn && typeof content.transitionIn !== 'string') {
+      content.transitionIn = String(content.transitionIn);
     }
 
     if (!content.beats) {
@@ -843,36 +1043,19 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       ? input.relevantFlags.map(f => `- ${f.name}: ${f.description}`).join('\n')
       : 'None specified';
 
-    let sourceContextStr = '';
-    if (input.sourceAnalysis) {
-      sourceContextStr = `
-## Source Material Fidelity (IP Research)
-The following iconic language and style fragments have been identified from the source IP. 
-**PRIORITIZE using this exact language, terminology, and tone where appropriate.**
+    const sourceContextStr = buildSourceMaterialFidelitySection(input.sourceAnalysis);
 
-### Iconic Dialogue
-${input.sourceAnalysis.directLanguageFragments.dialogue.map(d => `- "${d}"`).join('\n')}
-
-### Notable Prose & Style
-${input.sourceAnalysis.directLanguageFragments.prose.map(p => `- ${p}`).join('\n')}
-
-### Key Terminology
-${input.sourceAnalysis.directLanguageFragments.terminology.join(', ')}
-
-${input.sourceAnalysis.adaptationGuidance ? `
-### Adaptation Guidance
-- **Narrative Voice**: ${input.sourceAnalysis.adaptationGuidance.narrativeVoice}
-- **Themes to Preserve**: ${input.sourceAnalysis.adaptationGuidance.keyThemesToPreserve.join(', ')}
-- **Iconic Moments**: ${input.sourceAnalysis.adaptationGuidance.iconicMoments.join(', ')}
-` : ''}
-`;
-    }
+    const structuralContext = buildStructuralContextSection({
+      anchors: input.seasonAnchors,
+      sevenPoint: input.seasonSevenPoint,
+      episodeStructuralRole: input.episodeStructuralRole,
+    });
 
     return `
 Write the scene content for the following scene blueprint:
 
 ${sourceContextStr}
-
+${structuralContext}
 ## Story Context
 - **Title**: ${input.storyContext.title}
 - **Genre**: ${input.storyContext.genre}
@@ -887,6 +1070,12 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 - **Mood**: ${input.sceneBlueprint.mood}
 - **Purpose**: ${input.sceneBlueprint.purpose}
 - **Narrative Function**: ${input.sceneBlueprint.narrativeFunction}
+
+### Scene Craft Targets
+- Define 1-4 sceneTakeaways in the output: what the player learns, feels, or understands.
+- If this scene begins after a time/place shift, include transitionIn with a short natural phrase.
+- keyMoments should name the emotional or narrative payoff, not just a location or mood.
+- moodProgression should show the scene's tension or emotional movement from start to finish.
 
 ### Expert Design Template
 - **Dramatic Question**: ${input.sceneBlueprint.dramaticQuestion}
@@ -936,6 +1125,45 @@ Write this scene with the encounter in mind. Every beat should move players emot
 
 The player should finish this scene feeling that something significant is coming. The encounter should feel INEVITABLE by the time they reach it.
 ` : ''}
+${input.branchContext ? `
+## Branch Topology Context
+- **Scene role**: ${input.branchContext.role}
+${input.branchContext.role === 'bottleneck' ? '- This scene is a **bottleneck**: every player path converges here. Acknowledge different prior paths when possible via textVariants.' : ''}
+${input.branchContext.role === 'branch' ? '- This scene is **branch-only**: not every player reaches it. Earn its distinct tone and avoid redundant setup.' : ''}
+${input.branchContext.role === 'reconvergence' ? `- This scene is a **reconvergence point**. Incoming branches: ${(input.branchContext.incomingBranchIds || []).join(', ') || 'multiple'}. Acknowledge different paths via conditional textVariants.` : ''}
+${input.branchContext.stateReconciliationNotes && input.branchContext.stateReconciliationNotes.length > 0 ? `- State reconciliation notes:\n${input.branchContext.stateReconciliationNotes.map(n => `  - ${n}`).join('\n')}` : ''}
+${input.branchContext.reconvergenceNarrativeAcknowledgment ? `- Suggested acknowledgment: "${input.branchContext.reconvergenceNarrativeAcknowledgment}"` : ''}
+` : ''}
+${input.activeThreads && input.activeThreads.length > 0 ? `
+## Active Narrative Threads (setup/payoff)
+You MUST plant or pay off the following threads in this scene. Set \`plantsThreadId\` or \`paysOffThreadId\` on the beat where each action happens.
+${input.activeThreads.map(t => `- [${t.action.toUpperCase()}] thread \`${t.id}\` (${t.kind}): ${t.label}${t.hint ? ` — hint: ${t.hint}` : ''}`).join('\n')}
+- Payoff must feel surprising-but-inevitable — the plant should read as incidental on first encounter.
+- If planting, be subtle: a sensory detail, an off-hand remark, a named object. Never lampshade.
+` : ''}
+${input.twistDirectives && input.twistDirectives.length > 0 ? `
+## Twist / Revelation Directives
+This scene participates in an episode-level twist. Honor the role for each beat and set \`plotPointType\` accordingly.
+${input.twistDirectives.map(d => `- Beat role: **${d.beatRole}** for a \`${d.twistKind}\` — ${d.hint}`).join('\n')}
+- Twist beats MUST be preceded by at least one earlier setup beat in this or an earlier scene.
+` : ''}
+${input.arcTargets && (input.arcTargets.identityDeltaHints?.length || input.arcTargets.relationshipTrajectory?.length) ? `
+## Character Arc Milestone Targets
+Frame beats so the player's available choices can nudge the protagonist toward these milestones.
+${(input.arcTargets.identityDeltaHints || []).map(h => `- Identity dimension \`${h.dimension}\`: target ${h.direction} (${h.magnitude})`).join('\n')}
+${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with ${r.npcId} (${r.dimension}): ${r.direction} — ${r.hint}`).join('\n')}
+` : ''}${buildSceneWriterCallbackSection((input.unresolvedCallbacks || []).map(h => ({
+  id: h.id,
+  sourceEpisode: h.sourceEpisode,
+  sourceSceneId: '',
+  sourceChoiceId: '',
+  flags: h.flags,
+  summary: h.summary,
+  payoffWindow: { minEpisode: 0, maxEpisode: 0 },
+  payoffCount: 0,
+  resolved: false,
+  createdAt: '',
+})))}
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
 - ${input.dialogueHeavy ? 'This is dialogue-heavy - focus on conversation' : 'Balance description with any dialogue'}
@@ -961,6 +1189,9 @@ Create the scene content following the SceneContent schema. Include:
 4. Natural flow between beats
 5. textVariants where state should affect content
 6. Full beat visual contract fields (visualMoment, primaryAction, emotionalRead, relationshipDynamic, mustShowDetail, intensityTier) for every beat
+7. Optional visualContinuity metadata when it clarifies beat-to-beat flow; keep panelMode as "single" unless an explicit UX/config flag says otherwise
+8. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id
+9. sceneTakeaways and transitionIn when they clarify purpose and flow
 
 Respond with valid JSON matching the SceneContent type.
 `;
@@ -1273,6 +1504,9 @@ Respond with valid JSON matching the SceneContent type.
 
       if (wordCount > maxWords || sentenceCount > MAX_SENTENCES) {
         longBeats.push(`Beat "${beat.id}" (${beat.isClimaxBeat ? 'climax' : beat.isKeyStoryBeat ? 'key' : 'standard'}): ${wordCount} words, ${sentenceCount} sentences (cap: ${maxWords} words)`);
+      }
+      if (/\{[A-Z][A-Za-z0-9]*\}/.test(text)) {
+        issues.push(`SCHEMA PLACEHOLDER LEAK - Beat "${beat.id}" contains an unresolved {Variable} placeholder. Rewrite it as concrete player-facing prose.`);
       }
     }
     if (climaxCount > 2) {

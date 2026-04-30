@@ -13,7 +13,7 @@
   "llmProvider": "anthropic",
   "llmModel": "claude-sonnet-4-20250514",
   "atlasCloudModel": "black-forest-labs/flux-dev-lora",
-  "artStyle": "isekai anime art style, polished cel-shading, vibrant fantasy color palette, cinematic lighting, dramatic atmosphere, crisp clean linework, expressive character design, dynamic composition, rich environmental detail, soft bloom highlights, depth of field, layered backgrounds, glossy rendering, premium light novel cover aesthetic, high-end Japanese fantasy anime key visual, elegant costume detailing, magical ambience, epic sense of scale, immersive worldbuilding tone, trending anime fantasy style, sharp focus, masterpiece quality",
+  "artStyle": "Studio Ghibli art style, hand-painted watercolor background, lush natural scenery, soft cel-shaded animation style, nostalgic and whimsical atmosphere, high-quality gouache textures, vibrant yet natural color palette, cinematic lighting, fluffy cumulonimbus clouds, intricate hand-drawn details, 1990s retro anime aesthetic.",
   "generationSettings": {
     "targetSceneCount": 6,
     "majorChoiceCount": 3,
@@ -24,7 +24,7 @@
     "encounterBeatCount": 3,
     "generateImages": true,
     "imageGenerationLimit": 10,
-    "panelMode": "special-beats",
+    "panelMode": "single",
     "blockingThreshold": 40,
     "warningThreshold": 60,
     "firstChoiceMaxSeconds": 90,

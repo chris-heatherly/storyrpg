@@ -64,6 +64,26 @@ export const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
     onSelectionChange(available);
   };
 
+  const selectFirst = () => {
+    const first = seasonPlan.episodes.find(e => e.episodeNumber === 1 && e.status !== 'completed');
+    if (first) onSelectionChange([first.episodeNumber]);
+  };
+
+  const selectNext = () => {
+    const completed = new Set(
+      seasonPlan.episodes.filter(e => e.status === 'completed').map(e => e.episodeNumber)
+    );
+    const next = seasonPlan.episodes
+      .filter(e => e.status !== 'completed')
+      .sort((a, b) => a.episodeNumber - b.episodeNumber)
+      .find(e => e.dependsOn.every(dep => completed.has(dep)));
+    const fallback = seasonPlan.episodes
+      .filter(e => e.status !== 'completed')
+      .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
+    const target = next || fallback;
+    if (target) onSelectionChange([target.episodeNumber]);
+  };
+
   const clearSelection = () => {
     onSelectionChange([]);
   };
@@ -109,14 +129,20 @@ export const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
           <View style={[styles.progressFill, { width: `${seasonPlan.progress.percentComplete}%` }]} />
         </View>
         <Text style={styles.progressText}>
-          {seasonPlan.progress.completedCount}/{seasonPlan.totalEpisodes} COMPLETED
+          {seasonPlan.progress.completedCount}/{seasonPlan.totalEpisodes} EPISODES GENERATED
         </Text>
       </View>
 
       {/* Selection Controls */}
       <View style={styles.controls}>
+        <TouchableOpacity style={styles.controlBtn} onPress={selectFirst}>
+          <Text style={styles.controlBtnText}>FIRST EPISODE</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.controlBtn} onPress={selectNext}>
+          <Text style={styles.controlBtnText}>NEXT EPISODE</Text>
+        </TouchableOpacity>
         <TouchableOpacity style={styles.controlBtn} onPress={selectAll}>
-          <Text style={styles.controlBtnText}>SELECT ALL</Text>
+          <Text style={styles.controlBtnText}>REMAINING</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.controlBtn} onPress={clearSelection}>
           <Text style={styles.controlBtnText}>CLEAR</Text>
@@ -368,6 +394,7 @@ const styles = StyleSheet.create({
   },
   controls: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     marginBottom: 12,
   },

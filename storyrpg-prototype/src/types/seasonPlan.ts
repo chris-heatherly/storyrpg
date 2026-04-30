@@ -33,6 +33,8 @@ export interface SeasonEpisode extends EpisodeOutline {
   // Generated episode ID (once created)
   generatedEpisodeId?: string;
   generatedStoryId?: string;
+  generatedJobId?: string;
+  outputDir?: string;
   
   // Generation metadata
   generatedAt?: Date;

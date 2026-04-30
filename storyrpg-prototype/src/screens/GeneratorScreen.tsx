@@ -506,6 +506,51 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     isJobCancelled: checkJobCancelled,
     cancelJob: cancelGenJob,
   } = useGenerationJobStore();
+
+  const getEpisodesToGenerate = useCallback((): number[] => {
+    if (selectedEpisodes.length > 0) {
+      return [...new Set(selectedEpisodes)].sort((a, b) => a - b);
+    }
+    return Array.from({ length: Math.max(1, selectedEpisodeCount) }, (_, i) => i + 1);
+  }, [selectedEpisodeCount, selectedEpisodes]);
+
+  const getLatestCompletedSeasonEpisode = useCallback(() => {
+    if (!seasonPlan) return null;
+    return [...seasonPlan.episodes]
+      .filter((episode) => episode.status === 'completed' && (episode.generatedJobId || episode.outputDir))
+      .sort((a, b) => (b.episodeNumber || 0) - (a.episodeNumber || 0))[0] || null;
+  }, [seasonPlan]);
+
+  const getContinuationJobId = useCallback((): string | undefined => (
+    getLatestCompletedSeasonEpisode()?.generatedJobId || undefined
+  ), [getLatestCompletedSeasonEpisode]);
+
+  const getContinuationOutputDir = useCallback((): string | undefined => (
+    getLatestCompletedSeasonEpisode()?.outputDir || undefined
+  ), [getLatestCompletedSeasonEpisode]);
+
+  const markSelectedEpisodesCompleted = useCallback(async (
+    story: Story,
+    jobId: string,
+    completedOutputDir?: string,
+  ) => {
+    if (!seasonPlan) return;
+    for (const episodeNumber of getEpisodesToGenerate()) {
+      const episode = story.episodes.find((candidate) => candidate.number === episodeNumber);
+      if (!episode) continue;
+      await seasonPlanStore.updateEpisodeStatus(
+        seasonPlan.id,
+        episodeNumber,
+        'completed',
+        episode.id,
+        story.id,
+        jobId,
+        completedOutputDir || story.outputDir,
+      );
+    }
+    const updated = seasonPlanStore.getPlan(seasonPlan.id);
+    if (updated) setSeasonPlan(updated.plan);
+  }, [getEpisodesToGenerate, seasonPlan]);
   
   // Track if we're viewing a historical job (not actively running)
   const [isViewingHistory, setIsViewingHistory] = useState(false);
@@ -577,6 +622,42 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       setActiveJobId(null);
     };
   }, [resumeJobId, getJob, setActiveJobId]);
+
+  useEffect(() => {
+    if (resumeJobId || seasonPlan || sourceAnalysis || state !== 'idle') return;
+    let cancelled = false;
+    seasonPlanStore.initialize()
+      .then(() => {
+        if (cancelled) return;
+        const active = seasonPlanStore.getActivePlan();
+        if (!active) return;
+        const completedCount = active.plan.progress?.completedCount || 0;
+        if (completedCount <= 0 || completedCount >= active.plan.totalEpisodes) return;
+        const nextEpisode = active.plan.episodes
+          .filter((episode) => episode.status !== 'completed')
+          .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
+        setSeasonPlan(active.plan);
+        setSourceAnalysis(active.sourceAnalysis);
+        setAnalysisResult({
+          analysis: active.sourceAnalysis,
+          totalEpisodes: active.sourceAnalysis.totalEstimatedEpisodes || active.plan.totalEpisodes,
+          episodeOutlines: active.sourceAnalysis.episodeBreakdown || active.plan.episodes,
+          suggestedOptions: [],
+        });
+        setCustomStoryTitle(active.sourceAnalysis.sourceTitle || active.plan.seasonTitle);
+        if (nextEpisode) {
+          setSelectedEpisodes([nextEpisode.episodeNumber]);
+          setSelectedEpisodeCount(1);
+        }
+        setState('analysis_complete');
+      })
+      .catch((err) => {
+        console.warn('[GeneratorScreen] Failed to restore active season plan:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeJobId, seasonPlan, sourceAnalysis, state]);
 
   const loadFailureWorkspace = useCallback(async (jobId: string) => {
     setFailureWorkspace((prev) => ({ ...prev, loading: true, error: null }));
@@ -1003,6 +1084,51 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         episode: { number: 1, title: 'Episode 1', synopsis: '', startingLocation: '' },
         userPrompt: userPrompt.trim()
       } as FullCreativeBrief;
+    } else if (sourceAnalysis) {
+      const firstEpisode = sourceAnalysis.episodeBreakdown?.[0];
+      brief = {
+        story: {
+          title: customStoryTitle || sourceAnalysis.sourceTitle || 'New Story',
+          genre: sourceAnalysis.genre || 'Adventure',
+          synopsis: sourceAnalysis.anchors?.goal || sourceAnalysis.storyArcs?.[0]?.description || sourceAnalysis.sourceTitle || '',
+          tone: sourceAnalysis.tone || 'Dramatic',
+          themes: sourceAnalysis.themes || [],
+        },
+        world: {
+          premise: sourceAnalysis.setting?.worldDetails || sourceAnalysis.setting?.location || '',
+          timePeriod: sourceAnalysis.setting?.timePeriod || '',
+          technologyLevel: '',
+          keyLocations: (sourceAnalysis.keyLocations || []).map((location) => ({
+            id: location.id,
+            name: location.name,
+            type: 'location',
+            description: location.description,
+            importance: location.importance,
+          })),
+        },
+        protagonist: {
+          id: sourceAnalysis.protagonist?.id || 'protagonist',
+          name: sourceAnalysis.protagonist?.name || 'Hero',
+          pronouns: 'they/them',
+          description: sourceAnalysis.protagonist?.description || '',
+          role: 'protagonist',
+        },
+        npcs: (sourceAnalysis.majorCharacters || [])
+          .filter((character) => character.id !== sourceAnalysis.protagonist?.id)
+          .map((character) => ({
+            id: character.id,
+            name: character.name,
+            role: character.role === 'antagonist' ? 'antagonist' : character.role === 'neutral' ? 'neutral' : 'ally',
+            description: character.description,
+            importance: character.importance === 'core' ? 'major' : character.importance === 'supporting' ? 'supporting' : 'minor',
+          })),
+        episode: {
+          number: firstEpisode?.episodeNumber || 1,
+          title: firstEpisode?.title || 'Episode 1',
+          synopsis: firstEpisode?.synopsis || '',
+          startingLocation: sourceAnalysis.keyLocations?.[0]?.id || '',
+        },
+      } as FullCreativeBrief;
     }
     
     // Attach season plan to brief if available - this provides encounter and branching directives
@@ -1402,8 +1528,10 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     if (USE_SERVER_WORKER) {
       try {
         const config = createPipelineConfig();
-        const workerEpisodeCount = selectedEpisodeCount > 0 ? selectedEpisodeCount : 1;
+        const episodesToGenerate = getEpisodesToGenerate();
+        const workerEpisodeCount = episodesToGenerate.length;
         let workerJobIdForUpdates: string | null = null;
+        const continuationJobId = getContinuationJobId();
         const episodeRange = updatedSourceAnalysis && (selectedEpisodes.length > 0 || selectedEpisodeCount > 0)
           ? (selectedEpisodes.length > 0
             ? { start: Math.min(...selectedEpisodes), end: Math.max(...selectedEpisodes), specific: selectedEpisodes }
@@ -1423,7 +1551,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           idempotencyKey: `generation:${brief.story.title}:${JSON.stringify(episodeRange || {})}`,
           storyTitle: brief.story.title || 'Untitled Story',
           episodeCount: workerEpisodeCount,
-          resumeFromJobId: currentJobId || undefined,
+          resumeFromJobId: continuationJobId,
         },
         (evt) => handleEvent(evt),
         (statusData) => {
@@ -1540,6 +1668,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           if (onStoryGenerated) onStoryGenerated(result.story);
           if (result.outputManifest) setOutputManifest(result.outputManifest);
           if (result.outputDirectory) setOutputDirectory(result.outputDirectory);
+          if (workerJobIdForUpdates) {
+            await markSelectedEpisodesCompleted(result.story, workerJobIdForUpdates, result.outputDirectory);
+          }
         }
         setLiveProgress(100);
         setEtaSeconds(null);
@@ -1586,7 +1717,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       status: 'running',
       currentPhase: 'initialization',
       progress: 0,
-      episodeCount: selectedEpisodeCount,
+      episodeCount: getEpisodesToGenerate().length,
       currentEpisode: 1,
       events: [],
     });
@@ -1595,10 +1726,17 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       let result: FullPipelineResult;
       if (updatedSourceAnalysis && (selectedEpisodes.length > 0 || selectedEpisodeCount > 0)) {
         // Use selected episodes from season plan if available, otherwise fall back to count
-        const episodesToGenerate = selectedEpisodes.length > 0 ? selectedEpisodes : Array.from({ length: selectedEpisodeCount }, (_, i) => i + 1);
+        const episodesToGenerate = getEpisodesToGenerate();
         const episodeRange = selectedEpisodes.length > 0 
           ? { start: Math.min(...selectedEpisodes), end: Math.max(...selectedEpisodes), specific: selectedEpisodes }
           : { start: 1, end: selectedEpisodeCount };
+        const continuationOutputDir = getContinuationOutputDir();
+        const resumeCheckpoint = continuationOutputDir
+          ? {
+              steps: { output_directory: { status: 'completed' } },
+              outputs: { output_directory: { outputDirectory: continuationOutputDir } },
+            }
+          : undefined;
         
         handleEvent({ type: 'phase_start', phase: 'initialization', message: `Starting generation of episode(s) ${episodesToGenerate.join(', ')} for "${brief.story.title}"...`, timestamp: new Date() });
         
@@ -1614,6 +1752,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           brief,
           sourceAnalysis: updatedSourceAnalysis,
           episodeRange,
+          resumeCheckpoint,
           onPipelineCreated: (pipeline) => {
             pipeline.setExternalJobId(jobId);
             pipelineRef.current = pipeline;
@@ -1686,6 +1825,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           if (onStoryGenerated) onStoryGenerated(sr.story!);
           if (sr.outputManifest) setOutputManifest(sr.outputManifest);
           if (sr.outputDirectory) setOutputDirectory(sr.outputDirectory);
+          await markSelectedEpisodesCompleted(sr.story!, jobId, sr.outputDirectory);
         }
         setState('complete');
         setLiveProgress(100);
@@ -1693,22 +1833,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         // Update job as completed
         if (jobId) {
           await updateGenJob(jobId, { status: 'completed', progress: 100 });
-        }
-        // Mark generated episodes as completed in season plan
-        if (seasonPlan && 'story' in result && result.story) {
-          const story = result.story;
-          for (const episode of story.episodes) {
-            await seasonPlanStore.updateEpisodeStatus(
-              seasonPlan.id, 
-              episode.number || 1, 
-              'completed',
-              episode.id,
-              story.id
-            );
-          }
-          // Refresh season plan
-          const updated = seasonPlanStore.getPlan(seasonPlan.id);
-          if (updated) setSeasonPlan(updated.plan);
         }
       } else { throw new Error(('error' in result ? result.error : 'Generation failed') || 'Unknown error'); }
     } catch (err) { 
@@ -1872,7 +1996,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     pipelineRef.current = null;
   };
 
-  const hasSourceInput = Boolean(documentBrief || userPrompt.trim());
+  const hasSourceInput = Boolean(documentBrief || userPrompt.trim() || sourceAnalysis);
   const updateGenerationSetting = useCallback(<K extends keyof GenerationSettings>(
     key: K,
     value: GenerationSettings[K],

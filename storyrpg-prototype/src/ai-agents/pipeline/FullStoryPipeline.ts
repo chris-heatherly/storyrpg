@@ -235,6 +235,7 @@ import {
   createWorldBriefFromAnalysis,
   getLocationInfoForScene,
 } from './planningHelpers';
+import { mergeSeasonEpisodes } from './seasonStoryMerge';
 
 // Re-export types for consumers
 export type { OutputManifest } from '../utils/pipelineOutputWriter';
@@ -1256,6 +1257,30 @@ export class FullStoryPipeline {
         message: `Resumed ${unitId} from ${artifactPath}`,
       });
       return data;
+    }
+    return undefined;
+  }
+
+  private loadContinuationStory(
+    outputDirectory: string | undefined,
+    resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> },
+  ): Story | undefined {
+    const checkpointStory = this.getResumeOutput<Story>(resumeCheckpoint, 'final_story_package');
+    if (checkpointStory?.episodes?.length) return checkpointStory;
+
+    const savedStory = this.loadResumeUnit<Story>(
+      outputDirectory,
+      'final_story_package',
+      'checkpoints/final-story-before-save.json',
+    );
+    if (savedStory?.episodes?.length) return savedStory;
+
+    const storyPackage = loadEarlyDiagnosticSync<{ story?: Story } | Story>(outputDirectory, 'story.json');
+    if (storyPackage && 'story' in storyPackage && storyPackage.story?.episodes?.length) {
+      return storyPackage.story;
+    }
+    if (storyPackage && 'episodes' in storyPackage && Array.isArray(storyPackage.episodes)) {
+      return storyPackage as Story;
     }
     return undefined;
   }
@@ -6610,6 +6635,20 @@ export class FullStoryPipeline {
 
       // Overlay images from AssetRegistry into the assembled story
       story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
+      const continuationStory = this.loadContinuationStory(outputDirectory, resumeCheckpoint);
+      if (continuationStory?.episodes?.length) {
+        const mergeResult = mergeSeasonEpisodes(continuationStory, story);
+        story = assembleStoryAssetsFromRegistry(mergeResult.story, this.assetRegistry);
+        this.emit({
+          type: 'debug',
+          phase: 'season_continuation',
+          message: `Merged ${mergeResult.appendedEpisodeNumbers.length} new episode(s) into existing season (${story.episodes.length} total).`,
+          data: {
+            appendedEpisodeNumbers: mergeResult.appendedEpisodeNumbers,
+            replacedEpisodeNumbers: mergeResult.replacedEpisodeNumbers,
+          },
+        });
+      }
       this.addCheckpoint('Final Story', story, false);
       await this.saveResumeUnit(
         outputDirectory,

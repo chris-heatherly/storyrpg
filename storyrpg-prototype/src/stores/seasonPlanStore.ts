@@ -372,7 +372,9 @@ export const seasonPlanStore = {
     episodeNumber: number,
     status: EpisodeStatus,
     generatedEpisodeId?: string,
-    generatedStoryId?: string
+    generatedStoryId?: string,
+    generatedJobId?: string,
+    outputDir?: string,
   ): Promise<void> {
     await storeMutex.withLock(async () => {
       const existing = state.plans.get(planId);
@@ -383,8 +385,10 @@ export const seasonPlanStore = {
         return {
           ...ep,
           status,
-          generatedEpisodeId,
-          generatedStoryId,
+          generatedEpisodeId: generatedEpisodeId ?? ep.generatedEpisodeId,
+          generatedStoryId: generatedStoryId ?? ep.generatedStoryId,
+          generatedJobId: generatedJobId ?? ep.generatedJobId,
+          outputDir: outputDir ?? ep.outputDir,
           generatedAt: status === 'completed' ? new Date() : ep.generatedAt,
         };
       });

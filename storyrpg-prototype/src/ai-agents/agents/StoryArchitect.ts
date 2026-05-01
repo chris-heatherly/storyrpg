@@ -319,6 +319,110 @@ export class StoryArchitect extends BaseAgent {
     return this.encounterMinimums?.long ?? 1;
   }
 
+  private getMinimumChoiceSceneCount(sceneCount: number): number {
+    return Math.ceil(sceneCount * 0.4);
+  }
+
+  private createExpressionChoicePoint(scene: SceneBlueprint, reason: string): NonNullable<SceneBlueprint['choicePoint']> {
+    const sceneGoal = scene.dramaticQuestion || scene.narrativeFunction || scene.description || scene.name;
+
+    return {
+      type: 'expression',
+      branches: false,
+      stakes: {
+        want: `Express how the protagonist responds to ${sceneGoal}`,
+        cost: 'The story beat continues, but the response colors how others read the protagonist.',
+        identity: 'This choice defines the protagonist through tone, values, and emotional posture.',
+      },
+      description: `Let the player choose how they meet this moment: ${reason}.`,
+      optionHints: [
+        'Answer with restraint and careful attention.',
+        'Answer with directness, making the feeling plain.',
+        'Answer obliquely, revealing only part of the truth.',
+      ],
+      consequenceDomain: 'identity',
+      reminderPlan: {
+        immediate: 'Reflect the chosen tone in the next line of dialogue or narration.',
+        shortTerm: 'Let a later scene echo how the protagonist carried themself here.',
+      },
+      expectedResidue: [
+        `The protagonist's response in ${scene.name} leaves an emotional trace.`,
+      ],
+    };
+  }
+
+  private addChoicePointIfEligible(scene: SceneBlueprint, reason: string): boolean {
+    if (scene.choicePoint || scene.isEncounter) return false;
+    scene.choicePoint = this.createExpressionChoicePoint(scene, reason);
+    console.log(`[StoryArchitect] Auto-added expression choicePoint to ${scene.id}: ${reason}`);
+    return true;
+  }
+
+  private repairChoiceDensity(blueprint: EpisodeBlueprint): void {
+    const scenes = blueprint.scenes || [];
+    if (scenes.length === 0) return;
+
+    const minimumChoiceScenes = this.getMinimumChoiceSceneCount(scenes.length);
+    let choiceSceneCount = scenes.filter(scene => scene.choicePoint).length;
+
+    const startingScene = scenes.find(scene => scene.id === blueprint.startingSceneId) || scenes[0];
+    if (startingScene && !startingScene.choicePoint) {
+      const followUps = startingScene.leadsTo
+        .map(id => scenes.find(scene => scene.id === id))
+        .filter((scene): scene is SceneBlueprint => Boolean(scene));
+      const secondSceneHasChoice = followUps.some(scene => scene.choicePoint);
+
+      if (!secondSceneHasChoice) {
+        if (this.addChoicePointIfEligible(startingScene, 'early player agency')) {
+          choiceSceneCount++;
+        } else {
+          const repairedFollowUp = followUps.find(scene => this.addChoicePointIfEligible(scene, 'early player agency after an encounter opening'));
+          if (repairedFollowUp) choiceSceneCount++;
+        }
+      }
+    }
+
+    const sceneMap = new Map(scenes.map(scene => [scene.id, scene]));
+    const visited = new Set<string>();
+    const repairLongNonChoiceRuns = (sceneId: string, nonChoiceStreak: number): void => {
+      const visitKey = `${sceneId}:${nonChoiceStreak}`;
+      if (visited.has(visitKey)) return;
+      visited.add(visitKey);
+
+      const scene = sceneMap.get(sceneId);
+      if (!scene) return;
+
+      let currentStreak = scene.choicePoint ? 0 : nonChoiceStreak + 1;
+      if (currentStreak > 2 && this.addChoicePointIfEligible(scene, 'breaking up a long passive scene run')) {
+        choiceSceneCount++;
+        currentStreak = 0;
+      }
+
+      for (const nextId of scene.leadsTo) {
+        repairLongNonChoiceRuns(nextId, currentStreak);
+      }
+    };
+
+    if (startingScene) {
+      repairLongNonChoiceRuns(startingScene.id, 0);
+    }
+
+    const preferredScenes = [
+      ...scenes.filter(scene => scene.purpose === 'bottleneck'),
+      ...scenes.filter(scene => scene.purpose === 'transition'),
+      ...scenes.filter(scene => scene.purpose === 'branch'),
+    ];
+    const seen = new Set<string>();
+    for (const scene of preferredScenes) {
+      if (choiceSceneCount >= minimumChoiceScenes) break;
+      if (seen.has(scene.id)) continue;
+      seen.add(scene.id);
+      if (this.addChoicePointIfEligible(scene, 'meeting the episode choice-density requirement')) {
+        choiceSceneCount++;
+      }
+    }
+  }
+
   private tokenizeEncounterText(value: string | undefined): string[] {
     return (value || '')
       .toLowerCase()
@@ -812,6 +916,8 @@ REQUIREMENTS:
       if (!blueprint.structuralRole && input.episodeStructuralRole) {
         blueprint.structuralRole = [...input.episodeStructuralRole];
       }
+
+      this.repairChoiceDensity(blueprint);
 
       // Log choice point info BEFORE validation
       const scenesWithChoices = blueprint.scenes?.filter(s => s.choicePoint) || [];

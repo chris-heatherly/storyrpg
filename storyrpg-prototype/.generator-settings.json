@@ -13,7 +13,7 @@
   "llmProvider": "anthropic",
   "llmModel": "claude-sonnet-4-20250514",
   "atlasCloudModel": "black-forest-labs/flux-dev-lora",
-  "artStyle": "Hand-painted anime fantasy illustration style, warm golden-hour cinematic lighting, elegant storybook atmosphere, expressive but clean character design, refined semi-realistic faces, graceful silhouettes, soft painterly backgrounds, broad brushwork, simplified natural forms, restrained texture, smooth color transitions, clear focal hierarchy, gentle atmospheric depth, earthy greens, warm ochres, muted blues, amber highlights, delicate linework, polished animation-background feel, low visual noise, uncluttered composition, minimal micro-detail, no speckling, no pointillistic texture, no excessive dappled highlights, no gritty realism.",
+  "artStyle": "anime fantasy illustration style, elegant storybook atmosphere, expressive but clean character design, refined semi-realistic faces, graceful silhouettes, soft painterly backgrounds, broad brushwork, simplified natural forms, restrained texture, smooth color transitions, clear focal hierarchy, gentle atmospheric depth, earthy greens, warm ochres, muted blues, amber highlights, delicate linework, polished animation-background feel, low visual noise, uncluttered composition, minimal micro-detail, no speckling, no pointillistic texture, no excessive dappled highlights, no gritty realism.",
   "generationSettings": {
     "targetSceneCount": 6,
     "majorChoiceCount": 3,

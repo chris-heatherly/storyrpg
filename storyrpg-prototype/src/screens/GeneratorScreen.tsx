@@ -507,6 +507,61 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     cancelJob: cancelGenJob,
   } = useGenerationJobStore();
 
+  const hydrateImageJobsFromWorkerStatus = useCallback((statusData: any) => {
+    if (Array.isArray(statusData?.imageManifest)) {
+      for (const shot of statusData.imageManifest) {
+        if (!shot?.identifier || seenManifestIdsRef.current.has(shot.identifier)) continue;
+        seenManifestIdsRef.current.add(shot.identifier);
+        addImageJob({
+          id: `manifest-${shot.identifier}`,
+          identifier: shot.identifier,
+          prompt: shot.description || '',
+          maxRetries: 3,
+          metadata: { sceneId: shot.sceneId, beatId: shot.beatId, type: 'beat' as const },
+        });
+      }
+    }
+
+    if (!Array.isArray(statusData?.imageJobs)) return;
+    for (const imageJob of statusData.imageJobs) {
+      if (!imageJob?.id) continue;
+      const identifier = imageJob.identifier || imageJob.id;
+      const manifestKey = `manifest-${identifier}`;
+      const targetId = seenManifestIdsRef.current.has(identifier) ? manifestKey : imageJob.id;
+      const progress = imageJob.status === 'completed'
+        ? 100
+        : imageJob.status === 'processing'
+          ? 50
+          : 0;
+      const updates: Record<string, unknown> = {};
+      if (imageJob.status !== undefined) updates.status = imageJob.status;
+      if (imageJob.imageUrl !== undefined) updates.imageUrl = imageJob.imageUrl;
+      if (imageJob.error !== undefined) updates.error = imageJob.error;
+      if (imageJob.status !== undefined) updates.progress = progress;
+
+      if (seenImageJobIdsRef.current.has(imageJob.id)) {
+        updateImageJob(targetId, updates);
+        continue;
+      }
+
+      seenImageJobIdsRef.current.add(imageJob.id);
+      if (seenManifestIdsRef.current.has(identifier)) {
+        updateImageJob(manifestKey, updates);
+      } else {
+        addImageJob({
+          id: imageJob.id,
+          identifier,
+          prompt: imageJob.prompt || '',
+          maxRetries: imageJob.maxRetries || 3,
+          metadata: imageJob.metadata,
+        });
+        if (imageJob.status !== 'pending') {
+          updateImageJob(imageJob.id, updates);
+        }
+      }
+    }
+  }, [addImageJob, updateImageJob]);
+
   const getEpisodesToGenerate = useCallback((): number[] => {
     if (selectedEpisodes.length > 0) {
       return [...new Set(selectedEpisodes)].sort((a, b) => a - b);
@@ -734,6 +789,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         if (typeof statusData.currentItem === 'number' && typeof statusData.totalItems === 'number') {
           setImageProgress({ current: statusData.currentItem, total: statusData.totalItems || 0 });
         }
+        hydrateImageJobsFromWorkerStatus(statusData);
 
         if (Array.isArray(statusData.timeline) && statusData.timeline.length > 0) {
           const mappedEvents = statusData.timeline.slice(-80).map((entry: any): PipelineEvent => ({
@@ -782,7 +838,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       cancelled = true;
       clearInterval(interval);
     };
-  }, [currentJobId, loadFailureWorkspace, state, updateGenJob]);
+  }, [currentJobId, hydrateImageJobsFromWorkerStatus, loadFailureWorkspace, state, updateGenJob]);
 
   useEffect(() => {
     if (analysisCharacters.length === 0) {
@@ -1584,47 +1640,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             setImageProgress({ current: statusData.currentItem, total: statusData.totalItems || 0 });
           }
 
-          if (Array.isArray(statusData?.imageManifest)) {
-            for (const shot of statusData.imageManifest) {
-              if (shot.identifier && !seenManifestIdsRef.current.has(shot.identifier)) {
-                seenManifestIdsRef.current.add(shot.identifier);
-                addImageJob({
-                  id: `manifest-${shot.identifier}`,
-                  identifier: shot.identifier,
-                  prompt: shot.description || '',
-                  maxRetries: 3,
-                  metadata: { sceneId: shot.sceneId, beatId: shot.beatId, type: 'beat' as const },
-                });
-              }
-            }
-          }
-
-          if (Array.isArray(statusData?.imageJobs)) {
-            for (const ij of statusData.imageJobs) {
-              if (!ij?.id) continue;
-              const manifestKey = `manifest-${ij.identifier || ij.id}`;
-              const targetId = seenManifestIdsRef.current.has(ij.identifier || '') ? manifestKey : ij.id;
-              if (seenImageJobIdsRef.current.has(ij.id)) {
-                updateImageJob(targetId, { status: ij.status, imageUrl: ij.imageUrl, progress: ij.status === 'completed' ? 100 : ij.status === 'processing' ? 50 : 0 });
-              } else {
-                seenImageJobIdsRef.current.add(ij.id);
-                if (seenManifestIdsRef.current.has(ij.identifier || '')) {
-                  updateImageJob(manifestKey, { status: ij.status, imageUrl: ij.imageUrl, progress: ij.status === 'completed' ? 100 : ij.status === 'processing' ? 50 : 0 });
-                } else {
-                  addImageJob({
-                    id: ij.id,
-                    identifier: ij.identifier || ij.id,
-                    prompt: ij.prompt || '',
-                    maxRetries: ij.maxRetries || 3,
-                    metadata: ij.metadata,
-                  });
-                  if (ij.status !== 'pending') {
-                    updateImageJob(ij.id, { status: ij.status, imageUrl: ij.imageUrl, progress: ij.status === 'completed' ? 100 : 50 });
-                  }
-                }
-              }
-            }
-          }
+          hydrateImageJobsFromWorkerStatus(statusData);
 
           if (workerJobIdForUpdates) {
             void updateGenJob(workerJobIdForUpdates, {
@@ -1901,6 +1917,17 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         throw new Error(result?.error || 'Failed to resume generation.');
       }
 
+      await registerGenJob({
+        id: result.jobId,
+        storyTitle: historyJob?.storyTitle || customStoryTitle || 'Untitled Story',
+        startedAt: new Date().toISOString(),
+        status: 'running',
+        currentPhase: 'queued',
+        progress: 0,
+        episodeCount: historyJob?.episodeCount || 1,
+        currentEpisode: historyJob?.currentEpisode || 1,
+        events: [],
+      });
       setFailureWorkspace((prev) => ({ ...prev, resuming: false, tab: 'resume' }));
       setIsViewingHistory(false);
       setHistoryJob(undefined);

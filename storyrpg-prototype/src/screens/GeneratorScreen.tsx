@@ -114,6 +114,7 @@ import {
 } from '../ai-agents/utils/documentParser';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { applyEndingModeToAnalysis } from '../ai-agents/utils/endingResolver';
+import { countVisibleImageJobs } from '../utils/imageJobDisplay';
 
 // Import PipelineEvent from canonical source
 import type { PipelineEvent } from '../ai-agents/pipeline';
@@ -436,7 +437,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   // Surface background image/video jobs in a header pill + bottom sheet rather
   // than mounting the full panels at the bottom of the generator scroll. The
   // pill is only rendered when jobs exist.
-  const imageJobCount = useImageJobStore((s) => Object.keys(s.jobs).length);
+  const imageJobCount = useImageJobStore((s) => countVisibleImageJobs(s.jobs));
   const videoJobCount = useVideoJobStore((s) => Object.keys(s.jobs).length);
   const totalBackgroundJobs = imageJobCount + videoJobCount;
   const hasBackgroundJobs = totalBackgroundJobs > 0;

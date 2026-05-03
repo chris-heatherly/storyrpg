@@ -6,12 +6,14 @@ import {
   TouchableOpacity,
   ScrollView,
   SafeAreaView,
+  Alert,
 } from 'react-native';
 import {
   ChevronRight,
 } from 'lucide-react-native';
 import { StoryCatalogEntry } from '../types';
 import { TERMINAL } from '../theme';
+import { PROXY_CONFIG } from '../config/endpoints';
 import { useSettingsStore, FontSize } from '../stores/settingsStore';
 import { useGenerationJobStore, GenerationJob } from '../stores/generationJobStore';
 import {
@@ -41,6 +43,7 @@ interface SettingsScreenProps {
   seasonContinuations?: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>;
   generatedStoryIds?: string[]; // IDs of stories that can be deleted
   onRefreshStories?: () => void;
+  onStoryArtifactsChanged?: (story: StoryCatalogEntry) => Promise<void> | void;
   isRefreshing?: boolean;
   videoGeneratingStoryId?: string | null;
   imageGeneratingStoryId?: string | null;
@@ -59,6 +62,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   seasonContinuations = {},
   generatedStoryIds = [],
   onRefreshStories,
+  onStoryArtifactsChanged,
   isRefreshing = false,
   videoGeneratingStoryId = null,
   imageGeneratingStoryId = null,
@@ -134,6 +138,80 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const handleStartRename = (story: StoryCatalogEntry) => {
     setRenamingStory(story);
     setNewStoryTitle(story.title);
+  };
+
+  const handleDeleteSeasonImageReferences = (story: StoryCatalogEntry) => {
+    const deleteRefs = async () => {
+      if (!story.outputDir) return;
+      try {
+        const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/story-image-artifacts/season-references`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ outputDir: story.outputDir }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || result?.success === false) {
+          throw new Error(result?.error || 'Failed to delete season references.');
+        }
+        if (onStoryArtifactsChanged) {
+          await onStoryArtifactsChanged(story);
+        } else {
+          onRefreshStories?.();
+        }
+      } catch (error) {
+        Alert.alert('Delete Failed', error instanceof Error ? error.message : 'Failed to delete season references.');
+      }
+    };
+
+    Alert.alert(
+      'Delete Season References?',
+      'This removes character reference sheets and style-bible assets for this season. Episode/beat art stays in place.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete References',
+          style: 'destructive',
+          onPress: () => { void deleteRefs(); },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteEpisodeArt = (story: StoryCatalogEntry) => {
+    const deleteArt = async () => {
+      if (!story.outputDir) return;
+      try {
+        const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/story-image-artifacts/episode-art`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ outputDir: story.outputDir }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || result?.success === false) {
+          throw new Error(result?.error || 'Failed to delete episode art.');
+        }
+        if (onStoryArtifactsChanged) {
+          await onStoryArtifactsChanged(story);
+        } else {
+          onRefreshStories?.();
+        }
+      } catch (error) {
+        Alert.alert('Delete Failed', error instanceof Error ? error.message : 'Failed to delete episode art.');
+      }
+    };
+
+    Alert.alert(
+      'Delete Episode Art?',
+      'This removes reader-facing cover, scene, and beat art for this story. Season-level character/style references stay in place.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Art',
+          style: 'destructive',
+          onPress: () => { void deleteArt(); },
+        },
+      ]
+    );
   };
 
   const confirmRename = () => {
@@ -236,6 +314,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           onRenameStory={onRenameStory}
           onGenerateVideos={onGenerateVideos}
           onGenerateImages={onGenerateImages}
+          onDeleteSeasonImageReferences={handleDeleteSeasonImageReferences}
+          onDeleteEpisodeArt={handleDeleteEpisodeArt}
           onContinueSeasonPlan={onContinueSeasonPlan}
           seasonContinuations={seasonContinuations}
           onRequestDeleteStory={handleDeleteStory}
@@ -483,17 +563,27 @@ const styles = StyleSheet.create({
   storySeasonHeader: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
     padding: 14,
     backgroundColor: '#1b1f27',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.05)',
   },
+  storySeasonHeaderNarrow: {
+    alignItems: 'stretch',
+    flexWrap: 'wrap',
+  },
   storyManageItem: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
     padding: 16,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.03)',
+  },
+  storyManageItemNarrow: {
+    alignItems: 'stretch',
+    flexWrap: 'wrap',
   },
   storyEpisodeNumber: {
     width: 42,
@@ -517,6 +607,7 @@ const styles = StyleSheet.create({
   },
   storyManageInfo: {
     flex: 1,
+    minWidth: 220,
   },
   storyManageTitle: {
     fontSize: 12,
@@ -556,10 +647,20 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(239, 68, 68, 0.1)',
   },
   storyManageActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: 'column',
     gap: 8,
-    alignItems: 'center',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  storyManageActionsNarrow: {
+    width: '100%',
+    alignItems: 'stretch',
+  },
+  storyActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    gap: 8,
     justifyContent: 'flex-end',
   },
   storyActionButton: {
@@ -570,6 +671,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    minWidth: 88,
+  },
+  storyActionButtonDisabled: {
+    backgroundColor: 'rgba(148, 163, 184, 0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.12)',
+    opacity: 0.55,
   },
   storyActionText: {
     fontSize: 8,

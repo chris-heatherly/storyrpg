@@ -1298,6 +1298,44 @@ export class FullStoryPipeline {
     return undefined;
   }
 
+  private buildStoryGeneratorMetadata(): Record<string, unknown> {
+    return {
+      pipeline: 'FullStoryPipeline',
+      artStyle: this.config.artStyle,
+      canonicalArtStyle: this.config.imageGen?.gemini?.canonicalArtStyle || this.config.artStyle,
+      artStyleProfile: this.config.imageGen?.artStyleProfile,
+      imageProvider: this.config.imageGen?.provider,
+    };
+  }
+
+  private hydrateSeasonImageStyleFromGenerator(generator?: Record<string, unknown>): void {
+    if (!generator || typeof generator !== 'object') return;
+    const savedArtStyle = typeof generator.artStyle === 'string' ? generator.artStyle.trim() : '';
+    const savedCanonicalStyle = typeof generator.canonicalArtStyle === 'string' ? generator.canonicalArtStyle.trim() : '';
+    const currentArtStyle = this.config.artStyle?.trim() || '';
+    const currentCanonicalStyle = this.config.imageGen?.gemini?.canonicalArtStyle?.trim() || '';
+    const isGenericFallback = (value: string) =>
+      /^(dramatic cinematic story art|cinematic illustration|expressive illustrated)$/i.test(value);
+    if (savedArtStyle && (!currentArtStyle || isGenericFallback(currentArtStyle))) {
+      this.config.artStyle = savedArtStyle;
+    }
+    if (!this.config.imageGen) this.config.imageGen = {};
+    if (generator.artStyleProfile && !this.config.imageGen.artStyleProfile) {
+      this.config.imageGen.artStyleProfile = generator.artStyleProfile as any;
+    }
+    if (!this.config.imageGen.gemini) this.config.imageGen.gemini = {};
+    if (!currentCanonicalStyle || isGenericFallback(currentCanonicalStyle)) {
+      this.config.imageGen.gemini.canonicalArtStyle = savedCanonicalStyle || savedArtStyle || this.config.artStyle;
+    }
+    if (savedArtStyle || savedCanonicalStyle) {
+      this.emit({
+        type: 'info',
+        phase: 'images',
+        message: 'Loaded season-level image style from saved story package.',
+      });
+    }
+  }
+
   private getEpisodeScopedSceneId(brief: FullCreativeBrief, sceneId: string): string {
     const episodeNumber = typeof brief.episode?.number === 'number' ? brief.episode.number : 0;
     return `episode-${episodeNumber}-${sceneId}`;
@@ -1404,6 +1442,8 @@ export class FullStoryPipeline {
     const brief = loadEarlyDiagnosticSync<FullCreativeBrief>(normalizedOutputDir, '00-input-brief.json');
     const worldBible = loadEarlyDiagnosticSync<WorldBible>(normalizedOutputDir, '01-world-bible.json');
     const characterBible = loadEarlyDiagnosticSync<CharacterBible>(normalizedOutputDir, '02-character-bible.json');
+    const storyPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(normalizedOutputDir, 'story.json');
+    this.hydrateSeasonImageStyleFromGenerator((storyPackage as any)?.generator);
     const story = this.loadContinuationStory(normalizedOutputDir, resumeCheckpoint);
     const savedChoiceSets = loadEarlyDiagnosticSync<ChoiceSet[]>(normalizedOutputDir, '05-choice-sets.json') || [];
     const savedEncounters = loadEarlyDiagnosticSync<EncounterStructure[]>(normalizedOutputDir, '05b-encounters.json') || [];
@@ -1493,6 +1533,7 @@ export class FullStoryPipeline {
         choiceSets: savedChoiceSets,
         encounters: savedEncounters,
         finalStory,
+        generator: this.buildStoryGeneratorMetadata(),
         visualPlanning: visualPlanningOutputs,
         encounterImageDiagnostics: allEncounterDiagnostics,
         llmLedger: this.telemetry.getLlmLedger() ?? undefined,
@@ -6822,6 +6863,7 @@ export class FullStoryPipeline {
           brief: baseBrief,
           worldBible,
           characterBible,
+          generator: this.buildStoryGeneratorMetadata(),
           visualPlanning: visualPlanningOutputs,
           encounterImageDiagnostics: allEncounterImageDiagnostics,
           llmLedger: this.telemetry.getLlmLedger() ?? undefined,
@@ -6921,6 +6963,7 @@ export class FullStoryPipeline {
         worldBible,
         characterBible,
         finalStory: story,
+        generator: this.buildStoryGeneratorMetadata(),
         visualPlanning: visualPlanningOutputs,
         qaReport: aggregatedQAReport,
         incrementalValidationResults: this.sceneValidationResults.length > 0
@@ -13246,13 +13289,12 @@ Design the key art. Return STRICT JSON matching the schema.`;
     this.emit({ type: 'agent_start', agent: 'ColorScriptAgent', message: 'Generating episode style bible...' });
 
     try {
-      // Composite style string carries the full ArtStyleProfile DNA instead
-      // of just the short label, so downstream prompt assembly already sees
-      // "romance novel. Rendering: …. Color: …." rather than a bare name
-      // that the model's priors can misinterpret.
+      // The user's raw style prompt is the season-level style contract. The
+      // structured profile can fill gaps, but it must not replace the user's
+      // explicit rendering and lighting vocabulary.
       const profileStyle =
-        composeCanonicalStyleString(this.config.imageGen?.artStyleProfile) ||
         this.config.artStyle ||
+        composeCanonicalStyleString(this.config.imageGen?.artStyleProfile) ||
         undefined;
 
       const titleSlug = idSlugify(brief.story.title);

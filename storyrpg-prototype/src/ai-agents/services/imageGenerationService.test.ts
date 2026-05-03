@@ -65,6 +65,46 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
     expect(rewritten).not.toMatch(/\bbloody\b/i);
     expect(rewritten).not.toMatch(/\bmurder\b/i);
   });
+
+  it('uses resolved style for DALL-E requests even when prompt.style is missing', async () => {
+    const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'image-gen-dalle-style-'));
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: [{ b64_json: Buffer.from('png').toString('base64') }] }),
+    }));
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const service = new ImageGenerationService({
+        enabled: true,
+        provider: 'dall-e',
+        openaiApiKey: 'test-key',
+        openaiImageModel: 'gpt-image-1',
+        outputDirectory,
+        geminiSettings: {
+          canonicalArtStyle: 'raw user style, crisp cel shading, consistent soft lighting',
+        },
+      } as any);
+
+      await (service as any).generateWithDallE(
+        { prompt: 'Mika Kuroda front reference', aspectRatio: '9:16' },
+        'ref_mika_front',
+        'job-1',
+        undefined,
+        'master',
+      );
+
+      const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+      const requestInit = calls[0]?.[1];
+      expect(requestInit).toBeDefined();
+      const body = JSON.parse(String(requestInit?.body || '{}'));
+      expect(body.prompt).toContain('Style: raw user style, crisp cel shading, consistent soft lighting');
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+      fs.rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('ImageGenerationService stable-diffusion wiring', () => {

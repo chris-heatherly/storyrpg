@@ -17,7 +17,15 @@ type CachedStoryRecord = {
 
 function getCatalogSourceKey(entry: StoryCatalogEntry): string {
   if (entry.isBuiltIn) return `builtin:${entry.id}`;
-  return entry.fullStoryUrl || entry.outputDir || `story:${entry.id}`;
+  const artifactState = entry.imageArtifacts
+    ? `refs:${entry.imageArtifacts.hasSeasonReferences ? 1 : 0}:art:${entry.imageArtifacts.hasEpisodeArt ? 1 : 0}`
+    : 'refs:?:art:?';
+  return [
+    entry.fullStoryUrl || entry.outputDir || `story:${entry.id}`,
+    entry.updatedAt || '',
+    entry.imagesStatus || '',
+    artifactState,
+  ].join('|');
 }
 
 function getStorySourceKey(story: Story): string {

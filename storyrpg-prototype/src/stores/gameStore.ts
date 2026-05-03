@@ -61,6 +61,7 @@ interface BranchPathEntry {
 
 interface GameActions {
   initializeStory: (story: Story, characterName: string, pronouns: PlayerState['characterPronouns']) => void;
+  updateCurrentStory: (story: Story) => void;
   loadEpisode: (episodeId: string) => void;
   loadScene: (sceneId: string, episodeOverride?: Episode) => void;
   setBeat: (beatId: string) => void;
@@ -461,6 +462,23 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setCurrentBeatId(null);
     setSceneHistory([]);
     setEncounterState(null);
+  }, []);
+
+  const updateCurrentStory = useCallback((story: Story) => {
+    storyIndexesRef.current = buildStoryIndexes(story);
+    setCurrentStory(story);
+    setCurrentEpisode((prev) => {
+      if (!prev) return prev;
+      return story.episodes.find((episode) => episode.id === prev.id) || null;
+    });
+    setCurrentScene((prev) => {
+      if (!prev) return prev;
+      for (const episode of story.episodes) {
+        const match = episode.scenes.find((scene) => scene.id === prev.id);
+        if (match) return match;
+      }
+      return null;
+    });
   }, []);
 
   const loadEpisode = useCallback((episodeId: string) => {
@@ -1344,6 +1362,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const actionsValue = useMemo<GameActions>(() => ({
     initializeStory,
+    updateCurrentStory,
     loadEpisode,
     loadScene,
     setBeat,
@@ -1395,6 +1414,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     resetGame,
   }), [
     initializeStory,
+    updateCurrentStory,
     loadEpisode,
     loadScene,
     setBeat,

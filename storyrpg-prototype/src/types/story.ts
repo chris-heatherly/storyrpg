@@ -160,6 +160,10 @@ export interface StoryCatalogEntry {
   tags?: string[];
   outputDir?: string;
   imagesStatus?: Story['imagesStatus'];
+  imageArtifacts?: {
+    hasSeasonReferences?: boolean;
+    hasEpisodeArt?: boolean;
+  };
   isBuiltIn?: boolean;
   updatedAt?: string;
   fullStoryUrl?: string;

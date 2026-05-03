@@ -497,8 +497,7 @@ describe('buildPipelineConfig', () => {
     );
 
     expect(config.imageGen?.artStyleProfile).toBe(profile);
-    expect(config.imageGen?.gemini?.canonicalArtStyle).toContain('romance novel cover');
-    expect(config.imageGen?.gemini?.canonicalArtStyle).toContain(profile.renderingTechnique);
+    expect(config.imageGen?.gemini?.canonicalArtStyle).toBe('romance novel cover');
     expect(config.imageGen?.preapprovedStyleAnchors?.character?.imagePath).toBe('/tmp/style-bible/character.png');
     expect(config.imageGen?.preapprovedStyleAnchors?.arcStrip?.data).toBe('AAA');
     expect(config.imageGen?.preapprovedStyleAnchors?.environment).toBeUndefined();

@@ -4,6 +4,7 @@ import {
   GestureResponderEvent,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import {
@@ -554,6 +555,8 @@ interface StoryLibrarySectionProps {
   onRenameStory?: (storyId: string, newTitle: string) => void;
   onGenerateVideos?: (storyId: string) => void;
   onGenerateImages?: (storyId: string) => void;
+  onDeleteSeasonImageReferences?: (story: StoryCatalogEntry) => void;
+  onDeleteEpisodeArt?: (story: StoryCatalogEntry) => void;
   onContinueSeasonPlan?: (planId: string) => void;
   seasonContinuations?: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>;
   onRequestDeleteStory: (story: StoryCatalogEntry) => void;
@@ -573,6 +576,8 @@ export function StoryLibrarySection({
   onRenameStory,
   onGenerateVideos,
   onGenerateImages,
+  onDeleteSeasonImageReferences,
+  onDeleteEpisodeArt,
   onContinueSeasonPlan,
   seasonContinuations = {},
   onRequestDeleteStory,
@@ -582,7 +587,57 @@ export function StoryLibrarySection({
   videoGeneratingStoryId,
   imageGeneratingStoryId,
 }: StoryLibrarySectionProps) {
+  const { width } = useWindowDimensions();
+  const isNarrow = width < 860;
+  const isCompact = width < 1120;
   const seasonGroups = buildStorySeasonGroups(stories, generatedStoryIds, seasonContinuations);
+
+  const renderStoryAction = (
+    key: string,
+    label: string,
+    icon: React.ReactNode,
+    color: string,
+    onPress: () => void,
+    options?: { disabled?: boolean; loading?: boolean; danger?: boolean; backgroundColor?: string },
+  ) => {
+    const disabled = options?.disabled === true;
+    const actionColor = disabled ? TERMINAL.colors.muted : color;
+    return (
+      <TouchableOpacity
+        key={key}
+        style={[
+          styles.storyActionButton,
+          options?.danger ? styles.deleteIconButton : null,
+          options?.backgroundColor ? { backgroundColor: options.backgroundColor } : null,
+          disabled ? styles.storyActionButtonDisabled : null,
+        ]}
+        onPress={onPress}
+        disabled={disabled}
+      >
+        {options?.loading ? (
+          <ActivityIndicator size={16} color={TERMINAL.colors.amber} />
+        ) : (
+          <>
+            {React.isValidElement(icon) ? React.cloneElement(icon as React.ReactElement<any>, { color: actionColor }) : icon}
+            <Text style={[styles.storyActionText, { color: actionColor }]}>{label}</Text>
+          </>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderActionRows = (actions: React.ReactNode[]) => {
+    const chunkSize = isCompact ? 3 : actions.length;
+    const rows: React.ReactNode[] = [];
+    for (let i = 0; i < actions.length; i += chunkSize) {
+      rows.push(
+        <View key={`row-${i}`} style={styles.storyActionRow}>
+          {actions.slice(i, i + chunkSize)}
+        </View>
+      );
+    }
+    return <View style={[styles.storyManageActions, isNarrow ? styles.storyManageActionsNarrow : null]}>{rows}</View>;
+  };
 
   return (
     <View style={styles.section}>
@@ -615,9 +670,40 @@ export function StoryLibrarySection({
       ) : (
         <View style={styles.storyManagementList}>
           {seasonGroups.map((group) => {
+            const representativeStory = group.rows.find((row) => row.story.outputDir && row.story.isBuiltIn !== true)?.story || group.rows[0]?.story;
+            const canDeleteSeasonRefs = Boolean(
+              onDeleteSeasonImageReferences
+              && representativeStory?.outputDir
+              && representativeStory.isBuiltIn !== true
+            );
+            const seasonRefsAvailable = representativeStory?.imageArtifacts?.hasSeasonReferences === true;
+            const headerActions: React.ReactNode[] = [];
+            if (group.continuation && onContinueSeasonPlan) {
+              headerActions.push(renderStoryAction(
+                'continue',
+                `NEXT EP ${group.continuation.nextEpisodeNumber}/${group.continuation.totalEpisodes}`,
+                <ChevronRight size={14} color={TERMINAL.colors.amber} />,
+                TERMINAL.colors.amber,
+                () => onContinueSeasonPlan(group.continuation!.planId),
+                { backgroundColor: 'rgba(245, 158, 11, 0.12)' },
+              ));
+            }
+            if (canDeleteSeasonRefs && representativeStory) {
+              headerActions.push(renderStoryAction(
+                'clear-refs',
+                'CLEAR REFS',
+                <Trash2 size={14} color={TERMINAL.colors.amber} />,
+                TERMINAL.colors.amber,
+                () => onDeleteSeasonImageReferences?.(representativeStory),
+                {
+                  disabled: !seasonRefsAvailable,
+                  backgroundColor: seasonRefsAvailable ? 'rgba(245, 158, 11, 0.1)' : undefined,
+                },
+              ));
+            }
             return (
               <View key={group.key} style={styles.storySeasonGroup}>
-                <View style={styles.storySeasonHeader}>
+                <View style={[styles.storySeasonHeader, isNarrow ? styles.storySeasonHeaderNarrow : null]}>
                   <View style={styles.storyManageInfo}>
                     <Text style={styles.storyManageTitle}>{group.title.toUpperCase()}</Text>
                     <View style={styles.storyManageMetaRow}>
@@ -641,17 +727,7 @@ export function StoryLibrarySection({
                       <Text style={styles.storyManageMeta}>{group.rows.length} EPISODE{group.rows.length === 1 ? '' : 'S'}</Text>
                     </View>
                   </View>
-                  {group.continuation && onContinueSeasonPlan ? (
-                    <TouchableOpacity
-                      style={[styles.storyActionButton, { backgroundColor: 'rgba(245, 158, 11, 0.12)' }]}
-                      onPress={() => onContinueSeasonPlan(group.continuation!.planId)}
-                    >
-                      <ChevronRight size={14} color={TERMINAL.colors.amber} />
-                      <Text style={[styles.storyActionText, { color: TERMINAL.colors.amber }]}>
-                        NEXT EP {group.continuation.nextEpisodeNumber}/{group.continuation.totalEpisodes}
-                      </Text>
-                    </TouchableOpacity>
-                  ) : null}
+                  {headerActions.length > 0 ? renderActionRows(headerActions) : null}
                 </View>
 
                 {group.rows.map((row) => {
@@ -662,11 +738,86 @@ export function StoryLibrarySection({
                     && story.outputDir
                     && story.isBuiltIn !== true
                   );
+                  const canDeleteEpisodeArt = Boolean(
+                    onDeleteEpisodeArt
+                    && story.outputDir
+                    && story.isBuiltIn !== true
+                  );
+                  const episodeArtAvailable = story.imageArtifacts?.hasEpisodeArt === true;
                   const canRename = Boolean(onRenameStory);
                   const canDelete = Boolean(onDeleteStory);
+                  const rowActions: React.ReactNode[] = [];
+                  if (canGenerateVideo) {
+                    rowActions.push(renderStoryAction(
+                      'animate',
+                      'ANIMATE',
+                      <Film size={14} color="rgb(168, 85, 247)" />,
+                      'rgb(168, 85, 247)',
+                      () => onGenerateVideos?.(story.id),
+                      {
+                        loading: videoGeneratingStoryId === story.id,
+                        disabled: videoGeneratingStoryId !== null,
+                        backgroundColor: videoGeneratingStoryId === story.id ? 'rgba(245, 158, 11, 0.15)' : 'rgba(168, 85, 247, 0.1)',
+                      },
+                    ));
+                  }
+                  if (canGenerateImages) {
+                    rowActions.push(renderStoryAction(
+                      'images',
+                      'IMAGES',
+                      <ImageIcon size={14} color={TERMINAL.colors.primary} />,
+                      TERMINAL.colors.primary,
+                      () => onGenerateImages?.(story.id),
+                      {
+                        loading: imageGeneratingStoryId === story.id,
+                        disabled: imageGeneratingStoryId !== null,
+                        backgroundColor: imageGeneratingStoryId === story.id ? 'rgba(245, 158, 11, 0.15)' : 'rgba(59, 130, 246, 0.12)',
+                      },
+                    ));
+                  }
+                  if (canDeleteEpisodeArt) {
+                    rowActions.push(renderStoryAction(
+                      'clear-art',
+                      'CLEAR ART',
+                      <Trash2 size={14} color={TERMINAL.colors.error} />,
+                      TERMINAL.colors.error,
+                      () => onDeleteEpisodeArt?.(story),
+                      {
+                        disabled: !episodeArtAvailable,
+                        backgroundColor: episodeArtAvailable ? 'rgba(239, 68, 68, 0.1)' : undefined,
+                      },
+                    ));
+                  }
+                  rowActions.push(renderStoryAction(
+                    'map',
+                    'MAP',
+                    <RefreshCw size={14} color={TERMINAL.colors.cyan} />,
+                    TERMINAL.colors.cyan,
+                    () => onOpenVisualizer(story.id),
+                    { backgroundColor: 'rgba(6, 182, 212, 0.1)' },
+                  ));
+                  if (canRename) {
+                    rowActions.push(renderStoryAction(
+                      'rename',
+                      'RENAME',
+                      <Edit2 size={14} color={TERMINAL.colors.primary} />,
+                      TERMINAL.colors.primary,
+                      () => onRequestRenameStory(story),
+                    ));
+                  }
+                  if (canDelete) {
+                    rowActions.push(renderStoryAction(
+                      'delete',
+                      'DELETE',
+                      <Trash2 size={14} color={TERMINAL.colors.error} />,
+                      TERMINAL.colors.error,
+                      () => onRequestDeleteStory(story),
+                      { danger: true },
+                    ));
+                  }
 
                   return (
-                    <View key={row.key} style={styles.storyManageItem}>
+                    <View key={row.key} style={[styles.storyManageItem, isNarrow ? styles.storyManageItemNarrow : null]}>
                       <View style={styles.storyEpisodeNumber}>
                         <Text style={styles.storyEpisodeNumberText}>EP</Text>
                         <Text style={styles.storyEpisodeNumberValue}>{row.episodeNumber}</Text>
@@ -683,79 +834,7 @@ export function StoryLibrarySection({
                           ) : null}
                         </View>
                       </View>
-                      <View style={styles.storyManageActions}>
-                        {canGenerateVideo ? (
-                          <TouchableOpacity
-                            style={[
-                              styles.storyActionButton,
-                              {
-                                backgroundColor: videoGeneratingStoryId === story.id
-                                  ? 'rgba(245, 158, 11, 0.15)'
-                                  : 'rgba(168, 85, 247, 0.1)',
-                              },
-                            ]}
-                            onPress={() => onGenerateVideos?.(story.id)}
-                            disabled={videoGeneratingStoryId !== null}
-                          >
-                            {videoGeneratingStoryId === story.id ? (
-                              <ActivityIndicator size={16} color={TERMINAL.colors.amber} />
-                            ) : (
-                              <>
-                                <Film size={14} color="rgb(168, 85, 247)" />
-                                <Text style={[styles.storyActionText, { color: 'rgb(168, 85, 247)' }]}>ANIMATE</Text>
-                              </>
-                            )}
-                          </TouchableOpacity>
-                        ) : null}
-                        {canGenerateImages ? (
-                          <TouchableOpacity
-                            style={[
-                              styles.storyActionButton,
-                              {
-                                backgroundColor: imageGeneratingStoryId === story.id
-                                  ? 'rgba(245, 158, 11, 0.15)'
-                                  : 'rgba(59, 130, 246, 0.12)',
-                              },
-                            ]}
-                            onPress={() => onGenerateImages?.(story.id)}
-                            disabled={imageGeneratingStoryId !== null}
-                          >
-                            {imageGeneratingStoryId === story.id ? (
-                              <ActivityIndicator size={16} color={TERMINAL.colors.amber} />
-                            ) : (
-                              <>
-                                <ImageIcon size={14} color={TERMINAL.colors.primary} />
-                                <Text style={[styles.storyActionText, { color: TERMINAL.colors.primary }]}>IMAGES</Text>
-                              </>
-                            )}
-                          </TouchableOpacity>
-                        ) : null}
-                        <TouchableOpacity
-                          style={[styles.storyActionButton, { backgroundColor: 'rgba(6, 182, 212, 0.1)' }]}
-                          onPress={() => onOpenVisualizer(story.id)}
-                        >
-                          <RefreshCw size={14} color={TERMINAL.colors.cyan} />
-                          <Text style={[styles.storyActionText, { color: TERMINAL.colors.cyan }]}>MAP</Text>
-                        </TouchableOpacity>
-                        {canRename ? (
-                          <TouchableOpacity
-                            style={styles.storyActionButton}
-                            onPress={() => onRequestRenameStory(story)}
-                          >
-                            <Edit2 size={14} color={TERMINAL.colors.primary} />
-                            <Text style={[styles.storyActionText, { color: TERMINAL.colors.primary }]}>RENAME</Text>
-                          </TouchableOpacity>
-                        ) : null}
-                        {canDelete ? (
-                          <TouchableOpacity
-                            style={[styles.storyActionButton, styles.deleteIconButton]}
-                            onPress={() => onRequestDeleteStory(story)}
-                          >
-                            <Trash2 size={14} color={TERMINAL.colors.error} />
-                            <Text style={[styles.storyActionText, { color: TERMINAL.colors.error }]}>DELETE</Text>
-                          </TouchableOpacity>
-                        ) : null}
-                      </View>
+                      {renderActionRows(rowActions)}
                     </View>
                   );
                 })}

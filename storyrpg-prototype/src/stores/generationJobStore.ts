@@ -303,13 +303,29 @@ export const useGenerationJobStore = create<GenerationJobStore>((set, get) => ({
   clearCompletedJobs: async () => {
     // Capture updated jobs from the setter for persistence
     let updatedJobs: GenerationJob[] = [];
+    let removedJobIds: string[] = [];
     set(state => {
+      removedJobIds = state.jobs
+        .filter(job => job.status !== 'running' && job.status !== 'pending')
+        .map(job => job.id);
       updatedJobs = state.jobs.filter(job => job.status === 'running' || job.status === 'pending');
       return { jobs: updatedJobs };
     });
 
     // Persist locally (using captured jobs, not get())
     await persistJobs(updatedJobs);
+
+    if (Platform.OS === 'web') {
+      await Promise.all(removedJobIds.map(async (jobId) => {
+        try {
+          await fetch(`${getProxyHost()}/generation-jobs/${jobId}`, {
+            method: 'DELETE',
+          });
+        } catch (e) {
+          console.warn(`[GenerationJobStore] Failed to remove completed job ${jobId} from server`);
+        }
+      }));
+    }
   },
 
   isJobCancelled: (jobId) => {

@@ -16,7 +16,7 @@ import {
 } from './src/screens';
 import { GeneratorScreen } from './src/screens/GeneratorScreen';
 import { allStories as builtInStories } from './src/data/stories';
-import { PlayerState, Story } from './src/types';
+import { PlayerState, Story, StoryCatalogEntry } from './src/types';
 import { TERMINAL } from './src/theme';
 import { PROXY_CONFIG } from './src/config/endpoints';
 import {
@@ -27,6 +27,7 @@ import { encodeStory } from './src/ai-agents/codec/storyCodec';
 import { loadConfig } from './src/ai-agents/config';
 import { useVideoJobStore } from './src/stores/videoJobStore';
 import { useStoryLibrary } from './src/hooks/useStoryLibrary';
+import { fetchStoryByCatalogEntry } from './src/services/storyLibrary';
 import { useGeneratorRunner } from './src/hooks/useGeneratorRunner';
 import { useAppNavigationStore } from './src/stores/appNavigationStore';
 import {
@@ -105,7 +106,7 @@ function AppContent() {
   } = useStoryLibrary(builtInStories);
   const { player } = useGamePlayerState();
   const { currentStory, currentEpisode } = useGameStoryState();
-  const { initializeStory, loadEpisode, loadScene, setBeat } = useGameActions();
+  const { initializeStory, updateCurrentStory, loadEpisode, loadScene, setBeat } = useGameActions();
   const { ensureProxyAvailable, runWorkerJob } = useGeneratorRunner();
   
   // Generation job store for the floating indicator
@@ -558,6 +559,16 @@ function AppContent() {
     }
   };
 
+  const handleStoryArtifactsChanged = useCallback(async (storyEntry: StoryCatalogEntry) => {
+    await loadStories();
+    const freshStory = await fetchStoryByCatalogEntry(storyEntry, builtInStories);
+    if (!freshStory) return;
+    upsertStory(freshStory);
+    if (currentStory?.id === freshStory.id) {
+      updateCurrentStory(freshStory);
+    }
+  }, [builtInStories, currentStory?.id, loadStories, updateCurrentStory, upsertStory]);
+
   const handleGenerateVideos = useCallback(async (storyId: string) => {
     if (videoGeneratingStoryId) return;
     const story = await loadFullStory(storyId);
@@ -828,6 +839,7 @@ function AppContent() {
           seasonContinuations={seasonContinuations}
           generatedStoryIds={Array.from(fileLoadedStoryIds)}
           onRefreshStories={loadStories}
+          onStoryArtifactsChanged={handleStoryArtifactsChanged}
           isRefreshing={isRefreshing}
           videoGeneratingStoryId={videoGeneratingStoryId}
           imageGeneratingStoryId={imageGeneratingStoryId}

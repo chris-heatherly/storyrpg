@@ -33,6 +33,44 @@ function createStoryCatalog(storiesDir, port) {
     return null;
   }
 
+  function getImageArtifactSummary(dirAbs) {
+    const has = (target) => fs.existsSync(path.join(dirAbs, target));
+    const imagesDir = path.join(dirAbs, 'images');
+    let hasSeasonReferences =
+      has('style-bible')
+      || has('visual-planning')
+      || has('season-visual-bible.json');
+    let hasEpisodeArt =
+      has('asset-registry.jsonl')
+      || has('image-manifest.json')
+      || has('08-registry-state.json')
+      || fs.existsSync(dirAbs) && fs.readdirSync(dirAbs).some((name) => /^08a-beat-resume-.*\.json$/.test(name));
+
+    if (fs.existsSync(imagesDir)) {
+      for (const entry of fs.readdirSync(imagesDir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (entry.name === 'job-reference-previews') hasSeasonReferences = true;
+          if (entry.name !== 'prompts' && entry.name !== 'job-reference-previews') hasEpisodeArt = true;
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        if (/^(ref_|style-bible-)/.test(entry.name)) hasSeasonReferences = true;
+        else hasEpisodeArt = true;
+      }
+
+      const promptsDir = path.join(imagesDir, 'prompts');
+      if (fs.existsSync(promptsDir)) {
+        for (const entry of fs.readdirSync(promptsDir, { withFileTypes: true })) {
+          if (!entry.isFile()) continue;
+          if (/^(ref_|style-bible-)/.test(entry.name)) hasSeasonReferences = true;
+          else hasEpisodeArt = true;
+        }
+      }
+    }
+
+    return { hasSeasonReferences, hasEpisodeArt };
+  }
+
   function getStoryRecord(dirName) {
     const dirAbs = path.join(storiesDir, dirName);
     const primary = resolvePrimaryStoryFile(dirAbs);
@@ -179,12 +217,16 @@ function createStoryCatalog(storiesDir, port) {
   }
 
   function createStoryCatalogEntry(record, req) {
-    return codec.projectForCatalog(record.pkg, {
+    const entry = codec.projectForCatalog(record.pkg, {
       req,
       port,
       dirName: record.dirName,
       mtimeMs: record.mtimeMs,
     });
+    return {
+      ...entry,
+      imageArtifacts: getImageArtifactSummary(path.join(storiesDir, record.dirName)),
+    };
   }
 
   function createFullStoryResponse(record, req) {

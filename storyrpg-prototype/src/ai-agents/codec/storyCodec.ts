@@ -75,7 +75,7 @@ export const StoryPackageV3Schema = z.object({
   generator: z.object({
     version: z.string().optional(),
     pipeline: z.string().optional(),
-  }).partial().optional(),
+  }).partial().passthrough().optional(),
   story: StoryBodySchema,
   assets: AssetIndexSchema.default({}),
 }).strict();
@@ -90,7 +90,7 @@ export const StoryPackageV2Schema = z.object({
   generator: z.object({
     version: z.string().optional(),
     pipeline: z.string().optional(),
-  }).partial().optional(),
+  }).partial().passthrough().optional(),
   story: StoryBodySchema,
 }).strict();
 
@@ -104,7 +104,7 @@ export interface StoryPackage {
   schemaVersion: StorySchemaVersion;
   storyId: string;
   createdAt: string;
-  generator?: { version?: string; pipeline?: string };
+  generator?: Record<string, unknown>;
   story: Story;
   assets: AssetIndex;
   /** true when the raw input was migrated to reach this package. */
@@ -255,7 +255,7 @@ export interface EncodeOptions {
   /** Override createdAt (defaults to now()). */
   createdAt?: string;
   /** Generator metadata; helpful for debugging stale artefacts. */
-  generator?: { version?: string; pipeline?: string };
+  generator?: Record<string, unknown>;
   /** Optional AssetIndex for v3; ignored for v1/v2. */
   assets?: AssetIndex;
 }

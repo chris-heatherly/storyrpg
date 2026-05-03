@@ -126,7 +126,11 @@ const lifecycle = createWorkerLifecycle({
   createSyncGenerationMirrorFromWorker,
   estimateWorkerProgress,
 });
-registerGenerationJobRoutes(app, lifecycle);
+registerGenerationJobRoutes(app, lifecycle, {
+  rootDir: ROOT_DIR,
+  storiesDir: STORIES_DIR,
+  workerCheckpointOutputDir: WORKER_CHECKPOINT_OUTPUT_DIR,
+});
 lifecycle.registerWorkerLifecycleRoutes(app);
 
 registerMemoryRoutes(app, { memoryRoot: PIPELINE_MEMORY_ROOT });

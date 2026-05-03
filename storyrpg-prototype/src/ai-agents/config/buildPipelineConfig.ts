@@ -256,7 +256,7 @@ export function buildPipelineConfig(
       gemini: {
         ...(normalizedImageProvider === 'nano-banana' ? input.geminiSettings : {}),
         canonicalArtStyle:
-          composeCanonicalStyleString(artStyleProfile) || input.artStyle.trim() || '',
+          input.artStyle.trim() || composeCanonicalStyleString(artStyleProfile) || '',
       },
       stableDiffusion: resolveStableDiffusionSettings(normalizedImageProvider, input.stableDiffusionSettings),
       qa,

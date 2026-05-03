@@ -1027,12 +1027,12 @@ export class ImageGenerationService {
     let source: string;
     const canonical = this._geminiSettings.canonicalArtStyle?.trim() || '';
     const promptTrimmed = promptStyle?.trim() || '';
-    if (canonical.length > 0) {
-      resolved = canonical;
-      source = 'canonicalArtStyle';
-    } else if (promptTrimmed.length > 0) {
+    if (promptTrimmed.length > 0) {
       resolved = promptTrimmed;
       source = 'prompt.style';
+    } else if (canonical.length > 0) {
+      resolved = canonical;
+      source = 'canonicalArtStyle';
     } else {
       resolved = ImageGenerationService.DEFAULT_ART_STYLE;
       source = 'default(fallback)';
@@ -5357,9 +5357,10 @@ export class ImageGenerationService {
       `identifier=${identifier} ${refSummary}`
     );
 
+    const resolvedStyle = this.resolveArtStyle(prompt.style, identifier);
     const composedPrompt = [
       prompt.prompt,
-      prompt.style ? `Style: ${prompt.style}` : '',
+      resolvedStyle ? `Style: ${resolvedStyle}` : '',
       prompt.composition ? `Composition: ${prompt.composition}` : '',
     ].filter(Boolean).join('\n\n');
 

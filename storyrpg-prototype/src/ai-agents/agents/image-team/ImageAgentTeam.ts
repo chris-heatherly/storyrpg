@@ -512,6 +512,29 @@ export class ImageAgentTeam extends BaseAgent {
     this.visualStorytellingValidator = new VisualStorytellingValidator(config);
   }
 
+  private lockPromptToSeasonStyle(prompt: ImagePrompt): ImagePrompt {
+    const style = prompt.style || this.artStyle;
+    if (!style?.trim()) return prompt;
+    const text = prompt.prompt || '';
+    const styleLead = `Art style: ${style}.`;
+    const promptText = text.includes(style)
+      ? text
+      : `${styleLead} ${text.replace(/^Art style:\s*[^.]+\.?\s*/i, '').trim()}`;
+    return {
+      ...prompt,
+      prompt: promptText,
+      style,
+      negativePrompt: [
+        prompt.negativePrompt,
+        'generic cinematic story art',
+        'generic anime style',
+        'photorealism',
+        'gritty realism',
+        'messy detail',
+      ].filter(Boolean).join(', '),
+    };
+  }
+
   /**
    * Main execute method - orchestrates the team based on input type
    */
@@ -1030,7 +1053,7 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
 
       const identifier = `ref_${sheet.characterId}_${viewKey}`;
       const result = await imageService.generateImage(
-        view.prompt,
+        this.lockPromptToSeasonStyle(view.prompt),
         identifier,
         { type: 'master', characterId: sheet.characterId, viewType: viewKey },
         referenceImages.length > 0 ? referenceImages : undefined

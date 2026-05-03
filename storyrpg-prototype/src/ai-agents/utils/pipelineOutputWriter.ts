@@ -263,6 +263,7 @@ export interface PipelineOutputs {
     data: unknown;
     requiresApproval: boolean;
   }>;
+  generator?: Record<string, unknown>;
 }
 
 export interface OutputManifest {
@@ -530,7 +531,7 @@ async function writeJsonFile(path: string, data: unknown): Promise<number> {
 export async function writeFinalStoryPackage(
   outputDir: string,
   story: Story,
-  options?: { generator?: { version?: string; pipeline?: string } },
+  options?: { generator?: Record<string, unknown> },
 ): Promise<{ storyJsonPath: string; manifestPath: string; storySize: number }> {
   const storyJsonPath = outputDir + 'story.json';
   const manifestPath = outputDir + 'manifest.json';
@@ -1177,7 +1178,7 @@ export async function savePipelineOutputs(
   if (outputs.finalStory) {
     const { storyJsonPath, manifestPath: mPath, storySize } =
       await writeFinalStoryPackage(outputDir, outputs.finalStory, {
-        generator: { pipeline: 'FullStoryPipeline' },
+        generator: outputs.generator || { pipeline: 'FullStoryPipeline' },
       });
     const legacyStoryPath = outputDir + '08-final-story.json';
     files.push({ name: 'Final Story (v3 package)', path: storyJsonPath, type: 'story', size: storySize });

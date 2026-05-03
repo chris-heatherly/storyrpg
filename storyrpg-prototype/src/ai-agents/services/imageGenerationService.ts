@@ -773,6 +773,16 @@ export class ImageGenerationService {
     };
   }
 
+  private shouldEnforceCharacterReferenceContinuity(
+    metadata: Parameters<ImageGenerationService['generateImage']>[2],
+    referenceAudit: CharacterReferenceAudit,
+  ): boolean {
+    if (this.config.requireCharacterRefsForVisibleCharacters === false) return false;
+    if (this.config.allowTextOnlyCharacterImages === true) return false;
+    if (metadata?.type === 'master' || metadata?.type === 'cover') return false;
+    return referenceAudit.visibleCharacters.length > 0 && referenceAudit.referenceRoute === 'text-only';
+  }
+
   private static withProviderErrorMeta(error: Error, meta: GeminiResponseMeta & { providerAttemptCount?: number; effectivePromptChars?: number; effectiveNegativeChars?: number; effectiveRefCount?: number; model?: string }): Error {
     Object.assign(error as unknown as Record<string, unknown>, meta);
     return error;
@@ -1761,6 +1771,24 @@ export class ImageGenerationService {
     return undefined;
   }
 
+  private hydrateExistingImageFile(imagePath?: string): { imageData: string; mimeType: string } | undefined {
+    if (!imagePath || /\.(txt)$/i.test(imagePath)) return undefined;
+    if (!nodeFs || typeof nodeFs.readFileSync !== 'function') return undefined;
+    try {
+      const imageData = nodeFs.readFileSync(imagePath).toString('base64');
+      const lower = imagePath.toLowerCase();
+      const mimeType = lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+        ? 'image/jpeg'
+        : lower.endsWith('.webp')
+          ? 'image/webp'
+          : detectImageMimeType(imageData).mimeType;
+      return { imageData, mimeType };
+    } catch (err) {
+      console.warn(`[ImageGenerationService] Failed to hydrate cached image "${imagePath}":`, err);
+      return undefined;
+    }
+  }
+
   public setOutputDirectory(dir: string): void {
     this.outputDir = normalizeManagedOutputPath(dir);
     this.ensureDirectory(this.outputDir);
@@ -2214,11 +2242,15 @@ export class ImageGenerationService {
       if (cached) {
         this.pipelineMetrics.cacheHits++;
         console.log(`[ImageGenerationService] Prompt cache HIT for ${identifier} (no UI job created)`);
+        const hydrated = this.hydrateExistingImageFile(cached.imagePath);
         return {
           prompt: normalizedPrompt,
           imagePath: cached.imagePath,
-          imageUrl: cached.imageUrl || this.getServedImageUrl(cached.imagePath),
-          mimeType: cached.mimeType,
+          imageUrl: cached.imageUrl || this.getServedImageUrl(cached.imagePath) || (hydrated && cached.imagePath
+            ? this.toImageHttpUrl(cached.imagePath, hydrated.mimeType, hydrated.imageData)
+            : undefined),
+          imageData: hydrated?.imageData,
+          mimeType: hydrated?.mimeType || cached.mimeType,
         };
       }
       this.pipelineMetrics.cacheMisses++;
@@ -2226,10 +2258,20 @@ export class ImageGenerationService {
 
     const existingFile = this.getExistingImageFile(identifier);
     if (existingFile) {
-      const imageUrl = this.getServedImageUrl(existingFile);
+      const hydrated = this.hydrateExistingImageFile(existingFile);
+      const imageUrl = this.getServedImageUrl(existingFile) || (hydrated
+        ? this.toImageHttpUrl(existingFile, hydrated.mimeType, hydrated.imageData)
+        : undefined);
       console.log(`[ImageGenerationService] File cache HIT for ${identifier} (no UI job created)`);
       this._generatedIdentifiers.add(identifier);
-      return { prompt: normalizedPrompt, imagePath: existingFile, imageUrl, metadata: { format: existingFile.split('.').pop() } };
+      return {
+        prompt: normalizedPrompt,
+        imagePath: existingFile,
+        imageUrl,
+        imageData: hydrated?.imageData,
+        mimeType: hydrated?.mimeType,
+        metadata: { format: existingFile.split('.').pop() },
+      };
     }
 
     // Identifier-based dedup: if we already generated this identifier successfully in this
@@ -2328,12 +2370,7 @@ export class ImageGenerationService {
     const capabilityFilteredRefs = this.filterReferencesForProvider(provider, referenceImages);
     const referenceAudit = this.buildCharacterReferenceAudit(provider, metadata, referenceImages, capabilityFilteredRefs);
     try {
-      if (
-        this.config.requireCharacterRefsForVisibleCharacters !== false &&
-        this.config.allowTextOnlyCharacterImages !== true &&
-        referenceAudit.visibleCharacters.length > 0 &&
-        referenceAudit.referenceRoute === 'text-only'
-      ) {
+      if (this.shouldEnforceCharacterReferenceContinuity(metadata, referenceAudit)) {
         const message =
           `Character reference continuity blocked "${identifier}": missing usable refs for ` +
           `${referenceAudit.missingReferenceCharacters.join(', ') || referenceAudit.visibleCharacters.join(', ')} after ${provider} filtering ` +

@@ -353,6 +353,7 @@ export interface StoryCatalogEntryProjection {
   coverImage: string;
   author?: string;
   tags?: string[];
+  imagesStatus?: Story['imagesStatus'];
   episodeCount: number;
   episodes: Array<{
     id: string;
@@ -373,6 +374,7 @@ export function projectForCatalog(pkg: StoryPackage): StoryCatalogEntryProjectio
     coverImage: typeof story.coverImage === 'string' ? story.coverImage : '',
     author: story.author,
     tags: story.tags,
+    imagesStatus: story.imagesStatus,
     episodeCount: Array.isArray(story.episodes) ? story.episodes.length : 0,
     episodes: Array.isArray(story.episodes)
       ? story.episodes.map((ep) => ({

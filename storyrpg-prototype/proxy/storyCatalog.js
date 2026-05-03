@@ -173,7 +173,8 @@ function createStoryCatalog(storiesDir, port) {
         seen.set(id, { dirName, mtimeMs: record.mtimeMs });
       }
     }
-    const valid = Array.from(storyMap.values());
+    const valid = Array.from(storyMap.values())
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
     return includeInvalid ? { valid, invalid } : valid;
   }
 

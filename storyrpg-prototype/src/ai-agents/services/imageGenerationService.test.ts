@@ -1,4 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 (globalThis as any).__DEV__ = false;
 
@@ -65,6 +68,26 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
 });
 
 describe('ImageGenerationService stable-diffusion wiring', () => {
+  it('hydrates file-cache hits with inline image data for downstream references', async () => {
+    const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'image-gen-cache-'));
+    fs.writeFileSync(path.join(outputDirectory, 'ref_mika_front.png'), Buffer.from('cached-reference-image'));
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory,
+    } as any);
+
+    const result = await service.generateImage(
+      { prompt: 'Mika Kuroda front reference' } as any,
+      'ref_mika_front',
+      { type: 'master', characterId: 'mika', viewType: 'front' } as any,
+    );
+
+    expect(result.imageData).toBe(Buffer.from('cached-reference-image').toString('base64'));
+    expect(result.mimeType).toBe('image/png');
+  });
+
   it('returns a preflight failure when SD is selected without a baseUrl', async () => {
     const service = new ImageGenerationService({
       enabled: true,
@@ -194,6 +217,48 @@ describe('ImageGenerationService character reference audit', () => {
 
     expect(audit.referenceRoute).toBe('text-only');
     expect(audit.missingReferenceCharacters).toEqual(['Detective Riley Kane', 'Mr. Boddy']);
+  });
+
+  it('does not enforce continuity for master style-bible anchors that seed later refs', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'nano-banana',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const audit = (service as any).buildCharacterReferenceAudit(
+      'nano-banana',
+      { characterNames: ['Hero'], type: 'master' },
+      undefined,
+      undefined,
+    );
+
+    expect(audit.referenceRoute).toBe('text-only');
+    expect(audit.missingReferenceCharacters).toEqual(['Hero']);
+    expect((service as any).shouldEnforceCharacterReferenceContinuity(
+      { characterNames: ['Hero'], type: 'master' },
+      audit,
+    )).toBe(false);
+  });
+
+  it('still enforces continuity for character-visible scene images without usable refs', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'nano-banana',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const audit = (service as any).buildCharacterReferenceAudit(
+      'nano-banana',
+      { characterNames: ['Hero'], type: 'scene' },
+      undefined,
+      undefined,
+    );
+
+    expect((service as any).shouldEnforceCharacterReferenceContinuity(
+      { characterNames: ['Hero'], type: 'scene' },
+      audit,
+    )).toBe(true);
   });
 });
 

@@ -16,6 +16,7 @@ import {
   Edit2,
   Eye,
   Film,
+  Image as ImageIcon,
   Info,
   Play,
   RefreshCw,
@@ -58,6 +59,76 @@ function getStoryContinuation(
     if (normalized && continuations[normalized]) return continuations[normalized];
   }
   return undefined;
+}
+
+type StoryEpisodeRow = {
+  key: string;
+  story: StoryCatalogEntry;
+  episodeNumber: number;
+  episodeTitle: string;
+  episodeSynopsis?: string;
+};
+
+type StorySeasonGroup = {
+  key: string;
+  title: string;
+  genre: string;
+  isBuiltIn: boolean;
+  isGeneratedLocal: boolean;
+  continuation?: { planId: string; nextEpisodeNumber: number; totalEpisodes: number };
+  rows: StoryEpisodeRow[];
+};
+
+function buildStorySeasonGroups(
+  stories: StoryCatalogEntry[],
+  generatedStoryIds: string[],
+  continuations: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>,
+): StorySeasonGroup[] {
+  const groups = new Map<string, StorySeasonGroup>();
+
+  for (const story of stories) {
+    const isBuiltIn = story.isBuiltIn === true;
+    const seasonKey = (story.id || story.title).trim().toLowerCase();
+    const continuation = getStoryContinuation(story, continuations);
+    const existing = groups.get(seasonKey);
+    const group = existing || {
+      key: seasonKey,
+      title: story.title || 'Untitled',
+      genre: story.genre || 'unknown',
+      isBuiltIn,
+      isGeneratedLocal: false,
+      continuation,
+      rows: [],
+    };
+
+    group.isGeneratedLocal = group.isGeneratedLocal || (generatedStoryIds.includes(story.id) && !isBuiltIn);
+    group.continuation = group.continuation || continuation;
+
+    const episodes = story.episodes.length > 0
+      ? story.episodes
+      : [{
+          id: story.id,
+          number: 1,
+          title: story.title || 'Episode',
+          synopsis: story.synopsis || '',
+          coverImage: story.coverImage || '',
+        }];
+
+    for (const episode of episodes) {
+      group.rows.push({
+        key: `${story.outputDir || story.id}:${episode.id || episode.number}`,
+        story,
+        episodeNumber: episode.number || group.rows.length + 1,
+        episodeTitle: episode.title || story.title || 'Episode',
+        episodeSynopsis: episode.synopsis || story.synopsis,
+      });
+    }
+
+    group.rows.sort((a, b) => a.episodeNumber - b.episodeNumber);
+    groups.set(seasonKey, group);
+  }
+
+  return Array.from(groups.values());
 }
 
 interface SectionHeaderProps {
@@ -482,6 +553,7 @@ interface StoryLibrarySectionProps {
   onDeleteStory?: (storyId: string) => void;
   onRenameStory?: (storyId: string, newTitle: string) => void;
   onGenerateVideos?: (storyId: string) => void;
+  onGenerateImages?: (storyId: string) => void;
   onContinueSeasonPlan?: (planId: string) => void;
   seasonContinuations?: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>;
   onRequestDeleteStory: (story: StoryCatalogEntry) => void;
@@ -489,6 +561,7 @@ interface StoryLibrarySectionProps {
   onRefreshStories?: () => void;
   isRefreshing: boolean;
   videoGeneratingStoryId?: string | null;
+  imageGeneratingStoryId?: string | null;
 }
 
 export function StoryLibrarySection({
@@ -499,6 +572,7 @@ export function StoryLibrarySection({
   onDeleteStory,
   onRenameStory,
   onGenerateVideos,
+  onGenerateImages,
   onContinueSeasonPlan,
   seasonContinuations = {},
   onRequestDeleteStory,
@@ -506,7 +580,10 @@ export function StoryLibrarySection({
   onRefreshStories,
   isRefreshing,
   videoGeneratingStoryId,
+  imageGeneratingStoryId,
 }: StoryLibrarySectionProps) {
+  const seasonGroups = buildStorySeasonGroups(stories, generatedStoryIds, seasonContinuations);
+
   return (
     <View style={styles.section}>
       <SectionHeader
@@ -531,104 +608,157 @@ export function StoryLibrarySection({
         ) : null}
       />
 
-      {stories.length === 0 ? (
+      {seasonGroups.length === 0 ? (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyText}>NO CHRONICLES DETECTED</Text>
         </View>
       ) : (
         <View style={styles.storyManagementList}>
-          {stories.map((story) => {
-            const isBuiltIn = story.isBuiltIn === true;
-            const canGenerateVideo = Boolean(onGenerateVideos && story.outputDir);
-            const canRename = Boolean(onRenameStory);
-            const canDelete = Boolean(onDeleteStory);
-            const showGeneratedBadge = generatedStoryIds.includes(story.id) && !isBuiltIn;
-            const continuation = getStoryContinuation(story, seasonContinuations);
-
+          {seasonGroups.map((group) => {
             return (
-              <View key={story.id} style={styles.storyManageItem}>
-                <View style={styles.storyManageInfo}>
-                  <Text style={styles.storyManageTitle}>{(story.title || 'Untitled').toUpperCase()}</Text>
-                  <View style={styles.storyManageMetaRow}>
-                    <Text style={styles.storyManageMeta}>{(story.genre || 'unknown').toUpperCase()}</Text>
-                    <View style={styles.metaDot} />
-                    <Text
-                      style={[
-                        styles.storyTypeBadge,
-                        { color: isBuiltIn ? TERMINAL.colors.muted : TERMINAL.colors.amber },
-                      ]}
-                    >
-                      {isBuiltIn ? 'SAMPLE' : 'GENERATED'}
-                    </Text>
-                    {showGeneratedBadge ? (
-                      <>
-                        <View style={styles.metaDot} />
-                        <Text style={[styles.storyTypeBadge, { color: TERMINAL.colors.primary }]}>LOCAL</Text>
-                      </>
-                    ) : null}
+              <View key={group.key} style={styles.storySeasonGroup}>
+                <View style={styles.storySeasonHeader}>
+                  <View style={styles.storyManageInfo}>
+                    <Text style={styles.storyManageTitle}>{group.title.toUpperCase()}</Text>
+                    <View style={styles.storyManageMetaRow}>
+                      <Text style={styles.storyManageMeta}>{group.genre.toUpperCase()}</Text>
+                      <View style={styles.metaDot} />
+                      <Text
+                        style={[
+                          styles.storyTypeBadge,
+                          { color: group.isBuiltIn ? TERMINAL.colors.muted : TERMINAL.colors.amber },
+                        ]}
+                      >
+                        {group.isBuiltIn ? 'SAMPLE' : 'GENERATED'}
+                      </Text>
+                      {group.isGeneratedLocal ? (
+                        <>
+                          <View style={styles.metaDot} />
+                          <Text style={[styles.storyTypeBadge, { color: TERMINAL.colors.primary }]}>LOCAL</Text>
+                        </>
+                      ) : null}
+                      <View style={styles.metaDot} />
+                      <Text style={styles.storyManageMeta}>{group.rows.length} EPISODE{group.rows.length === 1 ? '' : 'S'}</Text>
+                    </View>
                   </View>
-                </View>
-                <View style={styles.storyManageActions}>
-                  {continuation && onContinueSeasonPlan ? (
+                  {group.continuation && onContinueSeasonPlan ? (
                     <TouchableOpacity
                       style={[styles.storyActionButton, { backgroundColor: 'rgba(245, 158, 11, 0.12)' }]}
-                      onPress={() => onContinueSeasonPlan(continuation.planId)}
+                      onPress={() => onContinueSeasonPlan(group.continuation!.planId)}
                     >
                       <ChevronRight size={14} color={TERMINAL.colors.amber} />
                       <Text style={[styles.storyActionText, { color: TERMINAL.colors.amber }]}>
-                        NEXT EP {continuation.nextEpisodeNumber}/{continuation.totalEpisodes}
+                        NEXT EP {group.continuation.nextEpisodeNumber}/{group.continuation.totalEpisodes}
                       </Text>
                     </TouchableOpacity>
                   ) : null}
-                  {canGenerateVideo ? (
-                    <TouchableOpacity
-                      style={[
-                        styles.storyActionButton,
-                        {
-                          backgroundColor: videoGeneratingStoryId === story.id
-                            ? 'rgba(245, 158, 11, 0.15)'
-                            : 'rgba(168, 85, 247, 0.1)',
-                        },
-                      ]}
-                      onPress={() => onGenerateVideos?.(story.id)}
-                      disabled={videoGeneratingStoryId !== null}
-                    >
-                      {videoGeneratingStoryId === story.id ? (
-                        <ActivityIndicator size={16} color={TERMINAL.colors.amber} />
-                      ) : (
-                        <>
-                          <Film size={14} color="rgb(168, 85, 247)" />
-                          <Text style={[styles.storyActionText, { color: 'rgb(168, 85, 247)' }]}>ANIMATE</Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  ) : null}
-                  <TouchableOpacity
-                    style={[styles.storyActionButton, { backgroundColor: 'rgba(6, 182, 212, 0.1)' }]}
-                    onPress={() => onOpenVisualizer(story.id)}
-                  >
-                    <RefreshCw size={14} color={TERMINAL.colors.cyan} />
-                    <Text style={[styles.storyActionText, { color: TERMINAL.colors.cyan }]}>MAP</Text>
-                  </TouchableOpacity>
-                  {canRename ? (
-                    <TouchableOpacity
-                      style={styles.storyActionButton}
-                      onPress={() => onRequestRenameStory(story)}
-                    >
-                      <Edit2 size={14} color={TERMINAL.colors.primary} />
-                      <Text style={[styles.storyActionText, { color: TERMINAL.colors.primary }]}>RENAME</Text>
-                    </TouchableOpacity>
-                  ) : null}
-                  {canDelete ? (
-                    <TouchableOpacity
-                      style={[styles.storyActionButton, styles.deleteIconButton]}
-                      onPress={() => onRequestDeleteStory(story)}
-                    >
-                      <Trash2 size={14} color={TERMINAL.colors.error} />
-                      <Text style={[styles.storyActionText, { color: TERMINAL.colors.error }]}>DELETE</Text>
-                    </TouchableOpacity>
-                  ) : null}
                 </View>
+
+                {group.rows.map((row) => {
+                  const story = row.story;
+                  const canGenerateVideo = Boolean(onGenerateVideos && story.outputDir);
+                  const canGenerateImages = Boolean(
+                    onGenerateImages
+                    && story.outputDir
+                    && (story.imagesStatus === 'pending' || story.imagesStatus === 'failed')
+                  );
+                  const canRename = Boolean(onRenameStory);
+                  const canDelete = Boolean(onDeleteStory);
+
+                  return (
+                    <View key={row.key} style={styles.storyManageItem}>
+                      <View style={styles.storyEpisodeNumber}>
+                        <Text style={styles.storyEpisodeNumberText}>EP</Text>
+                        <Text style={styles.storyEpisodeNumberValue}>{row.episodeNumber}</Text>
+                      </View>
+                      <View style={styles.storyManageInfo}>
+                        <Text style={styles.storyEpisodeTitle}>{(row.episodeTitle || 'Untitled').toUpperCase()}</Text>
+                        <View style={styles.storyManageMetaRow}>
+                          <Text style={styles.storyManageMeta}>{story.imagesStatus ? `IMAGES ${story.imagesStatus.toUpperCase()}` : 'READY'}</Text>
+                          {story.outputDir ? (
+                            <>
+                              <View style={styles.metaDot} />
+                              <Text style={styles.storyManageMeta}>{story.outputDir.split('/').filter(Boolean).pop()}</Text>
+                            </>
+                          ) : null}
+                        </View>
+                      </View>
+                      <View style={styles.storyManageActions}>
+                        {canGenerateVideo ? (
+                          <TouchableOpacity
+                            style={[
+                              styles.storyActionButton,
+                              {
+                                backgroundColor: videoGeneratingStoryId === story.id
+                                  ? 'rgba(245, 158, 11, 0.15)'
+                                  : 'rgba(168, 85, 247, 0.1)',
+                              },
+                            ]}
+                            onPress={() => onGenerateVideos?.(story.id)}
+                            disabled={videoGeneratingStoryId !== null}
+                          >
+                            {videoGeneratingStoryId === story.id ? (
+                              <ActivityIndicator size={16} color={TERMINAL.colors.amber} />
+                            ) : (
+                              <>
+                                <Film size={14} color="rgb(168, 85, 247)" />
+                                <Text style={[styles.storyActionText, { color: 'rgb(168, 85, 247)' }]}>ANIMATE</Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                        ) : null}
+                        {canGenerateImages ? (
+                          <TouchableOpacity
+                            style={[
+                              styles.storyActionButton,
+                              {
+                                backgroundColor: imageGeneratingStoryId === story.id
+                                  ? 'rgba(245, 158, 11, 0.15)'
+                                  : 'rgba(59, 130, 246, 0.12)',
+                              },
+                            ]}
+                            onPress={() => onGenerateImages?.(story.id)}
+                            disabled={imageGeneratingStoryId !== null}
+                          >
+                            {imageGeneratingStoryId === story.id ? (
+                              <ActivityIndicator size={16} color={TERMINAL.colors.amber} />
+                            ) : (
+                              <>
+                                <ImageIcon size={14} color={TERMINAL.colors.primary} />
+                                <Text style={[styles.storyActionText, { color: TERMINAL.colors.primary }]}>IMAGES</Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                        ) : null}
+                        <TouchableOpacity
+                          style={[styles.storyActionButton, { backgroundColor: 'rgba(6, 182, 212, 0.1)' }]}
+                          onPress={() => onOpenVisualizer(story.id)}
+                        >
+                          <RefreshCw size={14} color={TERMINAL.colors.cyan} />
+                          <Text style={[styles.storyActionText, { color: TERMINAL.colors.cyan }]}>MAP</Text>
+                        </TouchableOpacity>
+                        {canRename ? (
+                          <TouchableOpacity
+                            style={styles.storyActionButton}
+                            onPress={() => onRequestRenameStory(story)}
+                          >
+                            <Edit2 size={14} color={TERMINAL.colors.primary} />
+                            <Text style={[styles.storyActionText, { color: TERMINAL.colors.primary }]}>RENAME</Text>
+                          </TouchableOpacity>
+                        ) : null}
+                        {canDelete ? (
+                          <TouchableOpacity
+                            style={[styles.storyActionButton, styles.deleteIconButton]}
+                            onPress={() => onRequestDeleteStory(story)}
+                          >
+                            <Trash2 size={14} color={TERMINAL.colors.error} />
+                            <Text style={[styles.storyActionText, { color: TERMINAL.colors.error }]}>DELETE</Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                })}
               </View>
             );
           })}

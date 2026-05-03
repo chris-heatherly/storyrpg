@@ -140,6 +140,7 @@ function projectForCatalog(pkg, { req, port, dirName, mtimeMs }) {
     author: story.author,
     tags: story.tags,
     outputDir: `generated-stories/${dirName}/`,
+    imagesStatus: story.imagesStatus,
     isBuiltIn: story.isBuiltIn === true,
     updatedAt: new Date(mtimeMs).toISOString(),
     fullStoryUrl: `${getRequestBaseUrl(req, port)}/stories/${encodeURIComponent(story.id)}`,

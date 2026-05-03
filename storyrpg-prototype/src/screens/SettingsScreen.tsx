@@ -36,12 +36,14 @@ interface SettingsScreenProps {
   onDeleteStory?: (storyId: string) => void;
   onRenameStory?: (storyId: string, newTitle: string) => void;
   onGenerateVideos?: (storyId: string) => void;
+  onGenerateImages?: (storyId: string) => void;
   onContinueSeasonPlan?: (planId: string) => void;
   seasonContinuations?: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>;
   generatedStoryIds?: string[]; // IDs of stories that can be deleted
   onRefreshStories?: () => void;
   isRefreshing?: boolean;
   videoGeneratingStoryId?: string | null;
+  imageGeneratingStoryId?: string | null;
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
@@ -52,12 +54,14 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onDeleteStory,
   onRenameStory,
   onGenerateVideos,
+  onGenerateImages,
   onContinueSeasonPlan,
   seasonContinuations = {},
   generatedStoryIds = [],
   onRefreshStories,
   isRefreshing = false,
   videoGeneratingStoryId = null,
+  imageGeneratingStoryId = null,
 }) => {
   const fontSize = useSettingsStore((state) => state.fontSize);
   const setFontSize = useSettingsStore((state) => state.setFontSize);
@@ -231,6 +235,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           onDeleteStory={onDeleteStory}
           onRenameStory={onRenameStory}
           onGenerateVideos={onGenerateVideos}
+          onGenerateImages={onGenerateImages}
           onContinueSeasonPlan={onContinueSeasonPlan}
           seasonContinuations={seasonContinuations}
           onRequestDeleteStory={handleDeleteStory}
@@ -238,6 +243,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           onRefreshStories={onRefreshStories}
           isRefreshing={isRefreshing}
           videoGeneratingStoryId={videoGeneratingStoryId}
+          imageGeneratingStoryId={imageGeneratingStoryId}
         />
 
         <SystemInfoSection styles={styles} />
@@ -465,11 +471,22 @@ const styles = StyleSheet.create({
   },
   storyManagementList: {
     marginLeft: 28,
+    gap: 12,
+  },
+  storySeasonGroup: {
     backgroundColor: '#16191f',
-    borderRadius: 20,
+    borderRadius: 14,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  storySeasonHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    backgroundColor: '#1b1f27',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
   },
   storyManageItem: {
     flexDirection: 'row',
@@ -478,11 +495,37 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.03)',
   },
+  storyEpisodeNumber: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+    backgroundColor: 'rgba(59, 130, 246, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  storyEpisodeNumberText: {
+    fontSize: 8,
+    fontWeight: '900',
+    color: TERMINAL.colors.muted,
+    letterSpacing: 1,
+  },
+  storyEpisodeNumberValue: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: TERMINAL.colors.primary,
+  },
   storyManageInfo: {
     flex: 1,
   },
   storyManageTitle: {
     fontSize: 12,
+    fontWeight: '900',
+    color: 'white',
+    marginBottom: 4,
+  },
+  storyEpisodeTitle: {
+    fontSize: 11,
     fontWeight: '900',
     color: 'white',
     marginBottom: 4,

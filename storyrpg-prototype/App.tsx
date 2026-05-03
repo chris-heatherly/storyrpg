@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { View, StyleSheet, Modal, Text, TouchableOpacity, Platform } from 'react-native';
+import { Alert, View, StyleSheet, Modal, Text, TouchableOpacity, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GameProvider, useGameActions, useGamePlayerState, useGameStoryState } from './src/stores/gameStore';
 import { SettingsProvider, useSettingsStore } from './src/stores/settingsStore';
@@ -27,6 +27,7 @@ import { encodeStory } from './src/ai-agents/codec/storyCodec';
 import { loadConfig } from './src/ai-agents/config';
 import { useVideoJobStore } from './src/stores/videoJobStore';
 import { useStoryLibrary } from './src/hooks/useStoryLibrary';
+import { useGeneratorRunner } from './src/hooks/useGeneratorRunner';
 import { useAppNavigationStore } from './src/stores/appNavigationStore';
 import {
   captureAttributionFromUrl,
@@ -72,6 +73,7 @@ const isSeasonEpisodeGenerated = (episode?: {
 function AppContent() {
   // Protagonist name/pronouns come from the story's established characters
   const [videoGeneratingStoryId, setVideoGeneratingStoryId] = useState<string | null>(null);
+  const [imageGeneratingStoryId, setImageGeneratingStoryId] = useState<string | null>(null);
   const videoPipelineRef = useRef<PipelineHandle | null>(null);
   const [visualizerStory, setVisualizerStory] = useState<Story | null>(null);
   const [recapEpisodeId, setRecapEpisodeId] = useState<string | null>(null);
@@ -104,6 +106,7 @@ function AppContent() {
   const { player } = useGamePlayerState();
   const { currentStory, currentEpisode } = useGameStoryState();
   const { initializeStory, loadEpisode, loadScene, setBeat } = useGameActions();
+  const { ensureProxyAvailable, runWorkerJob } = useGeneratorRunner();
   
   // Generation job store for the floating indicator
   const { jobs, loadJobs, registerJob: registerGenJob, updateJob: updateGenJob, addJobEvent } = useGenerationJobStore();
@@ -664,6 +667,128 @@ function AppContent() {
     }
   }, [videoGeneratingStoryId, registerGenJob, updateGenJob, addJobEvent, addVideoJob, updateVideoJob, removeVideoJob, clearVideoJobs, loadFullStory]);
 
+  const handleGenerateImages = useCallback(async (storyId: string) => {
+    if (imageGeneratingStoryId) return;
+    const storyEntry = stories.find((candidate) => candidate.id === storyId);
+    const outputDir = storyEntry?.outputDir;
+    if (!outputDir) {
+      Alert.alert('Missing Output Directory', 'This story does not have a saved draft directory for image generation.');
+      return;
+    }
+    const proxyAvailable = await ensureProxyAvailable();
+    if (!proxyAvailable) {
+      Alert.alert('Backend Unavailable', 'Proxy server is not reachable at http://localhost:3001.');
+      return;
+    }
+
+    const jobTitle = `${storyEntry?.title || 'Story'} Images`;
+    let workerJobId: string | null = null;
+    setImageGeneratingStoryId(storyId);
+
+    try {
+      const config = loadConfig();
+      config.generation = {
+        ...(config.generation || {}),
+        assetGenerationMode: 'image-only',
+      };
+      config.imageGen = {
+        ...(config.imageGen || {}),
+        enabled: true,
+      };
+
+      const worker = await runWorkerJob<any>(
+        {
+          mode: 'image-generation',
+          payload: {
+            config: config as unknown as Record<string, unknown>,
+            imageGenerationInput: {
+              outputDirectory: outputDir,
+            },
+          } as any,
+          idempotencyKey: `image-generation:${outputDir}`,
+          storyTitle: jobTitle,
+          episodeCount: storyEntry?.episodeCount || 1,
+        },
+        (event) => {
+          if (!workerJobId) return;
+          addJobEvent(workerJobId, {
+            type: event.type,
+            phase: event.phase,
+            agent: event.agent,
+            message: event.message,
+            timestamp: new Date().toISOString(),
+          });
+        },
+        (statusData) => {
+          if (!workerJobId) return;
+          updateGenJob(workerJobId, {
+            status: (statusData?.status as any) || 'running',
+            currentPhase: statusData?.currentPhase || 'images',
+            progress: Math.max(0, Math.min(100, Number(statusData?.progress ?? 0))),
+            currentEpisode: Number(statusData?.currentEpisode || 1),
+            episodeCount: Number(statusData?.episodeCount || storyEntry?.episodeCount || 1),
+          });
+        },
+        async (jobId) => {
+          workerJobId = jobId;
+          await registerGenJob({
+            id: jobId,
+            storyTitle: jobTitle,
+            startedAt: new Date().toISOString(),
+            status: 'running',
+            currentPhase: 'queued',
+            progress: 0,
+            episodeCount: storyEntry?.episodeCount || 1,
+            currentEpisode: 1,
+            outputDir,
+            events: [],
+          });
+          openGeneratorRoute(jobId);
+        },
+      );
+
+      if (!worker.result?.success) {
+        throw new Error(worker.result?.error || 'Image generation failed');
+      }
+      if (worker.result?.story) {
+        upsertStory(worker.result.story);
+      } else {
+        await loadStories();
+      }
+      if (workerJobId) {
+        await updateGenJob(workerJobId, {
+          status: 'completed',
+          progress: 100,
+          currentPhase: 'complete',
+          outputDir: worker.result?.outputDirectory || outputDir,
+        });
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error('[App] Image generation failed:', errMsg);
+      if (workerJobId) {
+        await updateGenJob(workerJobId, {
+          status: 'failed',
+          error: errMsg,
+        });
+      }
+      Alert.alert('Image Generation Failed', errMsg);
+    } finally {
+      setImageGeneratingStoryId(null);
+    }
+  }, [
+    imageGeneratingStoryId,
+    stories,
+    ensureProxyAvailable,
+    runWorkerJob,
+    addJobEvent,
+    updateGenJob,
+    registerGenJob,
+    openGeneratorRoute,
+    upsertStory,
+    loadStories,
+  ]);
+
   if (!storiesLoaded) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
@@ -698,12 +823,14 @@ function AppContent() {
           onDeleteStory={handleDeleteStory}
           onRenameStory={handleRenameStory}
           onGenerateVideos={handleGenerateVideos}
+          onGenerateImages={handleGenerateImages}
           onContinueSeasonPlan={handleContinueSeasonPlan}
           seasonContinuations={seasonContinuations}
           generatedStoryIds={Array.from(fileLoadedStoryIds)}
           onRefreshStories={loadStories}
           isRefreshing={isRefreshing}
           videoGeneratingStoryId={videoGeneratingStoryId}
+          imageGeneratingStoryId={imageGeneratingStoryId}
         />
       )}
 

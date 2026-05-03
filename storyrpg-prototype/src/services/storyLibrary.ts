@@ -122,6 +122,7 @@ export function createStoryCatalogEntry(
     author: story.author,
     tags: story.tags,
     outputDir: story.outputDir,
+    imagesStatus: story.imagesStatus,
     episodeCount: story.episodes.length,
     episodes: story.episodes.map((episode) => ({
       id: episode.id,

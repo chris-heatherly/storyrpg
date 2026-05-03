@@ -159,6 +159,7 @@ export interface StoryCatalogEntry {
   author?: string;
   tags?: string[];
   outputDir?: string;
+  imagesStatus?: Story['imagesStatus'];
   isBuiltIn?: boolean;
   updatedAt?: string;
   fullStoryUrl?: string;

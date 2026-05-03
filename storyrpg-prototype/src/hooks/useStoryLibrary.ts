@@ -154,10 +154,10 @@ export function useStoryLibrary(builtInStories: Story[]) {
       const existingIndex = prev.findIndex((candidate) => candidate.id === normalizedStory.id);
       if (existingIndex >= 0) {
         const updated = [...prev];
-        updated[existingIndex] = { ...updated[existingIndex], ...catalogEntry };
-        return updated;
+        updated.splice(existingIndex, 1);
+        return [{ ...prev[existingIndex], ...catalogEntry }, ...updated];
       }
-      return [...prev, catalogEntry];
+      return [catalogEntry, ...prev];
     });
 
     setFileLoadedStoryIds((prev) => new Set([...prev, normalizedStory.id]));
@@ -172,7 +172,6 @@ export function useStoryLibrary(builtInStories: Story[]) {
       return next;
     });
   }, []);
-
   return {
     stories,
     setStories,

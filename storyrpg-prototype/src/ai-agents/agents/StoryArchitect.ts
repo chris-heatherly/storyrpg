@@ -19,6 +19,7 @@ import { BaseAgent, AgentResponse, AgentMessage } from './BaseAgent';
 import { BRANCH_AND_BOTTLENECK } from '../prompts/storytellingPrinciples';
 import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType } from '../../types';
+import type { CliffhangerPlan } from '../../types/seasonPlan';
 import type { EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 
 // Input types
@@ -81,6 +82,12 @@ export interface StoryArchitectInput {
    * required vs. optional and what dramatic function the episode serves.
    */
   episodeStructuralRole?: StructuralRole[];
+
+  /**
+   * Role-mapped episode ending contract. The final non-encounter scene should
+   * resolve the episode's immediate tension, then open this hook.
+   */
+  cliffhangerPlan?: CliffhangerPlan;
 
   // Season plan data (encounter and branching directives from the master blueprint)
   seasonPlanDirectives?: {
@@ -1039,6 +1046,7 @@ ${input.memoryContext}
 ${STORY_ARCHITECT_BLUEPRINT_EXAMPLE}
 ${this.buildSeasonPlanDirectivesSection(input)}
 ${this.buildStructuralContextSection(input)}
+${this.buildCliffhangerPlanSection(input)}
 
 ## Required JSON Structure
 
@@ -1170,6 +1178,13 @@ ENCOUNTER REQUIREMENTS:
 - Encounter scenes should be bottlenecks and should NOT have a regular choicePoint (they have skill-based choices instead)
 - The encounter should be the episode's dramatic climax — roughly scene 3 of 5, or scene 4 of 6
 
+CLIFFHANGER REQUIREMENTS:
+- The final scene should usually be an aftermath / consequence scene, not the encounter itself.
+- The final scene must acknowledge what happened in the episode's central conflict before opening the next pressure.
+- If a Cliffhanger Plan is supplied, the final scene's narrativeFunction and keyBeats MUST explicitly support it.
+- For high-intensity cliffhangers, make the final keyBeat a concrete shock, emotional rupture, betrayal, reframe, arrival, loss, or decision — not vague unease.
+- Do not fake unresolved tension by simply stopping mid-action; make the hook earned by prior setup.
+
 CHOICE DENSITY REQUIREMENTS (CRITICAL - Interactive fiction requires player choices):
 6. At least 40% of scenes MUST have a choicePoint defined (branching, dilemma, or flavor)
 7. Players need agency early - either the FIRST scene has a choicePoint, OR the first scene is very brief (< 200 words) and the SECOND scene has one
@@ -1235,6 +1250,27 @@ Leave the other \`arc.*\` fields as empty strings — the season sevenPoint abov
 already carries them at other episodes. The \`arc.climax\` field MUST, when
 filled, reference or rephrase the season Climax anchor above so the season
 reads as a single story.
+`;
+  }
+
+  private buildCliffhangerPlanSection(input: StoryArchitectInput): string {
+    const plan = input.cliffhangerPlan;
+    if (!plan) return '';
+
+    return `
+## Seven-Point Cliffhanger Plan (final scene contract)
+- Style: ${plan.style}
+- Structural role: ${plan.mappedStructuralRole}
+- Type: ${plan.type}
+- Intensity: ${plan.intensity}
+- Hook to deliver: ${plan.hook}
+- Setup that must make it earned: ${plan.setup}
+- Immediate episode tension to acknowledge/resolve: ${plan.resolvedEpisodeTension}
+- New open question: ${plan.newOpenQuestion}
+- Emotional charge: ${plan.emotionalCharge}
+- Next-episode pressure: ${plan.nextEpisodePressure}
+
+Design the final scene as "aftermath plus hook": show the consequence of this episode's encounter/choice, then end on the new question or pressure above.
 `;
   }
 

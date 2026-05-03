@@ -178,6 +178,11 @@ ANTHROPIC_API_KEY=your-anthropic-api-key-here
 # === OPTIONAL: Voice Narration ===
 # ELEVENLABS_API_KEY=your-elevenlabs-key-here
 
+# === OPTIONAL: Analytics / Attribution ===
+# EXPO_PUBLIC_ANALYTICS_ENABLED=true
+# EXPO_PUBLIC_POSTHOG_KEY=phc_your_project_key
+# EXPO_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+
 # === OPTIONAL: Advanced Settings ===
 # PORT=3001
 # EXPO_PUBLIC_DEBUG=true
@@ -686,6 +691,17 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 
 # ElevenLabs text-to-speech
 # ELEVENLABS_API_KEY=...
+
+# ===================================================================
+# ANALYTICS / ATTRIBUTION (Optional)
+# ===================================================================
+
+# Product analytics and campaign attribution (web only in v1).
+# When disabled or missing a PostHog key, analytics calls no-op.
+# EXPO_PUBLIC_ANALYTICS_ENABLED=true
+# EXPO_PUBLIC_POSTHOG_KEY=phc_...
+# EXPO_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+# EXPO_PUBLIC_ANALYTICS_DEBUG=false
 
 # ===================================================================
 # SERVER CONFIGURATION

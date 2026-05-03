@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 import {
   Bot,
+  ChevronRight,
   CheckCircle2,
   Clock,
   Code,
@@ -457,6 +458,8 @@ interface StoryLibrarySectionProps {
   onDeleteStory?: (storyId: string) => void;
   onRenameStory?: (storyId: string, newTitle: string) => void;
   onGenerateVideos?: (storyId: string) => void;
+  onContinueSeasonPlan?: (planId: string) => void;
+  seasonContinuations?: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>;
   onRequestDeleteStory: (story: StoryCatalogEntry) => void;
   onRequestRenameStory: (story: StoryCatalogEntry) => void;
   onRefreshStories?: () => void;
@@ -472,6 +475,8 @@ export function StoryLibrarySection({
   onDeleteStory,
   onRenameStory,
   onGenerateVideos,
+  onContinueSeasonPlan,
+  seasonContinuations = {},
   onRequestDeleteStory,
   onRequestRenameStory,
   onRefreshStories,
@@ -514,6 +519,7 @@ export function StoryLibrarySection({
             const canRename = Boolean(onRenameStory);
             const canDelete = Boolean(onDeleteStory);
             const showGeneratedBadge = generatedStoryIds.includes(story.id) && !isBuiltIn;
+            const continuation = seasonContinuations[story.id];
 
             return (
               <View key={story.id} style={styles.storyManageItem}>
@@ -539,6 +545,17 @@ export function StoryLibrarySection({
                   </View>
                 </View>
                 <View style={styles.storyManageActions}>
+                  {continuation && onContinueSeasonPlan ? (
+                    <TouchableOpacity
+                      style={[styles.storyActionButton, { backgroundColor: 'rgba(245, 158, 11, 0.12)' }]}
+                      onPress={() => onContinueSeasonPlan(continuation.planId)}
+                    >
+                      <ChevronRight size={14} color={TERMINAL.colors.amber} />
+                      <Text style={[styles.storyActionText, { color: TERMINAL.colors.amber }]}>
+                        NEXT EP {continuation.nextEpisodeNumber}/{continuation.totalEpisodes}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
                   {canGenerateVideo ? (
                     <TouchableOpacity
                       style={[

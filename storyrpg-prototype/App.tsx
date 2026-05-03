@@ -5,6 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GameProvider, useGameActions, useGamePlayerState, useGameStoryState } from './src/stores/gameStore';
 import { SettingsProvider, useSettingsStore } from './src/stores/settingsStore';
 import { useGenerationJobStore } from './src/stores/generationJobStore';
+import { seasonPlanStore } from './src/stores/seasonPlanStore';
 import {
   HomeScreen,
   EpisodeSelectScreen,
@@ -27,9 +28,29 @@ import { loadConfig } from './src/ai-agents/config';
 import { useVideoJobStore } from './src/stores/videoJobStore';
 import { useStoryLibrary } from './src/hooks/useStoryLibrary';
 import { useAppNavigationStore } from './src/stores/appNavigationStore';
+import {
+  captureAttributionFromUrl,
+  identifyAnonymousPlayer,
+  incrementPersonProperty,
+  initAnalytics,
+  screen as trackScreen,
+  setSuperProperties,
+  track,
+} from './src/services/analyticsService';
 
 const GENERATED_STORIES_KEY = '@storyrpg_generated_stories';
 const DELETED_STORIES_KEY = '@storyrpg_deleted_stories'; // Track intentionally deleted stories
+
+type SeasonContinuation = {
+  planId: string;
+  nextEpisodeNumber: number;
+  totalEpisodes: number;
+};
+
+const normalizeContinuationKey = (value?: string | null) => {
+  if (!value) return null;
+  return value.trim().toLowerCase().replace(/\/+$/, '');
+};
 
 function AppContent() {
   // Protagonist name/pronouns come from the story's established characters
@@ -41,6 +62,7 @@ function AppContent() {
   const showPauseMenu = useAppNavigationStore((state) => state.showPauseMenu);
   const visualizerStoryId = useAppNavigationStore((state) => state.visualizerStoryId);
   const resumeJobId = useAppNavigationStore((state) => state.resumeJobId);
+  const generatorSeasonPlanId = useAppNavigationStore((state) => state.generatorSeasonPlanId);
   const navigateTo = useAppNavigationStore((state) => state.navigateTo);
   const openPauseMenu = useAppNavigationStore((state) => state.openPauseMenu);
   const closePauseMenu = useAppNavigationStore((state) => state.closePauseMenu);
@@ -62,24 +84,78 @@ function AppContent() {
     upsertStory,
     removeStory,
   } = useStoryLibrary(builtInStories);
+  const { player } = useGamePlayerState();
+  const { currentStory, currentEpisode } = useGameStoryState();
+  const { initializeStory, loadEpisode, loadScene, setBeat } = useGameActions();
   
   // Generation job store for the floating indicator
   const { jobs, loadJobs, registerJob: registerGenJob, updateJob: updateGenJob, addJobEvent } = useGenerationJobStore();
   const activeGenerationJob = jobs.find(j => j.status === 'running' || j.status === 'pending');
+  const [seasonContinuations, setSeasonContinuations] = useState<Record<string, SeasonContinuation>>({});
 
   // Video job store for live preview
   const { addJob: addVideoJob, updateJob: updateVideoJob, removeJob: removeVideoJob, clearJobs: clearVideoJobs } = useVideoJobStore();
 
   useEffect(() => {
     loadJobs(); // Load generation jobs on app start
+    initAnalytics();
+    identifyAnonymousPlayer();
+    captureAttributionFromUrl();
+    track('app opened');
     
-    // Initialize season plan store for episode selection persistence
-    import('./src/stores/seasonPlanStore').then(({ seasonPlanStore }) => {
-      seasonPlanStore.initialize().catch(err => {
-        console.warn('[App] Failed to initialize season plan store:', err);
-      });
+    seasonPlanStore.initialize().catch(err => {
+      console.warn('[App] Failed to initialize season plan store:', err);
     });
   }, [loadJobs]);
+
+  useEffect(() => {
+    const rebuildSeasonContinuations = () => {
+      const next: Record<string, SeasonContinuation> = {};
+      const addContinuationKey = (key: string | null | undefined, continuation: SeasonContinuation) => {
+        const normalized = normalizeContinuationKey(key);
+        if (normalized) next[normalized] = continuation;
+      };
+
+      for (const saved of seasonPlanStore.getPlans()) {
+        const nextEpisode = saved.plan.episodes
+          .filter((episode) => episode.status !== 'completed')
+          .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
+        if (!nextEpisode) continue;
+
+        const continuation = {
+          planId: saved.plan.id,
+          nextEpisodeNumber: nextEpisode.episodeNumber,
+          totalEpisodes: saved.plan.totalEpisodes,
+        };
+
+        addContinuationKey(saved.plan.id, continuation);
+        addContinuationKey(saved.plan.sourceTitle, continuation);
+        addContinuationKey(saved.plan.seasonTitle, continuation);
+        addContinuationKey(saved.sourceAnalysis?.sourceTitle, continuation);
+
+        for (const episode of saved.plan.episodes) {
+          addContinuationKey(episode.generatedStoryId, continuation);
+          addContinuationKey(episode.outputDir, continuation);
+          addContinuationKey(episode.outputDir?.split('/').filter(Boolean).pop(), continuation);
+        }
+      }
+      setSeasonContinuations(next);
+    };
+
+    seasonPlanStore.initialize()
+      .then(rebuildSeasonContinuations)
+      .catch((err) => console.warn('[App] Failed to load season continuations:', err));
+
+    return seasonPlanStore.subscribe(rebuildSeasonContinuations);
+  }, []);
+
+  useEffect(() => {
+    trackScreen(currentScreen, {
+      has_current_story: Boolean(currentStory?.id),
+      current_story_id: currentStory?.id,
+      current_episode_id: currentEpisode?.id,
+    });
+  }, [currentScreen, currentStory?.id, currentEpisode?.id]);
 
   // Save non-file stories to AsyncStorage (for non-web platforms)
   useEffect(() => {
@@ -127,9 +203,6 @@ function AppContent() {
     saveStories();
   }, [stories, storiesLoaded, fileLoadedStoryIds]);
 
-  const { player } = useGamePlayerState();
-  const { currentStory, currentEpisode } = useGameStoryState();
-  const { initializeStory, loadEpisode, loadScene, setBeat } = useGameActions();
   const fonts = useSettingsStore((state) => state.getFontSizes());
 
   const normalizePronouns = (value: unknown): PlayerState['characterPronouns'] | null => {
@@ -180,16 +253,40 @@ function AppContent() {
   };
 
   const handleStartStory = async (storyId: string) => {
+    const catalogStory = stories.find((story) => story.id === storyId);
+    track('story selected', {
+      story_id: storyId,
+      story_genre: catalogStory?.genre,
+      episode_count: catalogStory?.episodeCount,
+      is_generated_story: catalogStory?.isBuiltIn === false || Boolean(catalogStory?.outputDir),
+    });
+
     const story = await loadFullStory(storyId);
     if (!story) return;
 
     // Use an actual character name; never derive the player name from story title text.
     const protagonist = resolveProtagonist(story);
     initializeStory(story, protagonist.name, protagonist.pronouns);
+    setSuperProperties({
+      last_story_id: story.id,
+      last_story_genre: story.genre,
+    });
+    incrementPersonProperty('stories_started_count');
+    track('story started', {
+      story_id: story.id,
+      story_genre: story.genre,
+      episode_count: story.episodes.length,
+      is_generated_story: Boolean(story.outputDir),
+    });
     navigateTo('episodes');
   };
 
   const handleContinueStory = () => {
+    track('continue story clicked', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+    });
     navigateTo('episodes');
   };
 
@@ -197,10 +294,30 @@ function AppContent() {
     const episode = currentStory?.episodes.find((e) => e.id === episodeId);
     if (!episode) return;
 
+    setSuperProperties({
+      last_story_id: currentStory?.id,
+      last_story_genre: currentStory?.genre,
+      last_episode_id: episode.id,
+    });
+    track('episode selected', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: episode.id,
+      episode_number: episode.number,
+      scene_count: episode.scenes.length,
+      beat_count: episode.scenes.reduce((sum, scene) => sum + scene.beats.length, 0),
+      is_completed: player.completedEpisodes.includes(episode.id),
+    });
     loadEpisode(episodeId);
     if (episode.startingSceneId) {
       loadScene(episode.startingSceneId, episode);
     }
+    track('episode started', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: episode.id,
+      episode_number: episode.number,
+    });
     navigateTo('reading');
   };
 
@@ -208,6 +325,7 @@ function AppContent() {
     // Plan 2: show the post-episode flowchart recap before returning the
     // player to the episode-select screen.
     if (currentEpisode?.id) {
+      incrementPersonProperty('episodes_completed_count');
       setRecapEpisodeId(currentEpisode.id);
       navigateTo('recap');
     } else {
@@ -232,14 +350,29 @@ function AppContent() {
   };
 
   const handlePause = () => {
+    track('pause menu opened', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+    });
     openPauseMenu();
   };
 
   const handleResume = () => {
+    track('pause menu resumed', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+    });
     closePauseMenu();
   };
 
   const handleQuitToMenu = () => {
+    track('quit to menu clicked', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+    });
     closePauseMenu();
     navigateTo('home');
   };
@@ -249,6 +382,7 @@ function AppContent() {
   };
 
   const handleOpenSettings = () => {
+    track('settings opened');
     navigateTo('settings');
   };
 
@@ -269,7 +403,16 @@ function AppContent() {
   };
 
   const handleOpenGenerator = (jobId?: string) => {
+    track('generator opened', {
+      resume_job: Boolean(jobId),
+    });
     openGeneratorRoute(jobId);
+  };
+
+  const handleContinueSeasonPlan = async (planId: string) => {
+    await seasonPlanStore.setActivePlan(planId);
+    track('season continuation opened', { plan_id: planId });
+    openGeneratorRoute(undefined, undefined, planId);
   };
 
   const handleBackFromGenerator = () => {
@@ -292,6 +435,18 @@ function AppContent() {
     const target = full || story;
     const protagonist = resolveProtagonist(target);
     initializeStory(target, protagonist.name, protagonist.pronouns);
+    setSuperProperties({
+      last_story_id: target.id,
+      last_story_genre: target.genre,
+    });
+    incrementPersonProperty('stories_started_count');
+    track('story started', {
+      story_id: target.id,
+      story_genre: target.genre,
+      episode_count: target.episodes.length,
+      is_generated_story: true,
+      start_source: 'generator',
+    });
     closeGeneratorRoute('episodes');
   };
 
@@ -526,6 +681,8 @@ function AppContent() {
           onDeleteStory={handleDeleteStory}
           onRenameStory={handleRenameStory}
           onGenerateVideos={handleGenerateVideos}
+          onContinueSeasonPlan={handleContinueSeasonPlan}
+          seasonContinuations={seasonContinuations}
           generatedStoryIds={Array.from(fileLoadedStoryIds)}
           onRefreshStories={loadStories}
           isRefreshing={isRefreshing}
@@ -540,6 +697,7 @@ function AppContent() {
           onPlayStory={handlePlayGeneratedStory}
           onViewLibrary={handleViewLibrary}
           resumeJobId={resumeJobId}
+          initialSeasonPlanId={generatorSeasonPlanId}
           onCancelExternalPipeline={() => {
             if (videoPipelineRef.current) {
               videoPipelineRef.current.cancel();

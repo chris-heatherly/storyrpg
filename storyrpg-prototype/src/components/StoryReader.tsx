@@ -52,6 +52,7 @@ import { useClickDebounce } from '../utils/useDebounce';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { useImagePromptOverlay } from '../hooks/useImagePromptOverlay';
 import { formatSceneBeatLabelFromImageUrl } from '../utils/imagePromptDebug';
+import { incrementPersonProperty, setSuperProperties, track } from '../services/analyticsService';
 import {
   cloneRelationshipMap,
   applyRelationshipConsequencesToSnapshot,
@@ -98,6 +99,15 @@ const REFLECTION_PROSE: Record<string, string[]> = {
 function getReflectionText(outcome: string): string {
   const pool = REFLECTION_PROSE[outcome] || REFLECTION_PROSE.victory;
   return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function countEpisodeBeats(episode?: { scenes?: Array<{ beats?: unknown[] }> } | null): number {
+  return episode?.scenes?.reduce((sum, scene) => sum + (scene.beats?.length || 0), 0) || 0;
+}
+
+function percentComplete(part: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((part / total) * 100)));
 }
 
 function applyStoryletFlags(
@@ -229,6 +239,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   // Dev mode navigation history — tracks actual visited beats so "back" works correctly
   const devHistoryRef = useRef<Array<{ sceneId: string; beatId: string }>>([]);
+  const lastTrackedSceneRef = useRef<string | null>(null);
+  const choiceShownRef = useRef<Set<string>>(new Set());
+  const encounterStartedRef = useRef<Set<string>>(new Set());
 
   const getSceneBeatLabelFromImageUrl = useCallback((url?: string): string | null => {
     return formatSceneBeatLabelFromImageUrl(url, currentScene?.id, currentBeatId);
@@ -319,6 +332,21 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     !completedEncounters.has(sceneEncounter.id) && 
     (showingEncounter || currentBeatId === currentScene?.startingBeatId);
 
+  useEffect(() => {
+    if (!shouldShowEncounter || !sceneEncounter || !currentStory || !currentEpisode || !currentScene) return;
+    if (encounterStartedRef.current.has(sceneEncounter.id)) return;
+    encounterStartedRef.current.add(sceneEncounter.id);
+    track('encounter started', {
+      story_id: currentStory.id,
+      story_genre: currentStory.genre,
+      episode_id: currentEpisode.id,
+      episode_number: currentEpisode.number,
+      scene_id: currentScene.id,
+      encounter_id: sceneEncounter.id,
+      encounter_type: sceneEncounter.type,
+    });
+  }, [shouldShowEncounter, sceneEncounter, currentStory, currentEpisode, currentScene]);
+
   // Auto-trigger encounter when entering a scene with one
   useEffect(() => {
     if (currentScene?.encounter && 
@@ -339,6 +367,17 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     }
     setCompletedEncounters(prev => new Set([...prev, sceneEncounter.id]));
     setShowingEncounter(false);
+    track('encounter completed', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+      episode_number: currentEpisode?.number,
+      scene_id: currentScene?.id,
+      encounter_id: sceneEncounter.id,
+      encounter_type: sceneEncounter.type,
+      encounter_outcome: outcome,
+      feedback_count: encounterFeedback?.length || 0,
+    });
     
     imageOpacity.setValue(1);
     fadeAnim.setValue(1);
@@ -412,6 +451,48 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const finishEpisode = useCallback(() => {
     if (!currentEpisode) return;
 
+    const visitLog = player.visitLog ?? [];
+    const episodeVisits = visitLog.filter((visit) => visit.episodeId === currentEpisode.id);
+    const beatsVisited = new Set(episodeVisits.map((visit) => visit.beatId)).size;
+    const scenesVisited = new Set(episodeVisits.map((visit) => visit.sceneId)).size;
+    const choicesMade = episodeVisits.filter((visit) => visit.choiceId).length;
+    const totalEpisodeBeats = countEpisodeBeats(currentEpisode);
+    const completedEpisodeIds = new Set(player.completedEpisodes);
+    completedEpisodeIds.add(currentEpisode.id);
+    const storyPercent = currentStory
+      ? percentComplete(completedEpisodeIds.size, currentStory.episodes.length)
+      : undefined;
+
+    track('episode completed', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode.id,
+      episode_number: currentEpisode.number,
+      beats_seen_count: beatsVisited,
+      choices_made_count: choicesMade,
+      scenes_seen_count: scenesVisited,
+      episode_percent_complete: percentComplete(beatsVisited, totalEpisodeBeats),
+      story_percent_complete: storyPercent,
+    });
+    setSuperProperties({
+      last_story_id: currentStory?.id,
+      last_story_genre: currentStory?.genre,
+      last_episode_id: currentEpisode.id,
+    });
+
+    if (currentStory && completedEpisodeIds.size >= currentStory.episodes.length) {
+      incrementPersonProperty('stories_completed_count');
+      track('story completed', {
+        story_id: currentStory.id,
+        story_genre: currentStory.genre,
+        episode_count: currentStory.episodes.length,
+        beats_seen_count: new Set(visitLog.map((visit) => visit.beatId)).size,
+        choices_made_count: visitLog.filter((visit) => visit.choiceId).length,
+        scenes_seen_count: new Set(visitLog.map((visit) => visit.sceneId)).size,
+        story_percent_complete: 100,
+      });
+    }
+
     completeEpisode(currentEpisode.id);
     const episodeEndConsequences = currentEpisode.onComplete || [];
     if (episodeEndConsequences.length > 0) {
@@ -446,6 +527,8 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     completeEpisode,
     applyConsequences,
     player.relationships,
+    player.visitLog,
+    player.completedEpisodes,
     currentStory,
     episodeChoiceRecap,
     onEpisodeComplete,
@@ -641,6 +724,38 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       });
     }
 
+    if (lastTrackedSceneRef.current !== currentScene.id) {
+      lastTrackedSceneRef.current = currentScene.id;
+      track('scene viewed', {
+        story_id: currentStory.id,
+        story_genre: currentStory.genre,
+        episode_id: currentEpisode?.id,
+        episode_number: currentEpisode?.number,
+        scene_id: currentScene.id,
+        beat_count: currentScene.beats.length,
+        has_encounter: Boolean(currentScene.encounter),
+        branch_type: currentScene.branchType,
+        is_convergence_point: Boolean(currentScene.isConvergencePoint),
+      });
+    }
+
+    const episodeVisits = (player.visitLog ?? []).filter((visit) => visit.episodeId === currentEpisode?.id);
+    const beatsVisited = new Set([...episodeVisits.map((visit) => visit.beatId), currentBeatId]).size;
+    track('beat viewed', {
+      story_id: currentStory.id,
+      story_genre: currentStory.genre,
+      episode_id: currentEpisode?.id,
+      episode_number: currentEpisode?.number,
+      scene_id: currentScene.id,
+      beat_id: currentBeatId,
+      has_choices: Boolean(beat.choices?.length),
+      choice_count: beat.choices?.length || 0,
+      has_image: Boolean(beat.image),
+      has_audio: Boolean(beat.audio),
+      has_video: Boolean(beat.video),
+      episode_percent_complete: percentComplete(beatsVisited, countEpisodeBeats(currentEpisode)),
+    });
+
     const processed = processBeat(beat, player, currentStory);
     
     // Add convergence context for branch-aware rendering
@@ -742,7 +857,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     }, 3000); // 3 seconds max for any animation
     
     return () => clearTimeout(safetyTimeout);
-  }, [currentScene, currentBeatId, currentStory]);
+  }, [currentScene, currentBeatId, currentStory, currentEpisode, player.visitLog]);
 
   const handleAnimationComplete = () => {
     setIsAnimating(false);
@@ -750,6 +865,23 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       setShowChoices(true);
     }
   };
+
+  useEffect(() => {
+    if (!showChoices || !processedBeat?.choices?.length || !currentScene || !currentBeatId) return;
+    const key = `${currentEpisode?.id || ''}:${currentScene.id}:${currentBeatId}`;
+    if (choiceShownRef.current.has(key)) return;
+    choiceShownRef.current.add(key);
+    track('choice shown', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+      episode_number: currentEpisode?.number,
+      scene_id: currentScene.id,
+      beat_id: currentBeatId,
+      choice_count: processedBeat.choices.length,
+      choice_ids: processedBeat.choices.map((choice) => choice.id),
+    });
+  }, [showChoices, processedBeat?.choices, currentScene, currentBeatId, currentEpisode, currentStory]);
 
   useEffect(() => {
     if (!recentChoiceEcho || !currentScene || !currentBeatId) return;
@@ -792,6 +924,23 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       setSelectedChoiceId(null);
       return;
     }
+
+    track('choice selected', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+      episode_number: currentEpisode?.number,
+      scene_id: currentScene.id,
+      beat_id: currentBeatId,
+      choice_id: choice.id,
+      choice_type: choice.choiceType,
+      consequence_domain: choice.consequenceDomain,
+      has_stat_check: Boolean(choice.statCheck),
+      has_delayed_consequence: Boolean(choice.delayedConsequences?.length),
+      has_next_scene: Boolean(result.nextSceneId),
+      has_next_beat: Boolean(result.nextBeatId),
+      resolution_tier: result.resolution?.tier,
+    });
 
     // Plan 2: attach the chosen choice to the current visit record so the
     // post-episode flowchart can draw the traveled edge.

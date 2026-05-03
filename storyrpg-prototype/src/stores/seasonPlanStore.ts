@@ -303,6 +303,13 @@ export const seasonPlanStore = {
   },
 
   /**
+   * Get all saved season plans.
+   */
+  getPlans(): SavedSeasonPlan[] {
+    return Array.from(state.plans.values());
+  },
+
+  /**
    * Get a specific season plan
    */
   getPlan(planId: string): SavedSeasonPlan | undefined {

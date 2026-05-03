@@ -19,12 +19,28 @@ import {
   SevenPointStructure,
   StructuralRole,
 } from './sourceAnalysis';
+import type { CliffhangerType } from './story';
 
 // ========================================
 // SEASON PLAN CORE TYPES
 // ========================================
 
 export type EpisodeStatus = 'planned' | 'selected' | 'in_progress' | 'completed' | 'skipped';
+
+export type CliffhangerIntensity = 'low' | 'medium' | 'high';
+
+export interface CliffhangerPlan {
+  type: CliffhangerType;
+  intensity: CliffhangerIntensity;
+  hook: string;
+  setup: string;
+  resolvedEpisodeTension: string;
+  newOpenQuestion: string;
+  emotionalCharge: string;
+  nextEpisodePressure: string;
+  mappedStructuralRole: StructuralRole;
+  style: 'serialized_tv';
+}
 
 export interface SeasonEpisode extends EpisodeOutline {
   // Generation status
@@ -58,6 +74,12 @@ export interface SeasonEpisode extends EpisodeOutline {
     role: 'opens' | 'reinforces' | 'threatens' | 'locks';
     description: string;
   }>;
+
+  /**
+   * Episode-ending contract. Non-finale episodes should resolve the immediate
+   * episode tension enough to satisfy, then open sharper next-episode pressure.
+   */
+  cliffhangerPlan?: CliffhangerPlan;
 }
 
 export interface SeasonArc {

@@ -112,6 +112,13 @@ export interface Story {
   outputDir?: string;
 
   /**
+   * Generation lifecycle for stories whose narrative content is complete before
+   * their image batch has finished. `pending` stories are valid drafts but
+   * should not be treated as fully illustrated catalog entries yet.
+   */
+  imagesStatus?: 'pending' | 'running' | 'complete' | 'failed';
+
+  /**
    * Structured art-style profile the generation pipeline used. Persisted so
    * single-image regenerations, resumes, and downstream playback can read
    * back the same style contract without re-running StyleArchitect.
@@ -253,7 +260,11 @@ export type CliffhangerType =
   | 'arrival'
   | 'departure'
   | 'decision'
-  | 'transformation';
+  | 'transformation'
+  | 'shock'
+  | 'emotional_hook'
+  | 'reframe'
+  | 'loss';
 
 export type StorySpinePosition =
   | 'setup'

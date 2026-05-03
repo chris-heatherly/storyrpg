@@ -10,7 +10,7 @@ import {
   StoryValidationError,
   type StoryPackage,
 } from '../codec/storyCodec';
-import { runStoryAnalysis, runStoryGeneration } from '../services/storyGenerationService';
+import { runImageGenerationBatch, runStoryAnalysis, runStoryGeneration } from '../services/storyGenerationService';
 import { WorkerPayload, assertValidWorkerPayload } from './workerPayload';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { Story } from '../../types';
@@ -259,6 +259,57 @@ async function runGeneration(payload: WorkerPayload) {
   }
 }
 
+async function runImageGeneration(payload: WorkerPayload) {
+  if (!payload.imageGenerationInput) throw new Error('imageGenerationInput is required for image-generation mode');
+  emit('step_start', { step: 'image_generation' });
+  const { result } = await runImageGenerationBatch({
+    config: payload.config,
+    externalJobId: payload.externalJobId,
+    outputDirectory: payload.imageGenerationInput.outputDirectory,
+    resumeCheckpoint: payload.resumeCheckpoint,
+    onEvent: (event) => {
+      emit('pipeline_event', {
+        eventType: event.type,
+        phase: event.phase,
+        agent: event.agent,
+        message: event.message,
+        data: event.data,
+        telemetry: event.telemetry,
+      });
+    },
+    onImageJobEvent: (rawEvent: any) => {
+      emit('image_job_event', {
+        eventType: rawEvent.type,
+        jobId: rawEvent.id || rawEvent.job?.id,
+        data: rawEvent.type === 'job_added' ? {
+          id: rawEvent.job?.id,
+          identifier: rawEvent.job?.identifier,
+          prompt: rawEvent.job?.prompt,
+          status: rawEvent.job?.status,
+          maxRetries: rawEvent.job?.maxRetries,
+          metadata: rawEvent.job?.metadata,
+        } : rawEvent.type === 'job_updated' ? {
+          id: rawEvent.id,
+          ...rawEvent.updates,
+        } : { id: rawEvent.id },
+      });
+    },
+  });
+  emit('step_complete', { step: 'image_generation', success: result.success });
+
+  const resultObj = result as unknown as Record<string, unknown>;
+  await atomicWriteJson(payload.resultPath, {
+    schemaVersion: 3,
+    storyId: (resultObj.story as Story | undefined)?.id || '',
+    story: resultObj.story || null,
+    success: result.success === true,
+    outputDirectory: result.outputDirectory,
+    outputManifest: result.outputManifest,
+    error: typeof resultObj.error === 'string' ? resultObj.error : undefined,
+    events: Array.isArray(resultObj.events) ? (resultObj.events as unknown[]).slice(-60) : [],
+  });
+}
+
 async function main() {
   const payloadPath = process.argv[2];
   if (!payloadPath) throw new Error('Missing payload path');
@@ -269,6 +320,8 @@ async function main() {
   emit('worker_start', { mode: payload.mode });
   if (payload.mode === 'analysis') {
     await runAnalysis(payload);
+  } else if (payload.mode === 'image-generation') {
+    await runImageGeneration(payload);
   } else {
     await runGeneration(payload);
   }
@@ -284,4 +337,3 @@ main()
     emit('worker_error', buildFailurePayload(error));
     process.exit(1);
   });
-

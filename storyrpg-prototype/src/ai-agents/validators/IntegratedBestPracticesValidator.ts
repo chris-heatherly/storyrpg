@@ -23,6 +23,7 @@ import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator
 import { PixarPrinciplesValidator } from './PixarPrinciplesValidator';
 import { CliffhangerValidator } from './CliffhangerValidator';
 import { NPCTier, RelationshipDimension, Consequence, ReminderPlan, SeasonBible, Episode, EpisodePlan } from '../../types';
+import type { CliffhangerPlan } from '../../types/seasonPlan';
 import type { EncounterStructure } from '../agents/EncounterArchitect';
 import type { CharacterBible } from '../agents/CharacterDesigner';
 import { StakesAnnotation } from '../agents/ChoiceAuthor';
@@ -121,6 +122,7 @@ export interface ValidationInput {
   seasonBible?: SeasonBible;
   episode?: Episode;
   episodePlan?: EpisodePlan;
+  cliffhangerPlan?: CliffhangerPlan;
 }
 
 export class IntegratedBestPracticesValidator {
@@ -554,11 +556,11 @@ export class IntegratedBestPracticesValidator {
     }
 
     // 8. Cliffhanger Validation (episode-level)
-    if (input.episode && input.episodePlan) {
+    if (input.episode && (input.episodePlan || input.cliffhangerPlan)) {
       try {
         const analysis = this.cliffhangerValidator.quickAnalyze(
           input.episode,
-          input.episodePlan,
+          input.cliffhangerPlan || input.episodePlan!,
         );
         if (analysis.quality === 'missing' || analysis.quality === 'weak') {
           allIssues.push({

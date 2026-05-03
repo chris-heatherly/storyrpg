@@ -27,6 +27,7 @@ import { useSettingsStore } from '../stores/settingsStore';
 import { APP_FOOTER_LINE_1, APP_FOOTER_LINE_2 } from '../config/version';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ConfirmDialog } from '../components/ui';
+import { track } from '../services/analyticsService';
 
 const { width } = Dimensions.get('window');
 
@@ -57,6 +58,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const PLACEHOLDER_IMAGE = 'https://placehold.co/400x600/1a1a2e/94a3b8?text=Story';
 
   const hasSavedGame = currentStory !== null && player.currentEpisodeId !== null;
+
+  useEffect(() => {
+    track('home viewed', {
+      story_count: stories.length,
+      has_saved_game: hasSavedGame,
+    });
+  }, [stories.length, hasSavedGame]);
+
+  useEffect(() => {
+    for (const story of stories) {
+      track('story card viewed', {
+        story_id: story.id,
+        story_genre: story.genre,
+        episode_count: story.episodeCount,
+        is_generated_story: story.isBuiltIn === false || Boolean(story.outputDir),
+      });
+    }
+  }, [stories]);
 
   const handleWipeCache = () => {
     setConfirmWipe(true);

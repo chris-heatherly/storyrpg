@@ -14,13 +14,14 @@ interface AppNavigationState {
   showPauseMenu: boolean;
   visualizerStoryId: string | null;
   resumeJobId?: string;
+  generatorSeasonPlanId?: string;
   generatorOrigin: GeneratorOrigin;
   navigateTo: (screen: AppScreen) => void;
   openPauseMenu: () => void;
   closePauseMenu: () => void;
   openVisualizer: (storyId: string) => void;
   closeVisualizer: () => void;
-  openGenerator: (jobId?: string, origin?: GeneratorOrigin) => void;
+  openGenerator: (jobId?: string, origin?: GeneratorOrigin, seasonPlanId?: string) => void;
   closeGenerator: (nextScreen?: AppScreen) => void;
 }
 
@@ -29,22 +30,28 @@ export const useAppNavigationStore = create<AppNavigationState>((set, get) => ({
   showPauseMenu: false,
   visualizerStoryId: null,
   resumeJobId: undefined,
+  generatorSeasonPlanId: undefined,
   generatorOrigin: 'home',
   navigateTo: (screen) => set({ currentScreen: screen }),
   openPauseMenu: () => set({ showPauseMenu: true }),
   closePauseMenu: () => set({ showPauseMenu: false }),
   openVisualizer: (storyId) => set({ visualizerStoryId: storyId, currentScreen: 'visualizer' }),
   closeVisualizer: () => set({ visualizerStoryId: null, currentScreen: 'settings' }),
-  openGenerator: (jobId, origin) => {
+  openGenerator: (jobId, origin, seasonPlanId) => {
     // Infer origin from the screen the user is currently on if not explicitly
     // provided, so back-nav always returns them to where they came from.
     const current = get().currentScreen;
     const inferred: GeneratorOrigin = origin
       || (current === 'home' || current === 'settings' ? current : 'home');
-    set({ resumeJobId: jobId, generatorOrigin: inferred, currentScreen: 'generator' });
+    set({
+      resumeJobId: jobId,
+      generatorSeasonPlanId: seasonPlanId,
+      generatorOrigin: inferred,
+      currentScreen: 'generator',
+    });
   },
   closeGenerator: (nextScreen) => {
     const origin = get().generatorOrigin;
-    set({ resumeJobId: undefined, currentScreen: nextScreen || origin });
+    set({ resumeJobId: undefined, generatorSeasonPlanId: undefined, currentScreen: nextScreen || origin });
   },
 }));

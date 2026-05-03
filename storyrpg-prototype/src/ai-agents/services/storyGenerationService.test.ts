@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const analyzeSourceMaterial = vi.fn();
 const generate = vi.fn();
 const generateMultipleEpisodes = vi.fn();
+const generateImagesForDraft = vi.fn();
 const seasonPlannerExecute = vi.fn();
 const pipelineInstances: MockPipeline[] = [];
 
@@ -44,6 +45,10 @@ class MockPipeline {
   async generateMultipleEpisodes(...args: any[]) {
     return generateMultipleEpisodes(...args);
   }
+
+  async generateImagesForDraft(...args: any[]) {
+    return generateImagesForDraft(...args);
+  }
 }
 
 vi.mock('../pipeline/FullStoryPipeline', () => ({
@@ -56,13 +61,14 @@ vi.mock('../agents/SeasonPlannerAgent', () => ({
   },
 }));
 
-const { runStoryAnalysis, runStoryGeneration } = await import('./storyGenerationService');
+const { runImageGenerationBatch, runStoryAnalysis, runStoryGeneration } = await import('./storyGenerationService');
 
 describe('storyGenerationService', () => {
   beforeEach(() => {
     analyzeSourceMaterial.mockReset();
     generate.mockReset();
     generateMultipleEpisodes.mockReset();
+    generateImagesForDraft.mockReset();
     seasonPlannerExecute.mockReset();
     pipelineInstances.length = 0;
   });
@@ -137,5 +143,35 @@ describe('storyGenerationService', () => {
       expect.objectContaining({ type: 'job_added' }),
     );
     expect(response.result).toEqual({ success: true, story: { id: 'story-1' } });
+  });
+
+  it('forces image rendering off for story-only generation mode', async () => {
+    generate.mockResolvedValue({ success: true });
+
+    await runStoryGeneration({
+      config: {
+        generation: { assetGenerationMode: 'story-only' },
+        imageGen: { enabled: true, provider: 'nano-banana' },
+        videoGen: { enabled: true },
+      } as any,
+      brief: { story: { title: 'Draft' } } as any,
+    });
+
+    expect(pipelineInstances[0].config.imageGen.enabled).toBe(false);
+    expect(pipelineInstances[0].config.videoGen.enabled).toBe(false);
+  });
+
+  it('runs image-only generation from an output directory', async () => {
+    generateImagesForDraft.mockResolvedValue({ success: true, outputDirectory: '/tmp/story/' });
+
+    const response = await runImageGenerationBatch({
+      config: { imageGen: { enabled: false } } as any,
+      outputDirectory: '/tmp/story/',
+    });
+
+    expect(generateImagesForDraft).toHaveBeenCalledWith('/tmp/story/', undefined);
+    expect(pipelineInstances[0].config.imageGen.enabled).toBe(true);
+    expect(pipelineInstances[0].config.generation.assetGenerationMode).toBe('image-only');
+    expect(response.result).toEqual({ success: true, outputDirectory: '/tmp/story/' });
   });
 });

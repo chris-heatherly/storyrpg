@@ -166,7 +166,13 @@ import {
 import { createLoraTrainerAdapter } from '../services/lora-training/factory';
 import { providerSupportsLoraTraining } from '../images/providerCapabilities';
 import { getReferenceStrategy } from '../images/referenceStrategy';
-import { buildStoryImageSlotManifest } from '../images/storyImageSlotManifest';
+import {
+  buildStoryImageSlotManifest,
+  storyBeatBaseIdentifier,
+  storyBeatCoverageKey,
+  storySceneBaseIdentifier,
+  storySceneCoverageKey,
+} from '../images/storyImageSlotManifest';
 import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
 import { buildBeatImagePrompt, overrideShotFromPlan } from '../images/beatPromptBuilder';
 import { planShotSequence, type ShotPlan, type PanelMode } from '../images/shotSequencePlanner';
@@ -184,6 +190,7 @@ import {
 } from '../images/visualValidation';
 import {
   IntegratedBestPracticesValidator,
+  CliffhangerValidator,
   NPCDepthValidator,
   IncrementalValidationRunner,
   SceneValidationResult,
@@ -1296,6 +1303,218 @@ export class FullStoryPipeline {
 
   private resetAssetRegistry(storyId?: string, persistPath?: string): void {
     this.assetRegistry = new AssetRegistry(storyId, undefined, persistPath);
+  }
+
+  private buildImageManifestFromStory(story: Story): {
+    version: 1;
+    storyId: string;
+    generatedAt: string;
+    imagesStatus: NonNullable<Story['imagesStatus']>;
+    slots: ImageSlot[];
+  } {
+    const slots: ImageSlot[] = [];
+    for (const episode of story.episodes || []) {
+      for (const scene of episode.scenes || []) {
+        const scopedSceneId = `episode-${episode.number}-${scene.id}`;
+        slots.push({
+          slotId: `story-scene:${scopedSceneId}`,
+          family: 'story-scene',
+          imageType: 'scene',
+          sceneId: scene.id,
+          scopedSceneId,
+          beatId: scene.beats?.[0]?.id,
+          storyFieldPath: `episodes[number=${episode.number}].scenes[id=${scene.id}].backgroundImage`,
+          baseIdentifier: storySceneBaseIdentifier(scopedSceneId),
+          required: false,
+          qualityTier: 'standard',
+          coverageKey: storySceneCoverageKey(scene.id),
+          continuitySourceSlotId: scene.beats?.[0]?.id ? `story-beat:${scopedSceneId}::${scene.beats[0].id}` : undefined,
+        });
+        for (const beat of scene.beats || []) {
+          slots.push({
+            slotId: `story-beat:${scopedSceneId}::${beat.id}`,
+            family: 'story-beat',
+            imageType: 'beat',
+            sceneId: scene.id,
+            scopedSceneId,
+            beatId: beat.id,
+            storyFieldPath: `episodes[number=${episode.number}].scenes[id=${scene.id}].beats[id=${beat.id}].image`,
+            baseIdentifier: storyBeatBaseIdentifier(scopedSceneId, beat.id),
+            required: false,
+            qualityTier: 'standard',
+            coverageKey: storyBeatCoverageKey(scene.id, beat.id),
+            metadata: {
+              isChoicePoint: beat.isChoicePoint === true,
+            },
+          });
+        }
+      }
+    }
+    return {
+      version: 1,
+      storyId: story.id,
+      generatedAt: new Date().toISOString(),
+      imagesStatus: story.imagesStatus || 'pending',
+      slots,
+    };
+  }
+
+  private async saveDraftImageManifest(outputDirectory: string | undefined, story: Story): Promise<void> {
+    if (!outputDirectory) return;
+    await saveEarlyDiagnostic(outputDirectory, 'image-manifest.json', this.buildImageManifestFromStory(story));
+  }
+
+  private sceneContentFromStoryScene(scene: Scene): SceneContent {
+    return {
+      sceneId: scene.id,
+      sceneName: scene.name,
+      beats: (scene.beats || []) as unknown as GeneratedBeat[],
+      startingBeatId: scene.startingBeatId || scene.beats?.[0]?.id || '',
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+      branchType: scene.branchType,
+      isBottleneck: scene.isBottleneck,
+      isConvergencePoint: scene.isConvergencePoint,
+    };
+  }
+
+  async generateImagesForDraft(
+    outputDirectory: string,
+    resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> }
+  ): Promise<FullPipelineResult> {
+    this.events = [];
+    this.checkpoints = [];
+    this.telemetry = new PipelineTelemetry();
+    this.pipelineStartedAtMs = Date.now();
+    this.completedPhases = new Set<string>();
+    this.resetCollectedVisualPlanning();
+    const startTime = Date.now();
+
+    const normalizedOutputDir = outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`;
+    await ensureDirectory(normalizedOutputDir);
+
+    const brief = loadEarlyDiagnosticSync<FullCreativeBrief>(normalizedOutputDir, '00-input-brief.json');
+    const worldBible = loadEarlyDiagnosticSync<WorldBible>(normalizedOutputDir, '01-world-bible.json');
+    const characterBible = loadEarlyDiagnosticSync<CharacterBible>(normalizedOutputDir, '02-character-bible.json');
+    const story = this.loadContinuationStory(normalizedOutputDir, resumeCheckpoint);
+    const savedChoiceSets = loadEarlyDiagnosticSync<ChoiceSet[]>(normalizedOutputDir, '05-choice-sets.json') || [];
+    const savedEncounters = loadEarlyDiagnosticSync<EncounterStructure[]>(normalizedOutputDir, '05b-encounters.json') || [];
+
+    if (!brief || !worldBible || !characterBible || !story) {
+      throw new PipelineError('Image-only generation requires a story-only output directory with brief, world bible, character bible, and story files.', 'images', {
+        context: { outputDirectory: normalizedOutputDir, failureKind: 'image_only_missing_draft' },
+      });
+    }
+
+    story.imagesStatus = 'running';
+    await this.saveDraftImageManifest(normalizedOutputDir, story);
+    this.resetAssetRegistry(idSlugify(story.title), `${normalizedOutputDir}asset-registry.jsonl`);
+
+    if (!this.config.imageGen?.enabled) {
+      this.config.imageGen = { ...(this.config.imageGen || {}), enabled: true };
+    }
+    this.imageService.setOutputDirectory(`${normalizedOutputDir}images/`);
+
+    try {
+      this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals from saved story draft...' });
+      await this.imageWorkerQueue.run(() =>
+        this.measurePhase('master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, brief))
+      );
+
+      const allEncounterDiagnostics: EncounterImageRunDiagnostic[] = [];
+      for (const episode of story.episodes || []) {
+        await this.checkCancellation();
+        const episodeBrief: FullCreativeBrief = {
+          ...brief,
+          episode: {
+            ...(brief.episode || {}),
+            number: episode.number,
+            title: episode.title,
+            synopsis: episode.synopsis,
+          },
+        } as FullCreativeBrief;
+        const sceneContents = (episode.scenes || []).map((scene) => this.sceneContentFromStoryScene(scene));
+        const choiceSets = savedChoiceSets.filter((choiceSet: any) => {
+          if (!choiceSet?.sceneId) return true;
+          return episode.scenes?.some((scene) => scene.id === choiceSet.sceneId);
+        });
+        const encounterMap = new Map<string, EncounterStructure>();
+        for (const encounter of savedEncounters) {
+          if (episode.scenes?.some((scene) => scene.id === encounter.sceneId)) {
+            encounterMap.set(encounter.sceneId, encounter);
+          }
+        }
+
+        this.emit({ type: 'phase_start', phase: 'images', message: `Generating scene visuals for episode ${episode.number}...` });
+        const imageResults = await this.imageWorkerQueue.run(() =>
+          this.measurePhase(
+            'episode_image_generation',
+            () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible, normalizedOutputDir)
+          )
+        );
+
+        let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
+        if (encounterMap.size > 0) {
+          this.imageService.clearEncounterDiagnostics();
+          await this.runEncounterProviderPreflight(normalizedOutputDir);
+          encounterImageResults = await this.imageWorkerQueue.run(() =>
+            this.measurePhase(
+              'encounter_image_generation',
+              () => this.generateEncounterImages(encounterMap, characterBible, episodeBrief, normalizedOutputDir)
+            )
+          );
+          allEncounterDiagnostics.push(...this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics()));
+        }
+
+        this.seedAssetRegistryFromResults(episodeBrief, sceneContents, encounterMap, imageResults, encounterImageResults);
+        await saveEarlyDiagnostic(normalizedOutputDir, '08-registry-state.json', this.assetRegistry.toSnapshot());
+      }
+
+      const coverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible);
+      let finalStory = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
+      if (coverUrl) finalStory.coverImage = coverUrl;
+      finalStory.imagesStatus = 'complete';
+      finalStory.outputDir = normalizedOutputDir;
+      await this.saveDraftImageManifest(normalizedOutputDir, finalStory);
+
+      const visualPlanningOutputs = this.getCollectedVisualPlanningForSave();
+      const outputManifest = await savePipelineOutputs(normalizedOutputDir, {
+        brief,
+        worldBible,
+        characterBible,
+        choiceSets: savedChoiceSets,
+        encounters: savedEncounters,
+        finalStory,
+        visualPlanning: visualPlanningOutputs,
+        encounterImageDiagnostics: allEncounterDiagnostics,
+        llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+      }, Date.now() - startTime);
+
+      this.emit({ type: 'phase_complete', phase: 'images', message: 'Image batch complete and bound into final story.' });
+      return {
+        success: true,
+        story: finalStory,
+        worldBible,
+        characterBible,
+        choiceSets: savedChoiceSets,
+        encounters: savedEncounters,
+        checkpoints: this.checkpoints,
+        events: this.events,
+        duration: Date.now() - startTime,
+        outputDirectory: normalizedOutputDir,
+        outputManifest,
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      story.imagesStatus = 'failed';
+      await this.saveDraftImageManifest(normalizedOutputDir, story).catch(() => {});
+      throw new PipelineError(`Image-only generation failed: ${msg}`, 'images', {
+        context: { outputDirectory: normalizedOutputDir, failureKind: 'image_generation' },
+        originalError: error instanceof Error ? error : undefined,
+      });
+    }
   }
 
   private registerStoryImageSlots(
@@ -2479,6 +2698,16 @@ export class FullStoryPipeline {
         }
       }
 
+      await this.repairWeakCliffhangerBeforeImages(
+        brief,
+        worldBible,
+        characterBible,
+        episodeBlueprint,
+        sceneContents,
+        choiceSets,
+        encounters,
+      );
+
       // === PHASE 5.5: IMAGE GENERATION (single-episode mode) ===
       await this.checkCancellation();
       // Create output directory EARLY so images are saved to the right location
@@ -2885,6 +3114,13 @@ export class FullStoryPipeline {
             message: `Deterministic flag chronology scan found ${flagIssues.length} forward-reference issue(s): ${flagIssues.join('; ')}`,
           });
         }
+      }
+
+      if (story && this.config.generation?.assetGenerationMode === 'story-only') {
+        story.imagesStatus = 'pending';
+        if (outputDirectory) await this.saveDraftImageManifest(outputDirectory, story);
+      } else if (story && this.config.imageGen?.enabled) {
+        story.imagesStatus = 'complete';
       }
 
       this.addCheckpoint('Final Story', story, false);
@@ -3609,6 +3845,7 @@ export class FullStoryPipeline {
       seasonAnchors: seasonPlan?.anchors,
       seasonSevenPoint: seasonPlan?.sevenPoint,
       episodeStructuralRole: seasonEpisode?.structuralRole,
+      cliffhangerPlan: seasonEpisode?.cliffhangerPlan,
       memoryContext: this.cachedPipelineMemory || undefined,
     }), PIPELINE_TIMEOUTS.llmAgent, 'StoryArchitect.execute');
 
@@ -4113,6 +4350,9 @@ export class FullStoryPipeline {
           episodeStructuralRole: brief.seasonPlan?.episodes.find(
             (e) => e.episodeNumber === brief.episode.number,
           )?.structuralRole,
+          cliffhangerPlan: this.isEpisodeFinalScene(sceneBlueprint, episodeBlueprint)
+            ? brief.seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number)?.cliffhangerPlan
+            : undefined,
         };
 
         // === KARPATHY LOOP: Best-of-N for critical scenes ===
@@ -6649,6 +6889,13 @@ export class FullStoryPipeline {
           },
         });
       }
+      if (this.config.generation?.assetGenerationMode === 'story-only') {
+        story.imagesStatus = 'pending';
+        await this.saveDraftImageManifest(outputDirectory, story);
+      } else if (this.config.imageGen?.enabled) {
+        story.imagesStatus = 'complete';
+      }
+
       this.addCheckpoint('Final Story', story, false);
       await this.saveResumeUnit(
         outputDirectory,
@@ -6894,6 +7141,16 @@ export class FullStoryPipeline {
           message: `CallbackLedger harvest failed (non-fatal): ${ledgerErr instanceof Error ? ledgerErr.message : String(ledgerErr)}`,
         });
       }
+
+      await this.repairWeakCliffhangerBeforeImages(
+        episodeBrief,
+        worldBible,
+        characterBible,
+        blueprint,
+        sceneContents,
+        choiceSets,
+        encounters,
+      );
 
       let imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> } | undefined;
       let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
@@ -14111,6 +14368,108 @@ Design the key art. Return STRICT JSON matching the schema.`;
       startingSceneId: blueprint.startingSceneId,
       coverImage: episodeCover
     };
+  }
+
+  private async repairWeakCliffhangerBeforeImages(
+    brief: FullCreativeBrief,
+    worldBible: WorldBible,
+    characterBible: CharacterBible,
+    blueprint: EpisodeBlueprint,
+    sceneContents: SceneContent[],
+    choiceSets: ChoiceSet[],
+    encounters?: Map<string, EncounterStructure>,
+  ): Promise<void> {
+    const seasonEpisode = brief.seasonPlan?.episodes.find(e => e.episodeNumber === brief.episode.number);
+    const cliffhangerPlan = seasonEpisode?.cliffhangerPlan;
+    const totalEpisodes = brief.seasonPlan?.episodes.length || 1;
+    if (!cliffhangerPlan || brief.episode.number >= totalEpisodes) return;
+
+    const scenes = blueprint.scenes || [];
+    const terminalBlueprint = [...scenes].reverse().find(s => !s.leadsTo || s.leadsTo.length === 0)
+      || scenes[scenes.length - 1];
+    if (!terminalBlueprint || terminalBlueprint.isEncounter) return;
+
+    const finalSceneIndex = sceneContents.findIndex(sc => sc.sceneId === terminalBlueprint.id);
+    const finalScene = finalSceneIndex >= 0 ? sceneContents[finalSceneIndex] : undefined;
+    const finalBeat = finalScene?.beats?.[finalScene.beats.length - 1];
+    if (!finalScene || !finalBeat) return;
+
+    const episode = this.assembleEpisode(
+      brief,
+      worldBible,
+      characterBible,
+      blueprint,
+      sceneContents,
+      choiceSets,
+      undefined,
+      encounters,
+    );
+
+    const validator = new CliffhangerValidator(this.config.agents.sceneWriter);
+    const analysis = validator.quickAnalyze(episode, cliffhangerPlan);
+    if (analysis.quality === 'good' || analysis.quality === 'excellent') {
+      this.emit({
+        type: 'debug',
+        phase: 'cliffhanger_validation',
+        message: `Cliffhanger passed (${analysis.quality}, ${analysis.score}/100)`,
+      });
+      return;
+    }
+
+    this.emit({
+      type: 'regeneration_triggered',
+      phase: 'cliffhanger_repair',
+      message: `Repairing weak ${cliffhangerPlan.mappedStructuralRole} cliffhanger (${analysis.score}/100): ${analysis.suggestions.join('; ')}`,
+    });
+
+    const improvement = await withTimeout(
+      validator.improveCliffhanger(episode, cliffhangerPlan, analysis),
+      PIPELINE_TIMEOUTS.llmAgent,
+      `CliffhangerValidator.improveCliffhanger(${brief.episode.number})`,
+    );
+
+    if (!improvement.success || !improvement.data?.improvedText) {
+      this.emit({
+        type: 'warning',
+        phase: 'cliffhanger_repair',
+        message: `Cliffhanger repair failed: ${improvement.error || 'no improved text returned'}`,
+      });
+      return;
+    }
+
+    finalBeat.text = improvement.data.improvedText;
+    finalBeat.visualMoment = finalBeat.visualMoment || improvement.data.improvedText.split(/[.!?]/)[0]?.trim();
+    finalBeat.emotionalRead = finalBeat.emotionalRead || cliffhangerPlan.emotionalCharge;
+    finalBeat.mustShowDetail = finalBeat.mustShowDetail || cliffhangerPlan.hook;
+    finalBeat.intensityTier = cliffhangerPlan.intensity === 'high' ? 'dominant' : (finalBeat.intensityTier || 'supporting');
+    finalScene.keyMoments = Array.from(new Set([...(finalScene.keyMoments || []), cliffhangerPlan.hook]));
+    finalScene.continuityNotes = Array.from(new Set([...(finalScene.continuityNotes || []), `Cliffhanger repaired: ${improvement.data.explanation}`]));
+
+    const repairedEpisode = this.assembleEpisode(
+      brief,
+      worldBible,
+      characterBible,
+      blueprint,
+      sceneContents,
+      choiceSets,
+      undefined,
+      encounters,
+    );
+    const repairedAnalysis = validator.quickAnalyze(repairedEpisode, cliffhangerPlan);
+    this.emit({
+      type: repairedAnalysis.quality === 'missing' || repairedAnalysis.quality === 'weak' ? 'warning' : 'phase_complete',
+      phase: 'cliffhanger_repair',
+      message: `Cliffhanger repair result: ${repairedAnalysis.quality} (${repairedAnalysis.score}/100)`,
+      data: { before: analysis, after: repairedAnalysis },
+    });
+  }
+
+  private isEpisodeFinalScene(scene: SceneBlueprint, blueprint: EpisodeBlueprint): boolean {
+    const terminalScenes = (blueprint.scenes || []).filter(s => !s.leadsTo || s.leadsTo.length === 0);
+    if (terminalScenes.length > 0) {
+      return terminalScenes.some(s => s.id === scene.id);
+    }
+    return (blueprint.scenes || [])[blueprint.scenes.length - 1]?.id === scene.id;
   }
 
   /**

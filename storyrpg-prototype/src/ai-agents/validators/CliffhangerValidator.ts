@@ -8,6 +8,8 @@
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from '../agents/BaseAgent';
 import { Episode, Scene, Beat, CliffhangerType, EpisodePlan } from '../../types';
+import type { CliffhangerPlan } from '../../types/seasonPlan';
+import type { StructuralRole } from '../../types/sourceAnalysis';
 
 // ========================================
 // TYPES
@@ -35,6 +37,7 @@ export interface CliffhangerAnalysis {
 export interface CliffhangerValidationInput {
   episode: Episode;
   episodePlan: EpisodePlan;
+  cliffhangerPlan?: CliffhangerPlan;
   isFinale: boolean;
 }
 
@@ -57,7 +60,7 @@ export class CliffhangerValidator extends BaseAgent {
   /**
    * Analyze cliffhanger quality without LLM (fast, heuristic-based)
    */
-  quickAnalyze(episode: Episode, plan: EpisodePlan): CliffhangerAnalysis {
+  quickAnalyze(episode: Episode, plan: EpisodePlan | CliffhangerPlan): CliffhangerAnalysis {
     if (!episode) {
       throw new Error('CliffhangerValidator.quickAnalyze: episode is null or undefined');
     }
@@ -118,7 +121,7 @@ export class CliffhangerValidator extends BaseAgent {
     
     try {
       // First do quick analysis
-      const quickResult = this.quickAnalyze(input.episode, input.episodePlan);
+      const quickResult = this.quickAnalyze(input.episode, input.cliffhangerPlan || input.episodePlan);
       
       // If clearly missing or excellent, no need for LLM
       if (quickResult.quality === 'missing' || quickResult.score >= 90) {
@@ -149,7 +152,7 @@ export class CliffhangerValidator extends BaseAgent {
       const errorMessage = error instanceof Error ? error.message : String(error);
       
       // Fall back to quick analysis
-      const quickResult = this.quickAnalyze(input.episode, input.episodePlan);
+      const quickResult = this.quickAnalyze(input.episode, input.cliffhangerPlan || input.episodePlan);
       
       return {
         success: true,
@@ -168,7 +171,7 @@ export class CliffhangerValidator extends BaseAgent {
    */
   async improveCliffhanger(
     episode: Episode,
-    plan: EpisodePlan,
+    plan: EpisodePlan | CliffhangerPlan,
     analysis: CliffhangerAnalysis
   ): Promise<AgentResponse<CliffhangerImprovement>> {
     const startTime = Date.now();
@@ -184,14 +187,15 @@ export class CliffhangerValidator extends BaseAgent {
         };
       }
       
-      const systemPrompt = `You are an expert at writing compelling cliffhangers for serialized fiction.
+      const planDetails = this.getPlanDetails(plan);
+      const systemPrompt = `You are an expert at writing compelling cliffhangers for serialized interactive fiction.
 
 A good cliffhanger:
-1. Creates UNRESOLVED TENSION that demands continuation
-2. Raises a QUESTION that the audience needs answered
-3. Provides an EMOTIONAL HOOK (fear, shock, curiosity, dread)
+1. Resolves or acknowledges the episode's immediate conflict enough to feel authored
+2. Opens a sharper next-episode pressure or question
+3. Provides a specific emotional hook (shock, heartbreak, dread, temptation, awe)
 4. Connects to the story's stakes and characters
-5. Feels EARNED by the episode's events, not arbitrary
+5. Feels earned by setup from the episode, not arbitrary
 
 Cliffhanger types:
 - REVELATION: A shocking truth is revealed ("She was the killer all along")
@@ -201,18 +205,25 @@ Cliffhanger types:
 - ARRIVAL: Someone/something appears with unclear implications
 - DEPARTURE: Someone leaves/is taken with unresolved impact
 - MYSTERY: New question that demands answers
-- REVERSAL: Situation inverts, everything changes
+- REFRAME: A prior assumption changes meaning
+- LOSS: A relationship, resource, safety, or belief is visibly taken away
 
-Your task: Rewrite the final beat to create a compelling "${plan.cliffhangerType}" cliffhanger.`;
+Your task: Rewrite the final beat to create a compelling "${planDetails.type}" ${planDetails.intensity} cliffhanger.`;
 
       const userPrompt = `## Episode Context
-Episode ${plan.episodeNumber}: "${plan.title}"
-Logline: ${plan.logline}
+${planDetails.title ? `Episode: "${planDetails.title}"` : 'Episode ending'}
+${planDetails.logline ? `Logline: ${planDetails.logline}` : ''}
 
 ## Planned Cliffhanger
-Type: ${plan.cliffhangerType}
-Hook: ${plan.cliffhangerHook}
-Setup: ${plan.cliffhangerSetup || 'Not specified'}
+Type: ${planDetails.type}
+Intensity: ${planDetails.intensity}
+Structural role: ${planDetails.mappedStructuralRole || 'not specified'}
+Hook: ${planDetails.hook}
+Setup: ${planDetails.setup || 'Not specified'}
+Resolved episode tension: ${planDetails.resolvedEpisodeTension || 'Not specified'}
+New open question: ${planDetails.newOpenQuestion || 'Not specified'}
+Emotional charge: ${planDetails.emotionalCharge || 'Not specified'}
+Next episode pressure: ${planDetails.nextEpisodePressure || 'Not specified'}
 
 ## Current Final Beat
 ${lastBeat.text}
@@ -222,10 +233,11 @@ Quality: ${analysis.quality}
 Weaknesses: ${analysis.weaknesses.join(', ')}
 
 ## Your Task
-Rewrite the final beat to deliver a compelling "${plan.cliffhangerType}" cliffhanger that:
-1. Implements the planned hook: "${plan.cliffhangerHook}"
-2. Creates unresolved tension
+Rewrite the final beat to deliver a compelling "${planDetails.type}" cliffhanger that:
+1. Acknowledges the resolved/changed episode tension
+2. Implements the planned hook: "${planDetails.hook}"
 3. Makes the reader NEED to continue
+4. Keeps the visual moment concrete for illustration
 
 Return JSON:
 {
@@ -245,7 +257,7 @@ Return JSON:
         data: {
           originalText: lastBeat.text,
           improvedText: parsed.improvedText || lastBeat.text,
-          cliffhangerType: plan.cliffhangerType,
+          cliffhangerType: planDetails.type,
           explanation: parsed.explanation || 'Rewritten to create stronger tension',
         },
         metadata: { duration: Date.now() - startTime },
@@ -263,66 +275,76 @@ Return JSON:
   // PRIVATE METHODS
   // ========================================
 
-  private analyzeTextForCliffhanger(text: string, plan: EpisodePlan): CliffhangerAnalysis {
+  private analyzeTextForCliffhanger(text: string, plan: EpisodePlan | CliffhangerPlan): CliffhangerAnalysis {
+    const planDetails = this.getPlanDetails(plan);
     const lowerText = text.toLowerCase();
     const strengths: string[] = [];
     const weaknesses: string[] = [];
-    let score = 50; // Base score
+    let score = 35;
     
-    // Check for tension indicators
-    const tensionIndicators = {
-      unfinished: ['...', '—', 'but before', 'just as', 'and then'],
-      questions: ['?', 'who could', 'what was', 'why would', 'how could'],
-      danger: ['danger', 'threat', 'attack', 'scream', 'explosion', 'blood', 'weapon'],
-      revelation: ['realized', 'truth', 'discovered', 'revealed', 'secret', 'actually'],
-      emotion: ['heart stopped', 'eyes widened', 'couldn\'t believe', 'frozen', 'shock'],
-      arrival: ['appeared', 'arrived', 'entered', 'door opened', 'figure', 'silhouette'],
-      betrayal: ['betrayed', 'lied', 'deceived', 'trust', 'never told'],
+    const indicators: Record<string, string[]> = {
+      resolved: ['but', 'after', 'finally', 'at last', 'won', 'survived', 'escaped', 'settled', 'ended', 'changed'],
+      nextPressure: ['tomorrow', 'next', 'before dawn', 'waiting', 'coming', 'until', 'would have to', 'must', 'could not go back'],
+      specificity: ['letter', 'name', 'blood', 'door', 'hand', 'voice', 'face', 'key', 'mark', 'message', 'shadow'],
+      emotion: ['heart', 'breath', 'throat', 'hands', 'tremble', 'frozen', 'shock', 'dread', 'tears', 'ache', 'fear'],
+      setup: ['same', 'earlier', 'again', 'recognized', 'remembered', 'the mark', 'the letter', 'the promise', 'the name'],
+      revelation: ['realized', 'truth', 'discovered', 'revealed', 'secret', 'actually', 'was never'],
+      danger: ['danger', 'threat', 'attack', 'scream', 'explosion', 'blood', 'weapon', 'hunted'],
+      arrival: ['appeared', 'arrived', 'entered', 'door opened', 'figure', 'silhouette', 'stepped inside'],
+      betrayal: ['betrayed', 'lied', 'deceived', 'trust', 'never told', 'sold you out'],
+      decision: ['choose', 'decision', 'must decide', 'offer', 'join', 'refuse'],
+      reframe: ['not what', 'never been', 'all along', 'meant something else', 'wrong about'],
+      loss: ['gone', 'lost', 'dead', 'taken', 'empty', 'missing', 'ruined'],
     };
-    
-    // Score based on indicators
-    for (const [category, indicators] of Object.entries(tensionIndicators)) {
-      const found = indicators.filter(ind => lowerText.includes(ind));
+
+    for (const [category, words] of Object.entries(indicators)) {
+      const found = words.filter(ind => lowerText.includes(ind));
       if (found.length > 0) {
-        score += 10;
+        score += category === 'specificity' || category === 'emotion' ? 12 : 8;
         strengths.push(`Contains ${category} elements: ${found.join(', ')}`);
       }
     }
-    
-    // Check for resolution (bad for cliffhangers)
-    const resolutionIndicators = [
-      'finally', 'at last', 'everything was', 'they lived', 'it was over',
-      'peace', 'smiled', 'laughed together', 'happily'
-    ];
-    const hasResolution = resolutionIndicators.some(ind => lowerText.includes(ind));
-    if (hasResolution) {
-      score -= 30;
-      weaknesses.push('Ending feels resolved rather than open');
-    }
-    
-    // Check for emotional impact
-    const emotionalWords = ['heart', 'breath', 'blood', 'scream', 'whisper', 'tremble'];
-    const emotionalCount = emotionalWords.filter(w => lowerText.includes(w)).length;
-    if (emotionalCount >= 2) {
-      score += 10;
-      strengths.push('Strong emotional language');
-    } else if (emotionalCount === 0) {
-      score -= 10;
-      weaknesses.push('Lacks emotional intensity');
-    }
-    
-    // Check text ends with tension
-    const endsWithTension = text.trim().endsWith('...') || 
-                           text.trim().endsWith('—') || 
-                           text.trim().endsWith('?');
-    if (endsWithTension) {
+
+    if (planDetails.hook && this.hasMeaningfulOverlap(lowerText, planDetails.hook)) {
       score += 15;
-      strengths.push('Ends with unfinished/questioning punctuation');
+      strengths.push('Final beat overlaps with the planned hook');
+    } else if (planDetails.hook) {
+      score -= 15;
+      weaknesses.push('Final beat does not clearly deliver the planned hook');
+    }
+
+    if (planDetails.newOpenQuestion && this.hasMeaningfulOverlap(lowerText, planDetails.newOpenQuestion)) {
+      score += 10;
+      strengths.push('Opens the planned next question');
+    }
+
+    if (planDetails.resolvedEpisodeTension && this.hasMeaningfulOverlap(lowerText, planDetails.resolvedEpisodeTension)) {
+      score += 8;
+      strengths.push('Acknowledges the episode tension before opening the hook');
+    }
+    
+    const overResolvedIndicators = [
+      'everything was over', 'nothing else mattered', 'peace at last', 'happily',
+      'no more danger', 'finally safe', 'the end'
+    ];
+    const hasOverResolution = overResolvedIndicators.some(ind => lowerText.includes(ind));
+    if (hasOverResolution) {
+      score -= 30;
+      weaknesses.push('Ending feels fully resolved rather than serialized');
+    }
+    
+    const cheapPunctuationOnly = /(\.\.\.|—|\?)\s*$/.test(text.trim())
+      && !indicators.specificity.some(w => lowerText.includes(w))
+      && !indicators.emotion.some(w => lowerText.includes(w));
+    if (cheapPunctuationOnly) {
+      score -= 15;
+      weaknesses.push('Relies on cliffhanger punctuation without concrete story pressure');
     }
     
     // Check length (too short = weak, too long = diluted)
     const wordCount = text.split(/\s+/).length;
     if (wordCount < 20) {
+      score -= 10;
       weaknesses.push('Final beat is very short');
     } else if (wordCount > 150) {
       score -= 5;
@@ -330,54 +352,51 @@ Return JSON:
     }
     
     // Detect cliffhanger type
-    let detectedType: CliffhangerType = 'mystery';
-    if (lowerText.includes('revealed') || lowerText.includes('truth') || lowerText.includes('actually')) {
-      detectedType = 'revelation';
-    } else if (lowerText.includes('danger') || lowerText.includes('attack') || lowerText.includes('threat')) {
-      detectedType = 'danger';
-    } else if (lowerText.includes('betray') || lowerText.includes('lied') || lowerText.includes('deceiv')) {
-      detectedType = 'betrayal';
-    } else if (lowerText.includes('appeared') || lowerText.includes('arrived') || lowerText.includes('door')) {
-      detectedType = 'arrival';
-    } else if (lowerText.includes('left') || lowerText.includes('gone') || lowerText.includes('departed')) {
-      detectedType = 'departure';
-    } else if (lowerText.includes('choose') || lowerText.includes('decision') || lowerText.includes('must')) {
-      detectedType = 'decision';
-    }
+    let detectedType = this.detectType(lowerText);
     
-    // Check if detected type matches planned type
-    if (detectedType === plan.cliffhangerType) {
-      score += 10;
-      strengths.push(`Matches planned cliffhanger type: ${plan.cliffhangerType}`);
+    if (this.typeMatchesPlan(detectedType, planDetails.type, planDetails.mappedStructuralRole)) {
+      score += 12;
+      strengths.push(`Matches planned cliffhanger type/role: ${planDetails.type}`);
     } else {
-      weaknesses.push(`Planned "${plan.cliffhangerType}" but detected "${detectedType}"`);
+      score -= 8;
+      weaknesses.push(`Planned "${planDetails.type}" but detected "${detectedType}"`);
     }
-    
+
+    if (planDetails.intensity === 'high') {
+      const highIntensityTypes: CliffhangerType[] = ['shock', 'emotional_hook', 'betrayal', 'reframe', 'revelation', 'loss', 'danger'];
+      if (highIntensityTypes.includes(detectedType)) {
+        score += 8;
+        strengths.push('High-intensity ending uses an appropriately sharp hook type');
+      } else {
+        score -= 12;
+        weaknesses.push('High-intensity episode needs shock, emotional rupture, betrayal, reframe, revelation, loss, or danger');
+      }
+    }
+
     // Determine quality
     score = Math.max(0, Math.min(100, score));
     let quality: CliffhangerAnalysis['quality'];
     if (score >= 80) quality = 'excellent';
-    else if (score >= 60) quality = 'good';
-    else if (score >= 30) quality = 'weak';
+    else if (score >= 62) quality = 'good';
+    else if (score >= 35) quality = 'weak';
     else quality = 'missing';
     
-    // Generate suggestions
     const suggestions: string[] = [];
-    if (hasResolution) {
-      suggestions.push('Remove resolution language and end on an unresolved note');
+    if (hasOverResolution) {
+      suggestions.push('Keep the immediate consequence, but remove full-closure language');
     }
-    if (!endsWithTension) {
-      suggestions.push('End with trailing punctuation (...) or a question');
+    if (cheapPunctuationOnly) {
+      suggestions.push('Replace punctuation-only suspense with a concrete object, arrival, revelation, or emotional rupture');
     }
-    if (emotionalCount < 2) {
-      suggestions.push('Add more visceral emotional language');
+    if (planDetails.hook && !this.hasMeaningfulOverlap(lowerText, planDetails.hook)) {
+      suggestions.push(`Deliver the planned hook: ${planDetails.hook}`);
     }
-    if (detectedType !== plan.cliffhangerType) {
-      suggestions.push(`Revise to emphasize "${plan.cliffhangerType}" elements`);
+    if (planDetails.intensity === 'high') {
+      suggestions.push('Use a high-intensity shock/emotional/reveal beat tied to the episode setup');
     }
     
     return {
-      hasCliffhanger: score >= 40,
+      hasCliffhanger: score >= 45,
       quality,
       type: detectedType,
       score,
@@ -387,6 +406,81 @@ Return JSON:
       unresolvedTension: this.extractUnresolvedTension(text),
       emotionalHook: this.extractEmotionalHook(text),
       suggestions,
+    };
+  }
+
+  private detectType(lowerText: string): CliffhangerType {
+    if (lowerText.includes('revealed') || lowerText.includes('truth') || lowerText.includes('actually')) {
+      return 'revelation';
+    }
+    if (lowerText.includes('all along') || lowerText.includes('not what') || lowerText.includes('wrong about')) return 'reframe';
+    if (lowerText.includes('betray') || lowerText.includes('lied') || lowerText.includes('deceiv') || lowerText.includes('sold you out')) return 'betrayal';
+    if (lowerText.includes('gone') || lowerText.includes('lost') || lowerText.includes('dead') || lowerText.includes('taken')) return 'loss';
+    if (lowerText.includes('danger') || lowerText.includes('attack') || lowerText.includes('threat') || lowerText.includes('weapon')) return 'danger';
+    if (lowerText.includes('appeared') || lowerText.includes('arrived') || lowerText.includes('door opened') || lowerText.includes('stepped inside')) return 'arrival';
+    if (lowerText.includes('left') || lowerText.includes('departed')) return 'departure';
+    if (lowerText.includes('choose') || lowerText.includes('decision') || lowerText.includes('must')) return 'decision';
+    if (lowerText.includes('heart') || lowerText.includes('tears') || lowerText.includes('throat') || lowerText.includes('tremble')) return 'emotional_hook';
+    if (lowerText.includes('shock') || lowerText.includes('froze') || lowerText.includes('could not breathe')) return 'shock';
+    return 'mystery';
+  }
+
+  private typeMatchesPlan(detected: CliffhangerType, planned: CliffhangerType, role?: StructuralRole): boolean {
+    if (detected === planned) return true;
+    if (planned === 'shock' && ['revelation', 'reframe', 'betrayal', 'loss', 'danger'].includes(detected)) return true;
+    if (planned === 'emotional_hook' && ['betrayal', 'loss', 'decision', 'transformation'].includes(detected)) return true;
+    if (role === 'midpoint' && ['reframe', 'revelation', 'shock'].includes(detected)) return true;
+    if (role === 'pinch2' && ['emotional_hook', 'loss', 'betrayal', 'danger'].includes(detected)) return true;
+    return false;
+  }
+
+  private hasMeaningfulOverlap(textLower: string, phrase: string): boolean {
+    const tokens = phrase
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/\s+/)
+      .filter(token => token.length > 4 && !['episode', 'pressure', 'question', 'conflict', 'tension'].includes(token));
+    if (tokens.length === 0) return false;
+    return tokens.slice(0, 12).some(token => textLower.includes(token));
+  }
+
+  private getPlanDetails(plan: EpisodePlan | CliffhangerPlan): {
+    type: CliffhangerType;
+    intensity?: string;
+    hook: string;
+    setup?: string;
+    title?: string;
+    logline?: string;
+    resolvedEpisodeTension?: string;
+    newOpenQuestion?: string;
+    emotionalCharge?: string;
+    nextEpisodePressure?: string;
+    mappedStructuralRole?: StructuralRole;
+  } {
+    if ('hook' in plan && 'newOpenQuestion' in plan) {
+      return {
+        type: plan.type,
+        intensity: plan.intensity,
+        hook: plan.hook,
+        setup: plan.setup,
+        resolvedEpisodeTension: plan.resolvedEpisodeTension,
+        newOpenQuestion: plan.newOpenQuestion,
+        emotionalCharge: plan.emotionalCharge,
+        nextEpisodePressure: plan.nextEpisodePressure,
+        mappedStructuralRole: plan.mappedStructuralRole,
+      };
+    }
+    return {
+      type: plan.cliffhangerType,
+      intensity: 'medium',
+      hook: plan.cliffhangerHook,
+      setup: plan.cliffhangerSetup,
+      title: plan.title,
+      logline: plan.logline,
+      resolvedEpisodeTension: plan.mustAccomplish?.join('; '),
+      newOpenQuestion: plan.nextEpisodeSetup?.join('; '),
+      emotionalCharge: 'curiosity, tension, or dread',
+      nextEpisodePressure: plan.nextEpisodeSetup?.join('; '),
     };
   }
 
@@ -435,13 +529,21 @@ Analyze the cliffhanger quality and provide specific, actionable feedback.`;
     const lastScene = input.episode.scenes[input.episode.scenes.length - 1];
     const lastBeat = lastScene?.beats[lastScene.beats.length - 1];
     
+    const plan = input.cliffhangerPlan || input.episodePlan;
+    const details = this.getPlanDetails(plan);
     return `## Episode Context
 Episode ${input.episodePlan.episodeNumber}: "${input.episodePlan.title}"
 Is Finale: ${input.isFinale}
 
 ## Planned Cliffhanger
-Type: ${input.episodePlan.cliffhangerType}
-Hook: ${input.episodePlan.cliffhangerHook}
+Type: ${details.type}
+Intensity: ${details.intensity || 'medium'}
+Structural role: ${details.mappedStructuralRole || 'not specified'}
+Hook: ${details.hook}
+Setup: ${details.setup || 'Not specified'}
+Resolved episode tension: ${details.resolvedEpisodeTension || 'Not specified'}
+New open question: ${details.newOpenQuestion || 'Not specified'}
+Emotional charge: ${details.emotionalCharge || 'Not specified'}
 
 ## Final Scene and Beat
 Scene: ${lastScene?.name || 'Unknown'}
@@ -484,7 +586,7 @@ Return JSON with:
       };
     } catch {
       // Fall back to quick analysis
-      return this.quickAnalyze(input.episode, input.episodePlan);
+      return this.quickAnalyze(input.episode, input.cliffhangerPlan || input.episodePlan);
     }
   }
 

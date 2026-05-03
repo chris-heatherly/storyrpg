@@ -568,6 +568,40 @@ function createWorkerLifecycle({
     return { normalized, changed };
   }
 
+  function getWorkerQueueKind(job) {
+    if (job?.mode === 'image-generation') return 'image';
+    return 'story';
+  }
+
+  function getWorkerQueueLimit(kind) {
+    const envKey = kind === 'image' ? 'STORYRPG_IMAGE_WORKER_CONCURRENCY' : 'STORYRPG_STORY_WORKER_CONCURRENCY';
+    const fallback = kind === 'image' ? 1 : 2;
+    const parsed = Number(process.env[envKey]);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  }
+
+  function countRunningByKind(kind) {
+    return loadWorkerJobs().filter((job) =>
+      job.status === 'running' && getWorkerQueueKind(job) === kind && activeWorkers.has(job.id)
+    ).length;
+  }
+
+  function scheduleQueuedWorkers() {
+    const jobs = loadWorkerJobs();
+    for (const kind of ['story', 'image']) {
+      let capacity = getWorkerQueueLimit(kind) - countRunningByKind(kind);
+      if (capacity <= 0) continue;
+      const queued = jobs
+        .filter((job) => job.status === 'pending' && getWorkerQueueKind(job) === kind && job.resumeContext?.requestPayload)
+        .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+      for (const job of queued) {
+        if (capacity <= 0) break;
+        capacity -= 1;
+        startWorkerProcess(job, { ...job.resumeContext.requestPayload, mode: job.mode, resumeCheckpoint: job.resumeCheckpoint });
+      }
+    }
+  }
+
   function startWorkerProcess(workerJob, payload) {
     const runnerPath = path.resolve(rootDir, 'src/ai-agents/server/worker-runner.ts');
     const payloadPath = path.join(os.tmpdir(), `storyrpg-worker-${workerJob.id}.payload.json`);
@@ -608,6 +642,7 @@ function createWorkerLifecycle({
       });
       appendDeadLetter({ jobId: workerJob.id, reason: 'spawn_error', error: err.message, at: new Date().toISOString() });
       syncGenerationMirrorFromWorker(failed);
+      scheduleQueuedWorkers();
     });
 
     let stdoutBuffer = '';
@@ -828,6 +863,7 @@ function createWorkerLifecycle({
       if (isCancelled) {
         const cancelled = upsertWorkerJob(workerJob.id, { status: 'cancelled', progress: 100, finishedAt: new Date().toISOString() });
         syncGenerationMirrorFromWorker(cancelled);
+        scheduleQueuedWorkers();
         return;
       }
 
@@ -895,6 +931,7 @@ function createWorkerLifecycle({
       try { fs.unlinkSync(resultPath); } catch {
         // best-effort cleanup
       }
+      scheduleQueuedWorkers();
     });
   }
 
@@ -933,7 +970,7 @@ function createWorkerLifecycle({
   function registerWorkerLifecycleRoutes(app) {
     app.post('/worker-jobs/start', (req, res) => {
       const { mode, payload, idempotencyKey, storyTitle, episodeCount, resumeFromJobId } = req.body || {};
-      if (!mode || !payload || (mode !== 'analysis' && mode !== 'generation')) {
+      if (!mode || !payload || (mode !== 'analysis' && mode !== 'generation' && mode !== 'image-generation')) {
         return res.status(400).json({ error: 'Invalid worker start payload' });
       }
 
@@ -983,6 +1020,14 @@ function createWorkerLifecycle({
         idempotencyKey: idempotencyKey || `${mode}:${Date.now()}`,
         resumeFromJobId: resumeFromJobId || undefined,
         requestSnapshot,
+        resumeCheckpoint,
+        resumeContext: {
+          mode,
+          requestPayload: hydratedPayload,
+          storyTitle: storyTitle || (mode === 'generation' ? 'Untitled Story' : mode === 'image-generation' ? 'Image Batch' : 'Source Analysis'),
+          episodeCount: episodeCount || 1,
+          resumeFromJobId: resumeFromJobId || undefined,
+        },
       });
 
       updateCheckpoint(jobId, {
@@ -1004,7 +1049,7 @@ function createWorkerLifecycle({
         },
       });
 
-      startWorkerProcess(workerJob, { ...hydratedPayload, mode, resumeCheckpoint });
+      scheduleQueuedWorkers();
       syncGenerationMirrorFromWorker(workerJob);
       return res.json({ success: true, jobId });
     });
@@ -1223,6 +1268,18 @@ function createWorkerLifecycle({
         idempotencyKey,
         resumeFromJobId: sourceJob.id,
         requestSnapshot,
+        resumeContext: {
+          mode,
+          requestPayload: patchedPayload,
+          storyTitle: storyTitle || 'Untitled Story',
+          episodeCount: episodeCount || 1,
+          resumeFromJobId: sourceJob.id,
+          resumedAt: new Date().toISOString(),
+          changedInputs: Object.keys(payloadPatch),
+          changedOutputs: Object.keys(outputsPatch),
+          ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),
+        },
+        resumeCheckpoint,
       });
 
       updateCheckpoint(jobId, {
@@ -1249,9 +1306,17 @@ function createWorkerLifecycle({
         },
       });
 
-      startWorkerProcess(workerJob, { ...patchedPayload, mode, resumeCheckpoint });
+      scheduleQueuedWorkers();
       syncGenerationMirrorFromWorker(workerJob);
       res.json({ success: true, jobId, resumedFromJobId: sourceJob.id });
+    });
+
+    setImmediate(() => {
+      try {
+        scheduleQueuedWorkers();
+      } catch (err) {
+        console.warn('[Proxy] Failed to schedule queued workers on startup:', err?.message || err);
+      }
     });
   }
 

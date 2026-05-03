@@ -7,7 +7,7 @@ function createSyncGenerationMirrorFromWorker(deps) {
   const { loadCheckpoints, loadJobs, saveJobs } = deps;
 
   return function syncGenerationMirrorFromWorker(workerJob) {
-    if (workerJob.mode !== 'generation') return;
+    if (workerJob.mode !== 'generation' && workerJob.mode !== 'image-generation') return;
     const workerCheckpoint = loadCheckpoints().find((c) => c.jobId === workerJob.id);
     const jobs = loadJobs();
     const idx = jobs.findIndex((j) => j.id === workerJob.id);
@@ -22,6 +22,9 @@ function createSyncGenerationMirrorFromWorker(deps) {
       episodeCount: workerJob.episodeCount || 1,
       currentEpisode: workerJob.currentEpisode || 1,
       error: workerJob.error,
+      outputDir: workerCheckpoint?.resumeContext?.outputDirectory
+        || workerCheckpoint?.outputs?.output_directory?.outputDirectory
+        || workerJob.resumeContext?.outputDirectory,
       events: (workerJob.timeline || []).slice(-30).map((e) => ({
         type: e.eventType || 'debug',
         phase: e.phase,

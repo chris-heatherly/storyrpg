@@ -36,6 +36,8 @@ interface SettingsScreenProps {
   onDeleteStory?: (storyId: string) => void;
   onRenameStory?: (storyId: string, newTitle: string) => void;
   onGenerateVideos?: (storyId: string) => void;
+  onContinueSeasonPlan?: (planId: string) => void;
+  seasonContinuations?: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>;
   generatedStoryIds?: string[]; // IDs of stories that can be deleted
   onRefreshStories?: () => void;
   isRefreshing?: boolean;
@@ -50,6 +52,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onDeleteStory,
   onRenameStory,
   onGenerateVideos,
+  onContinueSeasonPlan,
+  seasonContinuations = {},
   generatedStoryIds = [],
   onRefreshStories,
   isRefreshing = false,
@@ -227,6 +231,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           onDeleteStory={onDeleteStory}
           onRenameStory={onRenameStory}
           onGenerateVideos={onGenerateVideos}
+          onContinueSeasonPlan={onContinueSeasonPlan}
+          seasonContinuations={seasonContinuations}
           onRequestDeleteStory={handleDeleteStory}
           onRequestRenameStory={handleStartRename}
           onRefreshStories={onRefreshStories}

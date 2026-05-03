@@ -177,6 +177,25 @@ type StoryIndexes = {
   scenesByEpisodeId: Map<string, Map<string, Scene>>;
 };
 
+const RELATIONSHIP_DIMENSIONS = ['trust', 'affection', 'respect', 'fear'] as const;
+type RelationshipDimension = typeof RELATIONSHIP_DIMENSIONS[number];
+
+function normalizeRelationshipDimension(value: unknown): RelationshipDimension | null {
+  return typeof value === 'string' && (RELATIONSHIP_DIMENSIONS as readonly string[]).includes(value)
+    ? value as RelationshipDimension
+    : null;
+}
+
+function formatTitleLabel(value: unknown, fallback = 'Unknown'): string {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.trim();
+  if (!normalized) return fallback;
+  return normalized
+    .replace(/^char[-_]/i, '')
+    .replace(/[-_]/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
 function buildStoryIndexes(story: Story): StoryIndexes {
   const episodesById = new Map<string, Episode>();
   const scenesByEpisodeId = new Map<string, Map<string, Scene>>();
@@ -525,15 +544,20 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               updatedPlayer.tags = new Set(updatedPlayer.tags).add(consequence.tag);
               break;
             case 'relationship':
+              const dimension = normalizeRelationshipDimension((consequence as any).dimension);
+              if (!dimension) {
+                console.warn('[GameStore] relationship delayed consequence missing valid dimension:', consequence);
+                break;
+              }
               const rel = updatedPlayer.relationships[consequence.npcId];
               if (rel) {
                 const maxV = 100;
-                const minV = consequence.dimension === 'fear' ? 0 : -100;
+                const minV = dimension === 'fear' ? 0 : -100;
                 updatedPlayer.relationships = {
                   ...updatedPlayer.relationships,
                   [consequence.npcId]: {
                     ...rel,
-                    [consequence.dimension]: Math.max(minV, Math.min(maxV, rel[consequence.dimension] + consequence.change)),
+                    [dimension]: Math.max(minV, Math.min(maxV, (rel[dimension] ?? 0) + consequence.change)),
                   },
                 };
               }
@@ -657,25 +681,29 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
 
           case 'relationship': {
+            const dimension = normalizeRelationshipDimension((consequence as any).dimension);
+            if (!dimension) {
+              console.warn('[GameStore] relationship consequence missing valid dimension:', consequence);
+              break;
+            }
+
             const rel = newPlayer.relationships[consequence.npcId];
             if (rel) {
               const dir = consequence.change >= 0 ? 'up' : 'down';
-              const npcName = consequence.npcId
-                .replace(/^char[-_]/i, '')
-                .replace(/[-_]/g, ' ')
-                .replace(/\b\w/g, c => c.toUpperCase());
+              const npcName = formatTitleLabel(consequence.npcId, 'Someone');
+              const dimensionLabel = formatTitleLabel(dimension, 'Relationship');
               const maxVal = 100;
-              const minVal = consequence.dimension === 'fear' ? 0 : -100;
+              const minVal = dimension === 'fear' ? 0 : -100;
               const nextValue = Math.max(
                 minVal,
-                Math.min(maxVal, rel[consequence.dimension] + consequence.change)
+                Math.min(maxVal, (rel[dimension] ?? 0) + consequence.change)
               );
               applied.push({
                 type: 'relationship',
-                label: `${npcName} · ${consequence.dimension.charAt(0).toUpperCase() + consequence.dimension.slice(1)}`,
+                label: `${npcName} · ${dimensionLabel}`,
                 direction: dir,
                 magnitude: classifyMagnitude(consequence.change),
-                narrativeHint: `${npcName} ${getRelationshipDescription(consequence.dimension, nextValue)}.`,
+                narrativeHint: `${npcName} ${getRelationshipDescription(dimension, nextValue)}.`,
                 scope: 'other',
                 linger: true,
               });
@@ -683,7 +711,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 ...newPlayer.relationships,
                 [consequence.npcId]: {
                   ...rel,
-                  [consequence.dimension]: nextValue,
+                  [dimension]: nextValue,
                 },
               };
             }

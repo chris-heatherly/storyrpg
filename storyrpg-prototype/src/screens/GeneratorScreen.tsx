@@ -281,6 +281,7 @@ interface GeneratorScreenProps {
    */
   onViewLibrary?: () => void;
   resumeJobId?: string; // If provided, resume viewing this job's progress
+  initialSeasonPlanId?: string;
   onCancelExternalPipeline?: () => void;
 }
 
@@ -332,7 +333,7 @@ const buildPipelineRuntimeSnapshot = (
   };
 };
 
-export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStoryGenerated, onPlayStory, onViewLibrary, resumeJobId, onCancelExternalPipeline }) => {
+export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStoryGenerated, onPlayStory, onViewLibrary, resumeJobId, initialSeasonPlanId, onCancelExternalPipeline }) => {
   const [state, setState] = useState<GeneratorState>('idle');
   const [events, setEvents] = useState<PipelineEvent[]>([]);
   const [currentPhase, setCurrentPhase] = useState<string | undefined>();
@@ -428,6 +429,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   // without a long scroll. The full wizard refactor (Tranche B) replaces this
   // with an explicit step indicator.
   const [showStoryPanel, setShowStoryPanel] = useState(true);
+  const [assetGenerationMode, setAssetGenerationMode] = useState<'story-only' | 'story-and-images'>('story-only');
   const [showImagesPanel, setShowImagesPanel] = useState(false);
   const [showNarrationPanel, setShowNarrationPanel] = useState(false);
   const [showVideoPanel, setShowVideoPanel] = useState(false);
@@ -468,6 +470,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [isCreatingSeasonPlan, setIsCreatingSeasonPlan] = useState(false);
   const activeEndingMode: EndingMode = sourceAnalysis?.resolvedEndingMode || sourceAnalysis?.detectedEndingMode || 'single';
   const activeEndings = sourceAnalysis?.resolvedEndings || [];
+  const nextSeasonEpisode = seasonPlan?.episodes
+    ?.filter((episode) => episode.status !== 'completed')
+    .sort((a, b) => a.episodeNumber - b.episodeNumber)[0] || null;
 
   const fonts = useSettingsStore((state) => state.getFontSizes());
 
@@ -680,7 +685,43 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   }, [resumeJobId, getJob, setActiveJobId]);
 
   useEffect(() => {
-    if (resumeJobId || seasonPlan || sourceAnalysis || state !== 'idle') return;
+    if (!initialSeasonPlanId || resumeJobId || seasonPlan || sourceAnalysis || state !== 'idle') return;
+    let cancelled = false;
+    seasonPlanStore.initialize()
+      .then(async () => {
+        if (cancelled) return;
+        const saved = seasonPlanStore.getPlan(initialSeasonPlanId);
+        if (!saved) return;
+        await seasonPlanStore.setActivePlan(initialSeasonPlanId);
+        if (cancelled) return;
+        const nextEpisode = saved.plan.episodes
+          .filter((episode) => episode.status !== 'completed')
+          .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
+        setSeasonPlan(saved.plan);
+        setSourceAnalysis(saved.sourceAnalysis);
+        setAnalysisResult({
+          analysis: saved.sourceAnalysis,
+          totalEpisodes: saved.sourceAnalysis.totalEstimatedEpisodes || saved.plan.totalEpisodes,
+          episodeOutlines: saved.sourceAnalysis.episodeBreakdown || saved.plan.episodes,
+          suggestedOptions: [],
+        });
+        setCustomStoryTitle(saved.sourceAnalysis.sourceTitle || saved.plan.seasonTitle);
+        if (nextEpisode) {
+          setSelectedEpisodes([nextEpisode.episodeNumber]);
+          setSelectedEpisodeCount(1);
+        }
+        setState('analysis_complete');
+      })
+      .catch((err) => {
+        console.warn('[GeneratorScreen] Failed to load requested season plan:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialSeasonPlanId, resumeJobId, seasonPlan, sourceAnalysis, state]);
+
+  useEffect(() => {
+    if (initialSeasonPlanId || resumeJobId || seasonPlan || sourceAnalysis || state !== 'idle') return;
     let cancelled = false;
     seasonPlanStore.initialize()
       .then(() => {
@@ -713,7 +754,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     return () => {
       cancelled = true;
     };
-  }, [resumeJobId, seasonPlan, sourceAnalysis, state]);
+  }, [initialSeasonPlanId, resumeJobId, seasonPlan, sourceAnalysis, state]);
 
   const loadFailureWorkspace = useCallback(async (jobId: string) => {
     setFailureWorkspace((prev) => ({ ...prev, loading: true, error: null }));
@@ -1347,7 +1388,12 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       preapprovedStyleAnchors:
         extraOverrides?.preapprovedStyleAnchors || handoff.preapprovedStyleAnchors,
     };
-    return buildPipelineConfig(buildPipelineConfigInput(), extras);
+    const config = buildPipelineConfig(buildPipelineConfigInput(), extras);
+    config.generation = {
+      ...(config.generation || {}),
+      assetGenerationMode,
+    };
+    return config;
   };
 
   const startAnalysis = async () => {
@@ -1686,6 +1732,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           if (result.outputManifest) setOutputManifest(result.outputManifest);
           if (result.outputDirectory) setOutputDirectory(result.outputDirectory);
           if (workerJobIdForUpdates) {
+            await updateGenJob(workerJobIdForUpdates, {
+              outputDir: result.outputDirectory,
+            });
             await markSelectedEpisodesCompleted(result.story, workerJobIdForUpdates, result.outputDirectory);
           }
         }
@@ -1882,6 +1931,131 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     }
   };
 
+  const startImageGenerationForDraft = useCallback(async () => {
+    const draftOutputDir = outputDirectory || generatedStory?.outputDir;
+    if (!draftOutputDir) {
+      Alert.alert('Missing Draft Output', 'The story draft does not have an output directory for the image batch.');
+      return;
+    }
+    const proxyAvailable = await ensureProxyAvailable();
+    if (!proxyAvailable) {
+      Alert.alert('Backend Unavailable', 'Proxy server is not reachable at http://localhost:3001.');
+      return;
+    }
+
+    try {
+      const config = createPipelineConfig();
+      config.generation = {
+        ...(config.generation || {}),
+        assetGenerationMode: 'image-only',
+      };
+      const title = generatedStory?.title || customStoryTitle || 'Image Batch';
+      let workerJobIdForUpdates: string | null = null;
+      setState('running');
+      setError(null);
+      setLiveProgress(0);
+      setImageProgress(null);
+      generationStartedAtRef.current = Date.now();
+
+      const worker = await runWorkerJob<FullPipelineResult>({
+        mode: 'image-generation',
+        payload: {
+          config,
+          imageGenerationInput: {
+            outputDirectory: draftOutputDir,
+          },
+        },
+        idempotencyKey: `image-generation:${draftOutputDir}`,
+        storyTitle: `${title} Images`,
+        episodeCount: generatedStory?.episodes?.length || 1,
+      },
+      (evt) => handleEvent(evt),
+      (statusData) => {
+        const progress = Math.max(0, Math.min(100, Number(statusData?.progress ?? 0)));
+        const currentPhaseFromStatus = statusData?.currentPhase;
+        setPipelineRuntime(buildPipelineRuntimeSnapshot(statusData, workerJobIdForUpdates));
+        if (typeof currentPhaseFromStatus === 'string' && currentPhaseFromStatus.length > 0) {
+          setCurrentPhase(currentPhaseFromStatus);
+        }
+        setLiveProgress(progress);
+        hydrateImageJobsFromWorkerStatus(statusData);
+        if (statusData?.imageProgress && typeof statusData.imageProgress.current === 'number') {
+          setImageProgress({ current: statusData.imageProgress.current, total: statusData.imageProgress.total || 0 });
+        }
+        if (workerJobIdForUpdates) {
+          void updateGenJob(workerJobIdForUpdates, {
+            status: (statusData?.status as any) || 'running',
+            currentPhase: currentPhaseFromStatus || 'images',
+            progress,
+            currentEpisode: Number(statusData?.currentEpisode || 1),
+            episodeCount: Number(statusData?.episodeCount || generatedStory?.episodes?.length || 1),
+          });
+        }
+      },
+      async (jobId) => {
+        workerJobIdForUpdates = jobId;
+        setCurrentJobId(jobId);
+        setActiveJobId(jobId);
+        await registerGenJob({
+          id: jobId,
+          storyTitle: `${title} Images`,
+          startedAt: new Date().toISOString(),
+          status: 'running',
+          currentPhase: 'queued',
+          progress: 0,
+          episodeCount: generatedStory?.episodes?.length || 1,
+          currentEpisode: 1,
+          outputDir: draftOutputDir,
+          events: [],
+        });
+      });
+
+      const result = worker.result;
+      if (!result || !result.success) {
+        throw new Error(result?.error || 'Image generation failed');
+      }
+      if ('story' in result && result.story) {
+        setGeneratedStory(result.story);
+        setGeneratedCode(storyToTypeScript(result.story));
+        if (onStoryGenerated) onStoryGenerated(result.story);
+        if (result.outputManifest) setOutputManifest(result.outputManifest);
+        if (result.outputDirectory) setOutputDirectory(result.outputDirectory);
+        if (workerJobIdForUpdates) {
+          await updateGenJob(workerJobIdForUpdates, {
+            outputDir: result.outputDirectory,
+          });
+        }
+      }
+      setLiveProgress(100);
+      setState('complete');
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setError(errMsg);
+      setState('error');
+      if (currentJobId) {
+        await updateGenJob(currentJobId, {
+          status: 'failed',
+          error: errMsg,
+          progress: liveProgress,
+        });
+      }
+    }
+  }, [
+    outputDirectory,
+    generatedStory,
+    ensureProxyAvailable,
+    createPipelineConfig,
+    customStoryTitle,
+    runWorkerJob,
+    handleEvent,
+    updateGenJob,
+    registerGenJob,
+    setActiveJobId,
+    onStoryGenerated,
+    currentJobId,
+    liveProgress,
+  ]);
+
   const handleCheckpointApprove = () => { setCurrentCheckpoint(null); setState('running'); };
   const handleCheckpointReject = (reason: string) => { Alert.alert('Checkpoint Rejected', 'Rejection logged, continuing generation.'); setCurrentCheckpoint(null); setState('running'); };
 
@@ -1978,6 +2152,60 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     setLiveProgress(0); setEtaSeconds(null); setImageProgress(null); setPipelineRuntime(null);
     setIsViewingHistory(false); setHistoryJob(undefined);
   };
+
+  const continueSeasonGeneration = useCallback(async () => {
+    let plan = seasonPlan;
+    let analysis = sourceAnalysis;
+
+    if (!plan || !analysis) {
+      await seasonPlanStore.initialize();
+      const active = seasonPlanStore.getActivePlan();
+      plan = active?.plan || null;
+      analysis = active?.sourceAnalysis || null;
+    }
+
+    if (!plan || !analysis) {
+      Alert.alert('Season Plan Missing', 'No saved season plan was found to continue.');
+      return;
+    }
+
+    const nextEpisode = plan.episodes
+      .filter((episode) => episode.status !== 'completed')
+      .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
+
+    if (!nextEpisode) {
+      Alert.alert('Season Complete', 'All planned episodes have already been generated.');
+      return;
+    }
+
+    setSeasonPlan(plan);
+    setSourceAnalysis(analysis);
+    setAnalysisResult({
+      analysis,
+      totalEpisodes: analysis.totalEstimatedEpisodes || plan.totalEpisodes,
+      episodeOutlines: analysis.episodeBreakdown || plan.episodes,
+      suggestedOptions: [],
+    });
+    setCustomStoryTitle(analysis.sourceTitle || plan.seasonTitle);
+    setSelectedEpisodes([nextEpisode.episodeNumber]);
+    setSelectedEpisodeCount(1);
+    setEpisodeRecommendations([]);
+    setSelectionWarnings([]);
+    setGeneratedStory(null);
+    setGeneratedCode(null);
+    setOutputManifest(null);
+    setOutputDirectory(null);
+    setEvents([]);
+    setCurrentCheckpoint(null);
+    setError(null);
+    setIsViewingHistory(false);
+    setHistoryJob(undefined);
+    setLiveProgress(0);
+    setEtaSeconds(null);
+    setImageProgress(null);
+    setPipelineRuntime(null);
+    setState('analysis_complete');
+  }, [seasonPlan, sourceAnalysis]);
 
   const cancelGeneration = () => {
     setConfirmCancelGeneration(true);
@@ -2465,6 +2693,34 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   </View>
                   <Text style={[styles.configHint, { marginTop: 8 }]}>
                     {GENERATION_MODE_OPTIONS.find((option) => option.value === generationMode)?.description}
+                  </Text>
+                </View>
+
+                <View style={styles.configItem}>
+                  <Text style={styles.configLabel}>ASSET EXECUTION</Text>
+                  <Text style={styles.configHint}>
+                    Story-first saves the complete narrative draft, then lets image jobs run separately.
+                  </Text>
+                  <View style={styles.segmentedControl}>
+                    {[
+                      { value: 'story-only' as const, label: 'STORY FIRST' },
+                      { value: 'story-and-images' as const, label: 'ALL-IN-ONE' },
+                    ].map((option) => (
+                      <TouchableOpacity
+                        key={option.value}
+                        style={[styles.segment, assetGenerationMode === option.value && styles.segmentActive]}
+                        onPress={() => setAssetGenerationMode(option.value)}
+                      >
+                        <Text style={[styles.segmentText, assetGenerationMode === option.value && styles.segmentTextActive]}>
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <Text style={[styles.configHint, { marginTop: 8 }]}>
+                    {assetGenerationMode === 'story-only'
+                      ? 'Images are queued later from the saved draft package.'
+                      : 'Story and images run in the same worker, matching the legacy flow.'}
                   </Text>
                 </View>
 
@@ -3952,18 +4208,39 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 <Text style={styles.summaryLabel}>SCENES</Text>
                 <Text style={styles.summaryValue}>{generatedStory.episodes.reduce((acc, ep) => acc + ep.scenes.length, 0)}</Text>
               </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>IMAGES</Text>
+                <Text style={styles.summaryValue}>{(generatedStory.imagesStatus || 'complete').toUpperCase()}</Text>
+              </View>
             </View>
             <View style={styles.completeActions}>
+              {generatedStory.imagesStatus === 'pending' && (
+                <TouchableOpacity style={styles.executeButton} onPress={() => { void startImageGenerationForDraft(); }}>
+                  <ImageIcon size={18} color="white" />
+                  <Text style={styles.executeButtonText}>GENERATE IMAGES</Text>
+                </TouchableOpacity>
+              )}
               {onPlayStory && (
-                <TouchableOpacity style={styles.executeButton} onPress={() => { void onPlayStory(generatedStory); }}>
-                  <Play size={18} color="white" />
-                  <Text style={styles.executeButtonText}>PLAY NOW</Text>
+                <TouchableOpacity
+                  style={[
+                    generatedStory.imagesStatus === 'pending' ? styles.secondaryActionButton : styles.executeButton,
+                  ]}
+                  onPress={() => { void onPlayStory(generatedStory); }}
+                >
+                  <Play size={18} color={generatedStory.imagesStatus === 'pending' ? TERMINAL.colors.primary : 'white'} />
+                  <Text style={generatedStory.imagesStatus === 'pending' ? styles.secondaryActionButtonText : styles.executeButtonText}>PLAY NOW</Text>
                 </TouchableOpacity>
               )}
               {onViewLibrary && (
                 <TouchableOpacity style={styles.secondaryActionButton} onPress={onViewLibrary}>
                   <Library size={18} color={TERMINAL.colors.primary} />
                   <Text style={styles.secondaryActionButtonText}>VIEW IN LIBRARY</Text>
+                </TouchableOpacity>
+              )}
+              {nextSeasonEpisode && (
+                <TouchableOpacity style={styles.executeButton} onPress={() => { void continueSeasonGeneration(); }}>
+                  <ChevronRight size={18} color="white" />
+                  <Text style={styles.executeButtonText}>CONTINUE WITH EPISODE {nextSeasonEpisode.episodeNumber}</Text>
                 </TouchableOpacity>
               )}
               <TouchableOpacity style={styles.secondaryActionButton} onPress={resetGenerator}>

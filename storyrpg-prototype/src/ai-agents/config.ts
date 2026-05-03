@@ -130,6 +130,13 @@ export interface GenerationSettingsConfig {
   generateExpressionSheets?: boolean;
   generateBodyVocabulary?: boolean;
 
+  /**
+   * Controls whether a worker run performs narrative generation, image
+   * generation, or both. `story-only` produces a text-complete draft and image
+   * manifest; `image-only` consumes that draft in a later worker.
+   */
+  assetGenerationMode?: 'story-and-images' | 'story-only' | 'image-only';
+
   // Concurrency and guardrail settings
   episodeParallelismEnabled?: boolean;
   // NOTE: historical `sceneParallelismEnabled` was removed — scene generation

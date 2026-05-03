@@ -21,6 +21,7 @@ import {
   StructuralRole,
 } from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
+import type { CliffhangerPlan } from '../../types/seasonPlan';
 import {
   CHOICE_DENSITY_REQUIREMENTS,
   NARRATIVE_INTENSITY_RULES,
@@ -182,6 +183,12 @@ export interface SceneWriterInput {
    * SeasonEpisode.structuralRole). Drives scene mood / intensity defaults.
    */
   episodeStructuralRole?: StructuralRole[];
+
+  /**
+   * Role-mapped ending contract for the final scene of the episode.
+   * Only supplied to scenes that may need to land the episode ending.
+   */
+  cliffhangerPlan?: CliffhangerPlan;
 
   // Context about the episode's climactic encounter that this scene is building toward.
   // Provided for all non-encounter scenes so the writer can plant seeds, establish stakes,
@@ -380,6 +387,7 @@ You are a master prose writer who brings scene blueprints to life with vivid, im
 - Include scene takeaways: what the player should learn, feel, or understand by the end.
 - Use natural transition phrasing in continuityNotes or transitionIn ("Later that night", "Back at the observatory") when time or place shifts.
 - End the final beat with forward pressure into the next beat, choice, scene, or episode.
+- When a Seven-Point Cliffhanger Plan is supplied, the final beat must satisfy that plan: close the immediate scene/episode tension enough to feel authored, then open the specified next pressure.
 - Keep dialogue concise, pointed, and subtextual; characters may disagree, tease, avoid, or reveal, but not every conversation needs to become an argument.
 - Use selective interiority when it deepens player connection, but avoid over-defining the player character's identity.
 - Do not use film/camera direction terms in player-facing prose. Visual metadata may still use the required shotType and visualContinuity fields.
@@ -1164,6 +1172,25 @@ ${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with 
   resolved: false,
   createdAt: '',
 })))}
+${input.cliffhangerPlan ? `
+## Seven-Point Cliffhanger Plan (CRITICAL if this is the episode's final scene)
+- Style: ${input.cliffhangerPlan.style}
+- Structural role: ${input.cliffhangerPlan.mappedStructuralRole}
+- Type: ${input.cliffhangerPlan.type}
+- Intensity: ${input.cliffhangerPlan.intensity}
+- Hook to deliver: ${input.cliffhangerPlan.hook}
+- Setup that earns it: ${input.cliffhangerPlan.setup}
+- Immediate episode tension to acknowledge/resolve: ${input.cliffhangerPlan.resolvedEpisodeTension}
+- New open question: ${input.cliffhangerPlan.newOpenQuestion}
+- Emotional charge: ${input.cliffhangerPlan.emotionalCharge}
+- Next-episode pressure: ${input.cliffhangerPlan.nextEpisodePressure}
+
+If this scene has no outgoing scene, write the last beat as serialized-TV craft:
+1. Acknowledge the episode's immediate conflict or consequence.
+2. Land the planned shock/emotional/reveal/danger/legacy hook as a concrete event or realization.
+3. End with forward pressure, but do not rely on ellipses or a generic question as the whole hook.
+4. Make the visual contract show the hook: the object, face, gesture, arrival, absence, or rupture the reader should remember.
+` : ''}
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
 - ${input.dialogueHeavy ? 'This is dialogue-heavy - focus on conversation' : 'Balance description with any dialogue'}

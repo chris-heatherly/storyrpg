@@ -260,6 +260,68 @@ describe('ImageGenerationService character reference audit', () => {
       audit,
     )).toBe(true);
   });
+
+  it('adds the persisted style reference to DALL-E scene refs without replacing character refs', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+    service.setGeminiStyleReference('style-bytes', 'image/png');
+
+    const refs = (service as any).withGlobalStyleReferenceForProvider(
+      'dall-e',
+      'scene',
+      'beat-episode-1-scene-1-beat-1',
+      [{ data: 'char-bytes', mimeType: 'image/png', role: 'character-reference', characterName: 'Mika Kuroda', viewType: 'front' }],
+    );
+
+    expect(refs).toHaveLength(2);
+    expect(refs[0].role).toBe('style-reference');
+    expect(refs[1].characterName).toBe('Mika Kuroda');
+  });
+
+  it('adds the reference-sheet style anchor to DALL-E character reference generation', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+    service.setGeminiStyleReference('style-bytes', 'image/png');
+    service.setReferenceSheetStyleAnchor('anchor-bytes', 'image/png');
+
+    const refs = (service as any).withGlobalStyleReferenceForProvider(
+      'dall-e',
+      'master',
+      'ref_mika-kuroda_front',
+      undefined,
+    );
+
+    expect(refs).toHaveLength(1);
+    expect(refs[0].role).toBe('style-reference');
+    expect(refs[0].data).toBe('anchor-bytes');
+  });
+
+  it('does not add the scene style reference to non-character DALL-E master generation', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+    service.setGeminiStyleReference('style-bytes', 'image/png');
+
+    const refs = (service as any).withGlobalStyleReferenceForProvider(
+      'dall-e',
+      'master',
+      'style-bible-as-if-tokyo-character-anchor',
+      undefined,
+    );
+
+    expect(refs).toBeUndefined();
+  });
 });
 
 describe('ImageGenerationService prompt cache hashing', () => {

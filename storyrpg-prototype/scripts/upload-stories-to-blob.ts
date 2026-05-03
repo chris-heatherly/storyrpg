@@ -69,6 +69,24 @@ async function listExistingBlobs(): Promise<Map<string, string>> {
   return existing;
 }
 
+async function loadExistingManifestEntries(): Promise<StoryManifestEntry[]> {
+  const manifestUrl = process.env.EXPO_PUBLIC_BLOB_MANIFEST_URL;
+  if (!manifestUrl) return [];
+
+  try {
+    const response = await fetch(manifestUrl);
+    if (!response.ok) {
+      console.warn(`[WARN] Existing manifest fetch failed: ${response.status}`);
+      return [];
+    }
+    const manifest = await response.json() as StoriesManifest;
+    return Array.isArray(manifest.stories) ? manifest.stories : [];
+  } catch (err) {
+    console.warn('[WARN] Existing manifest fetch failed:', err);
+    return [];
+  }
+}
+
 async function uploadImageBlob(
   blobPathname: string,
   base64Data: string,
@@ -313,8 +331,13 @@ async function main() {
     if (entry) manifestEntries.push(entry);
   }
 
-  // Deduplicate by story ID (keep the latest)
+  const existingManifestEntries = requestedDirs.size > 0
+    ? await loadExistingManifestEntries()
+    : [];
+
+  // Deduplicate by story ID (keep the latest upload)
   const seen = new Map<string, StoryManifestEntry>();
+  for (const entry of existingManifestEntries) seen.set(entry.id, entry);
   for (const entry of manifestEntries) seen.set(entry.id, entry);
   const dedupedEntries = Array.from(seen.values());
 

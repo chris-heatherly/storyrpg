@@ -660,7 +660,7 @@ export function StoryLibrarySection({
                   const canGenerateImages = Boolean(
                     onGenerateImages
                     && story.outputDir
-                    && (story.imagesStatus === 'pending' || story.imagesStatus === 'failed')
+                    && story.isBuiltIn !== true
                   );
                   const canRename = Boolean(onRenameStory);
                   const canDelete = Boolean(onDeleteStory);

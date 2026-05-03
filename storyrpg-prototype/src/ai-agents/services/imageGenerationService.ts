@@ -2121,6 +2121,40 @@ export class ImageGenerationService {
     return usable.slice(0, caps.maxRefs);
   }
 
+  private withGlobalStyleReferenceForProvider(
+    provider: ImageProvider,
+    imageType: ImageType | undefined,
+    identifier: string,
+    refs: ReferenceImage[] | undefined,
+  ): ReferenceImage[] | undefined {
+    if (provider !== 'dall-e' || imageType === 'cover' || imageType === 'expression') {
+      return refs;
+    }
+
+    const existingRefs = refs || [];
+    if (existingRefs.some((ref) => ref.role === 'style-reference' || ref.role === 'style-anchor')) {
+      return refs;
+    }
+
+    const styleSource = imageType === 'master'
+      ? (identifier.startsWith('ref_') ? this._referenceSheetStyleAnchor : null)
+      : this._geminiStyleReference;
+    if (!styleSource) {
+      return refs;
+    }
+
+    return [
+      {
+        data: styleSource.data,
+        mimeType: styleSource.mimeType,
+        role: 'style-reference',
+        characterName: '',
+        viewType: 'style',
+      },
+      ...existingRefs,
+    ];
+  }
+
   /**
    * Classify errors as transient (worth retrying) or permanent (do not retry).
    */
@@ -2367,8 +2401,9 @@ export class ImageGenerationService {
     // A9: Drop reference images the provider can't meaningfully consume. Avoids
     // paying the tokenization / upload cost on refs that would have been
     // silently ignored by the downstream provider.
-    const capabilityFilteredRefs = this.filterReferencesForProvider(provider, referenceImages);
-    const referenceAudit = this.buildCharacterReferenceAudit(provider, metadata, referenceImages, capabilityFilteredRefs);
+    const providerInputRefs = this.withGlobalStyleReferenceForProvider(provider, metadata?.type, identifier, referenceImages);
+    const capabilityFilteredRefs = this.filterReferencesForProvider(provider, providerInputRefs);
+    const referenceAudit = this.buildCharacterReferenceAudit(provider, metadata, providerInputRefs, capabilityFilteredRefs);
     try {
       if (this.shouldEnforceCharacterReferenceContinuity(metadata, referenceAudit)) {
         const message =
@@ -2401,7 +2436,8 @@ export class ImageGenerationService {
           const msg = atlasErr instanceof Error ? atlasErr.message : String(atlasErr);
           console.warn(`[ImageGenerationService] Atlas-first encounter generation failed, using Gemini: ${msg}`);
           this.providerPolicy.observeTransientFailure('atlas-cloud', providerFamily);
-          result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, this.filterReferencesForProvider('nano-banana', referenceImages), metadata?.type);
+          const nanoRefs = this.withGlobalStyleReferenceForProvider('nano-banana', metadata?.type, identifier, referenceImages);
+          result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, this.filterReferencesForProvider('nano-banana', nanoRefs), metadata?.type);
         }
       } else {
         if (

@@ -141,6 +141,25 @@ export interface ImagePrompt {
   // Metadata for reference-based generation
   referenceCharIds?: string[];
   referenceLocationId?: string;
+
+  // Deterministic prompt contract fields. These are additive metadata for
+  // providers, diagnostics, and tests: style describes how to render; identity
+  // and appearance state describe what to render.
+  styleContract?: {
+    source: 'user-visual' | 'approved-anchor' | 'raw-season-style' | 'default';
+    text: string;
+  };
+  characterIdentity?: string[];
+  appearanceState?: string;
+  sceneAction?: string;
+  compositionContract?: string;
+  negativeContract?: string;
+  promptContract?: {
+    sanitizedTerms?: string[];
+    deterministicRules?: string[];
+    referencePrecedence?: string;
+    stylePrecedence?: string;
+  };
   
   // Micro-direction fields — specific visual details that survive the "telephone game"
   // from StoryboardAgent -> VisualIllustratorAgent -> imageGenerationService.

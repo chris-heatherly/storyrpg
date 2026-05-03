@@ -58,6 +58,11 @@ import { extractReferenceFaceCrop } from '../../utils/imageResizer';
 import { buildDefectRetryPrompt } from '../../images/imageDefectGate';
 import { runTier1Checks } from '../../images/visualValidation';
 import {
+  applyPromptContract,
+  buildStyleContractDirective,
+  sanitizeStyleContaminationText,
+} from '../../images/imagePromptContracts';
+import {
   MoodSpec,
   ColorScript,
   ColorScriptBeat,
@@ -521,15 +526,15 @@ export class ImageAgentTeam extends BaseAgent {
     const cleanReferenceStylePhrase = (value?: string) =>
       value?.replace(/\breference sheet style\b/gi, neutralReferenceWording);
     const text = prompt.prompt || '';
-    const styleLead = `Art style: ${style}.`;
+    const styleLead = buildStyleContractDirective(style);
     const cleanedText = text
-      .replace(/^Art style:\s*[^.]+\.?\s*/i, '')
+      .replace(/^Art style(?:\s*\(strict\))?:\s*[^.]+\.?\s*/i, '')
       .replace(/\breference sheet style\b/gi, neutralReferenceWording)
       .trim();
     const promptText = text.includes(style)
       ? cleanReferenceStylePhrase(text)
       : `${styleLead} ${cleanedText}`;
-    return {
+    return applyPromptContract({
       ...prompt,
       prompt: promptText,
       style,
@@ -541,7 +546,14 @@ export class ImageAgentTeam extends BaseAgent {
         'gritty realism',
         'messy detail',
       ].filter(Boolean).join(', '),
-    };
+    }, {
+      style,
+      styleSource: 'raw-season-style',
+      mode: 'character-ref',
+      characterIdentity: [sanitizeStyleContaminationText(cleanedText).text].filter(Boolean),
+      composition: prompt.composition || 'Full-body character reference, plain background, even studio lighting',
+      negativeContract: prompt.negativePrompt,
+    });
   }
 
   private assertReferencePromptStyleContract(

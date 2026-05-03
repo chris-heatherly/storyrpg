@@ -27,6 +27,12 @@ import {
   ESTABLISHING_NEGATIVE_OVERLAY,
   composeNegativePrompt as composeNegativePromptShared,
 } from './cinematicPromptCore';
+import {
+  applyPromptContract,
+  buildStyleContractDirective,
+  hasUnauthorizedCharacterRedesign,
+  sanitizeStyleContaminationText,
+} from './imagePromptContracts';
 
 export interface BeatPromptInput {
   beatId: string;
@@ -363,7 +369,7 @@ function buildEstablishingPrompt(
   const styleStrength: 0 | 1 | 2 = scene.styleAnchorStrength ?? 1;
 
   const promptParts: string[] = [
-    styleStrength === 2 ? `Art style (strict): ${artStyle}` : `Art style: ${artStyle}`,
+    styleStrength === 2 ? buildStyleContractDirective(artStyle) : `STYLE CONTRACT: ${artStyle}`,
     SINGLE_FRAME_IMAGE_DIRECTIVE,
     'wide establishing shot',
     coreVisual,
@@ -382,7 +388,7 @@ function buildEstablishingPrompt(
         : '',
   ];
 
-  return {
+  const basePrompt: ImagePrompt = {
     prompt: joinPromptParts(promptParts),
     negativePrompt: composeNegativePrompt(
       BASE_NEGATIVE_PROMPT + ESTABLISHING_NEGATIVE,
@@ -398,6 +404,15 @@ function buildEstablishingPrompt(
     settingBranchLabel: settingSelection.branchLabel,
     settingContext: scene.settingContext,
   };
+
+  return applyPromptContract(basePrompt, {
+    style: artStyle,
+    styleSource: scene.artStyle ? 'raw-season-style' : 'default',
+    mode: 'story-beat',
+    sceneAction: coreVisual,
+    composition: basePrompt.composition,
+    negativeContract: basePrompt.negativePrompt,
+  });
 }
 
 function buildCharacterPrompt(
@@ -424,6 +439,19 @@ function buildCharacterPrompt(
   const camera = analysis.suggestedCamera;
   const effectiveAction = beat.primaryAction || analysis.bodyLanguageDirectives.momentOfChange;
   const bodyLanguage = buildBodyLanguageFromAnalysis(analysis, beat.primaryAction, beat.relationshipDynamic);
+  const appearanceStateClause = buildCharacterStateClause(
+    beat.foregroundCharacterNames || [],
+    beat.characterVisualStates,
+  );
+  const redesignText = [
+    coreVisual,
+    effectiveAction,
+    beat.mustShowDetail,
+    beat.relationshipDynamic,
+  ].filter(Boolean).join(' ');
+  if (hasUnauthorizedCharacterRedesign(redesignText) && !appearanceStateClause) {
+    throw new Error(`Beat ${beat.beatId} attempts to change stable character appearance without an explicit appearance_state`);
+  }
 
   // Build a flowing narrative prompt: [STYLE] + [CAMERA] + [SCENE] woven together,
   // following the PROMPT_ASSEMBLY_PATTERN style from visualPrinciples.ts
@@ -438,7 +466,7 @@ function buildCharacterPrompt(
   // C6: For heavy anchor strength, promote to "strictly" language.
   const styleStrength: 0 | 1 | 2 = scene.styleAnchorStrength ?? 1;
   narrativeParts.push(
-    styleStrength === 2 ? `Art style (strict): ${artStyle}` : `Art style: ${artStyle}`
+    styleStrength === 2 ? buildStyleContractDirective(artStyle) : `STYLE CONTRACT: ${artStyle}`
   );
   narrativeParts.push(SINGLE_FRAME_IMAGE_DIRECTIVE);
 
@@ -487,12 +515,8 @@ function buildCharacterPrompt(
 
     // D4: Append per-character visual state so wardrobe/injuries/props carry
     // across beats. Silently skipped when no state is registered.
-    const stateClause = buildCharacterStateClause(
-      beat.foregroundCharacterNames,
-      beat.characterVisualStates,
-    );
-    if (stateClause) {
-      narrativeParts.push(stateClause);
+    if (appearanceStateClause) {
+      narrativeParts.push(`Appearance state (story-justified only): ${appearanceStateClause}`);
     }
   } else if (effectiveAction) {
     narrativeParts.push(effectiveAction);
@@ -569,7 +593,7 @@ function buildCharacterPrompt(
   // Composition field now carries beat-aware intent instead of just metadata
   const compositionIntent = buildCompositionIntent(analysis, scene, beat);
 
-  return {
+  const basePrompt: ImagePrompt = {
     prompt: joinPromptParts(narrativeParts),
     negativePrompt: composeNegativePrompt(
       BASE_NEGATIVE_PROMPT + CHARACTER_NEGATIVE,
@@ -596,6 +620,20 @@ function buildCharacterPrompt(
     settingBranchLabel: settingSelection.branchLabel,
     settingContext: scene.settingContext,
   };
+
+  return applyPromptContract(basePrompt, {
+    style: artStyle,
+    styleSource: scene.artStyle ? 'raw-season-style' : 'default',
+    mode: 'story-beat',
+    characterIdentity: [
+      ...(beat.foregroundCharacterNames || []),
+      ...(beat.backgroundCharacterNames || []),
+    ],
+    appearanceState: appearanceStateClause,
+    sceneAction: sanitizeStyleContaminationText(coreVisual).text,
+    composition: compositionIntent,
+    negativeContract: basePrompt.negativePrompt,
+  });
 }
 
 /**

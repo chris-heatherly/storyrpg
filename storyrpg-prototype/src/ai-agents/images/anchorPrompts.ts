@@ -11,6 +11,7 @@
  */
 
 import type { ImagePrompt } from '../agents/ImageGenerator';
+import { applyPromptContract, buildStyleContractDirective } from './imagePromptContracts';
 
 export interface AnchorStyleInput {
   /**
@@ -76,29 +77,38 @@ export function buildCharacterAnchorPrompt(input: CharacterAnchorInput): BuiltAn
     ? `Identity anchors: ${input.protagonistDescription}.`
     : 'Identity anchors: generic Hero, clearly readable face, coherent contemporary costume, stable silhouette.';
   const displayName = input.protagonistName?.trim() || 'Hero';
+  const basePrompt: ImagePrompt = {
+    prompt: [
+      buildStyleContractDirective(input.style || ''),
+      `Single character reference image: ${displayName}, one person only, front view, facing camera directly, neutral standing pose.`,
+      'Full body visible head to toe, feet on the ground, plain solid light background, even studio lighting.',
+      'Clean full-body character identity reference. No text, no labels, no annotations, no panels.',
+      `the episode palette expressed through ${palette || 'the planned color script'},`,
+      identityLine,
+    ]
+      .filter(Boolean)
+      .join(' '),
+    style: input.style,
+    aspectRatio: '3:4',
+    composition:
+      'One single full-body front-view character on a plain background. Head-to-toe framing, feet planted, even studio lighting, no splits, no panels, no divisions, no text.',
+    negativePrompt:
+      'text, letters, numbers, captions, labels, annotations, watermark, speech bubble, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, turnaround layout, extra arms, extra hands, extra legs, duplicated limbs, malformed hands, floating, levitating, airborne, feet off ground, cropped feet, cropped head, photorealistic, photography',
+    visualNarrative: `${displayName} rendered as the canonical clean full-body character identity reference for the episode. One strict front-view figure, not split or divided.`,
+    keyExpression: 'Readable calm but alert expression, neutral enough for reuse, never blank.',
+    keyBodyLanguage:
+      'Neutral upright standing pose, feet planted on the ground, arms natural and anatomically correct, clear silhouette.',
+  };
   return {
     role: 'character-anchor',
-    prompt: {
-      prompt: [
-        `Single character reference image: ${displayName}, one person only, front view, facing camera directly, neutral standing pose.`,
-        'Full body visible head to toe, feet on the ground, plain solid light background, even studio lighting.',
-        'Clean full-body character identity reference. No text, no labels, no annotations, no panels.',
-        `the episode palette expressed through ${palette || 'the planned color script'},`,
-        identityLine,
-      ]
-        .filter(Boolean)
-        .join(' '),
-      style: input.style,
-      aspectRatio: '3:4',
-      composition:
-        'One single full-body front-view character on a plain background. Head-to-toe framing, feet planted, even studio lighting, no splits, no panels, no divisions, no text.',
-      negativePrompt:
-        'text, letters, numbers, captions, labels, annotations, watermark, speech bubble, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, turnaround layout, extra arms, extra hands, extra legs, duplicated limbs, malformed hands, floating, levitating, airborne, feet off ground, cropped feet, cropped head, photorealistic, photography',
-      visualNarrative: `${displayName} rendered as the canonical clean full-body character identity reference for the episode. One strict front-view figure, not split or divided.`,
-      keyExpression: 'Readable calm but alert expression, neutral enough for reuse, never blank.',
-      keyBodyLanguage:
-        'Neutral upright standing pose, feet planted on the ground, arms natural and anatomically correct, clear silhouette.',
-    },
+    prompt: applyPromptContract(basePrompt, {
+      style: input.style || '',
+      styleSource: input.style ? 'raw-season-style' : 'default',
+      mode: 'style-anchor',
+      characterIdentity: [identityLine],
+      composition: basePrompt.composition,
+      negativeContract: basePrompt.negativePrompt,
+    }),
   };
 }
 

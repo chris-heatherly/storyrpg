@@ -104,4 +104,54 @@ describe('buildBeatImagePrompt', () => {
     expect(prompt.prompt).toContain('Visible shot cast: Miss Scarlet, Professor Plum, Mrs Peacock only');
     expect(prompt.prompt).toContain('Mrs Peacock visible in the background');
   });
+
+  it('keeps style in the style contract and strips competing art direction from beat text', () => {
+    const prompt = buildBeatImagePrompt(
+      {
+        beatId: 'beat-style',
+        beatText: 'Mara waits in what looks like a film still.',
+        beatIndex: 0,
+        totalBeats: 1,
+        visualMoment: 'Mara waits in a cinematic story frame with oil painting texture.',
+        primaryAction: 'stands still',
+        foregroundCharacterNames: ['Mara'],
+      },
+      {
+        sceneId: 'scene-1',
+        sceneName: 'The Gate',
+        genre: 'fantasy',
+        tone: 'tense',
+        artStyle: 'inked watercolor with clean linework',
+      },
+    );
+
+    expect(prompt.style).toBe('inked watercolor with clean linework');
+    expect(prompt.styleContract?.text).toBe('inked watercolor with clean linework');
+    expect(prompt.prompt).toContain('STYLE CONTRACT');
+    expect(prompt.prompt).not.toMatch(/cinematic story frame|oil painting texture|film still/i);
+    expect(prompt.promptContract?.sanitizedTerms).toEqual(
+      expect.arrayContaining(['cinematic story frame', 'oil painting texture']),
+    );
+  });
+
+  it('rejects stable character redesigns unless an appearance state is supplied', () => {
+    expect(() => buildBeatImagePrompt(
+      {
+        beatId: 'beat-redesign',
+        beatText: 'Mara enters with a new look.',
+        beatIndex: 0,
+        totalBeats: 1,
+        visualMoment: 'Mara has changed hair and a different face.',
+        primaryAction: 'walks into the room',
+        foregroundCharacterNames: ['Mara'],
+      },
+      {
+        sceneId: 'scene-1',
+        sceneName: 'The Gate',
+        genre: 'fantasy',
+        tone: 'tense',
+        artStyle: 'inked watercolor',
+      },
+    )).toThrow(/appearance_state/);
+  });
 });

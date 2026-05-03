@@ -34,6 +34,7 @@ import {
   normalizeImageDefectReport,
   type ImageDefectReport,
 } from '../images/imageDefectGate';
+import { sanitizeStyleContaminationText } from '../images/imagePromptContracts';
 
 // Dynamic import for Node.js fs module
 let nodeFs: any;
@@ -784,7 +785,7 @@ export class ImageGenerationService {
     if (this.config.requireCharacterRefsForVisibleCharacters === false) return false;
     if (this.config.allowTextOnlyCharacterImages === true) return false;
     if (metadata?.type === 'master' || metadata?.type === 'cover') return false;
-    return referenceAudit.visibleCharacters.length > 0 && referenceAudit.referenceRoute === 'text-only';
+    return referenceAudit.visibleCharacters.length > 0 && referenceAudit.missingReferenceCharacters.length > 0;
   }
 
   private static withProviderErrorMeta(error: Error, meta: GeminiResponseMeta & { providerAttemptCount?: number; effectivePromptChars?: number; effectiveNegativeChars?: number; effectiveRefCount?: number; model?: string }): Error {
@@ -2412,6 +2413,27 @@ export class ImageGenerationService {
     const providerInputRefs = this.withGlobalStyleReferenceForProvider(provider, metadata?.type, identifier, referenceImages);
     const capabilityFilteredRefs = this.filterReferencesForProvider(provider, providerInputRefs);
     const referenceAudit = this.buildCharacterReferenceAudit(provider, metadata, providerInputRefs, capabilityFilteredRefs);
+    if (this.config.savePrompts !== false) {
+      try {
+        await this.savePrompt(normalizedPrompt, identifier, {
+          ...(metadata || {}),
+          effectiveProvider: provider,
+          referenceAudit,
+          inputReferences: (providerInputRefs || []).map((ref) => ({
+            role: ref.role,
+            characterName: ref.characterName,
+            viewType: ref.viewType,
+          })),
+          effectiveReferences: (capabilityFilteredRefs || []).map((ref) => ({
+            role: ref.role,
+            characterName: ref.characterName,
+            viewType: ref.viewType,
+          })),
+        });
+      } catch (promptErr) {
+        console.warn(`[ImageGenerationService] Failed to update effective prompt metadata for ${identifier}: ${promptErr instanceof Error ? promptErr.message : String(promptErr)}`);
+      }
+    }
     try {
       if (this.shouldEnforceCharacterReferenceContinuity(metadata, referenceAudit)) {
         const message =
@@ -2936,19 +2958,19 @@ export class ImageGenerationService {
         const ca = d.canonicalAppearance;
         if (ca && (ca.face || ca.hair || ca.eyes || ca.skinTone || ca.build || ca.height || (ca.distinguishingMarks && ca.distinguishingMarks.length) || ca.defaultAttire)) {
           const slotLines: string[] = [`${d.name}:`];
-          if (ca.face) slotLines.push(`  - Face: ${ca.face}`);
-          if (ca.hair) slotLines.push(`  - Hair: ${ca.hair}`);
-          if (ca.eyes) slotLines.push(`  - Eyes: ${ca.eyes}`);
-          if (ca.skinTone) slotLines.push(`  - Skin: ${ca.skinTone}`);
-          if (ca.build) slotLines.push(`  - Build: ${ca.build}`);
-          if (ca.height) slotLines.push(`  - Height: ${ca.height}`);
+          if (ca.face) slotLines.push(`  - Face: ${sanitizeStyleContaminationText(ca.face).text}`);
+          if (ca.hair) slotLines.push(`  - Hair: ${sanitizeStyleContaminationText(ca.hair).text}`);
+          if (ca.eyes) slotLines.push(`  - Eyes: ${sanitizeStyleContaminationText(ca.eyes).text}`);
+          if (ca.skinTone) slotLines.push(`  - Skin: ${sanitizeStyleContaminationText(ca.skinTone).text}`);
+          if (ca.build) slotLines.push(`  - Build: ${sanitizeStyleContaminationText(ca.build).text}`);
+          if (ca.height) slotLines.push(`  - Height: ${sanitizeStyleContaminationText(ca.height).text}`);
           if (ca.distinguishingMarks && ca.distinguishingMarks.length > 0) {
-            slotLines.push(`  - Distinguishing marks: ${ca.distinguishingMarks.join('; ')}`);
+            slotLines.push(`  - Distinguishing marks: ${ca.distinguishingMarks.map(mark => sanitizeStyleContaminationText(mark).text).join('; ')}`);
           }
-          if (ca.defaultAttire) slotLines.push(`  - Attire: ${ca.defaultAttire}`);
+          if (ca.defaultAttire) slotLines.push(`  - Attire: ${sanitizeStyleContaminationText(ca.defaultAttire).text}`);
           identityLines.push(slotLines.join('\n'));
         } else if (d.appearance) {
-          identityLines.push(`${d.name}: ${d.appearance}`);
+          identityLines.push(`${d.name}: ${sanitizeStyleContaminationText(d.appearance).text}`);
         } else {
           identityLines.push(`${d.name}`);
         }

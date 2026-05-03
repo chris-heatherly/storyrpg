@@ -54,7 +54,9 @@ describe('ImageAgentTeam reference style contract', () => {
 
     const prompt = generateImage.mock.calls[0][0];
     expect(prompt.style).toBe(rawSeasonStyle);
-    expect(prompt.prompt).toContain(`Art style: ${rawSeasonStyle}`);
+    expect(prompt.prompt).toContain(`STYLE CONTRACT (authoritative renderer): ${rawSeasonStyle}`);
+    expect(prompt.styleContract.text).toBe(rawSeasonStyle);
+    expect(prompt.promptContract.stylePrecedence).toContain('raw season style');
     expect(prompt.prompt).toContain('clean full-body character identity reference');
     expect(prompt.prompt).not.toMatch(/\breference sheet style\b/i);
     expect(prompt.negativePrompt).not.toMatch(/\breference sheet style\b/i);
@@ -106,7 +108,7 @@ describe('ImageAgentTeam reference style contract', () => {
     const prompt = generateImage.mock.calls[0][0];
     const refs = generateImage.mock.calls[0][3];
     expect(prompt.style).toBe(rawSeasonStyle);
-    expect(prompt.prompt).toContain(`Art style: ${rawSeasonStyle}`);
+    expect(prompt.prompt).toContain(`STYLE CONTRACT (authoritative renderer): ${rawSeasonStyle}`);
     expect(refs).toHaveLength(1);
     expect(refs[0].role).toBe('user-provided-character-reference');
   });

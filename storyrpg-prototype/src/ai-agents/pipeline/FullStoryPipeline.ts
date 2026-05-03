@@ -89,6 +89,7 @@ import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
 import { buildFashionPrimaryClothing, buildFashionStyleSummary } from '../images/characterFashionStyle';
+import { sanitizeStyleContaminationText } from '../images/imagePromptContracts';
 import { 
   Story, Episode, Scene, Beat, Choice, NPCTier, RelationshipDimension, Consequence,
   Encounter, EncounterOutcome, EncounterType, EncounterClock, EncounterPhase, EncounterBeat as TypeEncounterBeat,
@@ -11814,6 +11815,15 @@ Design the key art. Return STRICT JSON matching the schema.`;
     return fuzzy?.id || null;
   }
 
+  private resolveCharacterIdWithBrief(idOrName: string, characterBible: CharacterBible, brief: FullCreativeBrief): string | null {
+    const raw = String(idOrName || '').trim();
+    if (!raw) return null;
+    if (/^p(?:rotagonist)?[-_ ]?1$/i.test(raw) || /^player$/i.test(raw) || /^hero$/i.test(raw)) {
+      return this.resolveCharacterId(brief.protagonist?.id || brief.protagonist?.name || raw, characterBible);
+    }
+    return this.resolveCharacterId(raw, characterBible);
+  }
+
   private normalizeCharacterIds(ids: string[] | undefined, characterBible: CharacterBible): string[] {
     const normalized = new Set<string>();
     for (const value of ids || []) {
@@ -11829,7 +11839,12 @@ Design the key art. Return STRICT JSON matching the schema.`;
     brief: FullCreativeBrief,
     contextLabel: string,
   ): Promise<string[]> {
-    const characterIds = this.normalizeCharacterIds(ids, characterBible);
+    const attemptedLookup = [...(ids || [])];
+    const characterIds = Array.from(new Set(
+      attemptedLookup
+        .map((id) => this.resolveCharacterIdWithBrief(id, characterBible, brief))
+        .filter(Boolean)
+    ));
     if (
       characterIds.length === 0 ||
       this.config.imageGen?.requireCharacterRefsForVisibleCharacters === false ||
@@ -11846,7 +11861,8 @@ Design the key art. Return STRICT JSON matching the schema.`;
       phase: 'images',
       message: `Character continuity refs missing for ${contextLabel}: ${missing
         .map((id) => characterBible.characters.find((c) => c.id === id)?.name || id)
-        .join(', ')}. Generating references before story images continue.`,
+        .join(', ')}. Generating references before story images continue. Lookup inputs: ${attemptedLookup.join(', ') || 'none'}.`,
+      data: { contextLabel, attemptedLookup, resolvedCharacterIds: characterIds, missing },
     });
 
     for (const id of missing) {
@@ -12548,18 +12564,18 @@ Design the key art. Return STRICT JSON matching the schema.`;
 
       const parts: string[] = [];
       if (consistencyInfo?.visualAnchors?.length) {
-        parts.push(consistencyInfo.visualAnchors.join(', '));
+        parts.push(consistencyInfo.visualAnchors.map(anchor => sanitizeStyleContaminationText(anchor).text).join(', '));
       } else if (hasSilhouette) {
-        parts.push(silhouette!.silhouetteHooks!.join(', '));
+        parts.push(silhouette!.silhouetteHooks!.map(hook => sanitizeStyleContaminationText(hook).text).join(', '));
       } else if (c.physicalDescription) {
-        parts.push(c.physicalDescription);
+        parts.push(sanitizeStyleContaminationText(c.physicalDescription).text);
       }
       if (c.distinctiveFeatures && c.distinctiveFeatures.length > 0) {
-        parts.push(`Distinctive features: ${c.distinctiveFeatures.join(', ')}`);
+        parts.push(`Distinctive features: ${c.distinctiveFeatures.map(feature => sanitizeStyleContaminationText(feature).text).join(', ')}`);
       }
-      if (c.typicalAttire) parts.push(`Attire: ${c.typicalAttire}`);
+      if (c.typicalAttire) parts.push(`Attire: ${sanitizeStyleContaminationText(c.typicalAttire).text}`);
       const fashionSummary = buildFashionStyleSummary(c.fashionStyle);
-      if (fashionSummary) parts.push(`Fashion style: ${fashionSummary}`);
+      if (fashionSummary) parts.push(`Fashion details: ${sanitizeStyleContaminationText(fashionSummary).text}`);
 
       // Build a structured canonicalAppearance by extracting semantic slots
       // from the free-form description sources. Each slot becomes its own

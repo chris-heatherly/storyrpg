@@ -67,22 +67,23 @@ export interface BuiltAnchorPrompt {
 }
 
 /**
- * Characters-only portrait anchor. Mirrors the pipeline's existing
- * protagonist anchor contract so `setGeminiStyleReference` can consume it.
+ * Characters-only identity anchor. Mirrors the strict character reference
+ * format so `setGeminiStyleReference` never learns from loose story art.
  */
 export function buildCharacterAnchorPrompt(input: CharacterAnchorInput): BuiltAnchorPrompt {
   const palette = (input.colorTerms || []).filter(Boolean).slice(0, 3).join(', ');
   const identityLine = input.protagonistDescription
     ? `Identity anchors: ${input.protagonistDescription}.`
-    : '';
+    : 'Identity anchors: generic Hero, clearly readable face, coherent contemporary costume, stable silhouette.';
+  const displayName = input.protagonistName?.trim() || 'Hero';
   return {
     role: 'character-anchor',
     prompt: {
       prompt: [
-        `one polished in-style character illustration of ${input.protagonistName}, one person only, three-quarter standing pose,`,
-        'readable face and costume, clean full-body silhouette,',
+        `Single character reference image: ${displayName}, one person only, front view, facing camera directly, neutral standing pose.`,
+        'Full body visible head to toe, feet on the ground, plain solid light background, even studio lighting.',
+        'Clean full-body character identity reference. No text, no labels, no annotations, no panels.',
         `the episode palette expressed through ${palette || 'the planned color script'},`,
-        'single unified image that demonstrates the exact rendering style for future story art',
         identityLine,
       ]
         .filter(Boolean)
@@ -90,13 +91,13 @@ export function buildCharacterAnchorPrompt(input: CharacterAnchorInput): BuiltAn
       style: input.style,
       aspectRatio: '3:4',
       composition:
-        'One single unified image of one character, no splits, no panels, no divisions, clear silhouette, polished rendering, no text.',
+        'One single full-body front-view character on a plain background. Head-to-toe framing, feet planted, even studio lighting, no splits, no panels, no divisions, no text.',
       negativePrompt:
-        'text, letters, numbers, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, turnaround layout, photorealistic, photography, neutral mannequin pose',
-      visualNarrative: `${input.protagonistName} rendered as the canonical in-style character illustration for the episode. One single unified image, not split or divided.`,
+        'text, letters, numbers, captions, labels, annotations, watermark, speech bubble, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, turnaround layout, extra arms, extra hands, extra legs, duplicated limbs, malformed hands, floating, levitating, airborne, feet off ground, cropped feet, cropped head, photorealistic, photography',
+      visualNarrative: `${displayName} rendered as the canonical clean full-body character identity reference for the episode. One strict front-view figure, not split or divided.`,
       keyExpression: 'Readable calm but alert expression, neutral enough for reuse, never blank.',
       keyBodyLanguage:
-        'Relaxed but purposeful three-quarter stance, asymmetric weight shift, clear silhouette.',
+        'Neutral upright standing pose, feet planted on the ground, arms natural and anatomically correct, clear silhouette.',
     },
   };
 }

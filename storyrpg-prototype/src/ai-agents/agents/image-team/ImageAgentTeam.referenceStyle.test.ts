@@ -110,4 +110,46 @@ describe('ImageAgentTeam reference style contract', () => {
     expect(refs).toHaveLength(1);
     expect(refs[0].role).toBe('user-provided-character-reference');
   });
+
+  it('retries character refs through the configured defect QA budget', async () => {
+    const team = new ImageAgentTeam(agentConfig, rawSeasonStyle);
+    const generateImage = vi.fn(async (prompt, identifier, _metadata, referenceImages) => ({
+      prompt,
+      identifier,
+      referenceImages,
+      imageUrl: `mock://${identifier}.png`,
+      imageData: Buffer.alloc(1500, identifier).toString('base64'),
+      mimeType: 'image/png',
+      metadata: { format: 'png' },
+    }));
+    const checkImageForDefects = vi
+      .fn()
+      .mockResolvedValueOnce({
+        passed: false,
+        issues: ['extra_limbs'],
+        reason: 'extra arms',
+      })
+      .mockResolvedValueOnce({
+        passed: true,
+        issues: [],
+        reason: 'passed',
+      });
+    const saveImageQADiagnostic = vi.fn(async () => undefined);
+
+    await team.generateIndividualViewImages(makeSheet('Mika Kuroda, front view'), {
+      generateImage,
+      checkImageForDefects,
+      saveImageQADiagnostic,
+      getMaxRetries: () => 2,
+    });
+
+    expect(generateImage).toHaveBeenCalledTimes(2);
+    expect(generateImage.mock.calls[1][1]).toBe('ref_char-mika-kuroda_front-qa-retry-2');
+    expect(generateImage.mock.calls[1][0].prompt).toContain('IMAGE QA CORRECTION');
+    expect(generateImage.mock.calls[1][0].negativePrompt).toContain('extra arms');
+    expect(saveImageQADiagnostic).toHaveBeenCalledWith(
+      'ref_char-mika-kuroda_front',
+      expect.objectContaining({ maxRetries: 2 }),
+    );
+  });
 });

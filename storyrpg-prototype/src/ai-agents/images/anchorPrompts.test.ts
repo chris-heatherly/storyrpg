@@ -22,20 +22,26 @@ describe('buildCharacterAnchorPrompt', () => {
     expect(built.prompt.prompt).toContain('Elena');
     expect(built.prompt.prompt).toContain('warm coral, gold, deep teal');
     expect(built.prompt.prompt).toContain('Identity anchors');
-    expect(built.prompt.prompt).toContain('one polished in-style character illustration');
+    expect(built.prompt.prompt).toContain('Single character reference image');
+    expect(built.prompt.prompt).toContain('Full body visible head to toe');
+    expect(built.prompt.prompt).toContain('plain solid light background');
+    expect(built.prompt.prompt).toContain('Clean full-body character identity reference');
     expect(built.prompt.prompt).not.toMatch(/cinematic story frame|style bible anchor|reference sheet/i);
     expect(built.prompt.negativePrompt).toContain('text');
     expect(built.prompt.negativePrompt).toContain('multi-panel');
+    expect(built.prompt.negativePrompt).toContain('extra arms');
+    expect(built.prompt.negativePrompt).toContain('floating');
     expect(built.prompt.negativePrompt).not.toMatch(/reference sheet/i);
     expect(built.prompt.aspectRatio).toBe('3:4');
   });
 
-  it('omits the identity line when no description is supplied', () => {
+  it('uses a generic Hero identity fallback when no description is supplied', () => {
     const built = buildCharacterAnchorPrompt({
       style: STYLE,
       protagonistName: 'Rook',
     });
-    expect(built.prompt.prompt).not.toContain('Identity anchors');
+    expect(built.prompt.prompt).toContain('Identity anchors: generic Hero');
+    expect(built.prompt.prompt).toContain('Rook');
   });
 });
 

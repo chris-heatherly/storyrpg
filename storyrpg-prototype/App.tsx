@@ -25,8 +25,10 @@ import {
 } from './src/ai-agents/pipeline/PipelineClient';
 import { encodeStory } from './src/ai-agents/codec/storyCodec';
 import { loadConfig } from './src/ai-agents/config';
+import type { PipelineConfig } from './src/ai-agents/config';
 import { useVideoJobStore } from './src/stores/videoJobStore';
 import { useStoryLibrary } from './src/hooks/useStoryLibrary';
+import { GENERATOR_STORAGE_KEYS } from './src/hooks/useGeneratorSettings';
 import { fetchStoryByCatalogEntry } from './src/services/storyLibrary';
 import { useGeneratorRunner } from './src/hooks/useGeneratorRunner';
 import { useAppNavigationStore } from './src/stores/appNavigationStore';
@@ -53,6 +55,74 @@ const normalizeContinuationKey = (value?: string | null) => {
   if (!value) return null;
   return value.trim().toLowerCase().replace(/\/+$/, '');
 };
+
+type PersistedGeneratorSettings = {
+  imageProvider?: string;
+  imageStrategy?: 'selective' | 'all-beats';
+  artStyle?: string;
+  generationSettings?: { panelMode?: 'single' | 'special-beats' | 'all-beats' };
+  geminiSettings?: PipelineConfig['imageGen'] extends infer T ? T extends { gemini?: infer G } ? G : never : never;
+  openaiSettings?: {
+    imageModel?: string;
+    imageModeration?: 'auto' | 'low';
+  };
+  midjourneySettings?: PipelineConfig['imageGen'] extends infer T ? T extends { midjourney?: infer M } ? M : never : never;
+  stableDiffusionSettings?: PipelineConfig['imageGen'] extends infer T ? T extends { stableDiffusion?: infer S } ? S : never : never;
+  loraTrainingSettings?: PipelineConfig['imageGen'] extends infer T ? T extends { loraTraining?: infer L } ? L : never : never;
+  atlasCloudModel?: string;
+};
+
+const normalizeImageProviderForPipeline = (provider?: string) => {
+  if (provider === 'useapi') return 'midapi';
+  if (provider === 'scenario-gg') return 'atlas-cloud';
+  return provider;
+};
+
+async function loadImageOnlyPipelineConfigFromSavedSettings(): Promise<PipelineConfig> {
+  const config = loadConfig();
+  let saved: PersistedGeneratorSettings = {};
+  try {
+    const response = await fetch(PROXY_CONFIG.generatorSettings);
+    if (response.ok) {
+      saved = await response.json();
+    }
+  } catch (error) {
+    console.warn('[App] Failed to load generator settings for image-only run; falling back to env config:', error);
+  }
+
+  const entries = await AsyncStorage.multiGet([
+    GENERATOR_STORAGE_KEYS.openaiApiKey,
+    GENERATOR_STORAGE_KEYS.geminiApiKey,
+    GENERATOR_STORAGE_KEYS.atlasCloudApiKey,
+    GENERATOR_STORAGE_KEYS.midapiToken,
+  ]);
+  const stored = Object.fromEntries(entries);
+  const provider = normalizeImageProviderForPipeline(saved.imageProvider) as NonNullable<PipelineConfig['imageGen']>['provider'] | undefined;
+
+  config.imageGen = {
+    ...(config.imageGen || {}),
+    enabled: true,
+    provider: provider || config.imageGen?.provider,
+    strategy: saved.imageStrategy || config.imageGen?.strategy,
+    geminiApiKey: stored[GENERATOR_STORAGE_KEYS.geminiApiKey] || config.imageGen?.geminiApiKey || config.imageGen?.apiKey,
+    apiKey: stored[GENERATOR_STORAGE_KEYS.geminiApiKey] || config.imageGen?.apiKey,
+    openaiApiKey: stored[GENERATOR_STORAGE_KEYS.openaiApiKey] || config.imageGen?.openaiApiKey,
+    atlasCloudApiKey: stored[GENERATOR_STORAGE_KEYS.atlasCloudApiKey] || config.imageGen?.atlasCloudApiKey,
+    atlasCloudModel: saved.atlasCloudModel || config.imageGen?.atlasCloudModel,
+    midapiToken: stored[GENERATOR_STORAGE_KEYS.midapiToken] || config.imageGen?.midapiToken,
+    openaiImageModel: saved.openaiSettings?.imageModel || config.imageGen?.openaiImageModel,
+    openaiModeration: saved.openaiSettings?.imageModeration || config.imageGen?.openaiModeration,
+    gemini: saved.geminiSettings ? { ...(config.imageGen?.gemini || {}), ...(saved.geminiSettings as any) } : config.imageGen?.gemini,
+    midjourney: saved.midjourneySettings ? { ...(config.imageGen?.midjourney || {}), ...(saved.midjourneySettings as any) } : config.imageGen?.midjourney,
+    stableDiffusion: saved.stableDiffusionSettings ? { ...(config.imageGen?.stableDiffusion || {}), ...(saved.stableDiffusionSettings as any) } : config.imageGen?.stableDiffusion,
+    loraTraining: saved.loraTrainingSettings ? { ...(config.imageGen?.loraTraining || {}), ...(saved.loraTrainingSettings as any) } : config.imageGen?.loraTraining,
+    panelMode: saved.generationSettings?.panelMode || config.imageGen?.panelMode,
+  };
+  if (saved.artStyle !== undefined) {
+    config.artStyle = saved.artStyle || config.artStyle;
+  }
+  return config;
+}
 
 const isSeasonEpisodeGenerated = (episode?: {
   status?: string;
@@ -697,7 +767,7 @@ function AppContent() {
     setImageGeneratingStoryId(storyId);
 
     try {
-      const config = loadConfig();
+      const config = await loadImageOnlyPipelineConfigFromSavedSettings();
       config.generation = {
         ...(config.generation || {}),
         assetGenerationMode: 'image-only',

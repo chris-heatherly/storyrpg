@@ -30,6 +30,10 @@ import { ENCOUNTER_VISUAL_PRINCIPLES_COMPACT, STORY_BEAT_VISUAL_PRINCIPLES_COMPA
 // E2: pure helper functions moved out of this file. Grow this module
 // with additional extractions as the service continues to split.
 import { normalizeManagedOutputPath, detectImageMimeType } from './imageGenerationHelpers';
+import {
+  normalizeImageDefectReport,
+  type ImageDefectReport,
+} from '../images/imageDefectGate';
 
 // Dynamic import for Node.js fs module
 let nodeFs: any;
@@ -2354,6 +2358,10 @@ export class ImageGenerationService {
     );
   }
 
+  getMaxRetries(): number {
+    return this.maxRetries;
+  }
+
   /**
    * Inner generation path called by `generateImage` after caches and inflight
    * dedup have been resolved. Factored out so the dedup wrapper doesn't
@@ -2882,6 +2890,13 @@ export class ImageGenerationService {
     const promptFile = this.joinPath(promptDir, `${identifier}.json`);
     await this.writeFile(promptFile, JSON.stringify({ identifier, metadata, prompt, timestamp: new Date().toISOString() }, null, 2));
     return { promptPath: promptFile, promptUrl: this.toOutputHttpUrl(promptFile) };
+  }
+
+  async saveImageQADiagnostic(identifier: string, diagnostic: unknown): Promise<void> {
+    const promptDir = this.joinPath(this.outputDir, 'prompts');
+    await this.ensureDirectory(promptDir);
+    const filePath = this.joinPath(promptDir, `${identifier}.qa.json`);
+    await this.writeFile(filePath, JSON.stringify(diagnostic, null, 2));
   }
 
   private injectCharacterIdentity(
@@ -5694,6 +5709,104 @@ export class ImageGenerationService {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[ImageGenerationService] Text artifact check failed: ${msg} — allowing image`);
       return { hasText: false };
+    }
+  }
+
+  /**
+   * Gemini vision QA gate for high-risk generated art defects. This is used
+   * by pipeline-level retry wrappers so bad anchors/refs/beats do not become
+   * accepted continuity sources.
+   */
+  async checkImageForDefects(
+    imageData: string,
+    mimeType: string,
+    prompt?: ImagePrompt,
+    identifier: string = 'unknown',
+  ): Promise<ImageDefectReport> {
+    const env = typeof process !== 'undefined' ? process.env : {} as any;
+    const apiKey = this.config.geminiApiKey || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY;
+    if (!apiKey) {
+      const report: ImageDefectReport = {
+        passed: true,
+        issues: [],
+        reason: 'Gemini API key unavailable; image defect QA skipped',
+        skipped: true,
+      };
+      console.warn(`[ImageGenerationService] ${report.reason} for ${identifier}`);
+      return report;
+    }
+
+    try {
+      const promptText = [
+        prompt?.prompt,
+        prompt?.composition,
+        prompt?.visualNarrative,
+        prompt?.negativePrompt,
+      ].filter(Boolean).join('\n');
+      const visionModel = 'gemini-2.0-flash';
+      const visionPrompt = `Inspect this generated image for production defects.
+
+PROMPT CONTEXT:
+${promptText || '(none)'}
+
+Return ONLY valid JSON:
+{
+  "passed": boolean,
+  "issues": ["visible text", "extra arms", "..."],
+  "reason": "one concise sentence"
+}
+
+Fail if any of these are present:
+- visible text, letters, numbers, captions, labels, annotations, watermarks, speech bubbles, random glyphs
+- extra arms, hands, legs, fingers, duplicated limbs, or malformed obvious anatomy
+- duplicated bodies, cloned character copies, repeated same person
+- floating, hovering, levitating, or unsupported characters unless the prompt explicitly asks for airborne/falling/jumping/levitation/dream/magical suspension
+- collage, split-screen, inset frame, picture-in-picture, comic panel borders, multi-panel leakage
+- reference-sheet/model-sheet artifacts, side-by-side views, turnaround layout, labels, measurement marks
+
+Pass only when none of those defects are visible.`;
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${visionModel}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inlineData: { mimeType, data: imageData } },
+              { text: visionPrompt },
+            ],
+          }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 256 },
+        }),
+      });
+
+      if (!response.ok) {
+        const report: ImageDefectReport = {
+          passed: true,
+          issues: [],
+          reason: `Gemini defect QA returned ${response.status}; QA skipped`,
+          skipped: true,
+        };
+        console.warn(`[ImageGenerationService] ${report.reason} for ${identifier}`);
+        return report;
+      }
+
+      const data = await response.json();
+      const text = data?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || '').join('\n').trim() || '';
+      const report = normalizeImageDefectReport(text, prompt);
+      if (!report.passed && report.issues.length > 0) {
+        console.warn(`[ImageGenerationService] Image defect detected for ${identifier}: ${report.issues.join(', ')} — ${report.reason || 'no reason'}`);
+      }
+      return report;
+    } catch (err) {
+      const report: ImageDefectReport = {
+        passed: true,
+        issues: [],
+        reason: `Image defect QA failed: ${err instanceof Error ? err.message : String(err)}; QA skipped`,
+        skipped: true,
+      };
+      console.warn(`[ImageGenerationService] ${report.reason} for ${identifier}`);
+      return report;
     }
   }
 }

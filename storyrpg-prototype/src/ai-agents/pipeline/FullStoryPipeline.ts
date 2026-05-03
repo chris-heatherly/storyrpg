@@ -156,6 +156,7 @@ import {
   anchorIdentifier,
 } from '../images/anchorPrompts';
 import { chooseGeminiStyleAnchor, type StyleAnchorValidationResult } from '../images/styleAnchorGate';
+import { buildDefectRetryPrompt, type ImageDefectIssue } from '../images/imageDefectGate';
 import { composeCanonicalStyleString } from '../images/artStyleProfile';
 import {
   LoraTrainingAgent,
@@ -9207,7 +9208,7 @@ ${clothingRule}
                     { characterNames: shotCharacterNames, characterDescriptions: shotCharacterDescriptions }
                   ), PIPELINE_TIMEOUTS.imageGeneration, panelLabel);
                 } else {
-                  panelResult = await withTimeout(this.imageService.generateImage(
+                  panelResult = await this.generateImageWithDefectRetries(
                     panelPrompt,
                     panelIdentifier,
                     {
@@ -9218,27 +9219,10 @@ ${clothingRule}
                       characterNames: shotCharacterNames,
                       characterDescriptions: shotCharacterDescriptions,
                     },
-                    panelRefs.length > 0 ? panelRefs : undefined
-                  ), PIPELINE_TIMEOUTS.imageGeneration, panelLabel);
-                }
-
-                // Tier 1 validation for panel
-                const panelTier1 = runTier1Checks(panelResult, panelIdentifier);
-                if (!panelTier1.passed && panelTier1.shouldRetry) {
-                  console.warn(`[Pipeline] Panel Tier 1 check failed for ${panelIdentifier}: ${panelTier1.reason}. Retrying once.`);
-                  this.emit({ type: 'warning', phase: 'images', message: `Panel Tier 1 retry for ${beatId} panel ${pIdx}: ${panelTier1.reason}` });
-                  try {
-                    const retryPanelResult = await withTimeout(this.imageService.generateImage(
-                      panelPrompt,
-                      `${panelIdentifier}-retry`,
-                      { sceneId: scopedSceneId, beatId, type: 'scene', characters: shotCharacterIds, regeneration: 1 },
-                      panelRefs.length > 0 ? panelRefs : undefined
-                    ), PIPELINE_TIMEOUTS.imageGeneration, `${panelLabel}-retry`);
-                    const retryTier1 = runTier1Checks(retryPanelResult, `${panelIdentifier}-retry`);
-                    if (retryTier1.passed) {
-                      panelResult = retryPanelResult;
-                    }
-                  } catch { /* retry is best-effort */ }
+                    panelRefs.length > 0 ? panelRefs : undefined,
+                    panelLabel,
+                    outputDirectory,
+                  );
                 }
 
                 if (panelResult.imageUrl) {
@@ -9321,7 +9305,7 @@ ${clothingRule}
               ), PIPELINE_TIMEOUTS.imageGeneration, imgLabel);
             } else {
               const shotCharacterDescriptions = this.buildCharacterDescriptions(shotCharacterIds, characterBible);
-              result = await withTimeout(this.imageService.generateImage(
+              result = await this.generateImageWithDefectRetries(
                 imagePrompt,
                 identifier,
                 {
@@ -9332,27 +9316,10 @@ ${clothingRule}
                   characterNames: shotCharacterNames,
                   characterDescriptions: shotCharacterDescriptions,
                 },
-                referenceImages.length > 0 ? referenceImages : undefined
-              ), PIPELINE_TIMEOUTS.imageGeneration, imgLabel);
-            }
-
-            // Tier 1 validation: deterministic inline check
-            const tier1 = runTier1Checks(result, identifier);
-            if (!tier1.passed && tier1.shouldRetry) {
-              console.warn(`[Pipeline] Tier 1 check failed for ${identifier}: ${tier1.reason}. Retrying once.`);
-              this.emit({ type: 'warning', phase: 'images', message: `Tier 1 retry for ${beatId}: ${tier1.reason}` });
-              const retryResult = await withTimeout(this.imageService.generateImage(
-                imagePrompt,
-                `${identifier}-retry`,
-                { sceneId: scopedSceneId, beatId, type: 'scene', characters: shotCharacterIds, regeneration: 1 },
-                referenceImages.length > 0 ? referenceImages : undefined
-              ), PIPELINE_TIMEOUTS.imageGeneration, `${imgLabel}-retry`);
-              const retryTier1 = runTier1Checks(retryResult, `${identifier}-retry`);
-              if (retryTier1.passed) {
-                result = retryResult;
-              } else {
-                console.warn(`[Pipeline] Tier 1 retry also failed for ${identifier}: ${retryTier1.reason}. Using original.`);
-              }
+                referenceImages.length > 0 ? referenceImages : undefined,
+                imgLabel,
+                outputDirectory,
+              );
             }
 
             if (result.imageUrl) {
@@ -9558,8 +9525,9 @@ ${clothingRule}
             negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, storyboard, grid layout, diptych, triptych, collage, duplicate character, same character twice, cloned figure, repeated subject',
           }, scene.settingContext);
           const identifier = `beat-${scopedSceneId}-${beat.id}-recovery`;
-          const result = await withTimeout(this.imageService.generateImage(
-            fallbackPrompt, identifier,
+          const result = await this.generateImageWithDefectRetries(
+            fallbackPrompt,
+            identifier,
             {
               sceneId: scopedSceneId,
               beatId: beat.id,
@@ -9569,8 +9537,10 @@ ${clothingRule}
               characterDescriptions: this.buildCharacterDescriptions(shotCharacterIds, characterBible),
               shotCastReason: shotCast.shotCastReason,
             },
-            referenceImages.length > 0 ? referenceImages : undefined
-          ), PIPELINE_TIMEOUTS.imageGeneration, `recoveryFallback(${scopedSceneId}:${beat.id})`);
+            referenceImages.length > 0 ? referenceImages : undefined,
+            `recoveryFallback(${scopedSceneId}:${beat.id})`,
+            outputDirectory,
+          );
           if (result.imageUrl) {
             beatImages.set(this.getEpisodeScopedBeatKey(brief, scene.sceneId, beat.id), result.imageUrl);
           }
@@ -13438,21 +13408,23 @@ Design the key art. Return STRICT JSON matching the schema.`;
           style: profileStyle,
           protagonistName,
           colorTerms,
+          protagonistDescription: this.buildCharacterDescriptions([brief.protagonist.id], characterBible)
+            .map(desc => desc.canonicalAppearance || desc.appearance)
+            .filter(Boolean)
+            .join(' '),
         });
-        anchorImage = await withTimeout(
-          this.imageService.generateImage(
-            built.prompt,
-            anchorIdentifier(titleSlug, built.role),
-            {
-              type: 'master',
-              characters: [brief.protagonist.id],
-              characterNames: [protagonistName],
-              characterDescriptions: this.buildCharacterDescriptions([brief.protagonist.id], characterBible),
-            },
-            protagonistRefImages.length > 0 ? protagonistRefImages : undefined,
-          ),
-          PIPELINE_TIMEOUTS.imageGeneration,
-          'EpisodeStyleBibleCharacterAnchor'
+        anchorImage = await this.generateImageWithDefectRetries(
+          built.prompt,
+          anchorIdentifier(titleSlug, built.role),
+          {
+            type: 'master',
+            characters: [brief.protagonist.id],
+            characterNames: [protagonistName],
+            characterDescriptions: this.buildCharacterDescriptions([brief.protagonist.id], characterBible),
+          },
+          protagonistRefImages.length > 0 ? protagonistRefImages : undefined,
+          'EpisodeStyleBibleCharacterAnchor',
+          outputDirectory,
         );
         if (anchorImage?.imagePath) {
           this._styleAnchorPaths.character = anchorImage.imagePath;
@@ -13625,6 +13597,135 @@ Design the key art. Return STRICT JSON matching the schema.`;
       return { passed: false, reason: issues.join('; '), issues };
     }
     return { passed: true, score: 100, reason: 'prompt contract passed', issues: [] };
+  }
+
+  private async generateImageWithDefectRetries(
+    prompt: ImagePrompt,
+    identifier: string,
+    metadata: any,
+    referenceImages: any[] | undefined,
+    label: string,
+    outputDirectory?: string,
+  ): Promise<GeneratedImage> {
+    const maxRetries = Math.max(1, this.imageService.getMaxRetries?.() || 1);
+    const attempts: Array<{
+      attempt: number;
+      identifier: string;
+      passed: boolean;
+      issues: string[];
+      reason?: string;
+      imagePath?: string;
+      imageUrl?: string;
+      skipped?: boolean;
+    }> = [];
+    let activePrompt = prompt;
+    let lastReason = '';
+
+    for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+      const attemptIdentifier = attempt === 1 ? identifier : `${identifier}-qa-retry-${attempt}`;
+      const result = await withTimeout(
+        this.imageService.generateImage(
+          activePrompt,
+          attemptIdentifier,
+          {
+            ...(metadata || {}),
+            regeneration: attempt > 1 ? attempt - 1 : metadata?.regeneration,
+          },
+          referenceImages,
+        ),
+        PIPELINE_TIMEOUTS.imageGeneration,
+        attempt === 1 ? label : `${label}-qa-retry-${attempt}`,
+      );
+
+      const tier1 = runTier1Checks(result, attemptIdentifier);
+      let passed = tier1.passed;
+      let issues: string[] = tier1.passed ? [] : ['tier1'];
+      let reason = tier1.reason || 'passed';
+      let skipped = false;
+
+      if (passed && result.imageData && result.mimeType) {
+        const defect = await withTimeout(
+          this.imageService.checkImageForDefects(result.imageData, result.mimeType, activePrompt, attemptIdentifier),
+          PIPELINE_TIMEOUTS.imageGeneration,
+          `imageDefectQA(${attemptIdentifier})`,
+        );
+        passed = defect.passed || defect.skipped === true;
+        issues = defect.issues || [];
+        reason = defect.reason || (passed ? 'defect gate passed' : 'defect gate failed');
+        skipped = defect.skipped === true;
+      }
+
+      attempts.push({
+        attempt,
+        identifier: attemptIdentifier,
+        passed,
+        issues,
+        reason,
+        skipped,
+        imagePath: result.imagePath,
+        imageUrl: result.imageUrl,
+      });
+      await this.saveImageQADiagnostic(outputDirectory, identifier, maxRetries, attempts);
+
+      if (passed) return result;
+
+      lastReason = reason;
+      if (attempt < maxRetries) {
+        const retryIssues = this.coerceRetryIssues(issues);
+        const patch = buildDefectRetryPrompt(prompt, retryIssues);
+        activePrompt = patch.prompt;
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: `Image defect detected for ${identifier}: ${issues.join(', ') || reason}; retry ${attempt + 1}/${maxRetries}`,
+          data: { identifier, issues, reason, attempt, maxRetries },
+        });
+      }
+    }
+
+    throw new Error(`Image defect QA failed for ${identifier}: ${lastReason || 'unknown defect'}`);
+  }
+
+  private coerceRetryIssues(issues: string[]): ImageDefectIssue[] {
+    const allowed = new Set<ImageDefectIssue>([
+      'visible_text',
+      'extra_limbs',
+      'duplicate_body',
+      'floating_character',
+      'panel_leakage',
+      'reference_sheet_artifact',
+    ]);
+    const normalized = issues.filter((issue): issue is ImageDefectIssue => allowed.has(issue as ImageDefectIssue));
+    return normalized.length > 0
+      ? normalized
+      : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact'];
+  }
+
+  private async saveImageQADiagnostic(
+    outputDirectory: string | undefined,
+    identifier: string,
+    maxRetries: number,
+    attempts: unknown[],
+  ): Promise<void> {
+    const payload = {
+      identifier,
+      generatedAt: new Date().toISOString(),
+      maxRetries,
+      attempts,
+    };
+    try {
+      if (outputDirectory) {
+        await saveEarlyDiagnostic(outputDirectory, `images/prompts/${identifier}.qa.json`, payload);
+      } else {
+        await this.imageService.saveImageQADiagnostic?.(identifier, payload);
+      }
+    } catch (error) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `Failed to save image QA diagnostic for ${identifier}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
   }
 
   private async validateGeneratedStyleAnchor(

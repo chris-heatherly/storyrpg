@@ -82,13 +82,39 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [confirmCancelJob, setConfirmCancelJob] = useState<GenerationJob | null>(null);
   const [artifactOverrides, setArtifactOverrides] = useState<Record<string, Partial<NonNullable<StoryCatalogEntry['imageArtifacts']>>>>({});
 
+  const getArtifactOverrideKeys = (
+    story: StoryCatalogEntry,
+    scope: 'season' | 'episode',
+  ) => {
+    const normalize = (value?: string | null) => value?.trim().toLowerCase().replace(/\/+$/, '');
+    const outputLeaf = story.outputDir?.split('/').filter(Boolean).pop();
+    const rawKeys = scope === 'season'
+      ? [
+          story.id,
+          story.title,
+          outputLeaf,
+          story.fullStoryUrl,
+        ]
+      : [
+          story.outputDir,
+          outputLeaf,
+          story.id,
+          story.fullStoryUrl,
+        ];
+    return Array.from(new Set(
+      rawKeys
+        .map(normalize)
+        .filter((key): key is string => Boolean(key))
+        .map((key) => `${scope}:${key}`),
+    ));
+  };
+
   const displayStories = useMemo(() => stories.map((story) => {
-    const seasonKey = `season:${(story.id || story.title || '').trim().toLowerCase()}`;
-    const episodeKey = `episode:${story.outputDir || story.id}`;
-    const override = {
-      ...(artifactOverrides[seasonKey] || {}),
-      ...(artifactOverrides[episodeKey] || {}),
-    };
+    const override = [...getArtifactOverrideKeys(story, 'season'), ...getArtifactOverrideKeys(story, 'episode')]
+      .reduce<Partial<NonNullable<StoryCatalogEntry['imageArtifacts']>>>((acc, key) => ({
+        ...acc,
+        ...(artifactOverrides[key] || {}),
+      }), {});
     if (Object.keys(override).length === 0) return story;
     return {
       ...story,
@@ -160,15 +186,16 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     patch: Partial<NonNullable<StoryCatalogEntry['imageArtifacts']>>,
     scope: 'season' | 'episode',
   ) => {
-    const key = scope === 'season'
-      ? `season:${(story.id || story.title || '').trim().toLowerCase()}`
-      : `episode:${story.outputDir || story.id}`;
+    const keys = getArtifactOverrideKeys(story, scope);
     setArtifactOverrides((prev) => ({
       ...prev,
-      [key]: {
-        ...(prev[key] || {}),
-        ...patch,
-      },
+      ...Object.fromEntries(keys.map((key) => [
+        key,
+        {
+          ...(prev[key] || {}),
+          ...patch,
+        },
+      ])),
     }));
   };
 
@@ -177,21 +204,23 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       let changed = false;
       const next = { ...prev };
       for (const story of stories) {
-        const seasonKey = `season:${(story.id || story.title || '').trim().toLowerCase()}`;
-        if (
-          next[seasonKey]?.hasSeasonReferences === false
-          && story.imageArtifacts?.hasSeasonReferences === false
-        ) {
-          delete next[seasonKey];
-          changed = true;
+        for (const seasonKey of getArtifactOverrideKeys(story, 'season')) {
+          if (
+            next[seasonKey]?.hasSeasonReferences === false
+            && story.imageArtifacts?.hasSeasonReferences === false
+          ) {
+            delete next[seasonKey];
+            changed = true;
+          }
         }
-        const episodeKey = `episode:${story.outputDir || story.id}`;
-        if (
-          next[episodeKey]?.hasEpisodeArt === false
-          && story.imageArtifacts?.hasEpisodeArt === false
-        ) {
-          delete next[episodeKey];
-          changed = true;
+        for (const episodeKey of getArtifactOverrideKeys(story, 'episode')) {
+          if (
+            next[episodeKey]?.hasEpisodeArt === false
+            && story.imageArtifacts?.hasEpisodeArt === false
+          ) {
+            delete next[episodeKey];
+            changed = true;
+          }
         }
       }
       return changed ? next : prev;

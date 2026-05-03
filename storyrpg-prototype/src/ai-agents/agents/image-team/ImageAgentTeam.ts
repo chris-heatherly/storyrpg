@@ -55,6 +55,8 @@ import {
   LightingColorValidationReport
 } from './LightingColorValidator';
 import { extractReferenceFaceCrop } from '../../utils/imageResizer';
+import { buildDefectRetryPrompt } from '../../images/imageDefectGate';
+import { runTier1Checks } from '../../images/visualValidation';
 import {
   MoodSpec,
   ColorScript,
@@ -1303,7 +1305,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
    */
   async generateIndividualViewImages(
     sheet: CharacterReferenceSheet,
-    imageService: { generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage> },
+    imageService: {
+      generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage>;
+      getMaxRetries?: () => number;
+      checkImageForDefects?: (imageData: string, mimeType: string, prompt?: ImagePrompt, identifier?: string) => Promise<{ passed: boolean; issues: string[]; reason?: string; skipped?: boolean }>;
+      saveImageQADiagnostic?: (identifier: string, diagnostic: unknown) => Promise<void>;
+    },
     onProgress?: (status: string, index: number, total: number) => void,
     userReferenceImages?: Array<{ data: string; mimeType: string }>,
     allowedViews?: Array<'front' | 'three-quarter' | 'profile'>
@@ -1364,7 +1371,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
         negativePrompt: [
           view.prompt.negativePrompt || '',
           'scenery, environment, background scene, action pose, dramatic lighting, props, text, words, labels, annotations',
-          'multiple characters, multiple views, grid, collage, triptych'
+          'multiple characters, multiple views, grid, collage, triptych',
+          'extra arms, extra hands, extra legs, duplicated limbs, duplicate body, floating, levitating, feet off ground, cropped feet'
         ].filter(Boolean).join(', '),
         aspectRatio: '3:4',
       };
@@ -1386,7 +1394,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
 
       const identifier = `ref_${sheet.characterId}_${view.viewType}`;
       this.assertReferencePromptStyleContract(viewPrompt, identifier, referenceImages.length > 0);
-      const result = await imageService.generateImage(
+      const result = await this.generateImageWithDefectRetries(
+        imageService,
         viewPrompt,
         identifier,
         { type: 'master', characterId: sheet.characterId, viewType: view.viewType },
@@ -4426,5 +4435,65 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       console.warn(`[ImageAgentTeam] Text artifact validation error for ${identifier}: ${msg} — allowing image`);
       return { passed: true };
     }
+  }
+
+  private async generateImageWithDefectRetries(
+    imageService: {
+      generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage>;
+      getMaxRetries?: () => number;
+      checkImageForDefects?: (imageData: string, mimeType: string, prompt?: ImagePrompt, identifier?: string) => Promise<{ passed: boolean; issues: string[]; reason?: string; skipped?: boolean }>;
+      saveImageQADiagnostic?: (identifier: string, diagnostic: unknown) => Promise<void>;
+    },
+    basePrompt: ImagePrompt,
+    identifier: string,
+    metadata?: any,
+    referenceImages?: any[],
+  ): Promise<GeneratedImage> {
+    const maxRetries = Math.max(1, imageService.getMaxRetries?.() || 1);
+    const attempts: any[] = [];
+    let prompt = basePrompt;
+    let lastReason = '';
+
+    for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+      const attemptIdentifier = attempt === 1 ? identifier : `${identifier}-qa-retry-${attempt}`;
+      const result = await imageService.generateImage(
+        prompt,
+        attemptIdentifier,
+        { ...(metadata || {}), regeneration: attempt > 1 ? attempt - 1 : metadata?.regeneration },
+        referenceImages,
+      );
+
+      const tier1 = runTier1Checks(result, attemptIdentifier);
+      let passed = tier1.passed;
+      let issues: string[] = tier1.passed ? [] : ['tier1'];
+      let reason = tier1.reason || 'passed';
+
+      if (passed && result.imageData && result.mimeType && imageService.checkImageForDefects) {
+        const defect = await imageService.checkImageForDefects(result.imageData, result.mimeType, prompt, attemptIdentifier);
+        passed = defect.passed || defect.skipped === true;
+        issues = defect.issues || [];
+        reason = defect.reason || (passed ? 'defect gate passed' : 'defect gate failed');
+      }
+
+      attempts.push({ attempt, identifier: attemptIdentifier, passed, issues, reason, imagePath: result.imagePath, imageUrl: result.imageUrl });
+      await imageService.saveImageQADiagnostic?.(identifier, {
+        identifier,
+        generatedAt: new Date().toISOString(),
+        maxRetries,
+        attempts,
+      });
+
+      if (passed) return result;
+
+      lastReason = reason;
+      if (attempt < maxRetries) {
+        const retryIssues = issues.length > 0 && issues[0] !== 'tier1' ? issues as any[] : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact'];
+        const retryPatch = buildDefectRetryPrompt(basePrompt, retryIssues);
+        prompt = retryPatch.prompt;
+        console.warn(`[ImageAgentTeam] Image defect detected for ${identifier}: ${issues.join(', ') || reason}; retry ${attempt + 1}/${maxRetries}`);
+      }
+    }
+
+    throw new Error(`Image defect QA failed for ${identifier}: ${lastReason || 'unknown defect'}`);
   }
 }

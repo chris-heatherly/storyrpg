@@ -3100,8 +3100,13 @@ export class ImageGenerationService {
             `Every view must be fully detailed and colored — no silhouettes, no shadows, no placeholders.`
           });
 
-          // 3. Cross-character style anchor (if a previous character ref sheet was generated)
-          if (this._referenceSheetStyleAnchor) {
+          // 3. Visual style anchor. User/preapproved/generated season style
+          // references outrank cross-character refs; character refs should not
+          // become the primary style source when a season style anchor exists.
+          if (gemSettings.includeStyleReference && this._geminiStyleReference) {
+            parts.push({ inlineData: { mimeType: this._geminiStyleReference.mimeType, data: this._geminiStyleReference.data } });
+            parts.push({ text: `Season visual style reference. Use for rendering density, line quality, lighting treatment, and palette feel. The ART STYLE text directive above remains authoritative; do not copy character identity from this image.` });
+          } else if (this._referenceSheetStyleAnchor) {
             parts.push({ inlineData: { mimeType: this._referenceSheetStyleAnchor.mimeType, data: this._referenceSheetStyleAnchor.data } });
             parts.push({ text: `Style consistency reference from a previously generated character in this story. Approximate guide for rendering density and color palette. The ART STYLE text directive above is authoritative for the actual visual style. Do NOT copy the character identity.` });
           }

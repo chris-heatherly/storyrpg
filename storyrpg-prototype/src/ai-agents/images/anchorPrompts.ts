@@ -79,10 +79,10 @@ export function buildCharacterAnchorPrompt(input: CharacterAnchorInput): BuiltAn
     role: 'character-anchor',
     prompt: {
       prompt: [
-        `single character portrait of ${input.protagonistName}, one person only, three-quarter standing pose,`,
-        'readable face and costume, cinematic story frame,',
+        `one polished in-style character illustration of ${input.protagonistName}, one person only, three-quarter standing pose,`,
+        'readable face and costume, clean full-body silhouette,',
         `the episode palette expressed through ${palette || 'the planned color script'},`,
-        'designed as a visual style bible anchor, unified single image',
+        'single unified image that demonstrates the exact rendering style for future story art',
         identityLine,
       ]
         .filter(Boolean)
@@ -92,8 +92,8 @@ export function buildCharacterAnchorPrompt(input: CharacterAnchorInput): BuiltAn
       composition:
         'One single unified image of one character, no splits, no panels, no divisions, clear silhouette, polished rendering, no text.',
       negativePrompt:
-        'text, letters, numbers, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, reference sheet, turnaround, photorealistic, photography, neutral mannequin pose',
-      visualNarrative: `${input.protagonistName} rendered as the canonical in-style anchor for the episode. One single unified image, not split or divided.`,
+        'text, letters, numbers, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, turnaround layout, photorealistic, photography, neutral mannequin pose',
+      visualNarrative: `${input.protagonistName} rendered as the canonical in-style character illustration for the episode. One single unified image, not split or divided.`,
       keyExpression: 'Readable calm but alert expression, neutral enough for reuse, never blank.',
       keyBodyLanguage:
         'Relaxed but purposeful three-quarter stance, asymmetric weight shift, clear silhouette.',

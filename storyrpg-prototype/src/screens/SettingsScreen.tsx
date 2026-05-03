@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import { TERMINAL } from '../theme';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { useSettingsStore, FontSize } from '../stores/settingsStore';
 import { useGenerationJobStore, GenerationJob } from '../stores/generationJobStore';
+import { useImageJobStore } from '../stores/imageJobStore';
 import {
   DeveloperToolsSection,
   DisplayPreferencesSection,
@@ -74,10 +75,29 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const preferVideo = useSettingsStore((state) => state.preferVideo);
   const setPreferVideo = useSettingsStore((state) => state.setPreferVideo);
   const fonts = useSettingsStore((state) => state.getFontSizes());
+  const clearImageJobs = useImageJobStore((state) => state.clearJobs);
   const [confirmDeleteStory, setConfirmDeleteStory] = useState<StoryCatalogEntry | null>(null);
   const [renamingStory, setRenamingStory] = useState<StoryCatalogEntry | null>(null);
   const [newStoryTitle, setNewStoryTitle] = useState('');
   const [confirmCancelJob, setConfirmCancelJob] = useState<GenerationJob | null>(null);
+  const [artifactOverrides, setArtifactOverrides] = useState<Record<string, Partial<NonNullable<StoryCatalogEntry['imageArtifacts']>>>>({});
+
+  const displayStories = useMemo(() => stories.map((story) => {
+    const seasonKey = `season:${(story.id || story.title || '').trim().toLowerCase()}`;
+    const episodeKey = `episode:${story.outputDir || story.id}`;
+    const override = {
+      ...(artifactOverrides[seasonKey] || {}),
+      ...(artifactOverrides[episodeKey] || {}),
+    };
+    if (Object.keys(override).length === 0) return story;
+    return {
+      ...story,
+      imageArtifacts: {
+        ...(story.imageArtifacts || {}),
+        ...override,
+      },
+    };
+  }), [artifactOverrides, stories]);
 
   // Generation job tracking
   const { jobs, isLoaded: jobsLoaded, loadJobs, cancelJob, removeJob, clearCompletedJobs } = useGenerationJobStore();
@@ -135,6 +155,49 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     setConfirmDeleteStory(story);
   };
 
+  const patchStoryArtifactState = (
+    story: StoryCatalogEntry,
+    patch: Partial<NonNullable<StoryCatalogEntry['imageArtifacts']>>,
+    scope: 'season' | 'episode',
+  ) => {
+    const key = scope === 'season'
+      ? `season:${(story.id || story.title || '').trim().toLowerCase()}`
+      : `episode:${story.outputDir || story.id}`;
+    setArtifactOverrides((prev) => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] || {}),
+        ...patch,
+      },
+    }));
+  };
+
+  useEffect(() => {
+    setArtifactOverrides((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const story of stories) {
+        const seasonKey = `season:${(story.id || story.title || '').trim().toLowerCase()}`;
+        if (
+          next[seasonKey]?.hasSeasonReferences === false
+          && story.imageArtifacts?.hasSeasonReferences === false
+        ) {
+          delete next[seasonKey];
+          changed = true;
+        }
+        const episodeKey = `episode:${story.outputDir || story.id}`;
+        if (
+          next[episodeKey]?.hasEpisodeArt === false
+          && story.imageArtifacts?.hasEpisodeArt === false
+        ) {
+          delete next[episodeKey];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [stories]);
+
   const handleStartRename = (story: StoryCatalogEntry) => {
     setRenamingStory(story);
     setNewStoryTitle(story.title);
@@ -153,6 +216,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         if (!response.ok || result?.success === false) {
           throw new Error(result?.error || 'Failed to delete season references.');
         }
+        clearImageJobs();
+        patchStoryArtifactState(story, { hasSeasonReferences: false }, 'season');
         if (onStoryArtifactsChanged) {
           await onStoryArtifactsChanged(story);
         } else {
@@ -190,6 +255,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         if (!response.ok || result?.success === false) {
           throw new Error(result?.error || 'Failed to delete episode art.');
         }
+        clearImageJobs();
+        patchStoryArtifactState(story, { hasEpisodeArt: false }, 'episode');
         if (onStoryArtifactsChanged) {
           await onStoryArtifactsChanged(story);
         } else {
@@ -307,7 +374,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
         <StoryLibrarySection
           styles={styles}
-          stories={stories}
+          stories={displayStories}
           generatedStoryIds={generatedStoryIds}
           onOpenVisualizer={onOpenVisualizer}
           onDeleteStory={onDeleteStory}

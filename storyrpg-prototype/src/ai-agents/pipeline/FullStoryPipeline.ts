@@ -155,6 +155,7 @@ import {
   buildEnvironmentAnchorPrompt,
   anchorIdentifier,
 } from '../images/anchorPrompts';
+import { chooseGeminiStyleAnchor, type StyleAnchorValidationResult } from '../images/styleAnchorGate';
 import { composeCanonicalStyleString } from '../images/artStyleProfile';
 import {
   LoraTrainingAgent,
@@ -670,6 +671,7 @@ export class FullStoryPipeline {
     environment?: string;
   } = {};
   private _uploadedStyleReferenceImages: ReferenceImage[] = [];
+  private _generatedStyleReferencesAllowed = true;
 
   /**
    * Lazily-created LoRA training plumbing. We construct it the first time a
@@ -1336,6 +1338,39 @@ export class FullStoryPipeline {
     }
   }
 
+  private applyActiveImageStyleToRuntime(): void {
+    const artStyle = this.config.artStyle;
+    this.encounterImageAgent = new EncounterImageAgent(this.config.agents.storyArchitect, artStyle);
+    this.imageAgentTeam = new ImageAgentTeam(
+      this.config.agents.imagePlanner || this.config.agents.storyArchitect,
+      artStyle
+    );
+    this.imageAgentTeam.setIdentityGateConfig({
+      identityScoreThreshold: this.config.imageGen?.identityScoreThreshold,
+      maxIdentityRegenerations: this.config.imageGen?.maxIdentityRegenerations,
+      resetIdentityBudget: true,
+    });
+    this.videoDirectorAgent = new VideoDirectorAgent(
+      this.config.agents.videoDirector || this.config.agents.storyArchitect,
+      artStyle
+    );
+
+    if (!this.config.imageGen) this.config.imageGen = {};
+    if (!this.config.imageGen.gemini) this.config.imageGen.gemini = {};
+    const canonicalArtStyle = this.config.imageGen.gemini.canonicalArtStyle || artStyle;
+    if (canonicalArtStyle) {
+      this.config.imageGen.gemini.canonicalArtStyle = canonicalArtStyle;
+      this.imageService.updateGeminiSettings({
+        ...this.imageService.getGeminiSettings(),
+        ...(this.config.imageGen.gemini || {}),
+        canonicalArtStyle,
+      });
+    }
+    if (this.config.imageGen.artStyleProfile) {
+      this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
+    }
+  }
+
   private getEpisodeScopedSceneId(brief: FullCreativeBrief, sceneId: string): string {
     const episodeNumber = typeof brief.episode?.number === 'number' ? brief.episode.number : 0;
     return `episode-${episodeNumber}-${sceneId}`;
@@ -1444,6 +1479,7 @@ export class FullStoryPipeline {
     const characterBible = loadEarlyDiagnosticSync<CharacterBible>(normalizedOutputDir, '02-character-bible.json');
     const storyPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(normalizedOutputDir, 'story.json');
     this.hydrateSeasonImageStyleFromGenerator((storyPackage as any)?.generator);
+    this.applyActiveImageStyleToRuntime();
     const story = this.loadContinuationStory(normalizedOutputDir, resumeCheckpoint);
     const savedChoiceSets = loadEarlyDiagnosticSync<ChoiceSet[]>(normalizedOutputDir, '05-choice-sets.json') || [];
     const savedEncounters = loadEarlyDiagnosticSync<EncounterStructure[]>(normalizedOutputDir, '05b-encounters.json') || [];
@@ -1464,6 +1500,37 @@ export class FullStoryPipeline {
     this.imageService.setOutputDirectory(`${normalizedOutputDir}images/`);
 
     try {
+      const firstEpisode = story.episodes?.[0];
+      if (firstEpisode) {
+        try {
+          const episodeBrief: FullCreativeBrief = {
+            ...brief,
+            episode: {
+              ...(brief.episode || {}),
+              number: firstEpisode.number,
+              title: firstEpisode.title,
+              synopsis: firstEpisode.synopsis,
+            },
+          } as FullCreativeBrief;
+          const sceneContents = (firstEpisode.scenes || []).map((scene) => this.sceneContentFromStoryScene(scene));
+          const choiceSets = savedChoiceSets.filter((choiceSet: any) => {
+            if (!choiceSet?.sceneId) return true;
+            return firstEpisode.scenes?.some((scene) => scene.id === choiceSet.sceneId);
+          });
+          const colorScript = await this.generateEpisodeColorScript(episodeBrief, sceneContents, choiceSets);
+          if (colorScript) {
+            this.collectedVisualPlanning.colorScript = colorScript;
+            await this.generateEpisodeStyleBible(episodeBrief, colorScript, characterBible, normalizedOutputDir);
+          }
+        } catch (styleErr) {
+          this.emit({
+            type: 'warning',
+            phase: 'images',
+            message: `Image-only style-bible preflight failed before character refs (continuing with text style): ${styleErr instanceof Error ? styleErr.message : String(styleErr)}`,
+          });
+        }
+      }
+
       this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals from saved story draft...' });
       await this.imageWorkerQueue.run(() =>
         this.measurePhase('master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, brief))
@@ -8558,6 +8625,7 @@ ${clothingRule}
     // Track last generated image for continuity (previous scene + style reference fallback)
     let lastGeneratedImage: { data: string; mimeType: string } | null = null;
     let styleReferenceStored = false;
+    this._generatedStyleReferencesAllowed = true;
 
     // Global image counter across all scenes for progress reporting
     let globalImageIndex = 0;
@@ -8584,7 +8652,7 @@ ${clothingRule}
     }
 
     if (colorScript) {
-      styleReferenceStored = await this.generateEpisodeStyleBible(brief, colorScript, characterBible);
+      styleReferenceStored = await this.generateEpisodeStyleBible(brief, colorScript, characterBible, outputDirectory);
     }
 
     // LoRA training hook. Runs after the character reference sheets AND the
@@ -8977,7 +9045,7 @@ ${clothingRule}
                 lastGeneratedImage = { data: prefetched.imageData, mimeType: prefetched.mimeType };
               }
 
-              if (!styleReferenceStored && prefetched.imageData && prefetched.mimeType) {
+              if (this._generatedStyleReferencesAllowed && !styleReferenceStored && prefetched.imageData && prefetched.mimeType) {
                 this.imageService.setGeminiStyleReference(prefetched.imageData, prefetched.mimeType);
                 styleReferenceStored = true;
                 this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from prefetched opener of scene ${scene.sceneId}` });
@@ -9235,7 +9303,7 @@ ${clothingRule}
                 persistBeatResume().catch(() => {});
               }
 
-              if (!styleReferenceStored && lastGeneratedImage) {
+              if (this._generatedStyleReferencesAllowed && !styleReferenceStored && lastGeneratedImage) {
                 this.imageService.setGeminiStyleReference(lastGeneratedImage.data, lastGeneratedImage.mimeType);
                 styleReferenceStored = true;
               }
@@ -9339,7 +9407,7 @@ ${clothingRule}
                 lastGeneratedImage = { data: result.imageData, mimeType: result.mimeType };
               }
 
-              if (!styleReferenceStored && result.imageData && result.mimeType) {
+              if (this._generatedStyleReferencesAllowed && !styleReferenceStored && result.imageData && result.mimeType) {
                 this.imageService.setGeminiStyleReference(result.imageData, result.mimeType);
                 styleReferenceStored = true;
                 this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from scene ${scene.sceneId}` });
@@ -9383,7 +9451,7 @@ ${clothingRule}
           this.imageService.setGeminiPreviousScene(lastGeneratedImage.data, lastGeneratedImage.mimeType);
 
           // Style reference: store the first scene's image as the style anchor
-          if (!styleReferenceStored) {
+          if (this._generatedStyleReferencesAllowed && !styleReferenceStored) {
             this.imageService.setGeminiStyleReference(lastGeneratedImage.data, lastGeneratedImage.mimeType);
             styleReferenceStored = true;
             this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from scene ${scene.sceneId}` });
@@ -13284,7 +13352,8 @@ Design the key art. Return STRICT JSON matching the schema.`;
   private async generateEpisodeStyleBible(
     brief: FullCreativeBrief,
     colorScript: ColorScript,
-    characterBible: CharacterBible
+    characterBible: CharacterBible,
+    outputDirectory?: string
   ): Promise<boolean> {
     this.emit({ type: 'agent_start', agent: 'ColorScriptAgent', message: 'Generating episode style bible...' });
 
@@ -13446,20 +13515,52 @@ Design the key art. Return STRICT JSON matching the schema.`;
         }
       }
 
-      const preferredAnchor = (anchorImage?.imageData && anchorImage?.mimeType)
+      const shouldValidateGeneratedCharacterAnchor =
+        !preapproved?.character && uploadedStyleReferences.length === 0;
+      const generatedCharacterValidation = shouldValidateGeneratedCharacterAnchor
+        ? await this.validateGeneratedStyleAnchor(
+            anchorIdentifier(titleSlug, 'character-anchor'),
+            anchorImage,
+            anchorImage.prompt || buildCharacterAnchorPrompt({ style: profileStyle, protagonistName, colorTerms }).prompt,
+            outputDirectory,
+          )
+        : undefined;
+
+      const uploadedPreferredAnchor = uploadedStyleReferences[0]?.data && uploadedStyleReferences[0]?.mimeType
+        ? {
+            prompt: { prompt: '' } as ImagePrompt,
+            imageUrl: uploadedStyleReferences[0].url,
+            imageData: uploadedStyleReferences[0].data,
+            mimeType: uploadedStyleReferences[0].mimeType,
+            metadata: { format: 'uploaded-style-reference' },
+          } as GeneratedImage
+        : undefined;
+      const preapprovedCharacterAnchor = preapproved?.character && anchorImage?.imageData && anchorImage?.mimeType
         ? anchorImage
-        : (uploadedStyleReferences[0]?.data && uploadedStyleReferences[0]?.mimeType
-          ? {
-              prompt: { prompt: '' } as ImagePrompt,
-              imageUrl: uploadedStyleReferences[0].url,
-              imageData: uploadedStyleReferences[0].data,
-              mimeType: uploadedStyleReferences[0].mimeType,
-              metadata: { format: 'uploaded-style-reference' },
-            } as GeneratedImage
-          : (stripImage?.imageData && stripImage?.mimeType ? stripImage : undefined));
+        : undefined;
+      const generatedCharacterAnchor = anchorImage?.imageData && anchorImage?.mimeType
+        ? anchorImage
+        : undefined;
+      const styleAnchorDecision = chooseGeminiStyleAnchor({
+        preapprovedCharacterAnchor,
+        uploadedStyleReference: uploadedPreferredAnchor,
+        generatedCharacterAnchor,
+        generatedCharacterValidation,
+      });
+      const preferredAnchor = styleAnchorDecision.anchor;
 
       if (!preferredAnchor?.imageData || !preferredAnchor?.mimeType) {
-        this.emit({ type: 'warning', phase: 'images', message: 'Episode style bible did not produce a reusable image anchor. Falling back to first scene anchor.' });
+        if (styleAnchorDecision.rejectedGeneratedAnchor) {
+          this._generatedStyleReferencesAllowed = false;
+          this.emit({
+            type: 'warning',
+            phase: 'images',
+            message: `Style bible character anchor rejected: ${styleAnchorDecision.rejectionReason || 'off-style'}; using raw text style only.`,
+            data: { validation: generatedCharacterValidation },
+          });
+        } else {
+          this.emit({ type: 'warning', phase: 'images', message: 'Episode style bible did not produce an approved reusable image anchor. Continuing with raw text style only.' });
+        }
         return false;
       }
 
@@ -13479,6 +13580,8 @@ Design the key art. Return STRICT JSON matching the schema.`;
             environment: !!preapproved?.environment,
           },
           uploadedStyleReferenceCount: uploadedStyleReferences.length,
+          styleAnchorSource: styleAnchorDecision.source,
+          generatedCharacterValidation,
         }
       });
       return true;
@@ -13486,6 +13589,160 @@ Design the key art. Return STRICT JSON matching the schema.`;
       const message = err instanceof Error ? err.message : String(err);
       this.emit({ type: 'warning', phase: 'images', message: `Episode style bible generation failed: ${message}` });
       return false;
+    }
+  }
+
+  private validateStyleAnchorPromptContract(
+    identifier: string,
+    prompt: ImagePrompt,
+    rawStyle?: string,
+  ): StyleAnchorValidationResult {
+    const style = prompt.style?.trim() || '';
+    const expectedStyle = rawStyle?.trim() || '';
+    if (!style) {
+      return { passed: false, reason: 'style anchor prompt is missing prompt.style', issues: ['missing prompt.style'] };
+    }
+    if (expectedStyle && style !== expectedStyle) {
+      return { passed: false, reason: 'style anchor prompt.style does not match the raw season style', issues: ['prompt.style mismatch'] };
+    }
+
+    const positiveText = [
+      prompt.prompt,
+      prompt.composition,
+      prompt.visualNarrative,
+      prompt.keyExpression,
+      prompt.keyBodyLanguage,
+    ].filter(Boolean).join('\n');
+    const negativeText = prompt.negativePrompt || '';
+    const issues: string[] = [];
+    if (/\b(cinematic story frame|style bible anchor|reference sheet|model sheet)\b/i.test(positiveText)) {
+      issues.push('positive prompt contains generic style-bible/model-sheet wording');
+    }
+    if (/\b(reference sheet|model sheet)\b/i.test(negativeText)) {
+      issues.push('negative prompt contains reference/model-sheet wording that can bias Gemini');
+    }
+    if (issues.length > 0) {
+      return { passed: false, reason: issues.join('; '), issues };
+    }
+    return { passed: true, score: 100, reason: 'prompt contract passed', issues: [] };
+  }
+
+  private async validateGeneratedStyleAnchor(
+    identifier: string,
+    anchorImage: GeneratedImage | undefined,
+    prompt: ImagePrompt,
+    outputDirectory?: string,
+  ): Promise<StyleAnchorValidationResult> {
+    const promptContract = this.validateStyleAnchorPromptContract(identifier, prompt, this.config.artStyle);
+    if (!promptContract.passed) {
+      await this.saveStyleAnchorValidationDiagnostic(outputDirectory, identifier, promptContract);
+      return promptContract;
+    }
+    if (!anchorImage?.imageData || !anchorImage?.mimeType) {
+      const result: StyleAnchorValidationResult = {
+        passed: false,
+        reason: 'generated style anchor has no image data for vision validation',
+        issues: ['missing imageData or mimeType'],
+      };
+      await this.saveStyleAnchorValidationDiagnostic(outputDirectory, identifier, result);
+      return result;
+    }
+
+    try {
+      const { BaseAgent } = await import('../agents/BaseAgent');
+      class StyleAnchorVisionJudge extends BaseAgent {
+        constructor(config: any) { super('Style Anchor Vision Judge', config); }
+        protected getAgentSpecificPrompt(): string { return ''; }
+        async execute(_input: any): Promise<any> { throw new Error('Use callLLM directly'); }
+      }
+
+      const judge = new StyleAnchorVisionJudge({
+        ...this.config.agents.storyArchitect,
+        maxTokens: 768,
+        temperature: 0.1,
+      });
+      const rawStyle = this.config.artStyle || prompt.style || '';
+      const response = await (judge as any).callLLM([
+        {
+          role: 'user' as const,
+          content: [
+            {
+              type: 'text' as const,
+              text: `Review this generated style anchor image against the authoritative raw season art style.
+
+AUTHORITATIVE RAW STYLE:
+${rawStyle}
+
+PROMPT USED:
+${prompt.prompt || ''}
+
+Judge only visual style fidelity: rendering style, lighting treatment, linework, palette, finish, and whether forbidden negatives are present. Do not judge story content.
+
+Return ONLY valid JSON:
+{
+  "passed": boolean,
+  "score": number,
+  "reason": "one concise sentence",
+  "issues": ["short issue", "..."]
+}
+
+Pass only if score is 80 or higher and the image clearly follows the authoritative raw style. Fail if it looks generic cinematic, photorealistic, gritty, messy, model-sheet-like, off-palette, or visually inconsistent with the raw style.`,
+            },
+            {
+              type: 'image' as const,
+              source: {
+                type: 'base64' as const,
+                media_type: anchorImage.mimeType,
+                data: anchorImage.imageData,
+              },
+            },
+          ],
+        },
+      ], 1);
+
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error('vision judge returned no JSON');
+      }
+      const parsed = JSON.parse(jsonMatch[0]);
+      const score = typeof parsed.score === 'number' ? parsed.score : 0;
+      const result: StyleAnchorValidationResult = {
+        passed: parsed.passed === true && score >= 80,
+        score,
+        reason: typeof parsed.reason === 'string' ? parsed.reason : 'style anchor vision review completed',
+        issues: Array.isArray(parsed.issues) ? parsed.issues.map(String) : [],
+      };
+      await this.saveStyleAnchorValidationDiagnostic(outputDirectory, identifier, result);
+      return result;
+    } catch (error) {
+      const result: StyleAnchorValidationResult = {
+        passed: false,
+        reason: `style anchor vision validation failed: ${error instanceof Error ? error.message : String(error)}`,
+        issues: ['vision validation error'],
+      };
+      await this.saveStyleAnchorValidationDiagnostic(outputDirectory, identifier, result);
+      return result;
+    }
+  }
+
+  private async saveStyleAnchorValidationDiagnostic(
+    outputDirectory: string | undefined,
+    identifier: string,
+    result: StyleAnchorValidationResult,
+  ): Promise<void> {
+    if (!outputDirectory) return;
+    try {
+      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${identifier}.validation.json`, {
+        identifier,
+        generatedAt: new Date().toISOString(),
+        ...result,
+      });
+    } catch (error) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `Failed to save style anchor validation diagnostic for ${identifier}: ${error instanceof Error ? error.message : String(error)}`,
+      });
     }
   }
 

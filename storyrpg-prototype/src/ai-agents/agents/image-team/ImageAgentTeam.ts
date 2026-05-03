@@ -513,19 +513,26 @@ export class ImageAgentTeam extends BaseAgent {
   }
 
   private lockPromptToSeasonStyle(prompt: ImagePrompt): ImagePrompt {
-    const style = prompt.style || this.artStyle;
+    const style = this.artStyle || prompt.style;
     if (!style?.trim()) return prompt;
+    const neutralReferenceWording = 'clean full-body character identity reference';
+    const cleanReferenceStylePhrase = (value?: string) =>
+      value?.replace(/\breference sheet style\b/gi, neutralReferenceWording);
     const text = prompt.prompt || '';
     const styleLead = `Art style: ${style}.`;
+    const cleanedText = text
+      .replace(/^Art style:\s*[^.]+\.?\s*/i, '')
+      .replace(/\breference sheet style\b/gi, neutralReferenceWording)
+      .trim();
     const promptText = text.includes(style)
-      ? text
-      : `${styleLead} ${text.replace(/^Art style:\s*[^.]+\.?\s*/i, '').trim()}`;
+      ? cleanReferenceStylePhrase(text)
+      : `${styleLead} ${cleanedText}`;
     return {
       ...prompt,
       prompt: promptText,
       style,
       negativePrompt: [
-        prompt.negativePrompt,
+        cleanReferenceStylePhrase(prompt.negativePrompt),
         'generic cinematic story art',
         'generic anime style',
         'photorealism',
@@ -533,6 +540,28 @@ export class ImageAgentTeam extends BaseAgent {
         'messy detail',
       ].filter(Boolean).join(', '),
     };
+  }
+
+  private assertReferencePromptStyleContract(
+    prompt: ImagePrompt,
+    identifier: string,
+    hasUserCharacterRefs: boolean,
+  ): void {
+    const promptText = [prompt.prompt, prompt.style, prompt.negativePrompt].filter(Boolean).join('\n');
+    if (!hasUserCharacterRefs) {
+      const style = this.artStyle?.trim() || prompt.style?.trim();
+      if (!style) {
+        throw new Error(`Reference prompt preflight failed for ${identifier}: missing season style for no-user-ref character reference`);
+      }
+      if (this.artStyle?.trim() && prompt.style !== this.artStyle.trim()) {
+        throw new Error(`Reference prompt preflight failed for ${identifier}: missing full season style in prompt.style`);
+      }
+      if (/\breference sheet style\b/i.test(promptText)) {
+        throw new Error(`Reference prompt preflight failed for ${identifier}: generic "reference sheet style" phrase is not allowed`);
+      }
+    } else if (!promptText.includes('Art style:') && !prompt.style) {
+      throw new Error(`Reference prompt preflight failed for ${identifier}: user-ref prompt is missing style context`);
+    }
   }
 
   /**
@@ -1326,11 +1355,11 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
         ? ` Color palette: ${colorPalette}.`
         : '';
 
-      const viewPrompt: ImagePrompt = {
+      const viewPromptBase: ImagePrompt = {
         ...view.prompt,
         prompt: `Single character reference image: ${view.prompt.prompt} ` +
           `Plain white background. Even studio lighting. Full body, head to toe. ` +
-          `NO text, NO labels, NO annotations. Character model sheet view.` +
+          `NO text, NO labels, NO annotations. Clean full-body character identity reference.` +
           identityConstraint + paletteConstraint,
         negativePrompt: [
           view.prompt.negativePrompt || '',
@@ -1339,6 +1368,7 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
         ].filter(Boolean).join(', '),
         aspectRatio: '3:4',
       };
+      const viewPrompt = this.lockPromptToSeasonStyle(viewPromptBase);
 
       const viewRefs = [...referenceImages];
       for (const prev of completedViews) {
@@ -1355,6 +1385,7 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       }
 
       const identifier = `ref_${sheet.characterId}_${view.viewType}`;
+      this.assertReferencePromptStyleContract(viewPrompt, identifier, referenceImages.length > 0);
       const result = await imageService.generateImage(
         viewPrompt,
         identifier,

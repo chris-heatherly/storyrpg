@@ -22,8 +22,11 @@ describe('buildCharacterAnchorPrompt', () => {
     expect(built.prompt.prompt).toContain('Elena');
     expect(built.prompt.prompt).toContain('warm coral, gold, deep teal');
     expect(built.prompt.prompt).toContain('Identity anchors');
+    expect(built.prompt.prompt).toContain('one polished in-style character illustration');
+    expect(built.prompt.prompt).not.toMatch(/cinematic story frame|style bible anchor|reference sheet/i);
     expect(built.prompt.negativePrompt).toContain('text');
     expect(built.prompt.negativePrompt).toContain('multi-panel');
+    expect(built.prompt.negativePrompt).not.toMatch(/reference sheet/i);
     expect(built.prompt.aspectRatio).toBe('3:4');
   });
 

@@ -119,6 +119,23 @@ import { countVisibleImageJobs } from '../utils/imageJobDisplay';
 // Import PipelineEvent from canonical source
 import type { PipelineEvent } from '../ai-agents/pipeline';
 
+const isSeasonEpisodeGenerated = (episode?: {
+  status?: string;
+  generatedEpisodeId?: string;
+  generatedStoryId?: string;
+  generatedJobId?: string;
+  outputDir?: string;
+}) => Boolean(
+  episode
+  && (
+    episode.status === 'completed'
+    || episode.generatedEpisodeId
+    || episode.generatedStoryId
+    || episode.generatedJobId
+    || episode.outputDir
+  )
+);
+
 const USE_SERVER_WORKER =
   Platform.OS === 'web' && process.env.EXPO_PUBLIC_USE_SERVER_WORKER !== 'false';
 
@@ -148,6 +165,19 @@ type UploadedCharacterReference = {
   data: string;
 };
 
+type StyleReferenceStrength = 'subtle' | 'balanced' | 'strong';
+
+type StyleReferenceUpload = {
+  id: string;
+  name: string;
+  uri: string;
+  mimeType: string;
+  data: string;
+  imagePath?: string;
+};
+
+const MAX_STYLE_REFERENCE_UPLOADS = 4;
+
 const inferImageMimeType = (name?: string, mimeType?: string): string => {
   if (mimeType && mimeType.startsWith('image/')) return mimeType;
   const normalized = (name || '').toLowerCase();
@@ -155,6 +185,15 @@ const inferImageMimeType = (name?: string, mimeType?: string): string => {
   if (normalized.endsWith('.webp')) return 'image/webp';
   if (normalized.endsWith('.gif')) return 'image/gif';
   return 'image/png';
+};
+
+const buildStyleReferenceStoryId = (title: string): string => {
+  const storyIdSeed = (title || 'untitled')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return storyIdSeed || 'untitled';
 };
 
 const getEndingConfidenceLabel = (ending: StoryEndingTarget): string => {
@@ -431,6 +470,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [showStoryPanel, setShowStoryPanel] = useState(true);
   const [assetGenerationMode, setAssetGenerationMode] = useState<'story-only' | 'story-and-images'>('story-only');
   const [showImagesPanel, setShowImagesPanel] = useState(false);
+  const [styleReferenceUploads, setStyleReferenceUploads] = useState<StyleReferenceUpload[]>([]);
+  const [styleReferenceStrength, setStyleReferenceStrength] = useState<StyleReferenceStrength>('balanced');
   const [showNarrationPanel, setShowNarrationPanel] = useState(false);
   const [showVideoPanel, setShowVideoPanel] = useState(false);
   const [confirmCancelGeneration, setConfirmCancelGeneration] = useState(false);
@@ -471,7 +512,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const activeEndingMode: EndingMode = sourceAnalysis?.resolvedEndingMode || sourceAnalysis?.detectedEndingMode || 'single';
   const activeEndings = sourceAnalysis?.resolvedEndings || [];
   const nextSeasonEpisode = seasonPlan?.episodes
-    ?.filter((episode) => episode.status !== 'completed')
+    ?.filter((episode) => !isSeasonEpisodeGenerated(episode))
     .sort((a, b) => a.episodeNumber - b.episodeNumber)[0] || null;
 
   const fonts = useSettingsStore((state) => state.getFontSizes());
@@ -578,7 +619,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const getLatestCompletedSeasonEpisode = useCallback(() => {
     if (!seasonPlan) return null;
     return [...seasonPlan.episodes]
-      .filter((episode) => episode.status === 'completed' && (episode.generatedJobId || episode.outputDir))
+      .filter((episode) => isSeasonEpisodeGenerated(episode) && (episode.generatedJobId || episode.outputDir))
       .sort((a, b) => (b.episodeNumber || 0) - (a.episodeNumber || 0))[0] || null;
   }, [seasonPlan]);
 
@@ -695,7 +736,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         await seasonPlanStore.setActivePlan(initialSeasonPlanId);
         if (cancelled) return;
         const nextEpisode = saved.plan.episodes
-          .filter((episode) => episode.status !== 'completed')
+          .filter((episode) => !isSeasonEpisodeGenerated(episode))
           .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
         setSeasonPlan(saved.plan);
         setSourceAnalysis(saved.sourceAnalysis);
@@ -728,10 +769,10 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         if (cancelled) return;
         const active = seasonPlanStore.getActivePlan();
         if (!active) return;
-        const completedCount = active.plan.progress?.completedCount || 0;
+        const completedCount = active.plan.episodes.filter((episode) => isSeasonEpisodeGenerated(episode)).length;
         if (completedCount <= 0 || completedCount >= active.plan.totalEpisodes) return;
         const nextEpisode = active.plan.episodes
-          .filter((episode) => episode.status !== 'completed')
+          .filter((episode) => !isSeasonEpisodeGenerated(episode))
           .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
         setSeasonPlan(active.plan);
         setSourceAnalysis(active.sourceAnalysis);
@@ -1036,6 +1077,96 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       }
       return { ...prev, [characterId]: remaining };
     });
+  };
+
+  const pickStyleReferences = async () => {
+    const remainingSlots = MAX_STYLE_REFERENCE_UPLOADS - styleReferenceUploads.length;
+    if (remainingSlots <= 0) {
+      Alert.alert('Style References Full', `Remove a style reference before adding another. You can upload up to ${MAX_STYLE_REFERENCE_UPLOADS}.`);
+      return;
+    }
+
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['image/*'],
+        copyToCacheDirectory: true,
+        multiple: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+
+      const assets = result.assets.slice(0, remainingSlots);
+      if (result.assets.length > remainingSlots) {
+        Alert.alert('Upload Limit', `Only the first ${remainingSlots} image(s) were added. Style references are limited to ${MAX_STYLE_REFERENCE_UPLOADS}.`);
+      }
+
+      const newUploads: StyleReferenceUpload[] = [];
+      for (const asset of assets) {
+        if (!asset?.uri) continue;
+
+        let data = '';
+        let mimeType = inferImageMimeType(asset.name, asset.mimeType);
+
+        if (Platform.OS === 'web') {
+          const response = await fetch(asset.uri);
+          const blob = await response.blob();
+          mimeType = blob.type || mimeType;
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('Failed to read image file.'));
+            reader.readAsDataURL(blob);
+          });
+          data = dataUrl.replace(/^data:[^;]+;base64,/, '');
+        } else {
+          data = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' as any });
+        }
+
+        if (!data) continue;
+
+        const id = `style-ref-${Date.now()}-${newUploads.length}`;
+        let imagePath: string | undefined;
+        try {
+          const saveRes = await fetch(`${PROXY_CONFIG.getProxyUrl()}/style-reference/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              storyId: buildStyleReferenceStoryId(customStoryTitle || 'untitled'),
+              id,
+              data,
+              mimeType,
+            }),
+          });
+          if (saveRes.ok) {
+            const payload = await saveRes.json();
+            imagePath = typeof payload.imagePath === 'string' ? payload.imagePath : undefined;
+          }
+        } catch (saveErr) {
+          console.warn('[GeneratorScreen] Could not persist style reference; keeping inline fallback:', saveErr);
+        }
+
+        newUploads.push({
+          id,
+          name: asset.name || `Style reference ${styleReferenceUploads.length + newUploads.length + 1}`,
+          uri: asset.uri,
+          mimeType,
+          data,
+          imagePath,
+        });
+      }
+
+      if (newUploads.length === 0) {
+        Alert.alert('Upload Failed', 'Could not read the selected image(s). Please try other files.');
+        return;
+      }
+
+      setStyleReferenceUploads((prev) => [...prev, ...newUploads].slice(0, MAX_STYLE_REFERENCE_UPLOADS));
+    } catch (err) {
+      Alert.alert('Upload Failed', err instanceof Error ? err.message : 'Failed to load style reference image(s).');
+    }
+  };
+
+  const removeStyleReference = (uploadId: string) => {
+    setStyleReferenceUploads((prev) => prev.filter((upload) => upload.id !== uploadId));
   };
 
   const updateCharacterReferenceMode = (characterId: string, mode: CharacterReferenceMode) => {
@@ -1361,12 +1492,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       throw new Error('Concept image returned no data');
     },
     saveAnchorFn: async (role: AnchorRole, data: string, mimeType: string) => {
-      const storyIdSeed = (customStoryTitle || 'untitled')
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .slice(0, 60);
-      const storyId = storyIdSeed || 'untitled';
+      const storyId = buildStyleReferenceStoryId(customStoryTitle || 'untitled');
       const res = await fetch(`${PROXY_CONFIG.getProxyUrl()}/style-anchor/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1383,10 +1509,26 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
 
   const createPipelineConfig = (extraOverrides?: PipelineConfigExtras): PipelineConfig => {
     const handoff = styleSetup.handoff;
+    const uploadedStyleReferences = generationSettings.generateImages
+      ? styleReferenceUploads.map((upload) => {
+          if (USE_SERVER_WORKER && upload.imagePath) {
+            return { imagePath: upload.imagePath };
+          }
+          return {
+            data: upload.data,
+            mimeType: upload.mimeType,
+            imagePath: upload.imagePath,
+          };
+        })
+      : [];
     const extras: PipelineConfigExtras = {
       artStyleProfileOverride: extraOverrides?.artStyleProfileOverride || handoff.profile,
       preapprovedStyleAnchors:
         extraOverrides?.preapprovedStyleAnchors || handoff.preapprovedStyleAnchors,
+      uploadedStyleReferences:
+        extraOverrides?.uploadedStyleReferences || uploadedStyleReferences,
+      styleReferenceStrength:
+        extraOverrides?.styleReferenceStrength || styleReferenceStrength,
     };
     const config = buildPipelineConfig(buildPipelineConfigInput(), extras);
     config.generation = {
@@ -2170,7 +2312,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     }
 
     const nextEpisode = plan.episodes
-      .filter((episode) => episode.status !== 'completed')
+      .filter((episode) => !isSeasonEpisodeGenerated(episode))
       .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
 
     if (!nextEpisode) {
@@ -2440,7 +2582,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const imageSummaryLines = [
     `${generationSettings.generateImages ? 'Images enabled' : 'Images disabled'} • ${imageProviderLabel} renderer`,
     `Prompting: ${imageLlmProvider.toUpperCase()} • ${imageLlmModel}`,
-    `Style: ${artStyle.trim() || '⚠ empty — will fall back to default (expressive illustrated)'} • refs ${generationSettings.generateCharacterRefs ? 'on' : 'off'}`,
+    `Style: ${artStyle.trim() || '⚠ empty — will fall back to default (expressive illustrated)'} • refs ${generationSettings.generateCharacterRefs ? 'on' : 'off'} • style refs ${styleReferenceUploads.length}`,
   ];
   const videoSummaryLines = [
     `${videoSettings.enabled ? 'Video enabled' : 'Video disabled'} • ${videoLlmProvider.toUpperCase()} • ${videoLlmModel}`,
@@ -2810,6 +2952,79 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     </Text>
                   ) : (
                     <Text style={[styles.configHint, { marginTop: 4 }]}>Sets the visual aesthetic for all generated art. This exact string is used as the style directive in every image prompt.</Text>
+                  )}
+                </View>
+
+                <View style={styles.configItem}>
+                  <View style={styles.styleReferenceHeader}>
+                    <View style={styles.styleReferenceTitleBlock}>
+                      <Text style={styles.configLabel}>STYLE REFERENCES</Text>
+                      <Text style={styles.configHint}>
+                        Upload up to {MAX_STYLE_REFERENCE_UPLOADS} images to seed the style bible and lock downstream image consistency.
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.referenceUploadButton,
+                        (!generationSettings.generateImages || styleReferenceUploads.length >= MAX_STYLE_REFERENCE_UPLOADS) && styles.referenceUploadButtonDisabled,
+                      ]}
+                      onPress={pickStyleReferences}
+                      disabled={!generationSettings.generateImages || styleReferenceUploads.length >= MAX_STYLE_REFERENCE_UPLOADS}
+                    >
+                      <ImageIcon size={14} color={generationSettings.generateImages ? TERMINAL.colors.primary : TERMINAL.colors.muted} />
+                      <Text style={[
+                        styles.referenceUploadButtonText,
+                        !generationSettings.generateImages && styles.referenceUploadButtonTextDisabled,
+                      ]}>
+                        {styleReferenceUploads.length > 0 ? 'ADD STYLE REF' : 'UPLOAD STYLE REF'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {!generationSettings.generateImages ? (
+                    <Text style={styles.referenceModeHint}>Enable images to pass style references into generation.</Text>
+                  ) : (
+                    <>
+                      <View style={styles.referenceModeSection}>
+                        <Text style={styles.referenceModeLabel}>REFERENCE STRENGTH</Text>
+                        <View style={styles.referenceModeControl}>
+                          {(['subtle', 'balanced', 'strong'] as StyleReferenceStrength[]).map((strength) => (
+                            <TouchableOpacity
+                              key={strength}
+                              style={[styles.referenceModeOption, styleReferenceStrength === strength && styles.referenceModeOptionActive]}
+                              onPress={() => setStyleReferenceStrength(strength)}
+                            >
+                              <Text style={[styles.referenceModeOptionText, styleReferenceStrength === strength && styles.referenceModeOptionTextActive]}>
+                                {strength.toUpperCase()}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </View>
+
+                      {styleReferenceUploads.length > 0 ? (
+                        <View style={styles.referencePreviewGrid}>
+                          {styleReferenceUploads.map((upload) => (
+                            <View key={upload.id} style={styles.referencePreviewCard}>
+                              <Image source={{ uri: upload.uri }} style={styles.referencePreviewImage} />
+                              <TouchableOpacity
+                                style={styles.referencePreviewRemove}
+                                onPress={() => removeStyleReference(upload.id)}
+                              >
+                                <Trash2 size={12} color="white" />
+                              </TouchableOpacity>
+                              <Text style={styles.referencePreviewName} numberOfLines={1}>
+                                {upload.name}
+                              </Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : (
+                        <Text style={styles.characterReferenceEmpty}>
+                          No uploaded style reference yet. The pipeline will build the style bible from the art style text.
+                        </Text>
+                      )}
+                    </>
                   )}
                 </View>
 
@@ -4684,8 +4899,12 @@ const styles = StyleSheet.create({
   characterReferenceName: { fontSize: 11, fontWeight: '900', color: 'white', letterSpacing: 0.6 },
   characterReferenceRole: { fontSize: 8, fontWeight: '800', color: TERMINAL.colors.muted, letterSpacing: 1 },
   characterReferenceDescription: { fontSize: 10, color: TERMINAL.colors.muted, lineHeight: 16, fontWeight: '600' },
+  styleReferenceHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 12 },
+  styleReferenceTitleBlock: { flex: 1, gap: 4 },
   referenceUploadButton: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, backgroundColor: 'rgba(59, 130, 246, 0.08)', borderWidth: 1, borderColor: 'rgba(59, 130, 246, 0.2)' },
+  referenceUploadButtonDisabled: { opacity: 0.55, backgroundColor: 'rgba(255,255,255,0.03)', borderColor: 'rgba(255,255,255,0.08)' },
   referenceUploadButtonText: { fontSize: 9, fontWeight: '900', color: TERMINAL.colors.primary, letterSpacing: 0.8 },
+  referenceUploadButtonTextDisabled: { color: TERMINAL.colors.muted },
   referenceModeSection: { gap: 8 },
   referenceModeLabel: { fontSize: 8, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   referenceModeControl: { flexDirection: 'row', gap: 8 },

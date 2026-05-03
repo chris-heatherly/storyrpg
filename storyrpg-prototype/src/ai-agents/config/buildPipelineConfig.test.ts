@@ -488,6 +488,11 @@ describe('buildPipelineConfig', () => {
           character: { imagePath: '/tmp/style-bible/character.png' },
           arcStrip: { data: 'AAA', mimeType: 'image/png' },
         },
+        uploadedStyleReferences: [
+          { imagePath: '/tmp/style-references/style-ref-1.png' },
+          { data: 'BBB', mimeType: 'image/webp' },
+        ],
+        styleReferenceStrength: 'strong',
       },
     );
 
@@ -497,5 +502,9 @@ describe('buildPipelineConfig', () => {
     expect(config.imageGen?.preapprovedStyleAnchors?.character?.imagePath).toBe('/tmp/style-bible/character.png');
     expect(config.imageGen?.preapprovedStyleAnchors?.arcStrip?.data).toBe('AAA');
     expect(config.imageGen?.preapprovedStyleAnchors?.environment).toBeUndefined();
+    expect(config.imageGen?.uploadedStyleReferences).toHaveLength(2);
+    expect(config.imageGen?.uploadedStyleReferences?.[0].imagePath).toBe('/tmp/style-references/style-ref-1.png');
+    expect(config.imageGen?.uploadedStyleReferences?.[1].data).toBe('BBB');
+    expect(config.imageGen?.styleReferenceStrength).toBe('strong');
   });
 });

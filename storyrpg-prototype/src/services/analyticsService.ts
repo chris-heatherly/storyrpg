@@ -4,6 +4,7 @@ import { isWebRuntime } from '../utils/runtimeEnv';
 
 type AnalyticsValue = string | number | boolean | null | undefined;
 type AnalyticsProperties = Record<string, AnalyticsValue | AnalyticsValue[]>;
+type SafeAnalyticsProperties = Record<string, string | number | boolean | null | Array<string | number | boolean | null>>;
 
 type AttributionProperties = {
   utm_source?: string;
@@ -45,12 +46,15 @@ const UTM_KEYS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'ut
 let posthogClient: typeof import('posthog-js').default | null = null;
 let initPromise: Promise<void> | null = null;
 let anonymousPlayerId: string | null = null;
+let registeredProperties: SafeAnalyticsProperties = {};
 const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 function analyticsEnabled(): boolean {
   const enabled = process.env.EXPO_PUBLIC_ANALYTICS_ENABLED;
   if (enabled && enabled.toLowerCase() === 'false') return false;
-  return Boolean(process.env.EXPO_PUBLIC_POSTHOG_KEY) && isWebRuntime() && Platform.OS === 'web';
+  const key = process.env.EXPO_PUBLIC_POSTHOG_KEY;
+  const hasRealKey = Boolean(key) && key !== 'phc_your_project_key' && key !== 'phc_your_project_token_here';
+  return hasRealKey && isWebRuntime() && Platform.OS === 'web';
 }
 
 function analyticsDebug(): boolean {
@@ -72,8 +76,8 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_PARTS.some((part) => lower.includes(part));
 }
 
-function sanitizeProperties(properties?: AnalyticsProperties): Record<string, string | number | boolean | null | Array<string | number | boolean | null>> {
-  const sanitized: Record<string, string | number | boolean | null | Array<string | number | boolean | null>> = {};
+function sanitizeProperties(properties?: AnalyticsProperties): SafeAnalyticsProperties {
+  const sanitized: SafeAnalyticsProperties = {};
   for (const [key, value] of Object.entries(properties || {})) {
     if (isSensitiveKey(key)) continue;
 
@@ -162,6 +166,40 @@ async function getAttributionSuperProperties(): Promise<Record<string, string | 
   return props;
 }
 
+function mergeRegisteredProperties(properties: SafeAnalyticsProperties): void {
+  registeredProperties = {
+    ...registeredProperties,
+    ...properties,
+  };
+}
+
+async function captureViaPostHogApi(eventName: string, properties: SafeAnalyticsProperties): Promise<void> {
+  const key = process.env.EXPO_PUBLIC_POSTHOG_KEY;
+  if (!key) return;
+
+  try {
+    const host = (process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com').replace(/\/$/, '');
+    const distinctId = await getAnonymousPlayerId();
+    const payload = {
+      api_key: key,
+      event: eventName,
+      distinct_id: distinctId,
+      properties: {
+        ...registeredProperties,
+        ...properties,
+      },
+    };
+
+    await fetch(`${host}/capture/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // Analytics must remain best-effort and never interrupt gameplay.
+  }
+}
+
 export async function initAnalytics(): Promise<void> {
   if (!analyticsEnabled()) return;
   if (initPromise) return initPromise;
@@ -174,19 +212,23 @@ export async function initAnalytics(): Promise<void> {
       autocapture: false,
       capture_pageview: false,
       disable_session_recording: true,
+      request_batching: false,
       loaded: (client) => {
         if (analyticsDebug()) client.debug();
       },
     });
 
     const id = await getAnonymousPlayerId();
+    const attributionSuperProperties = await getAttributionSuperProperties();
     posthogClient.identify(id);
-    posthogClient.register({
+    const baseProperties = sanitizeProperties({
       analytics_player_id: id,
       analytics_session_id: sessionId,
       platform: Platform.OS,
-      ...(await getAttributionSuperProperties()),
+      ...attributionSuperProperties,
     });
+    mergeRegisteredProperties(baseProperties);
+    posthogClient.register(baseProperties);
   })();
 
   return initPromise;
@@ -224,6 +266,7 @@ export async function captureAttributionFromUrl(): Promise<void> {
 
   await initAnalytics();
   const superProperties = await getAttributionSuperProperties();
+  mergeRegisteredProperties(superProperties);
   posthogClient?.register(superProperties);
   posthogClient?.people.set(superProperties);
   track('campaign attributed', {
@@ -235,6 +278,7 @@ export async function captureAttributionFromUrl(): Promise<void> {
 export function setSuperProperties(properties: AnalyticsProperties): void {
   if (!analyticsEnabled()) return;
   const safe = sanitizeProperties(properties);
+  mergeRegisteredProperties(safe);
   void initAnalytics().then(() => {
     posthogClient?.register(safe);
   });
@@ -248,7 +292,7 @@ export function track(eventName: string, properties?: AnalyticsProperties): void
     ...properties,
   });
   void initAnalytics().then(() => {
-    posthogClient?.capture(eventName, safe);
+    void captureViaPostHogApi(eventName, safe);
   });
 }
 
@@ -268,5 +312,5 @@ export function incrementPersonProperty(property: string, amount = 1): void {
     await writeJson(PERSON_COUNTERS_KEY, nextCounters);
     await initAnalytics();
     posthogClient?.people.set({ [property]: nextValue });
-  });
+  })();
 }

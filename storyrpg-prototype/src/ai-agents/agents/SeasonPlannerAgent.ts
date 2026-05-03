@@ -1038,7 +1038,7 @@ CRITICAL RULES:
 
     for (const episode of plan.episodes) {
       if (selectedEpisodes.includes(episode.episodeNumber)) continue;
-      if (episode.status === 'completed') continue;
+      if (this.isEpisodeGenerated(episode)) continue;
 
       // Check if this episode is needed for selected episodes
       const isNeededBySelected = selectedEpisodes.some(selNum => {
@@ -1118,8 +1118,13 @@ CRITICAL RULES:
       const ep = plan.episodes.find(e => e.episodeNumber === epNum);
       if (!ep) continue;
 
+      if (this.isEpisodeGenerated(ep)) {
+        warnings.push(`Episode ${epNum} is already generated. Keeping it selected will regenerate that episode.`);
+      }
+
       for (const dep of ep.dependsOn) {
-        if (!sorted.includes(dep) && plan.episodes.find(e => e.episodeNumber === dep)?.status !== 'completed') {
+        const depEp = plan.episodes.find(e => e.episodeNumber === dep);
+        if (!sorted.includes(dep) && !this.isEpisodeGenerated(depEp)) {
           warnings.push(`Episode ${epNum} depends on Episode ${dep}, which is not selected or completed.`);
         }
       }
@@ -1133,10 +1138,11 @@ CRITICAL RULES:
       if (arcEpisodes.length > 0 && arcEpisodes.length < (arc.episodeRange.end - arc.episodeRange.start + 1)) {
         const missing = [];
         for (let i = arc.episodeRange.start; i <= arc.episodeRange.end; i++) {
-          if (!sorted.includes(i)) missing.push(i);
+          const episode = plan.episodes.find(e => e.episodeNumber === i);
+          if (!sorted.includes(i) && !this.isEpisodeGenerated(episode)) missing.push(i);
         }
         if (missing.length > 0) {
-          warnings.push(`Arc "${arc.name}" has gaps: episodes ${missing.join(', ')} are not selected.`);
+          warnings.push(`Arc "${arc.name}" has gaps: episodes ${missing.join(', ')} are not selected or already generated.`);
         }
       }
     }
@@ -1159,7 +1165,7 @@ CRITICAL RULES:
     const ordered: number[] = [];
     const remaining = new Set(selectedEpisodes);
     const completed = new Set(
-      plan.episodes.filter(e => e.status === 'completed').map(e => e.episodeNumber)
+      plan.episodes.filter(e => this.isEpisodeGenerated(e)).map(e => e.episodeNumber)
     );
 
     while (remaining.size > 0) {
@@ -1184,5 +1190,18 @@ CRITICAL RULES:
     }
 
     return ordered;
+  }
+
+  private isEpisodeGenerated(episode: Pick<SeasonEpisode, 'status' | 'generatedEpisodeId' | 'generatedStoryId' | 'generatedJobId' | 'outputDir'> | undefined): boolean {
+    return Boolean(
+      episode
+      && (
+        episode.status === 'completed'
+        || episode.generatedEpisodeId
+        || episode.generatedStoryId
+        || episode.generatedJobId
+        || episode.outputDir
+      )
+    );
   }
 }

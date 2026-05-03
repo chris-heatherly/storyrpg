@@ -38,6 +38,19 @@ const state: SeasonPlanStoreState = {
   isLoaded: false,
 };
 
+function isEpisodeGenerated(episode?: Partial<SeasonEpisode>): boolean {
+  return Boolean(
+    episode
+    && (
+      episode.status === 'completed'
+      || episode.generatedEpisodeId
+      || episode.generatedStoryId
+      || episode.generatedJobId
+      || episode.outputDir
+    )
+  );
+}
+
 // Listeners for state changes
 type Listener = () => void;
 const listeners: Set<Listener> = new Set();
@@ -287,19 +300,22 @@ export const seasonPlanStore = {
    * Get all season plans as summaries
    */
   getPlanSummaries(): SeasonPlanSummary[] {
-    return Array.from(state.plans.values()).map(({ plan }) => ({
-      id: plan.id,
-      sourceTitle: plan.sourceTitle,
-      seasonTitle: plan.seasonTitle,
-      totalEpisodes: plan.totalEpisodes,
-      completedEpisodes: plan.progress.completedCount,
-      lastUpdated: plan.updatedAt,
-      status: plan.progress.completedCount === 0 
-        ? 'new' 
-        : plan.progress.completedCount === plan.totalEpisodes 
-          ? 'completed' 
-          : 'in_progress',
-    }));
+    return Array.from(state.plans.values()).map(({ plan }) => {
+      const completedEpisodes = plan.episodes.filter(isEpisodeGenerated).length;
+      return {
+        id: plan.id,
+        sourceTitle: plan.sourceTitle,
+        seasonTitle: plan.seasonTitle,
+        totalEpisodes: plan.totalEpisodes,
+        completedEpisodes,
+        lastUpdated: plan.updatedAt,
+        status: completedEpisodes === 0
+          ? 'new'
+          : completedEpisodes === plan.totalEpisodes
+            ? 'completed'
+            : 'in_progress',
+      };
+    });
   },
 
   /**
@@ -409,7 +425,7 @@ export const seasonPlanStore = {
       const nextRecommended = episodes.find(e => 
         e.status === 'planned' && 
         e.dependsOn.every(dep => 
-          episodes.find(d => d.episodeNumber === dep)?.status === 'completed'
+          isEpisodeGenerated(episodes.find(d => d.episodeNumber === dep))
         )
       );
 
@@ -535,7 +551,7 @@ export const seasonPlanStore = {
     if (!plan) return [];
 
     const completed = new Set(
-      plan.episodes.filter(e => e.status === 'completed').map(e => e.episodeNumber)
+      plan.episodes.filter(isEpisodeGenerated).map(e => e.episodeNumber)
     );
 
     return plan.episodes

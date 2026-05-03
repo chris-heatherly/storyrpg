@@ -7,7 +7,7 @@
 
 import * as ExpoFileSystem from 'expo-file-system';
 import { ImagePrompt, GeneratedImage } from '../agents/ImageGenerator';
-import { GeminiSettings, DEFAULT_GEMINI_SETTINGS, MidjourneySettings, DEFAULT_MIDJOURNEY_SETTINGS, ImageProvider, StableDiffusionSettings } from '../config';
+import { GeminiSettings, DEFAULT_GEMINI_SETTINGS, MidjourneySettings, DEFAULT_MIDJOURNEY_SETTINGS, ImageProvider, StableDiffusionSettings, StyleReferenceStrength } from '../config';
 import type { SDReferencePurpose } from '../agents/ImageGenerator';
 import { budgetCanonicalPrompt } from '../images/promptComposer';
 import { ProviderPolicy } from '../images/providerPolicy';
@@ -103,6 +103,7 @@ export interface ImageGenerationConfig {
   geminiSettings?: GeminiSettings;
   midjourneySettings?: MidjourneySettings;
   stableDiffusionSettings?: StableDiffusionSettings;
+  styleReferenceStrength?: StyleReferenceStrength;
   failurePolicy?: 'fail_fast' | 'recover';
   requireCharacterRefsForVisibleCharacters?: boolean;
   minRefsPerVisibleCharacter?: number;
@@ -604,6 +605,31 @@ export class ImageGenerationService {
 
   public setGeminiStyleReference(data: string, mimeType: string): void {
     this._geminiStyleReference = { data, mimeType };
+  }
+
+  private getStyleReferenceGuidance(): string {
+    switch (this.config.styleReferenceStrength || 'balanced') {
+      case 'subtle':
+        return 'Loose style inspiration only - borrow broad palette and rendering mood while keeping the ART STYLE text directive authoritative.';
+      case 'strong':
+        return 'Primary style target - closely match the reference image color language, rendering density, material treatment, and composition feel unless the ART STYLE text conflicts.';
+      case 'balanced':
+      default:
+        return 'Style consistency reference - approximate guide for color temperature, rendering density, and composition feel. The ART STYLE text directive above is authoritative; follow its description over any visual differences in this reference.';
+    }
+  }
+
+  private resolveMidjourneyStyleWeight(baseWeight: number | undefined): number {
+    const base = Math.max(0, Math.min(1000, baseWeight ?? 100));
+    switch (this.config.styleReferenceStrength || 'balanced') {
+      case 'subtle':
+        return Math.min(base, 50);
+      case 'strong':
+        return Math.max(base, 250);
+      case 'balanced':
+      default:
+        return base;
+    }
   }
 
   public setGeminiPreviousScene(data: string, mimeType: string): void {
@@ -1148,14 +1174,14 @@ export class ImageGenerationService {
 
     if (referenceImages.length > 0) {
       const charRefs = referenceImages.filter(r => r.characterName);
-      const styleRefs = referenceImages.filter(r => r.role === 'style-reference');
+      const styleRefs = referenceImages.filter(r => r.role === 'style-reference' || r.role === 'style-anchor');
       const prevScene = referenceImages.filter(r => r.role === 'previous-scene-reference');
-      const otherRefs = referenceImages.filter(r => !r.characterName && r.role !== 'style-reference' && r.role !== 'previous-scene-reference');
+      const otherRefs = referenceImages.filter(r => !r.characterName && r.role !== 'style-reference' && r.role !== 'style-anchor' && r.role !== 'previous-scene-reference');
 
       let imageIdx = 1;
 
       for (const ref of styleRefs) {
-        sections.push(`Image ${imageIdx}: Style consistency reference — approximate guide for color temperature, rendering density, and composition feel. The ART STYLE text above is authoritative; follow its description over any visual differences in this reference.`);
+        sections.push(`Image ${imageIdx}: ${this.getStyleReferenceGuidance()}`);
         imageIdx++;
       }
 
@@ -1308,7 +1334,7 @@ export class ImageGenerationService {
       }
       if (styleRefUrl) {
         crefSrefParams.push(`--sref ${styleRefUrl}`);
-        const sw = Math.max(0, Math.min(1000, mj.styleWeight ?? 100));
+        const sw = this.resolveMidjourneyStyleWeight(mj.styleWeight);
         crefSrefParams.push(`--sw ${sw}`);
       }
     }
@@ -1481,7 +1507,7 @@ export class ImageGenerationService {
     let num = imageNumber || parts.length;
     if (gemSettings.includeStyleReference && this._geminiStyleReference) {
       parts.push({ inlineData: { mimeType: this._geminiStyleReference.mimeType, data: this._geminiStyleReference.data } });
-      parts.push({ text: `Style consistency reference — approximate guide for color temperature, rendering density, and composition feel. The ART STYLE text directive above is authoritative; follow its description over any visual differences in this reference.` });
+      parts.push({ text: this.getStyleReferenceGuidance() });
       num++;
     }
     if (gemSettings.includePreviousScene && this._geminiPreviousScene) {

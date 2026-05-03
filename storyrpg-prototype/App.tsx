@@ -52,6 +52,23 @@ const normalizeContinuationKey = (value?: string | null) => {
   return value.trim().toLowerCase().replace(/\/+$/, '');
 };
 
+const isSeasonEpisodeGenerated = (episode?: {
+  status?: string;
+  generatedEpisodeId?: string;
+  generatedStoryId?: string;
+  generatedJobId?: string;
+  outputDir?: string;
+}) => Boolean(
+  episode
+  && (
+    episode.status === 'completed'
+    || episode.generatedEpisodeId
+    || episode.generatedStoryId
+    || episode.generatedJobId
+    || episode.outputDir
+  )
+);
+
 function AppContent() {
   // Protagonist name/pronouns come from the story's established characters
   const [videoGeneratingStoryId, setVideoGeneratingStoryId] = useState<string | null>(null);
@@ -118,7 +135,7 @@ function AppContent() {
 
       for (const saved of seasonPlanStore.getPlans()) {
         const nextEpisode = saved.plan.episodes
-          .filter((episode) => episode.status !== 'completed')
+          .filter((episode) => !isSeasonEpisodeGenerated(episode))
           .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
         if (!nextEpisode) continue;
 

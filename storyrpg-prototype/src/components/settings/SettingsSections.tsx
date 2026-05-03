@@ -36,6 +36,30 @@ import { PipelineProgress } from '../PipelineProgress';
 
 type SettingsStyles = Record<string, any>;
 
+function normalizeContinuationKey(value?: string | null) {
+  if (!value) return null;
+  return value.trim().toLowerCase().replace(/\/+$/, '');
+}
+
+function getStoryContinuation(
+  story: StoryCatalogEntry,
+  continuations: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>,
+) {
+  const keys = [
+    story.id,
+    story.outputDir,
+    story.outputDir?.split('/').filter(Boolean).pop(),
+    story.fullStoryUrl,
+    story.title,
+  ];
+
+  for (const key of keys) {
+    const normalized = normalizeContinuationKey(key);
+    if (normalized && continuations[normalized]) return continuations[normalized];
+  }
+  return undefined;
+}
+
 interface SectionHeaderProps {
   styles: SettingsStyles;
   icon: React.ReactNode;
@@ -519,7 +543,7 @@ export function StoryLibrarySection({
             const canRename = Boolean(onRenameStory);
             const canDelete = Boolean(onDeleteStory);
             const showGeneratedBadge = generatedStoryIds.includes(story.id) && !isBuiltIn;
-            const continuation = seasonContinuations[story.id];
+            const continuation = getStoryContinuation(story, seasonContinuations);
 
             return (
               <View key={story.id} style={styles.storyManageItem}>

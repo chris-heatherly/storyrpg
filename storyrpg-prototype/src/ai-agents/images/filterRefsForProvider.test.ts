@@ -127,9 +127,9 @@ describe('filterRefsForProvider', () => {
       expect(out.refs).not.toContain(profile);
     });
 
-    it('drops expression-sheet refs and location/style anchors', () => {
+    it('drops expression-sheet refs and locations but keeps one style anchor', () => {
       const out = filterRefsForProvider([expression, styleAnchor, location], 'dall-e');
-      expect(out.refs).toEqual([]);
+      expect(out.refs).toEqual([styleAnchor]);
     });
 
     it('keeps at least one clean identity ref per character in group shots', () => {

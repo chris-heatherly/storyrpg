@@ -38,6 +38,11 @@ function extensionForMime(mimeType) {
   return 'png';
 }
 
+function sanitizeReferenceId(input) {
+  if (typeof input !== 'string') return '';
+  return input.replace(/[^a-zA-Z0-9_\-.]/g, '').slice(0, 120);
+}
+
 function registerStyleRoutes(app, { storiesDir }) {
   if (!storiesDir) {
     throw new Error('registerStyleRoutes requires storiesDir');
@@ -83,6 +88,51 @@ function registerStyleRoutes(app, { storiesDir }) {
       });
     } catch (err) {
       console.error('[styleRoutes] save failed:', err);
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post('/style-reference/save', (req, res) => {
+    const body = req.body || {};
+    const storyId = sanitizeStoryId(body.storyId);
+    const requestedId = sanitizeReferenceId(body.id);
+    const data = typeof body.data === 'string' ? body.data : '';
+    const mimeType = typeof body.mimeType === 'string' ? body.mimeType : 'image/png';
+
+    if (!storyId) {
+      return res.status(400).json({ error: 'Missing or invalid storyId' });
+    }
+    if (!data) {
+      return res.status(400).json({ error: 'Missing base64 data' });
+    }
+
+    try {
+      const storyDir = path.resolve(storiesDir, storyId);
+      const refsDir = path.resolve(storyDir, 'style-references');
+      if (!storyDir.startsWith(path.resolve(storiesDir))) {
+        return res.status(400).json({ error: 'Resolved storyId escapes storiesDir' });
+      }
+      fs.mkdirSync(refsDir, { recursive: true });
+
+      const ext = extensionForMime(mimeType);
+      const id = requestedId || `style-ref-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const filename = `${id}.${ext}`;
+      const filePath = path.resolve(refsDir, filename);
+      if (!filePath.startsWith(refsDir)) {
+        return res.status(400).json({ error: 'Resolved reference path escapes style-references directory' });
+      }
+      const buffer = Buffer.from(data, 'base64');
+      fs.writeFileSync(filePath, buffer);
+
+      const relativePath = path.relative(storiesDir, filePath);
+      res.json({
+        imagePath: filePath,
+        relativePath,
+        bytes: buffer.length,
+        id,
+      });
+    } catch (err) {
+      console.error('[styleRoutes] style-reference save failed:', err);
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

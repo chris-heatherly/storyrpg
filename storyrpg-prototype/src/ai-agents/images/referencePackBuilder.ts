@@ -307,11 +307,12 @@ export function getReferencePackProfile(family: ImageSlotFamily): ReferencePackP
  *     three-quarter / profile add little, expression sheets dilute the
  *     identity signal. Per-reference strategy (see `referenceStrategy.ts`),
  *     keep only `character-reference` (front view), `character-reference-face`,
- *     and `user-provided-character-reference`. Drop composite, 3q/profile
- *     views, expression refs, style anchors, and location shots. Keep at
- *     least one clean identity ref per character when present; then add
- *     second refs up to the provider capability. This prevents group shots
- *     from silently dropping one character's identity anchor.
+   *     and `user-provided-character-reference`, plus one uploaded/generated
+   *     style anchor when present. Drop composite, 3q/profile views,
+   *     expression refs, and location shots. Keep at least one clean identity
+   *     ref per character when present; then add second refs up to the
+   *     provider capability. This prevents group shots from silently dropping
+   *     one character's identity anchor.
  *
  *   placeholder:
  *     Drop all refs — the provider does not consume reference images.
@@ -376,6 +377,10 @@ export function filterRefsForProvider(
           kept.push(r);
           continue;
         }
+        if (isStyleAnchorRef(r.role)) {
+          kept.push(r);
+          continue;
+        }
         // Face crop: always useful for gpt-image-2 (tight identity).
         if (r.role === 'character-reference-face') {
           kept.push(r);
@@ -422,7 +427,10 @@ export function filterRefsForProvider(
         if (ordered.length >= maxRefs) break;
       }
 
-      const targetRefs = Math.max(strategy.maxSceneRefs, perCharacter.size);
+      const styleAnchor = noCharacter.find((r) => isStyleAnchorRef(r.role));
+      addUnique(styleAnchor);
+
+      const targetRefs = Math.max(strategy.maxSceneRefs, perCharacter.size + (styleAnchor ? 1 : 0));
       for (const bucket of perCharacter.values()) {
         if (ordered.length >= Math.min(maxRefs, targetRefs)) break;
         for (const r of bucket) {

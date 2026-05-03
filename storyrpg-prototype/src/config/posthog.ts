@@ -4,14 +4,19 @@ import { Platform } from 'react-native';
 // On web, posthog-js is used via analyticsService.ts instead.
 // Configuration is loaded from app.config.js extras via expo-constants.
 
-let posthogInstance: import('posthog-react-native').PostHog | null = null;
+type NativePostHogClient = {
+  identify?: (distinctId: string, properties?: Record<string, unknown>) => void;
+  register?: (properties: Record<string, unknown>) => void;
+  capture?: (eventName: string, properties?: Record<string, unknown>) => void;
+};
 
-function createNativeClient(): import('posthog-react-native').PostHog | null {
+let posthogInstance: NativePostHogClient | null = null;
+
+function createNativeClient(): NativePostHogClient | null {
   if (Platform.OS === 'web') return null;
 
   try {
     // expo-constants reads from app.config.js extras at build time
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const Constants = require('expo-constants').default;
     const apiKey = Constants.expoConfig?.extra?.posthogProjectToken as string | undefined;
     const host = Constants.expoConfig?.extra?.posthogHost as string | undefined;
@@ -28,7 +33,6 @@ function createNativeClient(): import('posthog-react-native').PostHog | null {
       console.warn('[PostHog] Host not configured. Set POSTHOG_HOST in .env.');
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const PostHog = require('posthog-react-native').PostHog;
     return new PostHog(apiKey || 'placeholder_key', {
       host: host || undefined,
@@ -46,7 +50,7 @@ function createNativeClient(): import('posthog-react-native').PostHog | null {
   }
 }
 
-export function getNativePostHog(): import('posthog-react-native').PostHog | null {
+export function getNativePostHog(): NativePostHogClient | null {
   if (Platform.OS === 'web') return null;
   if (!posthogInstance) {
     posthogInstance = createNativeClient();

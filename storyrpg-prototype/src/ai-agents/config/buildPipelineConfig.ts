@@ -9,6 +9,7 @@ import {
   ImageProvider,
   LoraTrainingSettings,
   resolveLoraTrainingSettings,
+  StyleReferenceStrength,
 } from '../config';
 import { resolveImageQaConfig, resolveArtStylePresetProfile } from './imageQaConfig';
 import { resolveArtStyleProfile, composeCanonicalStyleString } from '../images/artStyleProfile';
@@ -139,6 +140,10 @@ export interface PipelineConfigExtras {
     arcStrip?: PreapprovedAnchor;
     environment?: PreapprovedAnchor;
   };
+  /** Uploaded style reference images from the Generator Images panel. */
+  uploadedStyleReferences?: PreapprovedAnchor[];
+  /** Strength applied when interpreting uploaded style references. */
+  styleReferenceStrength?: StyleReferenceStrength;
 }
 
 export function buildPipelineConfig(
@@ -257,6 +262,8 @@ export function buildPipelineConfig(
       qa,
       artStyleProfile,
       preapprovedStyleAnchors: extras?.preapprovedStyleAnchors,
+      uploadedStyleReferences: extras?.uploadedStyleReferences,
+      styleReferenceStrength: extras?.styleReferenceStrength,
       loraTraining: resolveLoraTrainingSettings(env, input.loraTrainingSettings),
     },
     generation: {

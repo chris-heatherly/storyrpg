@@ -46,6 +46,8 @@ export interface PreapprovedAnchor {
   imagePath?: string;
 }
 
+export type StyleReferenceStrength = 'subtle' | 'balanced' | 'strong';
+
 export type { ImageQaConfig, ImagePromptMode, ImageQaMode } from './config/imageQaConfig';
 export { DEFAULT_IMAGE_QA_CONFIG } from './config/imageQaConfig';
 export type { ArtStyleProfile } from './images/artStyleProfile';
@@ -725,6 +727,15 @@ export interface PipelineConfig {
       arcStrip?: PreapprovedAnchor;
       environment?: PreapprovedAnchor;
     };
+    /**
+     * User-uploaded style references from the Generator Images panel. These
+     * seed the generated style bible and then act as fallback/pinned style
+     * anchors for downstream image requests when the active provider can
+     * consume references.
+     */
+    uploadedStyleReferences?: PreapprovedAnchor[];
+    /** How strongly downstream prompts/providers should defer to uploads. */
+    styleReferenceStrength?: StyleReferenceStrength;
     /**
      * Auto-train LoRA settings. Drives the `LoraTrainingAgent` in
      * `FullStoryPipeline`. Only meaningful when `provider === 'stable-diffusion'`

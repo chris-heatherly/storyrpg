@@ -665,6 +665,7 @@ export class FullStoryPipeline {
     arcStrip?: string;
     environment?: string;
   } = {};
+  private _uploadedStyleReferenceImages: ReferenceImage[] = [];
 
   /**
    * Lazily-created LoRA training plumbing. We construct it the first time a
@@ -809,6 +810,7 @@ export class FullStoryPipeline {
       midjourneySettings: this.config.imageGen?.midjourney || this.config.midjourneySettings,
       geminiSettings: this.config.imageGen?.gemini || this.config.geminiSettings,
       stableDiffusionSettings: this.config.imageGen?.stableDiffusion,
+      styleReferenceStrength: this.config.imageGen?.styleReferenceStrength,
       failurePolicy: this.getFailurePolicy(),
     });
     // C4: install the structured art-style profile (if any) so prompt
@@ -12656,6 +12658,11 @@ Design the key art. Return STRICT JSON matching the schema.`;
         });
       }
     }
+
+    for (const styleRef of this._uploadedStyleReferenceImages) {
+      if (references.length >= MAX_TOTAL_REFS) break;
+      references.push(styleRef as any);
+    }
     
     const family = options?.family;
     if (!family) {
@@ -13232,6 +13239,10 @@ Design the key art. Return STRICT JSON matching the schema.`;
 
       const titleSlug = idSlugify(brief.story.title);
       const preapproved = this.config.imageGen?.preapprovedStyleAnchors;
+      const uploadedStyleReferences = await this.hydrateUploadedStyleReferences(
+        this.config.imageGen?.uploadedStyleReferences,
+      );
+      this._uploadedStyleReferenceImages = uploadedStyleReferences;
 
       // === Arc color strip ===
       let stripImage: GeneratedImage | undefined;
@@ -13267,6 +13278,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
             built.prompt,
             anchorIdentifier(titleSlug, built.role),
             { type: 'master' },
+            uploadedStyleReferences.length > 0 ? uploadedStyleReferences : undefined,
           ),
           PIPELINE_TIMEOUTS.imageGeneration,
           'EpisodeStyleBibleStrip'
@@ -13357,6 +13369,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
               built.prompt,
               anchorIdentifier(titleSlug, built.role),
               { type: 'master' as const },
+              uploadedStyleReferences.length > 0 ? uploadedStyleReferences : undefined,
             ),
             PIPELINE_TIMEOUTS.imageGeneration,
             'EpisodeStyleBibleEnvironmentAnchor'
@@ -13375,7 +13388,15 @@ Design the key art. Return STRICT JSON matching the schema.`;
 
       const preferredAnchor = (anchorImage?.imageData && anchorImage?.mimeType)
         ? anchorImage
-        : (stripImage?.imageData && stripImage?.mimeType ? stripImage : undefined);
+        : (uploadedStyleReferences[0]?.data && uploadedStyleReferences[0]?.mimeType
+          ? {
+              prompt: { prompt: '' } as ImagePrompt,
+              imageUrl: uploadedStyleReferences[0].url,
+              imageData: uploadedStyleReferences[0].data,
+              mimeType: uploadedStyleReferences[0].mimeType,
+              metadata: { format: 'uploaded-style-reference' },
+            } as GeneratedImage
+          : (stripImage?.imageData && stripImage?.mimeType ? stripImage : undefined));
 
       if (!preferredAnchor?.imageData || !preferredAnchor?.mimeType) {
         this.emit({ type: 'warning', phase: 'images', message: 'Episode style bible did not produce a reusable image anchor. Falling back to first scene anchor.' });
@@ -13397,6 +13418,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
             arcStrip: !!preapproved?.arcStrip,
             environment: !!preapproved?.environment,
           },
+          uploadedStyleReferenceCount: uploadedStyleReferences.length,
         }
       });
       return true;
@@ -13625,6 +13647,43 @@ Design the key art. Return STRICT JSON matching the schema.`;
    * bookkeeping — specifically the later `setGeminiStyleReference` call
    * which needs `imageData` + `mimeType`.
    */
+  private async hydrateUploadedStyleReferences(
+    anchors: PreapprovedAnchor[] | undefined,
+  ): Promise<ReferenceImage[]> {
+    if (!anchors?.length) return [];
+
+    const refs: ReferenceImage[] = [];
+    for (const [index, anchor] of anchors.entries()) {
+      try {
+        const image = await this.hydratePreapprovedAnchor(anchor);
+        if (!image.imageData || !image.mimeType) continue;
+        refs.push({
+          data: image.imageData,
+          mimeType: image.mimeType,
+          role: 'style-anchor',
+          viewType: `uploaded-${index + 1}`,
+          url: image.imageUrl,
+        });
+      } catch (err) {
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: `Uploaded style reference ${index + 1} could not be read and will be skipped: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+
+    if (refs.length > 0) {
+      this.emit({
+        type: 'info',
+        phase: 'images',
+        message: `Using ${refs.length} uploaded style reference image(s) to seed the style bible.`,
+      });
+    }
+
+    return refs;
+  }
+
   private async hydratePreapprovedAnchor(
     anchor: PreapprovedAnchor,
   ): Promise<GeneratedImage> {

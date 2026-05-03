@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildReferencePack } from './referencePackBuilder';
+import { buildReferencePack, filterRefsForProvider } from './referencePackBuilder';
 import type { ReferenceImage } from '../services/imageGenerationService';
 
 function ref(role: string, opts: Partial<ReferenceImage> = {}): ReferenceImage {
@@ -57,5 +57,48 @@ describe('buildReferencePack — composite-sheet handling', () => {
     if (compIdx !== -1) {
       expect(faceIdx).toBeLessThan(compIdx);
     }
+  });
+
+  it('preserves uploaded style anchors in reserved style slots without evicting character identity', () => {
+    const styleAnchor = ref('style-anchor', { viewType: 'uploaded-1' });
+    const location = ref('location-master-shot', { viewType: 'location' });
+    const face = ref('character-reference-face', { characterName: 'Aoi' });
+    const front = ref('character-reference', { characterName: 'Aoi', viewType: 'front' });
+    const profile = ref('character-reference', { characterName: 'Aoi', viewType: 'profile' });
+
+    const pack = buildReferencePack(
+      'slot-3',
+      'story-beat',
+      [front, profile, location, styleAnchor, face],
+    );
+
+    expect(pack.references.find((r) => r.role === 'style-anchor')).toBeDefined();
+    expect(pack.references.find((r) => r.role === 'character-reference-face')).toBeDefined();
+    expect(pack.references.find((r) => r.role === 'character-reference' && r.viewType === 'front')).toBeDefined();
+  });
+
+  it('routes style anchors through provider filters for Gemini/Atlas and Midjourney', () => {
+    const styleAnchor = ref('style-anchor', { url: 'https://example.test/style.png' });
+    const composite = ref('composite-sheet', { characterName: 'Aoi', viewType: 'composite', url: 'https://example.test/aoi.png' });
+    const face = ref('character-reference-face', { characterName: 'Aoi' });
+    const refs = [styleAnchor, composite, face];
+
+    expect(filterRefsForProvider(refs, 'nano-banana').refs.find((r) => r.role === 'style-anchor')).toBeDefined();
+    expect(filterRefsForProvider(refs, 'atlas-cloud').refs.find((r) => r.role === 'style-anchor')).toBeDefined();
+
+    const midjourneyRefs = filterRefsForProvider(refs, 'midapi').refs;
+    expect(midjourneyRefs.map((r) => r.role)).toEqual(['style-anchor', 'composite-sheet']);
+  });
+
+  it('keeps one style anchor for OpenAI alongside clean character identity refs', () => {
+    const styleAnchor = ref('style-anchor', { url: 'https://example.test/style.png' });
+    const face = ref('character-reference-face', { characterName: 'Aoi' });
+    const profile = ref('character-reference', { characterName: 'Aoi', viewType: 'profile' });
+
+    const openAiRefs = filterRefsForProvider([profile, styleAnchor, face], 'dall-e').refs;
+
+    expect(openAiRefs.find((r) => r.role === 'style-anchor')).toBeDefined();
+    expect(openAiRefs.find((r) => r.role === 'character-reference-face')).toBeDefined();
+    expect(openAiRefs.find((r) => r.viewType === 'profile')).toBeUndefined();
   });
 });

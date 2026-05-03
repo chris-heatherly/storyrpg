@@ -387,17 +387,28 @@ export interface GeneratedReferenceSheet extends CharacterReferenceSheet {
 export function computeCharacterIdentityFingerprint(
   char: Pick<
     import('../CharacterDesigner').CharacterProfile,
-    'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire'
+    'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire' | 'fashionStyle'
   >,
 ): string {
   const norm = (s: string | undefined): string => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const features = (char.distinctiveFeatures || []).map(norm).sort().join('|');
+  const fashion = char.fashionStyle
+    ? JSON.stringify({
+        styleSummary: norm(char.fashionStyle.styleSummary),
+        styleTags: (char.fashionStyle.styleTags || []).map(norm).sort(),
+        signatureGarments: (char.fashionStyle.signatureGarments || []).map(norm).sort(),
+        materials: (char.fashionStyle.materials || []).map(norm).sort(),
+        colorPalette: (char.fashionStyle.colorPalette || []).map(norm).sort(),
+        accessories: (char.fashionStyle.accessories || []).map(norm).sort(),
+      })
+    : '';
   const raw = [
     norm(char.name),
     norm(char.role),
     norm(char.physicalDescription),
     features,
     norm(char.typicalAttire),
+    fashion,
   ].join('||');
 
   // FNV-1a 32-bit — small, deterministic, dependency-free.

@@ -24,6 +24,7 @@ import {
   StorySchemaAbstraction,
   WritingStyleGuide,
   DirectLanguageFragmentGroups,
+  CharacterFashionStyle,
   StructuralRole,
   SEVEN_POINT_BEATS,
 } from '../../types/sourceAnalysis';
@@ -93,12 +94,14 @@ interface StoryStructureAnalysis {
     name: string;
     description: string;
     arc: string;
+    fashionStyle?: Partial<CharacterFashionStyle>;
   };
   majorCharacters: Array<{
     name: string;
     role: string;
     description: string;
     importance: string;
+    fashionStyle?: Partial<CharacterFashionStyle>;
   }>;
   keyLocations: Array<{
     name: string;
@@ -372,7 +375,16 @@ Analyze this text and respond with JSON:
   "protagonist": {
     "name": "<protagonist name>",
     "description": "<brief description>",
-    "arc": "<what they learn/how they change>"
+    "arc": "<what they learn/how they change>",
+    "fashionStyle": {
+      "styleSummary": "<1 sentence describing this character's clothing silhouette and fashion identity; omit only if the source gives no cue>",
+      "styleTags": ["<fashion/wardrobe keywords, not art-style keywords>"],
+      "signatureGarments": ["<recurring garments or outfit pieces>"],
+      "materials": ["<fabric/material cues>"],
+      "colorPalette": ["<character-specific clothing colors>"],
+      "accessories": ["<worn or carried accessories>"],
+      "sourceEvidence": ["<short source/prompt evidence for this fashion read>"]
+    }
   },
   "majorCharacters": [
     DO NOT include the protagonist here — they are already listed above.
@@ -381,7 +393,16 @@ Analyze this text and respond with JSON:
       "name": "<name>",
       "role": "<antagonist/ally/mentor/love_interest/rival/neutral>",
       "description": "<brief description>",
-      "importance": "<core/supporting/background>"
+      "importance": "<core/supporting/background>",
+      "fashionStyle": {
+        "styleSummary": "<1 sentence describing this character's clothing silhouette and fashion identity; omit only if the source gives no cue>",
+        "styleTags": ["<fashion/wardrobe keywords, not art-style keywords>"],
+        "signatureGarments": ["<recurring garments or outfit pieces>"],
+        "materials": ["<fabric/material cues>"],
+        "colorPalette": ["<character-specific clothing colors>"],
+        "accessories": ["<worn or carried accessories>"],
+        "sourceEvidence": ["<short source/prompt evidence for this fashion read>"]
+      }
     }
   ],
   "keyLocations": [
@@ -492,6 +513,7 @@ Analyze this text and respond with JSON:
 }
 
 Be thorough but concise. Focus on elements that matter for interactive fiction adaptation.
+Fashion style is character wardrobe/silhouette/material/color information only. Do NOT put prose style, visual art style, cinematography, or image-rendering style in fashionStyle.
 Return ONLY valid JSON.
 `;
 
@@ -689,6 +711,7 @@ Return ONLY valid JSON.
       description: char.description,
       importance: this.normalizeImportance(char.importance),
       firstAppearance: this.findFirstAppearance(char.name, breakdown.episodes),
+      fashionStyle: normalizeCharacterFashionStyle(char.fashionStyle),
     }));
 
     // Build locations list
@@ -772,6 +795,7 @@ Return ONLY valid JSON.
         name: structure.protagonist.name,
         description: structure.protagonist.description,
         arc: structure.protagonist.arc,
+        fashionStyle: normalizeCharacterFashionStyle(structure.protagonist.fashionStyle),
       },
       majorCharacters,
       keyLocations,
@@ -1086,6 +1110,41 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map((item) => String(item || '').trim()).filter(Boolean)
     : [];
+}
+
+export function normalizeCharacterFashionStyle(
+  fashionStyle: Partial<CharacterFashionStyle> | undefined,
+): CharacterFashionStyle | undefined {
+  if (!fashionStyle) return undefined;
+
+  const styleSummary = String(fashionStyle.styleSummary || '').trim();
+  const styleTags = asStringArray(fashionStyle.styleTags);
+  const signatureGarments = asStringArray(fashionStyle.signatureGarments);
+  const materials = asStringArray(fashionStyle.materials);
+  const colorPalette = asStringArray(fashionStyle.colorPalette);
+  const accessories = asStringArray(fashionStyle.accessories);
+  const sourceEvidence = asStringArray(fashionStyle.sourceEvidence);
+
+  if (
+    !styleSummary &&
+    styleTags.length === 0 &&
+    signatureGarments.length === 0 &&
+    materials.length === 0 &&
+    colorPalette.length === 0 &&
+    accessories.length === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    styleSummary,
+    styleTags,
+    signatureGarments,
+    materials,
+    colorPalette,
+    accessories,
+    ...(sourceEvidence.length > 0 ? { sourceEvidence } : {}),
+  };
 }
 
 export function normalizeDirectLanguageFragments(

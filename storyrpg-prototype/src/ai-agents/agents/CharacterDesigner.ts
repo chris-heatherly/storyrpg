@@ -12,6 +12,7 @@ import { AgentConfig } from '../config';
 import { describeTierRequirements } from '../config/tierRequirements';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import type {
+  CharacterFashionStyle,
   StoryAnchors,
   SevenPointStructure,
 } from '../../types/sourceAnalysis';
@@ -34,6 +35,7 @@ export interface CharacterDesignerInput {
     role: 'protagonist' | 'antagonist' | 'ally' | 'neutral' | 'wildcard';
     briefDescription: string;
     importance: 'major' | 'supporting' | 'minor';
+    fashionStyle?: CharacterFashionStyle;
   }>;
 
   // Relationship context
@@ -105,6 +107,7 @@ export interface CharacterProfile {
   physicalDescription: string;
   distinctiveFeatures: string[];
   typicalAttire: string;
+  fashionStyle?: CharacterFashionStyle;
 
   // Voice
   voiceProfile: VoiceProfile;
@@ -217,6 +220,62 @@ export interface CharacterBible {
   // Consistency notes
   voiceDistinctions: string; // How to keep characters from sounding alike
   doNotForget: string[]; // Critical character facts
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+}
+
+export function normalizeFashionStyle(
+  fashionStyle: Partial<CharacterFashionStyle> | undefined,
+): CharacterFashionStyle | undefined {
+  if (!fashionStyle) return undefined;
+
+  const styleSummary = String(fashionStyle.styleSummary || '').trim();
+  const styleTags = asStringArray(fashionStyle.styleTags);
+  const signatureGarments = asStringArray(fashionStyle.signatureGarments);
+  const materials = asStringArray(fashionStyle.materials);
+  const colorPalette = asStringArray(fashionStyle.colorPalette);
+  const accessories = asStringArray(fashionStyle.accessories);
+  const sourceEvidence = asStringArray(fashionStyle.sourceEvidence);
+
+  if (
+    !styleSummary &&
+    styleTags.length === 0 &&
+    signatureGarments.length === 0 &&
+    materials.length === 0 &&
+    colorPalette.length === 0 &&
+    accessories.length === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    styleSummary,
+    styleTags,
+    signatureGarments,
+    materials,
+    colorPalette,
+    accessories,
+    ...(sourceEvidence.length > 0 ? { sourceEvidence } : {}),
+  };
+}
+
+function formatFashionStyleForPrompt(fashionStyle: CharacterFashionStyle | undefined): string {
+  if (!fashionStyle) return '';
+
+  const parts = [
+    fashionStyle.styleSummary,
+    fashionStyle.styleTags.length ? `tags: ${fashionStyle.styleTags.join(', ')}` : '',
+    fashionStyle.signatureGarments.length ? `garments: ${fashionStyle.signatureGarments.join(', ')}` : '',
+    fashionStyle.materials.length ? `materials: ${fashionStyle.materials.join(', ')}` : '',
+    fashionStyle.colorPalette.length ? `palette: ${fashionStyle.colorPalette.join(', ')}` : '',
+    fashionStyle.accessories.length ? `accessories: ${fashionStyle.accessories.join(', ')}` : '',
+  ].filter(Boolean);
+
+  return parts.join('; ');
 }
 
 export class CharacterDesigner extends BaseAgent {
@@ -346,6 +405,7 @@ Before finalizing:
       // or drop casing. We fuzzy-match each returned character back to the
       // requested id so downstream references stay valid.
       this.alignCharacterIds(characterBible, input);
+      this.preserveInputFashionStyle(characterBible, input);
 
       this.validateCharacterBible(characterBible, input);
 
@@ -388,7 +448,10 @@ Before finalizing:
 
   private buildPrompt(input: CharacterDesignerInput): string {
     const characterList = input.charactersToCreate
-      .map(c => `- ID: "${c.id}", Name: "${c.name}", Role: ${c.role}, Importance: ${c.importance}\n  Description: ${c.briefDescription}`)
+      .map(c => {
+        const fashion = formatFashionStyleForPrompt(c.fashionStyle);
+        return `- ID: "${c.id}", Name: "${c.name}", Role: ${c.role}, Importance: ${c.importance}\n  Description: ${c.briefDescription}${fashion ? `\n  Fashion Style: ${fashion}` : ''}`;
+      })
       .join('\n');
 
     const characterIds = input.charactersToCreate.map(c => `"${c.id}"`).join(', ');
@@ -434,6 +497,17 @@ ${characterList}
       "importance": "major/supporting/minor",
       "tier": "core | supporting | background (NPC tier by narrative weight: 'core' = protagonist, primary antagonist, or recurring main cast with a full arc; 'supporting' = named secondary NPCs who appear in several scenes with a relationship dimension; 'background' = one-scene or ambient NPCs)",
       "physicalDescription": "Brief appearance",
+      "distinctiveFeatures": ["visual feature 1"],
+      "typicalAttire": "One concise outfit description that incorporates any provided Fashion Style",
+      "fashionStyle": {
+        "styleSummary": "Preserve the provided Fashion Style summary if present; otherwise infer a concise wardrobe identity",
+        "styleTags": ["fashion keyword"],
+        "signatureGarments": ["recurring garment"],
+        "materials": ["fabric or material"],
+        "colorPalette": ["clothing color"],
+        "accessories": ["worn or carried accessory"],
+        "sourceEvidence": ["optional short source/prompt evidence"]
+      },
       "want": "What they desire most",
       "fear": "What they're afraid of",
       "flaw": "Their key weakness",
@@ -464,10 +538,11 @@ CRITICAL REQUIREMENTS:
 1. Each character "id" MUST be EXACTLY one of: ${characterIds} — copy the string VERBATIM. Do NOT substitute underscores for hyphens. Do NOT change case. Do NOT add suffixes. "char-mr-green" is NOT the same as "char-mr_green".
 2. Each character MUST have "pronouns" set to "he/him" or "she/her". Only use "they/them" if the character is explicitly non-binary or transgender. Default to he/him or she/her based on the character's identity.
 3. Each character MUST have want, fear, and flaw filled in
-4. Each voiceProfile MUST have at least 2 greetingExamples and 3 signatureLines
-5. MUST include "voiceDistinctions" at the top level (not nested)
-6. Keep ALL descriptions concise - one sentence each
-7. Return ONLY valid JSON, no markdown, no extra text
+4. If a character has a provided Fashion Style, preserve it in "fashionStyle" and make "typicalAttire" reflect its garments, silhouette, materials, palette, and accessories. Fashion style is wardrobe only, not art style.
+5. Each voiceProfile MUST have at least 2 greetingExamples and 3 signatureLines
+6. MUST include "voiceDistinctions" at the top level (not nested)
+7. Keep ALL descriptions concise - one sentence each
+8. Return ONLY valid JSON, no markdown, no extra text
 `;
   }
 
@@ -522,6 +597,8 @@ CRITICAL REQUIREMENTS:
       } else if (!Array.isArray(character.distinctiveFeatures)) {
         character.distinctiveFeatures = [character.distinctiveFeatures as unknown as string];
       }
+
+      character.fashionStyle = normalizeFashionStyle(character.fashionStyle);
 
       const validPronouns: PronounSet[] = ['he/him', 'she/her', 'they/them'];
       if (!character.pronouns || !validPronouns.includes(character.pronouns)) {
@@ -736,6 +813,39 @@ CRITICAL REQUIREMENTS:
     }
   }
 
+  private preserveInputFashionStyle(bible: CharacterBible, input: CharacterDesignerInput): void {
+    const inputFashionById = new Map(
+      input.charactersToCreate
+        .map((character) => [character.id, normalizeFashionStyle(character.fashionStyle)] as const)
+        .filter((entry): entry is readonly [string, CharacterFashionStyle] => !!entry[1]),
+    );
+
+    for (const character of bible.characters || []) {
+      const inputFashion = inputFashionById.get(character.id);
+      if (!inputFashion) continue;
+
+      const outputFashion = normalizeFashionStyle(character.fashionStyle);
+      character.fashionStyle = outputFashion
+        ? {
+            styleSummary: outputFashion.styleSummary || inputFashion.styleSummary,
+            styleTags: outputFashion.styleTags.length ? outputFashion.styleTags : inputFashion.styleTags,
+            signatureGarments: outputFashion.signatureGarments.length ? outputFashion.signatureGarments : inputFashion.signatureGarments,
+            materials: outputFashion.materials.length ? outputFashion.materials : inputFashion.materials,
+            colorPalette: outputFashion.colorPalette.length ? outputFashion.colorPalette : inputFashion.colorPalette,
+            accessories: outputFashion.accessories.length ? outputFashion.accessories : inputFashion.accessories,
+            sourceEvidence: outputFashion.sourceEvidence?.length ? outputFashion.sourceEvidence : inputFashion.sourceEvidence,
+          }
+        : inputFashion;
+
+      if (!character.typicalAttire && character.fashionStyle) {
+        character.typicalAttire = [
+          character.fashionStyle.styleSummary,
+          character.fashionStyle.signatureGarments.join(', '),
+        ].filter(Boolean).join('; ');
+      }
+    }
+  }
+
   /**
    * Collect quality issues that could be improved (beyond structural validation)
    */
@@ -882,6 +992,7 @@ Return ONLY valid JSON, no markdown, no extra text.
         revisedBible = this.parseJSON<CharacterBible>(response);
         revisedBible = this.normalizeCharacterBible(revisedBible);
         this.alignCharacterIds(revisedBible, input);
+        this.preserveInputFashionStyle(revisedBible, input);
         console.log(`[CharacterDesigner] Revision complete`);
         return revisedBible;
       } catch (parseError) {

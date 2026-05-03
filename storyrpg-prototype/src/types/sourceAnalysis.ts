@@ -96,6 +96,16 @@ export interface DirectLanguageFragmentGroups {
   terminology: string[];
 }
 
+export interface CharacterFashionStyle {
+  styleSummary: string;
+  styleTags: string[];
+  signatureGarments: string[];
+  materials: string[];
+  colorPalette: string[];
+  accessories: string[];
+  sourceEvidence?: string[];
+}
+
 /**
  * Which beat of the 7-point structure a given episode carries.
  *
@@ -442,6 +452,7 @@ export interface SourceMaterialAnalysis {
     name: string;
     description: string;
     arc: string;
+    fashionStyle?: CharacterFashionStyle;
   };
   majorCharacters: Array<{
     id: string;
@@ -450,6 +461,7 @@ export interface SourceMaterialAnalysis {
     description: string;
     importance: 'core' | 'supporting' | 'background';
     firstAppearance: number; // Episode number
+    fashionStyle?: CharacterFashionStyle;
   }>;
 
   // Key locations identified

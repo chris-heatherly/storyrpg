@@ -169,6 +169,7 @@ export function createCharacterBriefFromAnalysis(
       id: protagonistId,
       name: analysis.protagonist.name,
       description: analysis.protagonist.description,
+      fashionStyle: analysis.protagonist.fashionStyle,
     },
     npcs: analysis.majorCharacters
       .filter((char) => char.id !== protagonistId && char.name?.toLowerCase() !== protagonistName)
@@ -182,6 +183,7 @@ export function createCharacterBriefFromAnalysis(
               ? 'ally'
               : 'neutral',
         description: char.description,
+        fashionStyle: char.fashionStyle,
         importance:
           char.importance === 'core'
             ? 'major'

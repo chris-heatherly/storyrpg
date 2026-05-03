@@ -39,6 +39,7 @@ import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, QARunnerOptions } from '../agents/QAAgents';
 import { SourceMaterialAnalyzer, SourceMaterialInput } from '../agents/SourceMaterialAnalyzer';
 import { SeasonPlan } from '../../types/seasonPlan';
+import type { CharacterFashionStyle } from '../../types/sourceAnalysis';
 import { buildGrowthTemplates, type GrowthCurveEntry } from '../../engine/growthConsequenceBuilder';
 // Types CrossEpisodeBranch, ConsequenceChain, PlannedEncounter used transitively via SeasonPlan
 import { BranchManager, BranchAnalysis, BranchPath, ReconvergencePoint } from '../agents/BranchManager';
@@ -87,6 +88,7 @@ import type { GeneratedImage } from '../agents/ImageGenerator';
 import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/VideoDirectorAgent';
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
+import { buildFashionPrimaryClothing, buildFashionStyleSummary } from '../images/characterFashionStyle';
 import { 
   Story, Episode, Scene, Beat, Choice, NPCTier, RelationshipDimension, Consequence,
   Encounter, EncounterOutcome, EncounterType, EncounterClock, EncounterPhase, EncounterBeat as TypeEncounterBeat,
@@ -344,6 +346,7 @@ export interface FullCreativeBrief {
     pronouns: 'he/him' | 'she/her' | 'they/them';
     description: string;
     role: string;
+    fashionStyle?: CharacterFashionStyle;
   };
 
   npcs: Array<{
@@ -353,6 +356,7 @@ export interface FullCreativeBrief {
     description: string;
     importance: 'major' | 'supporting' | 'minor';
     relationshipToProtagonist?: string;
+    fashionStyle?: CharacterFashionStyle;
   }>;
 
   // Episode to generate (for single-episode mode)
@@ -3730,6 +3734,7 @@ export class FullStoryPipeline {
       role: 'protagonist' as const,
       briefDescription: brief.protagonist.description,
       importance: 'major' as const,
+      fashionStyle: brief.protagonist.fashionStyle,
     };
 
     // Deduplicate: filter any NPC that shares an ID or name with the protagonist
@@ -3743,6 +3748,7 @@ export class FullStoryPipeline {
         role: npc.role,
         briefDescription: npc.description,
         importance: npc.importance,
+        fashionStyle: npc.fashionStyle,
       }));
 
     const charactersToCreate = [protagonistEntry, ...npcEntries];
@@ -4352,7 +4358,7 @@ export class FullStoryPipeline {
           episodeStructuralRole: brief.seasonPlan?.episodes.find(
             (e) => e.episodeNumber === brief.episode.number,
           )?.structuralRole,
-          cliffhangerPlan: this.isEpisodeFinalScene(sceneBlueprint, episodeBlueprint)
+          cliffhangerPlan: this.isEpisodeFinalScene(sceneBlueprint, blueprint)
             ? brief.seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number)?.cliffhangerPlan
             : undefined,
         };
@@ -8361,7 +8367,17 @@ ${clothingRule}
    * Extract clothing info from a character profile
    */
   private extractClothingInfo(char: CharacterProfile): CharacterReferenceSheetRequest['clothing'] | undefined {
-    const text = `${char.fullBackground || ''} ${char.overview || ''}`.toLowerCase();
+    const fashion = char.fashionStyle;
+    const fashionPrimary = buildFashionPrimaryClothing(char);
+    if (fashionPrimary) {
+      return {
+        primary: fashionPrimary,
+        accessories: fashion?.accessories?.length ? fashion.accessories : undefined,
+        colorPalette: fashion?.colorPalette?.length ? fashion.colorPalette : undefined,
+      };
+    }
+
+    const text = `${char.typicalAttire || ''} ${char.fullBackground || ''} ${char.overview || ''}`.toLowerCase();
     
     // Simple extraction - look for clothing mentions
     const clothingPatterns = [
@@ -12461,6 +12477,8 @@ Design the key art. Return STRICT JSON matching the schema.`;
         parts.push(`Distinctive features: ${c.distinctiveFeatures.join(', ')}`);
       }
       if (c.typicalAttire) parts.push(`Attire: ${c.typicalAttire}`);
+      const fashionSummary = buildFashionStyleSummary(c.fashionStyle);
+      if (fashionSummary) parts.push(`Fashion style: ${fashionSummary}`);
 
       // Build a structured canonicalAppearance by extracting semantic slots
       // from the free-form description sources. Each slot becomes its own
@@ -12475,7 +12493,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
       const canonicalAppearance = this.extractCanonicalAppearance(
         sources,
         c.distinctiveFeatures,
-        c.typicalAttire,
+        [c.typicalAttire, fashionSummary].filter(Boolean).join('; ') || undefined,
       );
 
       if (parts.length > 0 || canonicalAppearance) {
@@ -13571,6 +13589,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
           physicalDescription: char.physicalDescription,
           distinctiveFeatures: char.distinctiveFeatures,
           typicalAttire: char.typicalAttire,
+          fashionStyle: char.fashionStyle,
         },
         identityFingerprint,
         references,

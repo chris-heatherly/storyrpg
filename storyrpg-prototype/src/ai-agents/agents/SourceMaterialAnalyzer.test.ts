@@ -4,6 +4,7 @@ import {
   containsSchemaPlaceholder,
   detectExplicitWritingStyleInstruction,
   normalizeAdaptationGuidance,
+  normalizeCharacterFashionStyle,
   normalizeDirectLanguageFragments,
   normalizeSchemaAbstraction,
   normalizeSchemaVariableName,
@@ -135,6 +136,30 @@ describe('SourceMaterialAnalyzer writing style helpers', () => {
     });
   });
 
+  it('normalizes character fashion style metadata', () => {
+    expect(
+      normalizeCharacterFashionStyle({
+        styleSummary: ' Tailored dockside noir ',
+        styleTags: [' trench coat ', ''],
+        signatureGarments: ['weathered coat'],
+        materials: ['wool'],
+        colorPalette: ['charcoal'],
+        accessories: ['silver lighter'],
+        sourceEvidence: ['coat mentioned twice'],
+      })
+    ).toEqual({
+      styleSummary: 'Tailored dockside noir',
+      styleTags: ['trench coat'],
+      signatureGarments: ['weathered coat'],
+      materials: ['wool'],
+      colorPalette: ['charcoal'],
+      accessories: ['silver lighter'],
+      sourceEvidence: ['coat mentioned twice'],
+    });
+
+    expect(normalizeCharacterFashionStyle({ styleSummary: '', styleTags: [] })).toBeUndefined();
+  });
+
   it('assembles a writing style guide and source-fidelity fields for old-safe analysis output', () => {
     const analyzer = new SourceMaterialAnalyzer({
       provider: 'anthropic',
@@ -149,8 +174,36 @@ describe('SourceMaterialAnalyzer writing style helpers', () => {
       tone: 'dry and tense',
       themes: ['truth'],
       setting: { timePeriod: 'now', location: 'Harbor City', worldDetails: 'rain and debt' },
-      protagonist: { name: 'Mara', description: 'A private investigator.', arc: 'Learns to trust again.' },
-      majorCharacters: [],
+      protagonist: {
+        name: 'Mara',
+        description: 'A private investigator.',
+        arc: 'Learns to trust again.',
+        fashionStyle: {
+          styleSummary: 'Rumpled investigator layers built around a rain-dark trench coat.',
+          styleTags: ['noir detective'],
+          signatureGarments: ['rain-dark trench coat'],
+          materials: ['gabardine'],
+          colorPalette: ['slate', 'black'],
+          accessories: ['notebook'],
+        },
+      },
+      majorCharacters: [
+        {
+          name: 'Boss Vale',
+          role: 'antagonist',
+          description: 'The harbor boss.',
+          importance: 'core',
+          fashionStyle: {
+            styleSummary: 'Immaculate white suits made threatening by blood-red accents.',
+            styleTags: ['crime boss tailoring'],
+            signatureGarments: ['white suit'],
+            materials: ['linen'],
+            colorPalette: ['white', 'red'],
+            accessories: ['ruby tie pin'],
+            sourceEvidence: ['The boss wore white.'],
+          },
+        },
+      ],
       keyLocations: [],
       directLanguageFragments: {
         dialogue: ['Everyone owes someone.'],
@@ -203,5 +256,7 @@ describe('SourceMaterialAnalyzer writing style helpers', () => {
     expect(analysis.writingStyleGuide.evidence).toEqual(['Write in spare noir prose.']);
     expect(analysis.directLanguageFragments.dialogue).toEqual(['Everyone owes someone.']);
     expect(analysis.adaptationGuidance.narrativeVoice).toBe('Hardboiled but intimate.');
+    expect(analysis.protagonist.fashionStyle?.styleTags).toEqual(['noir detective']);
+    expect(analysis.majorCharacters[0].fashionStyle?.signatureGarments).toEqual(['white suit']);
   });
 });

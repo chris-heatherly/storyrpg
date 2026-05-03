@@ -24,6 +24,7 @@ import type {
 import type { ArtStyleProfile } from './artStyleProfile';
 import type { GeneratedImage } from '../agents/ImageGenerator';
 import type { PreapprovedAnchor } from '../config';
+import type { CharacterFashionStyle } from '../../types/sourceAnalysis';
 
 /** A single character reference image, however it was sourced. */
 export interface DatasetCharacterReference {
@@ -64,6 +65,7 @@ export interface CharacterIdentityForDataset {
   physicalDescription?: string;
   distinctiveFeatures?: string[];
   typicalAttire?: string;
+  fashionStyle?: CharacterFashionStyle;
 }
 
 export interface BuildCharacterDatasetInput {
@@ -189,6 +191,10 @@ function composeIdentityAnchors(char: CharacterIdentityForDataset): string | und
     parts.push(char.distinctiveFeatures.slice(0, 3).join(', '));
   }
   if (char.typicalAttire) parts.push(char.typicalAttire);
+  if (char.fashionStyle?.styleSummary) parts.push(char.fashionStyle.styleSummary);
+  if (char.fashionStyle?.signatureGarments?.length) parts.push(char.fashionStyle.signatureGarments.slice(0, 4).join(', '));
+  if (char.fashionStyle?.materials?.length) parts.push(char.fashionStyle.materials.slice(0, 3).join(', '));
+  if (char.fashionStyle?.colorPalette?.length) parts.push(char.fashionStyle.colorPalette.slice(0, 4).join(', '));
   const joined = parts.filter(Boolean).join(', ').trim();
   return joined.length > 0 ? joined : undefined;
 }

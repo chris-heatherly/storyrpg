@@ -1,6 +1,6 @@
 # Image Pipeline Runtime
 
-**Last Updated:** April 2026
+**Last Updated:** May 2026
 
 This document captures the live runtime behavior of the StoryRPG image pipeline.
 
@@ -22,7 +22,11 @@ opts in:
 - **B1 / two-axis QA toggles** — `EXPO_PUBLIC_IMAGE_PROMPT_MODE`
   (`deterministic` | `llm` | `compare`) and `EXPO_PUBLIC_IMAGE_QA_MODE`
   (`off` | `fast` | `full`) let prompt-building and QA rigor be tuned
-  independently. See `src/ai-agents/config/imageQaConfig.ts`.
+  independently. The default is now `promptMode=llm` and `qaMode=full`:
+  `StoryboardAgent` + `VisualIllustratorAgent` plan story-beat shots, then
+  the deterministic prompt contracts, reference rules, provider filtering,
+  and defect QA/retry wrap each generated prompt before any image call. See
+  `src/ai-agents/config/imageQaConfig.ts`.
 - **C1 / ArtStyleProfile** — structured replacement for the flat
   `canonicalArtStyle` string. Captures rendering technique, color
   philosophy, lighting, acceptable deviations, genre negatives, and
@@ -163,8 +167,9 @@ opts in:
   previous-beat continuity requirement (D10 clears the reference at
   every scene boundary). Skipped automatically when `panelMode !==
   'single'` (panel beats render multiple sub-images and aren't covered
-  by the prefetch) and per-scene when the opener is already resumed
-  from disk or the asset registry. Implementation lives in
+  by the prefetch), when `promptMode !== deterministic`, and per-scene
+  when the opener is already resumed from disk or the asset registry.
+  Implementation lives in
   `FullStoryPipeline.prefetchSceneOpeningBeats`. Default off.
 
 ### Deferred / Future work
@@ -187,8 +192,10 @@ opts in:
   refactor because scene openers are the most parallelism-friendly
   piece of the work.
 
-All improvements preserve today's default behavior — to opt in, set the
-relevant env var / config flag described in each bullet.
+The current default prioritizes image consistency and full visual quality
+over minimum cost/latency. Set `EXPO_PUBLIC_IMAGE_PROMPT_MODE=deterministic`
+or `EXPO_PUBLIC_IMAGE_QA_MODE=fast|off` only when intentionally trading
+creative shot planning or QA depth for speed.
 
 ## Current Runtime Flow
 
@@ -221,11 +228,14 @@ relevant env var / config flag described in each bullet.
    - an abstract color-script strip (skipped if pre-approved via the UI)
    - a controlled character-in-style anchor image (skipped if pre-approved via the UI)
    - an optional environment vignette anchor (skipped if pre-approved via the UI)
-4. The best style-bible image becomes the primary style anchor for downstream image generation.
-5. `StoryboardAgent` plans shot rhythm, transitions, color/mood, motifs, and beat locks.
-6. `VisualIllustratorAgent` converts shots into structured image prompts.
-7. `ImageGenerationService` routes the prompt to the selected provider and applies provider-specific controls.
-8. `ImageAgentTeam` runs diversity validation first, then full visual QA, and can trigger targeted regeneration for severe failures.
+4. The best validated style-bible image may become a visual style anchor for downstream image generation. Uploaded/pre-approved user style refs still win; rejected generated anchors are not allowed to steer later images.
+5. For each story scene, `runEpisodeImageGeneration` resolves the effective prompt mode:
+   - `llm` (default): calls `ImageAgentTeam.generateFullSceneVisuals()`. `StoryboardAgent` plans rhythm, shot grammar, transition logic, pose, lighting, mood, and visual storytelling. `VisualIllustratorAgent` converts those shots into `ImagePrompt`s keyed by beat id.
+   - `deterministic`: skips the LLM scene-planning cascade and uses `buildBeatImagePrompt()` plus `shotSequencePlanner`.
+   - `compare`: builds both prompt variants for the configured capped number of beats, saves `images/prompts/<id>.prompt-compare.json`, and binds only the configured canonical variant into the story.
+6. Every LLM prompt is treated as a creative draft. The pipeline wraps it with `applyPromptContract`, the raw season `style_contract`, sanitized rendering-language rules, anti-photoreal negatives, character/ref precedence metadata, and the same provider-aware reference filtering used by deterministic prompts. Missing LLM prompts fall back beat-by-beat to the deterministic builder; they do not force the whole scene to fall back.
+7. `ImageGenerationService` routes the contracted prompt to the selected provider and applies provider-specific controls. Every accepted beat writes `images/prompts/<id>.qa.json` from the shared defect gate/retry loop.
+8. Under `qaMode=full`, hero/key beats also receive legacy full visual QA diagnostics at `images/prompts/<id>.visual-qa.json`, and each scene receives `images/prompts/<sceneId>.visual-planning.json` plus scene-level `visual-qa.json` when full QA runs.
 
 ### Image Prompt Assembly
 

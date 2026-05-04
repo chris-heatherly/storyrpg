@@ -4,17 +4,17 @@
  * Two orthogonal dimensions:
  *
  * 1. `promptMode` — which prompt-building path runs:
- *    - `deterministic` (today): beatPromptBuilder + CinematicBeatAnalyzer, no LLM
- *    - `llm`: the revived StoryboardAgent + VisualIllustratorAgent cascade
+ *    - `deterministic`: beatPromptBuilder + CinematicBeatAnalyzer, no LLM
+ *    - `llm` (default): the revived StoryboardAgent + VisualIllustratorAgent cascade
  *    - `compare`: run both paths for each illustrated beat and write both
  *      variants (deterministic.png + llm.png) plus a manifest. Pick the
  *      canonical variant via `compareCanonical`.
  *
  * 2. `qaMode` — post-generation validator cascade:
- *    - `off` (today): only tier-1 artifact/text checks
+ *    - `off`: only tier-1 artifact/text checks
  *    - `fast`: pose-diversity + consistency-scorer only on hero beats,
  *      single re-roll
- *    - `full`: the legacy 8-validator cascade with its diversity / full-QA
+ *    - `full` (default): the legacy 8-validator cascade with its diversity / full-QA
  *      re-roll caps
  *
  * The axes are independent — every combination is valid. `compare` mode
@@ -38,9 +38,9 @@ export interface ImageQaConfig {
 }
 
 export const DEFAULT_IMAGE_QA_CONFIG: ImageQaConfig = {
-  promptMode: 'deterministic',
-  qaMode: 'off',
-  compareCanonical: 'deterministic',
+  promptMode: 'llm',
+  qaMode: 'full',
+  compareCanonical: 'llm',
   compareMaxBeats: 20,
 };
 

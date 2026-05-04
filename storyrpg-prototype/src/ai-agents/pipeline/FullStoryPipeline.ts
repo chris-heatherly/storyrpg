@@ -8639,6 +8639,166 @@ ${clothingRule}
    * Now uses character reference sheets for consistency AND pose diversity validation
    * ENHANCED: Includes color script, scene context, and full story data mapping
    */
+  private getEffectiveImagePromptMode(): 'deterministic' | 'llm' | 'compare' {
+    return this.config.imageGen?.qa?.promptMode || 'llm';
+  }
+
+  private getEffectiveImageQaMode(): 'off' | 'fast' | 'full' {
+    return this.config.imageGen?.qa?.qaMode || 'full';
+  }
+
+  private async saveSceneVisualPlanningDiagnostic(
+    outputDirectory: string | undefined,
+    scopedSceneId: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    if (!outputDirectory) return;
+    try {
+      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${scopedSceneId}.visual-planning.json`, {
+        generatedAt: new Date().toISOString(),
+        scopedSceneId,
+        ...payload,
+      });
+    } catch (error) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `Failed to save visual planning diagnostic for ${scopedSceneId}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  private wrapLlmImagePromptWithContracts(
+    prompt: ImagePrompt,
+    input: import('../images/beatPromptBuilder').BeatPromptInput,
+    sceneContext: import('../images/beatPromptBuilder').ScenePromptContext,
+    characterNames: string[],
+    promptMode: string,
+    brief: FullCreativeBrief,
+  ): ImagePrompt {
+    const action = [
+      input.visualMoment,
+      input.primaryAction,
+      input.emotionalRead,
+      input.relationshipDynamic,
+      input.mustShowDetail,
+    ].filter(Boolean).join(' ');
+    const contracted = applyPromptContract({
+      ...prompt,
+      style: sceneContext.artStyle || prompt.style,
+      promptContract: {
+        ...(prompt.promptContract || {}),
+        sourcePromptMode: promptMode,
+      },
+    }, {
+      style: sceneContext.artStyle || prompt.style || '',
+      styleSource: this._uploadedStyleReferenceImages.length > 0 ? 'user-visual' : 'raw-season-style',
+      mode: 'story-beat',
+      characterIdentity: characterNames,
+      appearanceState: input.characterVisualStates
+        ? Object.entries(input.characterVisualStates).map(([name, state]) => `${name}: ${JSON.stringify(state)}`).join('; ')
+        : undefined,
+      sceneAction: action,
+      composition: prompt.composition,
+      negativeContract: prompt.negativePrompt,
+      hasVisualStyleRef: this._uploadedStyleReferenceImages.length > 0,
+      hasVisualCharacterRef: false,
+    });
+    return this.sanitizeImagePrompt(contracted, brief);
+  }
+
+  private async savePromptCompareDiagnostic(
+    outputDirectory: string | undefined,
+    identifier: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    if (!outputDirectory) return;
+    try {
+      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${identifier}.prompt-compare.json`, {
+        generatedAt: new Date().toISOString(),
+        identifier,
+        ...payload,
+      });
+    } catch (error) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `Failed to save prompt compare diagnostic for ${identifier}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  private shouldRunHeroVisualQA(
+    beat: any,
+    beatIndex: number,
+    totalBeats: number,
+    qaMode: 'off' | 'fast' | 'full',
+  ): boolean {
+    if (qaMode === 'off') return false;
+    if (qaMode === 'full') {
+      return beatIndex === 0 ||
+        beatIndex === totalBeats - 1 ||
+        beat.isClimaxBeat === true ||
+        beat.isKeyStoryBeat === true ||
+        beat.isChoicePoint === true ||
+        beat.isChoicePayoff === true;
+    }
+    return beat.isClimaxBeat === true || beat.isKeyStoryBeat === true || beat.isChoicePayoff === true;
+  }
+
+  private async saveSceneVisualQADiagnostic(
+    outputDirectory: string | undefined,
+    scopedSceneId: string,
+    report: unknown,
+  ): Promise<void> {
+    if (!outputDirectory) return;
+    try {
+      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${scopedSceneId}.visual-qa.json`, {
+        generatedAt: new Date().toISOString(),
+        scopedSceneId,
+        report,
+      });
+    } catch (error) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `Failed to save visual QA diagnostic for ${scopedSceneId}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  private serializeVisualQAReport(report: any): Record<string, unknown> {
+    const mapToObject = (value: unknown) => value instanceof Map ? Object.fromEntries(value.entries()) : value;
+    return {
+      ...report,
+      expressionReports: mapToObject(report?.expressionReports),
+      bodyLanguageReports: mapToObject(report?.bodyLanguageReports),
+      lightingColorReports: mapToObject(report?.lightingColorReports),
+      visualStorytellingReports: mapToObject(report?.visualStorytellingReports),
+    };
+  }
+
+  private async saveBeatVisualQADiagnostic(
+    outputDirectory: string | undefined,
+    identifier: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    if (!outputDirectory) return;
+    try {
+      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${identifier}.visual-qa.json`, {
+        generatedAt: new Date().toISOString(),
+        identifier,
+        ...payload,
+      });
+    } catch (error) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `Failed to save beat visual QA diagnostic for ${identifier}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
   private async runEpisodeImageGeneration(
     sceneContents: SceneContent[],
     choiceSets: ChoiceSet[],
@@ -8708,7 +8868,8 @@ ${clothingRule}
     const imagePipelineEnv = typeof process !== 'undefined' ? process.env : ({} as Record<string, string | undefined>);
     const parallelSceneStartsEnabled = imagePipelineEnv.EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS === 'true'
       || imagePipelineEnv.EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS === '1';
-    if (parallelSceneStartsEnabled) {
+    const effectivePromptMode = this.getEffectiveImagePromptMode();
+    if (parallelSceneStartsEnabled && effectivePromptMode === 'deterministic') {
       try {
         await this.prefetchSceneOpeningBeats(sceneContents, brief, characterBible, colorScript, worldBible, outputDirectory);
       } catch (prefetchErr) {
@@ -8721,6 +8882,13 @@ ${clothingRule}
       }
     } else {
       this._openingBeatPrefetch.clear();
+      if (parallelSceneStartsEnabled && effectivePromptMode !== 'deterministic') {
+        this.emit({
+          type: 'debug',
+          phase: 'images',
+          message: `A3-narrow prefetch skipped because promptMode=${effectivePromptMode}; LLM/compare mode needs scene-level visual planning first.`,
+        });
+      }
     }
 
     for (let sceneIndex = 0; sceneIndex < sceneContents.length; sceneIndex++) {
@@ -8989,6 +9157,118 @@ ${clothingRule}
           beatCharacterMap.set(eb.id, eb.characters);
         }
 
+        const promptMode = this.getEffectiveImagePromptMode();
+        const qaMode = this.getEffectiveImageQaMode();
+        const compareCanonical = this.config.imageGen?.qa?.compareCanonical || 'llm';
+        const compareMaxBeats = this.config.imageGen?.qa?.compareMaxBeats ?? 20;
+        let compareBeatsSeen = 0;
+        let llmVisualPlan: VisualPlan | undefined;
+        const llmPromptMap = new Map<string, ImagePrompt>();
+        const generatedImagesForVisualQA = new Map<string, GeneratedImage>();
+        const heroVisualQAIdentifiers = new Map<string, string>();
+
+        if (promptMode === 'llm' || promptMode === 'compare') {
+          try {
+            const sceneCharacterDescriptions = this.buildCharacterDescriptions(sceneCharacterIds, characterBible)
+              .map((desc: any) => {
+                const character = characterBible.characters.find(c => c.name === desc.name);
+                return {
+                  id: character?.id || desc.name,
+                  name: desc.name,
+                  physicalDescription: desc.appearance || '',
+                  distinctiveFeatures: desc.canonicalAppearance?.distinctiveFeatures || [],
+                  typicalAttire: desc.canonicalAppearance?.attire || '',
+                  role: character?.role || '',
+                  silhouetteHooks: desc.canonicalAppearance?.silhouetteHooks,
+                  shapeLanguage: desc.canonicalAppearance?.shapeLanguage,
+                  contrastNotes: desc.canonicalAppearance?.contrastNotes,
+                };
+              });
+            const storyboardRequest = {
+              sceneId: scopedSceneId,
+              sceneName: scene.sceneName,
+              sceneDescription: [
+                scene.sceneName,
+                scene.settingContext?.description,
+                Array.isArray(scene.keyMoments) ? scene.keyMoments.join(' ') : undefined,
+              ].filter(Boolean).join('. '),
+              beats: enrichedBeats,
+              genre: brief.story.genre,
+              tone: brief.story.tone,
+              mood: sceneMood,
+              colorScript,
+              sceneContext,
+              choicePositions,
+              incomingChoiceContext: scene.incomingChoiceContext,
+              locationInfo: locationInfo ? {
+                locationId: locationInfo.locationId || sceneLocationId || scene.sceneId,
+                locationName: locationInfo.name || locationInfo.locationName || scene.sceneName,
+                basePersonality: locationInfo.basePersonality || locationInfo.personality || 'neutral',
+                description: locationInfo.description || locationInfo.fullDescription || scene.settingContext?.description || scene.sceneName,
+                isThreshold: locationInfo.isThreshold,
+              } : undefined,
+              characterBodyVocabularies,
+              characterDescriptions: sceneCharacterDescriptions,
+            };
+            const llmResult = await withTimeout(
+              this.imageAgentTeam.generateFullSceneVisuals(storyboardRequest as any),
+              PIPELINE_TIMEOUTS.storyboard,
+              `ImageAgentTeam.generateFullSceneVisuals(${scopedSceneId})`,
+            );
+            if (llmResult.success && llmResult.data) {
+              llmVisualPlan = llmResult.data;
+              const rawPrompts = llmResult.data.prompts instanceof Map
+                ? llmResult.data.prompts
+                : new Map(Object.entries((llmResult.data as any).prompts || {}));
+              rawPrompts.forEach((prompt: ImagePrompt, key: string) => {
+                llmPromptMap.set(key, prompt);
+                const shot = llmVisualPlan?.shots?.find((s: any) => s.id === key || s.beatId === key);
+                if (shot?.beatId) llmPromptMap.set(shot.beatId, prompt);
+              });
+              this.collectedVisualPlanning.visualPlans.push(llmVisualPlan);
+              await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
+                promptMode,
+                qaMode,
+                status: 'success',
+                shotCount: llmVisualPlan.shots?.length || 0,
+                promptCount: llmPromptMap.size,
+                shots: llmVisualPlan.shots,
+                promptKeys: [...llmPromptMap.keys()],
+              });
+              this.emit({
+                type: 'debug',
+                phase: 'images',
+                message: `LLM visual planning restored for ${scene.sceneId}: ${llmVisualPlan.shots?.length || 0} shots, ${llmPromptMap.size} prompt keys`,
+              });
+            } else {
+              await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
+                promptMode,
+                qaMode,
+                status: 'failed',
+                error: llmResult.error || 'unknown LLM visual planning failure',
+              });
+              this.emit({
+                type: 'warning',
+                phase: 'images',
+                message: `LLM visual planning failed for ${scene.sceneName}; deterministic prompts will be used for this scene: ${llmResult.error || 'unknown error'}`,
+              });
+            }
+          } catch (planningErr) {
+            const planningMsg = planningErr instanceof Error ? planningErr.message : String(planningErr);
+            await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
+              promptMode,
+              qaMode,
+              status: 'threw',
+              error: planningMsg,
+            });
+            this.emit({
+              type: 'warning',
+              phase: 'images',
+              message: `LLM visual planning threw for ${scene.sceneName}; deterministic prompts will be used for this scene: ${planningMsg}`,
+            });
+          }
+        }
+
         for (let beatIdx = 0; beatIdx < enrichedBeats.length; beatIdx++) {
           await this.checkCancellation();
           const beat = enrichedBeats[beatIdx];
@@ -9170,14 +9450,64 @@ ${clothingRule}
             colorMoodOverride: beatColorOverride,
           };
 
-          let imagePrompt = buildBeatImagePrompt(beatPromptInput, scenePromptCtx);
-          imagePrompt = this.sanitizeImagePrompt(imagePrompt, brief);
-
-          // Apply shot plan override (universal — all beats get their shot type from the scene-level planner)
+          let deterministicPrompt = this.sanitizeImagePrompt(buildBeatImagePrompt(beatPromptInput, scenePromptCtx), brief);
           const beatPlan = shotPlanMap.get(beatId);
           if (beatPlan) {
-            imagePrompt = overrideShotFromPlan(imagePrompt, beatPlan.assignedShotType, beatPlan.assignedAngle);
+            deterministicPrompt = overrideShotFromPlan(deterministicPrompt, beatPlan.assignedShotType, beatPlan.assignedAngle);
           }
+
+          const rawLlmPrompt = llmPromptMap.get(beatId);
+          const shouldCompareThisBeat = promptMode === 'compare' && compareBeatsSeen < compareMaxBeats;
+          if (shouldCompareThisBeat) compareBeatsSeen++;
+          const wrappedLlmPrompt = rawLlmPrompt
+            ? this.wrapLlmImagePromptWithContracts(rawLlmPrompt, beatPromptInput, scenePromptCtx, shotCharacterNames, promptMode, brief)
+            : undefined;
+          let imagePrompt = deterministicPrompt;
+          let promptSource: 'deterministic' | 'llm' | 'deterministic-fallback' | 'compare-llm' | 'compare-deterministic' = 'deterministic';
+
+          if (promptMode === 'llm') {
+            if (wrappedLlmPrompt) {
+              imagePrompt = wrappedLlmPrompt;
+              promptSource = 'llm';
+            } else {
+              promptSource = 'deterministic-fallback';
+              this.emit({
+                type: 'warning',
+                phase: 'images',
+                message: `LLM prompt missing for ${scene.sceneId}:${beatId}; deterministic fallback used for this beat only.`,
+              });
+            }
+          } else if (shouldCompareThisBeat) {
+            await this.savePromptCompareDiagnostic(outputDirectory, identifier, {
+              promptMode,
+              canonical: compareCanonical,
+              hasLlmPrompt: !!wrappedLlmPrompt,
+              deterministicPrompt,
+              llmPrompt: wrappedLlmPrompt || null,
+            });
+            if (compareCanonical === 'llm' && wrappedLlmPrompt) {
+              imagePrompt = wrappedLlmPrompt;
+              promptSource = 'compare-llm';
+            } else {
+              imagePrompt = deterministicPrompt;
+              promptSource = 'compare-deterministic';
+            }
+          }
+
+          imagePrompt = {
+            ...imagePrompt,
+            promptContract: {
+              ...(imagePrompt.promptContract || {}),
+              effectivePromptMode: promptMode,
+              effectivePromptSource: promptSource,
+              effectiveQaMode: qaMode,
+              styleSource: this._uploadedStyleReferenceImages.length > 0
+                ? 'user-visual'
+                : (this._generatedStyleReferencesAllowed && styleReferenceStored ? 'approved-generated-anchor' : 'raw-season-style'),
+              visibleCharacterRefsRequired: shotCharacterNames,
+              visualPlanningStatus: rawLlmPrompt ? 'llm-prompt-available' : 'deterministic-fallback',
+            },
+          };
 
           this.emit({ type: 'agent_start', agent: 'ImageService', message: `Generating image for beat ${beatId} in ${scene.sceneName}...` });
 
@@ -9201,6 +9531,7 @@ ${clothingRule}
             if (beatPlan?.isPanelBeat && beatPlan.panelShotSequence && beatPlan.panelCount) {
               const panelUrls: string[] = [];
               let previousPanelImage: { data: string; mimeType: string } | null = null;
+              let firstPanelResult: GeneratedImage | null = null;
               this.emit({ type: 'debug', phase: 'images', message: `Panel beat ${beatId}: generating ${beatPlan.panelCount} panels` });
 
               for (let pIdx = 0; pIdx < beatPlan.panelCount; pIdx++) {
@@ -9255,6 +9586,7 @@ ${clothingRule}
                 }
 
                 if (panelResult.imageUrl) {
+                  if (!firstPanelResult) firstPanelResult = panelResult;
                   panelUrls.push(panelResult.imageUrl);
                   const panelSlotId = `story-beat-panel:${scene.sceneId}::${beatId}::panel-${pIdx}`;
                   try {
@@ -9314,6 +9646,10 @@ ${clothingRule}
                 beatResumeSet.add(identifier);
                 beatResumeImageMap[identifier] = panelUrls[0];
                 persistBeatResume().catch(() => {});
+                if (firstPanelResult && this.shouldRunHeroVisualQA(beat, beatIdx, enrichedBeats.length, qaMode)) {
+                  generatedImagesForVisualQA.set(beatId, firstPanelResult);
+                  heroVisualQAIdentifiers.set(beatId, identifier);
+                }
               }
 
               if (this._generatedStyleReferencesAllowed && !styleReferenceStored && lastGeneratedImage) {
@@ -9354,6 +9690,10 @@ ${clothingRule}
             if (result.imageUrl) {
               const beatMapKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beatId);
               beatImages.set(beatMapKey, result.imageUrl);
+              if (this.shouldRunHeroVisualQA(beat, beatIdx, enrichedBeats.length, qaMode)) {
+                generatedImagesForVisualQA.set(beatId, result);
+                heroVisualQAIdentifiers.set(beatId, identifier);
+              }
 
               // Register with AssetRegistry for durable tracking
               const slotId = `story-beat:${scopedSceneId}::${beatId}`;
@@ -9433,6 +9773,64 @@ ${clothingRule}
               throw shotErr;
             }
             await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs * 2));
+          }
+        }
+
+        if (qaMode === 'full' && llmVisualPlan && generatedImagesForVisualQA.size > 0) {
+          const heroBeatIds = new Set(heroVisualQAIdentifiers.keys());
+          const heroPlan: VisualPlan = {
+            ...llmVisualPlan,
+            shots: (llmVisualPlan.shots || []).filter((shot: any) => heroBeatIds.has(shot.beatId || shot.id)),
+          };
+          if (heroPlan.shots.length > 0) {
+            try {
+              const fullQaReport = await this.imageAgentTeam.runFullVisualQA(
+                heroPlan,
+                generatedImagesForVisualQA,
+                sceneContext.isClimactic ? 'climax' : 'dialogue',
+                sceneContext.isClimactic || heroPlan.shots.some((shot: any) => shot.storyBeat?.isClimaxBeat || shot.storyBeat?.isKeyStoryBeat),
+                colorScript,
+                sceneContext,
+              );
+              const serializedReport = this.serializeVisualQAReport(fullQaReport);
+              await this.saveSceneVisualQADiagnostic(outputDirectory, scopedSceneId, serializedReport);
+              for (const [beatKey, beatIdentifier] of heroVisualQAIdentifiers.entries()) {
+                const shot = heroPlan.shots.find((s: any) => s.beatId === beatKey || s.id === beatKey);
+                await this.saveBeatVisualQADiagnostic(outputDirectory, beatIdentifier, {
+                  scopedSceneId,
+                  beatId: beatKey,
+                  qaMode,
+                  promptMode,
+                  shot,
+                  overallScore: fullQaReport.overallScore,
+                  isAcceptable: fullQaReport.isAcceptable,
+                  issues: fullQaReport.issues,
+                  shouldRegenerate: fullQaReport.shotsToRegenerate.includes(beatKey),
+                  report: serializedReport,
+                });
+              }
+              if (!fullQaReport.isAcceptable) {
+                this.emit({
+                  type: 'warning',
+                  phase: 'images',
+                  message: `Full visual QA flagged ${scene.sceneName}: ${fullQaReport.issues.slice(0, 3).join('; ')}`,
+                  data: { sceneId: scene.sceneId, shotsToRegenerate: fullQaReport.shotsToRegenerate },
+                });
+              }
+            } catch (qaErr) {
+              const qaMsg = qaErr instanceof Error ? qaErr.message : String(qaErr);
+              await this.saveSceneVisualQADiagnostic(outputDirectory, scopedSceneId, {
+                status: 'failed',
+                error: qaMsg,
+                promptMode,
+                qaMode,
+              });
+              this.emit({
+                type: 'warning',
+                phase: 'images',
+                message: `Full visual QA failed for ${scene.sceneName} (non-fatal): ${qaMsg}`,
+              });
+            }
           }
         }
 

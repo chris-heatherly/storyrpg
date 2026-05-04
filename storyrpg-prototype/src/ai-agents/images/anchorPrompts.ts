@@ -75,7 +75,7 @@ export function buildCharacterAnchorPrompt(input: CharacterAnchorInput): BuiltAn
   const palette = (input.colorTerms || []).filter(Boolean).slice(0, 3).join(', ');
   const identityLine = input.protagonistDescription
     ? `Identity anchors: ${input.protagonistDescription}.`
-    : 'Identity anchors: generic Hero, clearly readable face, coherent contemporary costume, stable silhouette.';
+    : 'Identity anchors: clearly readable face, coherent contemporary costume, stable silhouette, consistent age impression and body language.';
   const displayName = input.protagonistName?.trim() || 'Hero';
   const basePrompt: ImagePrompt = {
     prompt: [
@@ -105,7 +105,7 @@ export function buildCharacterAnchorPrompt(input: CharacterAnchorInput): BuiltAn
       style: input.style || '',
       styleSource: input.style ? 'raw-season-style' : 'default',
       mode: 'style-anchor',
-      characterIdentity: [identityLine],
+      characterIdentity: [displayName],
       composition: basePrompt.composition,
       negativeContract: basePrompt.negativePrompt,
     }),

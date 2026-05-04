@@ -381,11 +381,7 @@ function buildEstablishingPrompt(
     scene.colorMood?.lighting ? `Lighting: ${scene.colorMood.lighting}` : '',
     beat.mustShowDetail ? `Must include: ${beat.mustShowDetail}` : '',
     'No characters in foreground. Show the environment, atmosphere, and sense of place.',
-    styleStrength === 2
-      ? `Strictly maintain art style: ${artStyle}. Do not introduce other aesthetics.`
-      : styleStrength === 1
-        ? `Maintain art style: ${artStyle}`
-        : '',
+    'Render as a stylized illustrated environment matching the season style contract and character-reference finish; never as a realistic interior render, photo, 3D render, or architectural visualization.',
   ];
 
   const basePrompt: ImagePrompt = {
@@ -564,21 +560,9 @@ function buildCharacterPrompt(
     narrativeParts.push(`must show: ${beat.mustShowDetail}`);
   }
 
-  // Repeat the art style as a closing anchor to reinforce it after all the
-  // narrative/camera/lighting text. Leading + trailing style = bracketed
-  // emphasis, the same pattern used by the direct Gemini prompt builder.
-  // C6: anchor strength 0 omits the closing reinforcement; 2 adds a
-  // mid-prompt "Style reminder" before the closing anchor for extra weight.
-  if (styleStrength === 2) {
-    narrativeParts.push(`Style reminder: ${artStyle}`);
-  }
-  if (styleStrength >= 1) {
-    narrativeParts.push(
-      styleStrength === 2
-        ? `Strictly maintain art style: ${artStyle}. Do not introduce other aesthetics.`
-        : `Maintain art style: ${artStyle}`
-    );
-  }
+  narrativeParts.push(
+    'Render as a stylized story illustration matching the season style contract and approved character references; never as photorealism, live-action, 3D render, or generic cinematic concept art.',
+  );
 
   const keyExpression = beat.emotionalRead
     ? synthesizeExpressionFromEmotion(beat.emotionalRead)

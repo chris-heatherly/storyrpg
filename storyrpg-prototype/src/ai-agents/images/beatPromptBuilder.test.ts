@@ -128,7 +128,11 @@ describe('buildBeatImagePrompt', () => {
     expect(prompt.style).toBe('inked watercolor with clean linework');
     expect(prompt.styleContract?.text).toBe('inked watercolor with clean linework');
     expect(prompt.prompt).toContain('STYLE CONTRACT');
+    expect(prompt.prompt).not.toMatch(/Maintain art style|Style reminder/i);
     expect(prompt.prompt).not.toMatch(/cinematic story frame|oil painting texture|film still/i);
+    expect(prompt.negativePrompt).toContain('photorealism');
+    expect(prompt.negativePrompt).toContain('architectural visualization');
+    expect(prompt.negativeContract).toContain('realistic 3D render');
     expect(prompt.promptContract?.sanitizedTerms).toEqual(
       expect.arrayContaining(['cinematic story frame', 'oil painting texture']),
     );

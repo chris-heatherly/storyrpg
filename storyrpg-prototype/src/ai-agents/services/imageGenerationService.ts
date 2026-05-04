@@ -718,6 +718,16 @@ export class ImageGenerationService {
       .trim();
   }
 
+  private looksLikeCharacterDisplayName(name: unknown): boolean {
+    const text = String(name || '').trim();
+    if (!text || text.length > 80) return false;
+    if (/[\n\r]/.test(text)) return false;
+    if (/\b(single character reference|identity anchors?|front view|full body|wearing|render(?:ed)?|style contract|negative prompt)\b/i.test(text)) {
+      return false;
+    }
+    return !/[{}[\]<>:;|\\/]/.test(text);
+  }
+
   private buildCharacterReferenceAudit(
     provider: ImageProvider,
     metadata: Parameters<ImageGenerationService['generateImage']>[2],
@@ -728,7 +738,11 @@ export class ImageGenerationService {
     const promptIdentityNames = Array.isArray(prompt.characterIdentity)
       ? prompt.characterIdentity
           .map((name) => String(name || '').trim())
-          .filter((name) => name && !/^identity anchors?:/i.test(name) && !/^characters?:/i.test(name))
+          .filter((name) =>
+            this.looksLikeCharacterDisplayName(name) &&
+            !/^identity anchors?:/i.test(name) &&
+            !/^characters?:/i.test(name)
+          )
       : [];
     const visibleCharacters = Array.from(new Set<string>(
       (Array.isArray((metadata as any)?.characterNames) && (metadata as any).characterNames.length > 0
@@ -794,7 +808,7 @@ export class ImageGenerationService {
   ): boolean {
     if (this.config.requireCharacterRefsForVisibleCharacters === false) return false;
     if (this.config.allowTextOnlyCharacterImages === true) return false;
-    if (metadata?.type === 'master' || metadata?.type === 'cover') return false;
+    if (metadata?.type === 'master') return false;
     return referenceAudit.visibleCharacters.length > 0 && referenceAudit.missingReferenceCharacters.length > 0;
   }
 
@@ -5782,7 +5796,7 @@ export class ImageGenerationService {
 Also inspect style fidelity against this authoritative style contract:
 ${styleContract}
 
-Fail if the image visibly drifts into a different renderer or finish, including generic cinematic concept art, photorealism, oil-painting texture, gritty realism, heavy film-still grading, architectural visualization, messy high-detail rendering, or any style that contradicts the contract.`
+Fail if the image visibly drifts into a different renderer or finish, including generic cinematic concept art, photorealism, DSLR/photo lighting, live-action stills, realistic 3D rendering, Unreal/Octane/Redshift-style rendering, oil-painting texture, gritty realism, heavy film-still grading, architectural visualization, messy high-detail rendering, or any style that contradicts the contract.`
         : '';
       const referenceFormatReview = prompt?.promptContract || prompt?.styleContract
         ? `
@@ -5808,6 +5822,7 @@ Fail if any of these are present:
 - floating, hovering, levitating, or unsupported characters unless the prompt explicitly asks for airborne/falling/jumping/levitation/dream/magical suspension
 - collage, split-screen, inset frame, picture-in-picture, comic panel borders, multi-panel leakage
 - reference-sheet/model-sheet artifacts, side-by-side views, turnaround layout, labels, measurement marks
+- photorealism, photographic lighting, live-action stills, 3D render finish, architectural visualization, lens blur, bokeh, or generic cinematic concept-art style drift
 ${styleReview}
 ${referenceFormatReview}
 

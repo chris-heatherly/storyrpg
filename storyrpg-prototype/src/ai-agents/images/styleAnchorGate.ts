@@ -3,6 +3,8 @@ export interface StyleAnchorValidationResult {
   score?: number;
   reason?: string;
   issues?: string[];
+  skipped?: boolean;
+  allowedAsStyleReference?: boolean;
 }
 
 export interface StyleAnchorGateDecision<T> {

@@ -17,6 +17,8 @@ describe('image defect gate helpers', () => {
         'floating character',
         'comic panel leakage',
         'reference sheet annotations',
+        'photorealistic architectural visualization',
+        'generic cinematic concept art style drift',
       ],
       reason: 'bad image',
     });
@@ -29,6 +31,8 @@ describe('image defect gate helpers', () => {
       'floating_character',
       'panel_leakage',
       'reference_sheet_artifact',
+      'photorealism',
+      'style_drift',
     ]);
   });
 

@@ -550,7 +550,8 @@ export class ImageAgentTeam extends BaseAgent {
       style,
       styleSource: 'raw-season-style',
       mode: 'character-ref',
-      characterIdentity: [sanitizeStyleContaminationText(cleanedText).text].filter(Boolean),
+      characterIdentity: prompt.characterIdentity,
+      sceneAction: sanitizeStyleContaminationText(cleanedText).text,
       composition: prompt.composition || 'Full-body character reference, plain background, even studio lighting',
       negativeContract: prompt.negativePrompt,
     });
@@ -1387,6 +1388,7 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           'extra arms, extra hands, extra legs, duplicated limbs, duplicate body, floating, levitating, feet off ground, cropped feet'
         ].filter(Boolean).join(', '),
         aspectRatio: '3:4',
+        characterIdentity: [sheet.characterName].filter(Boolean),
       };
       const viewPrompt = this.lockPromptToSeasonStyle(viewPromptBase);
 
@@ -1410,7 +1412,18 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
         imageService,
         viewPrompt,
         identifier,
-        { type: 'master', characterId: sheet.characterId, viewType: view.viewType },
+        {
+          type: 'master',
+          characterId: sheet.characterId,
+          characterNames: [sheet.characterName].filter(Boolean),
+          characterDescriptions: [{
+            id: sheet.characterId,
+            name: sheet.characterName,
+            appearance: visualAnchors,
+            canonicalAppearance: visualAnchors,
+          }],
+          viewType: view.viewType,
+        },
         viewRefs.length > 0 ? viewRefs : undefined
       );
 
@@ -4499,7 +4512,9 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
 
       lastReason = reason;
       if (attempt < maxRetries) {
-        const retryIssues = issues.length > 0 && issues[0] !== 'tier1' ? issues as any[] : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact'];
+        const retryIssues = issues.length > 0 && issues[0] !== 'tier1'
+          ? issues as any[]
+          : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'style_drift'];
         const retryPatch = buildDefectRetryPrompt(basePrompt, retryIssues);
         prompt = retryPatch.prompt;
         console.warn(`[ImageAgentTeam] Image defect detected for ${identifier}: ${issues.join(', ') || reason}; retry ${attempt + 1}/${maxRetries}`);

@@ -306,6 +306,51 @@ describe('ImageGenerationService character reference audit', () => {
     )).toBe(false);
   });
 
+  it('enforces continuity for character-visible cover images without usable refs', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const audit = (service as any).buildCharacterReferenceAudit(
+      'dall-e',
+      { characterNames: ['Hikari Hoshino'], type: 'cover' },
+      { prompt: 'Hikari Hoshino as the cover focal subject' },
+      undefined,
+      undefined,
+    );
+
+    expect(audit.missingReferenceCharacters).toEqual(['Hikari Hoshino']);
+    expect((service as any).shouldEnforceCharacterReferenceContinuity(
+      { characterNames: ['Hikari Hoshino'], type: 'cover' },
+      audit,
+    )).toBe(true);
+  });
+
+  it('ignores long prompt paragraphs in characterIdentity when metadata names are absent', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const audit = (service as any).buildCharacterReferenceAudit(
+      'dall-e',
+      { type: 'master' },
+      {
+        prompt: 'Single character reference image',
+        characterIdentity: ['Single character reference image: Hikari Hoshino, one person only, front view, facing camera directly.'],
+      },
+      undefined,
+      undefined,
+    );
+
+    expect(audit.visibleCharacters).toEqual([]);
+  });
+
   it('still enforces continuity for character-visible scene images without usable refs', () => {
     const service = new ImageGenerationService({
       enabled: true,

@@ -6,7 +6,9 @@ export type ImageDefectIssue =
   | 'duplicate_body'
   | 'floating_character'
   | 'panel_leakage'
-  | 'reference_sheet_artifact';
+  | 'reference_sheet_artifact'
+  | 'photorealism'
+  | 'style_drift';
 
 export interface ImageDefectReport {
   passed: boolean;
@@ -32,6 +34,8 @@ const ISSUE_NEGATIVES: Record<ImageDefectIssue, string> = {
   floating_character: 'floating, levitating, airborne, feet off ground, hovering, unsupported body',
   panel_leakage: 'panel borders, comic panels, collage, split screen, multi-panel layout, inset image, picture-in-picture',
   reference_sheet_artifact: 'turnaround sheet, model sheet, reference sheet layout, side-by-side views, annotations, labels',
+  photorealism: 'photorealism, photorealistic, DSLR photo, live-action still, photographic lighting, lens blur, bokeh, depth of field, hyperreal skin',
+  style_drift: 'generic cinematic concept art, realistic 3D render, architectural visualization, Unreal Engine, Octane render, Redshift render, gritty realism, oil painting texture, off-style rendering',
 };
 
 const ISSUE_INSTRUCTIONS: Record<ImageDefectIssue, string> = {
@@ -41,6 +45,8 @@ const ISSUE_INSTRUCTIONS: Record<ImageDefectIssue, string> = {
   floating_character: 'Keep standing characters grounded with feet visibly planted unless the story explicitly requests airborne motion.',
   panel_leakage: 'Return one continuous image only, with no panels, borders, inset frames, collage, or split-screen layout.',
   reference_sheet_artifact: 'Return one clean image only, not a model sheet, turnaround, labeled reference sheet, or multi-view layout.',
+  photorealism: 'Remove all photoreal, photographic, live-action, lens, bokeh, and realistic material rendering; use the requested illustrated season style only.',
+  style_drift: 'Restore the exact season rendering style, linework, palette, lighting treatment, and finish; do not use generic cinematic concept art or 3D-rendered realism.',
 };
 
 export function promptAllowsFloating(prompt: ImagePrompt | string): boolean {
@@ -78,6 +84,8 @@ export function normalizeImageDefectReport(raw: unknown, prompt?: ImagePrompt | 
   addIf('floating_character', obj.floating_character ?? obj.floating, /\b(floating|levitating|hovering|airborne|feet off ground|unsupported)\b/);
   addIf('panel_leakage', obj.panel_leakage ?? obj.panelLeakage, /\b(panel|comic panel|split[- ]screen|collage|inset|picture-in-picture|multi[- ]panel)\b/);
   addIf('reference_sheet_artifact', obj.reference_sheet_artifact ?? obj.referenceSheetArtifact, /\b(reference sheet|model sheet|turnaround|multi[- ]view|side-by-side|annotations?)\b/);
+  addIf('photorealism', obj.photorealism ?? obj.photorealistic ?? obj.photoRealism, /\b(photoreal(?:istic|ism)?|photographic|photo|dslr|live[- ]action|lens blur|bokeh|depth of field|hyperreal)\b/);
+  addIf('style_drift', obj.style_drift ?? obj.styleDrift ?? obj.offStyle, /\b(style drift|off[- ]style|generic cinematic|concept art|3d render|architectural visualization|unreal|octane|redshift|gritty realism|oil painting)\b/);
 
   if (issues.has('floating_character') && prompt && promptAllowsFloating(prompt)) {
     issues.delete('floating_character');

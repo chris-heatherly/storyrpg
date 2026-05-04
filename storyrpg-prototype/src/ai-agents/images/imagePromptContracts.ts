@@ -32,8 +32,8 @@ const STYLE_CONTAMINATION: Array<{ pattern: RegExp; replacement: string; label: 
   { pattern: /\bmovie still\b/gi, replacement: 'single story image', label: 'movie still' },
   { pattern: /\bconcept art\b/gi, replacement: 'finished illustration', label: 'concept art' },
   { pattern: /\boil painting texture\b/gi, replacement: 'style-consistent finish', label: 'oil painting texture' },
-  { pattern: /\bphotoreal(?:istic|ism)?\b/gi, replacement: 'style-consistent', label: 'photorealism' },
-  { pattern: /\bgritty realism\b/gi, replacement: 'clean style-consistent realism level', label: 'gritty realism' },
+  { pattern: /\bphotoreal(?:istic|ism)?\b/gi, replacement: 'non-photoreal illustrated finish', label: 'photorealism' },
+  { pattern: /\bgritty realism\b/gi, replacement: 'clean stylized finish', label: 'gritty realism' },
   { pattern: /\bhyper[- ]?detailed\b/gi, replacement: 'clear detailed', label: 'hyper-detailed' },
   { pattern: /\bpainterly environment\b/gi, replacement: 'style-consistent environment', label: 'painterly environment' },
   { pattern: /\bgeneric anime style\b/gi, replacement: 'the specified season style', label: 'generic anime style' },
@@ -45,8 +45,35 @@ const STYLE_CONTAMINATION: Array<{ pattern: RegExp; replacement: string; label: 
 
 const CHARACTER_REDESIGN_TERMS = /\b(change(?:d)? (?:hair|face|eyes|skin|build|body)|different (?:face|hair|eyes|skin|body|outfit)|redesign(?:ed)?|new look|make (?:her|him|them) look)\b/i;
 
+const ANTI_PHOTOREAL_NEGATIVES = [
+  'photorealism',
+  'photorealistic',
+  'realistic 3D render',
+  'architectural visualization',
+  'DSLR photo',
+  'live-action still',
+  'lens blur',
+  'bokeh',
+  'depth of field',
+  'Unreal Engine',
+  'Octane render',
+  'Redshift render',
+  'cinematic realism',
+  'hyperreal skin',
+  'realistic material rendering',
+  'film grain',
+  'photographic lighting',
+];
+
 function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean)));
+}
+
+function appendAntiPhotorealNegatives(value: string | undefined): string {
+  const existing = value?.trim() || '';
+  const normalizedExisting = existing.toLowerCase();
+  const additions = ANTI_PHOTOREAL_NEGATIVES.filter(term => !normalizedExisting.includes(term.toLowerCase()));
+  return [existing, ...additions].filter(Boolean).join(', ');
 }
 
 export function sanitizeStyleContaminationText(value: string | undefined): SanitizedText {
@@ -84,7 +111,9 @@ export function applyPromptContract(
   };
   const compositionClean = sanitizeStyleContaminationText(options.composition || prompt.composition);
   const negativeClean = {
-    text: (prompt.negativePrompt || '').replace(/\breference sheet style\b/gi, 'clean full-body character identity reference'),
+    text: appendAntiPhotorealNegatives(
+      (prompt.negativePrompt || '').replace(/\breference sheet style\b/gi, 'clean full-body character identity reference'),
+    ),
     sanitizedTerms: /\breference sheet style\b/i.test(prompt.negativePrompt || '') ? ['reference sheet style'] : [],
   };
   const styleSource = options.styleSource || (style ? 'raw-season-style' : 'default');
@@ -113,7 +142,7 @@ export function applyPromptContract(
     appearanceState: options.appearanceState,
     sceneAction: options.sceneAction,
     compositionContract: compositionClean.text || options.composition || prompt.composition,
-    negativeContract: options.negativeContract || negativeClean.text || prompt.negativePrompt,
+    negativeContract: appendAntiPhotorealNegatives(options.negativeContract || negativeClean.text || prompt.negativePrompt),
     promptContract: {
       ...(prompt.promptContract || {}),
       sanitizedTerms,

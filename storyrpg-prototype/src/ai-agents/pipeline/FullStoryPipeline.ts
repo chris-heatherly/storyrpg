@@ -1391,11 +1391,26 @@ export class FullStoryPipeline {
     storyId: string;
     generatedAt: string;
     imagesStatus: NonNullable<Story['imagesStatus']>;
+    coverage: {
+      totalBeats: number;
+      beatsWithImages: number;
+      totalScenes: number;
+      scenesWithImages: number;
+      strategy: string;
+    };
     slots: ImageSlot[];
   } {
     const slots: ImageSlot[] = [];
+    let totalBeats = 0;
+    let beatsWithImages = 0;
+    let totalScenes = 0;
+    let scenesWithImages = 0;
     for (const episode of story.episodes || []) {
       for (const scene of episode.scenes || []) {
+        totalScenes += 1;
+        if (scene.backgroundImage || scene.image || scene.imageUrl || scene.imagePath) {
+          scenesWithImages += 1;
+        }
         const scopedSceneId = `episode-${episode.number}-${scene.id}`;
         slots.push({
           slotId: `story-scene:${scopedSceneId}`,
@@ -1412,6 +1427,10 @@ export class FullStoryPipeline {
           continuitySourceSlotId: scene.beats?.[0]?.id ? `story-beat:${scopedSceneId}::${scene.beats[0].id}` : undefined,
         });
         for (const beat of scene.beats || []) {
+          totalBeats += 1;
+          if (beat.image || beat.imageUrl || beat.imagePath) {
+            beatsWithImages += 1;
+          }
           slots.push({
             slotId: `story-beat:${scopedSceneId}::${beat.id}`,
             family: 'story-beat',
@@ -1436,6 +1455,13 @@ export class FullStoryPipeline {
       storyId: story.id,
       generatedAt: new Date().toISOString(),
       imagesStatus: story.imagesStatus || 'pending',
+      coverage: {
+        totalBeats,
+        beatsWithImages,
+        totalScenes,
+        scenesWithImages,
+        strategy: this.config.imageGen?.strategy || 'selective',
+      },
       slots,
     };
   }
@@ -8767,11 +8793,13 @@ ${clothingRule}
               }
             );
             
-            return this.imageService.generateImage(
+            return this.generateImageWithDefectRetries(
               prompt,
               identifier,
               metadata,
-              referenceImages.length > 0 ? referenceImages : undefined
+              referenceImages.length > 0 ? referenceImages : undefined,
+              `storyBeat(${identifier})`,
+              outputDirectory,
             );
           }
         };
@@ -9894,7 +9922,8 @@ ${clothingRule}
     try {
       this.emit({ type: 'agent_start', agent: 'ImageService', message: 'Generating story cover art...' });
 
-      const protagonistId = this.resolveCharacterIdWithBrief(brief.protagonist.id || brief.protagonist.name, characterBible, brief)
+      const protagonistId = this.resolveProtagonistCharacterId(characterBible, brief)
+        || this.resolveCharacterIdWithBrief(brief.protagonist.id || brief.protagonist.name, characterBible, brief)
         || this.resolveCharacterIdWithBrief(brief.protagonist.name, characterBible, brief)
         || brief.protagonist.id;
       const protagonist = characterBible.characters.find(c => c.id === protagonistId);
@@ -10088,7 +10117,7 @@ ${clothingRule}
       }
 
       const result = await withTimeout(
-        this.imageService.generateImage(
+        this.generateImageWithDefectRetries(
           coverPrompt,
           'story-cover',
           {
@@ -10097,7 +10126,9 @@ ${clothingRule}
             characterNames: [protagonist?.name || brief.protagonist.name].filter(Boolean),
             characterDescriptions: this.buildCharacterDescriptions([protagonistId], characterBible),
           },
-          referenceImages.length > 0 ? referenceImages : undefined
+          referenceImages.length > 0 ? referenceImages : undefined,
+          'StoryCoverArt',
+          undefined,
         ),
         PIPELINE_TIMEOUTS.storyboard,
         'StoryCoverArt'
@@ -11833,11 +11864,33 @@ Design the key art. Return STRICT JSON matching the schema.`;
     return fuzzy?.id || null;
   }
 
+  private resolveProtagonistCharacterId(characterBible: CharacterBible, brief: FullCreativeBrief): string | null {
+    const byRole = characterBible.characters.find((c: any) =>
+      /\b(protagonist|main character|player character)\b/i.test(String(c.role || c.archetype || ''))
+    );
+    if (byRole?.id) return byRole.id;
+
+    const briefName = String(brief.protagonist?.name || '').trim();
+    if (briefName && !/^hero$/i.test(briefName)) {
+      const byBriefName = this.resolveCharacterId(briefName, characterBible);
+      if (byBriefName) return byBriefName;
+    }
+
+    const briefId = String(brief.protagonist?.id || '').trim();
+    if (briefId && !/^p(?:rotagonist)?[-_ ]?1$/i.test(briefId) && !/^hero$/i.test(briefId)) {
+      const byBriefId = this.resolveCharacterId(briefId, characterBible);
+      if (byBriefId) return byBriefId;
+    }
+
+    return characterBible.characters[0]?.id || null;
+  }
+
   private resolveCharacterIdWithBrief(idOrName: string, characterBible: CharacterBible, brief: FullCreativeBrief): string | null {
     const raw = String(idOrName || '').trim();
     if (!raw) return null;
     if (/^p(?:rotagonist)?[-_ ]?1$/i.test(raw) || /^player$/i.test(raw) || /^hero$/i.test(raw)) {
-      return this.resolveCharacterId(brief.protagonist?.name || brief.protagonist?.id || raw, characterBible);
+      return this.resolveProtagonistCharacterId(characterBible, brief)
+        || this.resolveCharacterId(brief.protagonist?.name || brief.protagonist?.id || raw, characterBible);
     }
     return this.resolveCharacterId(raw, characterBible);
   }
@@ -13422,7 +13475,8 @@ Design the key art. Return STRICT JSON matching the schema.`;
       }
 
       // === Character anchor ===
-      const protagonistId = this.resolveCharacterIdWithBrief(brief.protagonist.id || brief.protagonist.name, characterBible, brief)
+      const protagonistId = this.resolveProtagonistCharacterId(characterBible, brief)
+        || this.resolveCharacterIdWithBrief(brief.protagonist.id || brief.protagonist.name, characterBible, brief)
         || this.resolveCharacterIdWithBrief(brief.protagonist.name, characterBible, brief)
         || brief.protagonist.id;
       const protagonistRefImages = this.gatherCharacterReferenceImages([protagonistId], characterBible);
@@ -13610,10 +13664,10 @@ Design the key art. Return STRICT JSON matching the schema.`;
     const style = prompt.style?.trim() || '';
     const expectedStyle = rawStyle?.trim() || '';
     if (!style) {
-      return { passed: false, reason: 'style anchor prompt is missing prompt.style', issues: ['missing prompt.style'] };
+      return { passed: false, reason: 'style anchor prompt is missing prompt.style', issues: ['missing prompt.style'], allowedAsStyleReference: false };
     }
     if (expectedStyle && style !== expectedStyle) {
-      return { passed: false, reason: 'style anchor prompt.style does not match the raw season style', issues: ['prompt.style mismatch'] };
+      return { passed: false, reason: 'style anchor prompt.style does not match the raw season style', issues: ['prompt.style mismatch'], allowedAsStyleReference: false };
     }
 
     const positiveText = [
@@ -13632,9 +13686,9 @@ Design the key art. Return STRICT JSON matching the schema.`;
       issues.push('negative prompt contains reference/model-sheet wording that can bias Gemini');
     }
     if (issues.length > 0) {
-      return { passed: false, reason: issues.join('; '), issues };
+      return { passed: false, reason: issues.join('; '), issues, allowedAsStyleReference: false };
     }
-    return { passed: true, score: 100, reason: 'prompt contract passed', issues: [] };
+    return { passed: true, score: 100, reason: 'prompt contract passed', issues: [], allowedAsStyleReference: true };
   }
 
   private async generateImageWithDefectRetries(
@@ -13732,11 +13786,13 @@ Design the key art. Return STRICT JSON matching the schema.`;
       'floating_character',
       'panel_leakage',
       'reference_sheet_artifact',
+      'photorealism',
+      'style_drift',
     ]);
     const normalized = issues.filter((issue): issue is ImageDefectIssue => allowed.has(issue as ImageDefectIssue));
     return normalized.length > 0
       ? normalized
-      : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact'];
+      : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'style_drift'];
   }
 
   private async saveImageQADiagnostic(
@@ -13782,6 +13838,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
         passed: false,
         reason: 'generated style anchor has no image data for vision validation',
         issues: ['missing imageData or mimeType'],
+        allowedAsStyleReference: false,
       };
       await this.saveStyleAnchorValidationDiagnostic(outputDirectory, identifier, result);
       return result;
@@ -13851,13 +13908,21 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         reason: typeof parsed.reason === 'string' ? parsed.reason : 'style anchor vision review completed',
         issues: Array.isArray(parsed.issues) ? parsed.issues.map(String) : [],
       };
+      result.allowedAsStyleReference = result.passed === true;
       await this.saveStyleAnchorValidationDiagnostic(outputDirectory, identifier, result);
       return result;
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isAuthOrConfig =
+        /invalid x-api-key|api key|authentication|unauthorized|permission|missing key|401|403/i.test(message);
       const result: StyleAnchorValidationResult = {
         passed: false,
-        reason: `style anchor vision validation failed: ${error instanceof Error ? error.message : String(error)}`,
-        issues: ['vision validation error'],
+        skipped: isAuthOrConfig,
+        allowedAsStyleReference: false,
+        reason: isAuthOrConfig
+          ? `style anchor vision validation unavailable: ${message}`
+          : `style anchor vision validation failed: ${message}`,
+        issues: [isAuthOrConfig ? 'vision validation unavailable' : 'vision validation error'],
       };
       await this.saveStyleAnchorValidationDiagnostic(outputDirectory, identifier, result);
       return result;

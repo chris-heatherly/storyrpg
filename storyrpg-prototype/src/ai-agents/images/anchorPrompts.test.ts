@@ -35,13 +35,14 @@ describe('buildCharacterAnchorPrompt', () => {
     expect(built.prompt.aspectRatio).toBe('3:4');
   });
 
-  it('uses a generic Hero identity fallback when no description is supplied', () => {
+  it('uses a neutral identity fallback when no description is supplied', () => {
     const built = buildCharacterAnchorPrompt({
       style: STYLE,
       protagonistName: 'Rook',
     });
-    expect(built.prompt.prompt).toContain('Identity anchors: generic Hero');
+    expect(built.prompt.prompt).toContain('Identity anchors: clearly readable face');
     expect(built.prompt.prompt).toContain('Rook');
+    expect(built.prompt.characterIdentity).toEqual(['Rook']);
   });
 });
 

@@ -156,6 +156,7 @@ import { CallbackLedger } from './callbackLedger';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { validateRegistryCoverage } from '../images/coverageValidator';
 import { walkStoryAssets, formatAssetWalkReport } from '../validators/storyAssetWalker';
+import { findUnsupportedQuotedRecallIssues } from '../validators/quoteRecallValidator';
 import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
 import { remediateImageIssues, resaveFinalStory } from '../validators/qaRemediation';
 import { buildReferencePack } from '../images/referencePackBuilder';
@@ -1592,6 +1593,8 @@ export class FullStoryPipeline {
       beatsWithImages: number;
       totalScenes: number;
       scenesWithImages: number;
+      encounterOnlyScenes: number;
+      sceneBackgroundSlots: number;
       strategy: string;
     };
     slots: ImageSlot[];
@@ -1601,6 +1604,8 @@ export class FullStoryPipeline {
     let beatsWithImages = 0;
     let totalScenes = 0;
     let scenesWithImages = 0;
+    let encounterOnlyScenes = 0;
+    let sceneBackgroundSlots = 0;
     for (const episode of story.episodes || []) {
       for (const scene of episode.scenes || []) {
         totalScenes += 1;
@@ -1608,20 +1613,26 @@ export class FullStoryPipeline {
           scenesWithImages += 1;
         }
         const scopedSceneId = `episode-${episode.number}-${scene.id}`;
-        slots.push({
-          slotId: `story-scene:${scopedSceneId}`,
-          family: 'story-scene',
-          imageType: 'scene',
-          sceneId: scene.id,
-          scopedSceneId,
-          beatId: scene.beats?.[0]?.id,
-          storyFieldPath: `episodes[number=${episode.number}].scenes[id=${scene.id}].backgroundImage`,
-          baseIdentifier: storySceneBaseIdentifier(scopedSceneId),
-          required: false,
-          qualityTier: 'standard',
-          coverageKey: storySceneCoverageKey(scene.id),
-          continuitySourceSlotId: scene.beats?.[0]?.id ? `story-beat:${scopedSceneId}::${scene.beats[0].id}` : undefined,
-        });
+        const isEncounterOnlyScene = !(scene.beats?.length) && Boolean(scene.encounter);
+        if (isEncounterOnlyScene) {
+          encounterOnlyScenes += 1;
+        } else {
+          sceneBackgroundSlots += 1;
+          slots.push({
+            slotId: `story-scene:${scopedSceneId}`,
+            family: 'story-scene',
+            imageType: 'scene',
+            sceneId: scene.id,
+            scopedSceneId,
+            beatId: scene.beats?.[0]?.id,
+            storyFieldPath: `episodes[number=${episode.number}].scenes[id=${scene.id}].backgroundImage`,
+            baseIdentifier: storySceneBaseIdentifier(scopedSceneId),
+            required: false,
+            qualityTier: 'standard',
+            coverageKey: storySceneCoverageKey(scene.id),
+            continuitySourceSlotId: scene.beats?.[0]?.id ? `story-beat:${scopedSceneId}::${scene.beats[0].id}` : undefined,
+          });
+        }
         for (const beat of scene.beats || []) {
           totalBeats += 1;
           if (beat.image || beat.imageUrl || beat.imagePath) {
@@ -1656,6 +1667,8 @@ export class FullStoryPipeline {
         beatsWithImages,
         totalScenes,
         scenesWithImages,
+        encounterOnlyScenes,
+        sceneBackgroundSlots,
         strategy: this.config.imageGen?.strategy || 'selective',
       },
       slots,
@@ -2879,7 +2892,7 @@ export class FullStoryPipeline {
         const maxQARepairPasses = brief.options?.maxQARepairPasses ?? 2;
 
         for (let qaRepairPass = 0; qaRepairPass < maxQARepairPasses; qaRepairPass++) {
-          if (qaReport.passesQA || qaReport.criticalIssues.length === 0) break;
+          if (qaReport.passesQA && qaReport.criticalIssues.length === 0) break;
 
           // === KARPATHY LOOP: QA-driven targeted repair ===
           const previousScore = qaReport.overallScore;
@@ -3501,6 +3514,21 @@ export class FullStoryPipeline {
             type: 'warning',
             phase: 'qa',
             message: `Deterministic flag chronology scan found ${flagIssues.length} forward-reference issue(s): ${flagIssues.join('; ')}`,
+          });
+        }
+
+        const quoteRecallIssues = findUnsupportedQuotedRecallIssues(story);
+        if (quoteRecallIssues.length > 0) {
+          for (const issue of quoteRecallIssues) {
+            if (!qaReport.criticalIssues.includes(issue.detail)) {
+              qaReport.criticalIssues.push(issue.detail);
+            }
+          }
+          qaReport.passesQA = false;
+          this.emit({
+            type: 'warning',
+            phase: 'qa',
+            message: `Deterministic quote recall scan found ${quoteRecallIssues.length} unsupported recalled quote(s): ${quoteRecallIssues.map(issue => issue.quote).join('; ')}`,
           });
         }
       }
@@ -9662,6 +9690,8 @@ ${clothingRule}
                 promptMode,
                 qaMode,
                 status: 'failed',
+                degraded: true,
+                fallback: imagePlanningMode === 'visual-storyboard' ? 'structured-storyboard-only' : 'deterministic-prompts',
                 error: llmResult.error || 'unknown LLM visual planning failure',
               });
               this.emit({
@@ -9676,6 +9706,8 @@ ${clothingRule}
               promptMode,
               qaMode,
               status: 'threw',
+              degraded: true,
+              fallback: imagePlanningMode === 'visual-storyboard' ? 'structured-storyboard-only' : 'deterministic-prompts',
               error: planningMsg,
             });
             this.emit({
@@ -9699,6 +9731,8 @@ ${clothingRule}
             qaMode,
             imagePlanningMode,
             status: 'structured-storyboard-only',
+            degraded: true,
+            fallbackReason: 'llm-visual-planning-unavailable',
             storyboardSheets: storyboardPlan.sheets,
             storyboardPanels: storyboardPlan.panels,
             storyboardCoverage: storyboardPlan.coverage,

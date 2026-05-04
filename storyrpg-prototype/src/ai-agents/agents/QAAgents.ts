@@ -72,6 +72,27 @@ export interface ContinuityReport {
   recommendations: string[];
 }
 
+export function normalizeContinuitySeverity(severity: unknown): ContinuityIssue['severity'] {
+  const normalized = typeof severity === 'string' ? severity.toLowerCase() : '';
+  if (normalized === 'error' || normalized === 'warning' || normalized === 'suggestion') {
+    return normalized;
+  }
+  return 'warning';
+}
+
+export function recomputeContinuityIssueCount(issues: ContinuityIssue[]): ContinuityReport['issueCount'] {
+  return issues.reduce(
+    (counts, issue) => {
+      const severity = normalizeContinuitySeverity((issue as unknown as { severity?: unknown }).severity);
+      if (severity === 'error') counts.errors += 1;
+      else if (severity === 'warning') counts.warnings += 1;
+      else counts.suggestions += 1;
+      return counts;
+    },
+    { errors: 0, warnings: 0, suggestions: 0 },
+  );
+}
+
 export class ContinuityChecker extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Continuity Checker', config);
@@ -169,27 +190,17 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
       report.overallScore = 50;
     }
 
-    // Ensure issueCount exists with all fields
-    if (!report.issueCount) {
-      report.issueCount = { errors: 0, warnings: 0, suggestions: 0 };
-    } else {
-      if (typeof report.issueCount.errors !== 'number') {
-        report.issueCount.errors = 0;
-      }
-      if (typeof report.issueCount.warnings !== 'number') {
-        report.issueCount.warnings = 0;
-      }
-      if (typeof report.issueCount.suggestions !== 'number') {
-        report.issueCount.suggestions = 0;
-      }
-    }
-
     // Ensure arrays are arrays
     if (!report.issues) {
       report.issues = [];
     } else if (!Array.isArray(report.issues)) {
       report.issues = [report.issues as unknown as ContinuityIssue];
     }
+    report.issues = report.issues.map(issue => ({
+      ...issue,
+      severity: normalizeContinuitySeverity((issue as unknown as { severity?: unknown }).severity),
+    }));
+    report.issueCount = recomputeContinuityIssueCount(report.issues);
 
     if (!report.passedChecks) {
       report.passedChecks = [];

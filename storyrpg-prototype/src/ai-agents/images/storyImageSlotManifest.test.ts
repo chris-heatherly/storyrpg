@@ -33,6 +33,20 @@ describe('storyImageSlotManifest', () => {
     ]);
   });
 
+  it('does not create orphan story-scene slots for encounter-only scenes', () => {
+    const manifest = buildStoryImageSlotManifest(
+      {
+        sceneId: 'scene-encounter',
+        startingBeatId: 'encounter-start',
+        beats: [],
+        encounter: { id: 'encounter-1' },
+      },
+      'episode-1::scene-encounter',
+    );
+
+    expect(manifest.slots).toEqual([]);
+  });
+
   it('scopes slot IDs by episode so scene IDs reused across episodes do not collide', () => {
     const ep1 = buildStoryImageSlotManifest(
       {

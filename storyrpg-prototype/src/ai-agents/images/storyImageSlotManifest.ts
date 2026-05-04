@@ -29,30 +29,33 @@ export function storyBeatRetryIdentifier(scopedSceneId: string, beatId: string, 
 }
 
 export function buildStoryImageSlotManifest(
-  scene: Pick<SceneContent, 'sceneId' | 'beats' | 'startingBeatId'>,
+  scene: Pick<SceneContent, 'sceneId' | 'beats' | 'startingBeatId'> & { encounter?: unknown },
   scopedSceneId: string,
 ): StoryImageSlotManifest {
   const slots: ImageSlot[] = [];
   const firstBeat = scene.beats?.[0];
+  const isEncounterOnlyScene = !firstBeat && Boolean(scene.encounter);
 
-  slots.push({
-    slotId: `story-scene:${scopedSceneId}`,
-    family: 'story-scene',
-    imageType: 'scene',
-    sceneId: scene.sceneId,
-    scopedSceneId,
-    beatId: firstBeat?.id,
-    storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].backgroundImage`,
-    baseIdentifier: storySceneBaseIdentifier(scopedSceneId),
-    required: false,
-    qualityTier: 'standard',
-    coverageKey: storySceneCoverageKey(scene.sceneId),
-    continuitySourceSlotId: firstBeat ? `story-beat:${scopedSceneId}::${firstBeat.id}` : undefined,
-    metadata: {
-      firstBeatId: firstBeat?.id,
-      startingBeatId: scene.startingBeatId,
-    },
-  });
+  if (!isEncounterOnlyScene) {
+    slots.push({
+      slotId: `story-scene:${scopedSceneId}`,
+      family: 'story-scene',
+      imageType: 'scene',
+      sceneId: scene.sceneId,
+      scopedSceneId,
+      beatId: firstBeat?.id,
+      storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].backgroundImage`,
+      baseIdentifier: storySceneBaseIdentifier(scopedSceneId),
+      required: false,
+      qualityTier: 'standard',
+      coverageKey: storySceneCoverageKey(scene.sceneId),
+      continuitySourceSlotId: firstBeat ? `story-beat:${scopedSceneId}::${firstBeat.id}` : undefined,
+      metadata: {
+        firstBeatId: firstBeat?.id,
+        startingBeatId: scene.startingBeatId,
+      },
+    });
+  }
 
   for (const beat of scene.beats || []) {
     slots.push({

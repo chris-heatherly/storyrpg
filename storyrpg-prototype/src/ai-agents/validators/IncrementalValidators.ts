@@ -1081,8 +1081,8 @@ export class IncrementalEncounterValidator extends BaseValidator {
     } else if (encounterBeats.length < 2) {
       issues.push({
         type: 'missing_beats',
-        detail: `Encounter has only ${encounterBeats.length} beat(s) - minimum 2 recommended`,
-        severity: 'warning',
+        detail: `Encounter has only ${encounterBeats.length} beat(s) - minimum 2 required for a playable encounter`,
+        severity: 'error',
       });
     }
 
@@ -1097,7 +1097,7 @@ export class IncrementalEncounterValidator extends BaseValidator {
           issues.push({
             type: 'invalid_skill',
             detail: `Choice "${choice.text}" uses undefined skill: ${choice.primarySkill}`,
-            severity: 'warning',
+            severity: 'error',
           });
         }
 
@@ -1181,7 +1181,7 @@ export class IncrementalEncounterValidator extends BaseValidator {
             issues.push({
               type: 'missing_outcome',
               detail: `Outcome ${tier} for "${choice.text}" at ${path} has neither nextSituation, nextBeatId, nor terminal ending`,
-              severity: 'warning',
+              severity: 'error',
             });
           }
         }
@@ -1225,6 +1225,22 @@ export class IncrementalEncounterValidator extends BaseValidator {
         type: 'missing_relationship_payoff',
         detail: `Encounter "${encounter.sceneId}" is ${encounter.encounterType} and tracks NPC state, but it never spends relationship state through conditions, setup variants, stat bonuses, or relationship consequences`,
         severity: 'warning',
+      });
+    }
+
+    if (!hasVictoryPath && !hasPartialVictoryPath) {
+      issues.push({
+        type: 'missing_outcome',
+        detail: 'Encounter has no authored victory or partialVictory path',
+        severity: 'error',
+      });
+    }
+
+    if (!hasDefeatPath) {
+      issues.push({
+        type: 'missing_outcome',
+        detail: 'Encounter has no authored defeat path',
+        severity: 'error',
       });
     }
 

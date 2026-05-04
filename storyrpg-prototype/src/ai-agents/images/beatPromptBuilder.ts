@@ -13,6 +13,7 @@
  */
 
 import type { ImagePrompt } from '../agents/ImageGenerator';
+import type { BeatCoveragePlan, VisualCast, VisualStagingPattern } from '../../types/content';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
 import { selectStyleAdaptation } from '../utils/styleAdaptation';
 import {
@@ -56,6 +57,11 @@ export interface BeatPromptInput {
 
   foregroundCharacterNames?: string[];
   backgroundCharacterNames?: string[];
+  visualCast?: VisualCast;
+  coveragePlan?: BeatCoveragePlan;
+  stagingPattern?: VisualStagingPattern;
+  relationshipBlocking?: string;
+  coverageReason?: string;
   /**
    * D9: Optional explicit staging for group scenes with 3+ foreground characters.
    * Maps character name -> positional descriptor (e.g. "left", "center",
@@ -520,6 +526,20 @@ function buildCharacterPrompt(
 
   if (beat.backgroundCharacterNames?.length) {
     narrativeParts.push(`${beat.backgroundCharacterNames.join(', ')} visible in the background`);
+  }
+
+  const coveragePlan = beat.coveragePlan;
+  const stagingPattern = coveragePlan?.stagingPattern || beat.stagingPattern;
+  const relationshipBlocking = coveragePlan?.relationshipBlocking || beat.relationshipBlocking;
+  const coverageReason = coveragePlan?.coverageReason || beat.coverageReason;
+  if (stagingPattern) {
+    narrativeParts.push(`Coverage plan: ${stagingPattern} staging, ${coveragePlan?.shotDistance || 'planned'} shot, ${coveragePlan?.cameraAngle || 'planned angle'}.`);
+  }
+  if (relationshipBlocking) {
+    narrativeParts.push(`Relationship blocking: ${relationshipBlocking}`);
+  }
+  if (coverageReason) {
+    narrativeParts.push(`Coverage reason: ${coverageReason}`);
   }
 
   // Body language and spatial relationship

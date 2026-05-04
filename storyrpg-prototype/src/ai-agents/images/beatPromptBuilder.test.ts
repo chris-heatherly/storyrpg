@@ -105,6 +105,43 @@ describe('buildBeatImagePrompt', () => {
     expect(prompt.prompt).toContain('Mrs Peacock visible in the background');
   });
 
+  it('includes locked cinematic coverage and relationship blocking', () => {
+    const prompt = buildBeatImagePrompt(
+      {
+        beatId: 'beat-coverage',
+        beatText: 'Kenji waits while Hikari decides what to say.',
+        beatIndex: 0,
+        totalBeats: 1,
+        visualMoment: 'Kenji waits while Hikari decides what to say.',
+        primaryAction: 'waits in tense stillness',
+        foregroundCharacterNames: ['Kenji Tanaka', 'Hikari Hoshino'],
+        coveragePlan: {
+          stagingPattern: 'ots-speaker',
+          shotDistance: 'MCU',
+          cameraAngle: 'eye-level',
+          cameraSide: 'primary',
+          focalCharacterIds: ['kenji'],
+          requiredVisibleCharacterIds: ['kenji', 'hikari'],
+          optionalVisibleCharacterIds: [],
+          offscreenCharacterIds: [],
+          relationshipBlocking: 'Over-the-shoulder dialogue coverage keeps Hikari physically present as listener.',
+          coverageReason: 'dialogue coverage run 1; pattern=ots-speaker; shot=MCU',
+        },
+      },
+      {
+        sceneId: 'scene-1',
+        sceneName: 'The Kitchen',
+        genre: 'drama',
+        tone: 'tense',
+        artStyle: 'fashion anime',
+      },
+    );
+
+    expect(prompt.prompt).toContain('Coverage plan: ots-speaker staging, MCU shot, eye-level');
+    expect(prompt.prompt).toContain('Relationship blocking: Over-the-shoulder dialogue coverage');
+    expect(prompt.prompt).toContain('Coverage reason: dialogue coverage run 1');
+  });
+
   it('keeps style in the style contract and strips competing art direction from beat text', () => {
     const prompt = buildBeatImagePrompt(
       {

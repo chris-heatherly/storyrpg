@@ -60,6 +60,45 @@ export interface VisualContinuityHint {
   panelMode?: 'single' | 'special-beats' | 'all-beats';
 }
 
+export type VisualStagingPattern =
+  | 'single'
+  | 'two-shot'
+  | 'ots-speaker'
+  | 'ots-listener'
+  | 'triangle'
+  | 'ensemble'
+  | 'environment'
+  | 'insert'
+  | 'solo-reaction'
+  | 'environmental-aftermath';
+
+export interface VisualCast {
+  sceneCharacterIds: string[];
+  activeCharacterIds: string[];
+  foregroundCharacterIds: string[];
+  backgroundCharacterIds: string[];
+  offscreenCharacterIds: string[];
+  speakerCharacterId?: string;
+  addressedCharacterIds: string[];
+  listenerCharacterIds: string[];
+  observerCharacterIds: string[];
+  payoffRelevantCharacterIds: string[];
+  castReason: string;
+}
+
+export interface BeatCoveragePlan {
+  stagingPattern: VisualStagingPattern;
+  shotDistance: 'ELS' | 'LS' | 'MLS' | 'MS' | 'MCU' | 'CU' | 'ECU';
+  cameraAngle: string;
+  cameraSide: string;
+  focalCharacterIds: string[];
+  requiredVisibleCharacterIds: string[];
+  optionalVisibleCharacterIds: string[];
+  offscreenCharacterIds: string[];
+  relationshipBlocking: string;
+  coverageReason: string;
+}
+
 // A beat is a unit of content within a scene
 export interface Beat {
   id: string;
@@ -109,6 +148,8 @@ export interface Beat {
   mustShowDetail?: string;
   intensityTier?: 'dominant' | 'supporting' | 'rest';
   visualContinuity?: VisualContinuityHint;
+  visualCast?: VisualCast;
+  coveragePlan?: BeatCoveragePlan;
 
   allowDiegeticText?: boolean;
 

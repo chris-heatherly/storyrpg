@@ -192,6 +192,7 @@ import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
 import { buildBeatImagePrompt, overrideShotFromPlan } from '../images/beatPromptBuilder';
 import { planShotSequence, type ShotPlan, type PanelMode } from '../images/shotSequencePlanner';
 import { resolveShotCast } from '../images/shotCastResolver';
+import { planSceneCoverage } from '../images/cinematicCoveragePlanner';
 import {
   runTier1Checks,
   checkStructuralDiversity,
@@ -6472,6 +6473,16 @@ export class FullStoryPipeline {
           onShow: genBeat.onShow,
           image: beatImages.get(compositeKey),
           video: beatVideos.get(compositeKey),
+          visualMoment: genBeat.visualMoment,
+          primaryAction: genBeat.primaryAction,
+          emotionalRead: genBeat.emotionalRead,
+          relationshipDynamic: genBeat.relationshipDynamic,
+          mustShowDetail: genBeat.mustShowDetail,
+          shotType: genBeat.shotType,
+          intensityTier: genBeat.intensityTier,
+          visualContinuity: genBeat.visualContinuity,
+          visualCast: (genBeat as any).visualCast,
+          coveragePlan: (genBeat as any).coveragePlan,
         };
 
         if (genBeat.isChoicePoint) {
@@ -6528,6 +6539,7 @@ export class FullStoryPipeline {
       return {
         id: sceneBlueprint.id,
         name: sceneBlueprint.name,
+        charactersInvolved: content.charactersInvolved || sceneBlueprint.npcsPresent,
         beats,
         startingBeatId: content.startingBeatId,
         backgroundImage: sceneImages.get(this.getEpisodeScopedSceneId(brief, sceneBlueprint.id)),
@@ -9093,6 +9105,24 @@ ${clothingRule}
       });
   }
 
+  private promptMissingRequiredCharacters(
+    prompt: ImagePrompt,
+    requiredCharacterNames: string[],
+  ): string[] {
+    const text = [
+      prompt.prompt,
+      prompt.composition,
+      prompt.visualNarrative,
+      prompt.keyExpression,
+      prompt.keyBodyLanguage,
+      prompt.poseSpec,
+    ].filter(Boolean).join('\n').toLowerCase();
+    return requiredCharacterNames.filter(name => {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return !new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+    });
+  }
+
   private async savePromptCompareDiagnostic(
     outputDirectory: string | undefined,
     identifier: string,
@@ -9376,10 +9406,57 @@ ${clothingRule}
               return isStartingBeat || isChoicePoint || isLastBeat || isClimaxBeat || isKeyStoryBeat || isChoicePayoff || isIntervalBeat;
             });
         
+        const sceneCoveragePlan = planSceneCoverage({
+          sceneId: scene.sceneId,
+          beats: beatsToIllustrate.map((b) => ({
+            id: b.id,
+            text: b.text,
+            speaker: b.speaker,
+            speakerMood: b.speakerMood,
+            shotType: (b as any).shotType,
+            isClimaxBeat: b.isClimaxBeat,
+            isKeyStoryBeat: b.isKeyStoryBeat,
+            isChoicePayoff: (b as any).isChoicePayoff,
+            visualMoment: b.visualMoment,
+            primaryAction: b.primaryAction,
+            emotionalRead: b.emotionalRead,
+            relationshipDynamic: b.relationshipDynamic,
+            mustShowDetail: b.mustShowDetail,
+            plantsThreadId: (b as any).plantsThreadId,
+            paysOffThreadId: (b as any).paysOffThreadId,
+            plotPointType: (b as any).plotPointType,
+            twistKind: (b as any).twistKind,
+          })),
+          sceneCharacterIds,
+          characters: characterBible.characters.map(c => ({ id: c.id, name: c.name, role: c.role })),
+          protagonistId: brief.protagonist.id,
+        });
+        const coverageByBeatId = new Map(sceneCoveragePlan.beats.map((beat) => [beat.beatId, beat]));
+        if (outputDirectory) {
+          await saveEarlyDiagnostic(outputDirectory, `images/prompts/${scopedSceneId}.coverage-plan.json`, {
+            generatedAt: new Date().toISOString(),
+            scopedSceneId,
+            status: 'coverage-plan',
+            coverageBeats: sceneCoveragePlan.beats,
+            diagnostics: sceneCoveragePlan.diagnostics,
+          });
+        }
+        if (sceneCoveragePlan.diagnostics.castWarnings.length > 0 || sceneCoveragePlan.diagnostics.solitaryCompositionWarnings.length > 0) {
+          this.emit({
+            type: 'warning',
+            phase: 'images',
+            message: `Coverage planning warnings for ${scene.sceneId}: ${[
+              ...sceneCoveragePlan.diagnostics.castWarnings,
+              ...sceneCoveragePlan.diagnostics.solitaryCompositionWarnings,
+            ].join('; ')}`,
+          });
+        }
+
         console.log(`[Pipeline] 🖼 Image generation step 6/6: building enrichedBeats for scene "${scene.sceneId}" (${beatsToIllustrate.length} beats selected)`);
         // Build enriched beat data with per-beat character analysis
         // This determines WHO is in the visual foreground vs background for each beat
         const enrichedBeats = beatsToIllustrate.map((b, beatIndex) => {
+          const coverage = coverageByBeatId.get(b.id);
           const beatCharContext = this.analyzeBeatCharacters(
             b.text,
             b.speaker,
@@ -9392,21 +9469,26 @@ ${clothingRule}
           // second-person fallback (no named characters in text, no speaker, no action verb) are
           // treated as establishing shots — environment-only, no character poses.
           const explicitShotType = (b as any).shotType as 'establishing' | 'character' | 'action' | undefined;
-          const isEstablishing = explicitShotType === 'establishing'
-            || (!explicitShotType && this.isEstablishingBeat(b.text, b.speaker, b.primaryAction, beatCharContext));
-          const resolvedShotType: 'establishing' | 'character' | 'action' = explicitShotType
-            || (isEstablishing ? 'establishing' : 'character');
-          const shotCast = resolveShotCast({
+          const isEstablishing = coverage
+            ? coverage.coveragePlan.stagingPattern === 'environment'
+            : explicitShotType === 'establishing'
+              || (!explicitShotType && this.isEstablishingBeat(b.text, b.speaker, b.primaryAction, beatCharContext));
+          const resolvedShotType: 'establishing' | 'character' | 'action' = coverage
+            ? (isEstablishing ? 'establishing' : ((b as any).shotType === 'action' ? 'action' : 'character'))
+            : explicitShotType || (isEstablishing ? 'establishing' : 'character');
+          const shotCast = coverage ? undefined : resolveShotCast({
             beat: { ...b, shotType: resolvedShotType },
             sceneCharacterIds,
             characters: characterBible.characters.map(c => ({ id: c.id, name: c.name })),
             protagonistId: brief.protagonist.id,
           });
           const visibleCharacterIds = [
-            ...shotCast.requiredForegroundCharacterIds,
-            ...shotCast.optionalBackgroundCharacterIds,
+            ...(coverage?.coveragePlan.requiredVisibleCharacterIds || shotCast?.requiredForegroundCharacterIds || []),
+            ...(coverage?.coveragePlan.optionalVisibleCharacterIds || shotCast?.optionalBackgroundCharacterIds || []),
           ];
           const getName = (id: string) => characterBible.characters.find(c => c.id === id)?.name || id;
+          (b as any).visualCast = coverage?.visualCast;
+          (b as any).coveragePlan = coverage?.coveragePlan;
           return {
             id: b.id,
             text: b.text,
@@ -9414,10 +9496,12 @@ ${clothingRule}
             isKeyStoryBeat: b.isKeyStoryBeat,
             // Per-beat shot cast: scene-present characters remain offscreen unless the beat needs them.
             characters: isEstablishing ? [] : visibleCharacterIds,
-            foregroundCharacters: isEstablishing ? [] : shotCast.requiredForegroundCharacterIds.map(getName),
-            backgroundCharacters: isEstablishing ? [] : shotCast.optionalBackgroundCharacterIds.map(getName),
-            offscreenCharacters: shotCast.offscreenCharacterIds,
-            shotCastReason: shotCast.shotCastReason,
+            foregroundCharacters: isEstablishing ? [] : (coverage?.visualCast.foregroundCharacterIds || shotCast?.requiredForegroundCharacterIds || []).map(getName),
+            backgroundCharacters: isEstablishing ? [] : (coverage?.visualCast.backgroundCharacterIds || shotCast?.optionalBackgroundCharacterIds || []).map(getName),
+            offscreenCharacters: coverage?.coveragePlan.offscreenCharacterIds || shotCast?.offscreenCharacterIds || [],
+            shotCastReason: coverage?.visualCast.castReason || shotCast?.shotCastReason,
+            visualCast: coverage?.visualCast,
+            coveragePlan: coverage?.coveragePlan,
             // Map speakerMood to emotional hints for visual generation
             emotionHint: isEstablishing ? undefined : this.mapSpeakerMoodToEmotion(b.speakerMood),
             intensityHint: this.inferIntensity(b.speakerMood, b.text),
@@ -9451,6 +9535,13 @@ ${clothingRule}
           { genre: brief.story.genre, tone: brief.story.tone },
           panelMode,
         );
+        for (const plan of shotPlans) {
+          const coverage = coverageByBeatId.get(plan.beatId)?.coveragePlan;
+          if (coverage) {
+            plan.assignedShotType = coverage.shotDistance;
+            plan.assignedAngle = coverage.cameraAngle;
+          }
+        }
         const shotPlanMap = new Map<string, ShotPlan>(
           shotPlans.map(sp => [sp.beatId, sp])
         );
@@ -9919,6 +10010,11 @@ ${clothingRule}
             isBranchPayoff: beatIdx === 0 && !!scene.incomingChoiceContext,
             foregroundCharacterNames: isEstablishingBeat ? [] : (beat.foregroundCharacters || shotCharacterNames),
             backgroundCharacterNames: isEstablishingBeat ? [] : beat.backgroundCharacters,
+            visualCast: (beat as any).visualCast,
+            coveragePlan: (beat as any).coveragePlan,
+            stagingPattern: (beat as any).coveragePlan?.stagingPattern,
+            relationshipBlocking: (beat as any).coveragePlan?.relationshipBlocking,
+            coverageReason: (beat as any).coveragePlan?.coverageReason,
             colorMoodOverride: beatColorOverride,
           };
 
@@ -9940,13 +10036,20 @@ ${clothingRule}
           if (promptMode === 'llm') {
             if (wrappedLlmPrompt) {
               const disallowedNames = this.promptMentionsDisallowedCharacters(wrappedLlmPrompt, shotCharacterNames, allSceneCharacterNames);
-              if (disallowedNames.length > 0) {
+              const requiredNames = (beat as any).coveragePlan?.requiredVisibleCharacterIds
+                ?.map((id: string) => characterBible.characters.find(c => c.id === id)?.name || id)
+                || shotCharacterNames;
+              const missingRequiredNames = this.promptMissingRequiredCharacters(wrappedLlmPrompt, requiredNames);
+              if (disallowedNames.length > 0 || missingRequiredNames.length > 0) {
                 promptSource = 'deterministic-fallback';
                 this.emit({
                   type: 'warning',
                   phase: 'images',
-                  message: `LLM prompt contract rejected for ${scene.sceneId}:${beatId}: disallowed visible character(s) ${disallowedNames.join(', ')}. Deterministic fallback used for this beat.`,
-                  data: { sceneId: scene.sceneId, beatId, disallowedNames, allowedCharacterNames: shotCharacterNames },
+                  message: `LLM prompt contract rejected for ${scene.sceneId}:${beatId}: ${[
+                    disallowedNames.length ? `disallowed visible character(s) ${disallowedNames.join(', ')}` : '',
+                    missingRequiredNames.length ? `missing required character(s) ${missingRequiredNames.join(', ')}` : '',
+                  ].filter(Boolean).join('; ')}. Deterministic fallback used for this beat.`,
+                  data: { sceneId: scene.sceneId, beatId, disallowedNames, missingRequiredNames, allowedCharacterNames: shotCharacterNames, requiredNames },
                 });
               } else {
                 imagePrompt = wrappedLlmPrompt;
@@ -9964,16 +10067,23 @@ ${clothingRule}
             const disallowedNames = wrappedLlmPrompt
               ? this.promptMentionsDisallowedCharacters(wrappedLlmPrompt, shotCharacterNames, allSceneCharacterNames)
               : [];
+            const requiredNames = (beat as any).coveragePlan?.requiredVisibleCharacterIds
+              ?.map((id: string) => characterBible.characters.find(c => c.id === id)?.name || id)
+              || shotCharacterNames;
+            const missingRequiredNames = wrappedLlmPrompt
+              ? this.promptMissingRequiredCharacters(wrappedLlmPrompt, requiredNames)
+              : requiredNames;
             await this.savePromptCompareDiagnostic(outputDirectory, identifier, {
               promptMode,
               canonical: compareCanonical,
               hasLlmPrompt: !!wrappedLlmPrompt,
-              llmContractRejected: disallowedNames.length > 0,
+              llmContractRejected: disallowedNames.length > 0 || missingRequiredNames.length > 0,
               disallowedNames,
+              missingRequiredNames,
               deterministicPrompt,
               llmPrompt: wrappedLlmPrompt || null,
             });
-            if (compareCanonical === 'llm' && wrappedLlmPrompt && disallowedNames.length === 0) {
+            if (compareCanonical === 'llm' && wrappedLlmPrompt && disallowedNames.length === 0 && missingRequiredNames.length === 0) {
               imagePrompt = wrappedLlmPrompt;
               promptSource = 'compare-llm';
             } else {
@@ -9994,6 +10104,8 @@ ${clothingRule}
                 ? 'user-visual'
                 : (this._generatedStyleReferencesAllowed && styleReferenceStored ? 'approved-generated-anchor' : 'raw-season-style'),
               visibleCharacterRefsRequired: shotCharacterNames,
+              visualCast: (beat as any).visualCast,
+              coveragePlan: (beat as any).coveragePlan,
               visualPlanningStatus: rawLlmPrompt ? 'llm-prompt-available' : 'deterministic-fallback',
             },
           };
@@ -10022,6 +10134,8 @@ ${clothingRule}
             characters: shotCharacterIds,
             characterNames: shotCharacterNames,
             characterDescriptions: shotCharacterDescriptionsForSlot,
+            visualCast: (beat as any).visualCast,
+            coveragePlan: (beat as any).coveragePlan,
             promptMode,
             qaMode,
           };
@@ -10371,13 +10485,20 @@ ${clothingRule}
                   brief,
                 );
                 const disallowedNames = this.promptMentionsDisallowedCharacters(wrapped, slot.shotCharacterNames, allSceneCharacterNames);
-                if (disallowedNames.length === 0) {
+                const requiredNames = slot.beatPromptInput.coveragePlan?.requiredVisibleCharacterIds
+                  ?.map((id: string) => characterBible.characters.find(c => c.id === id)?.name || id)
+                  || slot.shotCharacterNames;
+                const missingRequiredNames = this.promptMissingRequiredCharacters(wrapped, requiredNames);
+                if (disallowedNames.length === 0 && missingRequiredNames.length === 0) {
                   regenPrompt = wrapped;
                 } else {
                   this.emit({
                     type: 'warning',
                     phase: 'images',
-                    message: `Regenerated LLM prompt rejected for ${scene.sceneId}:${regenBeatId}: disallowed visible character(s) ${disallowedNames.join(', ')}. Using contract-preserving correction prompt.`,
+                    message: `Regenerated LLM prompt rejected for ${scene.sceneId}:${regenBeatId}: ${[
+                      disallowedNames.length ? `disallowed visible character(s) ${disallowedNames.join(', ')}` : '',
+                      missingRequiredNames.length ? `missing required character(s) ${missingRequiredNames.join(', ')}` : '',
+                    ].filter(Boolean).join('; ')}. Using contract-preserving correction prompt.`,
                   });
                 }
               }
@@ -15758,10 +15879,34 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           brief.protagonist.id,
         );
         const explicitShotType = (openerBeat as { shotType?: 'establishing' | 'character' | 'action' }).shotType;
-        const isEstablishing = explicitShotType === 'establishing'
-          || (!explicitShotType && this.isEstablishingBeat(openerBeat.text, openerBeat.speaker, openerBeat.primaryAction, beatCharContext));
-        const resolvedShotType: 'establishing' | 'character' | 'action' = explicitShotType
-          || (isEstablishing ? 'establishing' : 'character');
+        const openerCoverage = planSceneCoverage({
+          sceneId: scene.sceneId,
+          beats: beatsToIllustrate.map((b) => ({
+            id: b.id,
+            text: b.text,
+            speaker: b.speaker,
+            speakerMood: b.speakerMood,
+            shotType: (b as any).shotType,
+            isClimaxBeat: b.isClimaxBeat,
+            isKeyStoryBeat: b.isKeyStoryBeat,
+            isChoicePayoff: (b as any).isChoicePayoff,
+            visualMoment: b.visualMoment,
+            primaryAction: b.primaryAction,
+            emotionalRead: b.emotionalRead,
+            relationshipDynamic: b.relationshipDynamic,
+            mustShowDetail: b.mustShowDetail,
+          })),
+          sceneCharacterIds,
+          characters: characterBible.characters.map(c => ({ id: c.id, name: c.name, role: c.role })),
+          protagonistId: brief.protagonist.id,
+        }).beats.find((b) => b.beatId === beatId);
+        const isEstablishing = openerCoverage
+          ? openerCoverage.coveragePlan.stagingPattern === 'environment'
+          : explicitShotType === 'establishing'
+            || (!explicitShotType && this.isEstablishingBeat(openerBeat.text, openerBeat.speaker, openerBeat.primaryAction, beatCharContext));
+        const resolvedShotType: 'establishing' | 'character' | 'action' = openerCoverage
+          ? (isEstablishing ? 'establishing' : ((openerBeat as any).shotType === 'action' ? 'action' : 'character'))
+          : explicitShotType || (isEstablishing ? 'establishing' : 'character');
         const openerShotCast = resolveShotCast({
           beat: { ...openerBeat, shotType: resolvedShotType },
           sceneCharacterIds,
@@ -15769,8 +15914,8 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           protagonistId: brief.protagonist.id,
         });
         const openerVisibleCharacterIds = [
-          ...openerShotCast.requiredForegroundCharacterIds,
-          ...openerShotCast.optionalBackgroundCharacterIds,
+          ...(openerCoverage?.coveragePlan.requiredVisibleCharacterIds || openerShotCast.requiredForegroundCharacterIds),
+          ...(openerCoverage?.coveragePlan.optionalVisibleCharacterIds || openerShotCast.optionalBackgroundCharacterIds),
         ];
         const getShotName = (id: string) => characterBible.characters.find(c => c.id === id)?.name || id;
 
@@ -15850,12 +15995,20 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           choiceContext: this.sanitizePromptText((openerBeat as { choiceContext?: string }).choiceContext || '', brief, ''),
           incomingChoiceContext: this.sanitizePromptText(scene.incomingChoiceContext || '', brief, ''),
           isBranchPayoff: !!scene.incomingChoiceContext,
-          foregroundCharacterNames: isEstablishing ? [] : openerShotCast.requiredForegroundCharacterIds.map(getShotName),
-          backgroundCharacterNames: isEstablishing ? [] : openerShotCast.optionalBackgroundCharacterIds.map(getShotName),
+          foregroundCharacterNames: isEstablishing ? [] : (openerCoverage?.visualCast.foregroundCharacterIds || openerShotCast.requiredForegroundCharacterIds).map(getShotName),
+          backgroundCharacterNames: isEstablishing ? [] : (openerCoverage?.visualCast.backgroundCharacterIds || openerShotCast.optionalBackgroundCharacterIds).map(getShotName),
+          visualCast: openerCoverage?.visualCast,
+          coveragePlan: openerCoverage?.coveragePlan,
+          stagingPattern: openerCoverage?.coveragePlan.stagingPattern,
+          relationshipBlocking: openerCoverage?.coveragePlan.relationshipBlocking,
+          coverageReason: openerCoverage?.coveragePlan.coverageReason,
           colorMoodOverride: beatColorOverride,
         };
 
         let imagePrompt = buildBeatImagePrompt(beatPromptInput, scenePromptCtx);
+        if (openerCoverage?.coveragePlan) {
+          imagePrompt = overrideShotFromPlan(imagePrompt, openerCoverage.coveragePlan.shotDistance, openerCoverage.coveragePlan.cameraAngle);
+        }
         imagePrompt = this.sanitizeImagePrompt(imagePrompt, brief);
 
         const includeExpressionRefs = !!(openerBeat.isClimaxBeat || openerBeat.isKeyStoryBeat);
@@ -15881,6 +16034,8 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
               characters: shotCharacterIds,
               characterNames: shotCharacterNames,
               characterDescriptions: this.buildCharacterDescriptions(shotCharacterIds, characterBible),
+              visualCast: openerCoverage?.visualCast,
+              coveragePlan: openerCoverage?.coveragePlan,
             },
             referenceImages.length > 0 ? referenceImages : undefined,
           ),
@@ -16274,6 +16429,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       scenes.push({
         id: sb.id,
         name: sb.name,
+        charactersInvolved: content.charactersInvolved || sb.npcsPresent,
         startingBeatId: content.startingBeatId,
         backgroundImage: sceneImages.get(this.getEpisodeScopedSceneId(brief, sb.id)),
         beats: content.beats.map(gb => ({
@@ -16284,6 +16440,16 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           nextBeatId: gb.nextBeatId,
           image: beatImages.get(this.getEpisodeScopedBeatKey(brief, sb.id, gb.id)),
           video: beatVideos.get(this.getEpisodeScopedBeatKey(brief, sb.id, gb.id)),
+          visualMoment: gb.visualMoment,
+          primaryAction: gb.primaryAction,
+          emotionalRead: gb.emotionalRead,
+          relationshipDynamic: gb.relationshipDynamic,
+          mustShowDetail: gb.mustShowDetail,
+          shotType: gb.shotType,
+          intensityTier: gb.intensityTier,
+          visualContinuity: gb.visualContinuity,
+          visualCast: (gb as any).visualCast,
+          coveragePlan: (gb as any).coveragePlan,
           choices: gb.isChoicePoint ? choiceMap.get(`${sb.id}::${gb.id}`)?.choices.map(c => ({
             id: c.id,
             text: c.text,
@@ -17435,7 +17601,11 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
             visualMoment: (beat as any).visualMoment,
             primaryAction: (beat as any).primaryAction,
             emotionalRead: (beat as any).emotionalRead,
+            relationshipDynamic: (beat as any).relationshipDynamic,
+            mustShowDetail: (beat as any).mustShowDetail,
             shotType: (beat as any).shotType,
+            visualCast: (beat as any).visualCast,
+            coveragePlan: (beat as any).coveragePlan,
           };
         });
 
@@ -17449,7 +17619,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           beats,
           startingBeatId: scene.startingBeatId || beats[0]?.id || '',
           moodProgression: (scene as any).moodProgression || [],
-          charactersInvolved: (scene as any).charactersPresent || [],
+          charactersInvolved: (scene as any).charactersInvolved || (scene as any).charactersPresent || [],
           keyMoments: [],
           continuityNotes: [],
         });

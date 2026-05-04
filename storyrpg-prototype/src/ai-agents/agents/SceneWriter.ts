@@ -278,6 +278,8 @@ export interface GeneratedBeat {
   shotType?: 'establishing' | 'character' | 'action'; // Camera intent: environment-only, character-focused, or physical action
   intensityTier?: 'dominant' | 'supporting' | 'rest'; // Narrative intensity for scene-level pacing
   visualContinuity?: Beat['visualContinuity']; // Optional beat-to-beat flow metadata
+  visualCast?: Beat['visualCast'];
+  coveragePlan?: Beat['coveragePlan'];
 
   // Setup-payoff + plot-point metadata (Phases 5, 6)
   plantsThreadId?: string;

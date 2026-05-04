@@ -18,6 +18,7 @@ import type { ResolutionTier } from './choice';
 export interface Scene {
   id: string;
   name: string;
+  charactersInvolved?: string[];
 
   backgroundImage?: MediaRef;
   ambientSound?: string;

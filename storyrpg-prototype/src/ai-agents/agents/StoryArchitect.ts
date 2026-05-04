@@ -628,7 +628,7 @@ Every non-encounter scene must earn its place by making the encounter MORE meani
 
 Branching is a PROPERTY of any non-expression choice.
 - Set \`branches: true\` on the choicePoint when the scene should diverge
-- Include at least ${this.sceneGraphBranching.minPerEpisode} scene-graph branch choice point(s) per episode unless the request explicitly says linear
+- Include at least ${this.sceneGraphBranching?.minPerEpisode ?? 1} scene-graph branch choice point(s) per episode unless the request explicitly says linear
 - A scene-graph branch means: a non-expression choicePoint with \`branches: true\` AND at least two distinct \`leadsTo\` scene IDs
 - Max 1-2 branching choice points per episode; keep them small and reconvergent
 - Encounter outcomes (victory/defeat/escape) are valuable, but they DO NOT count as regular scene-graph branching
@@ -1206,7 +1206,7 @@ CHOICE DENSITY REQUIREMENTS (CRITICAL - Interactive fiction requires player choi
 11. BOTTLENECK scenes CAN have flavor choices - players still get agency in HOW they react even if the story beat is fixed
 12. Major choicePoints should include consequenceDomain and reminderPlan so later agents know how to preserve residue
 13. Use competenceArc and failureBranchPurpose when a future confrontation should open recovery, training, leverage, alliance, investigation, or regrouping paths
-14. At least ${this.sceneGraphBranching.minPerEpisode} non-expression choicePoint MUST set branches=true and offer at least two distinct leadsTo targets, unless the user's prompt explicitly asks for a linear episode.
+14. At least ${this.sceneGraphBranching?.minPerEpisode ?? 1} non-expression choicePoint MUST set branches=true and offer at least two distinct leadsTo targets, unless the user's prompt explicitly asks for a linear episode.
 
 SCENE LINKING & CONTINUITY (CRITICAL):
 12. Every scene (except the final scene) MUST have at least one valid ID in the "leadsTo" array.

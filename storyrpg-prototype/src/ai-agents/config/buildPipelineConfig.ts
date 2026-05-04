@@ -249,6 +249,7 @@ export function buildPipelineConfig(
       atlasCloudModel: input.atlasCloudModel.trim() || undefined,
       midapiToken: input.midapiToken.trim() || undefined,
       panelMode: input.panelMode || 'single',
+      imagePlanningMode: input.generationSettings.imagePlanningMode || 'text',
       requireCharacterRefsForVisibleCharacters: true,
       minRefsPerVisibleCharacter: 1,
       allowTextOnlyCharacterImages: false,

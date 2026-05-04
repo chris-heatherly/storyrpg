@@ -90,6 +90,15 @@ import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
 import { buildFashionPrimaryClothing, buildFashionStyleSummary } from '../images/characterFashionStyle';
 import { applyPromptContract, sanitizeStyleContaminationText } from '../images/imagePromptContracts';
+import {
+  attachStoryboardPlanToVisualPlan,
+  buildSceneVisualStoryboardPlan,
+  normalizeImagePlanningMode,
+  visualPlanSlotsFromBeats,
+  visualPlanSlotsFromEncounterManifest,
+  visualPlanSlotsFromStoryletManifest,
+  type SceneVisualStoryboardPlan,
+} from '../images/visualStoryboardPlanning';
 import { 
   Story, Episode, Scene, Beat, Choice, NPCTier, RelationshipDimension, Consequence,
   Encounter, EncounterOutcome, EncounterType, EncounterClock, EncounterPhase, EncounterBeat as TypeEncounterBeat,
@@ -206,6 +215,7 @@ import {
   StructuralValidator,
   ChoiceDistributionValidator,
   SceneGraphBranchValidator,
+  type SceneGraphBranchValidationResult,
   runNarrativeDiagnostics,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
@@ -917,7 +927,7 @@ export class FullStoryPipeline {
       outputDirectory?: string;
       artifactName?: string;
     }
-  ): Promise<void> {
+  ): Promise<SceneGraphBranchValidationResult> {
     const result = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, {
       requireSceneGraphBranching: this.config.generation?.requireSceneGraphBranching,
       minSceneGraphBranchesPerEpisode: this.config.generation?.minSceneGraphBranchesPerEpisode,
@@ -957,6 +967,140 @@ export class FullStoryPipeline {
         }
       );
     }
+
+    return result;
+  }
+
+  private async repairSceneGraphBranchingChoices(
+    brief: FullCreativeBrief,
+    worldBible: WorldBible,
+    characterBible: CharacterBible,
+    blueprint: EpisodeBlueprint,
+    sceneContents: SceneContent[],
+    choiceSets: ChoiceSet[],
+    encounters: Map<string, EncounterStructure>,
+    context: { phase: string }
+  ): Promise<boolean> {
+    const episode = this.assembleEpisode(
+      brief,
+      worldBible,
+      characterBible,
+      blueprint,
+      sceneContents,
+      choiceSets,
+      undefined,
+      encounters,
+      undefined,
+    );
+    const validation = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, {
+      requireSceneGraphBranching: this.config.generation?.requireSceneGraphBranching,
+      minSceneGraphBranchesPerEpisode: this.config.generation?.minSceneGraphBranchesPerEpisode,
+      allowLinearBottleneckEpisodes: this.config.generation?.allowLinearBottleneckEpisodes,
+    });
+    if (validation.valid) return false;
+
+    const repairable = validation.issues.some(issue =>
+      issue.type === 'lost_branch_during_assembly' ||
+      issue.type === 'missing_scene_graph_branch'
+    );
+    if (!repairable) return false;
+
+    const branchScenes = blueprint.scenes.filter(scene =>
+      scene.choicePoint?.branches &&
+      scene.choicePoint.type !== 'expression' &&
+      new Set(scene.leadsTo || []).size >= 2 &&
+      !scene.isEncounter
+    );
+    if (branchScenes.length === 0) return false;
+
+    let repaired = false;
+    for (const sceneBlueprint of branchScenes.slice(0, 2)) {
+      const sceneContent = sceneContents.find(scene => scene.sceneId === sceneBlueprint.id);
+      if (!sceneContent || sceneContent.beats.length === 0) continue;
+
+      let choicePointBeat = sceneContent.beats.find(beat => beat.isChoicePoint);
+      if (!choicePointBeat) {
+        choicePointBeat = sceneContent.beats[sceneContent.beats.length - 1];
+        choicePointBeat.isChoicePoint = true;
+      }
+
+      this.emit({
+        type: 'regeneration_triggered',
+        phase: context.phase,
+        message: `Repairing scene-graph branch choices for ${sceneBlueprint.id}`,
+        data: { sceneId: sceneBlueprint.id, beatId: choicePointBeat.id, leadsTo: sceneBlueprint.leadsTo },
+      });
+
+      const location = this.resolveWorldLocationForScene(sceneBlueprint, worldBible);
+      const repairResult = await withTimeout(this.choiceAuthor.execute({
+        sceneBlueprint,
+        beatText: choicePointBeat.text,
+        beatId: choicePointBeat.id,
+        storyContext: {
+          title: brief.story.title,
+          genre: brief.story.genre,
+          tone: brief.story.tone,
+          userPrompt:
+            `${brief.userPrompt || ''}\n\nCRITICAL SCENE-GRAPH BRANCH REPAIR:\n` +
+            `This scene is a required branch point. Every option must include nextSceneId, distributed across these valid future scenes: ${(sceneBlueprint.leadsTo || []).join(', ')}. ` +
+            `Do not create expression choices. Preserve the scene's stakes and make each route feel narratively distinct.`,
+          worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription),
+        },
+        protagonistInfo: {
+          name: brief.protagonist.name,
+          pronouns: brief.protagonist.pronouns,
+        },
+        npcsInScene: this.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
+        availableFlags: blueprint.suggestedFlags,
+        availableScores: blueprint.suggestedScores,
+        availableTags: blueprint.suggestedTags,
+        unresolvedCallbacks: this.getUnresolvedCallbacksForPrompt(brief.episode?.number),
+        possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
+          const scene = blueprint.scenes.find(candidate => candidate.id === id);
+          return {
+            id,
+            name: scene?.name || id,
+            description: scene?.description || '',
+          };
+        }),
+        optionCount: Math.max(sceneBlueprint.choicePoint?.optionHints?.length || 0, Math.min(3, sceneBlueprint.leadsTo.length)),
+        sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
+        memoryContext: this.cachedPipelineMemory || undefined,
+        branchContext: {
+          role: 'linear',
+          isBranchPoint: true,
+          expectedBranches: new Set(sceneBlueprint.leadsTo || []).size,
+        },
+        consequenceBudgetTarget: { callback: 60, tint: 20, branchlet: 10, branch: 10 },
+        seasonAnchors: brief.seasonPlan?.anchors,
+        seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+        episodeStructuralRole: brief.seasonPlan?.episodes.find(
+          (episodeEntry) => episodeEntry.episodeNumber === brief.episode.number,
+        )?.structuralRole,
+      }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} scene-graph-branch-repair)`);
+
+      if (!repairResult.success || !repairResult.data) {
+        this.emit({
+          type: 'warning',
+          phase: context.phase,
+          message: `Scene-graph branch repair failed for ${sceneBlueprint.id}: ${repairResult.error || 'no data'}`,
+        });
+        continue;
+      }
+
+      const repairedChoiceSet = { ...repairResult.data, sceneId: sceneBlueprint.id };
+      const existingIndex = choiceSets.findIndex(choiceSet =>
+        (choiceSet.sceneId ? `${choiceSet.sceneId}::${choiceSet.beatId}` : choiceSet.beatId) === `${sceneBlueprint.id}::${choicePointBeat.id}`
+      );
+      if (existingIndex >= 0) {
+        choiceSets[existingIndex] = repairedChoiceSet;
+      } else {
+        choiceSets.push(repairedChoiceSet);
+      }
+      repaired = true;
+    }
+
+    return repaired;
   }
 
   private assertSceneDependencyInvariants(blueprint: EpisodeBlueprint, sceneContents: SceneContent[]): void {
@@ -1574,10 +1718,15 @@ export class FullStoryPipeline {
     await this.saveDraftImageManifest(normalizedOutputDir, story);
     this.resetAssetRegistry(idSlugify(story.title), `${normalizedOutputDir}asset-registry.jsonl`);
 
-    if (!this.config.imageGen?.enabled) {
-      this.config.imageGen = { ...(this.config.imageGen || {}), enabled: true };
-    }
-    this.imageService.setOutputDirectory(`${normalizedOutputDir}images/`);
+	    if (!this.config.imageGen?.enabled) {
+	      this.config.imageGen = { ...(this.config.imageGen || {}), enabled: true };
+	    }
+	    this.config.imageGen = {
+	      ...(this.config.imageGen || {}),
+	      enabled: true,
+	      strategy: 'all-beats',
+	    };
+	    this.imageService.setOutputDirectory(`${normalizedOutputDir}images/`);
 
     try {
       const firstEpisode = story.episodes?.[0];
@@ -1633,12 +1782,29 @@ export class FullStoryPipeline {
           if (!choiceSet?.sceneId) return true;
           return episode.scenes?.some((scene) => scene.id === choiceSet.sceneId);
         });
-        const encounterMap = new Map<string, EncounterStructure>();
-        for (const encounter of savedEncounters) {
-          if (episode.scenes?.some((scene) => scene.id === encounter.sceneId)) {
-            encounterMap.set(encounter.sceneId, encounter);
-          }
-        }
+	        const encounterMap = new Map<string, EncounterStructure>();
+	        for (const encounter of savedEncounters) {
+	          if (episode.scenes?.some((scene) => scene.id === encounter.sceneId)) {
+	            encounterMap.set(encounter.sceneId, encounter);
+	          }
+	        }
+	        if (encounterMap.size === 0) {
+	          for (const scene of episode.scenes || []) {
+	            if (scene.encounter) {
+	              encounterMap.set(scene.id, {
+	                ...(scene.encounter as unknown as EncounterStructure),
+	                sceneId: scene.id,
+	              });
+	            }
+	          }
+	          if (encounterMap.size > 0) {
+	            this.emit({
+	              type: 'debug',
+	              phase: 'encounter_images',
+	              message: `Image-only run recovered ${encounterMap.size} encounter(s) from embedded story scenes because 05b-encounters.json was unavailable.`,
+	            });
+	          }
+	        }
 
         this.emit({ type: 'phase_start', phase: 'images', message: `Generating scene visuals for episode ${episode.number}...` });
         const imageResults = await this.imageWorkerQueue.run(() =>
@@ -2929,6 +3095,17 @@ export class FullStoryPipeline {
         this.resetAssetRegistry(idSlugify(brief.story.title));
         await saveEarlyDiagnostic(outputDirectory, `episode-${brief.episode.number}-blueprint.json`, episodeBlueprint);
 
+        await this.repairSceneGraphBranchingChoices(
+          brief,
+          worldBible,
+          characterBible,
+          episodeBlueprint,
+          sceneContents,
+          choiceSets,
+          encounters,
+          { phase: 'branch_repair' }
+        );
+
         const branchValidationEpisode = this.assembleEpisode(
           brief,
           worldBible,
@@ -3904,7 +4081,7 @@ export class FullStoryPipeline {
       memoryContext: this.cachedPipelineMemory || undefined,
     }), PIPELINE_TIMEOUTS.llmAgent, 'WorldBuilder.execute');
 
-    if (!result.success || !result.data) {
+    if (!result || !result.success || !result.data) {
       console.error(`[Pipeline] World Builder failed with error:`, result.error);
       throw new PipelineError(
         `World Builder failed: ${result.error}`,
@@ -4030,7 +4207,7 @@ export class FullStoryPipeline {
     const seasonPlan = brief.seasonPlan;
     const seasonEpisode = seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number);
 
-    const result = await withTimeout(this.storyArchitect.execute({
+    const architectureInput: StoryArchitectInput = {
       storyTitle: brief.story.title,
       genre: brief.story.genre,
       synopsis: brief.story.synopsis,
@@ -4061,7 +4238,39 @@ export class FullStoryPipeline {
       episodeStructuralRole: seasonEpisode?.structuralRole,
       cliffhangerPlan: seasonEpisode?.cliffhangerPlan,
       memoryContext: this.cachedPipelineMemory || undefined,
-    }), PIPELINE_TIMEOUTS.llmAgent, 'StoryArchitect.execute');
+    };
+
+    let result: AgentResponse<EpisodeBlueprint> | undefined;
+    const maxArchitectureAttempts = 2;
+    for (let attempt = 1; attempt <= maxArchitectureAttempts; attempt += 1) {
+      result = await withTimeout(
+        this.storyArchitect.execute(architectureInput),
+        PIPELINE_TIMEOUTS.llmAgent,
+        attempt === 1 ? 'StoryArchitect.execute' : `StoryArchitect.execute(branch-repair-${attempt})`
+      );
+
+      if (result.success && result.data) break;
+
+      const errorText = result.error || '';
+      const branchFailure =
+        errorText.includes('scene-graph branching') ||
+        errorText.includes('valid branch point') ||
+        errorText.includes('branches=true');
+      if (!branchFailure || attempt >= maxArchitectureAttempts) break;
+
+      this.emit({
+        type: 'regeneration_triggered',
+        phase: 'architecture',
+        message: `Retrying StoryArchitect for missing scene-graph branch (${attempt}/${maxArchitectureAttempts})`,
+        data: { error: result.error },
+      });
+
+      architectureInput.userPrompt =
+        `${architectureInput.userPrompt || ''}\n\nCRITICAL BLUEPRINT BRANCH REPAIR:\n` +
+        `The previous blueprint failed because it did not include a real scene-graph branch. ` +
+        `Add at least ${this.config.generation?.minSceneGraphBranchesPerEpisode ?? 1} non-expression choicePoint with branches=true, ` +
+        `at least two distinct future leadsTo scene IDs, branch scene incomingChoiceContext, and a later bottleneck/reconvergence scene.`;
+    }
 
     if (!result.success || !result.data) {
       throw new PipelineError(
@@ -7372,6 +7581,17 @@ export class FullStoryPipeline {
         encounters,
       );
 
+      await this.repairSceneGraphBranchingChoices(
+        episodeBrief,
+        worldBible,
+        characterBible,
+        blueprint,
+        sceneContents,
+        choiceSets,
+        encounters,
+        { phase: `episode_${i}_branch_repair` }
+      );
+
       const branchValidationEpisode = this.assembleEpisode(
         episodeBrief,
         worldBible,
@@ -8738,6 +8958,10 @@ ${clothingRule}
     return this.config.imageGen?.qa?.qaMode || 'full';
   }
 
+  private getEffectiveImagePlanningMode(): 'text' | 'visual-storyboard' {
+    return normalizeImagePlanningMode(this.config.imageGen?.imagePlanningMode);
+  }
+
   private async saveSceneVisualPlanningDiagnostic(
     outputDirectory: string | undefined,
     scopedSceneId: string,
@@ -8757,6 +8981,27 @@ ${clothingRule}
         message: `Failed to save visual planning diagnostic for ${scopedSceneId}: ${error instanceof Error ? error.message : String(error)}`,
       });
     }
+  }
+
+  private buildBeatSceneStoryboardPlan(params: {
+    sceneId: string;
+    scopedSceneId: string;
+    sceneName: string;
+    sceneDescription?: string;
+    beats: Array<{ id: string; text?: string }>;
+    visualPlan?: VisualPlan;
+  }): SceneVisualStoryboardPlan {
+    return buildSceneVisualStoryboardPlan({
+      sceneId: params.sceneId,
+      scopedSceneId: params.scopedSceneId,
+      sceneName: params.sceneName,
+      sceneDescription: params.sceneDescription,
+      slots: visualPlanSlotsFromBeats(params.scopedSceneId, params.beats),
+      panelCap: 6,
+      branchAware: false,
+      continuityBible: (params.visualPlan as any)?.continuityBible,
+      sequenceGrammar: (params.visualPlan as any)?.sequenceGrammar,
+    });
   }
 
   private wrapLlmImagePromptWithContracts(
@@ -8927,6 +9172,9 @@ ${clothingRule}
     let lastGeneratedImage: { data: string; mimeType: string } | null = null;
     let styleReferenceStored = false;
     this._generatedStyleReferencesAllowed = true;
+    try {
+      (this.imageAgentTeam as any).resetIdentityRegenerationBudget?.();
+    } catch { /* identity gate budget reset is best-effort */ }
 
     // Global image counter across all scenes for progress reporting
     let globalImageIndex = 0;
@@ -9086,7 +9334,7 @@ ${clothingRule}
         };
 
         // Filter beats based on image generation strategy (narrative-aware, mirrors story approach)
-        const imageStrategy = this.config.imageGen?.strategy || 'selective';
+	        const imageStrategy = this.config.imageGen?.strategy || 'all-beats';
         const beatsToIllustrate = imageStrategy === 'all-beats' 
           ? scene.beats 
           : scene.beats.filter((b, idx) => {
@@ -9276,6 +9524,7 @@ ${clothingRule}
 
         const promptMode = this.getEffectiveImagePromptMode();
         const qaMode = this.getEffectiveImageQaMode();
+        const imagePlanningMode = this.getEffectiveImagePlanningMode();
         const compareCanonical = this.config.imageGen?.qa?.compareCanonical || 'llm';
         const compareMaxBeats = this.config.imageGen?.qa?.compareMaxBeats ?? 20;
         let compareBeatsSeen = 0;
@@ -9341,6 +9590,8 @@ ${clothingRule}
               } : undefined,
               characterBodyVocabularies,
               characterDescriptions: sceneCharacterDescriptions,
+              imagePlanningMode,
+              storyboardPanelCap: 6,
             };
             let llmResult: any;
             const scenePlanningAttempts = 2;
@@ -9362,6 +9613,17 @@ ${clothingRule}
             }
             if (llmResult.success && llmResult.data) {
               llmVisualPlan = llmResult.data;
+              if (imagePlanningMode === 'visual-storyboard') {
+                const storyboardPlan = this.buildBeatSceneStoryboardPlan({
+                  sceneId: scene.sceneId,
+                  scopedSceneId,
+                  sceneName: scene.sceneName,
+                  sceneDescription: storyboardRequest.sceneDescription,
+                  beats: enrichedBeats,
+                  visualPlan: llmVisualPlan,
+                });
+                attachStoryboardPlanToVisualPlan(llmVisualPlan, storyboardPlan);
+              }
               const rawPrompts = llmResult.data.prompts instanceof Map
                 ? llmResult.data.prompts
                 : new Map(Object.entries((llmResult.data as any).prompts || {}));
@@ -9381,6 +9643,12 @@ ${clothingRule}
                 shotCount: llmVisualPlan.shots?.length || 0,
                 promptCount: llmPromptMap.size,
                 contractFidelityMetrics,
+                imagePlanningMode,
+                storyboardSheets: (llmVisualPlan as any).storyboardSheets,
+                storyboardPanels: (llmVisualPlan as any).storyboardPanels,
+                storyboardCoverage: (llmVisualPlan as any).storyboardCoverage,
+                sequenceGrammar: (llmVisualPlan as any).sequenceGrammar,
+                continuityBible: (llmVisualPlan as any).continuityBible,
                 shots: llmVisualPlan.shots,
                 promptKeys: [...llmPromptMap.keys()],
               });
@@ -9416,6 +9684,27 @@ ${clothingRule}
               message: `LLM visual planning threw for ${scene.sceneName}; deterministic prompts will be used for this scene: ${planningMsg}`,
             });
           }
+        }
+
+        if (imagePlanningMode === 'visual-storyboard' && !llmVisualPlan) {
+          const storyboardPlan = this.buildBeatSceneStoryboardPlan({
+            sceneId: scene.sceneId,
+            scopedSceneId,
+            sceneName: scene.sceneName,
+            sceneDescription: scenePromptCtx.sceneName,
+            beats: enrichedBeats,
+          });
+          await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
+            promptMode,
+            qaMode,
+            imagePlanningMode,
+            status: 'structured-storyboard-only',
+            storyboardSheets: storyboardPlan.sheets,
+            storyboardPanels: storyboardPlan.panels,
+            storyboardCoverage: storyboardPlan.coverage,
+            sequenceGrammar: storyboardPlan.sequenceGrammar,
+            continuityBible: storyboardPlan.continuityBible,
+          });
         }
 
         for (let beatIdx = 0; beatIdx < enrichedBeats.length; beatIdx++) {
@@ -9666,6 +9955,7 @@ ${clothingRule}
               effectivePromptMode: promptMode,
               effectivePromptSource: promptSource,
               effectiveQaMode: qaMode,
+              imagePlanningMode,
               styleSource: this._uploadedStyleReferenceImages.length > 0
                 ? 'user-visual'
                 : (this._generatedStyleReferencesAllowed && styleReferenceStored ? 'approved-generated-anchor' : 'raw-season-style'),
@@ -10179,25 +10469,32 @@ ${clothingRule}
             });
           }
 
-          const heroBeatIds = new Set(heroVisualQAIdentifiers.keys());
           const sceneQaPlan: VisualPlan = {
             ...llmVisualPlan,
             shots: (llmVisualPlan.shots || []).filter((shot: any) => renderedBeatSlots.has(shot.beatId || shot.id)),
           };
+          const sceneQaImages = generatedImagesForSceneQA;
+          const toBeatId = (shotId: string): string => {
+            const shot = sceneQaPlan.shots.find((s: any) => s.id === shotId || s.beatId === shotId);
+            return shot?.beatId || shotId;
+          };
+          const includesShotOrBeat = (shotIds: string[], beatId: string): boolean => {
+            return shotIds.some((shotId: string) => toBeatId(shotId) === beatId || shotId === beatId);
+          };
           if (sceneQaPlan.shots.length > 0) {
             try {
               const fullQaReport = await this.imageAgentTeam.runFullVisualQA(
-                heroPlan,
-                generatedImagesForVisualQA,
+                sceneQaPlan,
+                sceneQaImages,
                 sceneContext.isClimactic ? 'climax' : 'dialogue',
-                sceneContext.isClimactic || heroPlan.shots.some((shot: any) => shot.storyBeat?.isClimaxBeat || shot.storyBeat?.isKeyStoryBeat),
+                sceneContext.isClimactic || sceneQaPlan.shots.some((shot: any) => shot.storyBeat?.isClimaxBeat || shot.storyBeat?.isKeyStoryBeat),
                 colorScript,
                 sceneContext,
               );
               const serializedReport = this.serializeVisualQAReport(fullQaReport);
               await this.saveSceneVisualQADiagnostic(outputDirectory, scopedSceneId, serializedReport);
               for (const [beatKey, beatIdentifier] of heroVisualQAIdentifiers.entries()) {
-                const shot = heroPlan.shots.find((s: any) => s.beatId === beatKey || s.id === beatKey);
+                const shot = sceneQaPlan.shots.find((s: any) => s.beatId === beatKey || s.id === beatKey);
                 await this.saveBeatVisualQADiagnostic(outputDirectory, beatIdentifier, {
                   scopedSceneId,
                   beatId: beatKey,
@@ -10207,7 +10504,7 @@ ${clothingRule}
                   overallScore: fullQaReport.overallScore,
                   isAcceptable: fullQaReport.isAcceptable,
                   issues: fullQaReport.issues,
-                  shouldRegenerate: fullQaReport.shotsToRegenerate.includes(beatKey),
+                  shouldRegenerate: includesShotOrBeat(fullQaReport.shotsToRegenerate || [], beatKey),
                   report: serializedReport,
                 });
               }
@@ -10224,10 +10521,7 @@ ${clothingRule}
                 while (!activeQaReport.isAcceptable && activeQaReport.shotsToRegenerate.length > 0 && qaAttempt < maxQaRegens) {
                   qaAttempt += 1;
                   const regenBeatIds = activeQaReport.shotsToRegenerate
-                    .map((shotId: string) => {
-                      const shot = heroPlan.shots.find((s: any) => s.id === shotId || s.beatId === shotId);
-                      return shot?.beatId || shotId;
-                    })
+                    .map((shotId: string) => toBeatId(shotId))
                     .filter((beatId: string, idx: number, arr: string[]) => renderedBeatSlots.has(beatId) && arr.indexOf(beatId) === idx)
                     .slice(0, 4);
                   if (regenBeatIds.length === 0) break;
@@ -10239,67 +10533,26 @@ ${clothingRule}
                   });
 
                   for (const regenBeatId of regenBeatIds) {
-                    const slot = renderedBeatSlots.get(regenBeatId);
-                    if (!slot) continue;
-                    const regenIdentifier = `${slot.identifier}-visualqa-retry-${qaAttempt}`;
-                    const regenPrompt: ImagePrompt = {
-                      ...slot.imagePrompt,
-                      prompt: [
-                        slot.imagePrompt.prompt,
-                        `FULL VISUAL QA CORRECTION: Fix these issues while preserving story action, approved character identities, attached references, and the authoritative style contract: ${activeQaReport.issues.slice(0, 4).join('; ')}.`,
-                      ].filter(Boolean).join('\n'),
-                      negativePrompt: [
-                        slot.imagePrompt.negativePrompt,
-                        'wrong lighting mood, inconsistent rendering finish, pose repetition, weak visual storytelling, identity drift',
-                      ].filter(Boolean).join(', '),
-                      promptContract: {
-                        ...(slot.imagePrompt.promptContract || {}),
-                        visualQaRegeneration: qaAttempt,
-                        visualQaIssues: activeQaReport.issues,
-                      },
-                    };
-                    const regenResult = await this.generateImageWithDefectRetries(
-                      regenPrompt,
-                      regenIdentifier,
-                      {
-                        ...slot.metadata,
-                        regeneration: qaAttempt,
-                        visualQaRegeneration: qaAttempt,
-                      },
-                      slot.referenceImages.length > 0 ? slot.referenceImages : undefined,
-                      `visualQARegen(${scopedSceneId}:${regenBeatId})`,
-                      outputDirectory,
-                      chatModeEnabled && this.imageService.hasChatSession(scopedSceneId)
-                        ? (activePrompt, attemptIdentifier, _attemptMetadata, attemptRefs) => this.imageService.generateImageInChat(
-                            activePrompt,
-                            attemptIdentifier,
-                            attemptRefs,
-                            { characterNames: slot.shotCharacterNames, characterDescriptions: slot.shotCharacterDescriptions }
-                          )
-                        : undefined,
+                    const shot = sceneQaPlan.shots.find((s: any) => s.beatId === regenBeatId || s.id === regenBeatId);
+                    const image = sceneQaImages.get(regenBeatId);
+                    let guidance: string | undefined;
+                    try {
+                      guidance = await (this.imageAgentTeam as any).buildFullQAGuidanceForShot?.(activeQaReport, shot, image);
+                    } catch { /* fall through to generic QA issues */ }
+                    await regenerateRenderedBeat(
+                      regenBeatId,
+                      'visual-qa',
+                      qaAttempt,
+                      guidance || activeQaReport.issues.slice(0, 4).join('; ') || 'Improve composition, expression, body language, lighting/color, and visual storytelling while preserving identity and style.',
+                      true,
                     );
-                    if (regenResult.imageUrl) {
-                      generatedImagesForVisualQA.set(regenBeatId, regenResult);
-                      beatImages.set(slot.beatMapKey, regenResult.imageUrl);
-                      if (slot.beatIndex === 0) sceneImages.set(scopedSceneId, regenResult.imageUrl);
-                      beatResumeSet.add(slot.identifier);
-                      beatResumeImageMap[slot.identifier] = regenResult.imageUrl;
-                      persistBeatResume().catch(() => {});
-                      renderedBeatSlots.set(regenBeatId, {
-                        ...slot,
-                        imagePrompt: regenPrompt,
-                      });
-                      try {
-                        this.assetRegistry.markSuccess(`story-beat:${scopedSceneId}::${regenBeatId}`, regenResult, { prompt: regenPrompt });
-                      } catch { /* non-fatal */ }
-                    }
                   }
 
                   activeQaReport = await this.imageAgentTeam.runFullVisualQA(
-                    heroPlan,
-                    generatedImagesForVisualQA,
+                    sceneQaPlan,
+                    sceneQaImages,
                     sceneContext.isClimactic ? 'climax' : 'dialogue',
-                    sceneContext.isClimactic || heroPlan.shots.some((shot: any) => shot.storyBeat?.isClimaxBeat || shot.storyBeat?.isKeyStoryBeat),
+                    sceneContext.isClimactic || sceneQaPlan.shots.some((shot: any) => shot.storyBeat?.isClimaxBeat || shot.storyBeat?.isKeyStoryBeat),
                     colorScript,
                     sceneContext,
                   );
@@ -10312,10 +10565,7 @@ ${clothingRule}
                 }
                 if (!activeQaReport.isAcceptable) {
                   const blocking = activeQaReport.shotsToRegenerate
-                    .map((shotId: string) => {
-                      const shot = heroPlan.shots.find((s: any) => s.id === shotId || s.beatId === shotId);
-                      return shot?.beatId || shotId;
-                    })
+                    .map((shotId: string) => toBeatId(shotId))
                     .filter((beatId: string) => renderedBeatSlots.has(beatId));
                   if (blocking.length > 0) {
                     for (const beatIdToReject of blocking) {
@@ -10348,6 +10598,119 @@ ${clothingRule}
                 message: `Full visual QA failed for ${scene.sceneName} (non-fatal): ${qaMsg}`,
               });
             }
+          }
+        }
+
+        if (qaMode === 'full' && llmVisualPlan && generatedImagesForSceneQA.size > 0 && renderedBeatSlots.size > 0) {
+          try {
+            const identityPlan: VisualPlan = {
+              ...llmVisualPlan,
+              shots: (llmVisualPlan.shots || [])
+                .map((shot: any) => {
+                  const beatIdForShot = shot.beatId || shot.id;
+                  const slot = renderedBeatSlots.get(beatIdForShot);
+                  if (!slot) return null;
+                  return {
+                    ...shot,
+                    beatId: beatIdForShot,
+                    characters: Array.isArray(slot.metadata?.characters) && slot.metadata.characters.length > 0
+                      ? slot.metadata.characters
+                      : shot.characters,
+                  };
+                })
+                .filter(Boolean),
+            };
+            if (identityPlan.shots.length > 0) {
+              const promptMap = new Map<string, ImagePrompt>();
+              for (const [beatIdForShot, slot] of renderedBeatSlots.entries()) {
+                promptMap.set(beatIdForShot, slot.imagePrompt);
+              }
+              const beforeIdentityUrls = new Map<string, string | undefined>();
+              for (const shot of identityPlan.shots) {
+                const shotKey = shot.beatId || shot.id;
+                beforeIdentityUrls.set(shotKey, generatedImagesForSceneQA.get(shotKey)?.imageUrl);
+              }
+              await (this.imageAgentTeam as any).runIdentityConsistencyGate?.(
+                identityPlan,
+                generatedImagesForSceneQA,
+                promptMap,
+                {
+                  generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => this.generateImageWithDefectRetries(
+                    prompt,
+                    identifier,
+                    {
+                      ...(metadata || {}),
+                      sceneId: scopedSceneId,
+                      type: 'beat',
+                      regenerationReason: 'identity',
+                      renderRoute: 'identity-generate',
+                    },
+                    referenceImages,
+                    `identityGate(${scopedSceneId}:${identifier})`,
+                    outputDirectory,
+                  ),
+                  editImage: (baseImage: { data: string; mimeType: string }, prompt: ImagePrompt, identifier: string, referenceImages?: any[]) => this.generateImageWithDefectRetries(
+                    prompt,
+                    identifier,
+                    {
+                      sceneId: scopedSceneId,
+                      type: 'beat',
+                      regenerationReason: 'identity',
+                      renderRoute: 'identity-edit',
+                    },
+                    referenceImages,
+                    `identityEdit(${scopedSceneId}:${identifier})`,
+                    outputDirectory,
+                    (activePrompt, attemptIdentifier, _attemptMetadata, attemptRefs) => this.imageService.editImage(
+                      baseImage,
+                      activePrompt,
+                      attemptIdentifier,
+                      attemptRefs,
+                    ),
+                  ),
+                },
+                storyboardRequest,
+              );
+
+              const changedIdentityShots: string[] = [];
+              for (const shot of identityPlan.shots) {
+                const shotKey = shot.beatId || shot.id;
+                const result = generatedImagesForSceneQA.get(shotKey);
+                const slot = renderedBeatSlots.get(shotKey);
+                if (!result?.imageUrl || !slot) continue;
+                if (beforeIdentityUrls.get(shotKey) === result.imageUrl) continue;
+                changedIdentityShots.push(shotKey);
+                beatImages.set(slot.beatMapKey, result.imageUrl);
+                if (slot.beatIndex === 0) sceneImages.set(scopedSceneId, result.imageUrl);
+                if (heroVisualQAIdentifiers.has(shotKey)) generatedImagesForVisualQA.set(shotKey, result);
+                beatResumeSet.add(slot.identifier);
+                beatResumeImageMap[slot.identifier] = result.imageUrl;
+                try {
+                  this.assetRegistry.markSuccess(`story-beat:${scopedSceneId}::${shotKey}`, result, { prompt: slot.imagePrompt });
+                } catch { /* non-fatal */ }
+              }
+              if (changedIdentityShots.length > 0) {
+                persistBeatResume().catch(() => {});
+                await this.saveSceneVisualQADiagnostic(outputDirectory, `${scopedSceneId}.identity`, {
+                  type: 'identity-consistency',
+                  promptMode,
+                  qaMode,
+                  changedShots: changedIdentityShots,
+                });
+                this.emit({
+                  type: 'warning',
+                  phase: 'images',
+                  message: `Identity consistency gate regenerated ${changedIdentityShots.length} shot(s) in ${scene.sceneName}: ${changedIdentityShots.join(', ')}`,
+                  data: { sceneId: scene.sceneId, changedIdentityShots },
+                });
+              }
+            }
+          } catch (identityErr) {
+            this.emit({
+              type: 'warning',
+              phase: 'images',
+              message: `Identity consistency gate failed for ${scene.sceneName} (non-fatal): ${identityErr instanceof Error ? identityErr.message : String(identityErr)}`,
+            });
           }
         }
 
@@ -11382,6 +11745,86 @@ Design the key art. Return STRICT JSON matching the schema.`;
         console.warn(
           `[Pipeline] Encounter ${sceneId}: ${slotManifest.truncatedPaths.length} subtree(s) not expanded beyond depth ${ENCOUNTER_TREE_MAX_DEPTH}`
         );
+      }
+      if (this.getEffectiveImagePlanningMode() === 'visual-storyboard') {
+        const storyletManifestForPlanning = buildStoryletSlotManifest(encounter.storylets, sceneId, scopedSceneId);
+        const storyboardPlan = buildSceneVisualStoryboardPlan({
+          sceneId,
+          scopedSceneId,
+          sceneName: `${sceneId} encounter`,
+          sceneDescription: encounter.description || encounter.encounterType || sceneId,
+          slots: [
+            ...visualPlanSlotsFromEncounterManifest(slotManifest.slots),
+            ...visualPlanSlotsFromStoryletManifest(storyletManifestForPlanning.slots),
+          ],
+          panelCap: 6,
+          branchAware: true,
+        });
+        const encounterVisualPlan = attachStoryboardPlanToVisualPlan({
+          sceneId: scopedSceneId,
+          imagePlanningMode: 'visual-storyboard',
+          rhythmPattern: 'Action Sequence',
+          shots: storyboardPlan.panels
+            .filter((panel) => !panel.contextOnly)
+            .map((panel) => ({
+              id: panel.slotId,
+              beatId: panel.beatId || panel.slotId,
+              description: panel.encounterPathId || panel.slotId,
+              type: panel.sequenceRole === 'aftermath' ? 'outcome' : 'action',
+              shotType: panel.sequenceRole === 'establishing' ? 'LS' : panel.sequenceRole === 'insert' ? 'CU' : 'MS',
+              cameraAngle: panel.sequenceRole === 'confrontation' ? 'Low' : 'Eye-level',
+              horizontalAngle: 'Three-quarter',
+              wallyWoodPanel: panel.sequenceRole,
+              pose: {
+                lineOfAction: 'diagonal',
+                weightDistribution: panel.sequenceRole === 'aftermath' ? 'backward' : 'forward',
+                armPosition: 'gesture-mid',
+                torsoTwist: 'twisted-left',
+                emotionalQuality: panel.sequenceRole === 'aftermath' ? 'contracted' : 'dynamic',
+              },
+              poseDescription: `Encounter ${panel.sequenceRole} panel for ${panel.slotId}`,
+              lighting: { direction: 'side', quality: 'dramatic', temperature: 'mixed', contrast: 'high' },
+              lightingDescription: 'Branch-aware dramatic light preserving the encounter setup geography.',
+              storyBeat: {
+                action: panel.encounterPathId || panel.slotId,
+                emotion: panel.sequenceRole,
+              },
+              mood: panel.sequenceRole,
+              composition: 'Branch-aware cinematic staging; preserve parent-state continuity.',
+              focalPoint: panel.beatId || panel.slotId,
+              depthLayers: 'Foreground pressure, midground action, background encounter geography.',
+              storyboardPanel: panel,
+              sequenceRole: panel.sequenceRole,
+              continuityFrom: panel.continuityFrom,
+              continuityTo: panel.continuityTo,
+            })),
+          diversityCheck: {
+            lineOfActionVariety: true,
+            weightVariety: true,
+            angleVariety: true,
+            poseRepetition: [],
+          },
+          transitionAnalysis: {
+            transitionSequence: [],
+            rhythmDescription: storyboardPlan.sequenceGrammar.cameraProgression,
+            closureLoadProgression: storyboardPlan.sequenceGrammar.silentReadabilityGoal,
+          },
+        } as any, storyboardPlan);
+        this.collectedVisualPlanning.visualPlans.push(encounterVisualPlan as any);
+        await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
+          promptMode: this.getEffectiveImagePromptMode(),
+          qaMode: this.getEffectiveImageQaMode(),
+          imagePlanningMode: 'visual-storyboard',
+          status: 'encounter-structured-storyboard',
+          encounterSlotCount: slotManifest.slots.length,
+          storyletSlotCount: storyletManifestForPlanning.slots.length,
+          storyboardSheets: storyboardPlan.sheets,
+          storyboardPanels: storyboardPlan.panels,
+          storyboardCoverage: storyboardPlan.coverage,
+          sequenceGrammar: storyboardPlan.sequenceGrammar,
+          continuityBible: storyboardPlan.continuityBible,
+          truncatedPaths: slotManifest.truncatedPaths,
+        });
       }
 
       const encounterPolicy = new EncounterProviderPolicy(this.imageService, {
@@ -15222,7 +15665,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       work: Promise<GeneratedImage>;
     };
     const items: PrefetchItem[] = [];
-    const imageStrategy = this.config.imageGen?.strategy || 'selective';
+	    const imageStrategy = this.config.imageGen?.strategy || 'all-beats';
 
     for (const scene of sceneContents) {
       try {

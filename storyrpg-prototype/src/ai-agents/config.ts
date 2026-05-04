@@ -681,6 +681,13 @@ export interface PipelineConfig {
     /** Panel layout mode for beat images: 'single' (one image per beat), 'special-beats' (panels for action/dramatic moments), 'all-beats' (panels for every beat). */
     panelMode?: 'single' | 'special-beats' | 'all-beats';
     /**
+     * Scene image planning mode. `text` preserves the existing prompt-only
+     * storyboard path. `visual-storyboard` adds canonical scene visual plans,
+     * sequence grammar, and branch-aware substoryboard panel maps before final
+     * image rendering.
+     */
+    imagePlanningMode?: 'text' | 'visual-storyboard';
+    /**
      * Minimum ConsistencyScorer score (0-100) a generated shot must achieve
      * against its character reference images before it is accepted. Shots below
      * this threshold trigger a single bounded edit-mode regeneration pass.
@@ -915,6 +922,9 @@ export function loadConfig(): PipelineConfig {
       openaiModeration: openaiSettingsFromEnv.imageModeration,
       model: env.EXPO_PUBLIC_GEMINI_MODEL || env.GEMINI_MODEL,
       provider: env.EXPO_PUBLIC_IMAGE_PROVIDER || env.IMAGE_PROVIDER || 'nano-banana',
+      imagePlanningMode: (env.EXPO_PUBLIC_IMAGE_PLANNING_MODE || env.IMAGE_PLANNING_MODE) === 'visual-storyboard'
+        ? 'visual-storyboard'
+        : 'text',
       requireCharacterRefsForVisibleCharacters: env.IMAGE_REQUIRE_CHARACTER_REFS !== 'false',
       minRefsPerVisibleCharacter: Number.parseInt(env.IMAGE_MIN_REFS_PER_VISIBLE_CHARACTER || '1', 10) || 1,
       allowTextOnlyCharacterImages: env.IMAGE_ALLOW_TEXT_ONLY_CHARACTER_IMAGES === 'true',

@@ -175,7 +175,9 @@ export async function runImageGenerationBatch(request: ImageGenerationBatchReque
           ...request.config.generation,
           assetGenerationMode: 'image-only' as const,
         },
-        imageGen: request.config.imageGen ? { ...request.config.imageGen, enabled: true } : { enabled: true },
+        imageGen: request.config.imageGen
+          ? { ...request.config.imageGen, enabled: true, strategy: 'all-beats' as const }
+          : { enabled: true, strategy: 'all-beats' as const },
       }
     : request.config;
   const pipeline = new FullStoryPipeline(effectiveConfig);

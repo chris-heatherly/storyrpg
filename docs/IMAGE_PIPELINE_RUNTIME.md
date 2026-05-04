@@ -222,20 +222,35 @@ creative shot planning or QA depth for speed.
    `imageGen.artStyleProfile` and `imageGen.preapprovedStyleAnchors` so
    the worker skips in-pipeline anchor generation for slots the UI
    already locked in.
-1. `FullStoryPipeline` generates character references and body-language assets during the master-images phase.
-2. `ColorScriptAgent` creates the episode color arc.
-3. The pipeline generates an episode style bible before scene renders begin:
+1. **Pre-image story-shape gate.** Before any master references, scene
+   renders, or encounter images are generated, `FullStoryPipeline`
+   assembles a text-only episode and runs `SceneGraphBranchValidator`.
+   This validator records regular choices, scene-graph branch choices
+   (`Choice.nextSceneId`), encounter choices, encounter outcome branches,
+   and storylet counts as separate metrics. Encounter/storylet branching
+   is valuable, but it does not satisfy the regular scene-graph branch
+   contract. If the blueprint has no real branch, `StoryArchitect` gets
+   one targeted retry during architecture. If a planned branch survives
+   the blueprint but assembled choices lose `nextSceneId`, the pipeline
+   reruns only `ChoiceAuthor` for the affected branch scene before image
+   work starts. The final branch metrics are saved as
+   `episode-<n>-branch-metrics.json`; fail-fast mode stops here rather
+   than spending image budget on a linear episode that was expected to
+   branch.
+2. `FullStoryPipeline` generates character references and body-language assets during the master-images phase.
+3. `ColorScriptAgent` creates the episode color arc.
+4. The pipeline generates an episode style bible before scene renders begin:
    - an abstract color-script strip (skipped if pre-approved via the UI)
    - a controlled character-in-style anchor image (skipped if pre-approved via the UI)
    - an optional environment vignette anchor (skipped if pre-approved via the UI)
-4. The best validated style-bible image may become a visual style anchor for downstream image generation. Uploaded/pre-approved user style refs still win; rejected generated anchors are not allowed to steer later images.
-5. For each story scene, `runEpisodeImageGeneration` resolves the effective prompt mode:
+5. The best validated style-bible image may become a visual style anchor for downstream image generation. Uploaded/pre-approved user style refs still win; rejected generated anchors are not allowed to steer later images.
+6. For each story scene, `runEpisodeImageGeneration` resolves the effective prompt mode:
    - `llm` (default): calls `ImageAgentTeam.generateFullSceneVisuals()`. `StoryboardAgent` plans rhythm, shot grammar, transition logic, pose, lighting, mood, and visual storytelling. `VisualIllustratorAgent` converts those shots into `ImagePrompt`s keyed by beat id.
    - `deterministic`: skips the LLM scene-planning cascade and uses `buildBeatImagePrompt()` plus `shotSequencePlanner`.
    - `compare`: builds both prompt variants for the configured capped number of beats, saves `images/prompts/<id>.prompt-compare.json`, and binds only the configured canonical variant into the story.
-6. Every LLM prompt is treated as a creative draft. The pipeline wraps it with `applyPromptContract`, the raw season `style_contract`, sanitized rendering-language rules, anti-photoreal negatives, character/ref precedence metadata, and the same provider-aware reference filtering used by deterministic prompts. Missing LLM prompts fall back beat-by-beat to the deterministic builder; they do not force the whole scene to fall back.
-7. `ImageGenerationService` routes the contracted prompt to the selected provider and applies provider-specific controls. Every accepted beat writes `images/prompts/<id>.qa.json` from the shared defect gate/retry loop.
-8. Under `qaMode=full`, hero/key beats also receive legacy full visual QA diagnostics at `images/prompts/<id>.visual-qa.json`, and each scene receives `images/prompts/<sceneId>.visual-planning.json` plus scene-level `visual-qa.json` when full QA runs.
+7. Every LLM prompt is treated as a creative draft. The pipeline wraps it with `applyPromptContract`, the raw season `style_contract`, sanitized rendering-language rules, anti-photoreal negatives, character/ref precedence metadata, and the same provider-aware reference filtering used by deterministic prompts. Missing LLM prompts fall back beat-by-beat to the deterministic builder; they do not force the whole scene to fall back.
+8. `ImageGenerationService` routes the contracted prompt to the selected provider and applies provider-specific controls. Every accepted beat writes `images/prompts/<id>.qa.json` from the shared defect gate/retry loop.
+9. Under `qaMode=full`, the split image-only path restores the old scene-level QA cascade after contracted rendering: pose-diversity review and targeted regeneration, full visual QA with guided re-illustration, and the bounded identity-consistency gate. Hero/key beats also receive legacy full visual QA diagnostics at `images/prompts/<id>.visual-qa.json`; each scene receives `images/prompts/<sceneId>.visual-planning.json`, scene-level `visual-qa.json`, diversity diagnostics, and identity diagnostics when those gates run.
 
 ### Image Prompt Assembly
 
@@ -326,10 +341,11 @@ These principles are codified in:
 
 ### Runtime QA Stages
 
-Runtime QA has two stages:
+Runtime QA has three scene-level stages after the fast per-image defect gate:
 
 1. Pose-diversity regeneration (`PoseDiversityValidator`)
 2. Full visual QA regeneration
+3. Identity-consistency scoring and bounded edit/regeneration against approved character refs
 
 Full visual QA can trigger targeted regeneration using guidance from:
 

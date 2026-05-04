@@ -169,9 +169,10 @@ describe('storyGenerationService', () => {
       outputDirectory: '/tmp/story/',
     });
 
-    expect(generateImagesForDraft).toHaveBeenCalledWith('/tmp/story/', undefined);
-    expect(pipelineInstances[0].config.imageGen.enabled).toBe(true);
-    expect(pipelineInstances[0].config.generation.assetGenerationMode).toBe('image-only');
+	    expect(generateImagesForDraft).toHaveBeenCalledWith('/tmp/story/', undefined);
+	    expect(pipelineInstances[0].config.imageGen.enabled).toBe(true);
+	    expect(pipelineInstances[0].config.imageGen.strategy).toBe('all-beats');
+	    expect(pipelineInstances[0].config.generation.assetGenerationMode).toBe('image-only');
     expect(response.result).toEqual({ success: true, outputDirectory: '/tmp/story/' });
   });
 });

@@ -64,6 +64,7 @@ export interface GenerationSettings {
   generateImages: boolean;
   imageGenerationLimit: number;
   panelMode: 'single' | 'special-beats' | 'all-beats';
+  imagePlanningMode: 'text' | 'visual-storyboard';
   
   // Validation
   blockingThreshold: number;
@@ -142,6 +143,7 @@ export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
   generateImages: true,
   imageGenerationLimit: CONCURRENCY_DEFAULTS.imageGenerationLimit,
   panelMode: 'single' as const,
+  imagePlanningMode: 'text' as const,
   
   // Validation
   blockingThreshold: PHASE_VALIDATION_DEFAULTS.blockingThreshold,
@@ -412,6 +414,17 @@ const PERFORMANCE_FIELDS: SettingFieldConfig[] = [
       { value: 'single', label: 'Single Image' },
       { value: 'special-beats', label: 'Special Beats' },
       { value: 'all-beats', label: 'All Beats' },
+    ],
+    condition: (settings) => settings.generateImages,
+  },
+  {
+    type: 'select',
+    key: 'imagePlanningMode',
+    label: 'Image Planning',
+    description: 'Current text planning, or scene-level visual storyboard planning with continuity maps.',
+    options: [
+      { value: 'text', label: 'Text Plan' },
+      { value: 'visual-storyboard', label: 'Visual Storyboard' },
     ],
     condition: (settings) => settings.generateImages,
   },

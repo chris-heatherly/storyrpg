@@ -33,6 +33,13 @@ import {
   ExpressionName
 } from './CharacterReferenceSheetAgent';
 import { selectStyleAdaptation, type SceneSettingContext } from '../../utils/styleAdaptation';
+import type {
+  ImagePlanningMode,
+  SceneContinuityBible,
+  SceneSequenceGrammar,
+  StoryboardPanelMapping,
+  StoryboardSheetPlan,
+} from '../../images/visualStoryboardPlanning';
 
 // Panel transition types (McCloud-inspired)
 export type TransitionType = 
@@ -360,6 +367,18 @@ export type {
 
 export interface VisualPlan {
   sceneId: string;
+  imagePlanningMode?: ImagePlanningMode;
+  continuityBible?: SceneContinuityBible;
+  sequenceGrammar?: SceneSequenceGrammar;
+  storyboardSheets?: StoryboardSheetPlan[];
+  storyboardPanels?: StoryboardPanelMapping[];
+  storyboardCoverage?: {
+    finalSlotCount: number;
+    mappedFinalSlotCount: number;
+    contextPanelCount: number;
+    duplicateFinalSlotIds: string[];
+    missingFinalSlotIds: string[];
+  };
   rhythmPattern: 'Standard' | 'Tension Build' | 'Intimate Exchange' | 'Action Sequence';
   shots: Array<{
     id: string;
@@ -498,6 +517,10 @@ export interface VisualPlan {
         horizonPreserved: boolean;
       };
     };
+    storyboardPanel?: StoryboardPanelMapping;
+    sequenceRole?: StoryboardPanelMapping['sequenceRole'];
+    continuityFrom?: string;
+    continuityTo?: string;
   }>;
   
   // Diversity tracking
@@ -630,6 +653,8 @@ export interface StoryboardRequest {
     contractHash?: string;
     expandedPlans?: VisualPlan[];
   };
+  imagePlanningMode?: ImagePlanningMode;
+  storyboardPanelCap?: number;
 }
 
 export interface VisualContract {
@@ -1479,6 +1504,28 @@ ${settingSelection.notes.map(note => `- ${note}`).join('\n')}
 `
       : '';
 
+    const visualStoryboardSection = request.imagePlanningMode === 'visual-storyboard'
+      ? `
+## VISUAL STORYBOARD MODE (MANDATORY)
+This scene is being planned for scene-level visual storyboard sheets before final image rendering.
+
+You must design SEQUENTIAL VISUAL GRAMMAR, not isolated thumbnails:
+- Plan the scene like a movie storyboard or comic sequence.
+- Use a deliberate wide/medium/close/detail/reaction rhythm.
+- Vary shot type, camera height, horizontal angle, staging, and focal subject across adjacent shots.
+- Preserve location geography, character blocking, costume/injury state, props, lighting logic, and visual motifs across all shots.
+- Each shot must include a sequenceRole: establishing, relationship, insert, reaction, confrontation, reversal, outcome, or aftermath.
+- Include continuityFrom and continuityTo notes that describe what state each shot inherits and hands off.
+- Include a scene-level sequenceGrammar object with:
+  sceneVisualArc, cameraProgression, shotRhythm, motifProgression, powerBlocking, silentReadabilityGoal.
+- Include a scene-level continuityBible object with:
+  locationLayout, lightingArc, characterBlocking, costumeState, importantProps.
+- The ordered sequence should pass a silent-storytelling test: without prose, the panel flow should show what changed emotionally and relationally.
+
+Substoryboard sheets may be generated later from this plan. Do NOT design collages for final reader images; each shot is still one final full-screen image.
+`
+      : '';
+
     return `
 Create a visual plan (storyboard) for the following scene with DIVERSE poses and INTENTIONAL TRANSITIONS.
 
@@ -1492,7 +1539,7 @@ ${request.incomingChoiceContext ? `
 ## CHOICE PAYOFF (CRITICAL — applies to the FIRST beat of this scene)
 This scene is entered because the player chose: "${request.incomingChoiceContext}"
 The FIRST beat's shot MUST visually depict the immediate consequence of this choice. The player made a specific decision and the opening image must show that decision playing out — the exact physical action, body language, and emotional consequence the player expects to see. Do NOT use a generic establishing shot for Beat 1; instead show the choice's payoff in action.
-` : ''}${settingSection}${characterDescSection}${bodyVocabSection}${colorScriptSection}${motifSection}
+` : ''}${settingSection}${characterDescSection}${bodyVocabSection}${colorScriptSection}${motifSection}${visualStoryboardSection}
 ## Beats to Illustrate
 ${beatsInfo}
 

@@ -13,6 +13,11 @@ import {
   GeneratedImage
 } from '../ImageGenerator';
 import { StoryboardAgent, StoryboardRequest, VisualPlan } from './StoryboardAgent';
+import {
+  attachStoryboardPlanToVisualPlan,
+  buildSceneVisualStoryboardPlan,
+  visualPlanSlotsFromBeats,
+} from '../../images/visualStoryboardPlanning';
 import { VisualIllustratorAgent, IllustrationRequest } from './VisualIllustratorAgent';
 import { EncounterImageAgent } from './EncounterImageAgent';
 import { ConsistencyScorerAgent, ConsistencyRequest, ConsistencyScore } from './ConsistencyScorerAgent';
@@ -721,6 +726,30 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       // Always use beatId as the canonical ID when available, regardless of whether shot.id was set.
       shot.id = shot.beatId || shot.id || `shot-${index}`;
     });
+
+    if ((request as any).imagePlanningMode === 'visual-storyboard') {
+      const storyboardPlan = buildSceneVisualStoryboardPlan({
+        sceneId: request.sceneId,
+        scopedSceneId: request.sceneId,
+        sceneName: request.sceneName,
+        sceneDescription: request.sceneDescription,
+        slots: visualPlanSlotsFromBeats(request.sceneId, request.beats),
+        panelCap: (request as any).storyboardPanelCap || 6,
+        branchAware: false,
+        continuityBible: (plan as any).continuityBible,
+        sequenceGrammar: (plan as any).sequenceGrammar,
+      });
+      attachStoryboardPlanToVisualPlan(plan, storyboardPlan);
+      for (const shot of plan.shots) {
+        const panel = storyboardPlan.panels.find((p) => p.beatId === shot.beatId);
+        if (panel) {
+          (shot as any).storyboardPanel = panel;
+          (shot as any).sequenceRole = panel.sequenceRole;
+          (shot as any).continuityFrom = panel.continuityFrom;
+          (shot as any).continuityTo = panel.continuityTo;
+        }
+      }
+    }
     
     const prompts = new Map<string, ImagePrompt>();
     

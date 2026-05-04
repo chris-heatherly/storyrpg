@@ -5,6 +5,7 @@ import { buildVerbatimProfile } from '../images/artStyleProfile';
 const generationSettings = {
   generateImages: true,
   imageGenerationLimit: 2,
+  imagePlanningMode: 'text',
   targetSceneCount: 5,
   majorChoiceCount: 3,
   minBeatsPerScene: 3,
@@ -505,5 +506,34 @@ describe('buildPipelineConfig', () => {
     expect(config.imageGen?.uploadedStyleReferences?.[0].imagePath).toBe('/tmp/style-references/style-ref-1.png');
     expect(config.imageGen?.uploadedStyleReferences?.[1].data).toBe('BBB');
     expect(config.imageGen?.styleReferenceStrength).toBe('strong');
+  });
+
+  it('threads visual storyboard image planning mode through imageGen', () => {
+    const config = buildPipelineConfig({
+      llmProvider: 'anthropic',
+      llmModel: 'claude-sonnet-4-5',
+      imageLlmProvider: 'anthropic',
+      imageLlmModel: 'claude-sonnet-4-5',
+      videoLlmProvider: 'anthropic',
+      videoLlmModel: 'claude-sonnet-4-5',
+      apiKey: 'anthropic-key',
+      geminiApiKey: 'gemini-key',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: '',
+      midapiToken: '',
+      imageProvider: 'dall-e',
+      imageStrategy: 'all-beats',
+      panelMode: 'single',
+      artStyle: 'cinematic fantasy',
+      geminiSettings: {},
+      midjourneySettings: {},
+      generationSettings: { ...generationSettings, imagePlanningMode: 'visual-storyboard' },
+      generationMode: 'advisory',
+      narrationSettings: { enabled: false } as any,
+      videoSettings: { enabled: false } as any,
+    });
+
+    expect(config.imageGen?.imagePlanningMode).toBe('visual-storyboard');
   });
 });

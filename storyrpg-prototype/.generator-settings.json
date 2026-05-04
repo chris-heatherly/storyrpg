@@ -13,7 +13,7 @@
   "llmProvider": "anthropic",
   "llmModel": "claude-sonnet-4-20250514",
   "atlasCloudModel": "black-forest-labs/flux-dev-lora",
-  "artStyle": "Fashionable anime art style, elegant contemporary aesthetic, expressive clean character design, refined semi-realistic facial features, stylish silhouettes, trend-forward wardrobe design, high-fashion editorial sensibility, polished cel-shading with soft painterly gradients, crisp graceful linework, tasteful accessory detailing, confident poses, strong sense of style and visual appeal, modern color harmony, flattering cinematic lighting, glossy magazine-like finish, clear focal hierarchy, low visual noise, uncluttered composition, smooth color transitions, minimal unnecessary texture, no gritty realism, no photorealism, no distorted anatomy, no messy detail.",
+  "artStyle": "Cartoon modern art style, bold simplified shapes, playful contemporary character design, expressive clean silhouettes, graphic poster-like composition, crisp confident linework, smooth cel-shading with subtle gradients, bright but curated color palette, stylish geometric forms, exaggerated proportions balanced with appealing design, minimal visual clutter, strong focal hierarchy, polished digital illustration finish, clean negative space, tasteful texture accents, dynamic but readable shapes, modern animation sensibility, charming expressive details, high clarity, low noise, no photorealism, no gritty realism, no excessive micro-detail, no muddy colors, no messy linework.",
   "generationSettings": {
     "targetSceneCount": 6,
     "majorChoiceCount": 3,
@@ -25,6 +25,7 @@
     "generateImages": true,
     "imageGenerationLimit": 10,
     "panelMode": "single",
+    "imagePlanningMode": "visual-storyboard",
     "blockingThreshold": 40,
     "warningThreshold": 60,
     "firstChoiceMaxSeconds": 90,

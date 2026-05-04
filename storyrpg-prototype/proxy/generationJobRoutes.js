@@ -172,6 +172,7 @@ function deleteSeasonReferenceArtifactsForOutputDir(outputDirAbs) {
   };
 
   remove(path.join(outputDirAbs, 'style-bible'));
+  remove(path.join(outputDirAbs, 'style-references'));
   remove(path.join(outputDirAbs, 'visual-planning'));
   remove(path.join(outputDirAbs, 'season-visual-bible.json'));
 

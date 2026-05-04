@@ -565,6 +565,8 @@ interface StoryLibrarySectionProps {
   isRefreshing: boolean;
   videoGeneratingStoryId?: string | null;
   imageGeneratingStoryId?: string | null;
+  isDeletingSeasonReferences?: (story: StoryCatalogEntry) => boolean;
+  isDeletingEpisodeArt?: (story: StoryCatalogEntry) => boolean;
 }
 
 export function StoryLibrarySection({
@@ -586,6 +588,8 @@ export function StoryLibrarySection({
   isRefreshing,
   videoGeneratingStoryId,
   imageGeneratingStoryId,
+  isDeletingSeasonReferences,
+  isDeletingEpisodeArt,
 }: StoryLibrarySectionProps) {
   const { width } = useWindowDimensions();
   const isNarrow = width < 860;
@@ -677,6 +681,7 @@ export function StoryLibrarySection({
               && representativeStory.isBuiltIn !== true
             );
             const seasonRefsAvailable = representativeStory?.imageArtifacts?.hasSeasonReferences === true;
+            const seasonRefsDeleting = Boolean(representativeStory && isDeletingSeasonReferences?.(representativeStory));
             const headerActions: React.ReactNode[] = [];
             if (group.continuation && onContinueSeasonPlan) {
               headerActions.push(renderStoryAction(
@@ -696,7 +701,8 @@ export function StoryLibrarySection({
                 TERMINAL.colors.amber,
                 () => onDeleteSeasonImageReferences?.(representativeStory),
                 {
-                  disabled: !seasonRefsAvailable,
+                  disabled: !seasonRefsAvailable || seasonRefsDeleting,
+                  loading: seasonRefsDeleting,
                   backgroundColor: seasonRefsAvailable ? 'rgba(245, 158, 11, 0.1)' : undefined,
                 },
               ));
@@ -744,6 +750,7 @@ export function StoryLibrarySection({
                     && story.isBuiltIn !== true
                   );
                   const episodeArtAvailable = story.imageArtifacts?.hasEpisodeArt === true;
+                  const episodeArtDeleting = Boolean(isDeletingEpisodeArt?.(story));
                   const canRename = Boolean(onRenameStory);
                   const canDelete = Boolean(onDeleteStory);
                   const rowActions: React.ReactNode[] = [];
@@ -783,7 +790,8 @@ export function StoryLibrarySection({
                       TERMINAL.colors.error,
                       () => onDeleteEpisodeArt?.(story),
                       {
-                        disabled: !episodeArtAvailable,
+                        disabled: !episodeArtAvailable || episodeArtDeleting,
+                        loading: episodeArtDeleting,
                         backgroundColor: episodeArtAvailable ? 'rgba(239, 68, 68, 0.1)' : undefined,
                       },
                     ));

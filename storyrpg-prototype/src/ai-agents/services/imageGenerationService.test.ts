@@ -66,6 +66,28 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
     expect(rewritten).not.toMatch(/\bmurder\b/i);
   });
 
+  it('falls back to prompt characterIdentity when metadata characterNames are absent', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+      requireCharacterRefsForVisibleCharacters: true,
+    } as any);
+
+    const audit = (service as any).buildCharacterReferenceAudit(
+      'dall-e',
+      { type: 'beat' },
+      { prompt: 'Visible shot cast: Mika Kuroda only.', characterIdentity: ['Mika Kuroda'] },
+      [],
+      [],
+    );
+
+    expect(audit.visibleCharacters).toEqual(['Mika Kuroda']);
+    expect(audit.missingReferenceCharacters).toEqual(['Mika Kuroda']);
+    expect((service as any).shouldEnforceCharacterReferenceContinuity({ type: 'beat' }, audit)).toBe(true);
+  });
+
   it('uses resolved style for DALL-E requests even when prompt.style is missing', async () => {
     const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'image-gen-dalle-style-'));
     const fetchMock = vi.fn(async () => ({
@@ -231,6 +253,7 @@ describe('ImageGenerationService character reference audit', () => {
     const audit = (service as any).buildCharacterReferenceAudit(
       'dall-e',
       { characterNames: ['Mr. Boddy'], type: 'encounter-outcome' },
+      { prompt: 'Mr. Boddy in frame' },
       [{ data: 'abc', mimeType: 'image/png', role: 'character-reference', characterName: 'Mr. Boddy', viewType: 'front' }],
       [{ data: 'abc', mimeType: 'image/png', role: 'character-reference', characterName: 'Mr. Boddy', viewType: 'front' }],
     );
@@ -251,6 +274,7 @@ describe('ImageGenerationService character reference audit', () => {
     const audit = (service as any).buildCharacterReferenceAudit(
       'dall-e',
       { characterNames: ['Detective Riley Kane', 'Mr. Boddy'], type: 'encounter-outcome' },
+      { prompt: 'Detective Riley Kane and Mr. Boddy in frame' },
       [{ data: 'abc', mimeType: 'image/png', role: 'character-reference', characterName: 'Detective Riley Kane', viewType: 'front' }],
       [],
     );
@@ -269,12 +293,13 @@ describe('ImageGenerationService character reference audit', () => {
     const audit = (service as any).buildCharacterReferenceAudit(
       'nano-banana',
       { characterNames: ['Hero'], type: 'master' },
+      { prompt: 'Hero style anchor' },
       undefined,
       undefined,
     );
 
     expect(audit.referenceRoute).toBe('text-only');
-    expect(audit.missingReferenceCharacters).toEqual(['Hero']);
+    expect(audit.missingReferenceCharacters).toEqual([]);
     expect((service as any).shouldEnforceCharacterReferenceContinuity(
       { characterNames: ['Hero'], type: 'master' },
       audit,
@@ -291,6 +316,7 @@ describe('ImageGenerationService character reference audit', () => {
     const audit = (service as any).buildCharacterReferenceAudit(
       'nano-banana',
       { characterNames: ['Hero'], type: 'scene' },
+      { prompt: 'Hero in frame' },
       undefined,
       undefined,
     );

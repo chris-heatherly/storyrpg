@@ -89,7 +89,7 @@ import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
 import { buildFashionPrimaryClothing, buildFashionStyleSummary } from '../images/characterFashionStyle';
-import { sanitizeStyleContaminationText } from '../images/imagePromptContracts';
+import { applyPromptContract, sanitizeStyleContaminationText } from '../images/imagePromptContracts';
 import { 
   Story, Episode, Scene, Beat, Choice, NPCTier, RelationshipDimension, Consequence,
   Encounter, EncounterOutcome, EncounterType, EncounterClock, EncounterPhase, EncounterBeat as TypeEncounterBeat,
@@ -9215,7 +9215,7 @@ ${clothingRule}
                     {
                       sceneId: scopedSceneId,
                       beatId,
-                      type: 'scene',
+                      type: 'beat',
                       characters: shotCharacterIds,
                       characterNames: shotCharacterNames,
                       characterDescriptions: shotCharacterDescriptions,
@@ -9312,7 +9312,7 @@ ${clothingRule}
                 {
                   sceneId: scopedSceneId,
                   beatId,
-                  type: 'scene',
+                  type: 'beat',
                   characters: shotCharacterIds,
                   characterNames: shotCharacterNames,
                   characterDescriptions: shotCharacterDescriptions,
@@ -9532,7 +9532,7 @@ ${clothingRule}
             {
               sceneId: scopedSceneId,
               beatId: beat.id,
-              type: 'scene',
+              type: 'beat',
               characters: shotCharacterIds,
               characterNames: shotCharacterNames,
               characterDescriptions: this.buildCharacterDescriptions(shotCharacterIds, characterBible),
@@ -9894,7 +9894,10 @@ ${clothingRule}
     try {
       this.emit({ type: 'agent_start', agent: 'ImageService', message: 'Generating story cover art...' });
 
-      const protagonist = characterBible.characters.find(c => c.id === brief.protagonist.id);
+      const protagonistId = this.resolveCharacterIdWithBrief(brief.protagonist.id || brief.protagonist.name, characterBible, brief)
+        || this.resolveCharacterIdWithBrief(brief.protagonist.name, characterBible, brief)
+        || brief.protagonist.id;
+      const protagonist = characterBible.characters.find(c => c.id === protagonistId);
       const antagonist = characterBible.characters.find(c =>
         c.role === 'antagonist' && c.importance === 'major'
       );
@@ -9958,7 +9961,7 @@ ${clothingRule}
         ? this.formatPosterConceptForPrompt(concept)
         : this.fallbackPosterConceptBlock(brief, protDesc, antagDesc, primaryLocation?.name);
 
-      const coverPrompt: ImagePrompt = {
+      const coverPromptBase: ImagePrompt = {
         prompt:
           // Deliverable — what this is and is NOT
           `Produce a single theatrical MOVIE POSTER (one-sheet / streaming key art) for "${brief.story.title}". ` +
@@ -10012,6 +10015,16 @@ ${clothingRule}
           'Bottom ~25% reserved as quiet low-detail UI-overlay safe zone. ' +
           'Zero typography anywhere.',
       };
+      const coverPrompt = applyPromptContract(coverPromptBase, {
+        style: artStyle,
+        styleSource: this._uploadedStyleReferenceImages.length > 0 ? 'user-visual' : 'raw-season-style',
+        mode: 'cover',
+        characterIdentity: [protagonist?.name || brief.protagonist.name].filter(Boolean),
+        sceneAction: concept?.coreMetaphor || brief.story.title,
+        composition: coverPromptBase.composition,
+        negativeContract: coverPromptBase.negativePrompt,
+        hasVisualStyleRef: this._uploadedStyleReferenceImages.length > 0,
+      });
 
       const gemSettings = this.imageService.getGeminiSettings();
       const maxPerChar = gemSettings.maxRefImagesPerCharacter || 2;
@@ -10027,24 +10040,24 @@ ${clothingRule}
 
       // Protagonist references — individual views (authoritative identity signal)
       const protRefs = this.imageAgentTeam.getCharacterReferenceImages(
-        brief.protagonist.id, false, maxPerChar, 'front', true
+        protagonistId, false, maxPerChar, 'front', true
       );
       for (const ref of protRefs) {
         const { role, viewType } = roleFor(ref.name);
         referenceImages.push({
           data: ref.data, mimeType: ref.mimeType,
           role,
-          characterName: brief.protagonist.name,
+          characterName: protagonist?.name || brief.protagonist.name,
           viewType,
         });
       }
       // Composite sheet as a separate artifact — routed per-provider downstream.
-      const protComposite = this.imageAgentTeam.getCompositeReferenceImage(brief.protagonist.id);
+      const protComposite = this.imageAgentTeam.getCompositeReferenceImage(protagonistId);
       if (protComposite) {
         referenceImages.push({
           data: protComposite.data, mimeType: protComposite.mimeType,
           role: 'composite-sheet',
-          characterName: brief.protagonist.name,
+          characterName: protagonist?.name || brief.protagonist.name,
           viewType: 'composite',
         });
       }
@@ -10078,7 +10091,12 @@ ${clothingRule}
         this.imageService.generateImage(
           coverPrompt,
           'story-cover',
-          { type: 'cover' as const, characters: [brief.protagonist.id] },
+          {
+            type: 'cover' as const,
+            characters: [protagonistId],
+            characterNames: [protagonist?.name || brief.protagonist.name].filter(Boolean),
+            characterDescriptions: this.buildCharacterDescriptions([protagonistId], characterBible),
+          },
           referenceImages.length > 0 ? referenceImages : undefined
         ),
         PIPELINE_TIMEOUTS.storyboard,
@@ -11819,7 +11837,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
     const raw = String(idOrName || '').trim();
     if (!raw) return null;
     if (/^p(?:rotagonist)?[-_ ]?1$/i.test(raw) || /^player$/i.test(raw) || /^hero$/i.test(raw)) {
-      return this.resolveCharacterId(brief.protagonist?.id || brief.protagonist?.name || raw, characterBible);
+      return this.resolveCharacterId(brief.protagonist?.name || brief.protagonist?.id || raw, characterBible);
     }
     return this.resolveCharacterId(raw, characterBible);
   }
@@ -13404,8 +13422,12 @@ Design the key art. Return STRICT JSON matching the schema.`;
       }
 
       // === Character anchor ===
-      const protagonistRefImages = this.gatherCharacterReferenceImages([brief.protagonist.id], characterBible);
-      const protagonistName = characterBible.characters.find(c => c.id === brief.protagonist.id)?.name || brief.protagonist.name;
+      const protagonistId = this.resolveCharacterIdWithBrief(brief.protagonist.id || brief.protagonist.name, characterBible, brief)
+        || this.resolveCharacterIdWithBrief(brief.protagonist.name, characterBible, brief)
+        || brief.protagonist.id;
+      const protagonistRefImages = this.gatherCharacterReferenceImages([protagonistId], characterBible);
+      const protagonistName = characterBible.characters.find(c => c.id === protagonistId)?.name || brief.protagonist.name;
+      const protagonistDescriptions = this.buildCharacterDescriptions([protagonistId], characterBible);
       const colorTerms = colorScript.colorDictionary.slice(0, 3).map(entry => entry.color);
 
       let anchorImage: GeneratedImage;
@@ -13424,7 +13446,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
           style: profileStyle,
           protagonistName,
           colorTerms,
-          protagonistDescription: this.buildCharacterDescriptions([brief.protagonist.id], characterBible)
+          protagonistDescription: protagonistDescriptions
             .map(desc => desc.canonicalAppearance || desc.appearance)
             .filter(Boolean)
             .join(' '),
@@ -13434,9 +13456,9 @@ Design the key art. Return STRICT JSON matching the schema.`;
           anchorIdentifier(titleSlug, built.role),
           {
             type: 'master',
-            characters: [brief.protagonist.id],
+            characters: [protagonistId],
             characterNames: [protagonistName],
-            characterDescriptions: this.buildCharacterDescriptions([brief.protagonist.id], characterBible),
+            characterDescriptions: protagonistDescriptions,
           },
           protagonistRefImages.length > 0 ? protagonistRefImages : undefined,
           'EpisodeStyleBibleCharacterAnchor',
@@ -14394,7 +14416,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
             {
               sceneId: scopedSceneId,
               beatId,
-              type: 'scene' as const,
+              type: 'beat' as const,
               characters: shotCharacterIds,
               characterNames: shotCharacterNames,
               characterDescriptions: this.buildCharacterDescriptions(shotCharacterIds, characterBible),

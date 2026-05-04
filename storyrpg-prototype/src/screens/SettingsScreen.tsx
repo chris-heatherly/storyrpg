@@ -7,6 +7,7 @@ import {
   ScrollView,
   SafeAreaView,
   Alert,
+  Platform,
 } from 'react-native';
 import {
   ChevronRight,
@@ -81,6 +82,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [newStoryTitle, setNewStoryTitle] = useState('');
   const [confirmCancelJob, setConfirmCancelJob] = useState<GenerationJob | null>(null);
   const [artifactOverrides, setArtifactOverrides] = useState<Record<string, Partial<NonNullable<StoryCatalogEntry['imageArtifacts']>>>>({});
+  const [deletingArtifactKeys, setDeletingArtifactKeys] = useState<Set<string>>(new Set());
 
   const getArtifactOverrideKeys = (
     story: StoryCatalogEntry,
@@ -199,6 +201,48 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     }));
   };
 
+  const setArtifactDeletionPending = (story: StoryCatalogEntry, scope: 'season' | 'episode', pending: boolean) => {
+    const keys = getArtifactOverrideKeys(story, scope);
+    setDeletingArtifactKeys((prev) => {
+      const next = new Set(prev);
+      for (const key of keys) {
+        if (pending) next.add(key);
+        else next.delete(key);
+      }
+      return next;
+    });
+  };
+
+  const isArtifactDeletionPending = (story: StoryCatalogEntry, scope: 'season' | 'episode') =>
+    getArtifactOverrideKeys(story, scope).some((key) => deletingArtifactKeys.has(key));
+
+  const confirmDestructiveAction = (
+    title: string,
+    message: string,
+    actionLabel: string,
+    onConfirm: () => void,
+  ) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.confirm === 'function') {
+      if (window.confirm(`${title}\n\n${message}`)) {
+        onConfirm();
+      }
+      return;
+    }
+
+    Alert.alert(
+      title,
+      message,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: actionLabel,
+          style: 'destructive',
+          onPress: onConfirm,
+        },
+      ]
+    );
+  };
+
   useEffect(() => {
     setArtifactOverrides((prev) => {
       let changed = false;
@@ -235,6 +279,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const handleDeleteSeasonImageReferences = (story: StoryCatalogEntry) => {
     const deleteRefs = async () => {
       if (!story.outputDir) return;
+      setArtifactDeletionPending(story, 'season', true);
       try {
         const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/story-image-artifacts/season-references`, {
           method: 'DELETE',
@@ -254,26 +299,23 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         }
       } catch (error) {
         Alert.alert('Delete Failed', error instanceof Error ? error.message : 'Failed to delete season references.');
+      } finally {
+        setArtifactDeletionPending(story, 'season', false);
       }
     };
 
-    Alert.alert(
+    confirmDestructiveAction(
       'Delete Season References?',
       'This removes character reference sheets and style-bible assets for this season. Episode/beat art stays in place.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete References',
-          style: 'destructive',
-          onPress: () => { void deleteRefs(); },
-        },
-      ]
+      'Delete References',
+      () => { void deleteRefs(); },
     );
   };
 
   const handleDeleteEpisodeArt = (story: StoryCatalogEntry) => {
     const deleteArt = async () => {
       if (!story.outputDir) return;
+      setArtifactDeletionPending(story, 'episode', true);
       try {
         const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/story-image-artifacts/episode-art`, {
           method: 'DELETE',
@@ -293,20 +335,16 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         }
       } catch (error) {
         Alert.alert('Delete Failed', error instanceof Error ? error.message : 'Failed to delete episode art.');
+      } finally {
+        setArtifactDeletionPending(story, 'episode', false);
       }
     };
 
-    Alert.alert(
+    confirmDestructiveAction(
       'Delete Episode Art?',
       'This removes reader-facing cover, scene, and beat art for this story. Season-level character/style references stay in place.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete Art',
-          style: 'destructive',
-          onPress: () => { void deleteArt(); },
-        },
-      ]
+      'Delete Art',
+      () => { void deleteArt(); },
     );
   };
 
@@ -420,6 +458,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           isRefreshing={isRefreshing}
           videoGeneratingStoryId={videoGeneratingStoryId}
           imageGeneratingStoryId={imageGeneratingStoryId}
+          isDeletingSeasonReferences={(story) => isArtifactDeletionPending(story, 'season')}
+          isDeletingEpisodeArt={(story) => isArtifactDeletionPending(story, 'episode')}
         />
 
         <SystemInfoSection styles={styles} />

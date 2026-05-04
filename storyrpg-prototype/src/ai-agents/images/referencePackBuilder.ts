@@ -421,8 +421,8 @@ export function filterRefsForProvider(
       for (const bucket of perCharacter.values()) {
         addUnique(
           bucket.find((r) => r.role === 'user-provided-character-reference') ||
-          bucket.find((r) => r.role === 'character-reference-face') ||
-          bucket.find((r) => r.role === 'character-reference' && (!r.viewType || r.viewType === 'front'))
+          bucket.find((r) => r.role === 'character-reference' && (!r.viewType || r.viewType === 'front')) ||
+          bucket.find((r) => r.role === 'character-reference-face')
         );
         if (ordered.length >= maxRefs) break;
       }

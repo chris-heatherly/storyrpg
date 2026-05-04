@@ -721,15 +721,25 @@ export class ImageGenerationService {
   private buildCharacterReferenceAudit(
     provider: ImageProvider,
     metadata: Parameters<ImageGenerationService['generateImage']>[2],
+    prompt: ImagePrompt,
     originalRefs: ReferenceImage[] | undefined,
     effectiveRefs: ReferenceImage[] | undefined,
   ): CharacterReferenceAudit {
+    const promptIdentityNames = Array.isArray(prompt.characterIdentity)
+      ? prompt.characterIdentity
+          .map((name) => String(name || '').trim())
+          .filter((name) => name && !/^identity anchors?:/i.test(name) && !/^characters?:/i.test(name))
+      : [];
     const visibleCharacters = Array.from(new Set<string>(
-      (Array.isArray((metadata as any)?.characterNames) ? (metadata as any).characterNames : [])
+      (Array.isArray((metadata as any)?.characterNames) && (metadata as any).characterNames.length > 0
+        ? (metadata as any).characterNames
+        : promptIdentityNames)
         .map((name: unknown) => String(name || '').trim())
         .filter(Boolean)
     ));
-    const minRefs = Math.max(1, this.config.minRefsPerVisibleCharacter || 1);
+    const minRefs = metadata?.type === 'master'
+      ? 0
+      : Math.max(1, this.config.minRefsPerVisibleCharacter || 1);
     const expectedCharacterRefs: Record<string, number> = {};
     const effectiveCharacterRefs: Record<string, number> = {};
 
@@ -2412,11 +2422,12 @@ export class ImageGenerationService {
     // silently ignored by the downstream provider.
     const providerInputRefs = this.withGlobalStyleReferenceForProvider(provider, metadata?.type, identifier, referenceImages);
     const capabilityFilteredRefs = this.filterReferencesForProvider(provider, providerInputRefs);
-    const referenceAudit = this.buildCharacterReferenceAudit(provider, metadata, providerInputRefs, capabilityFilteredRefs);
+    const referenceAudit = this.buildCharacterReferenceAudit(provider, metadata, normalizedPrompt, providerInputRefs, capabilityFilteredRefs);
     if (this.config.savePrompts !== false) {
       try {
         await this.savePrompt(normalizedPrompt, identifier, {
           ...(metadata || {}),
+          visibleCharacterNames: referenceAudit.visibleCharacters,
           effectiveProvider: provider,
           referenceAudit,
           inputReferences: (providerInputRefs || []).map((ref) => ({
@@ -5765,6 +5776,18 @@ export class ImageGenerationService {
         prompt?.visualNarrative,
         prompt?.negativePrompt,
       ].filter(Boolean).join('\n');
+      const styleContract = prompt?.styleContract?.text || prompt?.style || '';
+      const styleReview = styleContract.trim()
+        ? `
+Also inspect style fidelity against this authoritative style contract:
+${styleContract}
+
+Fail if the image visibly drifts into a different renderer or finish, including generic cinematic concept art, photorealism, oil-painting texture, gritty realism, heavy film-still grading, architectural visualization, messy high-detail rendering, or any style that contradicts the contract.`
+        : '';
+      const referenceFormatReview = prompt?.promptContract || prompt?.styleContract
+        ? `
+For character/style reference images, also fail if the requested reference format is not followed: one full-body character, plain background, head-to-toe framing, no labels, no annotations, no panels, no floating figure.`
+        : '';
       const visionModel = 'gemini-2.0-flash';
       const visionPrompt = `Inspect this generated image for production defects.
 
@@ -5785,6 +5808,8 @@ Fail if any of these are present:
 - floating, hovering, levitating, or unsupported characters unless the prompt explicitly asks for airborne/falling/jumping/levitation/dream/magical suspension
 - collage, split-screen, inset frame, picture-in-picture, comic panel borders, multi-panel leakage
 - reference-sheet/model-sheet artifacts, side-by-side views, turnaround layout, labels, measurement marks
+${styleReview}
+${referenceFormatReview}
 
 Pass only when none of those defects are visible.`;
 

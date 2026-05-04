@@ -140,6 +140,8 @@ describe('filterRefsForProvider', () => {
       expect(out.refs.some(r => r.characterName === 'Aoi')).toBe(true);
       expect(out.refs.some(r => r.characterName === 'Bruno')).toBe(true);
       expect(out.refs.some(r => r.characterName === 'Cara')).toBe(true);
+      expect(out.refs.find(r => r.characterName === 'Aoi')).toBe(front);
+      expect(out.refs.find(r => r.characterName === 'Bruno')).toBe(brunoFront);
     });
 
     it('keeps the tight strategy max for a single character', () => {

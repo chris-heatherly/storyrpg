@@ -528,12 +528,12 @@ export class ImageAgentTeam extends BaseAgent {
     const text = prompt.prompt || '';
     const styleLead = buildStyleContractDirective(style);
     const cleanedText = text
+      .replace(/^STYLE CONTRACT(?:\s*\([^)]*\))?:\s*[^.]+\.?\s*/i, '')
       .replace(/^Art style(?:\s*\(strict\))?:\s*[^.]+\.?\s*/i, '')
+      .replace(new RegExp(`\\bArt style(?:\\s*\\(strict\\))?:\\s*${style.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.?\\s*`, 'gi'), '')
       .replace(/\breference sheet style\b/gi, neutralReferenceWording)
       .trim();
-    const promptText = text.includes(style)
-      ? cleanReferenceStylePhrase(text)
-      : `${styleLead} ${cleanedText}`;
+    const promptText = `${styleLead} ${cleanReferenceStylePhrase(cleanedText)}`.trim();
     return applyPromptContract({
       ...prompt,
       prompt: promptText,

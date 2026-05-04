@@ -44,6 +44,22 @@ describe('buildCharacterAnchorPrompt', () => {
     expect(built.prompt.prompt).toContain('Rook');
     expect(built.prompt.characterIdentity).toEqual(['Rook']);
   });
+
+  it('formats structured protagonist identity without leaking object strings', () => {
+    const built = buildCharacterAnchorPrompt({
+      style: STYLE,
+      protagonistName: 'Hikari',
+      protagonistDescription: {
+        hair: 'glossy dark salon hair',
+        distinguishingMarks: ['gold pearl studs'],
+        defaultAttire: 'tailored navy blazer and butter-yellow bag',
+      },
+    });
+
+    expect(built.prompt.prompt).toContain('hair: glossy dark salon hair');
+    expect(built.prompt.prompt).toContain('distinguishingMarks: gold pearl studs');
+    expect(built.prompt.prompt).not.toContain('[object Object]');
+  });
 });
 
 describe('buildArcStripAnchorPrompt', () => {

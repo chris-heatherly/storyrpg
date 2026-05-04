@@ -32,8 +32,24 @@ const STYLE_CONTAMINATION: Array<{ pattern: RegExp; replacement: string; label: 
   { pattern: /\bmovie still\b/gi, replacement: 'single story image', label: 'movie still' },
   { pattern: /\bconcept art\b/gi, replacement: 'finished illustration', label: 'concept art' },
   { pattern: /\boil painting texture\b/gi, replacement: 'style-consistent finish', label: 'oil painting texture' },
-  { pattern: /\bphotoreal(?:istic|ism)?\b/gi, replacement: 'non-photoreal illustrated finish', label: 'photorealism' },
+  { pattern: /\bphotoreal(?:istic|ism)?\b/gi, replacement: 'stylized illustrated finish', label: 'photorealism' },
   { pattern: /\bgritty realism\b/gi, replacement: 'clean stylized finish', label: 'gritty realism' },
+  { pattern: /\bsoft[- ]?focus\b/gi, replacement: 'clean simplified background separation', label: 'soft-focus' },
+  { pattern: /\bbokeh\b/gi, replacement: 'simple graphic background accents', label: 'bokeh' },
+  { pattern: /\bdepth of field\b/gi, replacement: 'clear layered composition', label: 'depth of field' },
+  { pattern: /\blens blur\b/gi, replacement: 'clean background simplification', label: 'lens blur' },
+  { pattern: /\bDSLR photo\b/gi, replacement: 'stylized illustration', label: 'DSLR photo' },
+  { pattern: /\blive-action still\b/gi, replacement: 'stylized illustration', label: 'live-action still' },
+  { pattern: /\barchitectural visualization\b/gi, replacement: 'stylized location illustration', label: 'architectural visualization' },
+  { pattern: /\b(?:realistic )?3D render\b/gi, replacement: 'stylized 2D illustration', label: '3D render' },
+  { pattern: /\bUnreal Engine\b/gi, replacement: 'stylized illustrated finish', label: 'Unreal Engine' },
+  { pattern: /\bOctane render\b/gi, replacement: 'stylized illustrated finish', label: 'Octane render' },
+  { pattern: /\bRedshift render\b/gi, replacement: 'stylized illustrated finish', label: 'Redshift render' },
+  { pattern: /\bcinematic realism\b/gi, replacement: 'style-consistent dramatic finish', label: 'cinematic realism' },
+  { pattern: /\bhyperreal skin\b/gi, replacement: 'clean stylized skin rendering', label: 'hyperreal skin' },
+  { pattern: /\brealistic material rendering\b/gi, replacement: 'style-consistent material simplification', label: 'realistic material rendering' },
+  { pattern: /\bfilm grain\b/gi, replacement: 'smooth clean finish', label: 'film grain' },
+  { pattern: /\bphotographic lighting\b/gi, replacement: 'style-consistent lighting', label: 'photographic lighting' },
   { pattern: /\bhyper[- ]?detailed\b/gi, replacement: 'clear detailed', label: 'hyper-detailed' },
   { pattern: /\bpainterly environment\b/gi, replacement: 'style-consistent environment', label: 'painterly environment' },
   { pattern: /\bgeneric anime style\b/gi, replacement: 'the specified season style', label: 'generic anime style' },
@@ -80,6 +96,10 @@ export function sanitizeStyleContaminationText(value: string | undefined): Sanit
   if (!value) return { text: '', sanitizedTerms: [] };
   let text = value;
   const sanitizedTerms: string[] = [];
+  if (/\[object Object\]/i.test(text)) {
+    sanitizedTerms.push('[object Object]');
+    text = text.replace(/\[object Object\]/gi, 'structured identity details');
+  }
   for (const rule of STYLE_CONTAMINATION) {
     if (rule.pattern.test(text)) {
       sanitizedTerms.push(rule.label);

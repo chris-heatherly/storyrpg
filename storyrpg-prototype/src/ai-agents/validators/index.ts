@@ -9,6 +9,13 @@ export type { BeatWithTiming, SceneWithTiming } from './ChoiceDensityValidator';
 
 export { ChoiceDistributionValidator } from './ChoiceDistributionValidator';
 export type { ChoiceDistributionTargets, ChoiceDistributionInput, ChoiceDistributionMetrics } from './ChoiceDistributionValidator';
+export { SceneGraphBranchValidator } from './SceneGraphBranchValidator';
+export type {
+  SceneGraphBranchIssue,
+  SceneGraphBranchMetrics,
+  SceneGraphBranchValidationOptions,
+  SceneGraphBranchValidationResult,
+} from './SceneGraphBranchValidator';
 
 export { NPCDepthValidator } from './NPCDepthValidator';
 

@@ -305,6 +305,11 @@ export class StoryArchitect extends BaseAgent {
     medium: number;   // 5-7 scenes
     long: number;     // 8+ scenes
   };
+  private sceneGraphBranching: {
+    required: boolean;
+    minPerEpisode: number;
+    allowLinearBottleneckEpisodes: boolean;
+  };
   private lastStructuralFeedback: string[] = [];
 
   constructor(config: AgentConfig, generationConfig?: GenerationSettingsConfig) {
@@ -316,6 +321,11 @@ export class StoryArchitect extends BaseAgent {
       short: generationConfig?.minEncountersShort ?? 1,
       medium: generationConfig?.minEncountersMedium ?? 1,
       long: generationConfig?.minEncountersLong ?? 1,
+    };
+    this.sceneGraphBranching = {
+      required: generationConfig?.requireSceneGraphBranching !== false,
+      minPerEpisode: generationConfig?.minSceneGraphBranchesPerEpisode ?? 1,
+      allowLinearBottleneckEpisodes: generationConfig?.allowLinearBottleneckEpisodes === true,
     };
   }
   
@@ -618,8 +628,10 @@ Every non-encounter scene must earn its place by making the encounter MORE meani
 
 Branching is a PROPERTY of any non-expression choice.
 - Set \`branches: true\` on the choicePoint when the scene should diverge
-- Max 1-2 branching choice points per episode (encounter outcomes ARE the primary branching)
-- Encounter outcomes (victory/defeat/escape) create the most meaningful divergence
+- Include at least ${this.sceneGraphBranching.minPerEpisode} scene-graph branch choice point(s) per episode unless the request explicitly says linear
+- A scene-graph branch means: a non-expression choicePoint with \`branches: true\` AND at least two distinct \`leadsTo\` scene IDs
+- Max 1-2 branching choice points per episode; keep them small and reconvergent
+- Encounter outcomes (victory/defeat/escape) are valuable, but they DO NOT count as regular scene-graph branching
 
 ## Choice Architecture Rules
 
@@ -1194,6 +1206,7 @@ CHOICE DENSITY REQUIREMENTS (CRITICAL - Interactive fiction requires player choi
 11. BOTTLENECK scenes CAN have flavor choices - players still get agency in HOW they react even if the story beat is fixed
 12. Major choicePoints should include consequenceDomain and reminderPlan so later agents know how to preserve residue
 13. Use competenceArc and failureBranchPurpose when a future confrontation should open recovery, training, leverage, alliance, investigation, or regrouping paths
+14. At least ${this.sceneGraphBranching.minPerEpisode} non-expression choicePoint MUST set branches=true and offer at least two distinct leadsTo targets, unless the user's prompt explicitly asks for a linear episode.
 
 SCENE LINKING & CONTINUITY (CRITICAL):
 12. Every scene (except the final scene) MUST have at least one valid ID in the "leadsTo" array.
@@ -1450,6 +1463,20 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       }
     }
 
+    if (this.sceneGraphBranching.required && !this.sceneGraphBranching.allowLinearBottleneckEpisodes) {
+      const branchPointCount = blueprint.scenes.filter(scene =>
+        scene.choicePoint?.branches &&
+        scene.choicePoint.type !== 'expression' &&
+        new Set(scene.leadsTo || []).size >= 2
+      ).length;
+      if (branchPointCount < this.sceneGraphBranching.minPerEpisode) {
+        issues.push(
+          `Only ${branchPointCount} scene-graph branch choicePoint(s); need at least ${this.sceneGraphBranching.minPerEpisode}. ` +
+          `Add a non-expression choicePoint with branches=true and 2 distinct leadsTo targets that later reconverge.`
+        );
+      }
+    }
+
     // Choice density pre-check (non-throwing)
     const scenesWithChoices = blueprint.scenes.filter(s => s.choicePoint);
     const density = scenesWithChoices.length / blueprint.scenes.length;
@@ -1511,6 +1538,20 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       }
       if (!scene.choicePoint?.reminderPlan?.immediate || !scene.choicePoint?.reminderPlan?.shortTerm) {
         throw new Error(`Scene ${scene.id} has a major choice but no usable reminderPlan`);
+      }
+    }
+
+    if (this.sceneGraphBranching.required && !this.sceneGraphBranching.allowLinearBottleneckEpisodes) {
+      const validBranchPointCount = blueprint.scenes.filter(scene =>
+        scene.choicePoint?.branches &&
+        scene.choicePoint.type !== 'expression' &&
+        new Set(scene.leadsTo || []).size >= 2
+      ).length;
+      if (validBranchPointCount < this.sceneGraphBranching.minPerEpisode) {
+        throw new Error(
+          `Insufficient scene-graph branching: ${validBranchPointCount}/${this.sceneGraphBranching.minPerEpisode} valid branch point(s). ` +
+          `At least one non-expression choicePoint must set branches=true and lead to 2+ distinct future scenes.`
+        );
       }
     }
 

@@ -34,7 +34,7 @@ export interface CharacterAnchorInput extends AnchorStyleInput {
    * (face, hair, costume). Omitted by the UI when no character bible exists
    * yet; the pipeline supplies it after the CharacterBible step.
    */
-  protagonistDescription?: string;
+  protagonistDescription?: unknown;
 }
 
 export interface ArcStripAnchorInput extends AnchorStyleInput {
@@ -67,15 +67,42 @@ export interface BuiltAnchorPrompt {
   prompt: ImagePrompt;
 }
 
+function formatIdentityAnchors(value: unknown): string {
+  if (!value) {
+    return 'clearly readable face, coherent contemporary costume, stable silhouette, consistent age impression and body language';
+  }
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map(formatIdentityAnchors)
+      .filter(Boolean)
+      .join(', ');
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const parts: string[] = [];
+    for (const key of ['hair', 'eyes', 'skinTone', 'build', 'height', 'face', 'distinguishingMarks', 'defaultAttire', 'attire', 'signatureAccessories', 'silhouetteHooks']) {
+      const raw = record[key];
+      if (Array.isArray(raw) && raw.length > 0) parts.push(`${key}: ${raw.map(formatIdentityAnchors).join(', ')}`);
+      else if (typeof raw === 'string' && raw.trim()) parts.push(`${key}: ${raw.trim()}`);
+    }
+    if (parts.length > 0) return parts.join('; ');
+    return Object.entries(record)
+      .filter(([, v]) => typeof v === 'string' || Array.isArray(v))
+      .map(([k, v]) => `${k}: ${formatIdentityAnchors(v)}`)
+      .filter(Boolean)
+      .join('; ');
+  }
+  return String(value);
+}
+
 /**
  * Characters-only identity anchor. Mirrors the strict character reference
  * format so `setGeminiStyleReference` never learns from loose story art.
  */
 export function buildCharacterAnchorPrompt(input: CharacterAnchorInput): BuiltAnchorPrompt {
   const palette = (input.colorTerms || []).filter(Boolean).slice(0, 3).join(', ');
-  const identityLine = input.protagonistDescription
-    ? `Identity anchors: ${input.protagonistDescription}.`
-    : 'Identity anchors: clearly readable face, coherent contemporary costume, stable silhouette, consistent age impression and body language.';
+  const identityLine = `Identity anchors: ${formatIdentityAnchors(input.protagonistDescription)}.`;
   const displayName = input.protagonistName?.trim() || 'Hero';
   const basePrompt: ImagePrompt = {
     prompt: [

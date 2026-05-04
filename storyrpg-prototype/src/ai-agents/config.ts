@@ -115,6 +115,12 @@ export interface GenerationSettingsConfig {
   // Branching cap: max choices per episode that route to different scenes.
   // Branching is a property of any non-expression choice, not a type.
   maxBranchingChoicesPerEpisode?: number;
+
+  // Scene-graph branching contract. These count regular Choice.nextSceneId
+  // routes, not encounter outcome branches or storylets.
+  requireSceneGraphBranching?: boolean;
+  minSceneGraphBranchesPerEpisode?: number;
+  allowLinearBottleneckEpisodes?: boolean;
   
   // Minimum encounters per episode
   minEncountersShort?: number;
@@ -928,6 +934,20 @@ export function loadConfig(): PipelineConfig {
     },
     generation: {
       failurePolicy,
+      requireSceneGraphBranching:
+        env.EXPO_PUBLIC_REQUIRE_SCENE_GRAPH_BRANCHING === 'false' ||
+        env.REQUIRE_SCENE_GRAPH_BRANCHING === 'false'
+          ? false
+          : true,
+      minSceneGraphBranchesPerEpisode: Number.parseInt(
+        env.EXPO_PUBLIC_MIN_SCENE_GRAPH_BRANCHES_PER_EPISODE ||
+        env.MIN_SCENE_GRAPH_BRANCHES_PER_EPISODE ||
+        '1',
+        10,
+      ) || 1,
+      allowLinearBottleneckEpisodes:
+        env.EXPO_PUBLIC_ALLOW_LINEAR_BOTTLENECK_EPISODES === 'true' ||
+        env.ALLOW_LINEAR_BOTTLENECK_EPISODES === 'true',
     },
     memory: {
       enabled: env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' || env.CLAUDE_MEMORY === 'true' || defaultConfig.provider === 'anthropic',

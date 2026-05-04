@@ -2437,12 +2437,22 @@ export class ImageGenerationService {
     const providerInputRefs = this.withGlobalStyleReferenceForProvider(provider, metadata?.type, identifier, referenceImages);
     const capabilityFilteredRefs = this.filterReferencesForProvider(provider, providerInputRefs);
     const referenceAudit = this.buildCharacterReferenceAudit(provider, metadata, normalizedPrompt, providerInputRefs, capabilityFilteredRefs);
+    const effectiveModel =
+      provider === 'dall-e' ? this.config.openaiImageModel :
+      provider === 'nano-banana' ? this._geminiSettings.model :
+      provider === 'atlas-cloud' ? this.config.atlasCloudModel :
+      provider === 'stable-diffusion' ? this._stableDiffusionSettings?.defaultModel :
+      undefined;
     if (this.config.savePrompts !== false) {
       try {
         await this.savePrompt(normalizedPrompt, identifier, {
           ...(metadata || {}),
           visibleCharacterNames: referenceAudit.visibleCharacters,
           effectiveProvider: provider,
+          effectiveModel,
+          effectiveRenderRoute: (metadata as any)?.renderRoute || referenceAudit.referenceRoute,
+          requestedProvider: this.config.provider,
+          requestedModel: this.config.geminiModel || this.config.openaiImageModel || this.config.atlasCloudModel,
           referenceAudit,
           inputReferences: (providerInputRefs || []).map((ref) => ({
             role: ref.role,

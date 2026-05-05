@@ -56,6 +56,7 @@ export const QA_DEFAULTS = {
 
 // Incremental validation defaults (per-scene validation during content generation)
 export const INCREMENTAL_VALIDATION_DEFAULTS = {
+  povClarityValidation: true,
   voiceValidation: true,
   stakesValidation: true,
   sensitivityCheck: true,

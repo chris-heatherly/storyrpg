@@ -5,6 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GameProvider, useGameActions, useGamePlayerState, useGameStoryState } from './src/stores/gameStore';
 import { SettingsProvider, useSettingsStore } from './src/stores/settingsStore';
 import { useGenerationJobStore } from './src/stores/generationJobStore';
+import { getVisibleGenerationJobs } from './src/types/generationJob';
 import { seasonPlanStore } from './src/stores/seasonPlanStore';
 import {
   HomeScreen,
@@ -181,7 +182,7 @@ function AppContent() {
   
   // Generation job store for the floating indicator
   const { jobs, loadJobs, registerJob: registerGenJob, updateJob: updateGenJob, addJobEvent } = useGenerationJobStore();
-  const activeGenerationJob = jobs.find(j => j.status === 'running' || j.status === 'pending');
+  const activeGenerationJob = getVisibleGenerationJobs(jobs).find(j => j.status === 'running' || j.status === 'pending');
   const [seasonContinuations, setSeasonContinuations] = useState<Record<string, SeasonContinuation>>({});
 
   // Video job store for live preview
@@ -892,6 +893,8 @@ function AppContent() {
           onContinueStory={handleContinueStory}
           onOpenSettings={handleOpenSettings}
           onOpenGenerator={() => handleOpenGenerator()}
+          activeGenerationJob={activeGenerationJob}
+          onOpenActiveGeneration={(jobId) => handleOpenGenerator(jobId)}
         />
       )}
 
@@ -987,23 +990,6 @@ function AppContent() {
         />
       )}
 
-      {/* Compact active generation header chip */}
-      {activeGenerationJob && currentScreen !== 'generator' && (
-        <TouchableOpacity 
-          style={styles.activeGenIndicator}
-          onPress={() => handleOpenGenerator(activeGenerationJob.id)}
-          activeOpacity={0.8}
-        >
-          <View style={styles.activeGenPulse} />
-          <View style={styles.activeGenContent}>
-            <Text style={styles.activeGenLabel}>PIPELINE</Text>
-            <Text style={styles.activeGenMeta} numberOfLines={1}>
-              {Math.max(0, Math.min(100, Math.round(activeGenerationJob.progress || 0)))}%
-            </Text>
-          </View>
-        </TouchableOpacity>
-      )}
-
       <Modal
         visible={showPauseMenu}
         transparent
@@ -1088,46 +1074,4 @@ const styles = StyleSheet.create({
   menuButtonText: { color: 'white', fontWeight: '900', textAlign: 'center', letterSpacing: 1 },
   menuButtonTextSecondary: { color: TERMINAL.colors.muted, textAlign: 'center', fontWeight: '900', letterSpacing: 1 },
   pauseFooter: { color: TERMINAL.colors.muted, marginTop: 12, textAlign: 'center', fontSize: 9, fontWeight: '700', letterSpacing: 1 },
-  // Compact active generation header chip
-  activeGenIndicator: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 50 : 20,
-    right: 18,
-    minWidth: 86,
-    minHeight: 38,
-    backgroundColor: 'rgba(10, 10, 10, 0.86)',
-    borderRadius: 19,
-    borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.45)',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1200,
-  },
-  activeGenPulse: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: TERMINAL.colors.amber,
-    marginRight: 7,
-  },
-  activeGenContent: {
-    alignItems: 'flex-start',
-  },
-  activeGenLabel: {
-    fontSize: 7,
-    fontWeight: '900',
-    color: TERMINAL.colors.amber,
-    letterSpacing: 1,
-    lineHeight: 10,
-  },
-  activeGenMeta: {
-    color: 'white',
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0.2,
-    lineHeight: 14,
-  },
 });

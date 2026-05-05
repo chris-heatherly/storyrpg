@@ -168,6 +168,61 @@ describe('SceneWriter structural guards', () => {
 
     expect(issues.join('\n')).toContain('SCHEMA PLACEHOLDER LEAK');
   });
+
+  it('adds POV clarity feedback when the opening beat does not anchor the player character', () => {
+    const writer = new SceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const issues = (writer as any).collectIssues(
+      {
+        sceneId: 'scene-1',
+        sceneName: 'Unanchored Opening',
+        beats: [{ id: 'beat-1', text: 'Mara waits beside the black gate while fog closes over the road.' }],
+        startingBeatId: 'beat-1',
+        moodProgression: [],
+        charactersInvolved: ['mara'],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      {
+        sceneBlueprint: {
+          id: 'scene-1',
+          name: 'Unanchored Opening',
+          description: 'The player arrives at the gate.',
+          location: 'gate',
+          mood: 'tense',
+          purpose: 'bottleneck',
+          narrativeFunction: 'Test.',
+          dramaticQuestion: 'Who is here?',
+          wantVsNeed: 'Clarity vs drift',
+          conflictEngine: 'A foggy opening.',
+          npcsPresent: ['mara'],
+          keyBeats: [],
+          leadsTo: [],
+        },
+        protagonistInfo: {
+          name: 'Alex',
+          pronouns: 'they/them',
+          description: 'The player character.',
+        },
+        npcs: [{
+          id: 'mara',
+          name: 'Mara',
+          pronouns: 'she/her',
+          description: 'A wary ally.',
+          voiceNotes: '',
+        }],
+        targetBeatCount: 1,
+      },
+    );
+
+    expect(issues.join('\n')).toContain('POV CLARITY');
+  });
 });
 
 describe('buildSourceMaterialFidelitySection', () => {

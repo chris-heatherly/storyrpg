@@ -21,6 +21,7 @@ import {
   StructuralRole,
 } from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
+import { PovClarityValidator } from '../validators/PovClarityValidator';
 import type { CliffhangerPlan } from '../../types/seasonPlan';
 import {
   CHOICE_DENSITY_REQUIREMENTS,
@@ -484,6 +485,7 @@ You can use these in text (will be replaced at runtime):
 ## CRITICAL: Character Names and Pronouns
 
 **ABSOLUTE REQUIREMENTS:**
+0. **Opening POV anchor:** The first non-empty player-facing beat MUST establish the player character as the viewpoint/focal character using second-person language ("you", "your") or player templates such as {{player.name}} / {{player.they}}. Do not open with pure NPC action, world exposition, or an unnamed camera-like view.
 1. **Use EXACT character names** as provided in the Characters section. Do NOT invent names, alter spellings, or use nicknames unless established.
 2. **Use CORRECT pronouns** for each character as specified:
    - "he/him" characters: he, him, his, himself
@@ -498,6 +500,7 @@ You can use these in text (will be replaced at runtime):
 **VERB CONJUGATION WITH TEMPLATES (IMPORTANT):**
 The player's pronouns may change at runtime, so verb forms must be written carefully:
 - **Prefer {{player.name}} as the sentence subject** when an action verb follows. This avoids conjugation issues entirely. Example: "{{player.name}} catches her wrist" — correct for all pronoun sets.
+- Use "you/your" for direct reader address and immediate sensory framing.
 - When you DO use {{player.they}} as the subject, **write the verb for "they" (plural form)**. The runtime engine auto-conjugates for singular pronouns. Example: "{{player.they}} catch her wrist" will render correctly as "He catches" / "She catches" / "They catch".
 - Use {{player.are}}, {{player.were}}, {{player.have}} for those specific verbs.
 - **Capitalize the template at sentence starts**: Use {{Player.they}} (capital P) when the template begins a sentence, so the pronoun is capitalized ("He"/"She"/"They" instead of "he"/"she"/"they").
@@ -1196,12 +1199,14 @@ If this scene has no outgoing scene, write the last beat as serialized-TV craft:
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
 - ${input.dialogueHeavy ? 'This is dialogue-heavy - focus on conversation' : 'Balance description with any dialogue'}
+- The first non-empty player-facing beat MUST anchor POV to the player character with "you", "your", {{player.name}}, or another player template before focusing on NPCs or setting.
 ${input.previousSceneSummary ? `- Previous scene context: ${input.previousSceneSummary}` : ''}
 ${input.sceneBlueprint.choicePoint ? '- Mark the final beat as isChoicePoint: true for the Choice Author to add options' : ''}
 ${input.incomingChoiceContext ? `
 ## CHOICE PAYOFF (CRITICAL — the player CHOSE this)
 This scene is entered because the player chose: "${input.incomingChoiceContext}"
 The FIRST beat MUST visually and textually pay off this choice. Do not delay, hedge, or skip the payoff.
+- The first beat must show what you / {{player.name}} did or immediately experiences because of that choice.
 - The first beat's text must show the immediate consequence of the choice — the SPECIFIC physical action the player chose.
 - The first beat's visual contract MUST directly depict the choice's consequence:
   - "visualMoment": Describe the EXACT action from the choice playing out (e.g., if they chose to spin in circles, show spinning in circles — not a generic pose)
@@ -1548,6 +1553,19 @@ Respond with valid JSON matching the SceneContent type.
       issues.push(`BEATS EXCEED CAP - Split or shorten:\n${longBeats.join('\n')}`);
     }
 
+    if (input.protagonistInfo) {
+      const povResult = new PovClarityValidator().validateScene(content, {
+        protagonistName: input.protagonistInfo.name,
+        characterNames: [
+          input.protagonistInfo.name,
+          ...(input.npcs || []).map(npc => npc.name),
+        ],
+      });
+      for (const issue of povResult.issues) {
+        issues.push(`POV CLARITY - Beat "${issue.beatId}": ${issue.issue} ${issue.suggestion}`);
+      }
+    }
+
     // Check for missing choice point
     if (input.sceneBlueprint.choicePoint) {
       const hasChoicePoint = content.beats?.some(b => b.isChoicePoint);
@@ -1591,6 +1609,8 @@ Please revise the content to fix these issues. Return the COMPLETE revised scene
 
 Key requirements:
 - Each beat must stay under cap: 4 sentences, ${TEXT_LIMITS.maxBeatWordCount} words (climax: ${TEXT_LIMITS.maxClimaxBeatWordCount}, key: ${TEXT_LIMITS.maxKeyStoryBeatWordCount})
+- Preserve existing beat IDs, choice-point flags, visual contract fields, thread IDs, callback IDs, and nextBeatId navigation unless a listed issue explicitly requires splitting or relinking beats
+- For POV clarity issues, rewrite only prose/textVariants needed to anchor the first non-empty beat to the player character with you/your or {{player.name}}
 - If a beat is too long, split it into multiple beats
 - Maintain the narrative flow when splitting
 - Keep beat IDs logical (beat-1, beat-2, etc.)

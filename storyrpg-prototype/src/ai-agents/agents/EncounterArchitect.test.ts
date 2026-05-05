@@ -105,6 +105,7 @@ describe('EncounterArchitect reliable prompt', () => {
     expect(reliable).toContain('storyboard');
     expect(reliable).toContain('current_clocks_only');
     expect(reliable).toContain('position, leverage, information');
+    expect(reliable).toContain('opening setupText MUST anchor');
     // Should NOT contain the heavy structural fields
     expect(reliable).not.toContain('pixarStakes');
     expect(reliable).not.toContain('cinematicSetup');

@@ -82,6 +82,7 @@ export {
   aggregateValidationResults,
   DEFAULT_INCREMENTAL_CONFIG,
 } from './IncrementalValidators';
+export { PovClarityValidator, hasPlayerReference } from './PovClarityValidator';
 export type {
   IncrementalValidationConfig,
   SceneValidationResult,
@@ -92,3 +93,4 @@ export type {
   IncrementalEncounterResult,
   CharacterVoiceProfile,
 } from './IncrementalValidators';
+export type { PovClarityIssue, PovClarityResult, PovClarityContext } from './PovClarityValidator';

@@ -1123,7 +1123,6 @@ function createWorkerLifecycle({
       const resumeOutputs = priorOutputDir
         ? { output_directory: { outputDirectory: priorOutputDir } }
         : undefined;
-
       const workerJob = upsertWorkerJob(jobId, {
         mode,
         status: 'pending',
@@ -1381,9 +1380,15 @@ function createWorkerLifecycle({
       const idempotencyKey = body.idempotencyKey || `${sourceJob.id}:resume:${Date.now()}`;
       const requestSnapshot = buildWorkerRequestSnapshot(mode, patchedPayload, storyTitle);
       const jobId = `worker-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const projectId = sourceJob.projectId
+        || sourceJob.resumeFromJobId
+        || sourceJob.resumeContext?.resumeFromJobId
+        || sourceJob.checkpoint?.resumeContext?.resumeFromJobId
+        || sourceJob.id;
 
       const workerJob = upsertWorkerJob(jobId, {
         mode,
+        projectId,
         status: 'pending',
         progress: 0,
         currentPhase: resumeCheckpoint?.failureContext?.resumeFromStepId || resumeCheckpoint?.failureContext?.failurePhase || 'queued',
@@ -1432,7 +1437,7 @@ function createWorkerLifecycle({
 
       scheduleQueuedWorkers();
       syncGenerationMirrorFromWorker(workerJob);
-      res.json({ success: true, jobId, resumedFromJobId: sourceJob.id });
+      res.json({ success: true, jobId, resumedFromJobId: sourceJob.id, projectId });
     });
 
     setImmediate(() => {

@@ -2237,6 +2237,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
 
       await registerGenJob({
         id: result.jobId,
+        projectId: typeof result.projectId === 'string' ? result.projectId : jobId,
+        resumeFromJobId: jobId,
         storyTitle: historyJob?.storyTitle || customStoryTitle || 'Untitled Story',
         startedAt: new Date().toISOString(),
         status: 'running',

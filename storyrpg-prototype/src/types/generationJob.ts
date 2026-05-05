@@ -65,6 +65,10 @@ export interface GenerationJobCheckpoint {
 
 export interface GenerationJob {
   id: string;
+  projectId?: string;
+  resumeFromJobId?: string;
+  projectJobIds?: string[];
+  attemptCount?: number;
   storyTitle: string;
   startedAt: string;
   updatedAt: string;
@@ -160,6 +164,12 @@ export function normalizeGenerationJob(value: unknown): GenerationJob | null {
 
   return {
     id: value.id,
+    projectId: typeof value.projectId === 'string' ? value.projectId : undefined,
+    resumeFromJobId: typeof value.resumeFromJobId === 'string' ? value.resumeFromJobId : undefined,
+    projectJobIds: Array.isArray(value.projectJobIds)
+      ? value.projectJobIds.filter((id): id is string => typeof id === 'string')
+      : undefined,
+    attemptCount: typeof value.attemptCount === 'number' ? value.attemptCount : undefined,
     storyTitle: value.storyTitle,
     startedAt: value.startedAt,
     updatedAt: value.updatedAt,
@@ -194,4 +204,63 @@ export function normalizeGenerationJob(value: unknown): GenerationJob | null {
     events: normalizedEvents,
     checkpoint: isRecord(value.checkpoint) ? value.checkpoint as GenerationJobCheckpoint : undefined,
   };
+}
+
+export function getGenerationJobResumeSourceId(job: GenerationJob): string | undefined {
+  return job.resumeFromJobId || job.checkpoint?.resumeContext?.resumeFromJobId;
+}
+
+export function getGenerationJobProjectId(job: GenerationJob, jobs: GenerationJob[]): string {
+  if (job.projectId) return job.projectId;
+
+  const byId = new Map(jobs.map((candidate) => [candidate.id, candidate]));
+  const seen = new Set<string>([job.id]);
+  let cursor: GenerationJob | undefined = job;
+
+  while (cursor) {
+    const sourceId = getGenerationJobResumeSourceId(cursor);
+    if (!sourceId || seen.has(sourceId)) break;
+    seen.add(sourceId);
+    const source = byId.get(sourceId);
+    if (!source) return sourceId;
+    if (source.projectId) return source.projectId;
+    cursor = source;
+  }
+
+  return cursor?.id || job.id;
+}
+
+function getJobTime(job: GenerationJob, field: 'startedAt' | 'updatedAt'): number {
+  const parsed = new Date(job[field]).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isActiveGenerationJob(job: GenerationJob): boolean {
+  return job.status === 'running' || job.status === 'pending';
+}
+
+export function getVisibleGenerationJobs(jobs: GenerationJob[]): GenerationJob[] {
+  const groups = new Map<string, GenerationJob[]>();
+
+  for (const job of jobs) {
+    const projectId = getGenerationJobProjectId(job, jobs);
+    const group = groups.get(projectId) || [];
+    group.push(job);
+    groups.set(projectId, group);
+  }
+
+  return Array.from(groups.entries()).map(([projectId, attempts]) => {
+    const sortedByUpdated = [...attempts].sort((a, b) => getJobTime(b, 'updatedAt') - getJobTime(a, 'updatedAt'));
+    const activeAttempt = sortedByUpdated.find(isActiveGenerationJob);
+    const visible = activeAttempt || sortedByUpdated[0];
+    const sortedByStarted = [...attempts].sort((a, b) => getJobTime(a, 'startedAt') - getJobTime(b, 'startedAt'));
+
+    return {
+      ...visible,
+      projectId,
+      projectJobIds: sortedByUpdated.map((attempt) => attempt.id),
+      attemptCount: attempts.length,
+      startedAt: sortedByStarted[0]?.startedAt || visible.startedAt,
+    };
+  }).sort((a, b) => getJobTime(b, 'updatedAt') - getJobTime(a, 'updatedAt'));
 }

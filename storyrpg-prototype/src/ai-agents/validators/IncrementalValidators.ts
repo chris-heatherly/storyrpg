@@ -10,6 +10,7 @@
  * - IncrementalStakesValidator: Checks choice quality and false choices
  * - IncrementalSensitivityChecker: Flags content rating concerns
  * - IncrementalContinuityChecker: Catches undefined flags/scores
+ * - PovClarityValidator: Ensures scenes open from the player character's POV
  * - IncrementalValidationRunner: Orchestrates all validators per scene
  */
 
@@ -19,6 +20,7 @@ import { ChoiceSet, GeneratedChoice } from '../agents/ChoiceAuthor';
 import { VoiceProfile } from '../agents/CharacterDesigner';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import { getEncounterBeats } from '../utils/encounterImageCoverage';
+import { PovClarityValidator, PovClarityResult } from './PovClarityValidator';
 
 // ============================================
 // TYPES AND INTERFACES
@@ -101,6 +103,7 @@ export interface IncrementalEncounterResult {
 }
 
 export interface IncrementalValidationConfig {
+  povClarityValidation: boolean;
   voiceValidation: boolean;
   stakesValidation: boolean;
   sensitivityCheck: boolean;
@@ -113,6 +116,7 @@ export interface IncrementalValidationConfig {
 }
 
 export const DEFAULT_INCREMENTAL_CONFIG: IncrementalValidationConfig = {
+  povClarityValidation: true,
   voiceValidation: true,
   stakesValidation: true,
   sensitivityCheck: true,
@@ -133,6 +137,7 @@ export interface CharacterVoiceProfile {
 export interface SceneValidationResult {
   sceneId: string;
   sceneName: string;
+  povClarity?: PovClarityResult;
   voice?: IncrementalVoiceResult;
   stakes?: IncrementalStakesResult;
   sensitivity?: IncrementalSensitivityResult;
@@ -1265,6 +1270,7 @@ export class IncrementalValidationRunner {
   private sensitivityChecker: IncrementalSensitivityChecker;
   private continuityChecker: IncrementalContinuityChecker;
   private encounterValidator: IncrementalEncounterValidator;
+  private povClarityValidator: PovClarityValidator;
   private config: IncrementalValidationConfig;
 
   constructor(
@@ -1275,6 +1281,7 @@ export class IncrementalValidationRunner {
   ) {
     this.config = { ...DEFAULT_INCREMENTAL_CONFIG, ...config };
 
+    this.povClarityValidator = new PovClarityValidator();
     this.voiceValidator = new IncrementalVoiceValidator(
       this.config.voiceRegenerationThreshold
     );
@@ -1309,6 +1316,19 @@ export class IncrementalValidationRunner {
       regenerationRequested: 'none',
       validationTimeMs: 0,
     };
+
+    // POV clarity validation
+    if (this.config.povClarityValidation) {
+      results.povClarity = this.povClarityValidator.validateScene(sceneContent, {
+        characterNames: characterProfiles.map(profile => profile.name),
+      });
+      if (results.povClarity.shouldRegenerate) {
+        results.regenerationRequested = 'scene';
+        results.overallPassed = false;
+      } else if (!results.povClarity.passed) {
+        results.overallPassed = false;
+      }
+    }
 
     // Voice validation
     if (this.config.voiceValidation) {
@@ -1468,6 +1488,7 @@ export class IncrementalValidationRunner {
       sensitivity: this.sensitivityChecker,
       continuity: this.continuityChecker,
       encounter: this.encounterValidator,
+      povClarity: this.povClarityValidator,
     };
   }
 }

@@ -190,6 +190,7 @@ import {
 } from '../images/storyImageSlotManifest';
 import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
 import { buildBeatImagePrompt, overrideShotFromPlan } from '../images/beatPromptBuilder';
+import { CharacterStateTracker } from '../images/CharacterStateTracker';
 import { planShotSequence, type ShotPlan, type PanelMode } from '../images/shotSequencePlanner';
 import { resolveShotCast } from '../images/shotCastResolver';
 import { planSceneCoverage } from '../images/cinematicCoveragePlanner';
@@ -3099,11 +3100,9 @@ export class FullStoryPipeline {
 
         quickValidation = await this.integratedValidator.runQuickValidation(validationInput);
 
-        // Phase 3.3: Treat voice errors above threshold as critical. The
-        // incremental validator already computes per-scene voice scores; if any
-        // scene dips below the configured regeneration threshold we escalate
-        // those into blocking issues so the repair loop below can target a
-        // scoped SceneWriter rewrite (voice_fidelity is in the repairable set).
+        // Treat incremental scene issues as critical when they require a scoped
+        // SceneWriter rewrite. Quick validation owns the final blocking gate, so
+        // escalate incremental POV/voice failures into repairable categories.
         try {
           const voiceThreshold =
             (this.config as unknown as { incrementalValidation?: { voiceRegenerationThreshold?: number } })
@@ -3129,11 +3128,32 @@ export class FullStoryPipeline {
               warningCount: quickValidation.warningCount,
             };
           }
+          const povClarityScenes = this.sceneValidationResults.filter(
+            r => r.povClarity && r.povClarity.shouldRegenerate,
+          );
+          if (povClarityScenes.length > 0) {
+            const povBlockers = povClarityScenes.map(r => ({
+              category: 'pov_clarity' as const,
+              level: 'error' as const,
+              message: `Scene ${r.sceneId}: opening beat does not clearly anchor POV to the player character`,
+              location: { sceneId: r.sceneId, beatId: r.povClarity!.checkedBeatId },
+              suggestion:
+                r.povClarity!.issues
+                  .slice(0, 3)
+                  .map(i => i.suggestion || i.issue)
+                  .join('; ') || 'Rewrite the first beat with you/your or {{player.name}} before NPC or setting exposition.',
+            }));
+            quickValidation = {
+              canProceed: false,
+              blockingIssues: [...quickValidation.blockingIssues, ...povBlockers],
+              warningCount: quickValidation.warningCount,
+            };
+          }
         } catch (err) {
           this.emit({
             type: 'warning',
             phase: 'quick_validation',
-            message: `Voice-fidelity escalation skipped: ${err instanceof Error ? err.message : String(err)}`,
+            message: `Incremental scene escalation skipped: ${err instanceof Error ? err.message : String(err)}`,
           });
         }
 
@@ -3145,6 +3165,7 @@ export class FullStoryPipeline {
             'choice_density',
             'consequence_budget',
             'callback_opportunities',
+            'pov_clarity',
             'voice_fidelity',
             'branch_topology',
           ]);
@@ -3273,9 +3294,11 @@ export class FullStoryPipeline {
               }
             }
 
-            // Phase 3.3: --- Repair voice_fidelity issues (scoped SceneWriter rewrite) ---
-            const voiceIssues = repairableIssues.filter(i => i.category === 'voice_fidelity');
-            for (const issue of voiceIssues) {
+            // --- Repair pov_clarity / voice_fidelity issues (scoped SceneWriter rewrite) ---
+            const sceneRewriteIssues = repairableIssues.filter(
+              i => i.category === 'voice_fidelity' || i.category === 'pov_clarity'
+            );
+            for (const issue of sceneRewriteIssues) {
               const sceneId = issue.location?.sceneId;
               if (!sceneId) continue;
               const sceneBlueprint = episodeBlueprint.scenes.find(s => s.id === sceneId);
@@ -3285,12 +3308,13 @@ export class FullStoryPipeline {
               this.emit({
                 type: 'regeneration_triggered',
                 phase: 'quick_validation',
-                message: `Rewriting scene ${sceneId} for voice fidelity: ${issue.message}`,
+                message: `Rewriting scene ${sceneId} for ${issue.category}: ${issue.message}`,
               });
               repairAttempted = true;
 
               const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
               const location = worldBible.locations.find(l => l.id === sceneBlueprint.location);
+              const existingSceneJson = JSON.stringify(sceneContents[sceneIdx]).slice(0, 12000);
 
               try {
                 const voiceRepair = await withTimeout(this.sceneWriter.execute({
@@ -3299,7 +3323,9 @@ export class FullStoryPipeline {
                     title: brief.story.title,
                     genre: brief.story.genre,
                     tone: brief.story.tone,
-                    userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL VOICE FIDELITY FIX:\n${issue.message}\n${issue.suggestion || ''}\n\nRe-author this scene's beats with stricter voice adherence; match each character's vocabulary, formality, sentence length, and avoided-words list.`,
+                    userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL ${issue.category === 'pov_clarity' ? 'POV CLARITY' : 'VOICE FIDELITY'} FIX:\n${issue.message}\n${issue.suggestion || ''}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${existingSceneJson}\n\n${issue.category === 'pov_clarity'
+                      ? 'Rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, {{player.name}}, or another player template before focusing on NPCs, setting, or exposition.'
+                      : 'Re-author this scene\'s beats with stricter voice adherence; match each character\'s vocabulary, formality, sentence length, and avoided-words list.'}`,
                     worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
                   },
                   protagonistInfo: {
@@ -3335,7 +3361,7 @@ export class FullStoryPipeline {
                 this.emit({
                   type: 'warning',
                   phase: 'quick_validation',
-                  message: `Voice repair for ${sceneId} failed: ${err instanceof Error ? err.message : String(err)}`,
+                  message: `${issue.category} repair for ${sceneId} failed: ${err instanceof Error ? err.message : String(err)}`,
                 });
               }
             }
@@ -5941,6 +5967,7 @@ export class FullStoryPipeline {
             phase: 'scene_complete',
             message: `Scene ${sceneBlueprint.id}: ${sceneValidation.overallPassed ? 'PASSED' : 'ISSUES FOUND'}`,
             data: {
+              povClarity: sceneValidation.povClarity ? { passed: sceneValidation.povClarity.passed, issues: sceneValidation.povClarity.issues.length } : null,
               voice: sceneValidation.voice ? { score: sceneValidation.voice.score, issues: sceneValidation.voice.issues.length } : null,
               sensitivity: sceneValidation.sensitivity ? { passed: sceneValidation.sensitivity.passed, flags: sceneValidation.sensitivity.flags.length } : null,
               continuity: sceneValidation.continuity ? { passed: sceneValidation.continuity.passed, issues: sceneValidation.continuity.issues.length } : null,
@@ -5968,14 +5995,22 @@ export class FullStoryPipeline {
             }
           }
 
-          // === KARPATHY LOOP: Scene regeneration based on voice/continuity validation ===
-          if (sceneValidation.regenerationRequested === 'scene' && incrementalConfig.voiceValidation) {
+          // === KARPATHY LOOP: Scene regeneration based on POV/voice/continuity validation ===
+          if (
+            sceneValidation.regenerationRequested === 'scene' &&
+            (incrementalConfig.povClarityValidation || incrementalConfig.voiceValidation)
+          ) {
             let sceneRegenAttempt = 0;
             const maxSceneRegenAttempts = incrementalConfig.maxRegenerationAttempts;
 
             while (sceneRegenAttempt < maxSceneRegenAttempts) {
               sceneRegenAttempt++;
               const issueDescriptions: string[] = [];
+              if (sceneValidation.povClarity && sceneValidation.povClarity.issues.length > 0) {
+                issueDescriptions.push(
+                  ...sceneValidation.povClarity.issues.map(i => `POV clarity issue: ${i.issue} ${i.suggestion}`)
+                );
+              }
               if (sceneValidation.voice && sceneValidation.voice.issues.length > 0) {
                 issueDescriptions.push(
                   ...sceneValidation.voice.issues.map(i => `Voice issue (${i.characterName}): ${i.issue}`)
@@ -5990,7 +6025,7 @@ export class FullStoryPipeline {
               this.emit({
                 type: 'regeneration_triggered',
                 phase: 'scenes',
-                message: `Regenerating scene ${sceneBlueprint.id} for voice/continuity (attempt ${sceneRegenAttempt}/${maxSceneRegenAttempts})`,
+                message: `Regenerating scene ${sceneBlueprint.id} for POV/voice/continuity (attempt ${sceneRegenAttempt}/${maxSceneRegenAttempts})`,
                 data: { reason: issueDescriptions },
               });
 
@@ -6000,7 +6035,7 @@ export class FullStoryPipeline {
                   title: brief.story.title,
                   genre: brief.story.genre,
                   tone: brief.story.tone,
-                  userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Fix these issues from validation:\n${issueDescriptions.join('\n')}`,
+                  userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Fix these issues from validation:\n${issueDescriptions.join('\n')}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${JSON.stringify(sceneContent).slice(0, 12000)}\n\nFor POV clarity fixes, rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, {{player.name}}, or another player template before focusing on NPCs, setting, or exposition.`,
                   worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
                 },
                 protagonistInfo: {
@@ -6059,7 +6094,8 @@ export class FullStoryPipeline {
 
               if (revisedValidation.regenerationRequested === 'none' ||
                   (revisedValidation.voice && sceneValidation.voice &&
-                   revisedValidation.voice.score > sceneValidation.voice.score)) {
+                   revisedValidation.voice.score > sceneValidation.voice.score) ||
+                  (revisedValidation.povClarity?.passed && !sceneValidation.povClarity?.passed)) {
                 // Revised version is better — swap it in
                 const sceneIdx = sceneContents.findIndex(sc => sc.sceneId === sceneBlueprint.id);
                 if (sceneIdx !== -1) {
@@ -6073,7 +6109,7 @@ export class FullStoryPipeline {
                 this.emit({
                   type: 'debug',
                   phase: 'scenes',
-                  message: `Scene ${sceneBlueprint.id} regenerated successfully (voice: ${sceneValidation.voice?.score ?? '?'} -> ${revisedValidation.voice?.score ?? '?'})`,
+                  message: `Scene ${sceneBlueprint.id} regenerated successfully (pov: ${sceneValidation.povClarity?.score ?? '?'} -> ${revisedValidation.povClarity?.score ?? '?'}, voice: ${sceneValidation.voice?.score ?? '?'} -> ${revisedValidation.voice?.score ?? '?'})`,
                 });
                 break;
               }
@@ -9930,6 +9966,7 @@ ${clothingRule}
       // previous one. Continuation within the scene's beats still benefits
       // from setGeminiPreviousScene after each successful generation.
       this.imageService.clearGeminiPreviousScene();
+      const characterStateTracker = new CharacterStateTracker(characterBible);
 
       try {
         // Null-safety: guarantee array fields are always arrays before any downstream code touches them
@@ -10471,6 +10508,13 @@ ${clothingRule}
           const beat = enrichedBeats[beatIdx];
           const beatId = beat.id;
           const identifier = `beat-${scopedSceneId}-${beatId}`;
+          const isEstablishingBeat = (beat as any).shotType === 'establishing';
+          const beatForegroundCharacterNames = isEstablishingBeat ? [] : (beat.foregroundCharacters || []);
+          const beatBackgroundCharacterNames = isEstablishingBeat ? [] : (beat.backgroundCharacters || []);
+          const characterVisualStates = characterStateTracker.updateForBeat(
+            beat,
+            [...beatForegroundCharacterNames, ...beatBackgroundCharacterNames],
+          );
 
           // Beat resume: if the AssetRegistry already has a successful result for this beat, reuse it
           const resumeSlotId = `story-beat:${scopedSceneId}::${beatId}`;
@@ -10636,7 +10680,6 @@ ${clothingRule}
             }
           }
 
-          const isEstablishingBeat = (beat as any).shotType === 'establishing';
           let shotCharacterIds: string[];
           if (isEstablishingBeat) {
             shotCharacterIds = [];
@@ -10705,13 +10748,14 @@ ${clothingRule}
             choiceContext: this.sanitizePromptText((beat as any).choiceContext || '', brief, ''),
             incomingChoiceContext: this.sanitizePromptText(scene.incomingChoiceContext || '', brief, ''),
             isBranchPayoff: beatIdx === 0 && !!scene.incomingChoiceContext,
-            foregroundCharacterNames: isEstablishingBeat ? [] : (beat.foregroundCharacters || shotCharacterNames),
-            backgroundCharacterNames: isEstablishingBeat ? [] : beat.backgroundCharacters,
+            foregroundCharacterNames: beatForegroundCharacterNames,
+            backgroundCharacterNames: beatBackgroundCharacterNames,
             visualCast: (beat as any).visualCast,
             coveragePlan: (beat as any).coveragePlan,
             stagingPattern: (beat as any).coveragePlan?.stagingPattern,
             relationshipBlocking: (beat as any).coveragePlan?.relationshipBlocking,
             coverageReason: (beat as any).coveragePlan?.coverageReason,
+            characterVisualStates,
             colorMoodOverride: beatColorOverride,
           };
 
@@ -10777,6 +10821,7 @@ ${clothingRule}
               llmContractRejected: disallowedNames.length > 0 || missingRequiredNames.length > 0,
               disallowedNames,
               missingRequiredNames,
+              characterStateDiagnostics: characterStateTracker.getDiagnostics(),
               deterministicPrompt,
               llmPrompt: wrappedLlmPrompt || null,
             });
@@ -16681,6 +16726,17 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         const shotCharacterNames = shotCharacterIds
           .map(id => characterBible.characters.find(c => c.id === id)?.name)
           .filter(Boolean) as string[];
+        const foregroundCharacterNames = isEstablishing
+          ? []
+          : (openerCoverage?.visualCast.foregroundCharacterIds || openerShotCast.requiredForegroundCharacterIds).map(getShotName);
+        const backgroundCharacterNames = isEstablishing
+          ? []
+          : (openerCoverage?.visualCast.backgroundCharacterIds || openerShotCast.optionalBackgroundCharacterIds).map(getShotName);
+        const openerStateTracker = new CharacterStateTracker(characterBible);
+        const characterVisualStates = openerStateTracker.updateForBeat(
+          openerBeat,
+          [...foregroundCharacterNames, ...backgroundCharacterNames],
+        );
 
         const beatPromptInput: import('../images/beatPromptBuilder').BeatPromptInput = {
           beatId,
@@ -16699,13 +16755,14 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           choiceContext: this.sanitizePromptText((openerBeat as { choiceContext?: string }).choiceContext || '', brief, ''),
           incomingChoiceContext: this.sanitizePromptText(scene.incomingChoiceContext || '', brief, ''),
           isBranchPayoff: !!scene.incomingChoiceContext,
-          foregroundCharacterNames: isEstablishing ? [] : (openerCoverage?.visualCast.foregroundCharacterIds || openerShotCast.requiredForegroundCharacterIds).map(getShotName),
-          backgroundCharacterNames: isEstablishing ? [] : (openerCoverage?.visualCast.backgroundCharacterIds || openerShotCast.optionalBackgroundCharacterIds).map(getShotName),
+          foregroundCharacterNames,
+          backgroundCharacterNames,
           visualCast: openerCoverage?.visualCast,
           coveragePlan: openerCoverage?.coveragePlan,
           stagingPattern: openerCoverage?.coveragePlan.stagingPattern,
           relationshipBlocking: openerCoverage?.coveragePlan.relationshipBlocking,
           coverageReason: openerCoverage?.coveragePlan.coverageReason,
+          characterVisualStates,
           colorMoodOverride: beatColorOverride,
         };
 

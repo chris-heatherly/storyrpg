@@ -392,7 +392,7 @@ interface GenerationJobsSectionProps {
   recentJobs: GenerationJob[];
   onOpenGenerator: (jobId?: string) => void;
   onCancelJob: (job: GenerationJob) => void;
-  onRemoveJob: (jobId: string) => void;
+  onRemoveJob: (jobId: string, projectJobIds?: string[]) => void;
   onClearCompletedJobs: () => void;
   formatJobTime: (dateString: string) => string;
   formatEta: (seconds?: number | null) => string | null;
@@ -416,9 +416,9 @@ export function GenerationJobsSection({
       <SectionHeader
         styles={styles}
         icon={<Cpu size={18} color={activeJobs.length > 0 ? TERMINAL.colors.amber : TERMINAL.colors.muted} />}
-        title="GENERATION JOBS"
+        title="GENERATION PROJECTS"
         titleColor={activeJobs.length > 0 ? TERMINAL.colors.amber : TERMINAL.colors.muted}
-        description="MONITOR AND CONTROL STORY GENERATION PROCESSES"
+        description="MONITOR AND RESUME STORY GENERATION PROJECTS"
         right={activeJobs.length > 0 ? (
           <View style={styles.activeJobsBadge}>
             <Text style={styles.activeJobsBadgeText}>{activeJobs.length} ACTIVE</Text>
@@ -432,7 +432,7 @@ export function GenerationJobsSection({
         </View>
       ) : jobs.length === 0 ? (
         <View style={styles.emptyCard}>
-          <Text style={styles.emptyText}>NO GENERATION JOBS</Text>
+          <Text style={styles.emptyText}>NO GENERATION PROJECTS</Text>
         </View>
       ) : (
         <View style={styles.jobsList}>
@@ -448,6 +448,9 @@ export function GenerationJobsSection({
                 <Text style={styles.jobTime}>{formatJobTime(job.updatedAt)}</Text>
               </View>
               <Text style={styles.jobTitle}>{(job.storyTitle || 'Untitled').toUpperCase()}</Text>
+              {job.attemptCount && job.attemptCount > 1 ? (
+                <Text style={styles.jobTelemetryText}>{job.attemptCount} ATTEMPTS IN THIS PROJECT</Text>
+              ) : null}
               {getJobImageStatsLabel(job) ? (
                 <View style={styles.jobImageStatsRow}>
                   <ImageIcon size={13} color={TERMINAL.colors.cyan} />
@@ -527,6 +530,9 @@ export function GenerationJobsSection({
                     <Text style={styles.jobTime}>{formatJobTime(job.updatedAt)}</Text>
                   </View>
                   <Text style={styles.jobTitle}>{(job.storyTitle || 'Untitled').toUpperCase()}</Text>
+                  {job.attemptCount && job.attemptCount > 1 ? (
+                    <Text style={styles.jobTelemetryText}>{job.attemptCount} ATTEMPTS IN THIS PROJECT</Text>
+                  ) : null}
                   {getJobImageStatsLabel(job) ? (
                     <View style={styles.jobImageStatsRow}>
                       <ImageIcon size={13} color={TERMINAL.colors.cyan} />
@@ -561,7 +567,7 @@ export function GenerationJobsSection({
                       style={styles.removeJobButtonInline}
                       onPress={(event: GestureResponderEvent) => {
                         event.stopPropagation();
-                        onRemoveJob(job.id);
+                        onRemoveJob(job.id, job.projectJobIds);
                       }}
                     >
                       <Trash2 size={14} color={TERMINAL.colors.muted} />

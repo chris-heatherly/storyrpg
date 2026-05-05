@@ -17,6 +17,7 @@ import { TERMINAL } from '../theme';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { useSettingsStore, FontSize } from '../stores/settingsStore';
 import { useGenerationJobStore, GenerationJob } from '../stores/generationJobStore';
+import { getVisibleGenerationJobs } from '../types/generationJob';
 import { useImageJobStore } from '../stores/imageJobStore';
 import {
   DeveloperToolsSection,
@@ -165,6 +166,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     setConfirmCancelJob(job);
   };
 
+  const removeGenerationProject = async (jobId: string, projectJobIds?: string[]) => {
+    const ids = projectJobIds && projectJobIds.length > 0 ? projectJobIds : [jobId];
+    for (const id of ids) {
+      await removeJob(id);
+    }
+  };
+
   const confirmJobCancel = async () => {
     if (confirmCancelJob) {
       await cancelJob(confirmCancelJob.id);
@@ -176,8 +184,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     setConfirmCancelJob(null);
   };
 
-  const activeJobs = jobs.filter(j => j.status === 'running' || j.status === 'pending');
-  const recentJobs = jobs.filter(j => j.status !== 'running' && j.status !== 'pending').slice(0, 12);
+  const visibleGenerationJobs = getVisibleGenerationJobs(jobs);
+  const activeJobs = visibleGenerationJobs.filter(j => j.status === 'running' || j.status === 'pending');
+  const recentJobs = visibleGenerationJobs.filter(j => j.status !== 'running' && j.status !== 'pending').slice(0, 12);
 
   const handleDeleteStory = (story: StoryCatalogEntry) => {
     setConfirmDeleteStory(story);
@@ -427,13 +436,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
         <GenerationJobsSection
           styles={styles}
-          jobs={jobs}
+          jobs={visibleGenerationJobs}
           jobsLoaded={jobsLoaded}
           activeJobs={activeJobs}
           recentJobs={recentJobs}
           onOpenGenerator={onOpenGenerator}
           onCancelJob={handleCancelJob}
-          onRemoveJob={removeJob}
+          onRemoveJob={removeGenerationProject}
           onClearCompletedJobs={clearCompletedJobs}
           formatJobTime={formatJobTime}
           formatEta={formatEta}

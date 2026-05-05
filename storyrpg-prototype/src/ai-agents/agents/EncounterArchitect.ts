@@ -1352,6 +1352,8 @@ ${npcsList || 'None'}
 ${priorCtx}
 ## TEXT RULES
 - Use {{player.name}} for protagonist name, {{player.they}}/{{player.them}}/{{player.their}} for pronouns
+- The opening setupText MUST anchor the encounter POV to {{player.name}} or a player pronoun template before focusing on NPCs, setting, or threat
+- Prefer {{player.name}} as the subject for concrete protagonist actions; use you/your only for direct reader-facing immediacy
 - NPCs use their actual names
 - setupText: 30-50 words setting the situation
 - narrativeText: 30-60 words showing THE RESULT of the action (not the action itself)
@@ -2940,6 +2942,8 @@ All encounter text (setupText, narrativeText, storylet beat text) MUST use templ
 
 **Verb conjugation**: Prefer {{player.name}} as the sentence subject when an action verb follows ("{{player.name}} catches the blade" not "{{player.they}} catch the blade"). When you do use {{player.they}} with a verb, write the plural/base form ("{{player.they}} catch", "{{player.they}} dodge") — the engine auto-conjugates for singular pronouns. Use {{Player.they}} (capital P) at sentence starts.
 
+**Opening POV anchor**: The first setupText / opening storylet text MUST establish {{player.name}} as the viewpoint/focal character before focusing on NPCs, setting, or threat.
+
 Example: "{{player.name}} presses close to the wall, water dripping from {{player.their}} dark hair."
 NPCs should be referred to by their actual names.
 
@@ -3016,6 +3020,7 @@ ${(input.encounterBeatPlan && input.encounterBeatPlan.length > 0)
 ## CHARACTER NAME TEMPLATES (CRITICAL)
 All text fields (setupText, narrativeText, storylet text) MUST use {{player.name}} for the protagonist — NEVER the literal name or story title.
 Use {{player.they}}/{{player.them}}/{{player.their}} for pronouns. NPCs use their actual names.
+The opening setupText MUST anchor POV to {{player.name}} before describing NPC action or the environment.
 
 ## REQUIRED: Return ONLY this JSON structure (no markdown, no prose)
 
@@ -3471,6 +3476,8 @@ ${npcsList || 'None'}
 ${relationshipSection}
 ## TEXT RULES
 - Use {{player.name}} for protagonist, {{player.they}}/{{player.them}}/{{player.their}} for pronouns
+- The opening setupText MUST establish {{player.name}} as the focal character before NPC action or environmental exposition
+- Prefer {{player.name}} as the subject for concrete protagonist actions; use you/your only for direct reader-facing immediacy
 - setupText: 30-50 words setting the opening situation
 - narrativeText: 30-60 words showing THE RESULT of the action (not the action itself)
 - Each outcome narrative must be SPECIFIC to the choice taken

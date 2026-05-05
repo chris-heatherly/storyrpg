@@ -28,6 +28,7 @@ export type ValidationCategory =
   | 'consequence_budget'
   | 'npc_depth'
   | 'callback_opportunities'
+  | 'pov_clarity'
   | 'voice_fidelity'
   | 'pixar_principles'
   | 'cliffhanger'

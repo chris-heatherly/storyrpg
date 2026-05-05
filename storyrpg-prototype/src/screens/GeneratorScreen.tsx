@@ -668,6 +668,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     resuming: false,
     error: null,
   });
+  const isRecoverableHistoryJob = (job?: GenerationJob) => job?.status === 'failed' || job?.status === 'cancelled';
 
   // Resume viewing a job if resumeJobId is provided
   useEffect(() => {
@@ -845,7 +846,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   }, [getJob, updateGenJob]);
 
   useEffect(() => {
-    const jobId = historyJob?.status === 'failed' ? historyJob.id : (state === 'error' ? currentJobId : null);
+    const jobId = isRecoverableHistoryJob(historyJob) ? historyJob!.id : (state === 'error' ? currentJobId : null);
     if (!jobId) return;
     void loadFailureWorkspace(jobId);
   }, [currentJobId, historyJob?.id, historyJob?.status, loadFailureWorkspace, state]);
@@ -2202,7 +2203,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const handleCheckpointReject = (reason: string) => { Alert.alert('Checkpoint Rejected', 'Rejection logged, continuing generation.'); setCurrentCheckpoint(null); setState('running'); };
 
   const resumeFailedJob = async () => {
-    const jobId = historyJob?.status === 'failed' ? historyJob.id : currentJobId;
+    const jobId = isRecoverableHistoryJob(historyJob) ? historyJob!.id : currentJobId;
     if (!jobId) return;
 
     let payloadPatch: Record<string, unknown> = {};
@@ -2414,10 +2415,20 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       );
     }
 
-    const failure = failureWorkspace.failureContext;
+    const resumePlan = failureWorkspace.resumePlan;
+    const failure = failureWorkspace.failureContext || (
+      resumePlan
+        ? {
+            failurePhase: historyJob?.currentPhase || 'cancelled',
+            failureStepId: resumePlan.resumeFromUnit || 'last durable checkpoint',
+            failureKind: historyJob?.status || 'recoverable',
+            message: historyJob?.error || 'Job stopped before a detailed failure context was recorded.',
+            resumePatchableInputs: ['settings'],
+          }
+        : null
+    );
     if (!failure) return null;
 
-    const resumePlan = failureWorkspace.resumePlan;
     const resumeFrom = typeof failure.resumeFromStepId === 'string' ? failure.resumeFromStepId : 'last durable checkpoint';
     const blockedAction = typeof failure.failureArtifactKey === 'string' ? failure.failureArtifactKey : 'credit-spending recovery';
 
@@ -2426,7 +2437,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         <View style={styles.failureWorkspaceHeader}>
           <Text style={styles.failureWorkspaceTitle}>FAILURE WORKSPACE</Text>
           <TouchableOpacity style={styles.textButton} onPress={() => {
-            const jobId = historyJob?.status === 'failed' ? historyJob.id : currentJobId;
+            const jobId = isRecoverableHistoryJob(historyJob) ? historyJob!.id : currentJobId;
             if (jobId) void loadFailureWorkspace(jobId);
           }}>
             <Text style={styles.textButtonText}>REFRESH</Text>
@@ -4543,7 +4554,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
               </View>
             )}
 
-            {historyJob.status === 'failed' && renderFailureWorkspace()}
+            {isRecoverableHistoryJob(historyJob) && renderFailureWorkspace()}
 
             {/* Pipeline Progress / Event Log */}
             {events.length > 0 && (

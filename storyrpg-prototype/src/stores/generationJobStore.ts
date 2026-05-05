@@ -166,12 +166,21 @@ export const useGenerationJobStore = create<GenerationJobStore>((set, get) => ({
         return job;
       });
 
-      // Auto-remove finished jobs (completed, failed, cancelled) that are older than 1 hour
-      // This keeps the job list clean without removing jobs the user might still want to see
+      // Auto-remove finished jobs that are older than 1 hour, but keep
+      // recoverable failed/cancelled jobs so users can resume expensive image runs.
       const oneHourAgo = Date.now() - 60 * 60 * 1000;
       const terminalStatuses: JobStatus[] = ['completed', 'failed', 'cancelled'];
       localJobs = localJobs.filter(job => {
         if (terminalStatuses.includes(job.status)) {
+          const hasResumeData = Boolean(
+            job.checkpoint?.isResumable ||
+            job.checkpoint?.failureContext ||
+            job.checkpoint?.resumeContext ||
+            (job as any).resumeContext
+          );
+          if ((job.status === 'failed' || job.status === 'cancelled') && hasResumeData) {
+            return true;
+          }
           const jobTime = new Date(job.updatedAt).getTime();
           if (jobTime < oneHourAgo) {
             console.log(`[GenerationJobStore] Auto-removing old finished job: ${job.id} (${job.status})`);

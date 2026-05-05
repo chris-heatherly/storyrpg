@@ -43,6 +43,82 @@ function resolveStoryOutputDir(outputDir, { rootDir, storiesDir }) {
   return resolved;
 }
 
+function countTopLevelImageFiles(imagesDir) {
+  if (!fs.existsSync(imagesDir)) return 0;
+  let count = 0;
+  for (const entry of fs.readdirSync(imagesDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    if (/\.(png|jpe?g|webp|gif)$/i.test(entry.name)) count++;
+  }
+  return count;
+}
+
+function readJsonIfExists(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function computeImageStatsForOutputDir(outputDirAbs) {
+  if (!outputDirAbs || !fs.existsSync(outputDirAbs)) return undefined;
+  const generatedFiles = countTopLevelImageFiles(path.join(outputDirAbs, 'images'));
+  const manifest = readJsonIfExists(path.join(outputDirAbs, 'image-manifest.json'));
+  const totalSlots = Array.isArray(manifest?.slots) ? manifest.slots.length : undefined;
+
+  let resolvedSlots = 0;
+  const registryPath = path.join(outputDirAbs, 'asset-registry.jsonl');
+  if (fs.existsSync(registryPath)) {
+    try {
+      const lines = fs.readFileSync(registryPath, 'utf8').split(/\r?\n/).filter(Boolean);
+      const resolvedSlotIds = new Set();
+      for (const line of lines) {
+        try {
+          const record = JSON.parse(line);
+          if (record?.status === 'succeeded' && (record.latestUrl || record.latestPath) && record.slot?.slotId) {
+            resolvedSlotIds.add(record.slot.slotId);
+          }
+        } catch {
+          // Ignore malformed historical registry lines.
+        }
+      }
+      resolvedSlots = resolvedSlotIds.size;
+    } catch {
+      resolvedSlots = 0;
+    }
+  }
+
+  return {
+    generatedFiles,
+    resolvedSlots,
+    totalSlots,
+  };
+}
+
+function enrichJobsWithImageStats(jobs, { rootDir, storiesDir }) {
+  const cache = new Map();
+  return jobs.map((job) => {
+    const outputDirAbs = resolveStoryOutputDir(getJobOutputDir(job), { rootDir, storiesDir });
+    if (!outputDirAbs) return job;
+    let imageStats = cache.get(outputDirAbs);
+    if (!imageStats) {
+      imageStats = computeImageStatsForOutputDir(outputDirAbs);
+      cache.set(outputDirAbs, imageStats);
+    }
+    if (!imageStats) return job;
+    return {
+      ...job,
+      outputDir: job.outputDir || path.relative(rootDir, outputDirAbs),
+      imageStats,
+      generatedImageCount: imageStats.generatedFiles,
+      resolvedImageSlotCount: imageStats.resolvedSlots,
+      totalImageSlotCount: imageStats.totalSlots,
+    };
+  });
+}
+
 function scrubStoryImages(story) {
   if (!story || typeof story !== 'object') return;
   story.imagesStatus = 'pending';
@@ -301,14 +377,14 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     const jobs = loadJobs();
     const { normalized, changed } = normalizeStaleRunningJobs(jobs);
     if (changed) saveJobs(normalized);
-    res.json(normalized);
+    res.json(enrichJobsWithImageStats(normalized, { rootDir, storiesDir }));
   });
 
   app.get('/generation-jobs/all', (req, res) => {
     const jobs = loadJobs();
     const { normalized, changed } = normalizeStaleRunningJobs(jobs);
     if (changed) saveJobs(normalized);
-    res.json(normalized);
+    res.json(enrichJobsWithImageStats(normalized, { rootDir, storiesDir }));
   });
 
   app.post('/generation-jobs/refresh', (req, res) => {

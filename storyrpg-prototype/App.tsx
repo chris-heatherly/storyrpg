@@ -987,27 +987,20 @@ function AppContent() {
         />
       )}
 
-      {/* Floating Active Generation Indicator */}
+      {/* Compact active generation header chip */}
       {activeGenerationJob && currentScreen !== 'generator' && (
         <TouchableOpacity 
           style={styles.activeGenIndicator}
           onPress={() => handleOpenGenerator(activeGenerationJob.id)}
+          activeOpacity={0.8}
         >
           <View style={styles.activeGenPulse} />
           <View style={styles.activeGenContent}>
-            <Text style={styles.activeGenLabel}>GENERATING</Text>
-            <Text style={styles.activeGenTitle} numberOfLines={1}>
-              {(activeGenerationJob.storyTitle || 'Untitled').toUpperCase()}
-            </Text>
+            <Text style={styles.activeGenLabel}>PIPELINE</Text>
             <Text style={styles.activeGenMeta} numberOfLines={1}>
-              {(activeGenerationJob.currentPhase || 'PROCESSING').toUpperCase()}
-              {typeof activeGenerationJob.etaSeconds === 'number' ? ` • ETA ${Math.max(0, Math.round(activeGenerationJob.etaSeconds))}S` : ''}
+              {Math.max(0, Math.min(100, Math.round(activeGenerationJob.progress || 0)))}%
             </Text>
-            <View style={styles.activeGenProgress}>
-              <View style={[styles.activeGenProgressBar, { width: `${activeGenerationJob.progress || 5}%` }]} />
-            </View>
           </View>
-          <Text style={styles.activeGenArrow}>→</Text>
         </TouchableOpacity>
       )}
 
@@ -1095,72 +1088,46 @@ const styles = StyleSheet.create({
   menuButtonText: { color: 'white', fontWeight: '900', textAlign: 'center', letterSpacing: 1 },
   menuButtonTextSecondary: { color: TERMINAL.colors.muted, textAlign: 'center', fontWeight: '900', letterSpacing: 1 },
   pauseFooter: { color: TERMINAL.colors.muted, marginTop: 12, textAlign: 'center', fontSize: 9, fontWeight: '700', letterSpacing: 1 },
-  // Active generation floating indicator
+  // Compact active generation header chip
   activeGenIndicator: {
     position: 'absolute',
-    bottom: 24,
-    left: 16,
-    right: 16,
-    backgroundColor: '#1e2229',
-    borderRadius: 16,
+    top: Platform.OS === 'ios' ? 50 : 20,
+    right: 18,
+    minWidth: 86,
+    minHeight: 38,
+    backgroundColor: 'rgba(10, 10, 10, 0.86)',
+    borderRadius: 19,
     borderWidth: 1,
-    borderColor: TERMINAL.colors.amber,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    borderColor: 'rgba(245, 158, 11, 0.45)',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: TERMINAL.colors.amber,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
+    justifyContent: 'center',
+    zIndex: 1200,
   },
   activeGenPulse: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
     backgroundColor: TERMINAL.colors.amber,
-    marginRight: 12,
+    marginRight: 7,
   },
   activeGenContent: {
-    flex: 1,
+    alignItems: 'flex-start',
   },
   activeGenLabel: {
-    fontSize: 8,
+    fontSize: 7,
     fontWeight: '900',
     color: TERMINAL.colors.amber,
     letterSpacing: 1,
-    marginBottom: 2,
-  },
-  activeGenTitle: {
-    fontSize: 12,
-    fontWeight: '900',
-    color: 'white',
-    letterSpacing: 0.5,
-    marginBottom: 6,
+    lineHeight: 10,
   },
   activeGenMeta: {
-    color: TERMINAL.colors.muted,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-    marginTop: 2,
-  },
-  activeGenProgress: {
-    height: 3,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  activeGenProgressBar: {
-    height: '100%',
-    backgroundColor: TERMINAL.colors.amber,
-    borderRadius: 2,
-  },
-  activeGenArrow: {
-    fontSize: 18,
+    color: 'white',
+    fontSize: 11,
     fontWeight: '900',
-    color: TERMINAL.colors.amber,
-    marginLeft: 12,
+    letterSpacing: 0.2,
+    lineHeight: 14,
   },
 });

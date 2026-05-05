@@ -1834,6 +1834,54 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     return this.characterReferenceSheets.get(characterId);
   }
 
+  hydrateReferenceSheetFromExistingImages(input: {
+    characterId: string;
+    characterName: string;
+    images: Array<{
+      viewType: string;
+      imageData: string;
+      mimeType: string;
+      imageUrl?: string;
+      imagePath?: string;
+    }>;
+    visualAnchors?: string[];
+    identityFingerprint?: string;
+  }): boolean {
+    if (!input.characterId || input.images.length === 0) return false;
+    const generatedImages = new Map<string, GeneratedImage>();
+    for (const image of input.images) {
+      generatedImages.set(image.viewType, {
+        prompt: { prompt: `hydrated existing reference image for ${input.characterName}` },
+        imageData: image.imageData,
+        mimeType: image.mimeType,
+        imageUrl: image.imageUrl,
+        imagePath: image.imagePath,
+        metadata: { hydratedFromDisk: true, viewType: image.viewType },
+      });
+    }
+
+    const views = input.images
+      .filter((image) => image.viewType !== 'face' && image.viewType !== 'composite')
+      .map((image) => ({
+        viewType: image.viewType,
+        prompt: { prompt: `hydrated existing ${image.viewType} reference for ${input.characterName}` },
+        purpose: 'Hydrated from an existing reference image file during image resume.',
+      })) as any;
+
+    this.characterReferenceSheets.set(input.characterId, {
+      characterId: input.characterId,
+      characterName: input.characterName,
+      views,
+      visualAnchors: input.visualAnchors || [],
+      colorPalette: [],
+      silhouetteNotes: 'Hydrated from existing generated reference image files.',
+      consistencyChecklist: [],
+      generatedImages,
+      identityFingerprint: input.identityFingerprint,
+    });
+    return true;
+  }
+
   /**
    * Clear cached reference sheets (useful for regeneration)
    */

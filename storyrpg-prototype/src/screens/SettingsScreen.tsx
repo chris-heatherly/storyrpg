@@ -177,7 +177,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   };
 
   const activeJobs = jobs.filter(j => j.status === 'running' || j.status === 'pending');
-  const recentJobs = jobs.filter(j => j.status !== 'running' && j.status !== 'pending').slice(0, 5);
+  const recentJobs = jobs.filter(j => j.status !== 'running' && j.status !== 'pending').slice(0, 12);
 
   const handleDeleteStory = (story: StoryCatalogEntry) => {
     setConfirmDeleteStory(story);
@@ -974,6 +974,18 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: 'white',
     marginBottom: 4,
+  },
+  jobImageStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  jobImageStatsText: {
+    fontSize: 9,
+    fontWeight: '900',
+    color: TERMINAL.colors.cyan,
+    letterSpacing: 0.5,
   },
   jobMeta: {
     flexDirection: 'row',

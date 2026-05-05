@@ -80,6 +80,14 @@ export interface GenerationJob {
   subphaseLabel?: string;
   error?: string;
   outputDir?: string;
+  imageStats?: {
+    generatedFiles?: number;
+    resolvedSlots?: number;
+    totalSlots?: number;
+  };
+  generatedImageCount?: number;
+  resolvedImageSlotCount?: number;
+  totalImageSlotCount?: number;
   events?: PipelineEventData[];
   checkpoint?: GenerationJobCheckpoint;
 }
@@ -161,6 +169,16 @@ export function normalizeGenerationJob(value: unknown): GenerationJob | null {
     subphaseLabel: typeof value.subphaseLabel === 'string' ? value.subphaseLabel : undefined,
     error: typeof value.error === 'string' ? value.error : undefined,
     outputDir: typeof value.outputDir === 'string' ? value.outputDir : undefined,
+    imageStats: isRecord(value.imageStats)
+      ? {
+          generatedFiles: typeof value.imageStats.generatedFiles === 'number' ? value.imageStats.generatedFiles : undefined,
+          resolvedSlots: typeof value.imageStats.resolvedSlots === 'number' ? value.imageStats.resolvedSlots : undefined,
+          totalSlots: typeof value.imageStats.totalSlots === 'number' ? value.imageStats.totalSlots : undefined,
+        }
+      : undefined,
+    generatedImageCount: typeof value.generatedImageCount === 'number' ? value.generatedImageCount : undefined,
+    resolvedImageSlotCount: typeof value.resolvedImageSlotCount === 'number' ? value.resolvedImageSlotCount : undefined,
+    totalImageSlotCount: typeof value.totalImageSlotCount === 'number' ? value.totalImageSlotCount : undefined,
     events: normalizedEvents,
     checkpoint: isRecord(value.checkpoint) ? value.checkpoint as GenerationJobCheckpoint : undefined,
   };

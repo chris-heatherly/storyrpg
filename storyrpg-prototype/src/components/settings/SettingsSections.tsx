@@ -355,6 +355,23 @@ function getJobStatusColor(status: JobStatus) {
   }
 }
 
+function getJobImageStatsLabel(job: GenerationJob) {
+  const generatedFiles = job.imageStats?.generatedFiles ?? job.generatedImageCount;
+  const resolvedSlots = job.imageStats?.resolvedSlots ?? job.resolvedImageSlotCount;
+  const totalSlots = job.imageStats?.totalSlots ?? job.totalImageSlotCount;
+  if (typeof generatedFiles !== 'number' && typeof resolvedSlots !== 'number') return null;
+  const parts: string[] = [];
+  if (typeof generatedFiles === 'number') {
+    parts.push(`${generatedFiles} IMAGE FILE${generatedFiles === 1 ? '' : 'S'}`);
+  }
+  if (typeof resolvedSlots === 'number' && typeof totalSlots === 'number' && totalSlots > 0) {
+    parts.push(`${resolvedSlots}/${totalSlots} SLOTS`);
+  } else if (typeof resolvedSlots === 'number') {
+    parts.push(`${resolvedSlots} RESOLVED SLOT${resolvedSlots === 1 ? '' : 'S'}`);
+  }
+  return parts.join(' • ');
+}
+
 interface GenerationJobsSectionProps {
   styles: SettingsStyles;
   jobs: GenerationJob[];
@@ -419,6 +436,12 @@ export function GenerationJobsSection({
                 <Text style={styles.jobTime}>{formatJobTime(job.updatedAt)}</Text>
               </View>
               <Text style={styles.jobTitle}>{(job.storyTitle || 'Untitled').toUpperCase()}</Text>
+              {getJobImageStatsLabel(job) ? (
+                <View style={styles.jobImageStatsRow}>
+                  <ImageIcon size={13} color={TERMINAL.colors.cyan} />
+                  <Text style={styles.jobImageStatsText}>{getJobImageStatsLabel(job)}</Text>
+                </View>
+              ) : null}
               <View style={styles.jobMeta}>
                 <Text style={styles.jobPhase}>{(job.currentPhase || 'unknown').toUpperCase()}</Text>
                 <View style={styles.metaDot} />
@@ -492,6 +515,12 @@ export function GenerationJobsSection({
                     <Text style={styles.jobTime}>{formatJobTime(job.updatedAt)}</Text>
                   </View>
                   <Text style={styles.jobTitle}>{(job.storyTitle || 'Untitled').toUpperCase()}</Text>
+                  {getJobImageStatsLabel(job) ? (
+                    <View style={styles.jobImageStatsRow}>
+                      <ImageIcon size={13} color={TERMINAL.colors.cyan} />
+                      <Text style={styles.jobImageStatsText}>{getJobImageStatsLabel(job)}</Text>
+                    </View>
+                  ) : null}
                   <View style={styles.jobMeta}>
                     <Text style={styles.jobPhase}>{(job.currentPhase || 'unknown').toUpperCase()}</Text>
                     <View style={styles.metaDot} />

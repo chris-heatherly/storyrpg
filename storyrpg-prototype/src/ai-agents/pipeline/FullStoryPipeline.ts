@@ -1584,6 +1584,291 @@ export class FullStoryPipeline {
     this.assetRegistry = new AssetRegistry(storyId, undefined, persistPath);
   }
 
+  private loadAssetRegistryForImageResume(storyId: string, outputDirectory: string): void {
+    const normalizedOutputDir = outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`;
+    const primaryPath = `${normalizedOutputDir}asset-registry.jsonl`;
+    const legacyPath = `${normalizedOutputDir}08-asset-registry.jsonl`;
+    this.assetRegistry = AssetRegistry.fromJSONL(primaryPath, storyId);
+
+    const legacyRegistry = AssetRegistry.fromJSONL(legacyPath, storyId);
+    for (const record of legacyRegistry.values()) {
+      if (record.status !== 'succeeded' || !record.latestUrl) continue;
+      if (this.assetRegistry.getResolvedAsset(record.slot.slotId)) continue;
+      this.assetRegistry.planSlot(record.slot);
+      this.assetRegistry.markSuccess(record.slot.slotId, {
+        prompt: { prompt: `image-resume imported legacy registry record ${record.slot.slotId}` },
+        imageUrl: record.latestUrl,
+        imagePath: record.latestPath || record.latestUrl,
+        provider: record.provider,
+        model: record.model,
+      });
+    }
+  }
+
+  private servedUrlForGeneratedImagePath(imagePath: string): string {
+    const gsIndex = imagePath.indexOf('generated-stories/');
+    if (gsIndex >= 0) return `http://localhost:3001/${imagePath.slice(gsIndex)}`;
+    return imagePath;
+  }
+
+  private async readImageArtifact(imagePath: string): Promise<GeneratedImage | undefined> {
+    if (!imagePath || /\.(txt)$/i.test(imagePath)) return undefined;
+    try {
+      const fs = await import('fs/promises');
+      const buffer = await fs.readFile(imagePath);
+      const lower = imagePath.toLowerCase();
+      const mimeType = lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+        ? 'image/jpeg'
+        : lower.endsWith('.webp')
+          ? 'image/webp'
+          : 'image/png';
+      return {
+        prompt: { prompt: `image-resume hydrated existing file ${imagePath}` },
+        imagePath,
+        imageUrl: this.servedUrlForGeneratedImagePath(imagePath),
+        imageData: buffer.toString('base64'),
+        mimeType,
+        metadata: { hydratedFromDisk: true },
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async findExistingImageArtifact(imagesDir: string, baseIdentifier: string): Promise<GeneratedImage | undefined> {
+    const exact = this.imageService.findExistingGeneratedImage(baseIdentifier);
+    if (exact?.imagePath) {
+      const hydrated = await this.readImageArtifact(exact.imagePath);
+      return {
+        ...(hydrated || { prompt: { prompt: `image-resume reused ${baseIdentifier}` } }),
+        imagePath: exact.imagePath,
+        imageUrl: exact.imageUrl || hydrated?.imageUrl || this.servedUrlForGeneratedImagePath(exact.imagePath),
+      } as GeneratedImage;
+    }
+
+    try {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const files = await fs.readdir(imagesDir);
+      const candidates: Array<{ name: string; fullPath: string; mtimeMs: number }> = [];
+      const imageExt = /\.(png|jpg|jpeg|webp)$/i;
+      for (const name of files) {
+        if (!imageExt.test(name)) continue;
+        if (!name.startsWith(`${baseIdentifier}-`)) continue;
+        if (!/-(qa-retry|retry|textfix|recovery|fallback)/i.test(name)) continue;
+        const fullPath = path.join(imagesDir, name);
+        const stat = await fs.stat(fullPath);
+        candidates.push({ name, fullPath, mtimeMs: stat.mtimeMs });
+      }
+      candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      return candidates[0] ? this.readImageArtifact(candidates[0].fullPath) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async hydrateReferenceSheetsFromExistingImages(
+    outputDirectory: string,
+    characterBible: CharacterBible,
+  ): Promise<number> {
+    const imagesDir = `${outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`}images/`;
+    let hydrated = 0;
+    for (const char of characterBible.characters || []) {
+      if (this.imageAgentTeam.hasReferenceSheet(char.id)) continue;
+      const views: Array<{ viewType: string; imageData: string; mimeType: string; imageUrl?: string; imagePath?: string }> = [];
+      for (const viewType of ['face', 'front', 'three-quarter', 'profile', 'composite']) {
+        const image = await this.findExistingImageArtifact(imagesDir, `ref_${char.id}_${viewType}`);
+        if (!image?.imageData || !image.mimeType) continue;
+        views.push({
+          viewType,
+          imageData: image.imageData,
+          mimeType: image.mimeType,
+          imageUrl: image.imageUrl,
+          imagePath: image.imagePath,
+        });
+      }
+      if (views.length === 0) continue;
+      const identityFingerprint = computeCharacterIdentityFingerprint(char);
+      const didHydrate = this.imageAgentTeam.hydrateReferenceSheetFromExistingImages({
+        characterId: char.id,
+        characterName: char.name,
+        images: views,
+        visualAnchors: [
+          char.physicalDescription,
+          ...(char.distinctiveFeatures || []),
+          char.typicalAttire,
+        ].filter(Boolean) as string[],
+        identityFingerprint,
+      });
+      if (didHydrate) {
+        this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, identityFingerprint);
+        hydrated += 1;
+      }
+    }
+    return hydrated;
+  }
+
+  private async markSlotFromExistingArtifact(slot: ImageSlot, imagesDir: string): Promise<boolean> {
+    this.assetRegistry.planSlot(slot);
+    if (this.assetRegistry.getResolvedAsset(slot.slotId)?.latestUrl) return true;
+
+    if (slot.continuitySourceSlotId) {
+      const source = this.assetRegistry.getResolvedAsset(slot.continuitySourceSlotId);
+      if (source?.latestUrl) {
+        this.assetRegistry.markSuccess(slot.slotId, {
+          prompt: { prompt: `image-resume linked continuity source ${slot.continuitySourceSlotId}` },
+          imageUrl: source.latestUrl,
+          imagePath: source.latestPath || source.latestUrl,
+          provider: source.provider,
+          model: source.model,
+        });
+        return true;
+      }
+    }
+
+    const artifact = await this.findExistingImageArtifact(imagesDir, slot.baseIdentifier);
+    if (!artifact?.imageUrl) return false;
+    this.assetRegistry.markSuccess(slot.slotId, artifact);
+    return true;
+  }
+
+  private async scanExistingImagesForResume(
+    outputDirectory: string,
+    story: Story,
+    characterBible: CharacterBible,
+    encounters: EncounterStructure[],
+  ): Promise<{
+    totalSlots: number;
+    resolvedSlotsBefore: number;
+    resolvedSlotsAfter: number;
+    hydratedReferenceSheets: number;
+    missingSlotIds: string[];
+    completedEncounterBaseIdentifiersByScene: Record<string, string[]>;
+  }> {
+    const normalizedOutputDir = outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`;
+    const imagesDir = `${normalizedOutputDir}images/`;
+    const storyId = idSlugify(story.title || story.id || 'story');
+    this.loadAssetRegistryForImageResume(storyId, normalizedOutputDir);
+    const resolvedSlotsBefore = this.assetRegistry.values().filter((record) => record.status === 'succeeded').length;
+    const hydratedReferenceSheets = await this.hydrateReferenceSheetsFromExistingImages(normalizedOutputDir, characterBible);
+
+    const encounterBySceneId = new Map<string, EncounterStructure>();
+    for (const encounter of encounters || []) {
+      if ((encounter as any)?.sceneId) encounterBySceneId.set((encounter as any).sceneId, encounter);
+    }
+
+    const slots: ImageSlot[] = [];
+    const completedEncounterBaseIdentifiersByScene: Record<string, string[]> = {};
+    for (const episode of story.episodes || []) {
+      for (const scene of episode.scenes || []) {
+        const scopedSceneId = `episode-${episode.number}-${scene.id}`;
+        const sceneContent = {
+          ...this.sceneContentFromStoryScene(scene),
+          encounter: scene.encounter,
+        };
+        slots.push(...buildStoryImageSlotManifest(sceneContent, scopedSceneId).slots);
+
+        const encounter = encounterBySceneId.get(scene.id) || (scene.encounter as unknown as EncounterStructure | undefined);
+        if (!encounter) continue;
+        const encounterSlots = buildEncounterSlotManifest(encounter, scene.id, scopedSceneId, ENCOUNTER_TREE_MAX_DEPTH).slots;
+        for (const encounterSlot of encounterSlots) {
+          slots.push(this.createEncounterRegistrySlot(encounterSlot));
+        }
+        const storyletSlots = buildStoryletSlotManifest((encounter as any).storylets, scene.id, scopedSceneId).slots;
+        for (const storyletSlot of storyletSlots) {
+          slots.push({
+            slotId: `storylet-aftermath:${scopedSceneId}::${storyletSlot.outcomeName}::${storyletSlot.beatId}`,
+            family: 'storylet-aftermath',
+            imageType: 'storylet-aftermath',
+            sceneId: scene.id,
+            scopedSceneId,
+            beatId: storyletSlot.beatId,
+            outcomeName: storyletSlot.outcomeName,
+            storyFieldPath: `episodes[].scenes[id=${scene.id}].encounter.storylets.${storyletSlot.outcomeName}.beats[id=${storyletSlot.beatId}].image`,
+            baseIdentifier: storyletSlot.baseIdentifier,
+            required: true,
+            qualityTier: 'critical',
+            coverageKey: storyletSlot.coverageKey,
+          });
+        }
+      }
+    }
+
+    for (const slot of slots) {
+      const resolved = await this.markSlotFromExistingArtifact(slot, imagesDir);
+      if (resolved && slot.family.startsWith('encounter')) {
+        const sceneId = slot.sceneId || '';
+        if (!completedEncounterBaseIdentifiersByScene[sceneId]) completedEncounterBaseIdentifiersByScene[sceneId] = [];
+        completedEncounterBaseIdentifiersByScene[sceneId].push(slot.baseIdentifier);
+      } else if (resolved && slot.family === 'storylet-aftermath') {
+        const sceneId = slot.sceneId || '';
+        if (!completedEncounterBaseIdentifiersByScene[sceneId]) completedEncounterBaseIdentifiersByScene[sceneId] = [];
+        completedEncounterBaseIdentifiersByScene[sceneId].push(slot.baseIdentifier);
+      }
+    }
+
+    for (const slot of slots) {
+      if (!slot.continuitySourceSlotId || this.assetRegistry.getResolvedAsset(slot.slotId)) continue;
+      const source = this.assetRegistry.getResolvedAsset(slot.continuitySourceSlotId);
+      if (!source?.latestUrl) continue;
+      this.assetRegistry.markSuccess(slot.slotId, {
+        prompt: { prompt: `image-resume linked continuity source ${slot.continuitySourceSlotId}` },
+        imageUrl: source.latestUrl,
+        imagePath: source.latestPath || source.latestUrl,
+        provider: source.provider,
+        model: source.model,
+      });
+    }
+
+    for (const [sceneId, completedBaseIdentifiers] of Object.entries(completedEncounterBaseIdentifiersByScene)) {
+      if (!sceneId || completedBaseIdentifiers.length === 0) continue;
+      const scene = story.episodes?.flatMap((episode) => episode.scenes || []).find((candidate) => candidate.id === sceneId);
+      const scopedSceneId = scene
+        ? `episode-${story.episodes.find((episode) => episode.scenes?.some((candidate) => candidate.id === sceneId))?.number || 0}-${sceneId}`
+        : sceneId;
+      const existing = loadEncounterResumeStateSync(normalizedOutputDir, idSlugify(sceneId));
+      const merged = new Set<string>([
+        ...(existing?.completedBaseIdentifiers || []),
+        ...completedBaseIdentifiers,
+      ]);
+      await saveEncounterResumeState(normalizedOutputDir, idSlugify(sceneId), {
+        version: 1,
+        sceneId,
+        scopedSceneId,
+        completedBaseIdentifiers: [...merged],
+        generatedAt: new Date().toISOString(),
+      });
+    }
+
+    const missingSlotIds = slots
+      .filter((slot) => !this.assetRegistry.getResolvedAsset(slot.slotId))
+      .map((slot) => slot.slotId);
+    const resolvedSlotsAfter = this.assetRegistry.values().filter((record) => record.status === 'succeeded').length;
+    const scan = {
+      outputDirectory: normalizedOutputDir,
+      imageDirectory: imagesDir,
+      generatedAt: new Date().toISOString(),
+      totalSlots: slots.length,
+      resolvedSlotsBefore,
+      resolvedSlotsAfter,
+      hydratedReferenceSheets,
+      missingSlotIds,
+      missingCoverageKeys: slots
+        .filter((slot) => !this.assetRegistry.getResolvedAsset(slot.slotId))
+        .map((slot) => slot.coverageKey),
+      completedEncounterBaseIdentifiersByScene,
+    };
+    await saveEarlyDiagnostic(normalizedOutputDir, 'image-resume-scan.json', scan);
+    return {
+      totalSlots: slots.length,
+      resolvedSlotsBefore,
+      resolvedSlotsAfter,
+      hydratedReferenceSheets,
+      missingSlotIds,
+      completedEncounterBaseIdentifiersByScene,
+    };
+  }
+
   private buildImageManifestFromStory(story: Story): {
     version: 1;
     storyId: string;
@@ -1728,122 +2013,111 @@ export class FullStoryPipeline {
       });
     }
 
-    story.imagesStatus = 'running';
-    await this.saveDraftImageManifest(normalizedOutputDir, story);
-    this.resetAssetRegistry(idSlugify(story.title), `${normalizedOutputDir}asset-registry.jsonl`);
+	    story.imagesStatus = 'running';
+	    await this.saveDraftImageManifest(normalizedOutputDir, story);
 
-	    if (!this.config.imageGen?.enabled) {
-	      this.config.imageGen = { ...(this.config.imageGen || {}), enabled: true };
-	    }
+		    if (!this.config.imageGen?.enabled) {
+		      this.config.imageGen = { ...(this.config.imageGen || {}), enabled: true };
+		    }
 	    this.config.imageGen = {
 	      ...(this.config.imageGen || {}),
 	      enabled: true,
-	      strategy: 'all-beats',
-	    };
-	    this.imageService.setOutputDirectory(`${normalizedOutputDir}images/`);
+		      strategy: 'all-beats',
+		    };
+		    this.imageService.setOutputDirectory(`${normalizedOutputDir}images/`);
+	    const imageResumeScan = await this.scanExistingImagesForResume(
+	      normalizedOutputDir,
+	      story,
+	      characterBible,
+	      savedEncounters,
+	    );
+	    this.emit({
+	      type: 'debug',
+	      phase: 'images',
+	      message: `Image resume scan resolved ${imageResumeScan.resolvedSlotsAfter}/${imageResumeScan.totalSlots} planned slots from disk; ${imageResumeScan.missingSlotIds.length} still missing.`,
+	      data: imageResumeScan,
+	    });
 
-    try {
-      const firstEpisode = story.episodes?.[0];
-      if (firstEpisode) {
-        try {
-          const episodeBrief: FullCreativeBrief = {
-            ...brief,
-            episode: {
-              ...(brief.episode || {}),
-              number: firstEpisode.number,
-              title: firstEpisode.title,
-              synopsis: firstEpisode.synopsis,
-            },
-          } as FullCreativeBrief;
-          const sceneContents = (firstEpisode.scenes || []).map((scene) => this.sceneContentFromStoryScene(scene));
-          const choiceSets = savedChoiceSets.filter((choiceSet: any) => {
-            if (!choiceSet?.sceneId) return true;
-            return firstEpisode.scenes?.some((scene) => scene.id === choiceSet.sceneId);
-          });
-          const colorScript = await this.generateEpisodeColorScript(episodeBrief, sceneContents, choiceSets);
-          if (colorScript) {
-            this.collectedVisualPlanning.colorScript = colorScript;
-            await this.generateEpisodeStyleBible(episodeBrief, colorScript, characterBible, normalizedOutputDir);
-          }
-        } catch (styleErr) {
-          this.emit({
-            type: 'warning',
-            phase: 'images',
-            message: `Image-only style-bible preflight failed before character refs (continuing with text style): ${styleErr instanceof Error ? styleErr.message : String(styleErr)}`,
-          });
-        }
-      }
+	    try {
+	      const allEncounterDiagnostics: EncounterImageRunDiagnostic[] = [];
+	      if (imageResumeScan.missingSlotIds.length === 0) {
+	        this.emit({
+	          type: 'phase_complete',
+	          phase: 'images',
+	          message: 'Image resume scan found every planned slot already generated; skipping image API calls.',
+	        });
+	      } else {
+	        this.emit({
+	          type: 'debug',
+	          phase: 'images',
+	          message: 'Image-only resume will skip style-bible/master preflight and generate only unresolved story, encounter, and storylet slots.',
+	          data: { missingSlotIds: imageResumeScan.missingSlotIds.slice(0, 100) },
+	        });
+	        for (const episode of story.episodes || []) {
+	          await this.checkCancellation();
+	          const episodeBrief: FullCreativeBrief = {
+	            ...brief,
+	            episode: {
+	              ...(brief.episode || {}),
+	              number: episode.number,
+	              title: episode.title,
+	              synopsis: episode.synopsis,
+	            },
+	          } as FullCreativeBrief;
+	          const sceneContents = (episode.scenes || []).map((scene) => this.sceneContentFromStoryScene(scene));
+	          const choiceSets = savedChoiceSets.filter((choiceSet: any) => {
+	            if (!choiceSet?.sceneId) return true;
+	            return episode.scenes?.some((scene) => scene.id === choiceSet.sceneId);
+	          });
+		        const encounterMap = new Map<string, EncounterStructure>();
+		        for (const encounter of savedEncounters) {
+		          if (episode.scenes?.some((scene) => scene.id === encounter.sceneId)) {
+		            encounterMap.set(encounter.sceneId, encounter);
+		          }
+		        }
+		        if (encounterMap.size === 0) {
+		          for (const scene of episode.scenes || []) {
+		            if (scene.encounter) {
+		              encounterMap.set(scene.id, {
+		                ...(scene.encounter as unknown as EncounterStructure),
+		                sceneId: scene.id,
+		              });
+		            }
+		          }
+		          if (encounterMap.size > 0) {
+		            this.emit({
+		              type: 'debug',
+		              phase: 'encounter_images',
+		              message: `Image-only run recovered ${encounterMap.size} encounter(s) from embedded story scenes because 05b-encounters.json was unavailable.`,
+		            });
+		          }
+		        }
 
-      this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals from saved story draft...' });
-      await this.imageWorkerQueue.run(() =>
-        this.measurePhase('master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, brief))
-      );
+	          this.emit({ type: 'phase_start', phase: 'images', message: `Generating missing scene visuals for episode ${episode.number}...` });
+	          const imageResults = await this.imageWorkerQueue.run(() =>
+	            this.measurePhase(
+	              'episode_image_generation',
+	              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible, normalizedOutputDir)
+	            )
+	          );
 
-      const allEncounterDiagnostics: EncounterImageRunDiagnostic[] = [];
-      for (const episode of story.episodes || []) {
-        await this.checkCancellation();
-        const episodeBrief: FullCreativeBrief = {
-          ...brief,
-          episode: {
-            ...(brief.episode || {}),
-            number: episode.number,
-            title: episode.title,
-            synopsis: episode.synopsis,
-          },
-        } as FullCreativeBrief;
-        const sceneContents = (episode.scenes || []).map((scene) => this.sceneContentFromStoryScene(scene));
-        const choiceSets = savedChoiceSets.filter((choiceSet: any) => {
-          if (!choiceSet?.sceneId) return true;
-          return episode.scenes?.some((scene) => scene.id === choiceSet.sceneId);
-        });
-	        const encounterMap = new Map<string, EncounterStructure>();
-	        for (const encounter of savedEncounters) {
-	          if (episode.scenes?.some((scene) => scene.id === encounter.sceneId)) {
-	            encounterMap.set(encounter.sceneId, encounter);
-	          }
-	        }
-	        if (encounterMap.size === 0) {
-	          for (const scene of episode.scenes || []) {
-	            if (scene.encounter) {
-	              encounterMap.set(scene.id, {
-	                ...(scene.encounter as unknown as EncounterStructure),
-	                sceneId: scene.id,
-	              });
-	            }
-	          }
+	          let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
 	          if (encounterMap.size > 0) {
-	            this.emit({
-	              type: 'debug',
-	              phase: 'encounter_images',
-	              message: `Image-only run recovered ${encounterMap.size} encounter(s) from embedded story scenes because 05b-encounters.json was unavailable.`,
-	            });
+	            this.imageService.clearEncounterDiagnostics();
+	            await this.runEncounterProviderPreflight(normalizedOutputDir);
+	            encounterImageResults = await this.imageWorkerQueue.run(() =>
+	              this.measurePhase(
+	                'encounter_image_generation',
+	                () => this.generateEncounterImages(encounterMap, characterBible, episodeBrief, normalizedOutputDir)
+	              )
+	            );
+	            allEncounterDiagnostics.push(...this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics()));
 	          }
+
+	          this.seedAssetRegistryFromResults(episodeBrief, sceneContents, encounterMap, imageResults, encounterImageResults);
+	          await saveEarlyDiagnostic(normalizedOutputDir, '08-registry-state.json', this.assetRegistry.toSnapshot());
 	        }
-
-        this.emit({ type: 'phase_start', phase: 'images', message: `Generating scene visuals for episode ${episode.number}...` });
-        const imageResults = await this.imageWorkerQueue.run(() =>
-          this.measurePhase(
-            'episode_image_generation',
-            () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible, normalizedOutputDir)
-          )
-        );
-
-        let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
-        if (encounterMap.size > 0) {
-          this.imageService.clearEncounterDiagnostics();
-          await this.runEncounterProviderPreflight(normalizedOutputDir);
-          encounterImageResults = await this.imageWorkerQueue.run(() =>
-            this.measurePhase(
-              'encounter_image_generation',
-              () => this.generateEncounterImages(encounterMap, characterBible, episodeBrief, normalizedOutputDir)
-            )
-          );
-          allEncounterDiagnostics.push(...this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics()));
-        }
-
-        this.seedAssetRegistryFromResults(episodeBrief, sceneContents, encounterMap, imageResults, encounterImageResults);
-        await saveEarlyDiagnostic(normalizedOutputDir, '08-registry-state.json', this.assetRegistry.toSnapshot());
-      }
+	      }
 
       const coverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible);
       let finalStory = assembleStoryAssetsFromRegistry(story, this.assetRegistry);

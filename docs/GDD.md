@@ -925,6 +925,7 @@ The application consists of six main screens:
 - Story structure exploration and debugging
 - Visual representations of choice trees and consequences
 - Developer tools for examining generated content
+- Mermaid Chart as an external reference tool for sharing branching diagrams (https://mermaid.ai/)
 - Analytics and playtesting data
 
 ### Navigation Philosophy

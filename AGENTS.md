@@ -233,6 +233,7 @@ The pipeline honours a structural spine derived from a 3-act / 7-point model:
 
 - **Endpoints centralized** — All URLs in `src/config/endpoints.ts`. Never hardcode URLs elsewhere.
 - **Fiction-first** — No visible stats/numbers in UI. All mechanics expressed narratively.
+- **Minimal diffs** — Keep code changes tightly scoped to the requested task. Do not reformat files, reorder imports, rename symbols, refactor unrelated code, or update generated artifacts unless required for the fix. Prefer the smallest clear patch that preserves existing style and behavior.
 - **Node polyfills** — `fs`/`path`/`process` are shimmed via babel and metro config so pipeline code can run in RN/web bundles.
 - **Typecheck split** — Five tsconfig files: `tsconfig.app.json` (narrow app subset), `tsconfig.test.json`, `tsconfig.contracts.json` (shared types for worker payloads), `tsconfig.worker.json`, and base `tsconfig.json`.
 - **Tests** — Co-located `*.test.ts` files, run with Vitest in Node env with RN stubs in `test/stubs/`.

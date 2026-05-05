@@ -40,6 +40,7 @@
 | **Xcode** | iOS development | Only for building native iOS app |
 | **Android Studio** | Android development | Only for building native Android app |
 | **Playwright Chromium** | Tier-2 browser playthrough QA | Install with `npx playwright install chromium` before `npm run test:e2e` or before running the in-pipeline browser QA phase |
+| **Mermaid Chart** | Text-based diagrams and flowcharts | Optional architecture/story-branching diagrams at https://mermaid.ai/ |
 
 ### Required API Keys
 

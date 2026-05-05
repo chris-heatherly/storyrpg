@@ -82,11 +82,15 @@ export interface GenerationJob {
   outputDir?: string;
   imageStats?: {
     generatedFiles?: number;
+    referenceFiles?: number;
+    storyFiles?: number;
     resolvedSlots?: number;
     totalSlots?: number;
     missingSlots?: number;
   };
   generatedImageCount?: number;
+  referenceImageCount?: number;
+  storyImageCount?: number;
   resolvedImageSlotCount?: number;
   totalImageSlotCount?: number;
   missingImageSlotCount?: number;
@@ -174,12 +178,16 @@ export function normalizeGenerationJob(value: unknown): GenerationJob | null {
     imageStats: isRecord(value.imageStats)
       ? {
           generatedFiles: typeof value.imageStats.generatedFiles === 'number' ? value.imageStats.generatedFiles : undefined,
+          referenceFiles: typeof value.imageStats.referenceFiles === 'number' ? value.imageStats.referenceFiles : undefined,
+          storyFiles: typeof value.imageStats.storyFiles === 'number' ? value.imageStats.storyFiles : undefined,
           resolvedSlots: typeof value.imageStats.resolvedSlots === 'number' ? value.imageStats.resolvedSlots : undefined,
           totalSlots: typeof value.imageStats.totalSlots === 'number' ? value.imageStats.totalSlots : undefined,
           missingSlots: typeof value.imageStats.missingSlots === 'number' ? value.imageStats.missingSlots : undefined,
         }
       : undefined,
     generatedImageCount: typeof value.generatedImageCount === 'number' ? value.generatedImageCount : undefined,
+    referenceImageCount: typeof value.referenceImageCount === 'number' ? value.referenceImageCount : undefined,
+    storyImageCount: typeof value.storyImageCount === 'number' ? value.storyImageCount : undefined,
     resolvedImageSlotCount: typeof value.resolvedImageSlotCount === 'number' ? value.resolvedImageSlotCount : undefined,
     totalImageSlotCount: typeof value.totalImageSlotCount === 'number' ? value.totalImageSlotCount : undefined,
     missingImageSlotCount: typeof value.missingImageSlotCount === 'number' ? value.missingImageSlotCount : undefined,

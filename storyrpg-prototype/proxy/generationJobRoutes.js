@@ -44,13 +44,16 @@ function resolveStoryOutputDir(outputDir, { rootDir, storiesDir }) {
 }
 
 function countTopLevelImageFiles(imagesDir) {
-  if (!fs.existsSync(imagesDir)) return 0;
-  let count = 0;
+  if (!fs.existsSync(imagesDir)) return { generatedFiles: 0, referenceFiles: 0, storyFiles: 0 };
+  let generatedFiles = 0;
+  let referenceFiles = 0;
   for (const entry of fs.readdirSync(imagesDir, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
-    if (/\.(png|jpe?g|webp|gif)$/i.test(entry.name)) count++;
+    if (!/\.(png|jpe?g|webp|gif)$/i.test(entry.name)) continue;
+    generatedFiles++;
+    if (/^ref_/i.test(entry.name)) referenceFiles++;
   }
-  return count;
+  return { generatedFiles, referenceFiles, storyFiles: Math.max(0, generatedFiles - referenceFiles) };
 }
 
 function readJsonIfExists(filePath) {
@@ -64,9 +67,14 @@ function readJsonIfExists(filePath) {
 
 function computeImageStatsForOutputDir(outputDirAbs) {
   if (!outputDirAbs || !fs.existsSync(outputDirAbs)) return undefined;
-  const generatedFiles = countTopLevelImageFiles(path.join(outputDirAbs, 'images'));
+  const fileStats = countTopLevelImageFiles(path.join(outputDirAbs, 'images'));
   const manifest = readJsonIfExists(path.join(outputDirAbs, 'image-manifest.json'));
-  const totalSlots = Array.isArray(manifest?.slots) ? manifest.slots.length : undefined;
+  const resumeScan = readJsonIfExists(path.join(outputDirAbs, 'image-resume-scan.json'));
+  const manifestSlots = Array.isArray(manifest?.slots) ? manifest.slots.length : undefined;
+  const scanSlots = typeof resumeScan?.totalSlots === 'number' ? resumeScan.totalSlots : undefined;
+  const totalSlots = typeof manifestSlots === 'number' && typeof scanSlots === 'number'
+    ? Math.max(manifestSlots, scanSlots)
+    : manifestSlots ?? scanSlots;
 
   let resolvedSlots = 0;
   const registryPath = path.join(outputDirAbs, 'asset-registry.jsonl');
@@ -91,7 +99,9 @@ function computeImageStatsForOutputDir(outputDirAbs) {
   }
 
   return {
-    generatedFiles,
+    generatedFiles: fileStats.generatedFiles,
+    referenceFiles: fileStats.referenceFiles,
+    storyFiles: fileStats.storyFiles,
     resolvedSlots,
     totalSlots,
     missingSlots: typeof totalSlots === 'number' ? Math.max(0, totalSlots - resolvedSlots) : undefined,
@@ -114,6 +124,8 @@ function enrichJobsWithImageStats(jobs, { rootDir, storiesDir }) {
       outputDir: job.outputDir || path.relative(rootDir, outputDirAbs),
       imageStats,
       generatedImageCount: imageStats.generatedFiles,
+      referenceImageCount: imageStats.referenceFiles,
+      storyImageCount: imageStats.storyFiles,
       resolvedImageSlotCount: imageStats.resolvedSlots,
       totalImageSlotCount: imageStats.totalSlots,
       missingImageSlotCount: imageStats.missingSlots,

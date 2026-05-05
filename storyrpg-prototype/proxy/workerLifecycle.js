@@ -300,11 +300,15 @@ function createWorkerLifecycle({
 
     const imagesDir = path.join(resolvedOutputDir, 'images');
     let generatedFiles = 0;
+    let referenceFiles = 0;
     if (fs.existsSync(imagesDir)) {
       for (const entry of fs.readdirSync(imagesDir, { withFileTypes: true })) {
-        if (entry.isFile() && /\.(png|jpe?g|webp|gif)$/i.test(entry.name)) generatedFiles += 1;
+        if (!entry.isFile() || !/\.(png|jpe?g|webp|gif)$/i.test(entry.name)) continue;
+        generatedFiles += 1;
+        if (/^ref_/i.test(entry.name)) referenceFiles += 1;
       }
     }
+    const storyFiles = Math.max(0, generatedFiles - referenceFiles);
 
     let totalSlots;
     try {
@@ -312,6 +316,15 @@ function createWorkerLifecycle({
       if (fs.existsSync(manifestPath)) {
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
         if (Array.isArray(manifest?.slots)) totalSlots = manifest.slots.length;
+      }
+      const resumeScanPath = path.join(resolvedOutputDir, 'image-resume-scan.json');
+      if (fs.existsSync(resumeScanPath)) {
+        const resumeScan = JSON.parse(fs.readFileSync(resumeScanPath, 'utf8'));
+        if (typeof resumeScan?.totalSlots === 'number') {
+          totalSlots = typeof totalSlots === 'number'
+            ? Math.max(totalSlots, resumeScan.totalSlots)
+            : resumeScan.totalSlots;
+        }
       }
     } catch {
       // Image stats should never make the jobs endpoint unavailable.
@@ -339,6 +352,8 @@ function createWorkerLifecycle({
 
     return {
       generatedFiles,
+      referenceFiles,
+      storyFiles,
       resolvedSlots: resolvedSlotIds.size,
       totalSlots,
       missingSlots: typeof totalSlots === 'number' ? Math.max(0, totalSlots - resolvedSlotIds.size) : undefined,
@@ -360,6 +375,8 @@ function createWorkerLifecycle({
     if (imageStats) {
       patch.imageStats = imageStats;
       patch.generatedImageCount = imageStats.generatedFiles;
+      patch.referenceImageCount = imageStats.referenceFiles;
+      patch.storyImageCount = imageStats.storyFiles;
       patch.resolvedImageSlotCount = imageStats.resolvedSlots;
       patch.totalImageSlotCount = imageStats.totalSlots;
       patch.missingImageSlotCount = imageStats.missingSlots;

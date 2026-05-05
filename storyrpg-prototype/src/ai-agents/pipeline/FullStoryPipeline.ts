@@ -1789,16 +1789,226 @@ export class FullStoryPipeline {
     return true;
   }
 
+  private collectPlannedReferenceCharacterIdsForResume(
+    story: Story,
+    characterBible: CharacterBible,
+    encounters: EncounterStructure[],
+  ): string[] {
+    const planned = new Set<string>();
+    const addRaw = (raw: unknown) => {
+      if (typeof raw !== 'string' || !raw.trim()) return;
+      const resolved = this.resolveCharacterId(raw, characterBible);
+      if (resolved) planned.add(resolved);
+    };
+    const addMany = (raw: unknown) => {
+      if (Array.isArray(raw)) {
+        raw.forEach((item) => {
+          if (typeof item === 'string') addRaw(item);
+          else if (item && typeof item === 'object') {
+            const record = item as Record<string, unknown>;
+            addRaw(record.id);
+            addRaw(record.characterId);
+            addRaw(record.npcId);
+            addRaw(record.name);
+          }
+        });
+      } else {
+        addRaw(raw);
+      }
+    };
+    const addVisualCast = (visualCast: unknown) => {
+      if (!visualCast || typeof visualCast !== 'object') return;
+      const record = visualCast as Record<string, unknown>;
+      [
+        'sceneCharacterIds',
+        'activeCharacterIds',
+        'foregroundCharacterIds',
+        'backgroundCharacterIds',
+        'speakerCharacterId',
+        'addressedCharacterIds',
+        'listenerCharacterIds',
+        'observerCharacterIds',
+        'payoffRelevantCharacterIds',
+        'requiredVisibleCharacterIds',
+        'focalCharacterIds',
+      ].forEach((key) => addMany(record[key]));
+    };
+    const scanReferenceKeys = (value: unknown, parentKey = '', depth = 0) => {
+      if (!value || depth > 8) return;
+      if (Array.isArray(value)) {
+        value.forEach((item) => scanReferenceKeys(item, parentKey, depth + 1));
+        return;
+      }
+      if (typeof value !== 'object') return;
+      const record = value as Record<string, unknown>;
+      for (const [key, child] of Object.entries(record)) {
+        const lower = key.toLowerCase();
+        const isCharacterKey =
+          lower.includes('characterid') ||
+          lower.includes('characterids') ||
+          lower.includes('npcid') ||
+          lower.includes('npcids') ||
+          lower === 'speaker' ||
+          lower === 'speakercharacterid' ||
+          lower.includes('participant') ||
+          lower.includes('observer') ||
+          lower.includes('listener') ||
+          lower.includes('addressed') ||
+          lower.includes('payoffrelevant') ||
+          lower.includes('requiredvisible') ||
+          lower.includes('foregroundcharacter') ||
+          lower.includes('backgroundcharacter') ||
+          lower.includes('activecharacter') ||
+          lower.includes('focalcharacter');
+        if (isCharacterKey) addMany(child);
+        if (lower === 'visualcast' || lower === 'coverageplan') addVisualCast(child);
+        scanReferenceKeys(child, lower || parentKey, depth + 1);
+      }
+    };
+
+    for (const char of characterBible.characters || []) {
+      if (char.importance === 'core' || char.importance === 'major' || char.id === characterBible.protagonist?.id) {
+        planned.add(char.id);
+      }
+    }
+
+    for (const episode of story.episodes || []) {
+      for (const scene of episode.scenes || []) {
+        const sceneRecord = scene as unknown as Record<string, unknown>;
+        addMany(sceneRecord.charactersInvolved);
+        addMany(sceneRecord.characterIds);
+        addMany(sceneRecord.characters);
+        addMany(sceneRecord.npcIds);
+        addVisualCast(sceneRecord.visualCast);
+        scanReferenceKeys(sceneRecord.encounter, 'encounter');
+        for (const beat of scene.beats || []) {
+          const beatRecord = beat as unknown as Record<string, unknown>;
+          addMany(beatRecord.characters);
+          addMany(beatRecord.characterIds);
+          addMany(beatRecord.npcIds);
+          addRaw(beatRecord.speaker);
+          addRaw(beatRecord.speakerCharacterId);
+          addVisualCast(beatRecord.visualCast);
+          addVisualCast(beatRecord.coveragePlan);
+        }
+        for (const choice of scene.choices || []) {
+          scanReferenceKeys(choice, 'choice');
+        }
+      }
+    }
+
+    for (const encounter of encounters || []) {
+      scanReferenceKeys(encounter, 'encounter');
+    }
+
+    return [...planned];
+  }
+
+  private async preflightResumeReferenceSheets(
+    outputDirectory: string,
+    story: Story,
+    characterBible: CharacterBible,
+    encounters: EncounterStructure[],
+    brief: FullCreativeBrief,
+  ): Promise<{
+    plannedReferenceCharacterIds: string[];
+    alreadyAvailableReferenceCharacterIds: string[];
+    hydratedReferenceCharacterIds: string[];
+    generatedReferenceCharacterIds: string[];
+    missingReferenceCharacterIds: string[];
+  }> {
+    const plannedReferenceCharacterIds = this.collectPlannedReferenceCharacterIdsForResume(story, characterBible, encounters);
+    const alreadyAvailableReferenceCharacterIds: string[] = [];
+    const hydratedReferenceCharacterIds: string[] = [];
+    const generatedReferenceCharacterIds: string[] = [];
+    const missingReferenceCharacterIds: string[] = [];
+
+    this.emit({
+      type: 'debug',
+      phase: 'reference_sheet',
+      message: `Resume reference preflight checking ${plannedReferenceCharacterIds.length} planned visible/encounter character(s).`,
+      data: { plannedReferenceCharacterIds },
+    });
+
+    for (const id of plannedReferenceCharacterIds) {
+      await this.checkCancellation();
+      const char = characterBible.characters.find((candidate) => candidate.id === id);
+      if (!char) continue;
+      if (this.imageAgentTeam.hasReferenceSheet(id)) {
+        alreadyAvailableReferenceCharacterIds.push(id);
+        continue;
+      }
+      const hydrated = await this.hydrateReferenceSheetFromDisk(char);
+      if (hydrated || this.imageAgentTeam.hasReferenceSheet(id)) {
+        hydratedReferenceCharacterIds.push(id);
+        continue;
+      }
+
+      this.emit({
+        type: 'warning',
+        phase: 'reference_sheet',
+        message: `Resume reference preflight missing ${char.name}; generating reference before story images continue.`,
+        data: { characterId: id, characterName: char.name },
+      });
+      await this.generateCharacterReferenceSheet(char, brief);
+      const fingerprint = computeCharacterIdentityFingerprint(char);
+      this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
+      if (this.imageAgentTeam.hasReferenceSheet(id)) {
+        generatedReferenceCharacterIds.push(id);
+      } else {
+        missingReferenceCharacterIds.push(id);
+      }
+    }
+
+    await saveEarlyDiagnostic(outputDirectory, 'image-reference-preflight.json', {
+      generatedAt: new Date().toISOString(),
+      plannedReferenceCharacterIds,
+      alreadyAvailableReferenceCharacterIds,
+      hydratedReferenceCharacterIds,
+      generatedReferenceCharacterIds,
+      missingReferenceCharacterIds,
+      plannedReferenceCharacters: plannedReferenceCharacterIds.map((id) => {
+        const char = characterBible.characters.find((candidate) => candidate.id === id);
+        return { id, name: char?.name };
+      }),
+    });
+
+    this.emit({
+      type: 'debug',
+      phase: 'reference_sheet',
+      message: `Resume reference preflight complete: ${alreadyAvailableReferenceCharacterIds.length + hydratedReferenceCharacterIds.length} available, ${generatedReferenceCharacterIds.length} generated, ${missingReferenceCharacterIds.length} missing.`,
+      data: {
+        plannedReferenceCharacterIds,
+        alreadyAvailableReferenceCharacterIds,
+        hydratedReferenceCharacterIds,
+        generatedReferenceCharacterIds,
+        missingReferenceCharacterIds,
+      },
+    });
+
+    return {
+      plannedReferenceCharacterIds,
+      alreadyAvailableReferenceCharacterIds,
+      hydratedReferenceCharacterIds,
+      generatedReferenceCharacterIds,
+      missingReferenceCharacterIds,
+    };
+  }
+
   private async scanExistingImagesForResume(
     outputDirectory: string,
     story: Story,
     characterBible: CharacterBible,
     encounters: EncounterStructure[],
+    brief: FullCreativeBrief,
   ): Promise<{
     totalSlots: number;
     resolvedSlotsBefore: number;
     resolvedSlotsAfter: number;
     hydratedReferenceSheets: number;
+    plannedReferenceCharacterIds: string[];
+    generatedReferenceCharacterIds: string[];
+    missingReferenceCharacterIds: string[];
     missingSlotIds: string[];
     completedEncounterBaseIdentifiersByScene: Record<string, string[]>;
   }> {
@@ -1809,6 +2019,13 @@ export class FullStoryPipeline {
     this.loadAssetRegistryForImageResume(storyId, normalizedOutputDir);
     const resolvedSlotsBefore = this.assetRegistry.values().filter((record) => record.status === 'succeeded').length;
     const hydratedReferenceSheets = await this.hydrateReferenceSheetsFromExistingImages(normalizedOutputDir, characterBible);
+    const referencePreflight = await this.preflightResumeReferenceSheets(
+      normalizedOutputDir,
+      story,
+      characterBible,
+      encounters,
+      brief,
+    );
     const hydratedStyleAnchors = await this.hydrateStyleAnchorsFromExistingImages(normalizedOutputDir, story.title || story.id || 'story');
 
     const encounterBySceneId = new Map<string, EncounterStructure>();
@@ -1911,6 +2128,7 @@ export class FullStoryPipeline {
       resolvedSlotsBefore,
       resolvedSlotsAfter,
       hydratedReferenceSheets,
+      referencePreflight,
       hydratedStyleAnchors,
       missingSlotIds,
       missingCoverageKeys: slots
@@ -1924,6 +2142,9 @@ export class FullStoryPipeline {
       resolvedSlotsBefore,
       resolvedSlotsAfter,
       hydratedReferenceSheets,
+      plannedReferenceCharacterIds: referencePreflight.plannedReferenceCharacterIds,
+      generatedReferenceCharacterIds: referencePreflight.generatedReferenceCharacterIds,
+      missingReferenceCharacterIds: referencePreflight.missingReferenceCharacterIds,
       missingSlotIds,
       completedEncounterBaseIdentifiersByScene,
     };
@@ -2090,6 +2311,7 @@ export class FullStoryPipeline {
 	      story,
 	      characterBible,
 	      savedEncounters,
+	      brief,
 	    );
 	    this.emit({
 	      type: 'debug',

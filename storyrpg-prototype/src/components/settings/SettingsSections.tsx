@@ -357,6 +357,8 @@ function getJobStatusColor(status: JobStatus) {
 
 function getJobImageStatsLabel(job: GenerationJob) {
   const generatedFiles = job.imageStats?.generatedFiles ?? job.generatedImageCount;
+  const referenceFiles = job.imageStats?.referenceFiles ?? job.referenceImageCount;
+  const storyFiles = job.imageStats?.storyFiles ?? job.storyImageCount;
   const resolvedSlots = job.imageStats?.resolvedSlots ?? job.resolvedImageSlotCount;
   const totalSlots = job.imageStats?.totalSlots ?? job.totalImageSlotCount;
   const missingSlots = job.imageStats?.missingSlots ?? job.missingImageSlotCount;
@@ -364,6 +366,12 @@ function getJobImageStatsLabel(job: GenerationJob) {
   const parts: string[] = [];
   if (typeof generatedFiles === 'number') {
     parts.push(`${generatedFiles} IMAGE FILE${generatedFiles === 1 ? '' : 'S'}`);
+  }
+  if (typeof referenceFiles === 'number' && referenceFiles > 0) {
+    parts.push(`${referenceFiles} REF${referenceFiles === 1 ? '' : 'S'}`);
+  }
+  if (typeof storyFiles === 'number' && storyFiles > 0) {
+    parts.push(`${storyFiles} STORY`);
   }
   if (typeof resolvedSlots === 'number' && typeof totalSlots === 'number' && totalSlots > 0) {
     parts.push(`${resolvedSlots}/${totalSlots} SLOTS`);

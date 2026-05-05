@@ -94,6 +94,7 @@ function computeImageStatsForOutputDir(outputDirAbs) {
     generatedFiles,
     resolvedSlots,
     totalSlots,
+    missingSlots: typeof totalSlots === 'number' ? Math.max(0, totalSlots - resolvedSlots) : undefined,
   };
 }
 
@@ -115,6 +116,7 @@ function enrichJobsWithImageStats(jobs, { rootDir, storiesDir }) {
       generatedImageCount: imageStats.generatedFiles,
       resolvedImageSlotCount: imageStats.resolvedSlots,
       totalImageSlotCount: imageStats.totalSlots,
+      missingImageSlotCount: imageStats.missingSlots,
     };
   });
 }

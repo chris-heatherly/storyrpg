@@ -84,10 +84,12 @@ export interface GenerationJob {
     generatedFiles?: number;
     resolvedSlots?: number;
     totalSlots?: number;
+    missingSlots?: number;
   };
   generatedImageCount?: number;
   resolvedImageSlotCount?: number;
   totalImageSlotCount?: number;
+  missingImageSlotCount?: number;
   events?: PipelineEventData[];
   checkpoint?: GenerationJobCheckpoint;
 }
@@ -174,11 +176,13 @@ export function normalizeGenerationJob(value: unknown): GenerationJob | null {
           generatedFiles: typeof value.imageStats.generatedFiles === 'number' ? value.imageStats.generatedFiles : undefined,
           resolvedSlots: typeof value.imageStats.resolvedSlots === 'number' ? value.imageStats.resolvedSlots : undefined,
           totalSlots: typeof value.imageStats.totalSlots === 'number' ? value.imageStats.totalSlots : undefined,
+          missingSlots: typeof value.imageStats.missingSlots === 'number' ? value.imageStats.missingSlots : undefined,
         }
       : undefined,
     generatedImageCount: typeof value.generatedImageCount === 'number' ? value.generatedImageCount : undefined,
     resolvedImageSlotCount: typeof value.resolvedImageSlotCount === 'number' ? value.resolvedImageSlotCount : undefined,
     totalImageSlotCount: typeof value.totalImageSlotCount === 'number' ? value.totalImageSlotCount : undefined,
+    missingImageSlotCount: typeof value.missingImageSlotCount === 'number' ? value.missingImageSlotCount : undefined,
     events: normalizedEvents,
     checkpoint: isRecord(value.checkpoint) ? value.checkpoint as GenerationJobCheckpoint : undefined,
   };

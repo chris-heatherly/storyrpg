@@ -505,10 +505,11 @@ export class ImageAgentTeam extends BaseAgent {
     this.artStyle = artStyle;
     
     // Initialize the team
-    // StoryboardAgent needs the full model output budget — Sonnet 4.6 supports 64K output tokens.
-    // A scene with 16 beats at ~2K tokens/shot = ~32K tokens; verbose responses can exceed 32K.
-    // Setting to 64000 (model limit) eliminates premature truncation that produced shots: [].
-    const storyboardConfig = { ...config, maxTokens: 64000 };
+    // StoryboardAgent can use a large output budget on Anthropic models, but
+    // forcing 64K onto OpenAI reasoning models is fragile because hidden
+    // reasoning and visible JSON share max_completion_tokens. Keep that path
+    // bounded unless explicitly overridden.
+    const storyboardConfig = { ...config, maxTokens: this.resolveStoryboardMaxTokens(config) };
     this.storyboardAgent = new StoryboardAgent(storyboardConfig, artStyle);
     this.illustratorAgent = new VisualIllustratorAgent(config, artStyle);
     this.encounterAgent = new EncounterImageAgent(config, artStyle);
@@ -522,6 +523,26 @@ export class ImageAgentTeam extends BaseAgent {
     this.colorScriptAgent = new ColorScriptAgent(config);
     this.lightingColorValidator = new LightingColorValidator(config);
     this.visualStorytellingValidator = new VisualStorytellingValidator(config);
+  }
+
+  private resolveStoryboardMaxTokens(config: AgentConfig): number {
+    const env = typeof process !== 'undefined' ? process.env : ({} as Record<string, string | undefined>);
+    const override = Number(env.STORYBOARD_AGENT_MAX_TOKENS || env.EXPO_PUBLIC_STORYBOARD_AGENT_MAX_TOKENS);
+    if (Number.isFinite(override) && override >= 1024) {
+      return Math.min(64000, Math.floor(override));
+    }
+
+    const provider = String(config.provider || '').toLowerCase();
+    const model = String(config.model || '').toLowerCase();
+    const requested = Number.isFinite(config.maxTokens) ? config.maxTokens : 8192;
+    const isOpenAiReasoningModel = provider === 'openai' && /^(gpt-5|o1|o3|o4|o\d)/i.test(model);
+    if (isOpenAiReasoningModel) {
+      return Math.min(Math.max(requested, 8192), 16384);
+    }
+    if (provider === 'openai') {
+      return Math.min(Math.max(requested, 8192), 24576);
+    }
+    return Math.max(requested, 64000);
   }
 
   private lockPromptToSeasonStyle(prompt: ImagePrompt): ImagePrompt {
@@ -700,6 +721,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     // that parseJSON successfully parsed but with no shots field
     if (!Array.isArray(plan.shots)) {
       plan.shots = [];
+    }
+    if (plan.shots.length === 0) {
+      return {
+        success: false,
+        error: `Storyboard planning returned 0 shots after chunked planning (expandedChunks=${planRes.data.passTelemetry.expandedChunks}, auditFailures=${planRes.data.passTelemetry.auditFailures}).`,
+      };
     }
 
     // Enrich each shot's storyBeat with isClimaxBeat/isKeyStoryBeat from request beats

@@ -688,6 +688,7 @@ export class FullStoryPipeline {
   } = {};
   private _uploadedStyleReferenceImages: ReferenceImage[] = [];
   private _generatedStyleReferencesAllowed = true;
+  private _activeImageResumeOutputDirectory?: string;
 
   /**
    * Lazily-created LoRA training plumbing. We construct it the first time a
@@ -1675,9 +1676,36 @@ export class FullStoryPipeline {
     let hydrated = 0;
     for (const char of characterBible.characters || []) {
       if (this.imageAgentTeam.hasReferenceSheet(char.id)) continue;
-      const views: Array<{ viewType: string; imageData: string; mimeType: string; imageUrl?: string; imagePath?: string }> = [];
-      for (const viewType of ['face', 'front', 'three-quarter', 'profile', 'composite']) {
-        const image = await this.findExistingImageArtifact(imagesDir, `ref_${char.id}_${viewType}`);
+      if (await this.hydrateReferenceSheetFromDisk(char, imagesDir)) hydrated += 1;
+    }
+    return hydrated;
+  }
+
+  private referenceIdentifierBasesForCharacter(char: CharacterProfile): string[] {
+    const candidates = [
+      char.id,
+      idSlugify(char.id),
+      idSlugify(char.name),
+      char.id.replace(/^character[-_]/i, 'char-'),
+      char.id.replace(/^char[-_]/i, 'char-'),
+      `char-${idSlugify(char.name)}`,
+    ];
+    return Array.from(new Set(candidates.filter(Boolean).map((value) => `ref_${value}`)));
+  }
+
+  private async hydrateReferenceSheetFromDisk(char: CharacterProfile, imagesDir?: string): Promise<boolean> {
+    if (this.imageAgentTeam.hasReferenceSheet(char.id)) return true;
+    const resolvedImagesDir = imagesDir
+      || (this._activeImageResumeOutputDirectory
+        ? `${this._activeImageResumeOutputDirectory.endsWith('/') ? this._activeImageResumeOutputDirectory : `${this._activeImageResumeOutputDirectory}/`}images/`
+        : undefined);
+    if (!resolvedImagesDir) return false;
+
+    const views: Array<{ viewType: string; imageData: string; mimeType: string; imageUrl?: string; imagePath?: string }> = [];
+    const bases = this.referenceIdentifierBasesForCharacter(char);
+    for (const viewType of ['face', 'front', 'three-quarter', 'profile', 'composite']) {
+      for (const base of bases) {
+        const image = await this.findExistingImageArtifact(resolvedImagesDir, `${base}_${viewType}`);
         if (!image?.imageData || !image.mimeType) continue;
         views.push({
           viewType,
@@ -1686,24 +1714,53 @@ export class FullStoryPipeline {
           imageUrl: image.imageUrl,
           imagePath: image.imagePath,
         });
+        break;
       }
-      if (views.length === 0) continue;
-      const identityFingerprint = computeCharacterIdentityFingerprint(char);
-      const didHydrate = this.imageAgentTeam.hydrateReferenceSheetFromExistingImages({
-        characterId: char.id,
-        characterName: char.name,
-        images: views,
-        visualAnchors: [
-          char.physicalDescription,
-          ...(char.distinctiveFeatures || []),
-          char.typicalAttire,
-        ].filter(Boolean) as string[],
-        identityFingerprint,
+    }
+    if (views.length === 0) return false;
+
+    const identityFingerprint = computeCharacterIdentityFingerprint(char);
+    const didHydrate = this.imageAgentTeam.hydrateReferenceSheetFromExistingImages({
+      characterId: char.id,
+      characterName: char.name,
+      images: views,
+      visualAnchors: [
+        char.physicalDescription,
+        ...(char.distinctiveFeatures || []),
+        char.typicalAttire,
+      ].filter(Boolean) as string[],
+      identityFingerprint,
+    });
+    if (didHydrate) {
+      this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, identityFingerprint);
+      this.emit({
+        type: 'debug',
+        phase: 'reference_sheet',
+        message: `Resume scan hydrated existing reference for ${char.name} (${views.map((view) => view.viewType).join(', ')}); skipping reference regeneration.`,
       });
-      if (didHydrate) {
-        this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, identityFingerprint);
-        hydrated += 1;
-      }
+    }
+    return didHydrate;
+  }
+
+  private async hydrateStyleAnchorsFromExistingImages(outputDirectory: string, storyTitle: string): Promise<number> {
+    const imagesDir = `${outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`}images/`;
+    const titleSlug = idSlugify(storyTitle || 'story');
+    let hydrated = 0;
+    const characterAnchor = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'character-anchor'));
+    if (characterAnchor?.imageData && characterAnchor.mimeType) {
+      this._styleAnchorPaths.character = characterAnchor.imagePath;
+      this.imageService.setGeminiStyleReference(characterAnchor.imageData, characterAnchor.mimeType);
+      hydrated += 1;
+    }
+    const arcStrip = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'arc-strip'));
+    if (arcStrip?.imagePath) {
+      this._styleAnchorPaths.arcStrip = arcStrip.imagePath;
+      hydrated += 1;
+    }
+    const environment = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'environment-anchor'));
+    if (environment?.imagePath) {
+      this._styleAnchorPaths.environment = environment.imagePath;
+      hydrated += 1;
     }
     return hydrated;
   }
@@ -1746,11 +1803,13 @@ export class FullStoryPipeline {
     completedEncounterBaseIdentifiersByScene: Record<string, string[]>;
   }> {
     const normalizedOutputDir = outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`;
+    this._activeImageResumeOutputDirectory = normalizedOutputDir;
     const imagesDir = `${normalizedOutputDir}images/`;
     const storyId = idSlugify(story.title || story.id || 'story');
     this.loadAssetRegistryForImageResume(storyId, normalizedOutputDir);
     const resolvedSlotsBefore = this.assetRegistry.values().filter((record) => record.status === 'succeeded').length;
     const hydratedReferenceSheets = await this.hydrateReferenceSheetsFromExistingImages(normalizedOutputDir, characterBible);
+    const hydratedStyleAnchors = await this.hydrateStyleAnchorsFromExistingImages(normalizedOutputDir, story.title || story.id || 'story');
 
     const encounterBySceneId = new Map<string, EncounterStructure>();
     for (const encounter of encounters || []) {
@@ -1852,6 +1911,7 @@ export class FullStoryPipeline {
       resolvedSlotsBefore,
       resolvedSlotsAfter,
       hydratedReferenceSheets,
+      hydratedStyleAnchors,
       missingSlotIds,
       missingCoverageKeys: slots
         .filter((slot) => !this.assetRegistry.getResolvedAsset(slot.slotId))
@@ -2055,6 +2115,15 @@ export class FullStoryPipeline {
 	        });
 	        for (const episode of story.episodes || []) {
 	          await this.checkCancellation();
+	          const missingForEpisode = imageResumeScan.missingSlotIds.some((slotId) => slotId.includes(`episode-${episode.number}-`));
+	          if (!missingForEpisode) {
+	            this.emit({
+	              type: 'debug',
+	              phase: 'images',
+	              message: `Image-only resume skipping episode ${episode.number}; all image slots are already resolved.`,
+	            });
+	            continue;
+	          }
 	          const episodeBrief: FullCreativeBrief = {
 	            ...brief,
 	            episode: {
@@ -2097,7 +2166,15 @@ export class FullStoryPipeline {
 	          const imageResults = await this.imageWorkerQueue.run(() =>
 	            this.measurePhase(
 	              'episode_image_generation',
-	              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible, normalizedOutputDir)
+	              () => this.runEpisodeImageGeneration(
+	                sceneContents,
+	                choiceSets,
+	                episodeBrief,
+		                worldBible,
+		                characterBible,
+		                normalizedOutputDir,
+		                { skipColorScriptAndStyleBible: true, missingSlotIds: imageResumeScan.missingSlotIds },
+		              )
 	            )
 	          );
 
@@ -8334,6 +8411,14 @@ export class FullStoryPipeline {
     const processCharacter = async ({ char, userRefImages }: EligibleChar): Promise<void> => {
       try {
         await this.checkCancellation();
+        if (this.imageAgentTeam.hasReferenceSheet(char.id) || await this.hydrateReferenceSheetFromDisk(char)) {
+          this.emit({
+            type: 'debug',
+            phase: 'reference_sheet',
+            message: `Skipping reference generation for ${char.name}; existing reference sheet is already available.`,
+          });
+          return;
+        }
         await this.generateCharacterReferenceSheet(char, brief, userRefImages.length > 0 ? userRefImages : undefined);
         // D5: tag the freshly-generated reference sheet with the identity
         // fingerprint that produced it so future runs can detect drift and
@@ -8455,6 +8540,14 @@ export class FullStoryPipeline {
     brief: FullCreativeBrief,
     userReferenceImages?: Array<{ data: string; mimeType: string }>
   ): Promise<GeneratedReferenceSheet | null> {
+    if (this.imageAgentTeam.hasReferenceSheet(char.id) || await this.hydrateReferenceSheetFromDisk(char)) {
+      this.emit({
+        type: 'debug',
+        phase: 'reference_sheet',
+        message: `Reference generation skipped for ${char.name}; existing hydrated reference is available.`,
+      });
+      return this.imageAgentTeam.getReferenceSheet(char.id) || null;
+    }
     const isMajorCharacter = char.importance === 'major' || char.importance === 'core' || char.id === brief.protagonist.id;
     
     this.emit({ 
@@ -9280,10 +9373,12 @@ ${clothingRule}
     outputDirectory: string | undefined,
     scopedSceneId: string,
     payload: Record<string, unknown>,
+    options?: { suffix?: string },
   ): Promise<void> {
     if (!outputDirectory) return;
     try {
-      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${scopedSceneId}.visual-planning.json`, {
+      const suffix = options?.suffix ? `.${options.suffix}` : '';
+      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${scopedSceneId}.visual-planning${suffix}.json`, {
         generatedAt: new Date().toISOString(),
         scopedSceneId,
         ...payload,
@@ -9495,7 +9590,8 @@ ${clothingRule}
     brief: FullCreativeBrief,
     worldBible: WorldBible,
     characterBible: CharacterBible,
-    outputDirectory?: string
+    outputDirectory?: string,
+    options?: { skipColorScriptAndStyleBible?: boolean; missingSlotIds?: string[] },
   ): Promise<{ beatImages: Map<string, string>; sceneImages: Map<string, string> }> {
     const beatImages = new Map<string, string>();
     const sceneImages = new Map<string, string>();
@@ -9517,7 +9613,14 @@ ${clothingRule}
     // parallel with master-image generation. Fresh inline call is the
     // fallback (and matches pre-A10 behavior).
     let colorScript: ColorScript | undefined;
-    if (this._preWarmedColorScriptPromise) {
+    if (options?.skipColorScriptAndStyleBible) {
+      this._preWarmedColorScriptPromise = null;
+      this.emit({
+        type: 'debug',
+        phase: 'images',
+        message: 'Image-only missing-slot resume: skipping color script and style-bible preflight.',
+      });
+    } else if (this._preWarmedColorScriptPromise) {
       colorScript = await this._preWarmedColorScriptPromise;
       this._preWarmedColorScriptPromise = null;
       if (colorScript === undefined) {
@@ -9532,7 +9635,7 @@ ${clothingRule}
       this.collectedVisualPlanning.colorScript = colorScript;
     }
 
-    if (colorScript) {
+    if (colorScript && !options?.skipColorScriptAndStyleBible) {
       styleReferenceStored = await this.generateEpisodeStyleBible(brief, colorScript, characterBible, outputDirectory);
     }
 
@@ -9584,11 +9687,21 @@ ${clothingRule}
       }
     }
 
-    for (let sceneIndex = 0; sceneIndex < sceneContents.length; sceneIndex++) {
-      await this.checkCancellation();
-      const scene = sceneContents[sceneIndex];
-      const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
-      this.emit({ type: 'agent_start', agent: 'ImageAgentTeam', message: `Planning visuals for scene: ${scene.sceneName}...` });
+	    for (let sceneIndex = 0; sceneIndex < sceneContents.length; sceneIndex++) {
+	      await this.checkCancellation();
+	      const scene = sceneContents[sceneIndex];
+	      const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
+	      if (options?.missingSlotIds && !options.missingSlotIds.some((slotId) =>
+	        slotId === `story-scene:${scopedSceneId}` || slotId.startsWith(`story-beat:${scopedSceneId}::`)
+	      )) {
+	        this.emit({
+	          type: 'debug',
+	          phase: 'images',
+	          message: `Image-only resume skipping scene ${scene.sceneId}; story beat slots already resolved.`,
+	        });
+	        continue;
+	      }
+	      this.emit({ type: 'agent_start', agent: 'ImageAgentTeam', message: `Planning visuals for scene: ${scene.sceneName}...` });
 
       // D10: drop the previous-scene reference at every scene boundary so the
       // first beat of the new scene isn't biased by the last beat of the
@@ -9922,6 +10035,7 @@ ${clothingRule}
         const compareMaxBeats = this.config.imageGen?.qa?.compareMaxBeats ?? 20;
         let compareBeatsSeen = 0;
         let llmVisualPlan: VisualPlan | undefined;
+        let llmVisualPlanningFailure: Record<string, unknown> | undefined;
         const llmPromptMap = new Map<string, ImagePrompt>();
         const generatedImagesForVisualQA = new Map<string, GeneratedImage>();
         const generatedImagesForSceneQA = new Map<string, GeneratedImage>();
@@ -10051,6 +10165,17 @@ ${clothingRule}
                 message: `LLM visual planning restored for ${scene.sceneId}: ${llmVisualPlan.shots?.length || 0} shots, ${llmPromptMap.size} prompt keys`,
               });
             } else {
+              llmVisualPlanningFailure = {
+                status: 'failed',
+                error: llmResult.error || 'unknown LLM visual planning failure',
+                attempts: scenePlanningAttempts,
+                promptMode,
+                qaMode,
+                imagePlanningMode,
+                model: this.config.agents?.imagePlanner?.model,
+                provider: this.config.agents?.imagePlanner?.provider,
+                maxTokens: this.config.agents?.imagePlanner?.maxTokens,
+              };
               await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
                 promptMode,
                 qaMode,
@@ -10058,7 +10183,7 @@ ${clothingRule}
                 degraded: true,
                 fallback: imagePlanningMode === 'visual-storyboard' ? 'structured-storyboard-only' : 'deterministic-prompts',
                 error: llmResult.error || 'unknown LLM visual planning failure',
-              });
+              }, { suffix: 'llm-failure' });
               this.emit({
                 type: 'warning',
                 phase: 'images',
@@ -10067,6 +10192,17 @@ ${clothingRule}
             }
           } catch (planningErr) {
             const planningMsg = planningErr instanceof Error ? planningErr.message : String(planningErr);
+            llmVisualPlanningFailure = {
+              status: 'threw',
+              error: planningMsg,
+              stack: planningErr instanceof Error ? planningErr.stack : undefined,
+              promptMode,
+              qaMode,
+              imagePlanningMode,
+              model: this.config.agents?.imagePlanner?.model,
+              provider: this.config.agents?.imagePlanner?.provider,
+              maxTokens: this.config.agents?.imagePlanner?.maxTokens,
+            };
             await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
               promptMode,
               qaMode,
@@ -10074,7 +10210,8 @@ ${clothingRule}
               degraded: true,
               fallback: imagePlanningMode === 'visual-storyboard' ? 'structured-storyboard-only' : 'deterministic-prompts',
               error: planningMsg,
-            });
+              stack: planningErr instanceof Error ? planningErr.stack : undefined,
+            }, { suffix: 'llm-failure' });
             this.emit({
               type: 'warning',
               phase: 'images',
@@ -10098,6 +10235,7 @@ ${clothingRule}
             status: 'structured-storyboard-only',
             degraded: true,
             fallbackReason: 'llm-visual-planning-unavailable',
+            llmFailure: llmVisualPlanningFailure,
             storyboardSheets: storyboardPlan.sheets,
             storyboardPanels: storyboardPlan.panels,
             storyboardCoverage: storyboardPlan.coverage,
@@ -10131,6 +10269,69 @@ ${clothingRule}
             beatImages.set(beatMapKey, beatResumeImageMap[identifier]);
             if (beatIdx === 0) sceneImages.set(scopedSceneId, beatResumeImageMap[identifier]);
             globalImageIndex++;
+            continue;
+          }
+
+          const diskExisting = await this.findExistingImageArtifact(imagesDir, identifier);
+          if (diskExisting?.imageUrl) {
+            console.log(`[Pipeline] Beat resume: reusing existing image for ${beatId} from disk artifact`);
+            const beatMapKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beatId);
+            beatImages.set(beatMapKey, diskExisting.imageUrl);
+            if (beatIdx === 0) sceneImages.set(scopedSceneId, diskExisting.imageUrl);
+
+            try {
+              if (!this.assetRegistry.get(resumeSlotId)) {
+                this.assetRegistry.planSlot({
+                  slotId: resumeSlotId,
+                  family: 'story-beat',
+                  imageType: 'beat',
+                  sceneId: scene.sceneId,
+                  scopedSceneId,
+                  beatId,
+                  storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beatId}].imageUrl`,
+                  baseIdentifier: identifier,
+                  required: false,
+                  qualityTier: 'standard',
+                  coverageKey: `beat:${scene.sceneId}:${beatId}`,
+                });
+              }
+              this.assetRegistry.markSuccess(resumeSlotId, diskExisting);
+              if (beatIdx === 0) {
+                const sceneSlotId = `story-scene:${scopedSceneId}`;
+                if (!this.assetRegistry.get(sceneSlotId)) {
+                  this.assetRegistry.planSlot({
+                    slotId: sceneSlotId,
+                    family: 'story-scene',
+                    imageType: 'scene',
+                    sceneId: scene.sceneId,
+                    scopedSceneId,
+                    beatId,
+                    storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].backgroundImage`,
+                    baseIdentifier: `scene-${scopedSceneId}-bg`,
+                    required: false,
+                    qualityTier: 'standard',
+                    coverageKey: `scene:${scene.sceneId}`,
+                  });
+                }
+                this.assetRegistry.markSuccess(sceneSlotId, diskExisting);
+              }
+            } catch { /* non-fatal: registry is supplementary to beatImages map */ }
+
+            if (diskExisting.imageData && diskExisting.mimeType) {
+              lastGeneratedImage = { data: diskExisting.imageData, mimeType: diskExisting.mimeType };
+            }
+
+            beatResumeSet.add(identifier);
+            beatResumeImageMap[identifier] = diskExisting.imageUrl;
+            persistBeatResume().catch(() => {});
+
+            globalImageIndex++;
+            this.emit({
+              type: 'checkpoint',
+              phase: 'images',
+              message: `Image ${globalImageIndex} of ~${estimatedTotalImages} complete (resumed from disk)`,
+              data: { imageIndex: globalImageIndex, totalImages: estimatedTotalImages, identifier, sceneId: scene.sceneId, resumedFromDisk: true },
+            });
             continue;
           }
 
@@ -13712,18 +13913,25 @@ Design the key art. Return STRICT JSON matching the schema.`;
     }
 
     const missing = characterIds.filter((id) => !this.imageAgentTeam.hasReferenceSheet(id));
-    if (missing.length === 0) return characterIds;
+    if (missing.length > 0) {
+      for (const id of missing) {
+        const char = characterBible.characters.find((c) => c.id === id);
+        if (char) await this.hydrateReferenceSheetFromDisk(char);
+      }
+    }
+    const stillMissing = characterIds.filter((id) => !this.imageAgentTeam.hasReferenceSheet(id));
+    if (stillMissing.length === 0) return characterIds;
 
     this.emit({
       type: 'warning',
       phase: 'images',
-      message: `Character continuity refs missing for ${contextLabel}: ${missing
+      message: `Character continuity refs missing for ${contextLabel}: ${stillMissing
         .map((id) => characterBible.characters.find((c) => c.id === id)?.name || id)
         .join(', ')}. Generating references before story images continue. Lookup inputs: ${attemptedLookup.join(', ') || 'none'}.`,
-      data: { contextLabel, attemptedLookup, resolvedCharacterIds: characterIds, missing },
+      data: { contextLabel, attemptedLookup, resolvedCharacterIds: characterIds, missing: stillMissing },
     });
 
-    for (const id of missing) {
+    for (const id of stillMissing) {
       const char = characterBible.characters.find((c) => c.id === id);
       if (!char) continue;
       await this.generateCharacterReferenceSheet(char, brief);

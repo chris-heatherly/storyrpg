@@ -359,6 +359,7 @@ function getJobImageStatsLabel(job: GenerationJob) {
   const generatedFiles = job.imageStats?.generatedFiles ?? job.generatedImageCount;
   const resolvedSlots = job.imageStats?.resolvedSlots ?? job.resolvedImageSlotCount;
   const totalSlots = job.imageStats?.totalSlots ?? job.totalImageSlotCount;
+  const missingSlots = job.imageStats?.missingSlots ?? job.missingImageSlotCount;
   if (typeof generatedFiles !== 'number' && typeof resolvedSlots !== 'number') return null;
   const parts: string[] = [];
   if (typeof generatedFiles === 'number') {
@@ -368,6 +369,9 @@ function getJobImageStatsLabel(job: GenerationJob) {
     parts.push(`${resolvedSlots}/${totalSlots} SLOTS`);
   } else if (typeof resolvedSlots === 'number') {
     parts.push(`${resolvedSlots} RESOLVED SLOT${resolvedSlots === 1 ? '' : 'S'}`);
+  }
+  if (typeof missingSlots === 'number' && missingSlots > 0) {
+    parts.push(`${missingSlots} LEFT`);
   }
   return parts.join(' • ');
 }

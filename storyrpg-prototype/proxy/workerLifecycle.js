@@ -270,7 +270,8 @@ function createWorkerLifecycle({
   function getOutputDirectoryFromCheckpoint(checkpoint) {
     return checkpoint?.resumeContext?.outputDirectory
       || checkpoint?.outputs?.output_directory?.outputDirectory
-      || checkpoint?.failureContext?.context?.outputDirectory;
+      || checkpoint?.failureContext?.context?.outputDirectory
+      || checkpoint?.resumeContext?.requestPayload?.imageGenerationInput?.outputDirectory;
   }
 
   function resolveOutputDirectory(outputDirectory) {
@@ -278,6 +279,92 @@ function createWorkerLifecycle({
     return path.isAbsolute(outputDirectory)
       ? outputDirectory
       : path.resolve(rootDir, outputDirectory);
+  }
+
+  function getOutputDirectoryFromJob(job, checkpoint) {
+    return job?.outputDir
+      || job?.outputDirectory
+      || job?.resumeContext?.outputDirectory
+      || job?.resumeContext?.requestPayload?.imageGenerationInput?.outputDirectory
+      || getOutputDirectoryFromCheckpoint(checkpoint);
+  }
+
+  function computeImageStatsForOutputDirectory(outputDirectory) {
+    const outputDirAbs = resolveOutputDirectory(outputDirectory);
+    if (!outputDirAbs || !fs.existsSync(outputDirAbs)) return undefined;
+    const storiesRoot = path.resolve(rootDir, 'generated-stories');
+    const resolvedOutputDir = path.resolve(outputDirAbs);
+    if (resolvedOutputDir !== storiesRoot && !resolvedOutputDir.startsWith(`${storiesRoot}${path.sep}`)) {
+      return undefined;
+    }
+
+    const imagesDir = path.join(resolvedOutputDir, 'images');
+    let generatedFiles = 0;
+    if (fs.existsSync(imagesDir)) {
+      for (const entry of fs.readdirSync(imagesDir, { withFileTypes: true })) {
+        if (entry.isFile() && /\.(png|jpe?g|webp|gif)$/i.test(entry.name)) generatedFiles += 1;
+      }
+    }
+
+    let totalSlots;
+    try {
+      const manifestPath = path.join(resolvedOutputDir, 'image-manifest.json');
+      if (fs.existsSync(manifestPath)) {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        if (Array.isArray(manifest?.slots)) totalSlots = manifest.slots.length;
+      }
+    } catch {
+      // Image stats should never make the jobs endpoint unavailable.
+    }
+
+    const resolvedSlotIds = new Set();
+    try {
+      const registryPath = path.join(resolvedOutputDir, 'asset-registry.jsonl');
+      if (fs.existsSync(registryPath)) {
+        for (const line of fs.readFileSync(registryPath, 'utf8').split(/\r?\n/)) {
+          if (!line.trim()) continue;
+          try {
+            const record = JSON.parse(line);
+            if (record?.status === 'succeeded' && record?.slot?.slotId && (record.latestUrl || record.latestPath || record.result?.url || record.result?.imageUrl)) {
+              resolvedSlotIds.add(record.slot.slotId);
+            }
+          } catch {
+            // Ignore malformed historical registry rows.
+          }
+        }
+      }
+    } catch {
+      // Best-effort stats only.
+    }
+
+    return {
+      generatedFiles,
+      resolvedSlots: resolvedSlotIds.size,
+      totalSlots,
+      missingSlots: typeof totalSlots === 'number' ? Math.max(0, totalSlots - resolvedSlotIds.size) : undefined,
+    };
+  }
+
+  function enrichWorkerJobWithOutputState(job, checkpoint, statsCache = new Map()) {
+    const outputDirectory = getOutputDirectoryFromJob(job, checkpoint);
+    if (!outputDirectory) return job;
+    let imageStats = statsCache.get(outputDirectory);
+    if (!imageStats) {
+      imageStats = computeImageStatsForOutputDirectory(outputDirectory);
+      statsCache.set(outputDirectory, imageStats || null);
+    }
+    const patch = {
+      outputDirectory,
+      outputDir: job.outputDir || outputDirectory,
+    };
+    if (imageStats) {
+      patch.imageStats = imageStats;
+      patch.generatedImageCount = imageStats.generatedFiles;
+      patch.resolvedImageSlotCount = imageStats.resolvedSlots;
+      patch.totalImageSlotCount = imageStats.totalSlots;
+      patch.missingImageSlotCount = imageStats.missingSlots;
+    }
+    return { ...job, ...patch };
   }
 
   function loadResumeManifest(checkpoint) {
@@ -1008,7 +1095,17 @@ function createWorkerLifecycle({
         ? hydrateCheckpointOutputs(loadCheckpoints().find((c) => c.jobId === resumeFromJobId))
         : undefined;
       const hydratedPayload = hydrateWorkerConfigApiKeys(payload);
+      const priorOutputDir = getOutputDirectoryFromCheckpoint(resumeCheckpoint);
+      if (priorOutputDir && mode === 'image-generation') {
+        hydratedPayload.imageGenerationInput = {
+          ...(hydratedPayload.imageGenerationInput || {}),
+          outputDirectory: priorOutputDir,
+        };
+      }
       const requestSnapshot = buildWorkerRequestSnapshot(mode, hydratedPayload, storyTitle);
+      const resumeOutputs = priorOutputDir
+        ? { output_directory: { outputDirectory: priorOutputDir } }
+        : undefined;
 
       const workerJob = upsertWorkerJob(jobId, {
         mode,
@@ -1027,7 +1124,10 @@ function createWorkerLifecycle({
           storyTitle: storyTitle || (mode === 'generation' ? 'Untitled Story' : mode === 'image-generation' ? 'Image Batch' : 'Source Analysis'),
           episodeCount: episodeCount || 1,
           resumeFromJobId: resumeFromJobId || undefined,
+          ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),
         },
+        ...(priorOutputDir ? { outputDirectory: priorOutputDir, outputDir: priorOutputDir } : {}),
+        ...(resumeOutputs ? { outputs: resumeOutputs } : {}),
       });
 
       updateCheckpoint(jobId, {
@@ -1040,12 +1140,14 @@ function createWorkerLifecycle({
             idempotencyKey: `${jobId}:queued`,
           },
         },
+        ...(resumeOutputs ? { outputs: resumeOutputs } : {}),
         resumeContext: {
           mode,
           requestPayload: hydratedPayload,
           storyTitle: workerJob.storyTitle,
           episodeCount: workerJob.episodeCount,
           resumeFromJobId: resumeFromJobId || undefined,
+          ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),
         },
       });
 
@@ -1058,7 +1160,10 @@ function createWorkerLifecycle({
       const jobs = loadWorkerJobs();
       const { normalized, changed } = normalizeStaleWorkerJobs(jobs);
       if (changed) saveWorkerJobs(normalized);
-      res.json(normalized);
+      const checkpoints = loadCheckpoints();
+      const checkpointByJobId = new Map(checkpoints.map((checkpoint) => [checkpoint.jobId, hydrateCheckpointOutputs(checkpoint)]));
+      const statsCache = new Map();
+      res.json(normalized.map((job) => enrichWorkerJobWithOutputState(job, checkpointByJobId.get(job.id), statsCache)));
     });
 
     app.get('/worker-jobs/:jobId', (req, res) => {
@@ -1068,17 +1173,19 @@ function createWorkerLifecycle({
       const job = normalized.find((j) => j.id === req.params.jobId);
       if (!job) return res.status(404).json({ error: 'Worker job not found' });
       const checkpoint = loadCheckpoints().find((c) => c.jobId === job.id);
+      const hydratedCheckpoint = hydrateCheckpointOutputs(checkpoint);
+      const enrichedJob = enrichWorkerJobWithOutputState(job, hydratedCheckpoint);
 
       const cached = workerResultCache.get(job.id);
       if (cached) {
         if (Date.now() - cached.storedAt > WORKER_RESULT_TTL_MS) {
           workerResultCache.delete(job.id);
         } else {
-          return res.json({ ...job, checkpoint, result: cached.result });
+          return res.json({ ...enrichedJob, checkpoint: hydratedCheckpoint, result: cached.result });
         }
       }
 
-      res.json({ ...job, checkpoint });
+      res.json({ ...enrichedJob, checkpoint: hydratedCheckpoint });
     });
 
     app.get('/worker-jobs/:jobId/failure-context', (req, res) => {

@@ -9865,6 +9865,12 @@ ${clothingRule}
     // Global image counter across all scenes for progress reporting
     let globalImageIndex = 0;
     const estimatedTotalImages = sceneContents.reduce((sum, sc) => sum + (sc.beats?.length || 0), 0);
+    const shouldProcessSceneForRequestedSlots = (scopedSceneId: string): boolean => {
+      if (!options?.missingSlotIds) return true;
+      return options.missingSlotIds.some((slotId) =>
+        slotId === `story-scene:${scopedSceneId}` || slotId.startsWith(`story-beat:${scopedSceneId}::`)
+      );
+    };
     
     // PHASE 1: Generate color script for visual arc consistency.
     // A10: prefer the pre-warmed promise if the caller kicked one off in
@@ -9949,9 +9955,7 @@ ${clothingRule}
 	      await this.checkCancellation();
 	      const scene = sceneContents[sceneIndex];
 	      const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
-	      if (options?.missingSlotIds && !options.missingSlotIds.some((slotId) =>
-	        slotId === `story-scene:${scopedSceneId}` || slotId.startsWith(`story-beat:${scopedSceneId}::`)
-	      )) {
+	      if (!shouldProcessSceneForRequestedSlots(scopedSceneId)) {
 	        this.emit({
 	          type: 'debug',
 	          phase: 'images',
@@ -11651,22 +11655,12 @@ ${clothingRule}
       const sceneBeats = scene.beats || [];
       if (sceneBeats.length === 0) continue; // encounter-only scene
       const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
+      if (!shouldProcessSceneForRequestedSlots(scopedSceneId)) continue;
 
       const coveredCount = sceneBeats.filter(b => beatImages.has(this.getEpisodeScopedBeatKey(brief, scene.sceneId, b.id))).length;
       if (coveredCount > 0) continue; // scene has at least some images
 
       console.warn(`[Pipeline] 🔄 Recovery: scene "${scene.sceneId}" ("${scene.sceneName}") has 0/${sceneBeats.length} beat images — generating fallback images`);
-      this.throwIfFailFast(
-        `Scene ${scene.sceneName} produced zero beat images`,
-        'images',
-        {
-          context: {
-            sceneId: scene.sceneId,
-            sceneName: scene.sceneName,
-            failureKind: 'image_step',
-          },
-        }
-      );
       this.emit({
         type: 'warning',
         phase: 'images',
@@ -11747,6 +11741,9 @@ ${clothingRule}
           );
           if (result.imageUrl) {
             beatImages.set(this.getEpisodeScopedBeatKey(brief, scene.sceneId, beat.id), result.imageUrl);
+            if (!sceneImages.has(scopedSceneId)) {
+              sceneImages.set(scopedSceneId, result.imageUrl);
+            }
           }
         } catch (beatErr) {
           const beatErrMsg = beatErr instanceof Error ? beatErr.message : String(beatErr);
@@ -11757,6 +11754,19 @@ ${clothingRule}
 
       const recoveredCount = sceneBeats.filter(b => beatImages.has(this.getEpisodeScopedBeatKey(brief, scene.sceneId, b.id))).length;
       console.log(`[Pipeline] Recovery complete for scene "${scene.sceneId}": ${recoveredCount}/${sceneBeats.length} beats now have images`);
+      if (recoveredCount === 0) {
+        this.throwIfFailFast(
+          `Scene ${scene.sceneName} produced zero beat images`,
+          'images',
+          {
+            context: {
+              sceneId: scene.sceneId,
+              sceneName: scene.sceneName,
+              failureKind: 'image_step',
+            },
+          }
+        );
+      }
     }
 
     // === TIER 2/3 VISUAL VALIDATION: Post-generation quality check ===

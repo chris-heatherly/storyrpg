@@ -2380,14 +2380,21 @@ export class ImageGenerationService {
   }): string {
     const { storyText, identityBlock } = this.splitCharacterIdentityBlock(params.prompt.prompt || '');
     const visibleCharacters = this.getVisibleCharacterNamesFromPrompt(params.prompt, params.metadata);
+    const environmentStyleLock = params.metadata?.isEnvironmentStyleShot
+      ? 'ENVIRONMENT STYLE LOCK:\nTreat the location/background as stylized cartoon environment design, not a photographed place: simplified graphic architecture, clean illustrated edges, designed shapes, curated cel/flat color, non-photographic lighting, no real-estate photo look, no HDR interior, no camera bokeh, no architectural visualization.'
+      : '';
     const negative = [
       params.prompt.negativePrompt,
+      params.metadata?.isEnvironmentStyleShot
+        ? 'photorealistic architecture, real estate photo, architectural photography, HDR interior, documentary photo, live-action background, realistic building materials, camera bokeh, photographic environment, 3D interior render'
+        : '',
       'reference sheet pose, character model sheet, full-body lineup, front-facing neutral stance, centered static composition, plain studio background, arms at sides, mannequin pose, copied reference composition',
     ].filter(Boolean).join(', ');
     const sections = [
       ['STYLE LOCK:', params.resolvedStyle || params.prompt.style || 'Use the approved story art style.'].join('\n'),
       this.buildOpenAiVisibleCastSection(visibleCharacters),
       ['STORY MOMENT:', storyText || params.prompt.visualNarrative || params.prompt.prompt || 'Render the requested story moment.'].join('\n'),
+      environmentStyleLock,
       this.buildOpenAiShotCompositionSection(params.prompt),
       this.buildOpenAiReferenceUsageSection(params.referenceImages.length > 0 && this.isOpenAiSceneLikeImageType(params.imageType)),
       identityBlock ? ['CHARACTER CONTINUITY:', identityBlock.replace(/^CHARACTER VISUAL IDENTITY[^\n]*\n?/i, '').trim()].join('\n') : '',
@@ -6019,7 +6026,8 @@ export class ImageGenerationService {
 Also inspect style fidelity against this authoritative style contract:
 ${styleContract}
 
-Fail if the image visibly drifts into a different renderer or finish, including generic cinematic concept art, photorealism, DSLR/photo lighting, live-action stills, realistic 3D rendering, Unreal/Octane/Redshift-style rendering, oil-painting texture, gritty realism, heavy film-still grading, architectural visualization, messy high-detail rendering, or any style that contradicts the contract.`
+Fail if the image visibly drifts into a different renderer or finish, including generic cinematic concept art, photorealism, DSLR/photo lighting, live-action stills, realistic 3D rendering, Unreal/Octane/Redshift-style rendering, oil-painting texture, gritty realism, heavy film-still grading, architectural visualization, messy high-detail rendering, or any style that contradicts the contract.
+For environments/backgrounds specifically, fail if the setting looks like a real estate photo, architectural photograph, HDR interior render, documentary/live-action location still, camera-bokeh background, or realistic building-material render instead of a stylized illustrated environment matching the character/style finish.`
         : '';
       const referenceFormatReview = prompt?.promptContract || prompt?.styleContract
         ? `
@@ -6046,6 +6054,7 @@ Fail if any of these are present:
 - collage, split-screen, inset frame, picture-in-picture, comic panel borders, multi-panel leakage
 - reference-sheet/model-sheet artifacts, side-by-side views, turnaround layout, labels, measurement marks
 - photorealism, photographic lighting, live-action stills, 3D render finish, architectural visualization, lens blur, bokeh, or generic cinematic concept-art style drift
+- photorealistic environments/backgrounds: real estate photo, architectural photography, HDR interior, documentary/live-action location still, realistic building-material rendering, or photographic bokeh in the setting
 - literal first-person/player-eye POV, disembodied player hands, "your hand" framing, or camera positioned inside the protagonist's body
 ${styleReview}
 ${referenceFormatReview}

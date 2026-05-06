@@ -8,6 +8,7 @@ export type ImageDefectIssue =
   | 'panel_leakage'
   | 'reference_sheet_artifact'
   | 'photorealism'
+  | 'environment_photorealism'
   | 'style_drift'
   | 'first_person_pov';
 
@@ -36,6 +37,7 @@ const ISSUE_NEGATIVES: Record<ImageDefectIssue, string> = {
   panel_leakage: 'panel borders, comic panels, collage, split screen, multi-panel layout, inset image, picture-in-picture',
   reference_sheet_artifact: 'turnaround sheet, model sheet, reference sheet layout, side-by-side views, annotations, labels',
   photorealism: 'photorealism, photorealistic, DSLR photo, live-action still, photographic lighting, lens blur, bokeh, depth of field, hyperreal skin',
+  environment_photorealism: 'photorealistic architecture, real estate photo, architectural photography, HDR interior, documentary photo, live-action background, realistic building materials, camera bokeh',
   style_drift: 'generic cinematic concept art, realistic 3D render, architectural visualization, Unreal Engine, Octane render, Redshift render, gritty realism, oil painting texture, off-style rendering',
   first_person_pov: 'first-person POV, player-eye view, point-of-view shot, disembodied hands, your hand, your hands, you see',
 };
@@ -48,6 +50,7 @@ const ISSUE_INSTRUCTIONS: Record<ImageDefectIssue, string> = {
   panel_leakage: 'Return one continuous image only, with no panels, borders, inset frames, collage, or split-screen layout.',
   reference_sheet_artifact: 'Return one clean image only, not a model sheet, turnaround, labeled reference sheet, or multi-view layout.',
   photorealism: 'Remove all photoreal, photographic, live-action, lens, bokeh, and realistic material rendering; use the requested illustrated season style only.',
+  environment_photorealism: 'Redraw the environment as a stylized illustrated background with simplified graphic architecture, designed shapes, and the same non-photographic finish as the characters.',
   style_drift: 'Restore the exact season rendering style, linework, palette, lighting treatment, and finish; do not use generic cinematic concept art or 3D-rendered realism.',
   first_person_pov: 'Use a third-person observer camera outside the player character; do not use literal first-person POV, disembodied hands, or player-eye framing.',
 };
@@ -88,6 +91,7 @@ export function normalizeImageDefectReport(raw: unknown, prompt?: ImagePrompt | 
   addIf('panel_leakage', obj.panel_leakage ?? obj.panelLeakage, /\b(panel|comic panel|split[- ]screen|collage|inset|picture-in-picture|multi[- ]panel)\b/);
   addIf('reference_sheet_artifact', obj.reference_sheet_artifact ?? obj.referenceSheetArtifact, /\b(reference sheet|model sheet|turnaround|multi[- ]view|side-by-side|annotations?)\b/);
   addIf('photorealism', obj.photorealism ?? obj.photorealistic ?? obj.photoRealism, /\b(photoreal(?:istic|ism)?|photographic|photo|dslr|live[- ]action|lens blur|bokeh|depth of field|hyperreal)\b/);
+  addIf('environment_photorealism', obj.environment_photorealism ?? obj.environmentPhotorealism ?? obj.photorealEnvironment, /\b(photoreal(?:istic)? (?:architecture|environment|background)|real estate photo|architectural photography|hdr interior|documentary photo|live[- ]action background|realistic building materials|camera bokeh)\b/);
   addIf('style_drift', obj.style_drift ?? obj.styleDrift ?? obj.offStyle, /\b(style drift|off[- ]style|generic cinematic|concept art|3d render|architectural visualization|unreal|octane|redshift|gritty realism|oil painting)\b/);
   addIf('first_person_pov', obj.first_person_pov ?? obj.firstPersonPov ?? obj.pov, /\b(first[- ]person|player[- ]eye|point[- ]of[- ]view|pov shot|disembodied hands?|your hands?|you see|from your view)\b/);
 

@@ -4786,7 +4786,7 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       if (attempt < maxRetries) {
         const retryIssues = issues.length > 0 && issues[0] !== 'tier1'
           ? issues as any[]
-          : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'style_drift', 'first_person_pov'];
+          : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'environment_photorealism', 'style_drift', 'first_person_pov'];
         const retryPatch = buildDefectRetryPrompt(basePrompt, retryIssues);
         prompt = retryPatch.prompt;
         console.warn(`[ImageAgentTeam] Image defect detected for ${identifier}: ${issues.join(', ') || reason}; retry ${attempt + 1}/${maxRetries}`);

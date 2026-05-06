@@ -2286,6 +2286,60 @@ export class FullStoryPipeline {
     await saveEarlyDiagnostic(outputDirectory, 'image-manifest.json', this.buildImageManifestFromStory(story));
   }
 
+  private async finalizeImageRunFromRegistry(
+    outputDirectory: string,
+    story: Story,
+    brief: FullCreativeBrief,
+    worldBible: WorldBible,
+    characterBible: CharacterBible,
+    choiceSets: ChoiceSet[],
+    encounters: EncounterStructure[],
+    encounterImageDiagnostics: EncounterImageRunDiagnostic[] = [],
+    terminalReason: 'cancelled' | 'failed' | 'completed' = 'completed',
+    startTime = Date.now(),
+  ): Promise<Story> {
+    const finalStory = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
+    finalStory.outputDir = outputDirectory;
+    const imageIntegrity = await this.repairBoundImageReferences(finalStory, outputDirectory);
+    const manifest = this.buildImageManifestFromStory(finalStory);
+    finalStory.imagesStatus = imageIntegrity.unresolved.length > 0
+      ? 'failed'
+      : manifest.imagesStatus;
+    if (terminalReason === 'cancelled' && finalStory.imagesStatus === 'pending') {
+      finalStory.imagesStatus = 'partial';
+    }
+
+    await saveEarlyDiagnostic(outputDirectory, '08-final-story.json', finalStory);
+    await saveEarlyDiagnostic(outputDirectory, '08-registry-state.json', this.assetRegistry.toSnapshot());
+    await saveEarlyDiagnostic(outputDirectory, 'image-integrity-report.json', imageIntegrity);
+    await this.saveDraftImageManifest(outputDirectory, finalStory);
+
+    await savePipelineOutputs(outputDirectory, {
+      brief,
+      worldBible,
+      characterBible,
+      choiceSets,
+      encounters,
+      finalStory,
+      generator: this.buildStoryGeneratorMetadata(),
+      visualPlanning: this.getCollectedVisualPlanningForSave(),
+      encounterImageDiagnostics,
+      llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+    }, Date.now() - startTime);
+
+    this.emit({
+      type: terminalReason === 'completed' ? 'debug' : 'warning',
+      phase: 'images',
+      message: `Finalized ${terminalReason} image run from AssetRegistry with imagesStatus=${finalStory.imagesStatus}.`,
+      data: {
+        imagesStatus: finalStory.imagesStatus,
+        registryRecords: this.assetRegistry.values().length,
+        unresolvedImageReferences: imageIntegrity.unresolved.length,
+      },
+    });
+    return finalStory;
+  }
+
   private async repairBoundImageReferences(story: Story, outputDirectory: string): Promise<{
     generatedAt: string;
     checked: number;
@@ -2465,8 +2519,8 @@ export class FullStoryPipeline {
 	      data: imageResumeScan,
 	    });
 
+    const allEncounterDiagnostics: EncounterImageRunDiagnostic[] = [];
 	    try {
-	      const allEncounterDiagnostics: EncounterImageRunDiagnostic[] = [];
 	      if (imageResumeScan.missingSlotIds.length === 0) {
 	        this.emit({
 	          type: 'phase_complete',
@@ -2613,8 +2667,27 @@ export class FullStoryPipeline {
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      story.imagesStatus = 'failed';
-      await this.saveDraftImageManifest(normalizedOutputDir, story).catch(() => {});
+      await this.finalizeImageRunFromRegistry(
+        normalizedOutputDir,
+        story,
+        brief,
+        worldBible,
+        characterBible,
+        savedChoiceSets,
+        savedEncounters,
+        allEncounterDiagnostics,
+        error instanceof JobCancelledError ? 'cancelled' : 'failed',
+        startTime,
+      ).catch((finalizeErr) => {
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: `Failed to finalize partial image run from registry: ${finalizeErr instanceof Error ? finalizeErr.message : String(finalizeErr)}`,
+        });
+      });
+      if (error instanceof JobCancelledError) {
+        throw error;
+      }
       throw new PipelineError(`Image-only generation failed: ${msg}`, 'images', {
         context: { outputDirectory: normalizedOutputDir, failureKind: 'image_generation' },
         originalError: error instanceof Error ? error : undefined,
@@ -4808,6 +4881,26 @@ export class FullStoryPipeline {
       // Handle job cancellation
       if (error instanceof JobCancelledError) {
         this.emit({ type: 'error', message: 'Generation cancelled by user' });
+        if (outputDirectory && story && brief && worldBible && characterBible) {
+          await this.finalizeImageRunFromRegistry(
+            outputDirectory,
+            story,
+            brief,
+            worldBible,
+            characterBible,
+            choiceSets || [],
+            Array.from(encounters?.values?.() || []),
+            [],
+            'cancelled',
+            startTime,
+          ).catch((finalizeErr) => {
+            this.emit({
+              type: 'warning',
+              phase: 'images',
+              message: `Failed to finalize cancelled pipeline from registry: ${finalizeErr instanceof Error ? finalizeErr.message : String(finalizeErr)}`,
+            });
+          });
+        }
       } else {
         this.emit({ type: 'error', message: `Pipeline failed: ${errorMessage}` });
         if (this.jobId) {
@@ -11070,8 +11163,12 @@ ${clothingRule}
             }
           }
 
+          const isEnvironmentStyleShot = shotCharacterIds.length === 0
+            || isEstablishingBeat
+            || (beat as any).coveragePlan?.stagingPattern === 'environment'
+            || (beat as any).coveragePlan?.stagingPattern === 'environmental-aftermath';
           imagePrompt = {
-            ...this.applyThirdPersonRenderContract(imagePrompt, storyboardShotPacket),
+            ...this.applyThirdPersonRenderContract(imagePrompt, storyboardShotPacket, { isEnvironmentShot: isEnvironmentStyleShot }),
             promptContract: {
               ...(imagePrompt.promptContract || {}),
               effectivePromptMode: promptMode,
@@ -11088,6 +11185,7 @@ ${clothingRule}
               visualCast: (beat as any).visualCast,
               coveragePlan: (beat as any).coveragePlan,
               visualStoryboardPacket: storyboardShotPacket,
+              isEnvironmentStyleShot,
               visualPlanningStatus: storyboardShotPacket
                 ? 'visual-storyboard-packet'
                 : (storyboardModeInfo?.effectiveMode === 'text' ? 'text-plan-fallback' : (rawLlmPrompt ? 'llm-prompt-available' : 'deterministic-fallback')),
@@ -11124,6 +11222,7 @@ ${clothingRule}
             requestedPlanningMode: storyboardModeInfo?.requestedMode || imagePlanningMode,
             effectivePlanningMode: storyboardModeInfo?.effectiveMode || imagePlanningMode,
             visualStoryboardFallbackReason: storyboardModeInfo?.fallbackReason,
+            isEnvironmentStyleShot,
             promptMode,
             qaMode,
           };
@@ -11131,6 +11230,43 @@ ${clothingRule}
             `story-beat:${scopedSceneId}::${beatId}`,
             referenceImages,
           );
+          const primarySlotId = `story-beat:${scopedSceneId}::${beatId}`;
+          try {
+            if (!this.assetRegistry.get(primarySlotId)) {
+              this.assetRegistry.planSlot({
+                slotId: primarySlotId,
+                family: 'story-beat',
+                imageType: 'beat',
+                sceneId: scene.sceneId,
+                scopedSceneId,
+                beatId,
+                storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beatId}].image`,
+                baseIdentifier: identifier,
+                required: false,
+                qualityTier: 'standard',
+                coverageKey: `beat:${scene.sceneId}::${beatId}`,
+                metadata: {
+                  requestedPlanningMode: storyboardModeInfo?.requestedMode || imagePlanningMode,
+                  effectivePlanningMode: storyboardModeInfo?.effectiveMode || imagePlanningMode,
+                  promptSource,
+                  fallbackReason: storyboardModeInfo?.fallbackReason,
+                  visibleCharacterNames: shotCharacterNames,
+                  offscreenCharacterIds: storyboardShotPacket?.offscreenCharacterIds,
+                  isEnvironmentStyleShot,
+                  primaryRenderStatus: 'attempted',
+                },
+              });
+            }
+            this.assetRegistry.markRendering(primarySlotId, {
+              attemptNumber: 1,
+              startedAt: new Date().toISOString(),
+              retryStage: 'primary',
+              effectivePromptChars: imagePrompt.prompt?.length || 0,
+              effectiveNegativeChars: imagePrompt.negativePrompt?.length || 0,
+              effectiveRefCount: referenceImages.length,
+              referenceRoles: referenceImages.map((ref: any) => ref.role || 'reference'),
+            });
+          } catch { /* non-fatal */ }
 
           try {
             // --- PANEL PATH: generate multiple sub-images for this beat ---
@@ -11351,7 +11487,7 @@ ${clothingRule}
               generatedImagesForSceneQA.set(beatId, result);
 
               // Register with AssetRegistry for durable tracking
-              const slotId = `story-beat:${scopedSceneId}::${beatId}`;
+              const slotId = primarySlotId;
               try {
                 if (!this.assetRegistry.get(slotId)) {
                   this.assetRegistry.planSlot({
@@ -11437,6 +11573,9 @@ ${clothingRule}
             const shotErrMsg = shotErr instanceof Error ? shotErr.message : String(shotErr);
             console.warn(`[Pipeline] Beat image generation failed for ${scopedSceneId}:${beatId}: ${shotErrMsg}`);
             this.emit({ type: 'warning', phase: 'images', message: `Beat image failed for ${scopedSceneId}:${beatId}: ${shotErrMsg}` });
+            try {
+              this.assetRegistry.markFailure(primarySlotId, 'failed_transient', shotErrMsg);
+            } catch { /* non-fatal */ }
             if (this.isLlmQuotaFailure(shotErr)) {
               console.error(`[Pipeline] LLM quota exhausted during shot generation — re-throwing to halt pipeline`);
               throw shotErr;
@@ -11934,12 +12073,46 @@ ${clothingRule}
 
       const missingBeats = sceneBeats.filter(b => !beatImages.has(this.getEpisodeScopedBeatKey(brief, scene.sceneId, b.id)));
       if (missingBeats.length === 0) continue;
+      const repairableBeats = missingBeats.filter((beat) => {
+        const slotId = `story-beat:${scopedSceneId}::${beat.id}`;
+        const record = this.assetRegistry.get(slotId);
+        const attempted = Boolean(record?.attempts?.length)
+          || (record?.slot.metadata as any)?.primaryRenderStatus === 'attempted'
+          || record?.status === 'failed_transient'
+          || record?.status === 'failed_permanent'
+          || record?.status === 'aborted';
+        if (!attempted) {
+          this.emit({
+            type: 'error',
+            phase: 'images',
+            message: `Repair blocked for ${scene.sceneId}:${beat.id}; no primary render attempt was recorded. Primary scene rendering likely failed before beat rendering.`,
+            data: { sceneId: scene.sceneId, beatId: beat.id, slotId },
+          });
+        }
+        return attempted;
+      });
+      if (repairableBeats.length === 0) {
+        this.emit({
+          type: 'error',
+          phase: 'images',
+          message: `Repair blocked for ${scene.sceneName}; ${missingBeats.length}/${sceneBeats.length} beats missing but no primary render attempts were recorded.`,
+          data: { sceneId: scene.sceneId, missingBeatIds: missingBeats.map((beat) => beat.id) },
+        });
+        continue;
+      }
+      if (repairableBeats.length < missingBeats.length) {
+        this.emit({
+          type: 'warning',
+          phase: 'images',
+          message: `Repair limited for ${scene.sceneName}; ${repairableBeats.length}/${missingBeats.length} missing beats had primary attempts.`,
+        });
+      }
 
-      console.warn(`[Pipeline] Slot repair: scene "${scene.sceneId}" ("${scene.sceneName}") has ${missingBeats.length}/${sceneBeats.length} missing beat images — generating per-slot text-plan repairs`);
+      console.warn(`[Pipeline] Slot repair: scene "${scene.sceneId}" ("${scene.sceneName}") has ${repairableBeats.length}/${sceneBeats.length} repairable missing beat images — generating per-slot text-plan repairs`);
       this.emit({
         type: 'warning',
         phase: 'images',
-        message: `Repair: generating text-plan fallback images for ${scene.sceneName} (${missingBeats.length}/${sceneBeats.length} beats missing)`,
+        message: `Repair: generating text-plan fallback images for ${scene.sceneName} (${repairableBeats.length}/${sceneBeats.length} beats missing after primary attempts)`,
       });
 
       const sceneCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
@@ -11949,7 +12122,7 @@ ${clothingRule}
         `repair-scene:${scopedSceneId}`
       );
 
-      for (const beat of missingBeats) {
+      for (const beat of repairableBeats) {
         try {
           const beatCharContext = this.analyzeBeatCharacters(
             beat.text,
@@ -11997,7 +12170,7 @@ ${clothingRule}
             composition: `Scene: ${scene.sceneName}. Genre: ${brief.story.genre}, Tone: ${brief.story.tone}. Generate exactly ONE single full-bleed third-person image with ONE unified scene and ONE camera angle. No first-person POV, no split-screen, no diptych, no stacked panels, no repeated subject, no image-within-image.`,
             negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, storyboard, grid layout, diptych, triptych, collage, duplicate character, same character twice, cloned figure, repeated subject, first-person POV, player-eye view, disembodied hands, your hand, photorealism, live-action still, photographic realism, style drift',
           }, scene.settingContext);
-          const promptWithContracts = this.applyThirdPersonRenderContract(fallbackPrompt);
+          const promptWithContracts = this.applyThirdPersonRenderContract(fallbackPrompt, undefined, { isEnvironmentShot: shotCharacterIds.length === 0 || isEstablishing });
           const identifier = `beat-${scopedSceneId}-${beat.id}-repair`;
           const result = await this.generateImageWithDefectRetries(
             promptWithContracts,
@@ -14599,8 +14772,12 @@ Design the key art. Return STRICT JSON matching the schema.`;
   private applyThirdPersonRenderContract(
     prompt: ImagePrompt,
     storyboardShot?: VisualStoryboardPacket['shots'][number],
+    options?: { isEnvironmentShot?: boolean },
   ): ImagePrompt {
     const thirdPersonContract = 'CAMERA POV CONTRACT: Render this as a third-person observer shot outside every character. Never use first-person/player-eye POV, disembodied hands, "your hand" framing, or a camera inside the protagonist body.';
+    const environmentStyleContract = options?.isEnvironmentShot
+      ? 'ENVIRONMENT STYLE LOCK: Render all backgrounds and architecture as stylized cartoon/graphic environment design matching the character finish: simplified designed shapes, clean illustrated edges, curated flat/cel color, non-photographic lighting, no real-estate photo look, no architectural visualization, no HDR interior realism, no live-action location still.'
+      : '';
     const storyboardContract = storyboardShot ? [
       'VISUAL STORYBOARD PACKET:',
       `Sequence role: ${storyboardShot.sequenceRole}.`,
@@ -14615,11 +14792,14 @@ Design the key art. Return STRICT JSON matching the schema.`;
       storyboardShot.continuityFrom ? `Continuity from previous shot: ${storyboardShot.continuityFrom}` : '',
       `Dramatic reason: ${storyboardShot.dramaticReason || 'story beat progression'}.`,
     ].filter(Boolean).join(' ') : '';
-    const negativeAdditions = 'first-person POV, player-eye view, POV hands, disembodied hands, your hand, your hands, selfie angle, photorealism, live-action still, photographic realism, style drift';
+    const environmentNegatives = options?.isEnvironmentShot
+      ? 'photorealistic architecture, real estate photo, architectural photography, HDR interior, documentary photo, live-action background, realistic building materials, camera bokeh, photographic environment, 3D interior render'
+      : '';
+    const negativeAdditions = ['first-person POV, player-eye view, POV hands, disembodied hands, your hand, your hands, selfie angle, photorealism, live-action still, photographic realism, style drift', environmentNegatives].filter(Boolean).join(', ');
     return {
       ...prompt,
-      prompt: [prompt.prompt, thirdPersonContract, storyboardContract].filter(Boolean).join('\n\n'),
-      composition: [prompt.composition, thirdPersonContract].filter(Boolean).join(' '),
+      prompt: [prompt.prompt, thirdPersonContract, environmentStyleContract, storyboardContract].filter(Boolean).join('\n\n'),
+      composition: [prompt.composition, thirdPersonContract, environmentStyleContract].filter(Boolean).join(' '),
       negativePrompt: [prompt.negativePrompt, negativeAdditions].filter(Boolean).join(', '),
     };
   }
@@ -15464,6 +15644,28 @@ Design the key art. Return STRICT JSON matching the schema.`;
           viewType: 'location',
         });
       }
+    }
+
+    const styleAnchorPaths = [
+      { role: 'style-anchor-character', imagePath: this._styleAnchorPaths.character },
+      { role: 'style-anchor-arc-strip', imagePath: this._styleAnchorPaths.arcStrip },
+      { role: 'style-anchor-environment', imagePath: this._styleAnchorPaths.environment },
+    ].filter((entry) => !!entry.imagePath);
+    for (const anchor of styleAnchorPaths) {
+      if (references.length >= MAX_TOTAL_REFS) break;
+      try {
+        const fs = require('fs');
+        if (!fs.existsSync(anchor.imagePath)) continue;
+        const ext = String(anchor.imagePath).split('.').pop()?.toLowerCase();
+        const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+        references.push({
+          data: fs.readFileSync(anchor.imagePath).toString('base64'),
+          mimeType,
+          role: anchor.role,
+          characterName: '',
+          viewType: 'style',
+        });
+      } catch { /* style anchors are helpful but non-fatal */ }
     }
 
     for (const styleRef of this._uploadedStyleReferenceImages) {
@@ -16412,13 +16614,14 @@ Design the key art. Return STRICT JSON matching the schema.`;
       'panel_leakage',
       'reference_sheet_artifact',
       'photorealism',
+      'environment_photorealism',
       'style_drift',
       'first_person_pov',
     ]);
     const normalized = issues.filter((issue): issue is ImageDefectIssue => allowed.has(issue as ImageDefectIssue));
     return normalized.length > 0
       ? normalized
-      : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'style_drift', 'first_person_pov'];
+      : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'environment_photorealism', 'style_drift', 'first_person_pov'];
   }
 
   private async saveImageQADiagnostic(

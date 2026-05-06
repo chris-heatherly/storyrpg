@@ -655,6 +655,16 @@ export interface StoryboardRequest {
   };
   imagePlanningMode?: ImagePlanningMode;
   storyboardPanelCap?: number;
+  sceneMasterPrompt?: {
+    style?: string;
+    styleNegatives?: string;
+    location?: string;
+    lightingColor?: string;
+    castPolicy?: string;
+    thirdPersonCameraRule?: string;
+    referenceSummary?: Array<{ role: string; characterName?: string; viewType?: string; purpose?: string; required?: boolean }>;
+  };
+  storyboardReferences?: Array<{ role: string; characterName?: string; viewType?: string; purpose?: string; required?: boolean }>;
 }
 
 export interface VisualContract {
@@ -779,6 +789,15 @@ export class StoryboardAgent extends BaseAgent {
     ].join('\n');
   }
 
+  private buildStoryboardReferenceLines(input: StoryboardRequest): string {
+    const refs = input.storyboardReferences || input.sceneMasterPrompt?.referenceSummary || [];
+    if (!refs.length) return '- none';
+    return refs.slice(0, 32).map((ref, index) => {
+      const target = ref.characterName || ref.purpose || 'scene';
+      return `- ref${index + 1}: role=${ref.role || 'reference'}; target=${target}; view=${ref.viewType || 'n/a'}; required=${ref.required ? 'yes' : 'no'}; purpose=${ref.purpose || 'other'}`;
+    }).join('\n');
+  }
+
   private buildLeanExpandPrompt(
     input: StoryboardRequest,
     chunk: StoryboardRequest,
@@ -798,6 +817,7 @@ export class StoryboardAgent extends BaseAgent {
     const skeletons = chunkSkeletons.map((s) =>
       `- beat:${s.beatId}; id:${s.id}; type:${s.type}; shotType:${s.shotType}; cameraAngle:${s.cameraAngle}; transitionHint:${s.transitionHint}`
     ).join('\n');
+    const master = input.sceneMasterPrompt || {};
 
     return `You are expanding storyboard shots for one chunk.
 ${contractRef}
@@ -807,6 +827,14 @@ IncomingChoice:${input.incomingChoiceContext || 'none'}
 SettingBranch:${settingSelection.branchLabel}
 SettingSummary:${input.sceneContext?.settingContext?.summary || 'none'}
 SettingNotes:${settingSelection.notes.join(' | ') || 'none'}
+SceneMasterStyle:${master.style || this.artStyle || 'default-style'}
+StyleNegatives:${master.styleNegatives || 'photorealism, live-action still, style drift, first-person POV'}
+LocationLayout:${master.location || input.sceneDescription}
+LightingColorArc:${master.lightingColor || input.mood}
+CastPolicy:${master.castPolicy || 'Only show characters named for the shot; others are offscreen.'}
+ThirdPersonRule:${master.thirdPersonCameraRule || 'Every shot is third-person observer camera; no first-person/player-eye POV.'}
+AvailableReferences:
+${this.buildStoryboardReferenceLines(input)}
 
 ChunkBeats:
 ${beats}
@@ -820,6 +848,9 @@ Hard requirements:
 - Beat 2 should show immediate consequence of Beat 1 action when IncomingChoice is present.
 - Preserve each beat lock fields; do not paraphrase away locked details.
 - Use character names, never generic "a man/a woman".
+- Plan visible/offscreen cast deliberately. Do not include scene-present characters unless fg/bg/beat requirements call for them.
+- Every shot must be third-person observer or over-shoulder from outside the body. Never use subjective/player-eye POV, disembodied hands, or "your hand" framing.
+- Respect shot variety: avoid repeating solitary neutral eye-level shots more than twice, and vary camera size/angle unless a locked micro-progression is dramatically justified.
 - At least one shot per beat in this chunk.
 
 Return ONLY JSON matching VisualPlan shape:
@@ -837,7 +868,7 @@ Return ONLY JSON matching VisualPlan shape:
     const skeletons: Array<{ id: string; beatId: string; type: string; shotType: string; cameraAngle: string; transitionHint: string }> = [];
     for (const chunk of chunks) {
       const beatLines = chunk.beats.map((b, idx) => `${idx + 1}. ${b.id}: ${b.text}`).join('\n');
-      const prompt = `Plan compact storyboard skeletons.\nContractHash:${contractHash}\nReturn JSON: {"shots":[{"id":"...","beatId":"...","type":"...","shotType":"...","cameraAngle":"...","transitionHint":"..."}]}\nBeats:\n${beatLines}`;
+      const prompt = `Plan compact storyboard skeletons.\nContractHash:${contractHash}\nThirdPersonRule:${input.sceneMasterPrompt?.thirdPersonCameraRule || 'Third-person observer only; no first-person/player-eye POV.'}\nCastPolicy:${input.sceneMasterPrompt?.castPolicy || 'Only show required beat cast.'}\nReferences:\n${this.buildStoryboardReferenceLines(input)}\nReturn JSON: {"shots":[{"id":"...","beatId":"...","type":"...","shotType":"...","cameraAngle":"...","transitionHint":"..."}]}\nBeats:\n${beatLines}`;
       const response = await this.callLLMForPass('PlanPass', prompt, 3, false);
       const parsed = this.parseJSON<{ shots: Array<{ id: string; beatId: string; type: string; shotType: string; cameraAngle: string; transitionHint: string }> }>(response);
       for (const s of parsed.shots || []) {
@@ -1525,6 +1556,22 @@ You must design SEQUENTIAL VISUAL GRAMMAR, not isolated thumbnails:
 Substoryboard sheets may be generated later from this plan. Do NOT design collages for final reader images; each shot is still one final full-screen image.
 `
       : '';
+    const master = request.sceneMasterPrompt || {};
+    const masterVisualSection = request.imagePlanningMode === 'visual-storyboard'
+      ? `
+## SCENE MASTER VISUAL PROMPT (AUTHORITATIVE)
+- Raw style: ${master.style || this.artStyle || 'default-style'}
+- Style negatives: ${master.styleNegatives || 'photorealism, live-action still, photographic realism, style drift'}
+- Location/layout: ${master.location || request.sceneDescription}
+- Lighting/color arc: ${master.lightingColor || request.mood}
+- Cast policy: ${master.castPolicy || 'Only show characters required by each beat; keep other scene-present characters offscreen.'}
+- Third-person POV rule: ${master.thirdPersonCameraRule || 'Every shot is third-person observer camera outside the protagonist; no first-person/player-eye POV.'}
+- Available references:
+${this.buildStoryboardReferenceLines(request)}
+
+Use the references as identity/style/location continuity inputs. Reference sheets may contain multiple poses/views; they are not additional characters in the scene.
+`
+      : '';
 
     return `
 Create a visual plan (storyboard) for the following scene with DIVERSE poses and INTENTIONAL TRANSITIONS.
@@ -1539,7 +1586,7 @@ ${request.incomingChoiceContext ? `
 ## CHOICE PAYOFF (CRITICAL — applies to the FIRST beat of this scene)
 This scene is entered because the player chose: "${request.incomingChoiceContext}"
 The FIRST beat's shot MUST visually depict the immediate consequence of this choice. The player made a specific decision and the opening image must show that decision playing out — the exact physical action, body language, and emotional consequence the player expects to see. Do NOT use a generic establishing shot for Beat 1; instead show the choice's payoff in action.
-` : ''}${settingSection}${characterDescSection}${bodyVocabSection}${colorScriptSection}${motifSection}${visualStoryboardSection}
+` : ''}${settingSection}${characterDescSection}${bodyVocabSection}${colorScriptSection}${motifSection}${masterVisualSection}${visualStoryboardSection}
 ## Beats to Illustrate
 ${beatsInfo}
 
@@ -1553,6 +1600,9 @@ ${beatsInfo}
 - **USE CHARACTER NAMES**: ALWAYS refer to characters by their actual names (e.g., "Catherine", "Heathcliff"). NEVER use generic terms like "a woman", "a man", "two young people", "the figure", "they/them" as the primary identifier. Every character in the description must be named.
 - The shot description MUST describe the scene as a depiction of the beat — action + emotion + relationship — NOT as a character portrait
 - If beat metadata includes LOCKED visual fields (visualMoment, primaryAction, emotionalRead, relationshipDynamic, mustShowDetail), preserve them exactly and only choose framing/camera around them.
+- Every shot must be third-person observer or over-shoulder from outside the protagonist body. Never use first-person/player-eye POV, subjective "your hands" framing, or disembodied hands.
+- Plan explicit visible and offscreen cast per beat. Characters not listed for the beat must remain offscreen.
+- Vary shot size, camera angle, height, side, focal subject, and sequence role; avoid more than two solitary neutral eye-level shots in a row.
 
 ### 1b. PER-CHARACTER EMOTIONS (CRITICAL - Characters don't all feel the same!)
 For EACH character visible in the shot, define their INDIVIDUAL emotion:

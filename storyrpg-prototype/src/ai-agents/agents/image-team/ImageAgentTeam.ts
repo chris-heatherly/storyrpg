@@ -16,7 +16,10 @@ import { StoryboardAgent, StoryboardRequest, VisualPlan } from './StoryboardAgen
 import {
   attachStoryboardPlanToVisualPlan,
   buildSceneVisualStoryboardPlan,
+  validateVisualStoryboardPacket,
   visualPlanSlotsFromBeats,
+  type StoryboardReferenceSummary,
+  type VisualStoryboardPacket,
 } from '../../images/visualStoryboardPlanning';
 import { VisualIllustratorAgent, IllustrationRequest } from './VisualIllustratorAgent';
 import { EncounterImageAgent } from './EncounterImageAgent';
@@ -695,6 +698,151 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     } catch {
       // best effort only
     }
+  }
+
+  /**
+   * Chunk-level visual storyboard preflight. Unlike generateFullSceneVisuals,
+   * this produces a persisted planning packet and intentionally does not call
+   * the per-shot illustrator agent during rendering.
+   */
+  async generateStoryboardPacket(request: StoryboardRequest & {
+    chunkIndex?: number;
+    sceneMasterPrompt?: Partial<VisualStoryboardPacket['sceneMasterPrompt']>;
+    storyboardReferences?: StoryboardReferenceSummary[];
+  }): Promise<AgentResponse<VisualStoryboardPacket>> {
+    console.log(`[ImageAgentTeam] Planning storyboard packet for scene: ${request.sceneName} chunk ${request.chunkIndex ?? 0}`);
+
+    // Each pipeline chunk is already capped (default 6 beats), so use one
+    // storyboard LLM call per packet instead of the older internal
+    // plan/expand/audit cascade.
+    const planRes = await this.storyboardAgent.execute(request);
+    if (!planRes.success || !planRes.data) {
+      return { success: false, error: `Storyboard packet planning failed: ${planRes.error}` };
+    }
+
+    const plan = (planRes.data as any).plan || planRes.data;
+    if (!Array.isArray(plan.shots)) plan.shots = [];
+    if (plan.shots.length === 0) {
+      return { success: false, error: 'Storyboard packet planning returned 0 shots' };
+    }
+
+    plan.shots.forEach((shot, index) => {
+      if (!shot.beatId) {
+        const authoredBeatId = request.beats[index]?.id;
+        if (authoredBeatId) shot.beatId = authoredBeatId;
+      }
+      shot.id = shot.beatId || shot.id || `shot-${index}`;
+    });
+
+    const storyboardPlan = buildSceneVisualStoryboardPlan({
+      sceneId: request.sceneId,
+      scopedSceneId: request.sceneId,
+      sceneName: request.sceneName,
+      sceneDescription: request.sceneDescription,
+      slots: visualPlanSlotsFromBeats(request.sceneId, request.beats),
+      panelCap: (request as any).storyboardPanelCap || 6,
+      branchAware: false,
+      continuityBible: (plan as any).continuityBible,
+      sequenceGrammar: (plan as any).sequenceGrammar,
+    });
+    attachStoryboardPlanToVisualPlan(plan, storyboardPlan);
+
+    const refs = Array.isArray(request.storyboardReferences) ? request.storyboardReferences : [];
+    const refByCharacter = new Map<string, StoryboardReferenceSummary[]>();
+    for (const ref of refs) {
+      if (!ref.characterName) continue;
+      const key = ref.characterName.toLowerCase();
+      const list = refByCharacter.get(key) || [];
+      list.push(ref);
+      refByCharacter.set(key, list);
+    }
+    const charNameForId = (id: string): string | undefined => {
+      const byId = request.characterDescriptions?.find((c: any) => c.id === id);
+      return byId?.name || id;
+    };
+    const refsForNames = (names: string[], required: boolean): StoryboardReferenceSummary[] => {
+      const out: StoryboardReferenceSummary[] = [];
+      for (const name of names || []) {
+        const matched = refByCharacter.get(String(name).toLowerCase()) || [];
+        out.push(...matched.map((ref) => ({ ...ref, required })));
+      }
+      return out;
+    };
+
+    const shots = plan.shots.map((shot: any, index: number) => {
+      const beat = request.beats.find((b: any) => b.id === shot.beatId) || request.beats[index];
+      const panel = storyboardPlan.panels.find((p) => p.beatId === (shot.beatId || beat?.id));
+      const resolvedCharacters = this.resolveCharactersForShot(
+        shot.characters,
+        beat?.characters,
+        request.characterDescriptions,
+        beat?.foregroundCharacters,
+        beat?.backgroundCharacters,
+      ) || [];
+      const visibleNames = resolvedCharacters.map((c: any) => c.name).filter(Boolean);
+      const requiredRefs = refsForNames(visibleNames, true);
+      const missingRefs = visibleNames
+        .filter((name: string) => refsForNames([name], true).length === 0)
+        .map((name: string) => ({ role: 'missing-character-reference', characterName: name, purpose: 'character' as const, required: true }));
+      const camera = shot.visualStorytelling?.camera || {};
+      return {
+        beatId: shot.beatId || beat?.id || `beat-${index + 1}`,
+        slotId: `story-beat:${request.sceneId}::${shot.beatId || beat?.id || `beat-${index + 1}`}`,
+        sequenceRole: panel?.sequenceRole || 'relationship',
+        shotSize: shot.shotType || camera.shotType || 'MS',
+        cameraAngle: shot.cameraAngle || 'eye-level',
+        cameraHeight: camera.height || 'eye',
+        cameraSide: shot.horizontalAngle || camera.side || 'left-of-axis',
+        thirdPersonPov: camera.pov === 'player_ots' || camera.pov === 'npc_ots' ? 'over-shoulder' : 'observer',
+        focalCharacterIds: (shot.characters || beat?.characters || []).map((value: any) => typeof value === 'string' ? value : value?.id || value?.name).filter(Boolean),
+        requiredVisibleCharacterIds: (shot.characters || beat?.characters || []).map((value: any) => typeof value === 'string' ? value : value?.id || value?.name).filter(Boolean),
+        optionalBackgroundCharacterIds: [],
+        offscreenCharacterIds: beat?.offscreenCharacters || [],
+        continuityFrom: panel?.continuityFrom,
+        dramaticReason: shot.description || panel?.sequenceRole || 'visual beat progression',
+        promptFields: {
+          action: shot.storyBeat?.action || shot.description || beat?.text || '',
+          emotionalRead: shot.storyBeat?.emotion || beat?.emotionalRead,
+          keyDetail: beat?.mustShowDetail,
+          composition: shot.composition,
+        },
+        referencePack: {
+          required: requiredRefs,
+          optional: refs.filter((ref) => !ref.required),
+          missing: missingRefs,
+        },
+      };
+    });
+
+    const packet: VisualStoryboardPacket = {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      requestedMode: 'visual-storyboard',
+      effectiveMode: 'visual-storyboard',
+      sceneId: request.sceneId,
+      scopedSceneId: request.sceneId,
+      sceneName: request.sceneName,
+      chunkIndex: request.chunkIndex || 0,
+      beatIds: request.beats.map((beat: any) => beat.id),
+      sceneMasterPrompt: {
+        style: request.sceneMasterPrompt?.style || this.artStyle || '',
+        styleNegatives: request.sceneMasterPrompt?.styleNegatives || 'photorealism, live-action still, 3D render, style drift',
+        location: request.sceneMasterPrompt?.location || request.sceneDescription || request.sceneName,
+        lightingColor: request.sceneMasterPrompt?.lightingColor || request.mood || 'preserve scene color script',
+        castPolicy: request.sceneMasterPrompt?.castPolicy || 'Only show characters explicitly required by each shot row; keep all other scene-present characters offscreen.',
+        thirdPersonCameraRule: request.sceneMasterPrompt?.thirdPersonCameraRule || 'Every shot is third-person observer camera outside the player character; no literal first-person/player-eye POV or disembodied hands.',
+        referenceSummary: refs,
+      },
+      continuityBible: storyboardPlan.continuityBible,
+      sequenceGrammar: storyboardPlan.sequenceGrammar,
+      shots,
+      validation: { passed: true, issues: [] },
+    };
+    packet.validation = validateVisualStoryboardPacket(packet);
+    if (!packet.validation.passed) {
+      return { success: false, error: `Storyboard packet validation failed: ${packet.validation.issues.join('; ')}`, data: packet as any };
+    }
+    return { success: true, data: packet };
   }
 
   /**
@@ -4010,17 +4158,37 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
    * - background characters get "BACKGROUND" annotation (present but softer/partial)
    */
   private resolveCharactersForShot(
-    shotCharacterIds?: string[],
-    beatCharacterIds?: string[],
+    shotCharacterIds?: any[],
+    beatCharacterIds?: any[],
     characterDescriptions?: StoryboardRequest['characterDescriptions'],
-    foregroundCharacterNames?: string[],
-    backgroundCharacterNames?: string[]
+    foregroundCharacterNames?: any[],
+    backgroundCharacterNames?: any[]
   ): Array<{ name: string; description: string; role: string; height?: string; build?: string }> | undefined {
     if (!characterDescriptions || characterDescriptions.length === 0) return undefined;
     
-    const charIds = shotCharacterIds && shotCharacterIds.length > 0 
-      ? shotCharacterIds 
-      : beatCharacterIds;
+    const normalizeCharRef = (value: any): string | undefined => {
+      if (typeof value === 'string') return value.trim() || undefined;
+      if (!value || typeof value !== 'object') return undefined;
+      const id = typeof value.id === 'string' ? value.id.trim() : '';
+      if (id) return id;
+      const name = typeof value.name === 'string' ? value.name.trim() : '';
+      if (name) return name;
+      const characterId = typeof value.characterId === 'string' ? value.characterId.trim() : '';
+      if (characterId) return characterId;
+      const npcId = typeof value.npcId === 'string' ? value.npcId.trim() : '';
+      if (npcId) return npcId;
+      return undefined;
+    };
+    const normalizeCharRefs = (values?: any[]): string[] => {
+      if (!Array.isArray(values)) return [];
+      return Array.from(new Set(values.map(normalizeCharRef).filter(Boolean) as string[]));
+    };
+
+    const shotIds = normalizeCharRefs(shotCharacterIds);
+    const beatIds = normalizeCharRefs(beatCharacterIds);
+    const fgNames = normalizeCharRefs(foregroundCharacterNames);
+    const bgNames = normalizeCharRefs(backgroundCharacterNames);
+    const charIds = shotIds.length > 0 ? shotIds : beatIds;
     
     const findChar = (idOrName: string) => {
       const byId = characterDescriptions.find(c => c.id === idOrName);
@@ -4032,8 +4200,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       );
     };
     
-    const fgNamesLower = new Set((foregroundCharacterNames || []).map(n => n.toLowerCase()));
-    const bgNamesLower = new Set((backgroundCharacterNames || []).map(n => n.toLowerCase()));
+    const fgNamesLower = new Set(fgNames.map(n => (findChar(n)?.name || n).toLowerCase()));
+    const bgNamesLower = new Set(bgNames.map(n => (findChar(n)?.name || n).toLowerCase()));
     
     const getVisualRole = (charName: string, storyRole: string): string => {
       const nameLower = charName.toLowerCase();
@@ -4062,8 +4230,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     });
 
     if (!charIds || charIds.length === 0) {
-      if (foregroundCharacterNames && foregroundCharacterNames.length > 0) {
-        const fgResolved = foregroundCharacterNames
+      if (fgNames.length > 0) {
+        const fgResolved = fgNames
           .map(name => findChar(name))
           .filter(Boolean);
         if (fgResolved.length > 0) {
@@ -4618,7 +4786,7 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       if (attempt < maxRetries) {
         const retryIssues = issues.length > 0 && issues[0] !== 'tier1'
           ? issues as any[]
-          : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'style_drift'];
+          : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'style_drift', 'first_person_pov'];
         const retryPatch = buildDefectRetryPrompt(basePrompt, retryIssues);
         prompt = retryPatch.prompt;
         console.warn(`[ImageAgentTeam] Image defect detected for ${identifier}: ${issues.join(', ') || reason}; retry ${attempt + 1}/${maxRetries}`);

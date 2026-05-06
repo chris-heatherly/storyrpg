@@ -40,6 +40,30 @@ function makeSheet(
 }
 
 describe('ImageAgentTeam reference style contract', () => {
+  it('normalizes mixed character refs before resolving storyboard shot characters', () => {
+    const team = new ImageAgentTeam(agentConfig, rawSeasonStyle) as any;
+
+    const resolved = team.resolveCharactersForShot(
+      [{ id: 'char-mika-kuroda' }, null, { name: 'Ignored Missing' }],
+      undefined,
+      [
+        {
+          id: 'char-mika-kuroda',
+          name: 'Mika Kuroda',
+          physicalDescription: 'sharp bob and black jacket',
+          distinctiveFeatures: ['blunt bob'],
+          typicalAttire: 'black jacket',
+          role: 'protagonist',
+        },
+      ],
+      [{ id: 'char-mika-kuroda' }],
+      [],
+    );
+
+    expect(resolved?.[0].name).toBe('Mika Kuroda');
+    expect(resolved?.[0].role).toContain('FOREGROUND');
+  });
+
   it('locks no-user-ref individual views to the full raw season style', async () => {
     const team = new ImageAgentTeam(agentConfig, rawSeasonStyle);
     const generateImage = vi.fn(async (prompt, identifier, metadata, referenceImages) => ({

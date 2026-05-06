@@ -6046,6 +6046,7 @@ Fail if any of these are present:
 - collage, split-screen, inset frame, picture-in-picture, comic panel borders, multi-panel leakage
 - reference-sheet/model-sheet artifacts, side-by-side views, turnaround layout, labels, measurement marks
 - photorealism, photographic lighting, live-action stills, 3D render finish, architectural visualization, lens blur, bokeh, or generic cinematic concept-art style drift
+- literal first-person/player-eye POV, disembodied player hands, "your hand" framing, or camera positioned inside the protagonist's body
 ${styleReview}
 ${referenceFormatReview}
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildSceneVisualStoryboardPlan,
+  chunkStoryboardBeats,
+  validateVisualStoryboardPacket,
   visualPlanSlotsFromBeats,
   visualPlanSlotsFromEncounterManifest,
   visualPlanSlotsFromStoryletManifest,
@@ -96,5 +98,77 @@ describe('visualStoryboardPlanning', () => {
     expect(plan.sheets.some((sheet) => sheet.branchPath === 'c1')).toBe(true);
     expect(plan.sheets.some((sheet) => sheet.branchPath === 'storylet:partialVictory')).toBe(true);
     expect(plan.sequenceGrammar.branchVisualLanguage?.failure).toContain('colder');
+  });
+
+  it('chunks beat storyboard preflight input at the configured cap', () => {
+    const beats = Array.from({ length: 14 }, (_, index) => ({ id: `beat-${index + 1}` }));
+    expect(chunkStoryboardBeats(beats, 6).map((chunk) => chunk.map((beat) => beat.id))).toEqual([
+      ['beat-1', 'beat-2', 'beat-3', 'beat-4', 'beat-5', 'beat-6'],
+      ['beat-7', 'beat-8', 'beat-9', 'beat-10', 'beat-11', 'beat-12'],
+      ['beat-13', 'beat-14'],
+    ]);
+  });
+
+  it('validates packet coverage, shot variety, and third-person camera rules', () => {
+    const packet = {
+      version: 1 as const,
+      generatedAt: 'now',
+      requestedMode: 'visual-storyboard' as const,
+      effectiveMode: 'visual-storyboard' as const,
+      sceneId: 'scene-1',
+      scopedSceneId: 'episode-1-scene-1',
+      sceneName: 'Lobby',
+      chunkIndex: 0,
+      beatIds: ['beat-1', 'beat-2', 'beat-3'],
+      sceneMasterPrompt: {
+        style: 'cartoon',
+        styleNegatives: 'photorealism',
+        location: 'hotel lobby',
+        lightingColor: 'warm',
+        castPolicy: 'only planned cast',
+        thirdPersonCameraRule: 'third-person observer only',
+        referenceSummary: [],
+      },
+      continuityBible: {
+        locationLayout: 'hotel',
+        lightingArc: 'warm',
+        characterBlocking: 'consistent',
+        costumeState: 'consistent',
+        importantProps: [],
+      },
+      sequenceGrammar: {
+        sceneVisualArc: 'arc',
+        cameraProgression: 'progression',
+        shotRhythm: ['establishing', 'relationship', 'reaction'] as any,
+        motifProgression: [],
+        powerBlocking: 'clear',
+        silentReadabilityGoal: 'readable',
+      },
+      shots: [
+        {
+          beatId: 'beat-1',
+          slotId: 'story-beat:episode-1-scene-1::beat-1',
+          sequenceRole: 'establishing' as const,
+          shotSize: 'LS',
+          cameraAngle: 'eye-level',
+          cameraHeight: 'eye',
+          cameraSide: 'left',
+          thirdPersonPov: 'observer' as const,
+          focalCharacterIds: [],
+          requiredVisibleCharacterIds: [],
+          optionalBackgroundCharacterIds: [],
+          offscreenCharacterIds: [],
+          dramaticReason: 'establish geography',
+          promptFields: { action: 'Lobby gleams.' },
+          referencePack: { required: [], optional: [], missing: [] },
+        },
+      ],
+      validation: { passed: true, issues: [] },
+    };
+
+    const result = validateVisualStoryboardPacket(packet);
+    expect(result.passed).toBe(false);
+    expect(result.issues).toContain('missing shot for beat-2');
+    expect(result.issues).toContain('missing shot for beat-3');
   });
 });

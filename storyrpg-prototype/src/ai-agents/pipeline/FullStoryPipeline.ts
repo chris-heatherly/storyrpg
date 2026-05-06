@@ -93,11 +93,16 @@ import { applyPromptContract, sanitizeStyleContaminationText } from '../images/i
 import {
   attachStoryboardPlanToVisualPlan,
   buildSceneVisualStoryboardPlan,
+  chunkStoryboardBeats,
   normalizeImagePlanningMode,
+  validateVisualStoryboardPacket,
   visualPlanSlotsFromBeats,
   visualPlanSlotsFromEncounterManifest,
   visualPlanSlotsFromStoryletManifest,
+  type ImagePlanningMode,
   type SceneVisualStoryboardPlan,
+  type StoryboardReferenceSummary,
+  type VisualStoryboardPacket,
 } from '../images/visualStoryboardPlanning';
 import { 
   Story, Episode, Scene, Beat, Choice, NPCTier, RelationshipDimension, Consequence,
@@ -188,7 +193,7 @@ import {
   storySceneBaseIdentifier,
   storySceneCoverageKey,
 } from '../images/storyImageSlotManifest';
-import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
+import type { ImageSlot, ImageSlotFamily, SlotReferencePack } from '../images/slotTypes';
 import { buildBeatImagePrompt, overrideShotFromPlan } from '../images/beatPromptBuilder';
 import { CharacterStateTracker } from '../images/CharacterStateTracker';
 import { planShotSequence, type ShotPlan, type PanelMode } from '../images/shotSequencePlanner';
@@ -1657,7 +1662,7 @@ export class FullStoryPipeline {
       for (const name of files) {
         if (!imageExt.test(name)) continue;
         if (!name.startsWith(`${baseIdentifier}-`)) continue;
-        if (!/-(qa-retry|retry|textfix|recovery|fallback)/i.test(name)) continue;
+        if (!/-(qa-retry|retry|textfix|repair|recovery|fallback)/i.test(name)) continue;
         const fullPath = path.join(imagesDir, name);
         const stat = await fs.stat(fullPath);
         candidates.push({ name, fullPath, mtimeMs: stat.mtimeMs });
@@ -2165,7 +2170,7 @@ export class FullStoryPipeline {
       sceneBackgroundSlots: number;
       strategy: string;
     };
-    slots: ImageSlot[];
+    slots: Array<ImageSlot & Record<string, unknown>>;
   } {
     const slots: ImageSlot[] = [];
     let totalBeats = 0;
@@ -2225,21 +2230,54 @@ export class FullStoryPipeline {
         }
       }
     }
+    const manifestSlots = slots.map((slot) => {
+      const record = this.assetRegistry.get(slot.slotId);
+      return {
+        ...slot,
+        status: record?.status || 'planned',
+        imageUrl: record?.latestUrl,
+        imagePath: record?.latestPath,
+        provider: record?.provider,
+        model: record?.model,
+        failureReason: record?.failureReason,
+        promptSummary: record?.promptSummary,
+        referencePack: record?.referencePack,
+        appliedReferencePack: record?.referencePack,
+        attemptCount: record?.attempts?.length || 0,
+        metadata: record?.slot.metadata || slot.metadata,
+        effectivePlanningMode: (record?.slot.metadata as any)?.effectivePlanningMode,
+        requestedPlanningMode: (record?.slot.metadata as any)?.requestedPlanningMode,
+        promptSource: (record?.slot.metadata as any)?.promptSource,
+        fallbackReason: (record?.slot.metadata as any)?.fallbackReason,
+        visibleCast: (record?.slot.metadata as any)?.visibleCharacterNames,
+        offscreenCast: (record?.slot.metadata as any)?.offscreenCharacterIds,
+      };
+    });
+    const requiredSlots = manifestSlots.filter((slot) => slot.required !== false);
+    const requiredMissing = requiredSlots.length > 0
+      ? requiredSlots.some((slot) => slot.status !== 'succeeded')
+      : manifestSlots.some((slot) => slot.family === 'story-beat' && slot.status !== 'succeeded');
+    const anySucceeded = manifestSlots.some((slot) => slot.status === 'succeeded');
+    const registryBeatsWithImages = manifestSlots.filter((slot) => slot.family === 'story-beat' && slot.status === 'succeeded').length;
+    const registryScenesWithImages = manifestSlots.filter((slot) => slot.family === 'story-scene' && slot.status === 'succeeded').length;
+    const imagesStatus: NonNullable<Story['imagesStatus']> = requiredMissing
+      ? (anySucceeded ? 'partial' : (story.imagesStatus === 'failed' ? 'failed' : 'pending'))
+      : 'complete';
     return {
       version: 1,
       storyId: story.id,
       generatedAt: new Date().toISOString(),
-      imagesStatus: story.imagesStatus || 'pending',
+      imagesStatus,
       coverage: {
         totalBeats,
-        beatsWithImages,
+        beatsWithImages: Math.max(beatsWithImages, registryBeatsWithImages),
         totalScenes,
-        scenesWithImages,
+        scenesWithImages: Math.max(scenesWithImages, registryScenesWithImages),
         encounterOnlyScenes,
         sceneBackgroundSlots,
         strategy: this.config.imageGen?.strategy || 'selective',
       },
-      slots,
+      slots: manifestSlots,
     };
   }
 
@@ -2289,10 +2327,10 @@ export class FullStoryPipeline {
       const ext = path.extname(filePath) || '.png';
       const stem = path.basename(filePath, ext);
       const stems = Array.from(new Set([
-        stem.replace(/-recovery-qa-retry-\d+$/i, '-recovery'),
+        stem.replace(/-(repair|recovery)-qa-retry-\d+$/i, '-$1'),
         stem.replace(/-qa-retry-\d+$/i, ''),
         stem.replace(/-(?:qa-retry-\d+|retry-\d+|textfix\d+)$/i, ''),
-        stem.replace(/-(?:recovery|fallback|textfix\d+|qa-retry-\d+|retry-\d+)$/i, ''),
+        stem.replace(/-(?:repair|recovery|fallback|textfix\d+|qa-retry-\d+|retry-\d+)$/i, ''),
       ].filter(Boolean)));
 
       for (const candidateStem of stems) {
@@ -2530,7 +2568,10 @@ export class FullStoryPipeline {
       if (coverUrl) finalStory.coverImage = coverUrl;
       finalStory.outputDir = normalizedOutputDir;
       const imageIntegrity = await this.repairBoundImageReferences(finalStory, normalizedOutputDir);
-      finalStory.imagesStatus = imageIntegrity.unresolved.length > 0 ? 'failed' : 'complete';
+      const finalImageManifest = this.buildImageManifestFromStory(finalStory);
+      finalStory.imagesStatus = imageIntegrity.unresolved.length > 0
+        ? 'failed'
+        : finalImageManifest.imagesStatus;
       await saveEarlyDiagnostic(normalizedOutputDir, 'image-integrity-report.json', imageIntegrity);
       if (imageIntegrity.repaired.length > 0 || imageIntegrity.unresolved.length > 0) {
         this.emit({
@@ -10461,7 +10502,6 @@ ${clothingRule}
         const compareMaxBeats = this.config.imageGen?.qa?.compareMaxBeats ?? 20;
         let compareBeatsSeen = 0;
         let llmVisualPlan: VisualPlan | undefined;
-        let llmVisualPlanningFailure: Record<string, unknown> | undefined;
         const llmPromptMap = new Map<string, ImagePrompt>();
         const generatedImagesForVisualQA = new Map<string, GeneratedImage>();
         const generatedImagesForSceneQA = new Map<string, GeneratedImage>();
@@ -10480,194 +10520,217 @@ ${clothingRule}
         }>();
 
         let storyboardRequest: any | undefined;
-        let contractFidelityMetrics: any | undefined;
-        if (promptMode === 'llm' || promptMode === 'compare') {
-          try {
-            const sceneCharacterDescriptions = this.buildCharacterDescriptions(sceneCharacterIds, characterBible)
-              .map((desc: any) => {
-                const character = characterBible.characters.find(c => c.name === desc.name);
-                return {
-                  id: character?.id || desc.name,
-                  name: desc.name,
-                  physicalDescription: desc.appearance || '',
-                  distinctiveFeatures: desc.canonicalAppearance?.distinctiveFeatures || [],
-                  typicalAttire: desc.canonicalAppearance?.attire || '',
-                  role: character?.role || '',
-                  silhouetteHooks: desc.canonicalAppearance?.silhouetteHooks,
-                  shapeLanguage: desc.canonicalAppearance?.shapeLanguage,
-                  contrastNotes: desc.canonicalAppearance?.contrastNotes,
-                };
-              });
-            storyboardRequest = {
-              sceneId: scopedSceneId,
-              sceneName: scene.sceneName,
-              sceneDescription: [
-                scene.sceneName,
-                scene.settingContext?.description,
-                Array.isArray(scene.keyMoments) ? scene.keyMoments.join(' ') : undefined,
-              ].filter(Boolean).join('. '),
-              beats: enrichedBeats,
-              genre: brief.story.genre,
-              tone: brief.story.tone,
-              mood: sceneMood,
-              colorScript,
-              sceneContext,
-              choicePositions,
-              incomingChoiceContext: scene.incomingChoiceContext,
-              locationInfo: locationInfo ? {
-                locationId: locationInfo.locationId || sceneLocationId || scene.sceneId,
-                locationName: locationInfo.name || locationInfo.locationName || scene.sceneName,
-                basePersonality: locationInfo.basePersonality || locationInfo.personality || 'neutral',
-                description: locationInfo.description || locationInfo.fullDescription || scene.settingContext?.description || scene.sceneName,
-                isThreshold: locationInfo.isThreshold,
-              } : undefined,
-              characterBodyVocabularies,
-              characterDescriptions: sceneCharacterDescriptions,
-              imagePlanningMode,
-              storyboardPanelCap: 6,
-            };
-            let llmResult: any;
-            const scenePlanningAttempts = 2;
-            for (let sceneAttempt = 1; sceneAttempt <= scenePlanningAttempts; sceneAttempt += 1) {
-              llmResult = await withTimeout(
-                this.imageAgentTeam.generateFullSceneVisuals(storyboardRequest as any),
-                PIPELINE_TIMEOUTS.storyboard,
-                `ImageAgentTeam.generateFullSceneVisuals(${scopedSceneId})`,
+        const storyboardPacketByBeatId = new Map<string, VisualStoryboardPacket['shots'][number]>();
+        const storyboardPacketModeByBeatId = new Map<string, {
+          requestedMode: 'visual-storyboard';
+          effectiveMode: ImagePlanningMode;
+          fallbackReason?: string;
+          chunkIndex?: number;
+        }>();
+        const storyboardPackets: VisualStoryboardPacket[] = [];
+        if (imagePlanningMode === 'visual-storyboard') {
+          const sceneCharacterDescriptions = this.buildCharacterDescriptions(sceneCharacterIds, characterBible)
+            .map((desc: any) => {
+              const character = characterBible.characters.find(c => c.name === desc.name);
+              return {
+                id: character?.id || desc.name,
+                name: desc.name,
+                physicalDescription: desc.appearance || '',
+                distinctiveFeatures: desc.canonicalAppearance?.distinctiveFeatures || [],
+                typicalAttire: desc.canonicalAppearance?.attire || '',
+                role: character?.role || '',
+                silhouetteHooks: desc.canonicalAppearance?.silhouetteHooks,
+                shapeLanguage: desc.canonicalAppearance?.shapeLanguage,
+                contrastNotes: desc.canonicalAppearance?.contrastNotes,
+              };
+            });
+          const sceneDescription = [
+            scene.sceneName,
+            scene.settingContext?.description,
+            Array.isArray(scene.keyMoments) ? scene.keyMoments.join(' ') : undefined,
+          ].filter(Boolean).join('. ');
+          const sceneMasterPrompt = {
+            style: this.config.artStyle || '',
+            styleNegatives: 'photorealism, photographic lighting, live-action still, 3D render, cinematic realism, style drift, first-person POV',
+            location: scene.settingContext?.description || sceneDescription || scene.sceneName,
+            lightingColor: [
+              colorMoodHints?.palette ? `palette: ${colorMoodHints.palette}` : undefined,
+              colorMoodHints?.lighting ? `lighting: ${colorMoodHints.lighting}` : undefined,
+              colorMoodHints?.temperature ? `temperature: ${colorMoodHints.temperature}` : undefined,
+            ].filter(Boolean).join('; ') || sceneMood,
+            castPolicy: 'Only show characters explicitly required by each shot row; all other scene-present characters remain offscreen.',
+            thirdPersonCameraRule: 'Every image is a third-person observer camera outside the protagonist; no literal player-eye POV, disembodied hands, "your hand" framing, or camera inside the player body.',
+            referenceSummary: [] as StoryboardReferenceSummary[],
+          };
+          storyboardRequest = {
+            sceneId: scopedSceneId,
+            sceneName: scene.sceneName,
+            sceneDescription,
+            beats: enrichedBeats,
+            genre: brief.story.genre,
+            tone: brief.story.tone,
+            mood: sceneMood,
+            colorScript,
+            sceneContext,
+            choicePositions,
+            incomingChoiceContext: scene.incomingChoiceContext,
+            locationInfo: locationInfo ? {
+              locationId: locationInfo.locationId || sceneLocationId || scene.sceneId,
+              locationName: locationInfo.name || locationInfo.locationName || scene.sceneName,
+              basePersonality: locationInfo.basePersonality || locationInfo.personality || 'neutral',
+              description: locationInfo.description || locationInfo.fullDescription || scene.settingContext?.description || scene.sceneName,
+              isThreshold: locationInfo.isThreshold,
+            } : undefined,
+            characterBodyVocabularies,
+            characterDescriptions: sceneCharacterDescriptions,
+            imagePlanningMode,
+            storyboardPanelCap: 6,
+            sceneMasterPrompt,
+          };
+          const chunks = chunkStoryboardBeats(enrichedBeats, 6);
+          for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+            await this.checkCancellation();
+            const chunkBeats = chunks[chunkIndex];
+            const storyboardReferences: StoryboardReferenceSummary[] = [];
+            for (const chunkBeat of chunkBeats) {
+              const refs = this.gatherCharacterReferenceImages(
+                chunkBeat.characters || [],
+                characterBible,
+                sceneLocationId,
+                {
+                  includeExpressions: !!(chunkBeat.isClimaxBeat || chunkBeat.isKeyStoryBeat),
+                  family: 'story-beat',
+                  slotId: `story-beat:${scopedSceneId}::${chunkBeat.id}`,
+                },
               );
-              if (llmResult.success && llmResult.data) break;
-              if (sceneAttempt < scenePlanningAttempts) {
-                this.emit({
-                  type: 'warning',
-                  phase: 'images',
-                  message: `LLM visual planning failed for ${scene.sceneName} (attempt ${sceneAttempt}/${scenePlanningAttempts}); retrying before deterministic fallback: ${llmResult.error || 'unknown error'}`,
+              for (const ref of refs || []) {
+                storyboardReferences.push({
+                  role: ref.role || 'character-reference',
+                  characterName: ref.characterName,
+                  viewType: ref.viewType,
+                  purpose: ref.characterName ? 'character' : 'other',
+                  required: true,
                 });
-                await new Promise(resolve => setTimeout(resolve, 20_000));
               }
             }
-            if (llmResult.success && llmResult.data) {
-              llmVisualPlan = llmResult.data;
-              if (imagePlanningMode === 'visual-storyboard') {
-                const storyboardPlan = this.buildBeatSceneStoryboardPlan({
-                  sceneId: scene.sceneId,
-                  scopedSceneId,
-                  sceneName: scene.sceneName,
-                  sceneDescription: storyboardRequest.sceneDescription,
-                  beats: enrichedBeats,
-                  visualPlan: llmVisualPlan,
-                });
-                attachStoryboardPlanToVisualPlan(llmVisualPlan, storyboardPlan);
+            for (const styleRef of this._uploadedStyleReferenceImages || []) {
+              storyboardReferences.push({
+                role: styleRef.role || 'uploaded-style-reference',
+                viewType: styleRef.viewType,
+                purpose: 'style',
+                required: false,
+              });
+            }
+            const chunkStoryboardRequest = {
+              ...storyboardRequest,
+              beats: chunkBeats,
+              chunkIndex,
+              sceneMasterPrompt: {
+                ...sceneMasterPrompt,
+                referenceSummary: storyboardReferences,
+              },
+              storyboardReferences,
+            };
+            try {
+              const packetResult = await withTimeout(
+                (this.imageAgentTeam as any).generateStoryboardPacket(chunkStoryboardRequest),
+                PIPELINE_TIMEOUTS.storyboard,
+                `ImageAgentTeam.generateStoryboardPacket(${scopedSceneId}:chunk-${chunkIndex + 1})`,
+              );
+              if (!packetResult.success || !packetResult.data) {
+                throw new Error(packetResult.error || 'unknown storyboard packet failure');
               }
-              const rawPrompts = llmResult.data.prompts instanceof Map
-                ? llmResult.data.prompts
-                : new Map(Object.entries((llmResult.data as any).prompts || {}));
-              rawPrompts.forEach((prompt: ImagePrompt, key: string) => {
-                llmPromptMap.set(key, prompt);
-                const shot = llmVisualPlan?.shots?.find((s: any) => s.id === key || s.beatId === key);
-                if (shot?.beatId) llmPromptMap.set(shot.beatId, prompt);
-              });
-              try {
-                contractFidelityMetrics = (this.imageAgentTeam as any).computeContractFidelityMetrics?.(storyboardRequest, llmVisualPlan, llmPromptMap);
-              } catch { /* diagnostics only */ }
-              this.collectedVisualPlanning.visualPlans.push(llmVisualPlan);
+              const packet = packetResult.data as VisualStoryboardPacket;
+              packet.validation = validateVisualStoryboardPacket(packet);
+              if (!packet.validation.passed) {
+                throw new Error(`Storyboard packet validation failed: ${packet.validation.issues.join('; ')}`);
+              }
+              storyboardPackets.push(packet);
+              for (const shot of packet.shots || []) {
+                storyboardPacketByBeatId.set(shot.beatId, shot);
+                storyboardPacketModeByBeatId.set(shot.beatId, {
+                  requestedMode: 'visual-storyboard',
+                  effectiveMode: 'visual-storyboard',
+                  chunkIndex: packet.chunkIndex,
+                });
+              }
               await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
-                promptMode,
-                qaMode,
-                status: 'success',
-                shotCount: llmVisualPlan.shots?.length || 0,
-                promptCount: llmPromptMap.size,
-                contractFidelityMetrics,
-                imagePlanningMode,
-                storyboardSheets: (llmVisualPlan as any).storyboardSheets,
-                storyboardPanels: (llmVisualPlan as any).storyboardPanels,
-                storyboardCoverage: (llmVisualPlan as any).storyboardCoverage,
-                sequenceGrammar: (llmVisualPlan as any).sequenceGrammar,
-                continuityBible: (llmVisualPlan as any).continuityBible,
-                shots: llmVisualPlan.shots,
-                promptKeys: [...llmPromptMap.keys()],
-              });
-              this.emit({
-                type: 'debug',
-                phase: 'images',
-                message: `LLM visual planning restored for ${scene.sceneId}: ${llmVisualPlan.shots?.length || 0} shots, ${llmPromptMap.size} prompt keys`,
-              });
-            } else {
-              llmVisualPlanningFailure = {
-                status: 'failed',
-                error: llmResult.error || 'unknown LLM visual planning failure',
-                attempts: scenePlanningAttempts,
-                promptMode,
-                qaMode,
-                imagePlanningMode,
-                model: this.config.agents?.imagePlanner?.model,
-                provider: this.config.agents?.imagePlanner?.provider,
-                maxTokens: this.config.agents?.imagePlanner?.maxTokens,
-              };
+                requestedMode: 'visual-storyboard',
+                effectiveMode: 'visual-storyboard',
+                status: 'packet-success',
+                chunkIndex,
+                beatIds: packet.beatIds,
+                sceneMasterPrompt: packet.sceneMasterPrompt,
+                shots: packet.shots,
+                validation: packet.validation,
+              }, { suffix: `chunk-${chunkIndex + 1}` });
+            } catch (planningErr) {
+              const planningMsg = planningErr instanceof Error ? planningErr.message : String(planningErr);
               await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
-                promptMode,
-                qaMode,
-                status: 'failed',
-                degraded: true,
-                fallback: imagePlanningMode === 'visual-storyboard' ? 'structured-storyboard-only' : 'deterministic-prompts',
-                error: llmResult.error || 'unknown LLM visual planning failure',
-              }, { suffix: 'llm-failure' });
+                requestedMode: 'visual-storyboard',
+                effectiveMode: 'text',
+                status: 'packet-fallback',
+                fallback: 'text-plan',
+                chunkIndex,
+                beatIds: chunkBeats.map((beat: any) => beat.id),
+                error: planningMsg,
+              }, { suffix: `chunk-${chunkIndex + 1}.fallback` });
+              for (const fallbackBeat of chunkBeats) {
+                storyboardPacketModeByBeatId.set(fallbackBeat.id, {
+                  requestedMode: 'visual-storyboard',
+                  effectiveMode: 'text',
+                  fallbackReason: planningMsg,
+                  chunkIndex,
+                });
+              }
               this.emit({
                 type: 'warning',
                 phase: 'images',
-                message: `LLM visual planning failed for ${scene.sceneName}; deterministic prompts will be used for this scene: ${llmResult.error || 'unknown error'}`,
+                message: `Visual storyboard packet failed for ${scene.sceneName} chunk ${chunkIndex + 1}; text-plan fallback will render those beats: ${planningMsg}`,
               });
             }
-          } catch (planningErr) {
-            const planningMsg = planningErr instanceof Error ? planningErr.message : String(planningErr);
-            llmVisualPlanningFailure = {
-              status: 'threw',
-              error: planningMsg,
-              stack: planningErr instanceof Error ? planningErr.stack : undefined,
-              promptMode,
-              qaMode,
-              imagePlanningMode,
-              model: this.config.agents?.imagePlanner?.model,
-              provider: this.config.agents?.imagePlanner?.provider,
-              maxTokens: this.config.agents?.imagePlanner?.maxTokens,
-            };
+          }
+          if (storyboardPackets.length > 0) {
+            const storyboardPlan = this.buildBeatSceneStoryboardPlan({
+              sceneId: scene.sceneId,
+              scopedSceneId,
+              sceneName: scene.sceneName,
+              sceneDescription,
+              beats: enrichedBeats,
+            });
+            llmVisualPlan = attachStoryboardPlanToVisualPlan({
+              shots: storyboardPackets.flatMap((packet) => packet.shots.map((shot) => ({
+                id: shot.beatId,
+                beatId: shot.beatId,
+                type: 'beat',
+                shotType: shot.shotSize,
+                cameraAngle: shot.cameraAngle,
+                horizontalAngle: shot.cameraSide,
+                description: shot.promptFields.action,
+                composition: shot.promptFields.composition,
+                storyBeat: {
+                  action: shot.promptFields.action,
+                  emotion: shot.promptFields.emotionalRead || '',
+                },
+                characters: shot.requiredVisibleCharacterIds,
+              }))),
+            } as any, storyboardPlan);
+            this.collectedVisualPlanning.visualPlans.push(llmVisualPlan);
             await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
-              promptMode,
-              qaMode,
-              status: 'threw',
-              degraded: true,
-              fallback: imagePlanningMode === 'visual-storyboard' ? 'structured-storyboard-only' : 'deterministic-prompts',
-              error: planningMsg,
-              stack: planningErr instanceof Error ? planningErr.stack : undefined,
-            }, { suffix: 'llm-failure' });
-            this.emit({
-              type: 'warning',
-              phase: 'images',
-              message: `LLM visual planning threw for ${scene.sceneName}; deterministic prompts will be used for this scene: ${planningMsg}`,
+              requestedMode: 'visual-storyboard',
+              effectiveMode: 'visual-storyboard',
+              status: 'packet-summary',
+              packetCount: storyboardPackets.length,
+              textFallbackBeatIds: enrichedBeats
+                .filter((beat: any) => !storyboardPacketByBeatId.has(beat.id))
+                .map((beat: any) => beat.id),
+              storyboardSheets: (llmVisualPlan as any).storyboardSheets,
+              storyboardPanels: (llmVisualPlan as any).storyboardPanels,
+              storyboardCoverage: (llmVisualPlan as any).storyboardCoverage,
+              sequenceGrammar: (llmVisualPlan as any).sequenceGrammar,
+              continuityBible: (llmVisualPlan as any).continuityBible,
             });
           }
-        }
-
-        if (imagePlanningMode === 'visual-storyboard' && !llmVisualPlan) {
-          const storyboardPlan = this.buildBeatSceneStoryboardPlan({
-            sceneId: scene.sceneId,
-            scopedSceneId,
-            sceneName: scene.sceneName,
-            sceneDescription: scenePromptCtx.sceneName,
-            beats: enrichedBeats,
-          });
-          await this.saveSceneVisualPlanningDiagnostic(outputDirectory, scopedSceneId, {
-            promptMode,
-            qaMode,
-            imagePlanningMode,
-            status: 'structured-storyboard-only',
-            degraded: true,
-            fallbackReason: 'llm-visual-planning-unavailable',
-            llmFailure: llmVisualPlanningFailure,
-            storyboardSheets: storyboardPlan.sheets,
-            storyboardPanels: storyboardPlan.panels,
-            storyboardCoverage: storyboardPlan.coverage,
-            sequenceGrammar: storyboardPlan.sequenceGrammar,
-            continuityBible: storyboardPlan.continuityBible,
-          });
         }
 
         for (let beatIdx = 0; beatIdx < enrichedBeats.length; beatIdx++) {
@@ -10931,6 +10994,12 @@ ${clothingRule}
           if (beatPlan) {
             deterministicPrompt = overrideShotFromPlan(deterministicPrompt, beatPlan.assignedShotType, beatPlan.assignedAngle);
           }
+          const storyboardShotPacket = storyboardPacketByBeatId.get(beatId);
+          const storyboardModeInfo = storyboardPacketModeByBeatId.get(beatId) || (
+            imagePlanningMode === 'visual-storyboard'
+              ? { requestedMode: 'visual-storyboard' as const, effectiveMode: 'text' as ImagePlanningMode, fallbackReason: 'visual-storyboard-packet-unavailable' }
+              : undefined
+          );
 
           const rawLlmPrompt = llmPromptMap.get(beatId);
           const shouldCompareThisBeat = promptMode === 'compare' && compareBeatsSeen < compareMaxBeats;
@@ -11002,20 +11071,26 @@ ${clothingRule}
           }
 
           imagePrompt = {
-            ...imagePrompt,
+            ...this.applyThirdPersonRenderContract(imagePrompt, storyboardShotPacket),
             promptContract: {
               ...(imagePrompt.promptContract || {}),
               effectivePromptMode: promptMode,
               effectivePromptSource: promptSource,
               effectiveQaMode: qaMode,
               imagePlanningMode,
+              requestedPlanningMode: storyboardModeInfo?.requestedMode || imagePlanningMode,
+              effectivePlanningMode: storyboardModeInfo?.effectiveMode || imagePlanningMode,
+              visualStoryboardFallbackReason: storyboardModeInfo?.fallbackReason,
               styleSource: this._uploadedStyleReferenceImages.length > 0
                 ? 'user-visual'
                 : (this._generatedStyleReferencesAllowed && styleReferenceStored ? 'approved-generated-anchor' : 'raw-season-style'),
               visibleCharacterRefsRequired: shotCharacterNames,
               visualCast: (beat as any).visualCast,
               coveragePlan: (beat as any).coveragePlan,
-              visualPlanningStatus: rawLlmPrompt ? 'llm-prompt-available' : 'deterministic-fallback',
+              visualStoryboardPacket: storyboardShotPacket,
+              visualPlanningStatus: storyboardShotPacket
+                ? 'visual-storyboard-packet'
+                : (storyboardModeInfo?.effectiveMode === 'text' ? 'text-plan-fallback' : (rawLlmPrompt ? 'llm-prompt-available' : 'deterministic-fallback')),
             },
           };
 
@@ -11045,9 +11120,17 @@ ${clothingRule}
             characterDescriptions: shotCharacterDescriptionsForSlot,
             visualCast: (beat as any).visualCast,
             coveragePlan: (beat as any).coveragePlan,
+            storyboardReferencePack: storyboardShotPacket?.referencePack,
+            requestedPlanningMode: storyboardModeInfo?.requestedMode || imagePlanningMode,
+            effectivePlanningMode: storyboardModeInfo?.effectiveMode || imagePlanningMode,
+            visualStoryboardFallbackReason: storyboardModeInfo?.fallbackReason,
             promptMode,
             qaMode,
           };
+          const slotReferencePack = this.createSlotReferencePack(
+            `story-beat:${scopedSceneId}::${beatId}`,
+            referenceImages,
+          );
 
           try {
             // --- PANEL PATH: generate multiple sub-images for this beat ---
@@ -11145,7 +11228,10 @@ ${clothingRule}
                         metadata: { panelIndex: pIdx },
                       });
                     }
-                    this.assetRegistry.markSuccess(panelSlotId, panelResult, { prompt: panelPrompt });
+                    this.assetRegistry.markSuccess(panelSlotId, panelResult, {
+                      prompt: panelPrompt,
+                      referencePack: this.createSlotReferencePack(panelSlotId, panelRefs),
+                    });
                   } catch { /* non-fatal */ }
 
                   if (panelResult.imageData && panelResult.mimeType) {
@@ -11173,13 +11259,24 @@ ${clothingRule}
                       scopedSceneId,
                       beatId,
                       storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beatId}].image`,
-                      baseIdentifier: identifier,
-                      required: false,
-                      qualityTier: 'standard',
-                      coverageKey: `beat:${scene.sceneId}::${beatId}`,
-                    });
+                        baseIdentifier: identifier,
+                        required: false,
+                        qualityTier: 'standard',
+                        coverageKey: `beat:${scene.sceneId}::${beatId}`,
+                        metadata: {
+                          requestedPlanningMode: storyboardModeInfo?.requestedMode || imagePlanningMode,
+                          effectivePlanningMode: storyboardModeInfo?.effectiveMode || imagePlanningMode,
+                          promptSource,
+                          fallbackReason: storyboardModeInfo?.fallbackReason,
+                          visibleCharacterNames: shotCharacterNames,
+                          offscreenCharacterIds: storyboardShotPacket?.offscreenCharacterIds,
+                        },
+                      });
                   }
-                  this.assetRegistry.markSuccess(heroSlotId, { imageUrl: panelUrls[0] } as GeneratedImage);
+                  this.assetRegistry.markSuccess(heroSlotId, { imageUrl: panelUrls[0] } as GeneratedImage, {
+                    prompt: imagePrompt,
+                    referencePack: slotReferencePack,
+                  });
                 } catch { /* non-fatal */ }
 
                 beatResumeSet.add(identifier);
@@ -11269,9 +11366,20 @@ ${clothingRule}
                     required: false,
                     qualityTier: 'standard',
                     coverageKey: `beat:${scene.sceneId}::${beatId}`,
+                    metadata: {
+                      requestedPlanningMode: storyboardModeInfo?.requestedMode || imagePlanningMode,
+                      effectivePlanningMode: storyboardModeInfo?.effectiveMode || imagePlanningMode,
+                      promptSource,
+                      fallbackReason: storyboardModeInfo?.fallbackReason,
+                      visibleCharacterNames: shotCharacterNames,
+                      offscreenCharacterIds: storyboardShotPacket?.offscreenCharacterIds,
+                    },
                   });
                 }
-                this.assetRegistry.markSuccess(slotId, result, { prompt: imagePrompt });
+                this.assetRegistry.markSuccess(slotId, result, {
+                  prompt: imagePrompt,
+                  referencePack: slotReferencePack,
+                });
               } catch { /* non-fatal: registry is supplementary to beatImages map */ }
 
               if (beatIdx === 0) {
@@ -11293,7 +11401,10 @@ ${clothingRule}
                       coverageKey: `scene:${scene.sceneId}`,
                     });
                   }
-                  this.assetRegistry.markSuccess(sceneSlotId, result);
+                  this.assetRegistry.markSuccess(sceneSlotId, result, {
+                    prompt: imagePrompt,
+                    referencePack: this.createSlotReferencePack(sceneSlotId, referenceImages),
+                  });
                 } catch { /* non-fatal */ }
               }
 
@@ -11812,7 +11923,8 @@ ${clothingRule}
     // underlying work, so the file may appear after the pipeline gave up on it).
     this.reconcileOrphanedBeatImages(brief, sceneContents, beatImages, sceneImages);
 
-    // Recovery pass: detect scenes that got zero images and run fallback generation
+    // Slot repair pass: render only the individual beat slots that remain missing
+    // after registry/disk reconciliation. This avoids scene-wide recovery bursts.
     for (const scene of sceneContents) {
       await this.checkCancellation();
       const sceneBeats = scene.beats || [];
@@ -11820,24 +11932,24 @@ ${clothingRule}
       const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
       if (!shouldProcessSceneForRequestedSlots(scopedSceneId)) continue;
 
-      const coveredCount = sceneBeats.filter(b => beatImages.has(this.getEpisodeScopedBeatKey(brief, scene.sceneId, b.id))).length;
-      if (coveredCount > 0) continue; // scene has at least some images
+      const missingBeats = sceneBeats.filter(b => !beatImages.has(this.getEpisodeScopedBeatKey(brief, scene.sceneId, b.id)));
+      if (missingBeats.length === 0) continue;
 
-      console.warn(`[Pipeline] 🔄 Recovery: scene "${scene.sceneId}" ("${scene.sceneName}") has 0/${sceneBeats.length} beat images — generating fallback images`);
+      console.warn(`[Pipeline] Slot repair: scene "${scene.sceneId}" ("${scene.sceneName}") has ${missingBeats.length}/${sceneBeats.length} missing beat images — generating per-slot text-plan repairs`);
       this.emit({
         type: 'warning',
         phase: 'images',
-        message: `Recovery: generating fallback images for ${scene.sceneName} (0/${sceneBeats.length} beats had images)`,
+        message: `Repair: generating text-plan fallback images for ${scene.sceneName} (${missingBeats.length}/${sceneBeats.length} beats missing)`,
       });
 
       const sceneCharacterIds = await this.ensureCharacterReferencesForVisibleCharacters(
         this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id),
         characterBible,
         brief,
-        `recovery-scene:${scopedSceneId}`
+        `repair-scene:${scopedSceneId}`
       );
 
-      for (const beat of sceneBeats) {
+      for (const beat of missingBeats) {
         try {
           const beatCharContext = this.analyzeBeatCharacters(
             beat.text,
@@ -11864,7 +11976,7 @@ ${clothingRule}
             shotCharacterIds,
             characterBible,
             brief,
-            `recovery-beat:${scopedSceneId}:${beat.id}`
+            `repair-beat:${scopedSceneId}:${beat.id}`
           );
           const shotCharacterNames = shotCharacterIds
             .map(id => characterBible.characters.find(c => c.id === id)?.name)
@@ -11876,18 +11988,19 @@ ${clothingRule}
             shotCharacterIds,
             characterBible,
             undefined,
-            { family: 'story-beat', slotId: `story-beat:${scopedSceneId}::${beat.id}:recovery` }
+            { family: 'story-beat', slotId: `story-beat:${scopedSceneId}::${beat.id}:repair` }
           );
           const fallbackPrompt: ImagePrompt = this.withSettingAwarePrompt({
-            prompt: `${this.sanitizePromptText(beat.text, brief, '')}${visibleCastClause} Show exactly one concrete story moment in a single continuous frame from one camera angle. Do not show multiple moments, repeated figures, or stacked scenes inside the image.`,
+            prompt: `${this.sanitizePromptText(beat.text, brief, '')}${visibleCastClause} Text-plan repair render. Translate second-person prose into third-person visual action centered on the protagonist from outside the body. Show exactly one concrete story moment in a single continuous frame from one camera angle. Do not show multiple moments, repeated figures, or stacked scenes inside the image.`,
             style: this.config.artStyle || undefined,
             aspectRatio: '9:19.5',
-            composition: `Scene: ${scene.sceneName}. Genre: ${brief.story.genre}, Tone: ${brief.story.tone}. Generate exactly ONE single full-bleed image with ONE unified scene and ONE camera angle. No split-screen, no diptych, no stacked panels, no repeated subject, no image-within-image.`,
-            negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, storyboard, grid layout, diptych, triptych, collage, duplicate character, same character twice, cloned figure, repeated subject',
+            composition: `Scene: ${scene.sceneName}. Genre: ${brief.story.genre}, Tone: ${brief.story.tone}. Generate exactly ONE single full-bleed third-person image with ONE unified scene and ONE camera angle. No first-person POV, no split-screen, no diptych, no stacked panels, no repeated subject, no image-within-image.`,
+            negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, storyboard, grid layout, diptych, triptych, collage, duplicate character, same character twice, cloned figure, repeated subject, first-person POV, player-eye view, disembodied hands, your hand, photorealism, live-action still, photographic realism, style drift',
           }, scene.settingContext);
-          const identifier = `beat-${scopedSceneId}-${beat.id}-recovery`;
+          const promptWithContracts = this.applyThirdPersonRenderContract(fallbackPrompt);
+          const identifier = `beat-${scopedSceneId}-${beat.id}-repair`;
           const result = await this.generateImageWithDefectRetries(
-            fallbackPrompt,
+            promptWithContracts,
             identifier,
             {
               sceneId: scopedSceneId,
@@ -11897,9 +12010,12 @@ ${clothingRule}
               characterNames: shotCharacterNames,
               characterDescriptions: this.buildCharacterDescriptions(shotCharacterIds, characterBible),
               shotCastReason: shotCast.shotCastReason,
+              requestedPlanningMode: 'visual-storyboard',
+              effectivePlanningMode: 'text',
+              visualStoryboardFallbackReason: 'slot-repair-after-registry-disk-reconcile',
             },
             referenceImages.length > 0 ? referenceImages : undefined,
-            `recoveryFallback(${scopedSceneId}:${beat.id})`,
+            `textPlanRepair(${scopedSceneId}:${beat.id})`,
             outputDirectory,
           );
           if (result.imageUrl) {
@@ -11907,16 +12023,43 @@ ${clothingRule}
             if (!sceneImages.has(scopedSceneId)) {
               sceneImages.set(scopedSceneId, result.imageUrl);
             }
+            const slotId = `story-beat:${scopedSceneId}::${beat.id}`;
+            try {
+              if (!this.assetRegistry.get(slotId)) {
+                this.assetRegistry.planSlot({
+                  slotId,
+                  family: 'story-beat',
+                  imageType: 'beat',
+                  sceneId: scene.sceneId,
+                  scopedSceneId,
+                  beatId: beat.id,
+                  storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beat.id}].image`,
+                  baseIdentifier: identifier,
+                  required: false,
+                  qualityTier: 'standard',
+                  coverageKey: `beat:${scene.sceneId}::${beat.id}`,
+                  metadata: {
+                    requestedPlanningMode: 'visual-storyboard',
+                    effectivePlanningMode: 'text',
+                    promptSource: 'text-plan-repair',
+                  },
+                });
+              }
+              this.assetRegistry.markSuccess(slotId, result, {
+                prompt: promptWithContracts,
+                referencePack: this.createSlotReferencePack(slotId, referenceImages),
+              });
+            } catch { /* non-fatal */ }
           }
         } catch (beatErr) {
           const beatErrMsg = beatErr instanceof Error ? beatErr.message : String(beatErr);
-          console.warn(`[Pipeline] Recovery fallback failed for beat ${beat.id} in scene ${scene.sceneId}: ${beatErrMsg}`);
-          this.emit({ type: 'warning', phase: 'images', message: `Recovery fallback failed for ${scene.sceneId}:${beat.id}: ${beatErrMsg}` });
+          console.warn(`[Pipeline] Text-plan repair failed for beat ${beat.id} in scene ${scene.sceneId}: ${beatErrMsg}`);
+          this.emit({ type: 'warning', phase: 'images', message: `Text-plan repair failed for ${scene.sceneId}:${beat.id}: ${beatErrMsg}` });
         }
       }
 
       const recoveredCount = sceneBeats.filter(b => beatImages.has(this.getEpisodeScopedBeatKey(brief, scene.sceneId, b.id))).length;
-      console.log(`[Pipeline] Recovery complete for scene "${scene.sceneId}": ${recoveredCount}/${sceneBeats.length} beats now have images`);
+      console.log(`[Pipeline] Slot repair complete for scene "${scene.sceneId}": ${recoveredCount}/${sceneBeats.length} beats now have images`);
       if (recoveredCount === 0) {
         this.throwIfFailFast(
           `Scene ${scene.sceneName} produced zero beat images`,
@@ -14453,6 +14596,49 @@ Design the key art. Return STRICT JSON matching the schema.`;
     };
   }
 
+  private applyThirdPersonRenderContract(
+    prompt: ImagePrompt,
+    storyboardShot?: VisualStoryboardPacket['shots'][number],
+  ): ImagePrompt {
+    const thirdPersonContract = 'CAMERA POV CONTRACT: Render this as a third-person observer shot outside every character. Never use first-person/player-eye POV, disembodied hands, "your hand" framing, or a camera inside the protagonist body.';
+    const storyboardContract = storyboardShot ? [
+      'VISUAL STORYBOARD PACKET:',
+      `Sequence role: ${storyboardShot.sequenceRole}.`,
+      `Shot: ${storyboardShot.shotSize}, ${storyboardShot.cameraAngle}, ${storyboardShot.cameraHeight} height, ${storyboardShot.cameraSide} side.`,
+      `POV mode: ${storyboardShot.thirdPersonPov}.`,
+      `Required visible cast: ${(storyboardShot.requiredVisibleCharacterIds || []).join(', ') || 'none'}.`,
+      `Optional/background cast: ${(storyboardShot.optionalBackgroundCharacterIds || []).join(', ') || 'none'}.`,
+      `Explicitly offscreen: ${(storyboardShot.offscreenCharacterIds || []).join(', ') || 'none'}.`,
+      `Shot action: ${storyboardShot.promptFields?.action || ''}`,
+      storyboardShot.promptFields?.emotionalRead ? `Emotional read: ${storyboardShot.promptFields.emotionalRead}` : '',
+      storyboardShot.promptFields?.keyDetail ? `Key detail: ${storyboardShot.promptFields.keyDetail}` : '',
+      storyboardShot.continuityFrom ? `Continuity from previous shot: ${storyboardShot.continuityFrom}` : '',
+      `Dramatic reason: ${storyboardShot.dramaticReason || 'story beat progression'}.`,
+    ].filter(Boolean).join(' ') : '';
+    const negativeAdditions = 'first-person POV, player-eye view, POV hands, disembodied hands, your hand, your hands, selfie angle, photorealism, live-action still, photographic realism, style drift';
+    return {
+      ...prompt,
+      prompt: [prompt.prompt, thirdPersonContract, storyboardContract].filter(Boolean).join('\n\n'),
+      composition: [prompt.composition, thirdPersonContract].filter(Boolean).join(' '),
+      negativePrompt: [prompt.negativePrompt, negativeAdditions].filter(Boolean).join(', '),
+    };
+  }
+
+  private createSlotReferencePack(slotId: string, references: unknown[] | undefined): SlotReferencePack | undefined {
+    const refs = Array.isArray(references) ? references.filter(Boolean) as any[] : [];
+    if (refs.length === 0) return undefined;
+    return {
+      slotId,
+      totalCount: refs.length,
+      references: refs,
+      summary: refs.map((ref) => ({
+        role: ref.role || 'reference',
+        characterName: ref.characterName,
+        viewType: ref.viewType,
+      })),
+    };
+  }
+
   private withSettingAwarePrompt(prompt: ImagePrompt, settingContext?: SceneSettingContext): ImagePrompt {
     if (!settingContext) return prompt;
     const selection = selectStyleAdaptation(prompt.style || this.config.artStyle || undefined, settingContext);
@@ -16227,11 +16413,12 @@ Design the key art. Return STRICT JSON matching the schema.`;
       'reference_sheet_artifact',
       'photorealism',
       'style_drift',
+      'first_person_pov',
     ]);
     const normalized = issues.filter((issue): issue is ImageDefectIssue => allowed.has(issue as ImageDefectIssue));
     return normalized.length > 0
       ? normalized
-      : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'style_drift'];
+      : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'style_drift', 'first_person_pov'];
   }
 
   private async saveImageQADiagnostic(

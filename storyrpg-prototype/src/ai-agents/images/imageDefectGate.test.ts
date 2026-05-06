@@ -19,6 +19,7 @@ describe('image defect gate helpers', () => {
         'reference sheet annotations',
         'photorealistic architectural visualization',
         'generic cinematic concept art style drift',
+        'first-person POV with disembodied hands',
       ],
       reason: 'bad image',
     });
@@ -33,6 +34,7 @@ describe('image defect gate helpers', () => {
       'reference_sheet_artifact',
       'photorealism',
       'style_drift',
+      'first_person_pov',
     ]);
   });
 
@@ -48,13 +50,14 @@ describe('image defect gate helpers', () => {
   it('adds defect-specific correction text and negative prompt terms', () => {
     const patch = buildDefectRetryPrompt(
       { prompt: 'A full-body character reference.', negativePrompt: 'text' },
-      ['extra_limbs', 'panel_leakage'],
+      ['extra_limbs', 'panel_leakage', 'first_person_pov'],
     );
 
     expect(patch.prompt.prompt).toContain('IMAGE QA CORRECTION');
     expect(patch.prompt.prompt).toContain('exactly two arms');
     expect(patch.prompt.negativePrompt).toContain('extra arms');
     expect(patch.prompt.negativePrompt).toContain('multi-panel layout');
+    expect(patch.prompt.negativePrompt).toContain('disembodied hands');
   });
 
   it('detects prompts that intentionally allow floating', () => {

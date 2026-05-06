@@ -117,7 +117,7 @@ export interface Story {
    * their image batch has finished. `pending` stories are valid drafts but
    * should not be treated as fully illustrated catalog entries yet.
    */
-  imagesStatus?: 'pending' | 'running' | 'complete' | 'failed';
+  imagesStatus?: 'pending' | 'running' | 'partial' | 'complete' | 'failed';
 
   /**
    * Structured art-style profile the generation pipeline used. Persisted so

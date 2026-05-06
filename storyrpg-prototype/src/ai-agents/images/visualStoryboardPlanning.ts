@@ -73,6 +73,71 @@ export interface SceneVisualStoryboardPlan {
   };
 }
 
+export interface StoryboardReferenceSummary {
+  role: string;
+  characterName?: string;
+  viewType?: string;
+  purpose: 'character' | 'style' | 'location' | 'continuity' | 'other';
+  required?: boolean;
+}
+
+export interface StoryboardShotPacket {
+  beatId: string;
+  slotId: string;
+  sequenceRole: StoryboardSequenceRole;
+  shotSize: string;
+  cameraAngle: string;
+  cameraHeight: string;
+  cameraSide: string;
+  thirdPersonPov: 'observer' | 'over-shoulder' | 'environmental-insert';
+  focalCharacterIds: string[];
+  requiredVisibleCharacterIds: string[];
+  optionalBackgroundCharacterIds: string[];
+  offscreenCharacterIds: string[];
+  continuityFrom?: string;
+  dramaticReason: string;
+  promptFields: {
+    action: string;
+    emotionalRead?: string;
+    keyDetail?: string;
+    composition?: string;
+  };
+  referencePack: {
+    required: StoryboardReferenceSummary[];
+    optional: StoryboardReferenceSummary[];
+    missing: StoryboardReferenceSummary[];
+  };
+}
+
+export interface VisualStoryboardPacket {
+  version: 1;
+  generatedAt: string;
+  requestedMode: 'visual-storyboard';
+  effectiveMode: ImagePlanningMode;
+  sceneId: string;
+  scopedSceneId: string;
+  sceneName: string;
+  chunkIndex: number;
+  beatIds: string[];
+  fallbackReason?: string;
+  sceneMasterPrompt: {
+    style: string;
+    styleNegatives: string;
+    location: string;
+    lightingColor: string;
+    castPolicy: string;
+    thirdPersonCameraRule: string;
+    referenceSummary: StoryboardReferenceSummary[];
+  };
+  continuityBible: SceneContinuityBible;
+  sequenceGrammar: SceneSequenceGrammar;
+  shots: StoryboardShotPacket[];
+  validation: {
+    passed: boolean;
+    issues: string[];
+  };
+}
+
 export interface StoryboardSlotInput {
   slotId: string;
   beatId?: string;
@@ -258,6 +323,45 @@ export function buildSceneVisualStoryboardPlan(params: {
       missingFinalSlotIds: finalSlotIds.filter((slotId) => !mapped.has(slotId)),
     },
   };
+}
+
+export function chunkStoryboardBeats<T extends { id: string }>(beats: T[], chunkSize = DEFAULT_PANEL_CAP): T[][] {
+  const size = Math.max(1, chunkSize || DEFAULT_PANEL_CAP);
+  const chunks: T[][] = [];
+  for (let index = 0; index < beats.length; index += size) {
+    chunks.push(beats.slice(index, index + size));
+  }
+  return chunks;
+}
+
+export function validateVisualStoryboardPacket(packet: VisualStoryboardPacket): { passed: boolean; issues: string[] } {
+  const issues: string[] = [];
+  if (packet.requestedMode !== 'visual-storyboard') issues.push('requestedMode must be visual-storyboard');
+  if (!packet.sceneMasterPrompt?.thirdPersonCameraRule) issues.push('missing third-person camera rule');
+  if (!Array.isArray(packet.shots) || packet.shots.length === 0) issues.push('packet has no shots');
+  const shotBeatIds = new Set<string>();
+  let solitaryRun = 0;
+  let lastAngle = '';
+  for (const shot of packet.shots || []) {
+    if (!shot.beatId) issues.push('shot missing beatId');
+    if (shot.beatId) shotBeatIds.add(shot.beatId);
+    if (!shot.thirdPersonPov || shot.thirdPersonPov === ('subjective' as never)) {
+      issues.push(`${shot.beatId || 'unknown'} uses invalid POV`);
+    }
+    const visibleCount = (shot.requiredVisibleCharacterIds?.length || 0) + (shot.optionalBackgroundCharacterIds?.length || 0);
+    const isSolitaryNeutral = visibleCount <= 1 && /^(ms|mcu|cu|medium|close)/i.test(shot.shotSize || '') && /eye/i.test(shot.cameraAngle || '');
+    solitaryRun = isSolitaryNeutral ? solitaryRun + 1 : 0;
+    if (solitaryRun > 2) issues.push(`${shot.beatId || 'unknown'} repeats solitary neutral composition more than twice`);
+    const angleKey = `${shot.shotSize}|${shot.cameraAngle}|${shot.cameraHeight}|${shot.cameraSide}`;
+    if (lastAngle && lastAngle === angleKey && !/locked micro/i.test(shot.dramaticReason || '')) {
+      issues.push(`${shot.beatId || 'unknown'} repeats previous camera without locked micro-progression`);
+    }
+    lastAngle = angleKey;
+  }
+  for (const beatId of packet.beatIds || []) {
+    if (!shotBeatIds.has(beatId)) issues.push(`missing shot for ${beatId}`);
+  }
+  return { passed: issues.length === 0, issues };
 }
 
 export function visualPlanSlotsFromBeats(scopedSceneId: string, beats: Array<{ id: string; text?: string }>): StoryboardSlotInput[] {

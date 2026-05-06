@@ -615,13 +615,17 @@ export class ImageGenerationService {
   private getStyleReferenceGuidance(): string {
     switch (this.config.styleReferenceStrength || 'balanced') {
       case 'subtle':
-        return 'Loose style inspiration only - borrow broad palette and rendering mood while keeping the ART STYLE text directive authoritative.';
+        return 'Loose style inspiration only - borrow broad palette and rendering mood while keeping the ART STYLE text directive authoritative. Do NOT copy the reference image camera angle, character placement, pose, blocking, or composition.';
       case 'strong':
-        return 'Primary style target - closely match the reference image color language, rendering density, material treatment, and composition feel unless the ART STYLE text conflicts.';
+        return 'Primary style target - closely match the reference image color language, rendering density, and material treatment unless the ART STYLE text conflicts. Do NOT copy the reference image camera angle, character placement, pose, blocking, or composition; every story beat needs fresh staging driven by the scene prompt.';
       case 'balanced':
       default:
-        return 'Style consistency reference - approximate guide for color temperature, rendering density, and composition feel. The ART STYLE text directive above is authoritative; follow its description over any visual differences in this reference.';
+        return 'Style consistency reference - approximate guide for color temperature, rendering density, and material treatment. The ART STYLE text directive above is authoritative; follow its description over any visual differences in this reference. Do NOT copy the reference image camera angle, character placement, pose, blocking, or composition.';
     }
+  }
+
+  private getPreviousSceneContinuityGuidance(): string {
+    return 'Previous scene — SETTING AND LIGHT CONTINUITY REFERENCE ONLY. Match broad color grading, lighting temperature, time of day, and environmental feel. Do NOT copy character appearance, camera angle, pose, blocking, character placement, focal point, or composition from this image; the new story moment must have fresh staging.';
   }
 
   private resolveMidjourneyStyleWeight(baseWeight: number | undefined): number {
@@ -1225,11 +1229,7 @@ export class ImageGenerationService {
       }
 
       for (const ref of prevScene) {
-        sections.push(
-          `Image ${imageIdx}: Previous scene — STYLE AND SETTING CONTINUITY REFERENCE ONLY. ` +
-          `Match the color grading, lighting temperature, and environmental feel of this image. ` +
-          `Do NOT copy character appearance from this image — character identity comes from the dedicated character reference images below.`
-        );
+        sections.push(`Image ${imageIdx}: ${this.getPreviousSceneContinuityGuidance()}`);
         imageIdx++;
       }
 
@@ -1551,7 +1551,7 @@ export class ImageGenerationService {
     }
     if (gemSettings.includePreviousScene && this._geminiPreviousScene) {
       parts.push({ inlineData: { mimeType: this._geminiPreviousScene.mimeType, data: this._geminiPreviousScene.data } });
-      parts.push({ text: `Previous scene — STYLE AND SETTING CONTINUITY REFERENCE ONLY. Match color grading, lighting temperature, and environmental feel. Do NOT copy character appearance from this image; character identity comes from the dedicated character reference images.` });
+      parts.push({ text: this.getPreviousSceneContinuityGuidance() });
       num++;
     }
     return num;
@@ -3435,7 +3435,7 @@ export class ImageGenerationService {
           // 4. Style reference (for visual consistency across episode)
           if (gemSettings.includeStyleReference && this._geminiStyleReference) {
             parts.push({ inlineData: { mimeType: this._geminiStyleReference.mimeType, data: this._geminiStyleReference.data } });
-            parts.push({ text: `Image ${imageNumber}: Style consistency reference — approximate guide for color temperature, rendering density, and composition feel. The ART STYLE text directive above is authoritative; follow its description over any visual differences in this reference.` });
+            parts.push({ text: `Image ${imageNumber}: ${this.getStyleReferenceGuidance()}` });
             imageManifest.push(`Image ${imageNumber}: Style reference`);
             imageNumber++;
           }
@@ -3463,7 +3463,7 @@ export class ImageGenerationService {
           // 5. Previous scene image (for scene-to-scene continuity)
           if (gemSettings.includePreviousScene && this._geminiPreviousScene) {
             parts.push({ inlineData: { mimeType: this._geminiPreviousScene.mimeType, data: this._geminiPreviousScene.data } });
-            parts.push({ text: `Image ${imageNumber}: Previous scene — STYLE AND SETTING CONTINUITY REFERENCE ONLY. Match color grading, lighting, and environmental feel. Do NOT copy character appearance from this image; character identity comes from the dedicated character reference images.` });
+            parts.push({ text: `Image ${imageNumber}: ${this.getPreviousSceneContinuityGuidance()}` });
             imageManifest.push(`Image ${imageNumber}: Previous scene continuity`);
             imageNumber++;
           }
@@ -3521,10 +3521,10 @@ export class ImageGenerationService {
             // style reference / previous-scene images are weak visual hints,
             // not style sources.
             if (styleLabel) {
-              consistencyText += ` Use ${styleLabel} as a weak hint for color temperature and rendering density only; the text art-style directive above is authoritative when they conflict.`;
+              consistencyText += ` Use ${styleLabel} as a weak hint for color temperature and rendering density only; do not copy its pose, camera angle, blocking, focal point, or composition. The text art-style directive above is authoritative when they conflict.`;
             }
             if (prevLabel) {
-              consistencyText += ` Maintain environmental / lighting continuity from ${prevLabel} (color grading, time of day), but NOT its rendering style — the text art-style directive governs rendering.`;
+              consistencyText += ` Maintain environmental / lighting continuity from ${prevLabel} (color grading, time of day), but NOT its rendering style, pose, camera angle, blocking, focal point, or composition — the text story moment governs staging.`;
             }
             parts.push({ text: consistencyText });
 
@@ -3870,6 +3870,14 @@ export class ImageGenerationService {
     // 8. COMPOSITION — woven in as direction, not a labeled field
     if (strengthenedPrompt.composition) {
       sections.push(strengthenedPrompt.composition);
+    }
+
+    if (hasRefs) {
+      sections.push(
+        'FRESH COMPOSITION RULE: Reference images are identity/style/continuity aids only. ' +
+        'Do NOT copy their pose, camera angle, character placement, blocking, focal point, or composition. ' +
+        'Compose this beat from the story action with a new arrangement of bodies, foreground/midground/background, and visual emphasis.'
+      );
     }
 
     // 9. SPATIAL PROPORTIONALITY — characters at similar depth must be similar size

@@ -316,7 +316,7 @@ ${TRANSITION_CONTINUITY_RULES}
 ${TRANSITION_PROMPT_TEMPLATES}
 
 When a transition type is specified, you MUST enforce its continuity rules:
-- **moment_to_moment**: Include "IDENTICAL camera angle", "IDENTICAL environment", "SAME position with TINY change in [X]"
+- **moment_to_moment**: Preserve emotional continuity and the specific micro-change. Use locked-off camera/position ONLY when the beat explicitly provides a locked_micro_progression affordance with changeOnly.
 - **action_to_action**: Include "SAME setting", "SAME character", "NOW showing [key pose phase]"
 - **subject_to_subject**: Include "SAME location", "SAME time", "IDENTICAL lighting", "NOW focused on [different subject]"
 - **scene_to_scene**: Include time/space change indicators, but note continuity thread
@@ -336,7 +336,7 @@ The negativePrompt MUST always include: 'triptych, diptych, collage, picture-in-
 The negativePrompt MUST always include 'text overlay, caption text, title text, speech bubbles, watermarks, signatures'. The image must contain NO rendered text except text that naturally exists within the scene world (e.g. a shop sign, book title, clothing text, or banner visible to characters). No captions, labels, or annotations.
 
 ## CRITICAL: For MOMENT_TO_MOMENT transitions
-The prompt MUST emphasize: "same angle, same environment, same character position, ONLY change is [specific micro-detail]"
+The prompt MUST emphasize the tiny visible change, but default to fresh composition. Only use "same angle, same character position" when an explicit locked_micro_progression affordance names the one allowed change.
 
 ## CRITICAL: For SUBJECT_TO_SUBJECT transitions  
 The prompt MUST include: "same scene, same time, same lighting direction, now the camera focuses on [different subject]"
@@ -635,14 +635,12 @@ For each character, describe: eyebrow position, eyelid openness, mouth shape.`;
 ## TRANSITION CONTINUITY: MOMENT-TO-MOMENT (Time Barely Moves)
 **THIS IS CRITICAL**: This shot is a micro-progression from the previous shot.
 ${request.storyBeat?.isClimaxBeat ? '**CLIMAX EXCEPTION**: At climax moments, slight camera/lighting shifts for dramatic effect are acceptable.' : ''}
-- Camera angle MUST BE IDENTICAL: ${prevRef?.cameraAngle || 'same as previous'}
-- Environment MUST BE IDENTICAL: ${prevRef?.environment || 'same as previous'}
-- Character position MUST BE IDENTICAL (with tiny adjustment only)
-- Lighting MUST BE IDENTICAL: ${prevRef?.lighting || 'same as previous'}
-- Color palette MUST BE IDENTICAL: ${prevRef?.palette || 'same as previous'}
+- Preserve emotional and spatial continuity from the previous shot, but use fresh camera/blocking unless an explicit locked_micro_progression affordance says otherwise.
+- Environment should remain recognizable: ${prevRef?.environment || 'same story setting'}
+- Lighting and palette should remain compatible: ${prevRef?.lighting || 'same mood family'}, ${prevRef?.palette || 'same palette family'}
 - **ONLY CHANGE ALLOWED**: ${transition.whatChanged}
 
-**PROMPT MUST START WITH**: "Same angle, same environment, same character position, ONLY change is [${transition.whatChanged}]"
+**PROMPT MUST START WITH**: "Micro-progression from the previous beat; fresh composition showing [${transition.whatChanged}]"
 **PRESERVED ELEMENTS**: ${transition.whatPreserved.join(', ')}`,
 
       'action_to_action': `

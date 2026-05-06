@@ -9707,7 +9707,54 @@ ${clothingRule}
       hasVisualStyleRef: this._uploadedStyleReferenceImages.length > 0,
       hasVisualCharacterRef: false,
     });
-    return this.sanitizeImagePrompt(contracted, brief);
+    return this.sanitizeImagePrompt(
+      this.applyVisualContinuityAffordance(contracted, input.coveragePlan),
+      brief,
+    );
+  }
+
+  private applyVisualContinuityAffordance(
+    prompt: ImagePrompt,
+    coveragePlan?: import('../../types/content').BeatCoveragePlan,
+  ): ImagePrompt {
+    const continuity = coveragePlan?.visualContinuity;
+    const mode = continuity?.mode || 'fresh_composition';
+    const result: ImagePrompt = { ...prompt };
+
+    if (mode === 'locked_micro_progression' && continuity?.changeOnly) {
+      const preserve = continuity.preserve?.length
+        ? continuity.preserve.join(', ')
+        : 'camera, blocking, lighting, environment, character position';
+      const directive = `VISUAL CONTINUITY AFFORDANCE: locked micro-progression. Preserve ${preserve}; ONLY visible change: ${continuity.changeOnly}. ${continuity.reason || ''}`.trim();
+      result.prompt = [result.prompt, directive].filter(Boolean).join(' ');
+      result.composition = [result.composition, directive].filter(Boolean).join(' ');
+      return result;
+    }
+
+    const scrubLockedContinuity = (value: string | undefined): string | undefined => {
+      if (!value) return value;
+      return value
+        .replace(/\bIDENTICAL camera angle\b/gi, 'motivated camera angle')
+        .replace(/\bIDENTICAL environment\b/gi, 'recognizable environment continuity')
+        .replace(/\bIDENTICAL lighting\b/gi, 'compatible lighting continuity')
+        .replace(/\bSAME character position\b/gi, 'fresh character position')
+        .replace(/\bsame angle, same environment, same character position\b/gi, 'fresh angle and blocking within the same story setting')
+        .replace(/\bCamera angle MUST BE IDENTICAL:?\s*[^.!?\n]*/gi, 'Camera angle should change when it improves the beat')
+        .replace(/\bCharacter position MUST BE IDENTICAL[^.!?\n]*/gi, 'Character position should be freshly blocked for this beat');
+    };
+
+    const directive = mode === 'preserve_scene_axis'
+      ? 'VISUAL CONTINUITY AFFORDANCE: preserve the broad scene axis and spatial readability, but use fresh camera distance, focal point, pose, and blocking for this beat.'
+      : 'VISUAL CONTINUITY AFFORDANCE: fresh composition is required. Do not repeat previous camera angle, character positions, blocking, or focal point; references and prior panels are continuity aids only.';
+    result.prompt = [scrubLockedContinuity(result.prompt), directive].filter(Boolean).join(' ');
+    result.composition = [scrubLockedContinuity(result.composition), directive].filter(Boolean).join(' ');
+    result.shotDescription = scrubLockedContinuity(result.shotDescription);
+    result.poseSpec = scrubLockedContinuity(result.poseSpec);
+    result.negativePrompt = [
+      result.negativePrompt,
+      'repeated staging from previous image, same character positions as previous image, locked-off camera without explicit micro-progression',
+    ].filter(Boolean).join(', ');
+    return result;
   }
 
   private promptMentionsDisallowedCharacters(

@@ -97,6 +97,35 @@ export interface BeatCoveragePlan {
   offscreenCharacterIds: string[];
   relationshipBlocking: string;
   coverageReason: string;
+  visualContinuity?: BeatVisualContinuity;
+}
+
+export type BeatVisualContinuityMode =
+  | 'fresh_composition'
+  | 'preserve_scene_axis'
+  | 'locked_micro_progression';
+
+export type BeatVisualContinuityElement =
+  | 'camera'
+  | 'blocking'
+  | 'lighting'
+  | 'environment'
+  | 'character_position';
+
+export interface BeatVisualContinuity {
+  /**
+   * Default: fresh_composition. The image pipeline should vary camera,
+   * blocking, focal point, and body arrangement unless a beat explicitly
+   * requests a locked micro-progression.
+   */
+  mode: BeatVisualContinuityMode;
+  reason?: string;
+  preserve?: BeatVisualContinuityElement[];
+  /**
+   * Required for locked_micro_progression. Describes the one visible change
+   * allowed while camera/blocking are preserved.
+   */
+  changeOnly?: string;
 }
 
 // A beat is a unit of content within a scene

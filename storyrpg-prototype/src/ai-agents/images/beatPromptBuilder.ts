@@ -510,7 +510,7 @@ function buildCharacterPrompt(
 
     // D9: For 3+ foreground characters, append an explicit staging clause so
     // the model doesn't swap/duplicate characters in group compositions.
-    const staging = buildGroupStagingClause(beat.foregroundCharacterNames, beat.characterStaging);
+    const staging = buildGroupStagingClause(beat.foregroundCharacterNames, beat.characterStaging, beat.beatId);
     if (staging) {
       narrativeParts.push(staging);
     }
@@ -540,6 +540,23 @@ function buildCharacterPrompt(
   }
   if (coverageReason) {
     narrativeParts.push(`Coverage reason: ${coverageReason}`);
+  }
+  const visualContinuity = coveragePlan?.visualContinuity;
+  if (visualContinuity?.mode === 'locked_micro_progression' && visualContinuity.changeOnly) {
+    const preserve = visualContinuity.preserve?.length
+      ? visualContinuity.preserve.join(', ')
+      : 'camera, blocking, lighting, environment, character position';
+    narrativeParts.push(
+      `Visual continuity: locked micro-progression. Preserve ${preserve}; ONLY visible change: ${visualContinuity.changeOnly}. Reason: ${visualContinuity.reason || 'the beat depends on a tiny visible change inside the same frame.'}`,
+    );
+  } else if (visualContinuity?.mode === 'preserve_scene_axis') {
+    narrativeParts.push(
+      `Visual continuity: preserve the broad scene axis and spatial readability, but still use fresh composition, fresh focal point, and motivated blocking for this beat.`,
+    );
+  } else {
+    narrativeParts.push(
+      `Visual continuity: fresh composition by default. Do not repeat the previous beat's camera angle, character positions, blocking, or focal point unless explicitly requested by locked_micro_progression.`,
+    );
   }
 
   // Body language and spatial relationship
@@ -706,34 +723,58 @@ function getFocalPointForBeat(beatType: BeatType, beat: BeatPromptInput): string
 }
 
 /**
- * D9: Build an explicit left/center/right staging clause for group scenes.
+ * D9: Build an explicit group staging clause without defaulting to a flat
+ * left/center/right lineup. Explicit caller-provided staging still wins, but
+ * the fallback uses rotating depth patterns so ensemble beats do not keep the
+ * same characters pinned to the same screen positions.
  * Returns empty string for 1-2 character beats (staging is implicit there).
- * Honors `characterStaging` overrides when provided; otherwise derives
- * positions deterministically from `foregroundCharacterNames` order.
  */
 function buildGroupStagingClause(
   names: string[],
   staging?: Record<string, string>,
+  beatId?: string,
 ): string {
   if (names.length < 3) return '';
 
-  const positionFor = (index: number, total: number): string => {
-    if (total <= 3) return ['left', 'center', 'right'][index] || 'background';
-    if (index === 0) return 'far left';
-    if (index === total - 1) return 'far right';
-    if (index === Math.floor((total - 1) / 2)) return 'center';
-    return index < total / 2 ? 'left of center' : 'right of center';
+  const hash = Array.from(beatId || names.join('|'))
+    .reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  const pattern = hash % 4;
+
+  const fallbackFor = (index: number, total: number): string => {
+    const isFirst = index === 0;
+    const isLast = index === total - 1;
+    switch (pattern) {
+      case 0:
+        if (isFirst) return 'nearest the focal action in the foreground';
+        if (index === 1) return 'offset in the midground reacting';
+        if (isLast) return 'farther back, partly framed by the environment';
+        return 'staggered between midground and background';
+      case 1:
+        if (isFirst) return 'anchoring the diagonal closest to camera';
+        if (isLast) return 'finishing the diagonal deeper in the scene';
+        return 'stepping through the middle depth layer';
+      case 2:
+        if (isFirst) return 'at the point of action near the key prop or gesture';
+        if (index === 1) return 'turned toward the action from midground';
+        if (isLast) return 'near a doorway, wall, threshold, or environmental frame';
+        return 'layered into the surrounding space';
+      default:
+        if (isFirst) return 'pressing into the conflict with forward body language';
+        if (index === 1) return 'angled inward as the counterweight';
+        if (isLast) return 'observing from behind the main exchange';
+        return 'offset behind the principal pair with a readable reaction';
+    }
   };
 
   const assignments: string[] = [];
   for (let i = 0; i < names.length; i++) {
     const name = names[i];
     const override = staging?.[name];
-    const pos = override || positionFor(i, names.length);
+    const pos = override || fallbackFor(i, names.length);
     assignments.push(`${name} ${pos}`);
   }
 
-  return `Staging: ${assignments.join(', ')}. Each character clearly distinguishable, no duplication or swapped identities.`;
+  return `Staging: ${assignments.join(', ')}. Layer characters in depth with diagonal blocking and varied distance from camera; do not arrange everyone as a flat left-center-right lineup. Each character clearly distinguishable, no duplication or swapped identities.`;
 }
 
 /**

@@ -47,6 +47,7 @@ describe('planSceneCoverage', () => {
 
     expect(plan.beats[0].visualCast.foregroundCharacterIds).toEqual(expect.arrayContaining(['mika', 'protagonist']));
     expect(['two-shot', 'ots-speaker']).toContain(plan.beats[0].coveragePlan.stagingPattern);
+    expect(plan.beats[0].coveragePlan.visualContinuity?.mode).toBe('fresh_composition');
   });
 
   it('keeps a silent future payoff character visible as an observer', () => {

@@ -361,6 +361,10 @@ export function planSceneCoverage(input: SceneCoverageInput): SceneCoveragePlan 
           `pattern=${pattern}`,
           `shot=${shotDistance}`,
         ].filter(Boolean).join('; '),
+        visualContinuity: {
+          mode: 'fresh_composition',
+          reason: 'Default story-beat coverage favors varied staging; locked-off micro-progression requires an explicit beat-level override.',
+        },
       },
     });
   }

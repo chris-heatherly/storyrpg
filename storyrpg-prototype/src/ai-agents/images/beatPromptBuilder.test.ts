@@ -105,6 +105,62 @@ describe('buildBeatImagePrompt', () => {
     expect(prompt.prompt).toContain('Mrs Peacock visible in the background');
   });
 
+  it('uses depth-based group staging instead of default left-center-right lineup', () => {
+    const prompt = buildBeatImagePrompt(
+      {
+        beatId: 'beat-group-depth',
+        beatText: 'Mara confronts Vale while Sera watches the door.',
+        beatIndex: 0,
+        totalBeats: 1,
+        visualMoment: 'Mara confronts Vale while Sera watches the door.',
+        primaryAction: 'leans toward the accusation as the others react',
+        foregroundCharacterNames: ['Mara', 'Vale', 'Sera'],
+      },
+      {
+        sceneId: 'scene-1',
+        sceneName: 'The Hall',
+        genre: 'fantasy',
+        tone: 'tense',
+        artStyle: 'inked watercolor',
+      },
+    );
+
+    expect(prompt.prompt).toContain('Staging:');
+    expect(prompt.prompt).toContain('Layer characters in depth');
+    expect(prompt.prompt).toContain('do not arrange everyone as a flat left-center-right lineup');
+    expect(prompt.prompt).not.toMatch(/Mara left, Vale center, Sera right/);
+  });
+
+  it('keeps explicit character staging overrides when provided', () => {
+    const prompt = buildBeatImagePrompt(
+      {
+        beatId: 'beat-explicit-staging',
+        beatText: 'Mara confronts Vale while Sera watches the door.',
+        beatIndex: 0,
+        totalBeats: 1,
+        visualMoment: 'Mara confronts Vale while Sera watches the door.',
+        primaryAction: 'leans toward the accusation as the others react',
+        foregroundCharacterNames: ['Mara', 'Vale', 'Sera'],
+        characterStaging: {
+          Mara: 'left of the broken table',
+          Vale: 'centered in the doorway',
+          Sera: 'right side near the stairs',
+        },
+      },
+      {
+        sceneId: 'scene-1',
+        sceneName: 'The Hall',
+        genre: 'fantasy',
+        tone: 'tense',
+        artStyle: 'inked watercolor',
+      },
+    );
+
+    expect(prompt.prompt).toContain('Mara left of the broken table');
+    expect(prompt.prompt).toContain('Vale centered in the doorway');
+    expect(prompt.prompt).toContain('Sera right side near the stairs');
+  });
+
   it('includes locked cinematic coverage and relationship blocking', () => {
     const prompt = buildBeatImagePrompt(
       {
@@ -140,6 +196,49 @@ describe('buildBeatImagePrompt', () => {
     expect(prompt.prompt).toContain('Coverage plan: ots-speaker staging, MCU shot, eye-level');
     expect(prompt.prompt).toContain('Relationship blocking: Over-the-shoulder dialogue coverage');
     expect(prompt.prompt).toContain('Coverage reason: dialogue coverage run 1');
+    expect(prompt.prompt).toContain('Visual continuity: fresh composition by default');
+  });
+
+  it('honors explicit locked micro-progression continuity', () => {
+    const prompt = buildBeatImagePrompt(
+      {
+        beatId: 'beat-locked',
+        beatText: 'Hikari notices the blood on Kenji\'s sleeve.',
+        beatIndex: 0,
+        totalBeats: 1,
+        visualMoment: 'Hikari notices the blood on Kenji\'s sleeve.',
+        primaryAction: 'eyes drop to the sleeve as her hand tightens on the cup',
+        foregroundCharacterNames: ['Hikari Hoshino', 'Kenji Tanaka'],
+        coveragePlan: {
+          stagingPattern: 'two-shot',
+          shotDistance: 'MCU',
+          cameraAngle: 'eye-level',
+          cameraSide: 'primary',
+          focalCharacterIds: ['hikari'],
+          requiredVisibleCharacterIds: ['hikari', 'kenji'],
+          optionalVisibleCharacterIds: [],
+          offscreenCharacterIds: [],
+          relationshipBlocking: 'The tiny reaction between them is the beat.',
+          coverageReason: 'locked reaction insert',
+          visualContinuity: {
+            mode: 'locked_micro_progression',
+            reason: 'The drama is a single visible realization inside the same frame.',
+            preserve: ['camera', 'blocking', 'lighting', 'environment', 'character_position'],
+            changeOnly: 'Hikari glances down and tightens her grip on the cup',
+          },
+        },
+      },
+      {
+        sceneId: 'scene-1',
+        sceneName: 'The Kitchen',
+        genre: 'drama',
+        tone: 'tense',
+        artStyle: 'fashion anime',
+      },
+    );
+
+    expect(prompt.prompt).toContain('Visual continuity: locked micro-progression');
+    expect(prompt.prompt).toContain('ONLY visible change: Hikari glances down and tightens her grip on the cup');
   });
 
   it('keeps style in the style contract and strips competing art direction from beat text', () => {

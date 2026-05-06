@@ -129,6 +129,48 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
   });
 });
 
+describe('ImageGenerationService reference composition guardrails', () => {
+  it('keeps style references from becoming composition references', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'nano-banana',
+      geminiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const guidance = (service as any).getStyleReferenceGuidance();
+
+    expect(guidance).not.toContain('composition feel');
+    expect(guidance).toContain('Do NOT copy');
+    expect(guidance).toContain('camera angle');
+    expect(guidance).toContain('character placement');
+    expect(guidance).toContain('composition');
+  });
+
+  it('adds a fresh composition rule when scene refs are present', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'nano-banana',
+      geminiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+      geminiSettings: {
+        canonicalArtStyle: 'ink wash story art',
+      },
+    } as any);
+
+    const prompt = (service as any).buildNarrativePrompt({
+      prompt: 'Ari reaches across the train table as Mara pulls back from the evidence.',
+      style: 'ink wash story art',
+      aspectRatio: '9:19.5',
+      visualNarrative: 'Ari and Mara realize the evidence connects them both.',
+      composition: 'medium shot with focal point on the folder between them',
+    }, true);
+
+    expect(prompt).toContain('FRESH COMPOSITION RULE');
+    expect(prompt).toContain('Do NOT copy their pose, camera angle, character placement, blocking, focal point, or composition');
+  });
+});
+
 describe('ImageGenerationService stable-diffusion wiring', () => {
   it('hydrates file-cache hits with inline image data for downstream references', async () => {
     const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'image-gen-cache-'));

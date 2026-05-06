@@ -2583,7 +2583,11 @@ export class ImageGenerationService {
       }
 
       // Store in prompt-hash cache on success (omit imageData to avoid unbounded heap growth)
-      if (result.imageUrl || result.imagePath) {
+      const hasRenderableImage =
+        Boolean(result.imageUrl) ||
+        /\.(png|jpe?g|webp)$/i.test(result.imagePath || '');
+
+      if (hasRenderableImage) {
         const cacheKey = this.computePromptHash(normalizedPrompt, metadata);
         this._promptCache.set(cacheKey, {
           imageUrl: result.imageUrl,
@@ -2605,9 +2609,9 @@ export class ImageGenerationService {
           beatId: metadata?.beatId,
           choiceId: metadata?.choiceId,
           tier: metadata?.tier,
-          status: result.imageUrl || result.imagePath ? 'success' : 'failed',
-          errorClass: result.imageUrl || result.imagePath ? undefined : 'transient',
-          errorMessage: result.imageUrl || result.imagePath ? undefined : 'no image URL/path returned',
+          status: hasRenderableImage ? 'success' : 'failed',
+          errorClass: hasRenderableImage ? undefined : 'transient',
+          errorMessage: hasRenderableImage ? undefined : 'no renderable image URL/path returned',
           attempts: effectiveMeta.providerAttemptCount || 1,
           durationMs: Date.now() - requestStartedAt,
           promptChars: normalizedPrompt.prompt?.length || 0,
@@ -2633,8 +2637,8 @@ export class ImageGenerationService {
         });
       }
 
-      this.providerPolicy.observeSuccess(provider, providerFamily);
-      if (result.imageUrl || result.imagePath) {
+      if (hasRenderableImage) {
+        this.providerPolicy.observeSuccess(provider, providerFamily);
         this._generatedIdentifiers.add(identifier);
       }
       return result;

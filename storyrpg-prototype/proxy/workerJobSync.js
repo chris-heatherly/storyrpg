@@ -3,6 +3,8 @@
  * Used so the UI can see worker progress via the /generation-jobs API.
  */
 
+const { sanitizeJobState } = require('./sanitizeJobState');
+
 function createSyncGenerationMirrorFromWorker(deps) {
   const { loadCheckpoints, loadJobs, saveJobs } = deps;
 
@@ -71,8 +73,8 @@ function createSyncGenerationMirrorFromWorker(deps) {
         isResumable: workerJob.status === 'failed' || workerJob.status === 'cancelled',
         resumeHint: workerJob.error ? `Failed: ${workerJob.error}` : undefined,
         failureContext: workerJob.failureContext || workerCheckpoint?.failureContext,
-        resumeContext: workerCheckpoint?.resumeContext,
-        outputs: workerCheckpoint?.outputs,
+        resumeContext: sanitizeJobState(workerCheckpoint?.resumeContext),
+        outputs: sanitizeJobState(workerCheckpoint?.outputs),
       },
     };
     if (idx >= 0) jobs[idx] = { ...jobs[idx], ...mapped };

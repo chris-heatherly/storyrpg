@@ -17,6 +17,7 @@ const path = require('path');
 
 const { atomicWriteJsonSync } = require('./atomicIo');
 const manifestModule = require('./storyManifest');
+const { sanitizeJobState } = require('./sanitizeJobState');
 
 function getJobOutputDir(job) {
   return job?.outputDir
@@ -417,10 +418,11 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     const jobs = loadJobs();
     const existingIndex = jobs.findIndex((j) => j.id === job.id);
 
+    const sanitizedJob = sanitizeJobState(job);
     if (existingIndex >= 0) {
-      jobs[existingIndex] = job;
+      jobs[existingIndex] = sanitizedJob;
     } else {
-      jobs.unshift(job);
+      jobs.unshift(sanitizedJob);
     }
 
     if (jobs.length > 50) {
@@ -472,7 +474,7 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     const jobIndex = jobs.findIndex((j) => j.id === jobId);
 
     if (jobIndex < 0) {
-      const newJob = { id: jobId, ...updates, startedAt: updates.startedAt || new Date().toISOString() };
+      const newJob = sanitizeJobState({ id: jobId, ...updates, startedAt: updates.startedAt || new Date().toISOString() });
       jobs.unshift(newJob);
       if (jobs.length > 50) jobs.length = 50;
       saveJobs(jobs);
@@ -480,7 +482,7 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
       return res.json({ success: true, upserted: true });
     }
 
-    jobs[jobIndex] = { ...jobs[jobIndex], ...updates };
+    jobs[jobIndex] = sanitizeJobState({ ...jobs[jobIndex], ...updates });
     saveJobs(jobs);
     res.json({ success: true });
   });

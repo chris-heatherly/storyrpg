@@ -2248,6 +2248,112 @@ export class FullStoryPipeline {
     await saveEarlyDiagnostic(outputDirectory, 'image-manifest.json', this.buildImageManifestFromStory(story));
   }
 
+  private async repairBoundImageReferences(story: Story, outputDirectory: string): Promise<{
+    generatedAt: string;
+    checked: number;
+    repaired: Array<{ path: string; from: string; to: string }>;
+    unresolved: Array<{ path: string; value: string; filePath: string }>;
+  }> {
+    const report = {
+      generatedAt: new Date().toISOString(),
+      checked: 0,
+      repaired: [] as Array<{ path: string; from: string; to: string }>,
+      unresolved: [] as Array<{ path: string; value: string; filePath: string }>,
+    };
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const outputRoot = path.resolve(outputDirectory);
+    const projectRoot = process.cwd();
+    const imageValueKeys = new Set(['image', 'imageUrl', 'imagePath', 'backgroundImage', 'coverImage']);
+
+    const toFilePath = (value: string): string | undefined => {
+      if (!value || value.startsWith('data:')) return undefined;
+      const generatedIndex = value.indexOf('generated-stories/');
+      if (generatedIndex < 0) return undefined;
+      return path.resolve(projectRoot, value.slice(generatedIndex));
+    };
+    const toServedUrl = (filePath: string): string => {
+      const relative = path.relative(projectRoot, filePath).split(path.sep).join('/');
+      return `http://localhost:3001/${relative}`;
+    };
+    const exists = async (filePath: string): Promise<boolean> => {
+      try {
+        const stat = await fs.stat(filePath);
+        return stat.isFile();
+      } catch {
+        return false;
+      }
+    };
+    const findReplacement = async (filePath: string): Promise<string | undefined> => {
+      const dir = path.dirname(filePath);
+      const ext = path.extname(filePath) || '.png';
+      const stem = path.basename(filePath, ext);
+      const stems = Array.from(new Set([
+        stem.replace(/-recovery-qa-retry-\d+$/i, '-recovery'),
+        stem.replace(/-qa-retry-\d+$/i, ''),
+        stem.replace(/-(?:qa-retry-\d+|retry-\d+|textfix\d+)$/i, ''),
+        stem.replace(/-(?:recovery|fallback|textfix\d+|qa-retry-\d+|retry-\d+)$/i, ''),
+      ].filter(Boolean)));
+
+      for (const candidateStem of stems) {
+        for (const candidateExt of [ext, '.png', '.jpg', '.jpeg', '.webp']) {
+          const candidate = path.join(dir, `${candidateStem}${candidateExt}`);
+          if (candidate !== filePath && await exists(candidate)) return candidate;
+        }
+      }
+
+      try {
+        const files = await fs.readdir(dir);
+        const candidates: Array<{ filePath: string; mtimeMs: number; rank: number }> = [];
+        for (const name of files) {
+          if (!/\.(png|jpe?g|webp)$/i.test(name)) continue;
+          const candidateStem = path.basename(name, path.extname(name));
+          const rank = stems.findIndex((prefix) => candidateStem === prefix || candidateStem.startsWith(`${prefix}-`));
+          if (rank < 0) continue;
+          const candidate = path.join(dir, name);
+          const stat = await fs.stat(candidate);
+          candidates.push({ filePath: candidate, mtimeMs: stat.mtimeMs, rank });
+        }
+        candidates.sort((a, b) => a.rank - b.rank || b.mtimeMs - a.mtimeMs);
+        return candidates[0]?.filePath;
+      } catch {
+        return undefined;
+      }
+    };
+
+    const visit = async (node: any, breadcrumb: string): Promise<void> => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (let index = 0; index < node.length; index += 1) {
+          await visit(node[index], `${breadcrumb}[${index}]`);
+        }
+        return;
+      }
+      for (const [key, value] of Object.entries(node)) {
+        const childPath = breadcrumb ? `${breadcrumb}.${key}` : key;
+        if (typeof value === 'string' && imageValueKeys.has(key)) {
+          const filePath = toFilePath(value);
+          if (!filePath || !filePath.startsWith(outputRoot)) continue;
+          report.checked += 1;
+          if (await exists(filePath)) continue;
+          const replacement = await findReplacement(filePath);
+          if (replacement) {
+            const nextValue = toServedUrl(replacement);
+            node[key] = nextValue;
+            report.repaired.push({ path: childPath, from: value, to: nextValue });
+          } else {
+            report.unresolved.push({ path: childPath, value, filePath });
+          }
+        } else {
+          await visit(value, childPath);
+        }
+      }
+    };
+
+    await visit(story, 'story');
+    return report;
+  }
+
   private sceneContentFromStoryScene(scene: Scene): SceneContent {
     return {
       sceneId: scene.id,
@@ -2422,8 +2528,18 @@ export class FullStoryPipeline {
       const coverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible);
       let finalStory = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
       if (coverUrl) finalStory.coverImage = coverUrl;
-      finalStory.imagesStatus = 'complete';
       finalStory.outputDir = normalizedOutputDir;
+      const imageIntegrity = await this.repairBoundImageReferences(finalStory, normalizedOutputDir);
+      finalStory.imagesStatus = imageIntegrity.unresolved.length > 0 ? 'failed' : 'complete';
+      await saveEarlyDiagnostic(normalizedOutputDir, 'image-integrity-report.json', imageIntegrity);
+      if (imageIntegrity.repaired.length > 0 || imageIntegrity.unresolved.length > 0) {
+        this.emit({
+          type: imageIntegrity.unresolved.length > 0 ? 'warning' : 'debug',
+          phase: 'images',
+          message: `Image binding integrity repaired ${imageIntegrity.repaired.length} reference(s); ${imageIntegrity.unresolved.length} unresolved.`,
+          data: imageIntegrity,
+        });
+      }
       await this.saveDraftImageManifest(normalizedOutputDir, finalStory);
 
       const visualPlanningOutputs = this.getCollectedVisualPlanningForSave();

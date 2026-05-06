@@ -18,6 +18,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { sanitizeJobState } = require('./sanitizeJobState');
 
 const WORKER_STALE_RUNNING_MS = 3 * 60 * 1000;
 const WORKER_MAX_TIMELINE = 200;
@@ -54,7 +55,7 @@ function stripLargeValues(obj, maxStringLen = 512) {
 function isMissingApiKey(value) {
   if (typeof value !== 'string') return true;
   const v = value.trim().toLowerCase();
-  return !v || v === 'dummy' || v === 'placeholder' || v === 'your-api-key';
+  return !v || v === 'dummy' || v === 'placeholder' || v === 'your-api-key' || v === '[redacted]';
 }
 
 function buildWorkerConfigSnapshot(config) {
@@ -231,7 +232,7 @@ function createWorkerLifecycle({
   const loadWorkerJobs = () => workerJobsStore.get();
   const saveWorkerJobs = (jobs) => workerJobsStore.set(jobs);
   const loadCheckpoints = () => checkpointsStore.get();
-  const saveCheckpoints = (rows) => checkpointsStore.set(rows);
+  const saveCheckpoints = (rows) => checkpointsStore.set(sanitizeJobState(rows));
 
   function ensureWorkerCheckpointOutputDir(jobId) {
     const dir = path.join(WORKER_CHECKPOINT_OUTPUT_DIR, jobId);
@@ -1044,7 +1045,6 @@ function createWorkerLifecycle({
     const cfg = payload.config;
     if (!cfg || typeof cfg !== 'object') return payload;
     const agents = cfg.agents;
-    if (!agents || typeof agents !== 'object') return payload;
 
     const envAnthropicKey =
       process.env.ANTHROPIC_API_KEY
@@ -1055,16 +1055,39 @@ function createWorkerLifecycle({
       process.env.OPENAI_API_KEY
       || process.env.EXPO_PUBLIC_OPENAI_API_KEY
       || '';
+    const envGeminiKey =
+      process.env.EXPO_PUBLIC_GEMINI_API_KEY
+      || process.env.GEMINI_API_KEY
+      || '';
+    const envAtlasKey =
+      process.env.ATLAS_CLOUD_API_KEY
+      || process.env.EXPO_PUBLIC_ATLAS_CLOUD_API_KEY
+      || '';
 
-    if (!envAnthropicKey && !envOpenAiKey) return payload;
+    if (agents && typeof agents === 'object') {
+      for (const agentName of Object.keys(agents)) {
+        const agentCfg = agents[agentName];
+        if (!agentCfg || typeof agentCfg !== 'object') continue;
+        if (agentCfg.provider === 'anthropic' && isMissingApiKey(agentCfg.apiKey)) {
+          agentCfg.apiKey = envAnthropicKey;
+        } else if (agentCfg.provider === 'openai' && isMissingApiKey(agentCfg.apiKey)) {
+          agentCfg.apiKey = envOpenAiKey;
+        }
+      }
+    }
 
-    for (const agentName of Object.keys(agents)) {
-      const agentCfg = agents[agentName];
-      if (!agentCfg || typeof agentCfg !== 'object') continue;
-      if (agentCfg.provider === 'anthropic' && isMissingApiKey(agentCfg.apiKey)) {
-        agentCfg.apiKey = envAnthropicKey;
-      } else if (agentCfg.provider === 'openai' && isMissingApiKey(agentCfg.apiKey)) {
-        agentCfg.apiKey = envOpenAiKey;
+    if (cfg.imageGen && typeof cfg.imageGen === 'object') {
+      if (isMissingApiKey(cfg.imageGen.apiKey)) {
+        cfg.imageGen.apiKey = envGeminiKey || envOpenAiKey || envAtlasKey;
+      }
+      if (isMissingApiKey(cfg.imageGen.geminiApiKey)) {
+        cfg.imageGen.geminiApiKey = envGeminiKey;
+      }
+      if (isMissingApiKey(cfg.imageGen.openaiApiKey)) {
+        cfg.imageGen.openaiApiKey = envOpenAiKey;
+      }
+      if (isMissingApiKey(cfg.imageGen.atlasCloudApiKey)) {
+        cfg.imageGen.atlasCloudApiKey = envAtlasKey;
       }
     }
 

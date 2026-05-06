@@ -16,6 +16,7 @@ describe('SceneWriter structural guards', () => {
     const prompt = (writer as any).getAgentSpecificPrompt();
     expect(prompt).toContain('scene takeaways');
     expect(prompt).toContain('Do not use film/camera direction terms in player-facing prose');
+    expect(prompt).toMatch(/restrained\s+interiority/);
     expect(prompt).toContain('Example: StoryRPG SceneWriter Beat Scale');
   });
 

@@ -47,6 +47,10 @@ import {
   selectMappedStructuralRole,
   shouldForceHighIntensityHook,
 } from '../utils/cliffhangerPlanning';
+import {
+  CRAFT_PRESSURE_GUIDANCE,
+  buildGenreAwareJeopardyGuidance,
+} from '../prompts/storytellingPrinciples';
 
 // ========================================
 // INPUT TYPES
@@ -241,6 +245,14 @@ Use the source analysis as the authority, but learn from reusable structure:
 - Pressure can be physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure.
 - Make plans go partly wrong often enough that choices require improvisation.
 - After the Climax, resolve quickly: show what was saved or changed, then show future cost, identity change, or legacy.
+- Ensure the Inciting Incident lands in Act 1 and the Climax lands in Act 3.
+- From the Inciting Incident through the Climax, make difficulty rise and make the protagonist's transformation increasingly necessary to achieve the Goal.
+- Following the Climax, include only brief resolution pressure: first what was saved, redeemed, or improved; then the protagonist's future, cost, identity change, or legacy.
+
+${CRAFT_PRESSURE_GUIDANCE}
+
+## Genre-Aware Jeopardy Policy
+${buildGenreAwareJeopardyGuidance(analysis.genre)}
 
 ${analysis.schemaAbstraction ? `## Reusable Pattern Abstraction
 - Archetype: ${analysis.schemaAbstraction.archetype}

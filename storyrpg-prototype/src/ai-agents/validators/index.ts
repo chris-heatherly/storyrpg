@@ -83,6 +83,7 @@ export {
   DEFAULT_INCREMENTAL_CONFIG,
 } from './IncrementalValidators';
 export { PovClarityValidator, hasPlayerReference } from './PovClarityValidator';
+export { SceneCraftValidator } from './SceneCraftValidator';
 export type {
   IncrementalValidationConfig,
   SceneValidationResult,
@@ -94,3 +95,4 @@ export type {
   CharacterVoiceProfile,
 } from './IncrementalValidators';
 export type { PovClarityIssue, PovClarityResult, PovClarityContext } from './PovClarityValidator';
+export type { SceneCraftOptions, SceneCraftResult } from './SceneCraftValidator';

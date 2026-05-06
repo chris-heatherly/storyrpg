@@ -394,7 +394,7 @@ export function filterRefsForProvider(
           }
           continue;
         }
-        // Everything else (composite-sheet, style-anchor, location-*,
+        // Everything else (composite-sheet, location-*,
         // expression-*, body-vocab, silhouette, previous-view-consistency,
         // canonical-front-identity, etc.) is dropped.
       }
@@ -421,8 +421,8 @@ export function filterRefsForProvider(
       for (const bucket of perCharacter.values()) {
         addUnique(
           bucket.find((r) => r.role === 'user-provided-character-reference') ||
-          bucket.find((r) => r.role === 'character-reference' && (!r.viewType || r.viewType === 'front')) ||
-          bucket.find((r) => r.role === 'character-reference-face')
+          bucket.find((r) => r.role === 'character-reference-face') ||
+          bucket.find((r) => r.role === 'character-reference' && (!r.viewType || r.viewType === 'front'))
         );
         if (ordered.length >= maxRefs) break;
       }

@@ -33,7 +33,11 @@ import {
   SevenPointStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
-import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
+import {
+  CRAFT_PRESSURE_GUIDANCE,
+  buildGenreAwareJeopardyGuidance,
+  buildStructuralContextSection,
+} from '../prompts/storytellingPrinciples';
 
 import { GeneratedStoryletDraft as GeneratedStorylet, StoryletBeatDraft as StoryletBeat } from '../types/encounterDraft';
 import { StateChange } from '../types/llm-output';
@@ -1341,6 +1345,9 @@ ${beatPlan}
 ## Story: ${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})
 ${input.storyContext.userPrompt ? `User instructions: ${input.storyContext.userPrompt}` : ''}
 
+## Genre-Aware Jeopardy
+${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
+
 ## Protagonist: ${protagonist} (${input.protagonistInfo.pronouns})
 
 ## NPCs
@@ -1359,6 +1366,7 @@ ${priorCtx}
 - narrativeText: 30-60 words showing THE RESULT of the action (not the action itself)
 - Each beat's choices must cover aggressive, cautious, and clever approaches
 - This is storyboard-driven, not combat-only. For this encounter emphasize: ${styleFocus}
+- Every encounter must put something serious at risk in genre-appropriate form: body, safety, reputation, trust, evidence, resources, love, moral standing, identity, or future leverage
 - Choices must change at least one tactical state: position, leverage, information, exposure, relationship pressure, resource state, threat clock, goal clock, cost domain, or later storylet
 - Keep mechanics fiction-first. Preserve existing clock feedback, but do not add visible stats, dice, numbers, panel markers, or extra meters
 
@@ -2424,6 +2432,11 @@ RULES:
     return `
 Design a COMPLETE encounter structure for the following scene:
 ${structuralContext}
+${CRAFT_PRESSURE_GUIDANCE}
+
+## Genre-Aware Jeopardy
+${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
+
 ## Story Context
 - **Title**: ${input.storyContext.title}
 - **Genre**: ${input.storyContext.genre}
@@ -2446,6 +2459,7 @@ ${input.storyContext.userPrompt ? `- **User Instructions**: ${input.storyContext
 - **Difficulty**: ${input.difficulty} (target ${difficultyOdds[input.difficulty]}% initial odds against player)
 - **Target Beat Count**: ${input.targetBeatCount}
 - **Minimum Required Beats**: ${this.getMinimumRequiredBeatCount(input)}
+- **Jeopardy Requirement**: Put something serious at risk in this encounter. Match the risk to the genre and encounter style; do not force combat unless the genre/style calls for it.
 - **Encounter Beat Plan**:
 ${(input.encounterBeatPlan && input.encounterBeatPlan.length > 0)
   ? input.encounterBeatPlan.map((beat, index) => `  ${index + 1}. ${beat}`).join('\n')
@@ -3017,6 +3031,9 @@ ${(input.encounterBeatPlan && input.encounterBeatPlan.length > 0)
 - Protagonist: ${protagonist} (${input.protagonistInfo.pronouns})
 - Key NPC: ${antagonist}
 
+## Genre-Aware Jeopardy
+${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
+
 ## CHARACTER NAME TEMPLATES (CRITICAL)
 All text fields (setupText, narrativeText, storylet text) MUST use {{player.name}} for the protagonist — NEVER the literal name or story title.
 Use {{player.they}}/{{player.them}}/{{player.their}} for pronouns. NPCs use their actual names.
@@ -3469,6 +3486,9 @@ CRITICAL RULES:
 
 ## Story: ${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})
 
+## Genre-Aware Jeopardy
+${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
+
 ## Protagonist: ${protagonist} (${input.protagonistInfo.pronouns})
 
 ## NPCs
@@ -3553,6 +3573,8 @@ Return ONLY valid JSON.
 - Scene: ${input.sceneName} — ${input.sceneDescription}
 - Story: ${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})
 - NPCs: ${npcsList}
+## Genre-Aware Jeopardy
+${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 ${relationshipSection}
 ## What the player tried
 Choice: "${choice.text}" (skill: ${choice.primarySkill})
@@ -3707,6 +3729,7 @@ Return ONLY the JSON object.`;
 ## Stakes: ${input.encounterStakes || 'personal to the protagonist'}
 ## NPCs: ${npcsList || 'None'}
 ## Story: ${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})
+## Genre-Aware Jeopardy: ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 ${relationshipSection}
 ## TASK
 Generate 3 storylets for: victory, defeat, escape. Each is a short aftermath sequence.

@@ -121,11 +121,107 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
       const requestInit = calls[0]?.[1];
       expect(requestInit).toBeDefined();
       const body = JSON.parse(String(requestInit?.body || '{}'));
-      expect(body.prompt).toContain('Style: raw user style, crisp cel shading, consistent soft lighting');
+      expect(body.prompt).toMatch(/^STYLE LOCK:/);
+      expect(body.prompt).toContain('raw user style, crisp cel shading, consistent soft lighting');
     } finally {
       vi.stubGlobal('fetch', originalFetch);
       fs.rmSync(outputDirectory, { recursive: true, force: true });
     }
+  });
+
+  it('composes OpenAI scene prompts with visible cast, reference usage, compact continuity, and provider audit text', async () => {
+    const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'image-gen-dalle-envelope-'));
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: [{ b64_json: Buffer.from('png').toString('base64') }] }),
+    }));
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const service = new ImageGenerationService({
+        enabled: true,
+        provider: 'dall-e',
+        openaiApiKey: 'test-key',
+        openaiImageModel: 'gpt-image-1',
+        outputDirectory,
+      } as any);
+
+      await service.generateImage(
+        {
+          prompt: 'Sofia reaches for Roxy as Alex notices the club door opening.',
+          style: 'Cartoon modern art style, bold simplified shapes, crisp confident linework',
+          aspectRatio: '9:16',
+          composition: 'tight two-shot with Alex partially visible in the background',
+          characterIdentity: ['Sofia Valea', 'Roxy Marin', 'Alex Dragos'],
+        } as any,
+        'beat-openai-envelope',
+        {
+          type: 'beat',
+          characterNames: ['Sofia Valea', 'Roxy Marin', 'Alex Dragos'],
+          characterDescriptions: [{
+            name: 'Sofia Valea',
+            appearance: '',
+            canonicalAppearance: {
+              hair: 'dark hair',
+              eyes: 'expressive eyes',
+              skinTone: 'warm olive skin',
+              distinguishingMarks: ['Perfectly applied red lipstick', 'Confident posture that masks vulnerability'],
+              defaultAttire: 'Sharp black blazer over a silk red dress; style tags: professional, sexy, confident, modern; signature garments: short dresses, blazers, heels; materials: silk, cotton blends, leather; palette: black, red, jewel tones; accessories: designer handbag, statement jewelry',
+            },
+          }],
+        } as any,
+        [
+          { role: 'character-reference-face', characterName: 'Sofia Valea', data: Buffer.from('face').toString('base64'), mimeType: 'image/png' },
+          { role: 'character-reference', characterName: 'Sofia Valea', viewType: 'front', data: Buffer.from('front').toString('base64'), mimeType: 'image/png' },
+          { role: 'character-reference-face', characterName: 'Roxy Marin', data: Buffer.from('roxy').toString('base64'), mimeType: 'image/png' },
+          { role: 'character-reference-face', characterName: 'Alex Dragos', data: Buffer.from('alex').toString('base64'), mimeType: 'image/png' },
+        ] as any,
+      );
+
+      const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+      const body = JSON.parse(String(calls[0]?.[1]?.body || '{}'));
+      expect(body.prompt).toMatch(/^STYLE LOCK:/);
+      expect(body.prompt).toContain('VISIBLE CAST:');
+      expect(body.prompt).toContain('Sofia Valea, Roxy Marin, Alex Dragos.');
+      expect(body.prompt).toContain('REFERENCE USAGE:');
+      expect(body.prompt).toContain('Do not copy reference-sheet pose');
+      expect(body.prompt).toContain('CHARACTER CONTINUITY:');
+      expect(body.prompt).toContain('Current wardrobe essentials: Sharp black blazer over a silk red dress');
+      expect(body.prompt).not.toContain('style tags:');
+      expect(body.prompt).not.toContain('materials:');
+      expect(body.prompt).not.toContain('palette:');
+      expect(body.prompt).toContain('full-body lineup');
+
+      const promptAudit = JSON.parse(fs.readFileSync(path.join(outputDirectory, 'prompts', 'beat-openai-envelope.json'), 'utf8'));
+      expect(promptAudit.metadata.providerPrompt).toBe(body.prompt);
+      expect(promptAudit.metadata.openAiComposedPrompt).toBe(body.prompt);
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+      fs.rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('filters OpenAI scene refs to visible characters while keeping style refs', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const refs = (service as any).filterOpenAiRefsToVisibleCast(
+      { prompt: 'Visible shot cast: Sofia Valea only.', characterIdentity: ['Sofia Valea'] },
+      { type: 'beat', characterNames: ['Sofia Valea'] },
+      'beat',
+      [
+        { role: 'character-reference-face', characterName: 'Sofia Valea', data: 'a', mimeType: 'image/png' },
+        { role: 'character-reference-face', characterName: 'Roxy Marin', data: 'b', mimeType: 'image/png' },
+        { role: 'style-reference', data: 'c', mimeType: 'image/png' },
+      ],
+    );
+
+    expect(refs.map((ref: any) => ref.characterName || ref.role)).toEqual(['Sofia Valea', 'style-reference']);
   });
 });
 

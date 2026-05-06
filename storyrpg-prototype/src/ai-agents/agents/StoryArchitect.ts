@@ -16,7 +16,11 @@ import {
   SEVEN_POINT_BEATS,
 } from '../../types/sourceAnalysis';
 import { BaseAgent, AgentResponse, AgentMessage } from './BaseAgent';
-import { BRANCH_AND_BOTTLENECK } from '../prompts/storytellingPrinciples';
+import {
+  BRANCH_AND_BOTTLENECK,
+  CRAFT_PRESSURE_GUIDANCE,
+  buildGenreAwareJeopardyGuidance,
+} from '../prompts/storytellingPrinciples';
 import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType } from '../../types';
 import type { CliffhangerPlan } from '../../types/seasonPlan';
@@ -1055,6 +1059,15 @@ ${input.memoryContext}
 - **Decisive beats**: keyBeats should include specific actions, surprising complications, character development, visible consequences, and forward pressure.
 - **Plans go wrong**: When characters follow a plan, include a plausible complication that forces improvisation unless the scene is deliberately a rest beat.
 - **No arbitrary escalation treadmill**: Escalate the episode's overall pressure, but do not make every conversation an argument or every beat more dangerous than everything before it.
+
+${CRAFT_PRESSURE_GUIDANCE}
+
+## Genre-Aware Jeopardy Policy
+${buildGenreAwareJeopardyGuidance(input.genre)}
+
+Apply the craft guidance through existing fields only: \`keyBeats\`, \`dramaticQuestion\`, \`conflictEngine\`,
+\`encounterBeatPlan\`, \`encounterBuildup\`, choice stakes, and cliffhanger planning. Do not invent
+a new chapter-beat layer.
 ${STORY_ARCHITECT_BLUEPRINT_EXAMPLE}
 ${this.buildSeasonPlanDirectivesSection(input)}
 ${this.buildStructuralContextSection(input)}

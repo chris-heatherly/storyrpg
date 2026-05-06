@@ -732,6 +732,57 @@ export class ImageGenerationService {
     return !/[{}[\]<>:;|\\/]/.test(text);
   }
 
+  private getVisibleCharacterNamesFromPrompt(
+    prompt: ImagePrompt,
+    metadata?: Parameters<ImageGenerationService['generateImage']>[2] | Record<string, unknown>,
+  ): string[] {
+    const metadataNames = Array.isArray((metadata as any)?.characterNames)
+      ? (metadata as any).characterNames
+      : [];
+    const promptIdentityNames = Array.isArray(prompt.characterIdentity)
+      ? prompt.characterIdentity
+      : [];
+    return Array.from(new Set<string>(
+      [...metadataNames, ...promptIdentityNames]
+        .map((name) => String(name || '').trim())
+        .filter((name) => this.looksLikeCharacterDisplayName(name))
+    ));
+  }
+
+  private isOpenAiSceneLikeImageType(imageType?: ImageType): boolean {
+    return imageType !== 'master' && imageType !== 'expression' && imageType !== 'cover';
+  }
+
+  private isStyleReferenceRole(role?: string): boolean {
+    return /\bstyle\b/i.test(role || '');
+  }
+
+  private isCharacterReferenceRole(role?: string): boolean {
+    const normalized = String(role || '');
+    if (normalized === 'composite-sheet') return false;
+    return /character-reference/i.test(normalized);
+  }
+
+  private filterOpenAiRefsToVisibleCast(
+    prompt: ImagePrompt,
+    metadata: Parameters<ImageGenerationService['generateImage']>[2],
+    imageType: ImageType | undefined,
+    refs: ReferenceImage[] | undefined,
+  ): ReferenceImage[] | undefined {
+    if (!refs || refs.length === 0 || !this.isOpenAiSceneLikeImageType(imageType)) return refs;
+    const visibleCharacters = this.getVisibleCharacterNamesFromPrompt(prompt, metadata);
+    const visibleSet = new Set(visibleCharacters.map((name) => this.normalizeCharacterNameForRefs(name)));
+    const singleVisible = visibleCharacters.length === 1 ? visibleCharacters[0] : undefined;
+
+    return refs.filter((ref) => {
+      if (this.isStyleReferenceRole(ref.role)) return true;
+      if (!this.isCharacterReferenceRole(ref.role)) return false;
+      const refName = this.normalizeCharacterNameForRefs(ref.characterName);
+      if (refName) return visibleSet.has(refName);
+      return ref.role === 'user-provided-character-reference' && Boolean(singleVisible);
+    });
+  }
+
   private buildCharacterReferenceAudit(
     provider: ImageProvider,
     metadata: Parameters<ImageGenerationService['generateImage']>[2],
@@ -2267,6 +2318,85 @@ export class ImageGenerationService {
     ].join('\n\n');
   }
 
+  private splitCharacterIdentityBlock(text: string): { storyText: string; identityBlock: string } {
+    const marker = 'CHARACTER VISUAL IDENTITY';
+    const index = text.indexOf(marker);
+    if (index < 0) return { storyText: text.trim(), identityBlock: '' };
+    return {
+      storyText: text.slice(0, index).trim(),
+      identityBlock: text.slice(index).trim(),
+    };
+  }
+
+  private buildOpenAiReferenceUsageSection(hasRefs: boolean): string {
+    if (!hasRefs) return '';
+    return [
+      'REFERENCE USAGE:',
+      'Use provided character references only to preserve identity: face, hair, skin tone, distinguishing marks, and essential current wardrobe.',
+      'Do not copy reference-sheet pose, front-facing stance, centered composition, plain background, full-body framing, camera angle, character placement, blocking, focal point, or neutral model-sheet posture.',
+      'Compose this image from the story moment and shot/composition instructions, with a fresh arrangement of bodies, foreground/midground/background, and visual emphasis.',
+    ].join('\n');
+  }
+
+  private buildOpenAiVisibleCastSection(visibleCharacters: string[]): string {
+    if (visibleCharacters.length === 0) {
+      return [
+        'VISIBLE CAST:',
+        'No visible character cast is specified for this shot. Do not add characters unless the story moment explicitly requires them.',
+      ].join('\n');
+    }
+    return [
+      'VISIBLE CAST:',
+      `${visibleCharacters.join(', ')}.`,
+      'These are the only characters allowed in the image. Do not include other scene-present, offscreen, or background characters.',
+    ].join('\n');
+  }
+
+  private buildOpenAiShotCompositionSection(prompt: ImagePrompt): string {
+    const details = [
+      prompt.shotDescription,
+      prompt.cameraAngle,
+      prompt.composition,
+      prompt.keyGesture,
+      prompt.keyBodyLanguage,
+      prompt.poseSpec,
+    ]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+    return [
+      'SHOT / COMPOSITION:',
+      ...details,
+      'Use motivated visual variety: inserts, over-the-shoulder shots, cropped torsos, foreground occlusion, detail shots, environment-led frames, reaction closeups, low/high angles, and asymmetrical group staging are allowed when they fit the story moment.',
+      'Avoid defaulting to full-body lineup coverage, static centered poses, or everyone standing upright just because character references are provided.',
+    ].join('\n');
+  }
+
+  private buildOpenAiComposedPrompt(params: {
+    prompt: ImagePrompt;
+    resolvedStyle: string;
+    referenceImages: ReferenceImage[];
+    imageType?: ImageType;
+    metadata?: Record<string, unknown>;
+  }): string {
+    const { storyText, identityBlock } = this.splitCharacterIdentityBlock(params.prompt.prompt || '');
+    const visibleCharacters = this.getVisibleCharacterNamesFromPrompt(params.prompt, params.metadata);
+    const negative = [
+      params.prompt.negativePrompt,
+      'reference sheet pose, character model sheet, full-body lineup, front-facing neutral stance, centered static composition, plain studio background, arms at sides, mannequin pose, copied reference composition',
+    ].filter(Boolean).join(', ');
+    const sections = [
+      ['STYLE LOCK:', params.resolvedStyle || params.prompt.style || 'Use the approved story art style.'].join('\n'),
+      this.buildOpenAiVisibleCastSection(visibleCharacters),
+      ['STORY MOMENT:', storyText || params.prompt.visualNarrative || params.prompt.prompt || 'Render the requested story moment.'].join('\n'),
+      this.buildOpenAiShotCompositionSection(params.prompt),
+      this.buildOpenAiReferenceUsageSection(params.referenceImages.length > 0 && this.isOpenAiSceneLikeImageType(params.imageType)),
+      identityBlock ? ['CHARACTER CONTINUITY:', identityBlock.replace(/^CHARACTER VISUAL IDENTITY[^\n]*\n?/i, '').trim()].join('\n') : '',
+      ['NEGATIVE / DO NOT:', negative].join('\n'),
+    ].filter((section) => section.trim().length > 0);
+
+    return sections.join('\n\n');
+  }
+
   async generateImage(
     prompt: ImagePrompt,
     rawIdentifier: string,
@@ -2434,7 +2564,10 @@ export class ImageGenerationService {
     // A9: Drop reference images the provider can't meaningfully consume. Avoids
     // paying the tokenization / upload cost on refs that would have been
     // silently ignored by the downstream provider.
-    const providerInputRefs = this.withGlobalStyleReferenceForProvider(provider, metadata?.type, identifier, referenceImages);
+    const providerInputRefsRaw = this.withGlobalStyleReferenceForProvider(provider, metadata?.type, identifier, referenceImages);
+    const providerInputRefs = provider === 'dall-e'
+      ? this.filterOpenAiRefsToVisibleCast(normalizedPrompt, metadata, metadata?.type, providerInputRefsRaw)
+      : providerInputRefsRaw;
     const capabilityFilteredRefs = this.filterReferencesForProvider(provider, providerInputRefs);
     const referenceAudit = this.buildCharacterReferenceAudit(provider, metadata, normalizedPrompt, providerInputRefs, capabilityFilteredRefs);
     const effectiveModel =
@@ -2443,28 +2576,29 @@ export class ImageGenerationService {
       provider === 'atlas-cloud' ? this.config.atlasCloudModel :
       provider === 'stable-diffusion' ? this._stableDiffusionSettings?.defaultModel :
       undefined;
+    const effectivePromptMetadata = {
+      ...(metadata || {}),
+      visibleCharacterNames: referenceAudit.visibleCharacters,
+      effectiveProvider: provider,
+      effectiveModel,
+      effectiveRenderRoute: (metadata as any)?.renderRoute || referenceAudit.referenceRoute,
+      requestedProvider: this.config.provider,
+      requestedModel: this.config.geminiModel || this.config.openaiImageModel || this.config.atlasCloudModel,
+      referenceAudit,
+      inputReferences: (providerInputRefs || []).map((ref) => ({
+        role: ref.role,
+        characterName: ref.characterName,
+        viewType: ref.viewType,
+      })),
+      effectiveReferences: (capabilityFilteredRefs || []).map((ref) => ({
+        role: ref.role,
+        characterName: ref.characterName,
+        viewType: ref.viewType,
+      })),
+    };
     if (this.config.savePrompts !== false) {
       try {
-        await this.savePrompt(normalizedPrompt, identifier, {
-          ...(metadata || {}),
-          visibleCharacterNames: referenceAudit.visibleCharacters,
-          effectiveProvider: provider,
-          effectiveModel,
-          effectiveRenderRoute: (metadata as any)?.renderRoute || referenceAudit.referenceRoute,
-          requestedProvider: this.config.provider,
-          requestedModel: this.config.geminiModel || this.config.openaiImageModel || this.config.atlasCloudModel,
-          referenceAudit,
-          inputReferences: (providerInputRefs || []).map((ref) => ({
-            role: ref.role,
-            characterName: ref.characterName,
-            viewType: ref.viewType,
-          })),
-          effectiveReferences: (capabilityFilteredRefs || []).map((ref) => ({
-            role: ref.role,
-            characterName: ref.characterName,
-            viewType: ref.viewType,
-          })),
-        });
+        await this.savePrompt(normalizedPrompt, identifier, effectivePromptMetadata);
       } catch (promptErr) {
         console.warn(`[ImageGenerationService] Failed to update effective prompt metadata for ${identifier}: ${promptErr instanceof Error ? promptErr.message : String(promptErr)}`);
       }
@@ -2520,7 +2654,7 @@ export class ImageGenerationService {
             jobId,
             imageType: metadata?.type,
             referenceImages: capabilityFilteredRefs,
-            metadata,
+            metadata: effectivePromptMetadata,
           },
           this.providerBridge,
         );
@@ -2960,6 +3094,47 @@ export class ImageGenerationService {
     await this.writeFile(filePath, JSON.stringify(diagnostic, null, 2));
   }
 
+  private cleanOpenAiIdentityPhrase(value?: string): string {
+    let text = sanitizeStyleContaminationText(value || '').text;
+    text = text
+      .replace(/;\s*style tags?:[^;\n]*/gi, '')
+      .replace(/;\s*signature garments?:[^;\n]*/gi, '')
+      .replace(/;\s*materials?:[^;\n]*/gi, '')
+      .replace(/;\s*palette:[^;\n]*/gi, '')
+      .replace(/;\s*accessories?:[^;\n]*/gi, '')
+      .replace(/\b(?:confident|commanding|vulnerable|chaotic|romantic|sexy|professional|designer|high fashion|avant-garde|gothic|vintage|trendy)\s+(?:posture|stance|energy|aesthetic|style)\b[^.;]*/gi, '')
+      .replace(/\s*;\s*;/g, ';')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return text.replace(/[;,\s]+$/, '').trim();
+  }
+
+  private buildOpenAiCompactIdentityLines(d: { name: string; appearance: string; canonicalAppearance?: CanonicalAppearance }): string[] {
+    const ca = d.canonicalAppearance;
+    if (!ca) {
+      const appearance = this.cleanOpenAiIdentityPhrase(d.appearance);
+      return appearance ? [`${d.name}: ${appearance}`] : [`${d.name}`];
+    }
+
+    const slotLines: string[] = [`${d.name}:`];
+    const push = (label: string, value?: string) => {
+      const cleaned = this.cleanOpenAiIdentityPhrase(value);
+      if (cleaned) slotLines.push(`  - ${label}: ${cleaned}`);
+    };
+    push('Face', ca.face);
+    push('Hair', ca.hair);
+    push('Eyes', ca.eyes);
+    push('Skin', ca.skinTone);
+    const marks = (ca.distinguishingMarks || [])
+      .map((mark) => this.cleanOpenAiIdentityPhrase(mark))
+      .filter(Boolean);
+    if (marks.length > 0) {
+      slotLines.push(`  - Distinguishing marks: ${marks.join('; ')}`);
+    }
+    push('Current wardrobe essentials', ca.defaultAttire);
+    return slotLines;
+  }
+
   private injectCharacterIdentity(
     prompt: ImagePrompt,
     characterNames?: string[],
@@ -2992,8 +3167,13 @@ export class ImageGenerationService {
     // — the model is much less likely to drop or summarize individual fields
     // than a prose paragraph.
     const identityLines: string[] = [];
+    const compactIdentityForOpenAi = this.normalizeProvider(this.config.provider) === 'dall-e';
     if (descs.length > 0) {
       for (const d of descs) {
+        if (compactIdentityForOpenAi) {
+          identityLines.push(this.buildOpenAiCompactIdentityLines(d).join('\n'));
+          continue;
+        }
         const ca = d.canonicalAppearance;
         if (ca && (ca.face || ca.hair || ca.eyes || ca.skinTone || ca.build || ca.height || (ca.distinguishingMarks && ca.distinguishingMarks.length) || ca.defaultAttire)) {
           const slotLines: string[] = [`${d.name}:`];
@@ -5447,11 +5627,32 @@ export class ImageGenerationService {
     );
 
     const resolvedStyle = this.resolveArtStyle(prompt.style, identifier);
-    const composedPrompt = [
-      prompt.prompt,
-      resolvedStyle ? `Style: ${resolvedStyle}` : '',
-      prompt.composition ? `Composition: ${prompt.composition}` : '',
-    ].filter(Boolean).join('\n\n');
+    const composedPrompt = this.buildOpenAiComposedPrompt({
+      prompt,
+      resolvedStyle,
+      referenceImages: cappedRefs,
+      imageType,
+      metadata: _metadata,
+    });
+    if (this.config.savePrompts !== false) {
+      try {
+        await this.savePrompt(prompt, identifier, {
+          ...(_metadata || {}),
+          effectiveProvider: 'dall-e',
+          effectiveModel: model,
+          providerPrompt: composedPrompt,
+          openAiComposedPrompt: composedPrompt,
+          openAiReferenceUsage: useEdit ? 'identity-style-only' : 'text-only',
+          openAiEffectiveReferences: cappedRefs.map((ref) => ({
+            role: ref.role,
+            characterName: ref.characterName,
+            viewType: ref.viewType,
+          })),
+        });
+      } catch (promptErr) {
+        console.warn(`[ImageGenerationService] Failed to save OpenAI composed prompt for ${identifier}: ${promptErr instanceof Error ? promptErr.message : String(promptErr)}`);
+      }
+    }
 
     const body: Record<string, unknown> = {
       model,

@@ -96,8 +96,9 @@ describe('filterRefsForProvider', () => {
 
   describe('dall-e (gpt-image-2)', () => {
     // gpt-image-2 accepts refs via /v1/images/edits but needs a tight pack:
-    // one front view + face crop is best practice. Composite, 3q, and
-    // profile dilute identity signal or copy as collages.
+    // face crop first for scene identity, then full-body front only as a
+    // secondary wardrobe/silhouette signal. Composite, 3q, and profile dilute
+    // identity signal or copy as collages.
     const userProvided = ref('user-provided-character-reference');
 
     it('keeps the front view', () => {
@@ -140,8 +141,8 @@ describe('filterRefsForProvider', () => {
       expect(out.refs.some(r => r.characterName === 'Aoi')).toBe(true);
       expect(out.refs.some(r => r.characterName === 'Bruno')).toBe(true);
       expect(out.refs.some(r => r.characterName === 'Cara')).toBe(true);
-      expect(out.refs.find(r => r.characterName === 'Aoi')).toBe(front);
-      expect(out.refs.find(r => r.characterName === 'Bruno')).toBe(brunoFront);
+      expect(out.refs.find(r => r.characterName === 'Aoi')).toBe(face);
+      expect(out.refs.find(r => r.characterName === 'Bruno')).toBe(brunoFace);
     });
 
     it('keeps the tight strategy max for a single character', () => {

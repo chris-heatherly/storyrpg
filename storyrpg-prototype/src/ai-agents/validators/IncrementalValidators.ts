@@ -21,6 +21,7 @@ import { VoiceProfile } from '../agents/CharacterDesigner';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import { getEncounterBeats } from '../utils/encounterImageCoverage';
 import { PovClarityValidator, PovClarityResult } from './PovClarityValidator';
+import { SceneCraftValidator, SceneCraftResult } from './SceneCraftValidator';
 
 // ============================================
 // TYPES AND INTERFACES
@@ -109,6 +110,7 @@ export interface IncrementalValidationConfig {
   sensitivityCheck: boolean;
   continuityCheck: boolean;
   encounterValidation: boolean;
+  craftValidation: boolean;
   voiceRegenerationThreshold: number;
   stakesRegenerationThreshold: number;
   maxRegenerationAttempts: number;
@@ -122,6 +124,7 @@ export const DEFAULT_INCREMENTAL_CONFIG: IncrementalValidationConfig = {
   sensitivityCheck: true,
   continuityCheck: true,
   encounterValidation: true,
+  craftValidation: true,
   voiceRegenerationThreshold: 50,
   stakesRegenerationThreshold: 60,
   maxRegenerationAttempts: 2,
@@ -143,6 +146,7 @@ export interface SceneValidationResult {
   sensitivity?: IncrementalSensitivityResult;
   continuity?: IncrementalContinuityResult;
   encounter?: IncrementalEncounterResult;
+  craft?: SceneCraftResult;
   overallPassed: boolean;
   regenerationRequested: 'scene' | 'choices' | 'encounter' | 'none';
   validationTimeMs: number;
@@ -1271,6 +1275,7 @@ export class IncrementalValidationRunner {
   private continuityChecker: IncrementalContinuityChecker;
   private encounterValidator: IncrementalEncounterValidator;
   private povClarityValidator: PovClarityValidator;
+  private craftValidator: SceneCraftValidator;
   private config: IncrementalValidationConfig;
 
   constructor(
@@ -1282,6 +1287,7 @@ export class IncrementalValidationRunner {
     this.config = { ...DEFAULT_INCREMENTAL_CONFIG, ...config };
 
     this.povClarityValidator = new PovClarityValidator();
+    this.craftValidator = new SceneCraftValidator();
     this.voiceValidator = new IncrementalVoiceValidator(
       this.config.voiceRegenerationThreshold
     );
@@ -1376,6 +1382,12 @@ export class IncrementalValidationRunner {
         results.regenerationRequested = results.regenerationRequested === 'none' ? 'encounter' : results.regenerationRequested;
         results.overallPassed = false;
       }
+    }
+
+    // Craft validation is advisory. It should surface quality drift without
+    // forcing regeneration or rejecting genre-appropriate quiet/rest scenes.
+    if (this.config.craftValidation) {
+      results.craft = this.craftValidator.validateScene(sceneContent);
     }
 
     results.validationTimeMs = Date.now() - startTime;
@@ -1489,6 +1501,7 @@ export class IncrementalValidationRunner {
       continuity: this.continuityChecker,
       encounter: this.encounterValidator,
       povClarity: this.povClarityValidator,
+      craft: this.craftValidator,
     };
   }
 }
@@ -1522,6 +1535,9 @@ export function formatValidationResult(result: SceneValidationResult): string {
   if (result.encounter) {
     lines.push(`  Encounter: ${result.encounter.passed ? 'OK' : 'ISSUES'} (${result.encounter.beatCount} beats)`);
   }
+  if (result.craft) {
+    lines.push(`  Craft: ${result.craft.passed ? 'OK' : 'ADVISORY'} (${result.craft.issues.length} issues)`);
+  }
 
   return lines.join('\n');
 }
@@ -1536,11 +1552,11 @@ export function aggregateValidationResults(
   passedScenes: number;
   failedScenes: number;
   regenerationRequests: { scene: number; choices: number; encounter: number };
-  totalIssues: { voice: number; stakes: number; sensitivity: number; continuity: number; encounter: number };
+  totalIssues: { voice: number; stakes: number; sensitivity: number; continuity: number; encounter: number; craft: number };
   averageValidationTime: number;
 } {
   const regenerationRequests = { scene: 0, choices: 0, encounter: 0 };
-  const totalIssues = { voice: 0, stakes: 0, sensitivity: 0, continuity: 0, encounter: 0 };
+  const totalIssues = { voice: 0, stakes: 0, sensitivity: 0, continuity: 0, encounter: 0, craft: 0 };
 
   for (const result of results) {
     if (result.regenerationRequested === 'scene') regenerationRequests.scene++;
@@ -1552,6 +1568,7 @@ export function aggregateValidationResults(
     if (result.sensitivity) totalIssues.sensitivity += result.sensitivity.flags.length;
     if (result.continuity) totalIssues.continuity += result.continuity.issues.length;
     if (result.encounter) totalIssues.encounter += result.encounter.issues.length;
+    if (result.craft) totalIssues.craft += result.craft.issues.length;
   }
 
   return {

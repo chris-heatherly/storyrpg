@@ -762,42 +762,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     };
   }, [initialSeasonPlanId, resumeJobId, seasonPlan, sourceAnalysis, state]);
 
-  useEffect(() => {
-    if (initialSeasonPlanId || resumeJobId || seasonPlan || sourceAnalysis || state !== 'idle') return;
-    let cancelled = false;
-    seasonPlanStore.initialize()
-      .then(() => {
-        if (cancelled) return;
-        const active = seasonPlanStore.getActivePlan();
-        if (!active) return;
-        const completedCount = active.plan.episodes.filter((episode) => isSeasonEpisodeGenerated(episode)).length;
-        if (completedCount <= 0 || completedCount >= active.plan.totalEpisodes) return;
-        const nextEpisode = active.plan.episodes
-          .filter((episode) => !isSeasonEpisodeGenerated(episode))
-          .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
-        setSeasonPlan(active.plan);
-        setSourceAnalysis(active.sourceAnalysis);
-        setAnalysisResult({
-          analysis: active.sourceAnalysis,
-          totalEpisodes: active.sourceAnalysis.totalEstimatedEpisodes || active.plan.totalEpisodes,
-          episodeOutlines: active.sourceAnalysis.episodeBreakdown || active.plan.episodes,
-          suggestedOptions: [],
-        });
-        setCustomStoryTitle(active.sourceAnalysis.sourceTitle || active.plan.seasonTitle);
-        if (nextEpisode) {
-          setSelectedEpisodes([nextEpisode.episodeNumber]);
-          setSelectedEpisodeCount(1);
-        }
-        setState('analysis_complete');
-      })
-      .catch((err) => {
-        console.warn('[GeneratorScreen] Failed to restore active season plan:', err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [initialSeasonPlanId, resumeJobId, seasonPlan, sourceAnalysis, state]);
-
   const loadFailureWorkspace = useCallback(async (jobId: string) => {
     setFailureWorkspace((prev) => ({ ...prev, loading: true, error: null }));
     try {
@@ -2294,6 +2258,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     setState('idle'); setEvents([]); setCurrentCheckpoint(null); setGeneratedStory(null); setGeneratedCode(null); setError(null); setCustomStoryTitle('');
     setOutputManifest(null); setOutputDirectory(null); pipelineRef.current = null; clearDocument();
     setCurrentJobId(null); setActiveJobId(null);
+    setSeasonPlan(null); setSourceAnalysis(null); setAnalysisResult(null); setSelectedEpisodes([]); setSelectedEpisodeCount(1);
     setLiveProgress(0); setEtaSeconds(null); setImageProgress(null); setPipelineRuntime(null);
     setIsViewingHistory(false); setHistoryJob(undefined);
   };

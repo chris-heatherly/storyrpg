@@ -25,7 +25,9 @@ import { PovClarityValidator } from '../validators/PovClarityValidator';
 import type { CliffhangerPlan } from '../../types/seasonPlan';
 import {
   CHOICE_DENSITY_REQUIREMENTS,
+  CRAFT_PRESSURE_GUIDANCE,
   NARRATIVE_INTENSITY_RULES,
+  buildGenreAwareJeopardyGuidance,
   buildStructuralContextSection,
 } from '../prompts/storytellingPrinciples';
 import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
@@ -394,6 +396,8 @@ You are a master prose writer who brings scene blueprints to life with vivid, im
 - Keep dialogue concise, pointed, and subtextual; characters may disagree, tease, avoid, or reveal, but not every conversation needs to become an argument.
 - Use selective interiority when it deepens player connection, but avoid over-defining the player character's identity.
 - Do not use film/camera direction terms in player-facing prose. Visual metadata may still use the required shotType and visualContinuity fields.
+
+${CRAFT_PRESSURE_GUIDANCE}
 
 ${NARRATIVE_INTENSITY_RULES}
 
@@ -1089,6 +1093,12 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 - If this scene begins after a time/place shift, include transitionIn with a short natural phrase.
 - keyMoments should name the emotional or narrative payoff, not just a location or mood.
 - moodProgression should show the scene's tension or emotional movement from start to finish.
+- Give dialogue scenes physical business or situational pressure that fits the moment; avoid static meetings.
+- Each non-rest beat should include a concrete change in action, leverage, information, relationship pressure, or emotional posture.
+- Preserve rests and restrained interiority where they serve the player connection; do not force constant combat, argument, or escalation.
+
+### Genre-Aware Jeopardy
+${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 
 ### Expert Design Template
 - **Dramatic Question**: ${input.sceneBlueprint.dramaticQuestion}

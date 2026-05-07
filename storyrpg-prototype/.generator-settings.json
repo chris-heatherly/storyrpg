@@ -25,7 +25,7 @@
     "generateImages": true,
     "imageGenerationLimit": 10,
     "panelMode": "single",
-    "imagePlanningMode": "visual-storyboard",
+    "imagePlanningMode": "text",
     "blockingThreshold": 40,
     "warningThreshold": 60,
     "firstChoiceMaxSeconds": 90,

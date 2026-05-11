@@ -26,6 +26,7 @@
     "imageGenerationLimit": 10,
     "panelMode": "single",
     "imagePlanningMode": "text",
+    "storyboardMaxPanelsPerSheet": 9,
     "blockingThreshold": 40,
     "warningThreshold": 60,
     "firstChoiceMaxSeconds": 90,

@@ -52,10 +52,11 @@ describe('image defect gate helpers', () => {
   it('adds defect-specific correction text and negative prompt terms', () => {
     const patch = buildDefectRetryPrompt(
       { prompt: 'A full-body character reference.', negativePrompt: 'text' },
-      ['extra_limbs', 'panel_leakage', 'first_person_pov', 'environment_photorealism'],
+      ['visible_text', 'extra_limbs', 'panel_leakage', 'first_person_pov', 'environment_photorealism'],
     );
 
     expect(patch.prompt.prompt).toContain('IMAGE QA CORRECTION');
+    expect(patch.prompt.prompt).toContain('Replace readable screens');
     expect(patch.prompt.prompt).toContain('exactly two arms');
     expect(patch.prompt.negativePrompt).toContain('extra arms');
     expect(patch.prompt.negativePrompt).toContain('multi-panel layout');
@@ -66,5 +67,18 @@ describe('image defect gate helpers', () => {
   it('detects prompts that intentionally allow floating', () => {
     expect(promptAllowsFloating('a dreamlike vision of a figure levitating')).toBe(true);
     expect(promptAllowsFloating('neutral standing pose, feet planted')).toBe(false);
+  });
+
+  it('keeps issue-driven reasons consistent with contradictory model prose', () => {
+    const report = normalizeImageDefectReport({
+      passed: false,
+      issues: ['visible text'],
+      reason: 'The image has no visible text.',
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.issues).toContain('visible_text');
+    expect(report.reason).toContain('Detected issue(s): visible_text.');
+    expect(report.reason).toContain('Raw assessment: The image has no visible text.');
   });
 });

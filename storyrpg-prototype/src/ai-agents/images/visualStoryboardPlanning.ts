@@ -149,7 +149,9 @@ export interface StoryboardSlotInput {
 }
 
 const DEFAULT_PANEL_CAP = 6;
+const MAX_PANEL_CAP = 12;
 const PANEL_SIZE = 1024;
+const PANEL_HEIGHT = Math.round(PANEL_SIZE * (16 / 9));
 
 export function normalizeImagePlanningMode(raw: unknown): ImagePlanningMode {
   return raw === 'visual-storyboard' ? 'visual-storyboard' : 'text';
@@ -206,7 +208,7 @@ export function buildDefaultContinuityBible(
 }
 
 function chunkSlotsByPanelCap(slots: StoryboardSlotInput[], panelCap: number): StoryboardSlotInput[][] {
-  const cap = Math.max(1, panelCap || DEFAULT_PANEL_CAP);
+  const cap = Math.max(1, Math.min(MAX_PANEL_CAP, Math.floor(panelCap || DEFAULT_PANEL_CAP)));
   const chunks: StoryboardSlotInput[][] = [];
   for (let index = 0; index < slots.length; index += cap) {
     chunks.push(slots.slice(index, index + cap));
@@ -235,11 +237,23 @@ function groupSlotsForSheets(slots: StoryboardSlotInput[], panelCap: number, bra
 }
 
 function canvasForPanelCount(panelCount: number): StoryboardSheetPlan['canvas'] {
-  const columns = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(panelCount))));
+  const columns = panelCount <= 1
+    ? 1
+    : panelCount <= 3
+      ? panelCount
+      : panelCount <= 4
+        ? 2
+        : panelCount <= 6
+          ? 3
+          : panelCount <= 8
+            ? 4
+            : panelCount <= 9
+              ? 3
+              : 4;
   const rows = Math.max(1, Math.ceil(panelCount / columns));
   return {
     width: columns * PANEL_SIZE,
-    height: rows * PANEL_SIZE,
+    height: rows * PANEL_HEIGHT,
     columns,
     rows,
   };
@@ -256,7 +270,7 @@ export function buildSceneVisualStoryboardPlan(params: {
   continuityBible?: Partial<SceneContinuityBible>;
   sequenceGrammar?: Partial<SceneSequenceGrammar>;
 }): SceneVisualStoryboardPlan {
-  const panelCap = params.panelCap || DEFAULT_PANEL_CAP;
+  const panelCap = Math.max(1, Math.min(MAX_PANEL_CAP, Math.floor(params.panelCap || DEFAULT_PANEL_CAP)));
   const branchAware = params.branchAware ?? params.slots.some((slot) => !!slot.branchPath);
   const continuityBible = {
     ...buildDefaultContinuityBible(params.sceneName, params.sceneDescription, branchAware),
@@ -298,7 +312,7 @@ export function buildSceneVisualStoryboardPlan(params: {
         encounterPathId: slot.encounterPathId,
         storyboardSheetId: sheetId,
         panelIndex,
-        cropBox: { x: col * PANEL_SIZE, y: row * PANEL_SIZE, width: PANEL_SIZE, height: PANEL_SIZE },
+        cropBox: { x: col * PANEL_SIZE, y: row * PANEL_HEIGHT, width: PANEL_SIZE, height: PANEL_HEIGHT },
         sequenceRole: selectSequenceRole(globalIndex >= 0 ? globalIndex : panelIndex, finalSlotIds.length, slot),
         continuityFrom: panelIndex > 0 ? group.slots[panelIndex - 1]?.slotId : undefined,
         continuityTo: panelIndex < group.slots.length - 1 ? group.slots[panelIndex + 1]?.slotId : undefined,
@@ -326,7 +340,7 @@ export function buildSceneVisualStoryboardPlan(params: {
 }
 
 export function chunkStoryboardBeats<T extends { id: string }>(beats: T[], chunkSize = DEFAULT_PANEL_CAP): T[][] {
-  const size = Math.max(1, chunkSize || DEFAULT_PANEL_CAP);
+  const size = Math.max(1, Math.min(MAX_PANEL_CAP, Math.floor(chunkSize || DEFAULT_PANEL_CAP)));
   const chunks: T[][] = [];
   for (let index = 0; index < beats.length; index += size) {
     chunks.push(beats.slice(index, index + size));

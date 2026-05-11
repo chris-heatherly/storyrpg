@@ -34,6 +34,27 @@ describe('visualStoryboardPlanning', () => {
     expect(plan.sequenceGrammar.silentReadabilityGoal).toContain('without prose');
   });
 
+  it('supports twelve 9:16 storyboard panels per planning sheet', () => {
+    const beats = Array.from({ length: 13 }, (_, index) => ({
+      id: `beat-${index + 1}`,
+      text: `Beat ${index + 1}`,
+    }));
+
+    const plan = buildSceneVisualStoryboardPlan({
+      sceneId: 'scene-1',
+      scopedSceneId: 'episode-1-scene-1',
+      sceneName: 'The Great Moot Gathers',
+      slots: visualPlanSlotsFromBeats('episode-1-scene-1', beats),
+      panelCap: 12,
+    });
+
+    expect(plan.sheets).toHaveLength(2);
+    expect(plan.sheets.map((sheet) => sheet.panelCount)).toEqual([12, 1]);
+    expect(plan.sheets[0].canvas).toEqual({ width: 4096, height: 5460, columns: 4, rows: 3 });
+    expect(plan.panels[0].cropBox).toEqual({ x: 0, y: 0, width: 1024, height: 1820 });
+    expect(plan.panels[4].cropBox).toEqual({ x: 0, y: 1820, width: 1024, height: 1820 });
+  });
+
   it('keeps all encounter and storylet paths in branch-aware substoryboards', () => {
     const encounterSlots: EncounterImageSlot[] = [
       {

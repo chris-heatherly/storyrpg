@@ -6,6 +6,7 @@ const generationSettings = {
   generateImages: true,
   imageGenerationLimit: 2,
   imagePlanningMode: 'text',
+  storyboardMaxPanelsPerSheet: 6,
   targetSceneCount: 5,
   majorChoiceCount: 3,
   minBeatsPerScene: 3,
@@ -535,5 +536,47 @@ describe('buildPipelineConfig', () => {
     });
 
     expect(config.imageGen?.imagePlanningMode).toBe('visual-storyboard');
+  });
+
+  it('threads storyboard sheet panel cap through imageGen', () => {
+    const config = buildPipelineConfig({
+      llmProvider: 'anthropic',
+      llmModel: 'claude-sonnet-4-20250514',
+      imageLlmProvider: 'gemini',
+      imageLlmModel: 'gemini-2.5-flash',
+      videoLlmProvider: 'anthropic',
+      videoLlmModel: 'claude-3-5-haiku-20241022',
+      apiKey: 'anthropic-key',
+      geminiApiKey: 'gemini-key',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: 'bytedance/seedream-v4.5',
+      midapiToken: '',
+      imageProvider: 'dall-e',
+      imageStrategy: 'all-beats',
+      panelMode: 'all-beats',
+      artStyle: 'painterly',
+      geminiSettings: {} as any,
+      midjourneySettings: {} as any,
+      generationSettings: { ...generationSettings, storyboardMaxPanelsPerSheet: 12 },
+      generationMode: 'advisory',
+      narrationSettings: {
+        enabled: false,
+        autoPlay: false,
+        preGenerateAudio: false,
+        voiceId: '',
+        highlightMode: 'word',
+      },
+      videoSettings: {
+        enabled: false,
+        model: 'veo-3.1-fast-generate-preview',
+        durationSeconds: 6,
+        resolution: '1080p',
+        aspectRatio: '9:16',
+        strategy: 'selective',
+      },
+    });
+
+    expect(config.imageGen?.storyboardV2?.maxPanelsPerSheet).toBe(12);
   });
 });

@@ -134,7 +134,7 @@ export interface Story {
    * Paths to the three style-bible anchor images the user approved in
    * the Style Setup UI (or the pipeline generated in-flight). Any slot
    * may be absent; playback only cares about `character` for
-   * `setGeminiStyleReference` hand-off on resume.
+   * season style-reference hand-off on resume.
    */
   styleAnchors?: {
     character?: { imagePath: string };

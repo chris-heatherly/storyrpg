@@ -187,9 +187,96 @@ function createStoryCatalog(storiesDir, port) {
     };
   }
 
+  function cloneJson(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function normaliseEpisodeOffset(record) {
+    const episodes = record.pkg?.story?.episodes;
+    if (!Array.isArray(episodes) || episodes.length < 2) return record;
+
+    const numbers = episodes
+      .map((episode) => Number(episode?.number))
+      .filter((number) => Number.isFinite(number) && number > 0);
+    if (numbers.length !== episodes.length) return record;
+
+    const minNumber = Math.min(...numbers);
+    if (minNumber <= 1) return record;
+
+    const pkg = cloneJson(record.pkg);
+    pkg.story.episodes = pkg.story.episodes
+      .map((episode) => ({
+        ...episode,
+        number: Math.max(1, Number(episode.number) - minNumber + 1),
+      }))
+      .sort((a, b) => Number(a.number || 0) - Number(b.number || 0));
+
+    return {
+      ...record,
+      pkg,
+      rawStory: pkg.story,
+      sourceRecords: [record],
+      episodeNumbersNormalized: true,
+    };
+  }
+
+  function mergeContinuationRecords(records) {
+    const sorted = [...records].sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const newest = sorted[0];
+    const newestEpisodes = newest.pkg?.story?.episodes;
+    if (!Array.isArray(newestEpisodes) || newestEpisodes.length === 0) return newest;
+
+    // A multi-episode package should be internally complete. Some resume jobs
+    // have been saved with an offset (2,3 instead of 1,2), so normalize those
+    // labels without pulling in stale older directories.
+    if (newestEpisodes.length > 1) {
+      return normaliseEpisodeOffset(newest);
+    }
+
+    const newestEpisodeNumber = Number(newestEpisodes[0]?.number || 1);
+    if (!Number.isFinite(newestEpisodeNumber) || newestEpisodeNumber <= 1) {
+      return newest;
+    }
+
+    const episodesByNumber = new Map();
+    const sourceRecords = new Set([newest]);
+    for (const record of sorted) {
+      const episodes = record.pkg?.story?.episodes;
+      if (!Array.isArray(episodes)) continue;
+      for (const episode of episodes) {
+        const number = Number(episode?.number);
+        if (!Number.isFinite(number) || number < 1 || number > newestEpisodeNumber) continue;
+        if (episodesByNumber.has(number)) continue;
+        episodesByNumber.set(number, cloneJson(episode));
+        sourceRecords.add(record);
+      }
+    }
+
+    if (!episodesByNumber.has(newestEpisodeNumber) || episodesByNumber.size <= 1) {
+      return newest;
+    }
+
+    const pkg = cloneJson(newest.pkg);
+    pkg.story.episodes = Array.from(episodesByNumber.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([, episode]) => episode);
+
+    const coverSource = sorted.find((record) => record.pkg?.story?.coverImage);
+    if (coverSource?.pkg?.story?.coverImage && !pkg.story.coverImage) {
+      pkg.story.coverImage = coverSource.pkg.story.coverImage;
+    }
+
+    return {
+      ...newest,
+      pkg,
+      rawStory: pkg.story,
+      sourceRecords: Array.from(sourceRecords),
+      mergedContinuationRecords: true,
+    };
+  }
+
   function listLatestStoryRecords({ includeInvalid = false } = {}) {
-    const storyMap = new Map();
-    const seen = new Map();
+    const recordsByStoryId = new Map();
     const invalid = [];
     for (const dirName of listStoryDirectories()) {
       const record = getStoryRecord(dirName);
@@ -200,18 +287,22 @@ function createStoryCatalog(storiesDir, port) {
       }
       if (!record.pkg?.storyId) continue;
       const id = record.pkg.storyId;
-      const prior = seen.get(id);
-      if (!prior || record.mtimeMs > prior.mtimeMs) {
-        // Fail-closed dedupe: log when we replace a record so the
-        // operator sees that two directories claim the same storyId.
-        if (prior) {
-          console.error(`[StoryCatalog] duplicate storyId="${id}": dropping "${prior.dirName}" in favour of "${dirName}" (newer mtime)`);
-        }
-        storyMap.set(id, record);
-        seen.set(id, { dirName, mtimeMs: record.mtimeMs });
-      }
+      const group = recordsByStoryId.get(id) || [];
+      group.push(record);
+      recordsByStoryId.set(id, group);
     }
-    const valid = Array.from(storyMap.values())
+
+    const valid = Array.from(recordsByStoryId.entries())
+      .map(([id, records]) => {
+        if (records.length > 1) {
+          const dirNames = records
+            .sort((a, b) => b.mtimeMs - a.mtimeMs)
+            .map((record) => record.dirName)
+            .join(', ');
+          console.error(`[StoryCatalog] duplicate storyId="${id}": resolving catalog view from ${dirNames}`);
+        }
+        return mergeContinuationRecords(records);
+      })
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
     return includeInvalid ? { valid, invalid } : valid;
   }
@@ -223,9 +314,18 @@ function createStoryCatalog(storiesDir, port) {
       dirName: record.dirName,
       mtimeMs: record.mtimeMs,
     });
+    const artifactSources = Array.isArray(record.sourceRecords) && record.sourceRecords.length > 0
+      ? record.sourceRecords
+      : [record];
+    const imageArtifacts = artifactSources
+      .map((source) => getImageArtifactSummary(path.join(storiesDir, source.dirName)))
+      .reduce((summary, source) => ({
+        hasSeasonReferences: summary.hasSeasonReferences || source.hasSeasonReferences,
+        hasEpisodeArt: summary.hasEpisodeArt || source.hasEpisodeArt,
+      }), { hasSeasonReferences: false, hasEpisodeArt: false });
     return {
       ...entry,
-      imageArtifacts: getImageArtifactSummary(path.join(storiesDir, record.dirName)),
+      imageArtifacts,
     };
   }
 

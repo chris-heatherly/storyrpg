@@ -1,5 +1,5 @@
 {
-  "scannedAt": 1778120277646,
+  "scannedAt": 1778444749392,
   "providers": {
     "anthropic": [
       {
@@ -119,6 +119,11 @@
         "value": "gemini-3.1-flash-lite-preview",
         "label": "Gemini 3.1 Flash Lite Preview",
         "description": "Gemini 3.1 Flash Lite Preview"
+      },
+      {
+        "value": "gemini-3.1-flash-lite",
+        "label": "Gemini 3.1 Flash Lite",
+        "description": "Gemini 3.1 Flash Lite"
       },
       {
         "value": "gemini-3.1-flash-image-preview",

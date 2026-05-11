@@ -1591,16 +1591,22 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   // For normal beats, only render beat- or scene-scoped art.
   // Reusing the last image or story cover here smears one fallback across the whole story.
   const sceneBgUrl = mediaRefAsString(currentScene.backgroundImage);
+  const firstBeatImageUrl = mediaRefAsString(currentScene.beats?.[0]?.image);
+  const isFirstBeat = processedBeat.id === currentScene.startingBeatId || processedBeat.id === currentScene.beats?.[0]?.id;
+  const sceneBgIsFirstBeatImage = Boolean(sceneBgUrl && firstBeatImageUrl && sceneBgUrl === firstBeatImageUrl);
+  const fallbackSceneBgUrl = sceneBgUrl && (!sceneBgIsFirstBeatImage || isFirstBeat)
+    ? sceneBgUrl
+    : undefined;
   const rawImageUrl: string | undefined =
     processedBeat.image
-    || sceneBgUrl
+    || fallbackSceneBgUrl
     || undefined;
 
   // Logic to handle missing beat images by falling back to scene background
   let finalImageUrl: string | undefined = rawImageUrl;
-  if (imageErrorId === processedBeat.id && processedBeat.image && processedBeat.image !== sceneBgUrl) {
+  if (imageErrorId === processedBeat.id && processedBeat.image && processedBeat.image !== fallbackSceneBgUrl) {
     debugLog(`[StoryReader] Falling back to scene background for beat ${processedBeat.id}`);
-    finalImageUrl = sceneBgUrl || undefined;
+    finalImageUrl = fallbackSceneBgUrl || undefined;
   }
 
   const originalImageUrl = finalImageUrl;
@@ -1614,7 +1620,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const imageUrl = finalImageUrl && !finalImageUrl.endsWith('.prompt.txt') && !finalImageUrl.endsWith('.txt')
     ? finalImageUrl
     : undefined;
-  if (imageUrl && (processedBeat.image || sceneBgUrl)) {
+  if (imageUrl && (processedBeat.image || fallbackSceneBgUrl)) {
     lastKnownImageRef.current = imageUrl;
   }
 

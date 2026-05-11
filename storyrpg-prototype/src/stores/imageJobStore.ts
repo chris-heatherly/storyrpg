@@ -8,7 +8,7 @@ export interface ImageJobMetadata {
   shotId?: string;
   characterId?: string;
   viewType?: string;
-  type?: 'scene' | 'beat' | 'cover' | 'master' | 'reference' | 'expression' | 'encounter-setup' | 'encounter-outcome';
+  type?: 'scene' | 'beat' | 'cover' | 'master' | 'reference' | 'expression' | 'encounter-setup' | 'encounter-outcome' | 'storylet-aftermath' | 'storyboard-sheet';
   characters?: string[];
   regeneration?: number;
   [key: string]: unknown;

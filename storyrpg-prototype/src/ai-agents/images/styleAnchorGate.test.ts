@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { chooseGeminiStyleAnchor } from './styleAnchorGate';
+import { chooseSeasonStyleAnchor } from './styleAnchorGate';
 
-describe('chooseGeminiStyleAnchor', () => {
+describe('chooseSeasonStyleAnchor', () => {
   it('rejects a generated anchor that fails validation', () => {
-    const decision = chooseGeminiStyleAnchor({
+    const decision = chooseSeasonStyleAnchor({
       generatedCharacterAnchor: 'generated',
       generatedCharacterValidation: {
         passed: false,
@@ -19,7 +19,7 @@ describe('chooseGeminiStyleAnchor', () => {
   });
 
   it('allows generated anchors only after validation passes', () => {
-    const decision = chooseGeminiStyleAnchor({
+    const decision = chooseSeasonStyleAnchor({
       generatedCharacterAnchor: 'generated',
       generatedCharacterValidation: {
         passed: true,
@@ -32,12 +32,12 @@ describe('chooseGeminiStyleAnchor', () => {
   });
 
   it('lets user-provided style sources bypass generated-anchor validation', () => {
-    const uploaded = chooseGeminiStyleAnchor({
+    const uploaded = chooseSeasonStyleAnchor({
       uploadedStyleReference: 'uploaded',
       generatedCharacterAnchor: 'generated',
       generatedCharacterValidation: { passed: false, reason: 'off style' },
     });
-    const preapproved = chooseGeminiStyleAnchor({
+    const preapproved = chooseSeasonStyleAnchor({
       preapprovedCharacterAnchor: 'preapproved',
       uploadedStyleReference: 'uploaded',
       generatedCharacterAnchor: 'generated',

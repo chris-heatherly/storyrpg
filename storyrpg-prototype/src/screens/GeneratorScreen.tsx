@@ -583,6 +583,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       const updates: Record<string, unknown> = {};
       if (imageJob.status !== undefined) updates.status = imageJob.status;
       if (imageJob.imageUrl !== undefined) updates.imageUrl = imageJob.imageUrl;
+      if (imageJob.imagePath !== undefined) updates.imagePath = imageJob.imagePath;
+      if (imageJob.localPath !== undefined) updates.localPath = imageJob.localPath;
       if (imageJob.error !== undefined) updates.error = imageJob.error;
       if (imageJob.status !== undefined) updates.progress = progress;
 
@@ -3158,10 +3160,10 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                           <Text style={[styles.configLabel, { marginBottom: 8 }]}>IMAGE MODEL</Text>
                           <ModelDropdown
                             options={[
-                              { value: 'gpt-image-1', label: 'GPT Image 1', description: 'Default. General-purpose high quality, no org verification required.' },
+                              { value: 'gpt-image-1', label: 'GPT Image 1', description: 'General-purpose high quality fallback, no org verification required.' },
                               { value: 'gpt-image-1-mini', label: 'GPT Image 1 Mini', description: 'Fastest and lowest cost. No verification required.' },
                               { value: 'gpt-image-1.5', label: 'GPT Image 1.5 (verified org only)', description: 'Requires OpenAI organization verification.' },
-                              { value: 'gpt-image-2', label: 'GPT Image 2 (verified org only)', description: 'Strongest consistency + multi-ref editing. Requires OpenAI organization verification.' },
+                              { value: 'gpt-image-2', label: 'GPT Image 2 (verified org only)', description: 'Default for storyboard pipeline. Strongest consistency + multi-ref editing. Requires OpenAI organization verification.' },
                             ]}
                             value={openaiSettings.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel}
                             onSelect={(v) => handleOpenaiSettingsChange({ imageModel: v as any })}

@@ -98,7 +98,7 @@ function formatIdentityAnchors(value: unknown): string {
 
 /**
  * Characters-only identity anchor. Mirrors the strict character reference
- * format so `setGeminiStyleReference` never learns from loose story art.
+ * format so `setSeasonStyleReference` never learns from loose story art.
  */
 export function buildCharacterAnchorPrompt(input: CharacterAnchorInput): BuiltAnchorPrompt {
   const palette = (input.colorTerms || []).filter(Boolean).slice(0, 3).join(', ');
@@ -120,7 +120,7 @@ export function buildCharacterAnchorPrompt(input: CharacterAnchorInput): BuiltAn
     composition:
       'One single full-body front-view character on a plain background. Head-to-toe framing, feet planted, even studio lighting, no splits, no panels, no divisions, no text.',
     negativePrompt:
-      'text, letters, numbers, captions, labels, annotations, watermark, speech bubble, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, turnaround layout, extra arms, extra hands, extra legs, duplicated limbs, malformed hands, floating, levitating, airborne, feet off ground, cropped feet, cropped head, photorealistic, photography',
+      'text, letters, numbers, captions, labels, annotations, watermark, speech bubble, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, turnaround layout, extra arms, extra hands, extra legs, duplicated limbs, malformed hands, floating, levitating, airborne, feet off ground, cropped feet, cropped head',
     visualNarrative: `${displayName} rendered as the canonical clean full-body character identity reference for the episode. One strict front-view figure, not split or divided.`,
     keyExpression: 'Readable calm but alert expression, neutral enough for reuse, never blank.',
     keyBodyLanguage:
@@ -154,7 +154,7 @@ export function buildArcStripAnchorPrompt(input: ArcStripAnchorInput): BuiltAnch
       composition:
         'Horizontal color script strip showing the episode look bible. Abstract mood panels only, no text, no characters, no people, no figures.',
       negativePrompt:
-        'text, letters, numbers, captions, labels, collage, split-screen, multi-image grid, photorealistic, photography, person, people, character, figure, face, body, silhouette of person, human, man, woman, portrait',
+        'text, letters, numbers, captions, labels, collage, split-screen, multi-image grid, person, people, character, figure, face, body, silhouette of person, human, man, woman, portrait',
       visualNarrative: `Episode style bible for ${input.storyTitle}: abstract color-and-light arc strip. NO characters, NO people, NO figures — purely abstract color mood panels.`,
     },
   };

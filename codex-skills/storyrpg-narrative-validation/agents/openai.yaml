@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Narrative Validation"
+  short_description: "Tune story structure, branching, and narrative QA"
+  default_prompt: "Use $storyrpg-narrative-validation to improve StoryRPG story QA without breaking fiction-first play."
+policy:
+  allow_implicit_invocation: true

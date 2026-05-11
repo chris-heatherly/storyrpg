@@ -41,6 +41,15 @@ function shouldReplaceImageJob(current: ImageJob, candidate: ImageJob): boolean 
   return candidate.startTime >= current.startTime;
 }
 
+function naturalIdentifierCompare(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function getSequenceIndex(job: ImageJob): number | undefined {
+  const value = Number(job.metadata?.sequenceIndex);
+  return Number.isFinite(value) ? value : undefined;
+}
+
 export function collapseImageJobAttempts(jobs: ImageJob[]): ImageJob[] {
   const groups = new Map<string, { representative: ImageJob; count: number }>();
 
@@ -68,7 +77,17 @@ export function collapseImageJobAttempts(jobs: ImageJob[]): ImageJob[] {
           },
         }
       : representative)
-    .sort((a, b) => a.startTime - b.startTime);
+    .sort((a, b) => {
+      const aSequence = getSequenceIndex(a);
+      const bSequence = getSequenceIndex(b);
+      if (aSequence !== undefined && bSequence !== undefined && aSequence !== bSequence) {
+        return aSequence - bSequence;
+      }
+      if (aSequence !== undefined && bSequence === undefined) return -1;
+      if (aSequence === undefined && bSequence !== undefined) return 1;
+      const natural = naturalIdentifierCompare(a.identifier || a.id, b.identifier || b.id);
+      return natural || a.startTime - b.startTime;
+    });
 }
 
 export function countVisibleImageJobs(jobs: Record<string, ImageJob>): number {

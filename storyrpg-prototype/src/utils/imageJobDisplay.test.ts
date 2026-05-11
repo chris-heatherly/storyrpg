@@ -58,4 +58,14 @@ describe('imageJobDisplay', () => {
 
     expect(collapseImageJobAttempts(jobs)).toHaveLength(1);
   });
+
+  it('natural-sorts storyboard beat identifiers when no sequence index is present', () => {
+    const jobs = [
+      makeJob({ id: 'beat-10', identifier: 'storyboard-v2-story-beat-episode-1-scene-3a-beat-10', startTime: 1000 }),
+      makeJob({ id: 'beat-2', identifier: 'storyboard-v2-story-beat-episode-1-scene-3a-beat-2', startTime: 2000 }),
+      makeJob({ id: 'beat-1', identifier: 'storyboard-v2-story-beat-episode-1-scene-3a-beat-1', startTime: 3000 }),
+    ];
+
+    expect(collapseImageJobAttempts(jobs).map((job) => job.id)).toEqual(['beat-1', 'beat-2', 'beat-10']);
+  });
 });

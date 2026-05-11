@@ -32,7 +32,7 @@ const FLOATING_ALLOWED_RE =
 const ISSUE_NEGATIVES: Record<ImageDefectIssue, string> = {
   visible_text: 'visible text, letters, words, numbers, captions, labels, annotations, watermarks, speech bubbles',
   extra_limbs: 'extra arms, extra hands, extra legs, duplicated limbs, malformed anatomy, too many fingers',
-  duplicate_body: 'duplicate bodies, duplicate character, cloned person, repeated figure, second copy of same character',
+  duplicate_body: 'duplicate bodies, duplicate character, cloned person, repeated figure, second copy of same intended character, same character appears more than once',
   floating_character: 'floating, levitating, airborne, feet off ground, hovering, unsupported body',
   panel_leakage: 'panel borders, comic panels, collage, split screen, multi-panel layout, inset image, picture-in-picture',
   reference_sheet_artifact: 'turnaround sheet, model sheet, reference sheet layout, side-by-side views, annotations, labels',
@@ -43,15 +43,15 @@ const ISSUE_NEGATIVES: Record<ImageDefectIssue, string> = {
 };
 
 const ISSUE_INSTRUCTIONS: Record<ImageDefectIssue, string> = {
-  visible_text: 'Remove every visible letter, word, caption, label, watermark, speech bubble, and number.',
+  visible_text: 'Remove every visible letter, word, caption, label, watermark, speech bubble, and number. Replace readable screens, signs, labels, books, papers, badges, and device UI with blank, dark, reflective, glare-obscured, face-down, cropped, or too-small-to-read surfaces.',
   extra_limbs: 'Render normal human anatomy: exactly two arms, two hands, two legs, one head, natural fingers.',
-  duplicate_body: 'Render each intended character exactly once; do not clone or duplicate bodies.',
+  duplicate_body: 'Render each intended character exactly once; do not clone, repeat, mirror-copy, or duplicate any visible character.',
   floating_character: 'Keep standing characters grounded with feet visibly planted unless the story explicitly requests airborne motion.',
   panel_leakage: 'Return one continuous image only, with no panels, borders, inset frames, collage, or split-screen layout.',
   reference_sheet_artifact: 'Return one clean image only, not a model sheet, turnaround, labeled reference sheet, or multi-view layout.',
-  photorealism: 'Remove all photoreal, photographic, live-action, lens, bokeh, and realistic material rendering; use the requested illustrated season style only.',
-  environment_photorealism: 'Redraw the environment as a stylized illustrated background with simplified graphic architecture, designed shapes, and the same non-photographic finish as the characters.',
-  style_drift: 'Restore the exact season rendering style, linework, palette, lighting treatment, and finish; do not use generic cinematic concept art or 3D-rendered realism.',
+  photorealism: 'Remove renderer, lens, lighting, or material cues that contradict the active season style contract; the explicit style prompt remains authoritative.',
+  environment_photorealism: 'Redraw the environment with the same renderer, material treatment, lighting language, and finish required by the active season style contract.',
+  style_drift: 'Restore the exact season rendering style, linework, palette, lighting treatment, and finish required by the active style contract.',
   first_person_pov: 'Use a third-person observer camera outside the player character; do not use literal first-person POV, disembodied hands, or player-eye framing.',
 };
 
@@ -86,7 +86,11 @@ export function normalizeImageDefectReport(raw: unknown, prompt?: ImagePrompt | 
 
   addIf('visible_text', obj.visible_text ?? obj.hasText ?? obj.text, /\b(text|letters?|words?|captions?|labels?|watermark|speech bubble|numbers?)\b/);
   addIf('extra_limbs', obj.extra_limbs ?? obj.extraLimbs, /\b(extra|duplicated|too many|malformed)\s+(arms?|hands?|legs?|limbs?|fingers?)\b/);
-  addIf('duplicate_body', obj.duplicate_body ?? obj.duplicateBodies, /\b(duplicate|duplicated|clone|cloned|repeated)\s+(body|bodies|character|figure|person)\b/);
+  addIf(
+    'duplicate_body',
+    obj.duplicate_body ?? obj.duplicateBodies ?? obj.duplicate_character ?? obj.duplicateCharacter,
+    /\b(?:(duplicate|duplicated|clone|cloned|repeated)\s+(body|bodies|character|figure|person)|same\s+(?:intended\s+)?character\s+(?:appears|shown|is visible|rendered)\s+(?:more than once|twice|multiple times)|second copy of (?:the )?same (?:character|person)|mirror[- ]copy)\b/,
+  );
   addIf('floating_character', obj.floating_character ?? obj.floating, /\b(floating|levitating|hovering|airborne|feet off ground|unsupported)\b/);
   addIf('panel_leakage', obj.panel_leakage ?? obj.panelLeakage, /\b(panel|comic panel|split[- ]screen|collage|inset|picture-in-picture|multi[- ]panel)\b/);
   addIf('reference_sheet_artifact', obj.reference_sheet_artifact ?? obj.referenceSheetArtifact, /\b(reference sheet|model sheet|turnaround|multi[- ]view|side-by-side|annotations?)\b/);
@@ -102,16 +106,17 @@ export function normalizeImageDefectReport(raw: unknown, prompt?: ImagePrompt | 
   const finalIssues = Array.from(issues);
   const explicitPassed = obj.passed === true || obj.pass === true;
   const passed = explicitPassed && finalIssues.length === 0;
+  const rawReason = typeof obj.reason === 'string' ? obj.reason : undefined;
   return {
     passed,
     issues: finalIssues,
-    reason: typeof obj.reason === 'string'
-      ? obj.reason
-      : finalIssues.length > 0
-        ? finalIssues.map(issue => ISSUE_INSTRUCTIONS[issue]).join(' ')
-        : explicitPassed
-          ? 'defect gate passed'
-          : 'defect gate returned no pass signal',
+    reason: finalIssues.length > 0
+      ? [
+          `Detected issue(s): ${finalIssues.join(', ')}.`,
+          finalIssues.map(issue => ISSUE_INSTRUCTIONS[issue]).join(' '),
+          rawReason ? `Raw assessment: ${rawReason}` : '',
+        ].filter(Boolean).join(' ')
+      : rawReason || (explicitPassed ? 'defect gate passed' : 'defect gate returned no pass signal'),
     rawResponse: typeof raw === 'string' ? raw : undefined,
   };
 }

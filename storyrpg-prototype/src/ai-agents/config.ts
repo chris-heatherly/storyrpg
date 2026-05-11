@@ -34,7 +34,7 @@ import type { ArtStyleProfile } from './images/artStyleProfile';
 /**
  * One pre-approved style-bible anchor image supplied by the UI's Style
  * Setup flow. Either the inline base64 payload (preferred for immediate
- * handoff to `setGeminiStyleReference`) or an on-disk path that the
+ * handoff to `setSeasonStyleReference`) or an on-disk path that the
  * pipeline can read.
  */
 export interface PreapprovedAnchor {
@@ -304,11 +304,10 @@ export interface OpenAISettings {
 export const DEFAULT_OPENAI_SETTINGS: Required<OpenAISettings> = {
   reasoningEffort: 'medium',
   forceJsonResponse: true,
-  // `gpt-image-1` is the broadest-availability tier on the OpenAI API and does
-  // NOT require organization verification. `gpt-image-2` and `gpt-image-1.5`
-  // are gated behind platform.openai.com org verification — pick them explicitly
-  // in the UI only after your org is verified.
-  imageModel: 'gpt-image-1',
+  // This branch's new storyboard pipeline is designed around GPT Image 2.
+  // Users can explicitly select an older GPT Image model when org
+  // verification or quota constraints require it.
+  imageModel: 'gpt-image-2',
   imageModeration: 'auto',
 };
 
@@ -664,6 +663,17 @@ export interface PipelineConfig {
     openaiModeration?: 'auto' | 'low';
     model?: string;
     provider?: ImageProvider;
+    /**
+     * Selects the image orchestration path. `storyboard-v2` is the default
+     * GPT Image storyboard pipeline for this branch; `legacy` preserves the
+     * older ImageAgentTeam/provider-heavy path for explicit fallback.
+     */
+    pipelineMode?: 'storyboard-v2' | 'legacy';
+    storyboardV2?: {
+      maxPanelsPerSheet?: number;
+      cropInsetRatio?: number;
+      refineCroppedPanels?: boolean;
+    };
     strategy?: 'selective' | 'all-beats';
     // Atlas Cloud configuration
     atlasCloudApiKey?: string;
@@ -728,7 +738,7 @@ export interface PipelineConfig {
      * Pre-approved style-bible anchor images supplied by the UI's Style
      * Setup section. When present, `generateEpisodeStyleBible` skips its
      * internal generation for whichever roles were approved and primes
-     * `setGeminiStyleReference` from the preferred anchor (character first,
+     * `setSeasonStyleReference` from the preferred anchor (character first,
      * falling back to arc strip). Any slot left undefined is still
      * generated in-pipeline the way it is today.
      *
@@ -922,6 +932,14 @@ export function loadConfig(): PipelineConfig {
       openaiModeration: openaiSettingsFromEnv.imageModeration,
       model: env.EXPO_PUBLIC_GEMINI_MODEL || env.GEMINI_MODEL,
       provider: env.EXPO_PUBLIC_IMAGE_PROVIDER || env.IMAGE_PROVIDER || 'nano-banana',
+      pipelineMode: (env.EXPO_PUBLIC_IMAGE_PIPELINE_MODE || env.IMAGE_PIPELINE_MODE) === 'legacy'
+        ? 'legacy'
+        : 'storyboard-v2',
+      storyboardV2: {
+        maxPanelsPerSheet: Number.parseInt(env.IMAGE_STORYBOARD_V2_MAX_PANELS_PER_SHEET || '6', 10) || 6,
+        cropInsetRatio: Number.parseFloat(env.IMAGE_STORYBOARD_V2_CROP_INSET_RATIO || '0.04') || 0.04,
+        refineCroppedPanels: env.IMAGE_STORYBOARD_V2_REFINE_CROPPED_PANELS !== 'false',
+      },
       imagePlanningMode: (env.EXPO_PUBLIC_IMAGE_PLANNING_MODE || env.IMAGE_PLANNING_MODE) === 'visual-storyboard'
         ? 'visual-storyboard'
         : 'text',

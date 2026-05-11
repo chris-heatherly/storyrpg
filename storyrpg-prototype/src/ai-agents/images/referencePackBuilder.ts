@@ -152,6 +152,10 @@ function isStyleAnchorRef(role: string): boolean {
   return role.includes('style');
 }
 
+function isCompositionRef(role: string): boolean {
+  return /^(storyboard-panel-crop|composition-reference|panel-crop|draft-crop)$/i.test(role);
+}
+
 function isLocationRef(role: string): boolean {
   return role.includes('location') || role.includes('environment');
 }
@@ -381,6 +385,13 @@ export function filterRefsForProvider(
           kept.push(r);
           continue;
         }
+        // Crop-refine storyboard jobs need the derived panel crop as the
+        // composition/staging source. It is not an identity or style ref, but
+        // dropping it turns the refine pass into a fresh scene generation.
+        if (isCompositionRef(r.role)) {
+          kept.push(r);
+          continue;
+        }
         // Face crop: always useful for gpt-image-2 (tight identity).
         if (r.role === 'character-reference-face') {
           kept.push(r);
@@ -418,6 +429,12 @@ export function filterRefsForProvider(
         ordered.push(r);
       };
 
+      const styleAnchor = noCharacter.find((r) => isStyleAnchorRef(r.role));
+      const compositionRefs = noCharacter.filter((r) => isCompositionRef(r.role));
+      for (const compositionRef of compositionRefs) {
+        addUnique(compositionRef);
+      }
+
       for (const bucket of perCharacter.values()) {
         addUnique(
           bucket.find((r) => r.role === 'user-provided-character-reference') ||
@@ -427,10 +444,12 @@ export function filterRefsForProvider(
         if (ordered.length >= maxRefs) break;
       }
 
-      const styleAnchor = noCharacter.find((r) => isStyleAnchorRef(r.role));
       addUnique(styleAnchor);
 
-      const targetRefs = Math.max(strategy.maxSceneRefs, perCharacter.size + (styleAnchor ? 1 : 0));
+      const targetRefs = Math.max(
+        strategy.maxSceneRefs,
+        perCharacter.size + compositionRefs.length + (styleAnchor ? 1 : 0)
+      );
       for (const bucket of perCharacter.values()) {
         if (ordered.length >= Math.min(maxRefs, targetRefs)) break;
         for (const r of bucket) {

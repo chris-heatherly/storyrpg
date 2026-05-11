@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Testing Validation"
+  short_description: "Choose focused StoryRPG verification commands"
+  default_prompt: "Use $storyrpg-testing-validation to choose the right StoryRPG checks for my change."
+policy:
+  allow_implicit_invocation: true

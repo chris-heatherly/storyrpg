@@ -519,6 +519,17 @@ async function writeJsonFile(path: string, data: unknown): Promise<number> {
   return content.length;
 }
 
+function withPersistedStoryVisualMetadata(story: Story, generator?: Record<string, unknown>): Story {
+  const next = { ...story } as Story;
+  if (!next.artStyleProfile && generator?.artStyleProfile) {
+    next.artStyleProfile = generator.artStyleProfile;
+  }
+  if (!next.styleAnchors && generator?.styleAnchors && typeof generator.styleAnchors === 'object') {
+    next.styleAnchors = generator.styleAnchors as Story['styleAnchors'];
+  }
+  return next;
+}
+
 /**
  * Write a v3 `story.json` package plus a small `manifest.json` next to
  * it. The manifest records the sha256 of story.json so the catalog
@@ -536,8 +547,9 @@ export async function writeFinalStoryPackage(
   const storyJsonPath = outputDir + 'story.json';
   const manifestPath = outputDir + 'manifest.json';
   const legacyPath = outputDir + '08-final-story.json';
+  const storyForPackage = withPersistedStoryVisualMetadata(story, options?.generator);
 
-  const pkg = encodeStory(story, {
+  const pkg = encodeStory(storyForPackage, {
     targetVersion: STORY_SCHEMA_VERSION,
     generator: options?.generator,
   });
@@ -551,7 +563,7 @@ export async function writeFinalStoryPackage(
     const result = atomicWriteNodeSync(storyJsonPath, storyJson);
     sha256 = result.sha256;
     bytes = result.bytes;
-    atomicWriteNodeSync(legacyPath, JSON.stringify(story, null, 2));
+    atomicWriteNodeSync(legacyPath, JSON.stringify(storyForPackage, null, 2));
   } else if (isWebRuntime()) {
     await fetch(PROXY_CONFIG.writeFile, {
       method: 'POST',
@@ -561,19 +573,19 @@ export async function writeFinalStoryPackage(
     await fetch(PROXY_CONFIG.writeFile, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filePath: legacyPath, content: JSON.stringify(story, null, 2) }),
+      body: JSON.stringify({ filePath: legacyPath, content: JSON.stringify(storyForPackage, null, 2) }),
     });
     // For web we cannot compute sha256 cheaply here; manifest sha will be empty
     // but the catalog tolerates missing manifest and falls back to the plain
     // file read.
   } else {
     await ExpoFileSystem.writeAsStringAsync(storyJsonPath, storyJson, { encoding: 'utf8' });
-    await ExpoFileSystem.writeAsStringAsync(legacyPath, JSON.stringify(story, null, 2), { encoding: 'utf8' });
+    await ExpoFileSystem.writeAsStringAsync(legacyPath, JSON.stringify(storyForPackage, null, 2), { encoding: 'utf8' });
   }
 
   const manifest = {
     schemaVersion: 1,
-    storyId: story.id,
+    storyId: storyForPackage.id,
     storySchemaVersion: STORY_SCHEMA_VERSION,
     primaryStoryFile: 'story.json',
     createdAt: new Date().toISOString(),

@@ -191,9 +191,11 @@ type EffectiveRequestMeta = {
 
 type CharacterReferenceAudit = {
   visibleCharacters: string[];
+  visibleCharacterIds?: string[];
   expectedCharacterRefs: Record<string, number>;
   effectiveCharacterRefs: Record<string, number>;
   missingReferenceCharacters: string[];
+  missingReferenceCharacterIds?: string[];
   referenceRoute: NonNullable<EncounterImageDiagnostic['referenceRoute']>;
 };
 
@@ -212,6 +214,10 @@ export interface ReferenceImage {
   data: string;
   mimeType: string;
   role: string;
+  governs?: string[];
+  prohibited?: string[];
+  /** Canonical character id for identity routing. Names are labels only. */
+  characterId?: string;
   /** Character name for labeling (e.g. "Vance") */
   characterName?: string;
   /** View type for labeling (e.g. "front", "profile", "three-quarter") */
@@ -321,7 +327,7 @@ export class ImageGenerationService {
   // after construction via `updateStableDiffusionSettings`).
   private _sdAdapter: StableDiffusionAdapter | null = null;
   private _sdSeedRegistry: SeedRegistry = new SeedRegistry('image-gen-service');
-  private _geminiStyleReference: { data: string; mimeType: string } | null = null;
+  private _seasonStyleReference: { data: string; mimeType: string } | null = null;
   private _geminiPreviousScene: { data: string; mimeType: string } | null = null;
   private _referenceSheetStyleAnchor: { data: string; mimeType: string } | null = null;
   // Multi-turn chat history for within-scene beat continuity (P3-B)
@@ -608,8 +614,16 @@ export class ImageGenerationService {
     return this._midjourneySettings;
   }
 
-  public setGeminiStyleReference(data: string, mimeType: string): void {
-    this._geminiStyleReference = { data, mimeType };
+  public setSeasonStyleReference(data: string, mimeType: string): void {
+    this._seasonStyleReference = { data, mimeType };
+  }
+
+  public hasSeasonStyleReference(): boolean {
+    return !!this._seasonStyleReference;
+  }
+
+  public hasReferenceSheetStyleAnchor(): boolean {
+    return !!this._referenceSheetStyleAnchor;
   }
 
   private getStyleReferenceGuidance(): string {
@@ -660,7 +674,7 @@ export class ImageGenerationService {
   }
 
   public clearGeminiContext(): void {
-    this._geminiStyleReference = null;
+    this._seasonStyleReference = null;
     this._geminiPreviousScene = null;
     this._referenceSheetStyleAnchor = null;
     this._chatHistory = [];
@@ -722,6 +736,35 @@ export class ImageGenerationService {
       .trim();
   }
 
+  private characterNameAliasesForRefs(name: unknown): string[] {
+    const raw = String(name || '').trim();
+    const normalized = this.normalizeCharacterNameForRefs(name);
+    if (!normalized) return [];
+    const aliases = new Set<string>([normalized]);
+    for (const part of raw.split(/\s*(?:\/|&|\+|\band\b|\bor\b)\s*/i)) {
+      const clean = this.normalizeCharacterNameForRefs(part);
+      if (clean) aliases.add(clean);
+    }
+    const words = normalized.split(/\s+/).filter(Boolean);
+    if (words.length > 1) {
+      aliases.add(words[words.length - 1]);
+      aliases.add(words.slice(-2).join(' '));
+    }
+    return [...aliases];
+  }
+
+  private characterRefNamesMatch(visibleName: unknown, refName: unknown): boolean {
+    const visibleAliases = this.characterNameAliasesForRefs(visibleName);
+    const refAliases = this.characterNameAliasesForRefs(refName);
+    for (const visible of visibleAliases) {
+      for (const ref of refAliases) {
+        if (visible === ref) return true;
+        if (visible.length >= 4 && ref.length >= 4 && (visible.includes(ref) || ref.includes(visible))) return true;
+      }
+    }
+    return false;
+  }
+
   private looksLikeCharacterDisplayName(name: unknown): boolean {
     const text = String(name || '').trim();
     if (!text || text.length > 80) return false;
@@ -729,7 +772,7 @@ export class ImageGenerationService {
     if (/\b(single character reference|identity anchors?|front view|full body|wearing|render(?:ed)?|style contract|negative prompt)\b/i.test(text)) {
       return false;
     }
-    return !/[{}[\]<>:;|\\/]/.test(text);
+    return !/[{}[\]<>:;|\\]/.test(text);
   }
 
   private getVisibleCharacterNamesFromPrompt(
@@ -749,6 +792,28 @@ export class ImageGenerationService {
     ));
   }
 
+  private normalizeCharacterIdForRefs(id: unknown): string {
+    return String(id || '').trim().toLowerCase();
+  }
+
+  private getVisibleCharacterIdsFromMetadata(
+    metadata?: Parameters<ImageGenerationService['generateImage']>[2] | Record<string, unknown>,
+  ): string[] {
+    const values = Array.isArray((metadata as any)?.visibleCharacterIds)
+      ? (metadata as any).visibleCharacterIds
+      : Array.isArray((metadata as any)?.characterIds)
+        ? (metadata as any).characterIds
+        : Array.isArray((metadata as any)?.characters)
+          ? (metadata as any).characters
+          : [];
+    return Array.from(new Set(
+      values
+        .map((value: unknown) => typeof value === 'string' ? value : (value as any)?.characterId || (value as any)?.id)
+        .map((id: unknown) => this.normalizeCharacterIdForRefs(id))
+        .filter(Boolean)
+    ));
+  }
+
   private isOpenAiSceneLikeImageType(imageType?: ImageType): boolean {
     return imageType !== 'master' && imageType !== 'expression' && imageType !== 'cover';
   }
@@ -763,6 +828,10 @@ export class ImageGenerationService {
     return /character-reference/i.test(normalized);
   }
 
+  private isCompositionReferenceRole(role?: string): boolean {
+    return /^(storyboard-panel-crop|composition-reference|panel-crop|draft-crop)$/i.test(String(role || ''));
+  }
+
   private filterOpenAiRefsToVisibleCast(
     prompt: ImagePrompt,
     metadata: Parameters<ImageGenerationService['generateImage']>[2],
@@ -770,15 +839,21 @@ export class ImageGenerationService {
     refs: ReferenceImage[] | undefined,
   ): ReferenceImage[] | undefined {
     if (!refs || refs.length === 0 || !this.isOpenAiSceneLikeImageType(imageType)) return refs;
+    const visibleCharacterIds = this.getVisibleCharacterIdsFromMetadata(metadata);
+    const visibleIdSet = new Set(visibleCharacterIds);
     const visibleCharacters = this.getVisibleCharacterNamesFromPrompt(prompt, metadata);
-    const visibleSet = new Set(visibleCharacters.map((name) => this.normalizeCharacterNameForRefs(name)));
     const singleVisible = visibleCharacters.length === 1 ? visibleCharacters[0] : undefined;
 
     return refs.filter((ref) => {
       if (this.isStyleReferenceRole(ref.role)) return true;
+      if (this.isCompositionReferenceRole(ref.role)) return true;
       if (!this.isCharacterReferenceRole(ref.role)) return false;
-      const refName = this.normalizeCharacterNameForRefs(ref.characterName);
-      if (refName) return visibleSet.has(refName);
+      const refCharacterId = this.normalizeCharacterIdForRefs(ref.characterId);
+      if (visibleIdSet.size > 0 && refCharacterId) return visibleIdSet.has(refCharacterId);
+      if (visibleIdSet.size > 0 && !refCharacterId && ref.characterName) {
+        return visibleCharacters.some((name) => this.characterRefNamesMatch(name, ref.characterName));
+      }
+      if (ref.characterName) return visibleCharacters.some((name) => this.characterRefNamesMatch(name, ref.characterName));
       return ref.role === 'user-provided-character-reference' && Boolean(singleVisible);
     });
   }
@@ -806,33 +881,48 @@ export class ImageGenerationService {
         .map((name: unknown) => String(name || '').trim())
         .filter(Boolean)
     ));
+    const visibleCharacterIds = this.getVisibleCharacterIdsFromMetadata(metadata);
     const minRefs = metadata?.type === 'master'
       ? 0
       : Math.max(1, this.config.minRefsPerVisibleCharacter || 1);
     const expectedCharacterRefs: Record<string, number> = {};
     const effectiveCharacterRefs: Record<string, number> = {};
+    const idToLabel = new Map<string, string>();
+    visibleCharacterIds.forEach((id, index) => {
+      idToLabel.set(id, visibleCharacters[index] || id);
+    });
 
-    for (const name of visibleCharacters) {
-      expectedCharacterRefs[name] = minRefs;
-      effectiveCharacterRefs[name] = 0;
-    }
+    const expectedLabels = visibleCharacterIds.length > 0
+      ? visibleCharacterIds.map((id) => idToLabel.get(id) || id)
+      : visibleCharacters;
 
-    const normalizedToVisible = new Map<string, string>();
-    for (const name of visibleCharacters) {
-      normalizedToVisible.set(this.normalizeCharacterNameForRefs(name), name);
+    for (const label of expectedLabels) {
+      expectedCharacterRefs[label] = minRefs;
+      effectiveCharacterRefs[label] = 0;
     }
 
     for (const ref of effectiveRefs || []) {
-      const refName = this.normalizeCharacterNameForRefs(ref.characterName);
-      const visibleName = normalizedToVisible.get(refName);
-      if (visibleName) {
-        effectiveCharacterRefs[visibleName] = (effectiveCharacterRefs[visibleName] || 0) + 1;
+      const refCharacterId = this.normalizeCharacterIdForRefs(ref.characterId);
+      if (visibleCharacterIds.length > 0 && refCharacterId && visibleCharacterIds.includes(refCharacterId)) {
+        const label = idToLabel.get(refCharacterId) || refCharacterId;
+        effectiveCharacterRefs[label] = (effectiveCharacterRefs[label] || 0) + 1;
+        continue;
+      }
+      if (visibleCharacterIds.length === 0 || !refCharacterId) {
+        const visibleName = visibleCharacters.find((name) => this.characterRefNamesMatch(name, ref.characterName));
+        if (visibleName) {
+          effectiveCharacterRefs[visibleName] = (effectiveCharacterRefs[visibleName] || 0) + 1;
+        }
       }
     }
 
-    const missingReferenceCharacters = visibleCharacters.filter((name) =>
-      (effectiveCharacterRefs[name] || 0) < minRefs
+    const missingReferenceCharacters = expectedLabels.filter((label) =>
+      (effectiveCharacterRefs[label] || 0) < minRefs
     );
+    const missingReferenceCharacterIds = visibleCharacterIds.filter((id) => {
+      const label = idToLabel.get(id) || id;
+      return (effectiveCharacterRefs[label] || 0) < minRefs;
+    });
 
     const hasEffectiveRefs = (effectiveRefs?.length || 0) > 0;
     const hasOriginalRefs = (originalRefs?.length || 0) > 0;
@@ -850,9 +940,11 @@ export class ImageGenerationService {
 
     return {
       visibleCharacters,
+      visibleCharacterIds,
       expectedCharacterRefs,
       effectiveCharacterRefs,
       missingReferenceCharacters,
+      missingReferenceCharacterIds,
       referenceRoute,
     };
   }
@@ -1180,6 +1272,74 @@ export class ImageGenerationService {
     return `Style DNA: ${parts.join('; ')}.`;
   }
 
+  private getProfileStyleContradictionNegatives(): string[] {
+    const profile = this._artStyleProfile;
+    if (!profile || profile.family === 'unknown') return [];
+    const styleText = [
+      profile.name,
+      profile.renderingTechnique,
+      profile.colorPhilosophy,
+      profile.lightingApproach,
+      profile.lineWeight,
+      profile.compositionStyle,
+      profile.moodRange,
+    ].join(' ').toLowerCase();
+    const isExplicitlyPhotographic = /\b(photoreal|photo(?:graphic)?|dslr|film still|live[- ]action|camera realism)\b/.test(styleText);
+    if (profile.family === 'cinematic' && isExplicitlyPhotographic) {
+      return [
+        'cartoon style',
+        'anime style',
+        'comic-book style',
+        'storybook illustration',
+        'flat cel shading',
+        'pixel art',
+      ];
+    }
+    const stylizedFamilies = new Set([
+      'watercolor',
+      'noir',
+      'manga',
+      'anime',
+      'comic',
+      'pixel',
+      'ink',
+      'oil',
+      'risograph',
+      'minimalist',
+      'storybook',
+    ]);
+    if (stylizedFamilies.has(profile.family)) {
+      return [
+        'photorealism',
+        'photographic lighting',
+        'DSLR photo',
+        'live-action still',
+        'realistic 3D render',
+        'architectural visualization',
+        'camera bokeh',
+      ];
+    }
+    return [];
+  }
+
+  private filterDefectReportForActiveStyle(report: ImageDefectReport): ImageDefectReport {
+    const contradictionText = this.getProfileStyleContradictionNegatives().join(' ').toLowerCase();
+    const allowPhotographic = !/\b(photoreal|photo|dslr|live-action|3d render|architectural visualization|bokeh)\b/.test(contradictionText);
+    if (!allowPhotographic) return report;
+    const issues = report.issues.filter(
+      (issue) => issue !== 'photorealism' && issue !== 'environment_photorealism',
+    );
+    if (issues.length === report.issues.length) return report;
+    return {
+      ...report,
+      issues,
+      passed: issues.length === 0 || report.passed,
+      reason: issues.length === 0
+        ? 'defect gate passed after style-appropriate photographic issue filtering'
+        : report.reason,
+    };
+  }
+
   private getSettingAdaptationNotes(prompt: ImagePrompt, identifier?: string): string[] {
     if (prompt.settingAdaptationNotes && prompt.settingAdaptationNotes.length > 0) {
       return prompt.settingAdaptationNotes;
@@ -1457,8 +1617,8 @@ export class ImageGenerationService {
 
   private collectAtlasReferenceImages(referenceImages?: ReferenceImage[]): ReferenceImage[] {
     const refs: ReferenceImage[] = [];
-    if (this._geminiStyleReference) {
-      refs.push({ data: this._geminiStyleReference.data, mimeType: this._geminiStyleReference.mimeType, role: 'style-reference' });
+    if (this._seasonStyleReference && !this.refsIncludeStyleReference(referenceImages)) {
+      refs.push({ data: this._seasonStyleReference.data, mimeType: this._seasonStyleReference.mimeType, role: 'style-reference' });
     }
     if (this._geminiPreviousScene) {
       refs.push({ data: this._geminiPreviousScene.data, mimeType: this._geminiPreviousScene.mimeType, role: 'previous-scene-reference' });
@@ -1595,8 +1755,8 @@ export class ImageGenerationService {
 
   private injectStyleReferenceImages(parts: any[], gemSettings: any, imageNumber?: number): number {
     let num = imageNumber || parts.length;
-    if (gemSettings.includeStyleReference && this._geminiStyleReference) {
-      parts.push({ inlineData: { mimeType: this._geminiStyleReference.mimeType, data: this._geminiStyleReference.data } });
+    if (gemSettings.includeStyleReference && this._seasonStyleReference) {
+      parts.push({ inlineData: { mimeType: this._seasonStyleReference.mimeType, data: this._seasonStyleReference.data } });
       parts.push({ text: this.getStyleReferenceGuidance() });
       num++;
     }
@@ -1816,6 +1976,10 @@ export class ImageGenerationService {
     return () => {
       this.listeners = this.listeners.filter(l => l !== listener);
     };
+  }
+
+  public emitExternalEvent(event: ImageJobEvent): void {
+    this.emit(event);
   }
 
   private emit(event: ImageJobEvent): void {
@@ -2201,15 +2365,17 @@ export class ImageGenerationService {
     return usable.slice(0, caps.maxRefs);
   }
 
-  private withGlobalStyleReferenceForProvider(
+  private withSeasonStyleReferenceForProvider(
     provider: ImageProvider,
     imageType: ImageType | undefined,
     identifier: string,
     refs: ReferenceImage[] | undefined,
   ): ReferenceImage[] | undefined {
-    if (provider !== 'dall-e' || imageType === 'cover' || imageType === 'expression') {
+    if (imageType === 'cover' || imageType === 'expression') {
       return refs;
     }
+    const caps = getProviderCapabilities(provider);
+    if (caps.maxRefs <= 0) return refs;
 
     const existingRefs = refs || [];
     if (existingRefs.some((ref) => ref.role === 'style-reference' || ref.role === 'style-anchor')) {
@@ -2218,7 +2384,7 @@ export class ImageGenerationService {
 
     const styleSource = imageType === 'master'
       ? (identifier.startsWith('ref_') ? this._referenceSheetStyleAnchor : null)
-      : this._geminiStyleReference;
+      : this._seasonStyleReference;
     if (!styleSource) {
       return refs;
     }
@@ -2233,6 +2399,29 @@ export class ImageGenerationService {
       },
       ...existingRefs,
     ];
+  }
+
+  private summarizeReferenceDrops(
+    inputRefs: ReferenceImage[] | undefined,
+    effectiveRefs: ReferenceImage[] | undefined,
+  ): Array<{ role: string; characterName?: string; viewType?: string; reason: string }> {
+    const effectiveKeys = new Set((effectiveRefs || []).map((ref) => this.referenceAuditKey(ref)));
+    return (inputRefs || [])
+      .filter((ref) => !effectiveKeys.has(this.referenceAuditKey(ref)))
+      .map((ref) => ({
+        role: ref.role,
+        characterName: ref.characterName,
+        viewType: ref.viewType,
+        reason: 'provider-filtered-or-cap-exceeded',
+      }));
+  }
+
+  private referenceAuditKey(ref: ReferenceImage): string {
+    return [ref.role, ref.characterId || '', ref.characterName || '', ref.viewType || '', ref.url || '', (ref.data || '').slice(0, 32)].join('|');
+  }
+
+  private refsIncludeStyleReference(refs: ReferenceImage[] | undefined): boolean {
+    return (refs || []).some((ref) => ref.role === 'style-reference' || ref.role === 'style-anchor');
   }
 
   /**
@@ -2289,7 +2478,7 @@ export class ImageGenerationService {
 
   private isOpenAiModerationBlock(status: number, raw: string): boolean {
     if (status !== 400) return false;
-    return /moderation_blocked|image_generation_user_error|request was rejected by the safety system/i.test(raw);
+    return /moderation_blocked|request was rejected by the safety system|safety system|content policy/i.test(raw);
   }
 
   private buildOpenAiSafetyRetryPrompt(composedPrompt: string): string {
@@ -2328,8 +2517,27 @@ export class ImageGenerationService {
     };
   }
 
-  private buildOpenAiReferenceUsageSection(hasRefs: boolean): string {
+  private isStoryboardCropRefineRoute(metadata?: Record<string, unknown>): boolean {
+    return /storyboard-sheet-crop-refine/i.test(String((metadata as any)?.renderRoute || (metadata as any)?.effectiveRenderRoute || ''));
+  }
+
+  private buildOpenAiReferenceUsageSection(params: {
+    hasRefs: boolean;
+    hasCompositionRef: boolean;
+    isCropRefine: boolean;
+  }): string {
+    const { hasRefs, hasCompositionRef, isCropRefine } = params;
     if (!hasRefs) return '';
+    if (isCropRefine || hasCompositionRef) {
+      return [
+        'REFERENCE USAGE:',
+        'Use the storyboard crop/composition reference only for staging: body placement, pose, camera angle, framing, action, and foreground/background arrangement.',
+        'Use provided character references only to preserve identity: face, hair, skin tone, distinguishing marks, and essential current wardrobe.',
+        'Use style references only for palette, lighting, texture, rendering finish, and mood continuity.',
+        'Do not copy reference-sheet pose, front-facing stance, centered composition, plain background, full-body framing, camera angle, character placement, blocking, focal point, or neutral model-sheet posture.',
+        'Do not let the storyboard crop, character refs, or style refs override the written STYLE LOCK.',
+      ].join('\n');
+    }
     return [
       'REFERENCE USAGE:',
       'Use provided character references only to preserve identity: face, hair, skin tone, distinguishing marks, and essential current wardrobe.',
@@ -2380,14 +2588,18 @@ export class ImageGenerationService {
   }): string {
     const { storyText, identityBlock } = this.splitCharacterIdentityBlock(params.prompt.prompt || '');
     const visibleCharacters = this.getVisibleCharacterNamesFromPrompt(params.prompt, params.metadata);
+    const hasCompositionRef = params.referenceImages.some((ref) => this.isCompositionReferenceRole(ref.role));
+    const isCropRefine = this.isStoryboardCropRefineRoute(params.metadata);
+    const styleContradictionNegatives = this.getProfileStyleContradictionNegatives();
     const environmentStyleLock = params.metadata?.isEnvironmentStyleShot
-      ? 'ENVIRONMENT STYLE LOCK:\nTreat the location/background as stylized cartoon environment design, not a photographed place: simplified graphic architecture, clean illustrated edges, designed shapes, curated cel/flat color, non-photographic lighting, no real-estate photo look, no HDR interior, no camera bokeh, no architectural visualization.'
+      ? 'ENVIRONMENT STYLE LOCK:\nTreat the location/background as part of the same season style contract. The style prompt controls architecture shape language, material treatment, lighting, texture, and finish.'
+      : '';
+    const finalStyleGuard = isCropRefine
+      ? 'FINAL STYLE GUARD:\nThe finished image must preserve the active style contract while refining composition. Do not let crop-refine invent a different renderer, texture system, lighting language, or finish.'
       : '';
     const negative = [
       params.prompt.negativePrompt,
-      params.metadata?.isEnvironmentStyleShot
-        ? 'photorealistic architecture, real estate photo, architectural photography, HDR interior, documentary photo, live-action background, realistic building materials, camera bokeh, photographic environment, 3D interior render'
-        : '',
+      ...styleContradictionNegatives,
       'reference sheet pose, character model sheet, full-body lineup, front-facing neutral stance, centered static composition, plain studio background, arms at sides, mannequin pose, copied reference composition',
     ].filter(Boolean).join(', ');
     const sections = [
@@ -2396,8 +2608,13 @@ export class ImageGenerationService {
       ['STORY MOMENT:', storyText || params.prompt.visualNarrative || params.prompt.prompt || 'Render the requested story moment.'].join('\n'),
       environmentStyleLock,
       this.buildOpenAiShotCompositionSection(params.prompt),
-      this.buildOpenAiReferenceUsageSection(params.referenceImages.length > 0 && this.isOpenAiSceneLikeImageType(params.imageType)),
+      this.buildOpenAiReferenceUsageSection({
+        hasRefs: params.referenceImages.length > 0 && this.isOpenAiSceneLikeImageType(params.imageType),
+        hasCompositionRef,
+        isCropRefine,
+      }),
       identityBlock ? ['CHARACTER CONTINUITY:', identityBlock.replace(/^CHARACTER VISUAL IDENTITY[^\n]*\n?/i, '').trim()].join('\n') : '',
+      finalStyleGuard,
       ['NEGATIVE / DO NOT:', negative].join('\n'),
     ].filter((section) => section.trim().length > 0);
 
@@ -2571,12 +2788,16 @@ export class ImageGenerationService {
     // A9: Drop reference images the provider can't meaningfully consume. Avoids
     // paying the tokenization / upload cost on refs that would have been
     // silently ignored by the downstream provider.
-    const providerInputRefsRaw = this.withGlobalStyleReferenceForProvider(provider, metadata?.type, identifier, referenceImages);
+    const providerInputRefsRaw = this.withSeasonStyleReferenceForProvider(provider, metadata?.type, identifier, referenceImages);
     const providerInputRefs = provider === 'dall-e'
       ? this.filterOpenAiRefsToVisibleCast(normalizedPrompt, metadata, metadata?.type, providerInputRefsRaw)
       : providerInputRefsRaw;
     const capabilityFilteredRefs = this.filterReferencesForProvider(provider, providerInputRefs);
     const referenceAudit = this.buildCharacterReferenceAudit(provider, metadata, normalizedPrompt, providerInputRefs, capabilityFilteredRefs);
+    const cropRefineMissingCompositionRef =
+      provider === 'dall-e' &&
+      this.isStoryboardCropRefineRoute(metadata as any) &&
+      !(capabilityFilteredRefs || []).some((ref) => this.isCompositionReferenceRole(ref.role));
     const effectiveModel =
       provider === 'dall-e' ? this.config.openaiImageModel :
       provider === 'nano-banana' ? this._geminiSettings.model :
@@ -2591,17 +2812,23 @@ export class ImageGenerationService {
       effectiveRenderRoute: (metadata as any)?.renderRoute || referenceAudit.referenceRoute,
       requestedProvider: this.config.provider,
       requestedModel: this.config.geminiModel || this.config.openaiImageModel || this.config.atlasCloudModel,
+      hasSeasonStyleReference: this.hasSeasonStyleReference(),
+      hasReferenceSheetStyleAnchor: this.hasReferenceSheetStyleAnchor(),
+      styleAnchorSource: (metadata as any)?.styleAnchorSource || (this.hasSeasonStyleReference() ? 'season-style-reference' : undefined),
       referenceAudit,
       inputReferences: (providerInputRefs || []).map((ref) => ({
         role: ref.role,
+        characterId: ref.characterId,
         characterName: ref.characterName,
         viewType: ref.viewType,
       })),
       effectiveReferences: (capabilityFilteredRefs || []).map((ref) => ({
         role: ref.role,
+        characterId: ref.characterId,
         characterName: ref.characterName,
         viewType: ref.viewType,
       })),
+      referenceDropReasons: this.summarizeReferenceDrops(providerInputRefs, capabilityFilteredRefs),
     };
     if (this.config.savePrompts !== false) {
       try {
@@ -2610,7 +2837,25 @@ export class ImageGenerationService {
         console.warn(`[ImageGenerationService] Failed to update effective prompt metadata for ${identifier}: ${promptErr instanceof Error ? promptErr.message : String(promptErr)}`);
       }
     }
+    if (
+      provider !== 'placeholder' &&
+      this.hasSeasonStyleReference() &&
+      referenceAudit.referenceRoute === 'text-only' &&
+      metadata?.type !== 'cover' &&
+      metadata?.type !== 'expression'
+    ) {
+      console.warn(
+        `[ImageGenerationService] "${identifier}" is rendering text-only even though a season style reference exists; provider=${provider}, imageType=${metadata?.type || 'unknown'}.`,
+      );
+    }
     try {
+      if (cropRefineMissingCompositionRef) {
+        const message =
+          `Storyboard crop-refine blocked "${identifier}": missing usable storyboard-panel-crop composition ref after ${provider} filtering.`;
+        this.emit({ type: 'job_updated', id: jobId, updates: { status: 'failed', error: message, endTime: Date.now() } });
+        throw new Error(message);
+      }
+
       if (this.shouldEnforceCharacterReferenceContinuity(metadata, referenceAudit)) {
         const message =
           `Character reference continuity blocked "${identifier}": missing usable refs for ` +
@@ -2642,7 +2887,7 @@ export class ImageGenerationService {
           const msg = atlasErr instanceof Error ? atlasErr.message : String(atlasErr);
           console.warn(`[ImageGenerationService] Atlas-first encounter generation failed, using Gemini: ${msg}`);
           this.providerPolicy.observeTransientFailure('atlas-cloud', providerFamily);
-          const nanoRefs = this.withGlobalStyleReferenceForProvider('nano-banana', metadata?.type, identifier, referenceImages);
+          const nanoRefs = this.withSeasonStyleReferenceForProvider('nano-banana', metadata?.type, identifier, referenceImages);
           result = await this.generateWithNanoBanana(normalizedPrompt, identifier, jobId, this.filterReferencesForProvider('nano-banana', nanoRefs), metadata?.type);
         }
       } else {
@@ -3366,8 +3611,8 @@ export class ImageGenerationService {
           // 3. Visual style anchor. User/preapproved/generated season style
           // references outrank cross-character refs; character refs should not
           // become the primary style source when a season style anchor exists.
-          if (gemSettings.includeStyleReference && this._geminiStyleReference) {
-            parts.push({ inlineData: { mimeType: this._geminiStyleReference.mimeType, data: this._geminiStyleReference.data } });
+          if (gemSettings.includeStyleReference && this._seasonStyleReference && !this.refsIncludeStyleReference(effectiveRefs)) {
+            parts.push({ inlineData: { mimeType: this._seasonStyleReference.mimeType, data: this._seasonStyleReference.data } });
             parts.push({ text: `Season visual style reference. Use for rendering density, line quality, lighting treatment, and palette feel. The ART STYLE text directive above remains authoritative; do not copy character identity from this image.` });
           } else if (this._referenceSheetStyleAnchor) {
             parts.push({ inlineData: { mimeType: this._referenceSheetStyleAnchor.mimeType, data: this._referenceSheetStyleAnchor.data } });
@@ -3624,8 +3869,8 @@ export class ImageGenerationService {
           }
 
           // 4. Style reference (for visual consistency across episode)
-          if (gemSettings.includeStyleReference && this._geminiStyleReference) {
-            parts.push({ inlineData: { mimeType: this._geminiStyleReference.mimeType, data: this._geminiStyleReference.data } });
+          if (gemSettings.includeStyleReference && this._seasonStyleReference && !this.refsIncludeStyleReference(effectiveRefs)) {
+            parts.push({ inlineData: { mimeType: this._seasonStyleReference.mimeType, data: this._seasonStyleReference.data } });
             parts.push({ text: `Image ${imageNumber}: ${this.getStyleReferenceGuidance()}` });
             imageManifest.push(`Image ${imageNumber}: Style reference`);
             imageNumber++;
@@ -3643,7 +3888,7 @@ export class ImageGenerationService {
             // Only attach when no explicit per-episode style reference is
             // already filling this slot — otherwise we double up on style
             // signals and burn attention budget.
-            !(gemSettings.includeStyleReference && this._geminiStyleReference)
+            !(gemSettings.includeStyleReference && this._seasonStyleReference && !this.refsIncludeStyleReference(effectiveRefs))
           ) {
             parts.push({ inlineData: { mimeType: this._referenceSheetStyleAnchor.mimeType, data: this._referenceSheetStyleAnchor.data } });
             parts.push({ text: `Image ${imageNumber}: Character model sheet (LOW-WEIGHT style anchor) — use ONLY for color palette, silhouette feel, and overall rendering density. Do NOT copy the multi-panel layout. Do NOT treat this as multiple characters; it shows ONE character from several angles. The scene is a single continuous image as specified above.` });
@@ -4353,6 +4598,14 @@ export class ImageGenerationService {
           .join(', ');
         if (merged) result.negativePrompt = merged;
       }
+
+      const contradictionNegatives = this.getProfileStyleContradictionNegatives();
+      if (contradictionNegatives.length > 0) {
+        const merged = [result.negativePrompt, ...contradictionNegatives]
+          .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+          .join(', ');
+        if (merged) result.negativePrompt = merged;
+      }
     }
 
     return result;
@@ -4897,12 +5150,11 @@ export class ImageGenerationService {
 
   /**
    * Atlas/OpenAI quality policy:
-   * - references / cover / key art => high
-   * - regular scene beats => medium (cost/latency balance with good fidelity)
+   * StoryRPG prioritizes identity consistency, pose fidelity, and small visual
+   * details over latency for gpt-image models, so every render uses high.
    */
-  private resolveAtlasOpenAiQuality(imageType?: ImageType): 'high' | 'medium' {
-    if (imageType === 'master' || imageType === 'cover' || imageType === 'expression') return 'high';
-    return 'medium';
+  private resolveAtlasOpenAiQuality(_imageType?: ImageType): 'high' {
+    return 'high';
   }
 
   private async generateWithAtlasCloud(
@@ -5560,14 +5812,11 @@ export class ImageGenerationService {
     return ratioMap[aspectRatio] || '16:9'; // Default to landscape for Midjourney
   }
 
-  private resolveOpenAiImageQuality(imageType?: ImageType): 'high' | 'medium' {
-    if (imageType === 'master' || imageType === 'cover' || imageType === 'expression') {
-      return 'high';
-    }
-    return 'medium';
+  private resolveOpenAiImageQuality(_imageType?: ImageType): 'high' {
+    return 'high';
   }
 
-  private mapAspectRatioForOpenAiImage(aspectRatio?: string): string {
+  private mapAspectRatioForOpenAiImage(aspectRatio?: string, model?: string): string {
     const ratio = (aspectRatio || '16:9').trim();
     const map: Record<string, string> = {
       '1:1': '1024x1024',
@@ -5581,7 +5830,21 @@ export class ImageGenerationService {
       '9:19.5': '1024x1536',
       '9:21': '1024x1536',
     };
-    return map[ratio] || '1536x1024';
+    if (map[ratio]) return map[ratio];
+
+    const customRatio = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(ratio);
+    if (customRatio) {
+      const ratioWidth = Number(customRatio[1]);
+      const ratioHeight = Number(customRatio[2]);
+      if (Number.isFinite(ratioWidth) && Number.isFinite(ratioHeight) && ratioWidth > 0 && ratioHeight > 0) {
+        const value = ratioWidth / ratioHeight;
+        if (value >= 1.2) return '1536x1024';
+        if (value <= 0.8) return '1024x1536';
+        return '1024x1024';
+      }
+    }
+
+    return '1536x1024';
   }
 
   private toOpenAiInputImage(ref: ReferenceImage): { image_url: string } | null {
@@ -5641,6 +5904,11 @@ export class ImageGenerationService {
       imageType,
       metadata: _metadata,
     });
+    const referenceUsage = useEdit
+      ? cappedRefs.some((ref) => this.isCompositionReferenceRole(ref.role))
+        ? 'composition-identity-style'
+        : 'identity-style-only'
+      : 'text-only';
     if (this.config.savePrompts !== false) {
       try {
         await this.savePrompt(prompt, identifier, {
@@ -5649,7 +5917,7 @@ export class ImageGenerationService {
           effectiveModel: model,
           providerPrompt: composedPrompt,
           openAiComposedPrompt: composedPrompt,
-          openAiReferenceUsage: useEdit ? 'identity-style-only' : 'text-only',
+          openAiReferenceUsage: referenceUsage,
           openAiEffectiveReferences: cappedRefs.map((ref) => ({
             role: ref.role,
             characterName: ref.characterName,
@@ -5664,7 +5932,7 @@ export class ImageGenerationService {
     const body: Record<string, unknown> = {
       model,
       prompt: composedPrompt,
-      size: this.mapAspectRatioForOpenAiImage(prompt.aspectRatio),
+      size: this.mapAspectRatioForOpenAiImage(prompt.aspectRatio, model),
       quality: this.resolveOpenAiImageQuality(imageType),
       output_format: 'png',
       moderation: this.config.openaiModeration || 'auto',
@@ -5825,7 +6093,7 @@ export class ImageGenerationService {
         this.emit({
           type: 'job_updated',
           id: jobId,
-          updates: { status: 'completed', progress: 100, imageUrl, endTime: Date.now() },
+          updates: { status: 'completed', progress: 100, imageUrl, imagePath, localPath: imagePath, endTime: Date.now() },
         });
         return {
           prompt,
@@ -6021,13 +6289,17 @@ export class ImageGenerationService {
         prompt?.negativePrompt,
       ].filter(Boolean).join('\n');
       const styleContract = prompt?.styleContract?.text || prompt?.style || '';
+      const contradictionNegatives = this.getProfileStyleContradictionNegatives();
+      const contradictionReview = contradictionNegatives.length > 0
+        ? `\nFor this style only, also fail if the image visibly uses these contradictory renderer cues: ${contradictionNegatives.join(', ')}.`
+        : '';
+      const allowStoryboardSheet = Boolean((prompt as any)?.allowStoryboardSheet);
       const styleReview = styleContract.trim()
         ? `
 Also inspect style fidelity against this authoritative style contract:
 ${styleContract}
 
-Fail if the image visibly drifts into a different renderer or finish, including generic cinematic concept art, photorealism, DSLR/photo lighting, live-action stills, realistic 3D rendering, Unreal/Octane/Redshift-style rendering, oil-painting texture, gritty realism, heavy film-still grading, architectural visualization, messy high-detail rendering, or any style that contradicts the contract.
-For environments/backgrounds specifically, fail if the setting looks like a real estate photo, architectural photograph, HDR interior render, documentary/live-action location still, camera-bokeh background, or realistic building-material render instead of a stylized illustrated environment matching the character/style finish.`
+Fail if the image visibly drifts into a different renderer, texture system, lighting language, or finish than the style contract requests.${contradictionReview}`
         : '';
       const referenceFormatReview = prompt?.promptContract || prompt?.styleContract
         ? `
@@ -6049,12 +6321,14 @@ Return ONLY valid JSON:
 Fail if any of these are present:
 - visible text, letters, numbers, captions, labels, annotations, watermarks, speech bubbles, random glyphs
 - extra arms, hands, legs, fingers, duplicated limbs, or malformed obvious anatomy
-- duplicated bodies, cloned character copies, repeated same person
+- duplicated bodies, cloned character copies, repeated same person, or the same intended character appearing more than once
+- when the prompt lists visible cast or visible canonical characters, any listed character appearing more than once, or any unlisted named/offscreen character rendered as a visible person
 - floating, hovering, levitating, or unsupported characters unless the prompt explicitly asks for airborne/falling/jumping/levitation/dream/magical suspension
-- collage, split-screen, inset frame, picture-in-picture, comic panel borders, multi-panel leakage
+- ${allowStoryboardSheet
+        ? 'for this intentional storyboard sheet only: panels/grid gutters are allowed, but fail broken panel count/order, accidental collage artifacts, white mats/frames, panel labels, text leakage, or panels that do not share the requested style contract'
+        : 'collage, split-screen, inset frame, picture-in-picture, comic panel borders, multi-panel leakage'}
 - reference-sheet/model-sheet artifacts, side-by-side views, turnaround layout, labels, measurement marks
-- photorealism, photographic lighting, live-action stills, 3D render finish, architectural visualization, lens blur, bokeh, or generic cinematic concept-art style drift
-- photorealistic environments/backgrounds: real estate photo, architectural photography, HDR interior, documentary/live-action location still, realistic building-material rendering, or photographic bokeh in the setting
+- a renderer, texture system, lighting language, or finish that contradicts the authoritative style contract${contradictionNegatives.length > 0 ? `, including ${contradictionNegatives.join(', ')}` : ''}
 - literal first-person/player-eye POV, disembodied player hands, "your hand" framing, or camera positioned inside the protagonist's body
 ${styleReview}
 ${referenceFormatReview}
@@ -6088,7 +6362,7 @@ Pass only when none of those defects are visible.`;
 
       const data = await response.json();
       const text = data?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || '').join('\n').trim() || '';
-      const report = normalizeImageDefectReport(text, prompt);
+      const report = this.filterDefectReportForActiveStyle(normalizeImageDefectReport(text, prompt));
       if (!report.passed && report.issues.length > 0) {
         console.warn(`[ImageGenerationService] Image defect detected for ${identifier}: ${report.issues.join(', ')} — ${report.reason || 'no reason'}`);
       }

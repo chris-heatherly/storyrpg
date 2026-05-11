@@ -86,4 +86,27 @@ describe('pipelineOutputWriter', () => {
     await expect(readFile(`${outputDir}08-final-story.json`, 'utf8')).resolves.toContain('Story Writer Test');
     expect(requestedModules).toEqual(expect.arrayContaining(['fs', 'path', 'crypto']));
   });
+
+  it('persists generator style profile and anchors onto the story body', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-output-writer-'));
+    tempDirs.push(tempDir);
+    const outputDir = `${tempDir}/`;
+
+    const result = await writeFinalStoryPackage(outputDir, makeStory(), {
+      generator: {
+        version: 'test',
+        pipeline: 'vitest',
+        artStyleProfile: { name: 'Verbatim', family: 'unknown', rawStyle: 'bright comic art' },
+        styleAnchors: { character: { imagePath: 'generated-stories/story/style-bible/character.png' } },
+      },
+    });
+
+    const pkg = JSON.parse(await readFile(result.storyJsonPath, 'utf8'));
+    expect(pkg.story.artStyleProfile).toMatchObject({ rawStyle: 'bright comic art' });
+    expect(pkg.story.styleAnchors.character.imagePath).toBe('generated-stories/story/style-bible/character.png');
+
+    const legacy = JSON.parse(await readFile(`${outputDir}08-final-story.json`, 'utf8'));
+    expect(legacy.artStyleProfile).toMatchObject({ rawStyle: 'bright comic art' });
+    expect(legacy.styleAnchors.character.imagePath).toBe('generated-stories/story/style-bible/character.png');
+  });
 });

@@ -61,7 +61,10 @@ type PersistedGeneratorSettings = {
   imageProvider?: string;
   imageStrategy?: 'selective' | 'all-beats';
   artStyle?: string;
-  generationSettings?: { panelMode?: 'single' | 'special-beats' | 'all-beats' };
+  generationSettings?: {
+    panelMode?: 'single' | 'special-beats' | 'all-beats';
+    storyboardMaxPanelsPerSheet?: number;
+  };
   geminiSettings?: PipelineConfig['imageGen'] extends infer T ? T extends { gemini?: infer G } ? G : never : never;
   openaiSettings?: {
     imageModel?: string;
@@ -118,6 +121,10 @@ async function loadImageOnlyPipelineConfigFromSavedSettings(): Promise<PipelineC
     stableDiffusion: saved.stableDiffusionSettings ? { ...(config.imageGen?.stableDiffusion || {}), ...(saved.stableDiffusionSettings as any) } : config.imageGen?.stableDiffusion,
     loraTraining: saved.loraTrainingSettings ? { ...(config.imageGen?.loraTraining || {}), ...(saved.loraTrainingSettings as any) } : config.imageGen?.loraTraining,
     panelMode: saved.generationSettings?.panelMode || config.imageGen?.panelMode,
+    storyboardV2: {
+      ...(config.imageGen?.storyboardV2 || {}),
+      maxPanelsPerSheet: saved.generationSettings?.storyboardMaxPanelsPerSheet || config.imageGen?.storyboardV2?.maxPanelsPerSheet,
+    },
   };
   if (saved.artStyle !== undefined) {
     config.artStyle = saved.artStyle || config.artStyle;

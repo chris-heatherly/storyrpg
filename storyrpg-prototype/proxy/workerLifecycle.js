@@ -858,6 +858,8 @@ function createWorkerLifecycle({
               if (rawData.error !== undefined) safeUpdates.error = rawData.error;
               if (rawData.attempts !== undefined) safeUpdates.attempts = rawData.attempts;
               if (rawData.endTime !== undefined) safeUpdates.endTime = rawData.endTime;
+              if (rawData.imagePath !== undefined) safeUpdates.imagePath = rawData.imagePath;
+              if (rawData.localPath !== undefined) safeUpdates.localPath = rawData.localPath;
               if (resolvedUrl !== undefined) safeUpdates.imageUrl = resolvedUrl;
               if (idx >= 0) Object.assign(imageJobs[idx], safeUpdates);
               else imageJobs.push({ id: rawData.id, ...safeUpdates });

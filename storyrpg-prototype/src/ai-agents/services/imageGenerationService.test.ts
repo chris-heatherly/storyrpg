@@ -129,6 +129,68 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
     }
   });
 
+  it('snaps custom OpenAI storyboard sheet ratios to supported Image API sizes', async () => {
+    const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'image-gen-dalle-custom-size-'));
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: [{ b64_json: Buffer.from('png').toString('base64') }] }),
+    }));
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const service = new ImageGenerationService({
+        enabled: true,
+        provider: 'dall-e',
+        openaiApiKey: 'test-key',
+        openaiImageModel: 'gpt-image-2',
+        outputDirectory,
+      } as any);
+
+      await (service as any).generateWithDallE(
+        { prompt: 'Storyboard sheet', aspectRatio: '9:8' },
+        'sheet-custom-ratio',
+        'job-1',
+        undefined,
+        'storyboard-sheet',
+      );
+
+      const [, requestInit] = fetchMock.mock.calls[0] as unknown as [unknown, RequestInit];
+      const body = JSON.parse(String(requestInit?.body || '{}'));
+      expect(['1024x1024', '1536x1024', '1024x1536']).toContain(body.size);
+      expect(body.size).not.toMatch(/^3840x/);
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+      fs.rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat non-safety OpenAI image user errors as moderation blocks', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    expect((service as any).isOpenAiModerationBlock(400, JSON.stringify({
+      error: {
+        message: "Invalid size '3840x3408'. Requested resolution exceeds the current pixel budget.",
+        type: 'image_generation_user_error',
+        param: 'size',
+        code: 'invalid_value',
+      },
+    }))).toBe(false);
+
+    expect((service as any).isOpenAiModerationBlock(400, JSON.stringify({
+      error: {
+        message: 'Your request was rejected by the safety system.',
+        type: 'image_generation_user_error',
+        code: 'moderation_blocked',
+      },
+    }))).toBe(true);
+  });
+
   it('composes OpenAI scene prompts with visible cast, reference usage, compact continuity, and provider audit text', async () => {
     const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'image-gen-dalle-envelope-'));
     const fetchMock = vi.fn(async () => ({
@@ -146,6 +208,7 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
         openaiImageModel: 'gpt-image-1',
         outputDirectory,
       } as any);
+      service.setSeasonStyleReference(Buffer.from('season-style').toString('base64'), 'image/png');
 
       await service.generateImage(
         {
@@ -188,12 +251,19 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
       expect(body.prompt).toContain('Do not copy reference-sheet pose');
       expect(body.prompt).toContain('CHARACTER CONTINUITY:');
       expect(body.prompt).toContain('Current wardrobe essentials: Sharp black blazer over a silk red dress');
+
+      const promptAudit = JSON.parse(fs.readFileSync(path.join(outputDirectory, 'prompts', 'beat-openai-envelope.json'), 'utf8'));
+      expect(promptAudit.metadata.referenceAudit.referenceRoute).not.toBe('text-only');
+      expect(promptAudit.metadata.inputReferences.length).toBeGreaterThan(0);
+      expect(promptAudit.metadata.effectiveReferences.length).toBeGreaterThan(0);
+      expect(promptAudit.metadata.hasSeasonStyleReference).toBe(true);
+      expect(promptAudit.metadata.inputReferences.some((ref: any) => ref.role === 'style-reference')).toBe(true);
+      expect(promptAudit.metadata.effectiveReferences.some((ref: any) => ref.role === 'style-reference')).toBe(true);
+      expect(promptAudit.metadata.referenceDropReasons).toEqual(expect.any(Array));
       expect(body.prompt).not.toContain('style tags:');
       expect(body.prompt).not.toContain('materials:');
       expect(body.prompt).not.toContain('palette:');
       expect(body.prompt).toContain('full-body lineup');
-
-      const promptAudit = JSON.parse(fs.readFileSync(path.join(outputDirectory, 'prompts', 'beat-openai-envelope.json'), 'utf8'));
       expect(promptAudit.metadata.providerPrompt).toBe(body.prompt);
       expect(promptAudit.metadata.openAiComposedPrompt).toBe(body.prompt);
     } finally {
@@ -222,6 +292,171 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
     );
 
     expect(refs.map((ref: any) => ref.characterName || ref.role)).toEqual(['Sofia Valea', 'style-reference']);
+  });
+
+  it('keeps OpenAI refs when visible cast uses slash aliases', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const refs = (service as any).filterOpenAiRefsToVisibleCast(
+      { prompt: 'Eros/Alex Kiriakis faces Daphne.', characterIdentity: ['Eros/Alex Kiriakis'] },
+      { type: 'storylet-aftermath', characterNames: ['Eros/Alex Kiriakis'] },
+      'storylet-aftermath',
+      [
+        { role: 'character-reference', characterName: 'Alex Kiriakis', viewType: 'front', data: 'a', mimeType: 'image/png' },
+        { role: 'style-reference', data: 'b', mimeType: 'image/png' },
+      ],
+    );
+
+    expect(refs.map((ref: any) => ref.characterName || ref.role)).toEqual(['Alex Kiriakis', 'style-reference']);
+
+    const audit = (service as any).buildCharacterReferenceAudit(
+      'dall-e',
+      { characterNames: ['Eros/Alex Kiriakis'], type: 'storylet-aftermath' },
+      { prompt: 'Eros/Alex Kiriakis faces Daphne.' },
+      refs,
+      refs,
+    );
+    expect(audit.effectiveCharacterRefs['Eros/Alex Kiriakis']).toBe(1);
+    expect(audit.missingReferenceCharacters).toEqual([]);
+  });
+
+  it('routes OpenAI character refs by canonical character id before display names', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const refs = (service as any).filterOpenAiRefsToVisibleCast(
+      { prompt: 'Alex faces Daphne.', characterIdentity: ['Alex'] },
+      {
+        type: 'storylet-aftermath',
+        visibleCharacterIds: ['char-erosalex-kiriakis'],
+        characterNames: ['Alex'],
+      },
+      'storylet-aftermath',
+      [
+        { role: 'character-reference', characterId: 'char-erosalex-kiriakis', characterName: 'Completely Different Nickname', viewType: 'front', data: 'a', mimeType: 'image/png' },
+        { role: 'character-reference', characterId: 'char-daphne-papadopoulos', characterName: 'Alex', viewType: 'front', data: 'b', mimeType: 'image/png' },
+        { role: 'style-reference', data: 'c', mimeType: 'image/png' },
+      ],
+    );
+
+    expect(refs.map((ref: any) => ref.characterId || ref.role)).toEqual(['char-erosalex-kiriakis', 'style-reference']);
+
+    const audit = (service as any).buildCharacterReferenceAudit(
+      'dall-e',
+      {
+        type: 'storylet-aftermath',
+        visibleCharacterIds: ['char-erosalex-kiriakis'],
+        characterNames: ['Alex'],
+      },
+      { prompt: 'Alex faces Daphne.' },
+      refs,
+      refs,
+    );
+    expect(audit.visibleCharacterIds).toEqual(['char-erosalex-kiriakis']);
+    expect(audit.effectiveCharacterRefs.Alex).toBe(1);
+    expect(audit.missingReferenceCharacters).toEqual([]);
+  });
+
+  it('keeps storyboard panel crops as OpenAI composition refs after visible-cast filtering', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      openaiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+
+    const refs = (service as any).filterOpenAiRefsToVisibleCast(
+      { prompt: 'Daphne turns away alone.', characterIdentity: ['Daphne Papadopoulos'] },
+      {
+        type: 'encounter-outcome',
+        visibleCharacterIds: ['char-daphne-papadopoulos'],
+        characterNames: ['Daphne Papadopoulos'],
+      },
+      'encounter-outcome',
+      [
+        { role: 'storyboard-panel-crop', viewType: 'draft-crop', data: 'crop', mimeType: 'image/png' },
+        { role: 'character-reference', characterId: 'char-daphne-papadopoulos', characterName: 'Daphne Papadopoulos', data: 'daphne', mimeType: 'image/png' },
+        { role: 'character-reference', characterId: 'char-erosalex-kiriakis', characterName: 'Alex', data: 'alex', mimeType: 'image/png' },
+        { role: 'episode-style-lock', data: 'style', mimeType: 'image/png' },
+      ],
+    );
+
+    expect(refs.map((ref: any) => ref.role)).toEqual([
+      'storyboard-panel-crop',
+      'character-reference',
+      'episode-style-lock',
+    ]);
+    expect(refs.map((ref: any) => ref.characterId).filter(Boolean)).toEqual(['char-daphne-papadopoulos']);
+  });
+
+  it('sends storyboard crop-refine refs to OpenAI and labels them as composition refs', async () => {
+    const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'image-gen-dalle-crop-refine-'));
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: [{ b64_json: Buffer.from('png').toString('base64') }] }),
+    }));
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const service = new ImageGenerationService({
+        enabled: true,
+        provider: 'dall-e',
+        openaiApiKey: 'test-key',
+        openaiImageModel: 'gpt-image-2',
+        outputDirectory,
+      } as any);
+
+      await service.generateImage(
+        {
+          prompt: 'ART STYLE: Cartoon modern art style\nDaphne challenges Eros across the cafe counter.',
+          style: 'Cartoon modern art style, bold simplified shapes, crisp confident linework',
+          aspectRatio: '9:16',
+          characterIdentity: ['Daphne', 'Eros'],
+        } as any,
+        'storyboard-crop-refine-openai',
+        {
+          type: 'encounter-outcome',
+          renderRoute: 'storyboard-sheet-crop-refine',
+          characterNames: ['Daphne', 'Eros'],
+          visibleCharacterIds: ['char-daphne', 'char-eros'],
+        } as any,
+        [
+          { role: 'storyboard-panel-crop', viewType: 'draft-crop', data: Buffer.from('crop').toString('base64'), mimeType: 'image/png' },
+          { role: 'character-reference', characterId: 'char-daphne', characterName: 'Daphne', viewType: 'front', data: Buffer.from('daphne').toString('base64'), mimeType: 'image/png' },
+          { role: 'character-reference', characterId: 'char-eros', characterName: 'Eros', viewType: 'front', data: Buffer.from('eros').toString('base64'), mimeType: 'image/png' },
+          { role: 'episode-style-lock', viewType: 'style', data: Buffer.from('style').toString('base64'), mimeType: 'image/png' },
+        ] as any,
+      );
+
+      const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+      const body = JSON.parse(String(calls[0]?.[1]?.body || '{}'));
+      expect(calls[0]?.[0]).toContain('/images/edits');
+      expect(body.images).toHaveLength(4);
+      expect(body.prompt).toContain('Use the storyboard crop/composition reference only for staging');
+      expect(body.prompt).toContain('FINAL STYLE GUARD:');
+
+      const promptAudit = JSON.parse(fs.readFileSync(path.join(outputDirectory, 'prompts', 'storyboard-crop-refine-openai.json'), 'utf8'));
+      expect(promptAudit.metadata.openAiReferenceUsage).toBe('composition-identity-style');
+      expect(promptAudit.metadata.openAiEffectiveReferences.map((ref: any) => ref.role)).toEqual([
+        'storyboard-panel-crop',
+        'character-reference',
+        'character-reference',
+        'episode-style-lock',
+      ]);
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+      fs.rmSync(outputDirectory, { recursive: true, force: true });
+    }
   });
 });
 
@@ -517,9 +752,9 @@ describe('ImageGenerationService character reference audit', () => {
       openaiApiKey: 'test-key',
       outputDirectory: '/tmp/generated-images-test',
     } as any);
-    service.setGeminiStyleReference('style-bytes', 'image/png');
+    service.setSeasonStyleReference('style-bytes', 'image/png');
 
-    const refs = (service as any).withGlobalStyleReferenceForProvider(
+    const refs = (service as any).withSeasonStyleReferenceForProvider(
       'dall-e',
       'scene',
       'beat-episode-1-scene-1-beat-1',
@@ -531,6 +766,27 @@ describe('ImageGenerationService character reference audit', () => {
     expect(refs[1].characterName).toBe('Mika Kuroda');
   });
 
+  it('adds the persisted season style reference to Nano and Atlas scene refs', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'nano-banana',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+    service.setSeasonStyleReference('style-bytes', 'image/png');
+
+    for (const provider of ['nano-banana', 'atlas-cloud'] as const) {
+      const refs = (service as any).withSeasonStyleReferenceForProvider(
+        provider,
+        'beat',
+        `beat-${provider}`,
+        [{ data: 'char-bytes', mimeType: 'image/png', role: 'character-reference', characterName: 'Mika Kuroda', viewType: 'front' }],
+      );
+
+      expect(refs[0].role).toBe('style-reference');
+      expect(refs[1].characterName).toBe('Mika Kuroda');
+    }
+  });
+
   it('adds the reference-sheet style anchor to DALL-E character reference generation', () => {
     const service = new ImageGenerationService({
       enabled: true,
@@ -538,10 +794,10 @@ describe('ImageGenerationService character reference audit', () => {
       openaiApiKey: 'test-key',
       outputDirectory: '/tmp/generated-images-test',
     } as any);
-    service.setGeminiStyleReference('style-bytes', 'image/png');
+    service.setSeasonStyleReference('style-bytes', 'image/png');
     service.setReferenceSheetStyleAnchor('anchor-bytes', 'image/png');
 
-    const refs = (service as any).withGlobalStyleReferenceForProvider(
+    const refs = (service as any).withSeasonStyleReferenceForProvider(
       'dall-e',
       'master',
       'ref_mika-kuroda_front',
@@ -560,9 +816,9 @@ describe('ImageGenerationService character reference audit', () => {
       openaiApiKey: 'test-key',
       outputDirectory: '/tmp/generated-images-test',
     } as any);
-    service.setGeminiStyleReference('style-bytes', 'image/png');
+    service.setSeasonStyleReference('style-bytes', 'image/png');
 
-    const refs = (service as any).withGlobalStyleReferenceForProvider(
+    const refs = (service as any).withSeasonStyleReferenceForProvider(
       'dall-e',
       'master',
       'style-bible-as-if-tokyo-character-anchor',
@@ -570,6 +826,82 @@ describe('ImageGenerationService character reference audit', () => {
     );
 
     expect(refs).toBeUndefined();
+  });
+
+  it('derives photoreal contradictions only for stylized profiles', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+    service.setArtStyleProfile({
+      name: 'ink wash',
+      family: 'ink',
+      renderingTechnique: 'brush ink with paper texture',
+      colorPhilosophy: 'monochrome',
+      lightingApproach: 'graphic',
+      lineWeight: 'expressive',
+      compositionStyle: 'spare',
+      moodRange: 'quiet',
+      acceptableDeviations: [],
+      genreNegatives: [],
+      positiveVocabulary: [],
+      inappropriateVocabulary: [],
+    });
+
+    expect((service as any).getProfileStyleContradictionNegatives()).toEqual(
+      expect.arrayContaining(['photorealism', 'DSLR photo', 'realistic 3D render']),
+    );
+  });
+
+  it('does not invent opposite-style negatives for unknown verbatim profiles', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+    service.setArtStyleProfile({
+      name: 'weird luminous scrapbook diorama',
+      family: 'unknown',
+      renderingTechnique: 'weird luminous scrapbook diorama',
+      colorPhilosophy: 'author-provided',
+      lightingApproach: 'author-provided',
+      lineWeight: 'author-provided',
+      compositionStyle: 'author-provided',
+      moodRange: 'author-provided',
+      acceptableDeviations: [],
+      genreNegatives: [],
+      positiveVocabulary: ['weird luminous scrapbook diorama'],
+      inappropriateVocabulary: [],
+    });
+
+    expect((service as any).getProfileStyleContradictionNegatives()).toEqual([]);
+  });
+
+  it('derives stylized contradictions only for explicit photographic cinematic profiles', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'dall-e',
+      outputDirectory: '/tmp/generated-images-test',
+    } as any);
+    service.setArtStyleProfile({
+      name: 'photographic cinematic still',
+      family: 'cinematic',
+      renderingTechnique: 'photoreal DSLR photo lighting',
+      colorPhilosophy: 'natural',
+      lightingApproach: 'photographic',
+      lineWeight: 'none',
+      compositionStyle: 'cinematic',
+      moodRange: 'grounded',
+      acceptableDeviations: [],
+      genreNegatives: [],
+      positiveVocabulary: [],
+      inappropriateVocabulary: [],
+    });
+
+    expect((service as any).getProfileStyleContradictionNegatives()).toEqual(
+      expect.arrayContaining(['cartoon style', 'anime style', 'flat cel shading']),
+    );
   });
 });
 

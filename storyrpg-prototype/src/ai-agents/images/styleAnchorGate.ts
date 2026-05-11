@@ -14,7 +14,7 @@ export interface StyleAnchorGateDecision<T> {
   rejectionReason?: string;
 }
 
-export function chooseGeminiStyleAnchor<T>(input: {
+export function chooseSeasonStyleAnchor<T>(input: {
   preapprovedCharacterAnchor?: T;
   uploadedStyleReference?: T;
   generatedCharacterAnchor?: T;

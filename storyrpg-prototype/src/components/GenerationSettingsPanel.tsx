@@ -65,6 +65,7 @@ export interface GenerationSettings {
   imageGenerationLimit: number;
   panelMode: 'single' | 'special-beats' | 'all-beats';
   imagePlanningMode: 'text' | 'visual-storyboard';
+  storyboardMaxPanelsPerSheet: number;
   
   // Validation
   blockingThreshold: number;
@@ -144,6 +145,7 @@ export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
   imageGenerationLimit: CONCURRENCY_DEFAULTS.imageGenerationLimit,
   panelMode: 'single' as const,
   imagePlanningMode: 'text' as const,
+  storyboardMaxPanelsPerSheet: 6,
   
   // Validation
   blockingThreshold: PHASE_VALIDATION_DEFAULTS.blockingThreshold,
@@ -426,6 +428,15 @@ const PERFORMANCE_FIELDS: SettingFieldConfig[] = [
       { value: 'text', label: 'Text Plan' },
       { value: 'visual-storyboard', label: 'Visual Storyboard' },
     ],
+    condition: (settings) => settings.generateImages,
+  },
+  {
+    type: 'number',
+    key: 'storyboardMaxPanelsPerSheet',
+    label: 'Panels per Storyboard Sheet',
+    description: 'Maximum storyboard panels generated together on one sheet.',
+    min: 1,
+    max: 12,
     condition: (settings) => settings.generateImages,
   },
   {

@@ -244,6 +244,10 @@ export function buildPipelineConfig(
       openaiImageModel: input.openaiSettings?.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel,
       openaiModeration: input.openaiSettings?.imageModeration || DEFAULT_OPENAI_SETTINGS.imageModeration,
       provider: normalizedImageProvider,
+      pipelineMode: 'storyboard-v2',
+      storyboardV2: {
+        maxPanelsPerSheet: input.generationSettings.storyboardMaxPanelsPerSheet || 6,
+      },
       strategy: input.imageStrategy,
       atlasCloudApiKey: input.atlasCloudApiKey.trim() || undefined,
       atlasCloudModel: input.atlasCloudModel.trim() || undefined,

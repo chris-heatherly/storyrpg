@@ -159,6 +159,7 @@ import { EncounterProviderPolicy } from '../encounters/encounterProviderPolicy';
 import { AssetRegistry } from '../images/assetRegistry';
 import { CallbackLedger } from './callbackLedger';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
+import { StoryboardV2Pipeline } from '../images/storyboard-v2/StoryboardV2Pipeline';
 import { validateRegistryCoverage } from '../images/coverageValidator';
 import { walkStoryAssets, formatAssetWalkReport } from '../validators/storyAssetWalker';
 import { findUnsupportedQuotedRecallIssues } from '../validators/quoteRecallValidator';
@@ -171,9 +172,9 @@ import {
   buildEnvironmentAnchorPrompt,
   anchorIdentifier,
 } from '../images/anchorPrompts';
-import { chooseGeminiStyleAnchor, type StyleAnchorValidationResult } from '../images/styleAnchorGate';
+import { chooseSeasonStyleAnchor, type StyleAnchorValidationResult } from '../images/styleAnchorGate';
 import { buildDefectRetryPrompt, type ImageDefectIssue } from '../images/imageDefectGate';
-import { composeCanonicalStyleString } from '../images/artStyleProfile';
+import { buildVerbatimProfile, composeCanonicalStyleString } from '../images/artStyleProfile';
 import {
   LoraTrainingAgent,
   type CharacterTrainingCandidate,
@@ -684,7 +685,7 @@ export class FullStoryPipeline {
    * Paths (relative or absolute) to the three style-bible anchor images,
    * whether preapproved by the UI or generated in `generateEpisodeStyleBible`.
    * Persisted onto `Story.styleAnchors` so single-image regenerations and
-   * session resumes can re-prime `setGeminiStyleReference` without
+   * session resumes can re-prime `setSeasonStyleReference` without
    * rebuilding the style bible from scratch.
    */
   private _styleAnchorPaths: {
@@ -846,6 +847,10 @@ export class FullStoryPipeline {
     // strengthening can operate bidirectionally on style-inappropriate /
     // style-positive vocabulary rather than applying only cinematic defaults.
     if (this.config.imageGen?.artStyleProfile) {
+      this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
+    } else if (this.config.artStyle?.trim()) {
+      this.config.imageGen = this.config.imageGen || {};
+      this.config.imageGen.artStyleProfile = buildVerbatimProfile(this.config.artStyle);
       this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
     }
     
@@ -1508,11 +1513,19 @@ export class FullStoryPipeline {
   }
 
   private buildStoryGeneratorMetadata(): Record<string, unknown> {
+    const styleAnchors = (this._styleAnchorPaths.character || this._styleAnchorPaths.arcStrip || this._styleAnchorPaths.environment)
+      ? {
+          character: this._styleAnchorPaths.character ? { imagePath: this._styleAnchorPaths.character } : undefined,
+          arcStrip: this._styleAnchorPaths.arcStrip ? { imagePath: this._styleAnchorPaths.arcStrip } : undefined,
+          environment: this._styleAnchorPaths.environment ? { imagePath: this._styleAnchorPaths.environment } : undefined,
+        }
+      : undefined;
     return {
       pipeline: 'FullStoryPipeline',
       artStyle: this.config.artStyle,
       canonicalArtStyle: this.config.imageGen?.gemini?.canonicalArtStyle || this.config.artStyle,
       artStyleProfile: this.config.imageGen?.artStyleProfile,
+      styleAnchors,
       imageProvider: this.config.imageGen?.provider,
     };
   }
@@ -1575,6 +1588,9 @@ export class FullStoryPipeline {
     }
     if (this.config.imageGen.artStyleProfile) {
       this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
+    } else if (artStyle?.trim()) {
+      this.config.imageGen.artStyleProfile = buildVerbatimProfile(artStyle);
+      this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
     }
   }
 
@@ -1585,6 +1601,52 @@ export class FullStoryPipeline {
 
   private getEpisodeScopedBeatKey(brief: FullCreativeBrief, sceneId: string, beatId: string): string {
     return `${this.getEpisodeScopedSceneId(brief, sceneId)}::${beatId}`;
+  }
+
+  private useStoryboardV2ImagePipeline(): boolean {
+    return this.config.imageGen?.pipelineMode !== 'legacy';
+  }
+
+  private shouldAttachCompositeCharacterRefs(): boolean {
+    return getReferenceStrategy(this.config.imageGen?.provider).sceneRefs === 'composite-anchor';
+  }
+
+  private async runStoryboardV2ImageGeneration(
+    sceneContents: SceneContent[],
+    choiceSets: ChoiceSet[],
+    brief: FullCreativeBrief,
+    characterBible: CharacterBible,
+    encounters: Map<string, EncounterStructure>,
+    outputDirectory?: string,
+  ): Promise<{
+    imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> };
+    encounterImageResults: {
+      encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>;
+      storyletImages: Map<string, Map<string, Map<string, string>>>;
+      storyletFailures?: string[];
+    };
+  }> {
+    const storyboard = new StoryboardV2Pipeline({
+      config: this.config,
+      assetRegistry: this.assetRegistry,
+      outputDirectory,
+      emit: (event) => this.emit(event as any),
+      onImageJobEvent: (event) => this.imageService.emitExternalEvent(event),
+    });
+    const result = await storyboard.generateEpisode({
+      brief,
+      sceneContents,
+      choiceSets,
+      characterBible,
+      encounters,
+    });
+    return {
+      imageResults: {
+        beatImages: result.beatImages,
+        sceneImages: result.sceneImages,
+      },
+      encounterImageResults: result.encounterImageResults,
+    };
   }
 
   private resetAssetRegistry(storyId?: string, persistPath?: string): void {
@@ -1755,7 +1817,7 @@ export class FullStoryPipeline {
     const characterAnchor = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'character-anchor'));
     if (characterAnchor?.imageData && characterAnchor.mimeType) {
       this._styleAnchorPaths.character = characterAnchor.imagePath;
-      this.imageService.setGeminiStyleReference(characterAnchor.imageData, characterAnchor.mimeType);
+      this.imageService.setSeasonStyleReference(characterAnchor.imageData, characterAnchor.mimeType);
       hydrated += 1;
     }
     const arcStrip = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'arc-strip'));
@@ -2584,23 +2646,35 @@ export class FullStoryPipeline {
 		        }
 
 	          this.emit({ type: 'phase_start', phase: 'images', message: `Generating missing scene visuals for episode ${episode.number}...` });
-	          const imageResults = await this.imageWorkerQueue.run(() =>
-	            this.measurePhase(
-	              'episode_image_generation',
-	              () => this.runEpisodeImageGeneration(
-	                sceneContents,
-	                choiceSets,
-	                episodeBrief,
-		                worldBible,
-		                characterBible,
-		                normalizedOutputDir,
-		                { skipColorScriptAndStyleBible: true, missingSlotIds: imageResumeScan.missingSlotIds },
-		              )
-	            )
-	          );
-
+	          let imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> };
 	          let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
-	          if (encounterMap.size > 0) {
+	          if (this.useStoryboardV2ImagePipeline()) {
+	            const storyboardResult = await this.imageWorkerQueue.run(() =>
+	              this.measurePhase(
+	                'storyboard_v2_image_generation',
+	                () => this.runStoryboardV2ImageGeneration(sceneContents, choiceSets, episodeBrief, characterBible, encounterMap, normalizedOutputDir),
+	              )
+	            );
+	            imageResults = storyboardResult.imageResults;
+	            encounterImageResults = storyboardResult.encounterImageResults;
+	          } else {
+	            imageResults = await this.imageWorkerQueue.run(() =>
+	              this.measurePhase(
+	                'episode_image_generation',
+	                () => this.runEpisodeImageGeneration(
+	                  sceneContents,
+	                  choiceSets,
+	                  episodeBrief,
+		                  worldBible,
+		                  characterBible,
+		                  normalizedOutputDir,
+		                  { skipColorScriptAndStyleBible: true, missingSlotIds: imageResumeScan.missingSlotIds },
+		                )
+	              )
+	            );
+	          }
+
+	          if (!this.useStoryboardV2ImagePipeline() && encounterMap.size > 0) {
 	            this.imageService.clearEncounterDiagnostics();
 	            await this.runEncounterProviderPreflight(normalizedOutputDir);
 	            encounterImageResults = await this.imageWorkerQueue.run(() =>
@@ -3970,87 +4044,98 @@ export class FullStoryPipeline {
         // Set image service output directory to story's images folder
         if (this.config.imageGen?.enabled) {
           this.requirePhases('images', ['content_generation']);
-          const imagesDir = outputDirectory + 'images/';
-          this.imageService.setOutputDirectory(imagesDir);
-          // Invalidate cached reference sheets if the user has changed art
-          // style since the last run under this output directory. See
-          // ImageGenerationService.reconcileCachedReferenceStyle for why this
-          // matters (otherwise stale refs lock the aesthetic).
-          const invalidatedRefs = this.imageService.reconcileCachedReferenceStyle(this.config.artStyle);
-          if (invalidatedRefs > 0) {
-            this.emit({
-              type: 'debug',
-              phase: 'images',
-              message: `Art style changed — invalidated ${invalidatedRefs} cached reference image(s) so new refs will be generated under the current style.`,
-            });
-          }
-          this.emit({ type: 'debug', phase: 'images', message: `Image output directory: ${imagesDir}` });
-          
-          // A10: warm up the color script in parallel with master image
-          // generation. Both are independent (color script is pure text;
-          // master images don't need the script) so overlapping them hides
-          // the color-script latency. `runEpisodeImageGeneration` consumes
-          // the promise below. Failures are swallowed into `undefined` so
-          // the downstream path can still fall back to a fresh call.
-          this._preWarmedColorScriptPromise = this.generateEpisodeColorScript(brief, sceneContents, choiceSets)
-            .catch((err) => {
+          if (this.useStoryboardV2ImagePipeline()) {
+            const storyboardResult = await this.imageWorkerQueue.run(() =>
+              this.measurePhase(
+                'storyboard_v2_image_generation',
+                () => this.runStoryboardV2ImageGeneration(sceneContents, choiceSets, brief, characterBible, encounters, outputDirectory),
+              )
+            );
+            imageResults = storyboardResult.imageResults;
+            encounterImageResults = storyboardResult.encounterImageResults;
+          } else {
+            const imagesDir = outputDirectory + 'images/';
+            this.imageService.setOutputDirectory(imagesDir);
+            // Invalidate cached reference sheets if the user has changed art
+            // style since the last run under this output directory. See
+            // ImageGenerationService.reconcileCachedReferenceStyle for why this
+            // matters (otherwise stale refs lock the aesthetic).
+            const invalidatedRefs = this.imageService.reconcileCachedReferenceStyle(this.config.artStyle);
+            if (invalidatedRefs > 0) {
               this.emit({
-                type: 'warning',
+                type: 'debug',
                 phase: 'images',
-                message: `A10 color-script prewarm failed (will retry inline): ${err instanceof Error ? err.message : String(err)}`,
+                message: `Art style changed — invalidated ${invalidatedRefs} cached reference image(s) so new refs will be generated under the current style.`,
               });
-              return undefined;
-            });
+            }
+            this.emit({ type: 'debug', phase: 'images', message: `Image output directory: ${imagesDir}` });
+            
+            // A10: warm up the color script in parallel with master image
+            // generation. Both are independent (color script is pure text;
+            // master images don't need the script) so overlapping them hides
+            // the color-script latency. `runEpisodeImageGeneration` consumes
+            // the promise below. Failures are swallowed into `undefined` so
+            // the downstream path can still fall back to a fresh call.
+            this._preWarmedColorScriptPromise = this.generateEpisodeColorScript(brief, sceneContents, choiceSets)
+              .catch((err) => {
+                this.emit({
+                  type: 'warning',
+                  phase: 'images',
+                  message: `A10 color-script prewarm failed (will retry inline): ${err instanceof Error ? err.message : String(err)}`,
+                });
+                return undefined;
+              });
 
-          // Generate master character/location references
-          this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
-          await this.imageWorkerQueue.run(() =>
-            this.measurePhase('master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, brief))
-          );
-          
-          // Generate scene beat images
-          this.emit({ type: 'phase_start', phase: 'images', message: 'Generating scene visuals...' });
-          imageResults = await this.imageWorkerQueue.run(() =>
-            this.measurePhase(
-              'episode_image_generation',
-              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, brief, worldBible, characterBible, outputDirectory)
-            )
-          );
-          
-          // Generate encounter-specific images (beats, outcome choices, and storylet aftermath)
-          if (encounters.size > 0) {
-            try {
-              this.imageService.clearEncounterDiagnostics();
-              await this.runEncounterProviderPreflight(outputDirectory);
-              encounterImageResults = await this.imageWorkerQueue.run(() =>
-                this.measurePhase(
-                  'encounter_image_generation',
-                  () => this.generateEncounterImages(encounters, characterBible, brief, outputDirectory)
-                )
-              );
-              encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
-            } catch (encImgError) {
-              const encImgMsg = encImgError instanceof Error ? encImgError.message : String(encImgError);
-              console.error(`[Pipeline] Encounter image generation failed: ${encImgMsg}`);
-              this.emit({ type: 'error', phase: 'encounter_images', message: `Encounter image generation failed: ${encImgMsg}` });
-              encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
-              if (outputDirectory && encounterImageDiagnostics.length > 0) {
-                await saveEncounterImageDiagnosticsLog(outputDirectory, encounterImageDiagnostics);
-              }
-              if (this.isLlmQuotaFailure(encImgError)) throw encImgError;
-              throw new PipelineError(
-                `Encounter image generation failed: ${encImgMsg}`,
-                'encounter_images',
-                {
-                  agent: 'EncounterImageAgent',
-                  context: {
-                    outputDirectory,
-                    encounterCount: encounters.size,
-                    failureKind: 'image_generation',
-                  },
-                  originalError: encImgError instanceof Error ? encImgError : undefined,
+            // Generate master character/location references
+            this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
+            await this.imageWorkerQueue.run(() =>
+              this.measurePhase('master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, brief))
+            );
+            
+            // Generate scene beat images
+            this.emit({ type: 'phase_start', phase: 'images', message: 'Generating scene visuals...' });
+            imageResults = await this.imageWorkerQueue.run(() =>
+              this.measurePhase(
+                'episode_image_generation',
+                () => this.runEpisodeImageGeneration(sceneContents, choiceSets, brief, worldBible, characterBible, outputDirectory)
+              )
+            );
+            
+            // Generate encounter-specific images (beats, outcome choices, and storylet aftermath)
+            if (encounters.size > 0) {
+              try {
+                this.imageService.clearEncounterDiagnostics();
+                await this.runEncounterProviderPreflight(outputDirectory);
+                encounterImageResults = await this.imageWorkerQueue.run(() =>
+                  this.measurePhase(
+                    'encounter_image_generation',
+                    () => this.generateEncounterImages(encounters, characterBible, brief, outputDirectory)
+                  )
+                );
+                encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
+              } catch (encImgError) {
+                const encImgMsg = encImgError instanceof Error ? encImgError.message : String(encImgError);
+                console.error(`[Pipeline] Encounter image generation failed: ${encImgMsg}`);
+                this.emit({ type: 'error', phase: 'encounter_images', message: `Encounter image generation failed: ${encImgMsg}` });
+                encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
+                if (outputDirectory && encounterImageDiagnostics.length > 0) {
+                  await saveEncounterImageDiagnosticsLog(outputDirectory, encounterImageDiagnostics);
                 }
-              );
+                if (this.isLlmQuotaFailure(encImgError)) throw encImgError;
+                throw new PipelineError(
+                  `Encounter image generation failed: ${encImgMsg}`,
+                  'encounter_images',
+                  {
+                    agent: 'EncounterImageAgent',
+                    context: {
+                      outputDirectory,
+                      encounterCount: encounters.size,
+                      failureKind: 'image_generation',
+                    },
+                    originalError: encImgError instanceof Error ? encImgError : undefined,
+                  }
+                );
+              }
             }
           }
           
@@ -8514,23 +8599,34 @@ export class FullStoryPipeline {
       if (this.config.imageGen?.enabled) {
         this.emit({ type: 'phase_start', phase: `images_ep_${i}`, message: `Generating visuals for Episode ${i}...` });
         try {
-          // A10: warm up color script in parallel with the episode image
-          // phase so the script latency overlaps master-image work.
-          this._preWarmedColorScriptPromise = this.generateEpisodeColorScript(episodeBrief, sceneContents, choiceSets)
-            .catch((err) => {
-              this.emit({
-                type: 'warning',
-                phase: `images_ep_${i}`,
-                message: `A10 color-script prewarm failed (will retry inline): ${err instanceof Error ? err.message : String(err)}`,
+          if (this.useStoryboardV2ImagePipeline()) {
+            const storyboardResult = await this.imageWorkerQueue.run(() =>
+              this.measurePhase(
+                `episode_${i}_storyboard_v2_images`,
+                () => this.runStoryboardV2ImageGeneration(sceneContents, choiceSets, episodeBrief, characterBible, encounters, outputDirectory),
+              )
+            );
+            imageResults = storyboardResult.imageResults;
+            encounterImageResults = storyboardResult.encounterImageResults;
+          } else {
+            // A10: warm up color script in parallel with the episode image
+            // phase so the script latency overlaps master-image work.
+            this._preWarmedColorScriptPromise = this.generateEpisodeColorScript(episodeBrief, sceneContents, choiceSets)
+              .catch((err) => {
+                this.emit({
+                  type: 'warning',
+                  phase: `images_ep_${i}`,
+                  message: `A10 color-script prewarm failed (will retry inline): ${err instanceof Error ? err.message : String(err)}`,
+                });
+                return undefined;
               });
-              return undefined;
-            });
-          imageResults = await this.imageWorkerQueue.run(() =>
-            this.measurePhase(
-              `episode_${i}_images`,
-              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible, outputDirectory)
-            )
-          );
+            imageResults = await this.imageWorkerQueue.run(() =>
+              this.measurePhase(
+                `episode_${i}_images`,
+                () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible, outputDirectory)
+              )
+            );
+          }
         } catch (imgError) {
           if (this.isLlmQuotaFailure(imgError)) {
             const quotaMsg = imgError instanceof Error ? imgError.message : String(imgError);
@@ -8570,7 +8666,7 @@ export class FullStoryPipeline {
           );
         }
 
-        if (encounters.size > 0) {
+        if (!this.useStoryboardV2ImagePipeline() && encounters.size > 0) {
           console.log(`[Pipeline] Episode ${i}: Starting encounter image generation for ${encounters.size} encounters`);
           try {
             this.imageService.clearEncounterDiagnostics();
@@ -9307,8 +9403,11 @@ export class FullStoryPipeline {
           // Store first character's ref sheet as style anchor for subsequent characters.
           // Prefer the full-body front view over the face crop so the anchor
           // carries costume and palette information, not just the face.
+          const compositeAnchorImg = this.shouldAttachCompositeCharacterRefs()
+            ? generatedSheet.generatedImages.get('composite')
+            : undefined;
           const anchorImg = generatedSheet.generatedImages.get('front')
-            || generatedSheet.generatedImages.get('composite')
+            || compositeAnchorImg
             || generatedSheet.generatedImages.get('face');
           if (anchorImg?.imageData && anchorImg?.mimeType) {
             this.imageService.setReferenceSheetStyleAnchor(anchorImg.imageData, anchorImg.mimeType);
@@ -9443,8 +9542,11 @@ export class FullStoryPipeline {
       // Store first character's ref sheet as style anchor for subsequent characters.
       // Prefer the full-body front view over the face crop so the anchor
       // carries costume and palette information, not just the face.
+      const compositeAnchorImg = this.shouldAttachCompositeCharacterRefs()
+        ? generatedSheet.generatedImages.get('composite')
+        : undefined;
       const anchorImg = generatedSheet.generatedImages.get('front')
-        || generatedSheet.generatedImages.get('composite')
+        || compositeAnchorImg
         || generatedSheet.generatedImages.get('face');
       if (anchorImg?.imageData && anchorImg?.mimeType) {
         this.imageService.setReferenceSheetStyleAnchor(anchorImg.imageData, anchorImg.mimeType);
@@ -9877,6 +9979,12 @@ ${clothingRule}
     return normalizeImagePlanningMode(this.config.imageGen?.imagePlanningMode);
   }
 
+  private getStoryboardMaxPanelsPerSheet(): number {
+    const configured = this.config.imageGen?.storyboardV2?.maxPanelsPerSheet;
+    if (!Number.isFinite(configured) || !configured) return 6;
+    return Math.max(1, Math.min(12, Math.floor(configured)));
+  }
+
   private async saveSceneVisualPlanningDiagnostic(
     outputDirectory: string | undefined,
     scopedSceneId: string,
@@ -9914,7 +10022,7 @@ ${clothingRule}
       sceneName: params.sceneName,
       sceneDescription: params.sceneDescription,
       slots: visualPlanSlotsFromBeats(params.scopedSceneId, params.beats),
-      panelCap: 6,
+      panelCap: this.getStoryboardMaxPanelsPerSheet(),
       branchAware: false,
       continuityBible: (params.visualPlan as any)?.continuityBible,
       sequenceGrammar: (params.visualPlan as any)?.sequenceGrammar,
@@ -10644,7 +10752,7 @@ ${clothingRule}
           ].filter(Boolean).join('. ');
           const sceneMasterPrompt = {
             style: this.config.artStyle || '',
-            styleNegatives: 'photorealism, photographic lighting, live-action still, 3D render, cinematic realism, style drift, first-person POV',
+            styleNegatives: 'style drift, unapproved renderer, unapproved texture system, first-person POV',
             location: scene.settingContext?.description || sceneDescription || scene.sceneName,
             lightingColor: [
               colorMoodHints?.palette ? `palette: ${colorMoodHints.palette}` : undefined,
@@ -10677,10 +10785,10 @@ ${clothingRule}
             characterBodyVocabularies,
             characterDescriptions: sceneCharacterDescriptions,
             imagePlanningMode,
-            storyboardPanelCap: 6,
+            storyboardPanelCap: this.getStoryboardMaxPanelsPerSheet(),
             sceneMasterPrompt,
           };
-          const chunks = chunkStoryboardBeats(enrichedBeats, 6);
+          const chunks = chunkStoryboardBeats(enrichedBeats, this.getStoryboardMaxPanelsPerSheet());
           for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
             await this.checkCancellation();
             const chunkBeats = chunks[chunkIndex];
@@ -10983,7 +11091,7 @@ ${clothingRule}
               }
 
               if (this._generatedStyleReferencesAllowed && !styleReferenceStored && prefetched.imageData && prefetched.mimeType) {
-                this.imageService.setGeminiStyleReference(prefetched.imageData, prefetched.mimeType);
+                this.imageService.setSeasonStyleReference(prefetched.imageData, prefetched.mimeType);
                 styleReferenceStored = true;
                 this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from prefetched opener of scene ${scene.sceneId}` });
               }
@@ -11428,7 +11536,7 @@ ${clothingRule}
               }
 
               if (this._generatedStyleReferencesAllowed && !styleReferenceStored && lastGeneratedImage) {
-                this.imageService.setGeminiStyleReference(lastGeneratedImage.data, lastGeneratedImage.mimeType);
+                this.imageService.setSeasonStyleReference(lastGeneratedImage.data, lastGeneratedImage.mimeType);
                 styleReferenceStored = true;
               }
             } else {
@@ -11549,7 +11657,7 @@ ${clothingRule}
               }
 
               if (this._generatedStyleReferencesAllowed && !styleReferenceStored && result.imageData && result.mimeType) {
-                this.imageService.setGeminiStyleReference(result.imageData, result.mimeType);
+                this.imageService.setSeasonStyleReference(result.imageData, result.mimeType);
                 styleReferenceStored = true;
                 this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from scene ${scene.sceneId}` });
               }
@@ -12040,7 +12148,7 @@ ${clothingRule}
 
           // Style reference: store the first scene's image as the style anchor
           if (this._generatedStyleReferencesAllowed && !styleReferenceStored) {
-            this.imageService.setGeminiStyleReference(lastGeneratedImage.data, lastGeneratedImage.mimeType);
+            this.imageService.setSeasonStyleReference(lastGeneratedImage.data, lastGeneratedImage.mimeType);
             styleReferenceStored = true;
             this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from scene ${scene.sceneId}` });
           }
@@ -12168,7 +12276,7 @@ ${clothingRule}
             style: this.config.artStyle || undefined,
             aspectRatio: '9:19.5',
             composition: `Scene: ${scene.sceneName}. Genre: ${brief.story.genre}, Tone: ${brief.story.tone}. Generate exactly ONE single full-bleed third-person image with ONE unified scene and ONE camera angle. No first-person POV, no split-screen, no diptych, no stacked panels, no repeated subject, no image-within-image.`,
-            negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, storyboard, grid layout, diptych, triptych, collage, duplicate character, same character twice, cloned figure, repeated subject, first-person POV, player-eye view, disembodied hands, your hand, photorealism, live-action still, photographic realism, style drift',
+            negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, storyboard, grid layout, diptych, triptych, collage, duplicate character, same character twice, cloned figure, repeated subject, first-person POV, player-eye view, disembodied hands, your hand, style drift, unapproved renderer',
           }, scene.settingContext);
           const promptWithContracts = this.applyThirdPersonRenderContract(fallbackPrompt, undefined, { isEnvironmentShot: shotCharacterIds.length === 0 || isEstablishing });
           const identifier = `beat-${scopedSceneId}-${beat.id}-repair`;
@@ -12744,15 +12852,19 @@ ${clothingRule}
           viewType,
         });
       }
-      // Composite sheet as a separate artifact — routed per-provider downstream.
-      const protComposite = this.imageAgentTeam.getCompositeReferenceImage(protagonistId);
-      if (protComposite) {
-        referenceImages.push({
-          data: protComposite.data, mimeType: protComposite.mimeType,
-          role: 'composite-sheet',
-          characterName: protagonist?.name || brief.protagonist.name,
-          viewType: 'composite',
-        });
+      // Composite turnarounds are only useful for providers that explicitly
+      // consume them as identity anchors (Midjourney --cref). GPT Image 2 and
+      // other edit-based providers should never see cached composite sheets.
+      if (this.shouldAttachCompositeCharacterRefs()) {
+        const protComposite = this.imageAgentTeam.getCompositeReferenceImage(protagonistId);
+        if (protComposite) {
+          referenceImages.push({
+            data: protComposite.data, mimeType: protComposite.mimeType,
+            role: 'composite-sheet',
+            characterName: protagonist?.name || brief.protagonist.name,
+            viewType: 'composite',
+          });
+        }
       }
 
       // Antagonist references (if available, limited)
@@ -12769,14 +12881,16 @@ ${clothingRule}
             viewType,
           });
         }
-        const antagComposite = this.imageAgentTeam.getCompositeReferenceImage(antagonist.id);
-        if (antagComposite) {
-          referenceImages.push({
-            data: antagComposite.data, mimeType: antagComposite.mimeType,
-            role: 'composite-sheet',
-            characterName: antagonist.name,
-            viewType: 'composite',
-          });
+        if (this.shouldAttachCompositeCharacterRefs()) {
+          const antagComposite = this.imageAgentTeam.getCompositeReferenceImage(antagonist.id);
+          if (antagComposite) {
+            referenceImages.push({
+              data: antagComposite.data, mimeType: antagComposite.mimeType,
+              role: 'composite-sheet',
+              characterName: antagonist.name,
+              viewType: 'composite',
+            });
+          }
         }
       }
 
@@ -12867,7 +12981,7 @@ CLICHÉS TO AVOID unless the concept genuinely demands them:
 - disembodied giant eye
 - stacked / lineup full-cast portraits
 
-The cover must RESPECT the story's established art direction (rendering technique, color philosophy, lighting, line treatment, mood). Never override the art direction with generic cinematic photoreal.
+The cover must RESPECT the story's established art direction (rendering technique, color philosophy, lighting, line treatment, mood). Never override the art direction with a renderer or finish that contradicts the style contract.
 
 Return STRICT JSON with EXACTLY these fields, no markdown, no commentary:
 {
@@ -12897,7 +13011,7 @@ Synopsis: ${brief.story.synopsis.substring(0, 800)}
 PROTAGONIST
 ${protDesc}
 
-${antagDesc ? `ANTAGONIST\n${antagDesc}\n\n` : ''}${primaryLocation ? `PRIMARY LOCATION / WORLD\n${primaryLocation}\n\n` : ''}ART DIRECTION (the cover MUST match this visual language — do NOT default to generic photoreal)
+${antagDesc ? `ANTAGONIST\n${antagDesc}\n\n` : ''}${primaryLocation ? `PRIMARY LOCATION / WORLD\n${primaryLocation}\n\n` : ''}ART DIRECTION (the cover MUST match this visual language — do not invent a different renderer)
 ${artDirection}
 
 Design the key art. Return STRICT JSON matching the schema.`;
@@ -13143,7 +13257,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
             ...visualPlanSlotsFromEncounterManifest(slotManifest.slots),
             ...visualPlanSlotsFromStoryletManifest(storyletManifestForPlanning.slots),
           ],
-          panelCap: 6,
+          panelCap: this.getStoryboardMaxPanelsPerSheet(),
           branchAware: true,
         });
         const encounterVisualPlan = attachStoryboardPlanToVisualPlan({
@@ -14793,9 +14907,9 @@ Design the key art. Return STRICT JSON matching the schema.`;
       `Dramatic reason: ${storyboardShot.dramaticReason || 'story beat progression'}.`,
     ].filter(Boolean).join(' ') : '';
     const environmentNegatives = options?.isEnvironmentShot
-      ? 'photorealistic architecture, real estate photo, architectural photography, HDR interior, documentary photo, live-action background, realistic building materials, camera bokeh, photographic environment, 3D interior render'
+      ? 'environment style drift, unapproved location renderer, background finish that contradicts the style contract'
       : '';
-    const negativeAdditions = ['first-person POV, player-eye view, POV hands, disembodied hands, your hand, your hands, selfie angle, photorealism, live-action still, photographic realism, style drift', environmentNegatives].filter(Boolean).join(', ');
+    const negativeAdditions = ['first-person POV, player-eye view, POV hands, disembodied hands, your hand, your hands, selfie angle, style drift, unapproved renderer', environmentNegatives].filter(Boolean).join(', ');
     return {
       ...prompt,
       prompt: [prompt.prompt, thirdPersonContract, environmentStyleContract, storyboardContract].filter(Boolean).join('\n\n'),
@@ -15609,11 +15723,10 @@ Design the key art. Return STRICT JSON matching the schema.`;
         });
       }
 
-      // Emit the composite model sheet as a separate artifact with its own
-      // canonical role. Downstream provider filters will either drop it
-      // (Gemini/Atlas — promoted to style anchor instead) or surface it
-      // as Midjourney `--cref`. Always tag it so the filter can find it.
-      if (references.length < MAX_TOTAL_REFS) {
+      // Emit the composite model sheet only for providers that explicitly use
+      // it as the scene identity anchor. In particular, GPT Image 2 should not
+      // receive or even collect cached multi-view/composite sheets.
+      if (this.shouldAttachCompositeCharacterRefs() && references.length < MAX_TOTAL_REFS) {
         const composite = this.imageAgentTeam.getCompositeReferenceImage(charId);
         if (composite) {
           references.push({
@@ -16428,7 +16541,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
       const generatedCharacterAnchor = anchorImage?.imageData && anchorImage?.mimeType
         ? anchorImage
         : undefined;
-      const styleAnchorDecision = chooseGeminiStyleAnchor({
+      const styleAnchorDecision = chooseSeasonStyleAnchor({
         preapprovedCharacterAnchor,
         uploadedStyleReference: uploadedPreferredAnchor,
         generatedCharacterAnchor,
@@ -16451,7 +16564,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
         return false;
       }
 
-      this.imageService.setGeminiStyleReference(preferredAnchor.imageData, preferredAnchor.mimeType);
+      this.imageService.setSeasonStyleReference(preferredAnchor.imageData, preferredAnchor.mimeType);
       this.emit({
         type: 'agent_complete',
         agent: 'ColorScriptAgent',
@@ -16711,7 +16824,7 @@ Return ONLY valid JSON:
   "issues": ["short issue", "..."]
 }
 
-Pass only if score is 80 or higher and the image clearly follows the authoritative raw style. Fail if it looks generic cinematic, photorealistic, gritty, messy, model-sheet-like, off-palette, or visually inconsistent with the raw style.`,
+Pass only if score is 80 or higher and the image clearly follows the authoritative raw style. Fail if it uses a renderer, finish, palette, or texture language that is visibly inconsistent with the raw style.`,
             },
             {
               type: 'image' as const,
@@ -16995,7 +17108,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
   /**
    * Turn a PreapprovedAnchor (inline base64 or on-disk path) into a
    * `GeneratedImage` shape compatible with the rest of the style-bible
-   * bookkeeping — specifically the later `setGeminiStyleReference` call
+   * bookkeeping — specifically the later `setSeasonStyleReference` call
    * which needs `imageData` + `mimeType`.
    */
   private async hydrateUploadedStyleReferences(

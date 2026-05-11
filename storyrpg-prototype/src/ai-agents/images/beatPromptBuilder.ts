@@ -387,7 +387,7 @@ function buildEstablishingPrompt(
     scene.colorMood?.lighting ? `Lighting: ${scene.colorMood.lighting}` : '',
     beat.mustShowDetail ? `Must include: ${beat.mustShowDetail}` : '',
     'No characters in foreground. Show the environment, atmosphere, and sense of place.',
-    'Render as a stylized illustrated environment matching the season style contract and character-reference finish; never as a realistic interior render, photo, 3D render, or architectural visualization.',
+    'Render every environmental detail through the season style contract; the style prompt controls rendering, texture, lighting, and finish.',
   ];
 
   const basePrompt: ImagePrompt = {
@@ -598,7 +598,7 @@ function buildCharacterPrompt(
   }
 
   narrativeParts.push(
-    'Render as a stylized story illustration matching the season style contract and approved character references; never as photorealism, live-action, 3D render, or generic cinematic concept art.',
+    'Render the story moment through the season style contract; the style prompt controls rendering, texture, lighting, finish, and camera language.',
   );
 
   const keyExpression = beat.emotionalRead

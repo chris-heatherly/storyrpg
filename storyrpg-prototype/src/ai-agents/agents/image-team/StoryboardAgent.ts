@@ -828,7 +828,7 @@ SettingBranch:${settingSelection.branchLabel}
 SettingSummary:${input.sceneContext?.settingContext?.summary || 'none'}
 SettingNotes:${settingSelection.notes.join(' | ') || 'none'}
 SceneMasterStyle:${master.style || this.artStyle || 'default-style'}
-StyleNegatives:${master.styleNegatives || 'photorealism, live-action still, style drift, first-person POV'}
+StyleNegatives:${master.styleNegatives || 'style drift, unapproved renderer, first-person POV'}
 LocationLayout:${master.location || input.sceneDescription}
 LightingColorArc:${master.lightingColor || input.mood}
 CastPolicy:${master.castPolicy || 'Only show characters named for the shot; others are offscreen.'}
@@ -1561,7 +1561,7 @@ Substoryboard sheets may be generated later from this plan. Do NOT design collag
       ? `
 ## SCENE MASTER VISUAL PROMPT (AUTHORITATIVE)
 - Raw style: ${master.style || this.artStyle || 'default-style'}
-- Style negatives: ${master.styleNegatives || 'photorealism, live-action still, photographic realism, style drift'}
+- Style negatives: ${master.styleNegatives || 'style drift, unapproved renderer'}
 - Location/layout: ${master.location || request.sceneDescription}
 - Lighting/color arc: ${master.lightingColor || request.mood}
 - Cast policy: ${master.castPolicy || 'Only show characters required by each beat; keep other scene-present characters offscreen.'}

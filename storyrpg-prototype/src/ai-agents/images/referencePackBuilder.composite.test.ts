@@ -101,4 +101,28 @@ describe('buildReferencePack — composite-sheet handling', () => {
     expect(openAiRefs.find((r) => r.role === 'character-reference-face')).toBeDefined();
     expect(openAiRefs.find((r) => r.viewType === 'profile')).toBeUndefined();
   });
+
+  it('keeps storyboard crops for OpenAI crop-refine calls with identity and style refs', () => {
+    const crop = ref('storyboard-panel-crop', { viewType: 'draft-crop' });
+    const styleLock = ref('episode-style-lock', { viewType: 'style' });
+    const daphne = ref('character-reference', {
+      characterId: 'char-daphne',
+      characterName: 'Daphne',
+      viewType: 'front',
+    });
+    const eros = ref('character-reference', {
+      characterId: 'char-eros',
+      characterName: 'Eros',
+      viewType: 'front',
+    });
+
+    const openAiRefs = filterRefsForProvider([crop, daphne, eros, styleLock], 'dall-e').refs;
+
+    expect(openAiRefs.map((r) => r.role)).toEqual([
+      'storyboard-panel-crop',
+      'character-reference',
+      'character-reference',
+      'episode-style-lock',
+    ]);
+  });
 });

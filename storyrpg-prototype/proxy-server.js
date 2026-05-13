@@ -34,6 +34,7 @@ const { registerImageFeedbackRoutes } = require('./proxy/imageFeedbackRoutes');
 const { registerStyleRoutes } = require('./proxy/styleRoutes');
 const { createWorkerLifecycle } = require('./proxy/workerLifecycle');
 const { registerGenerationJobRoutes } = require('./proxy/generationJobRoutes');
+const { getStoryStorageMode, getGcsBucketName, getGcsPublicBaseUrl, mapProxyPathToGcsObjectPath } = require('./proxy/gcsConfig');
 
 require('dotenv').config();
 
@@ -65,6 +66,22 @@ app.use('/generated-stories', (req, res, next) => {
 
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
+  }
+
+  const mode = getStoryStorageMode();
+  if (mode === 'gcs') {
+    const bucket = getGcsBucketName();
+    if (!bucket) return res.status(500).send('GCS_BUCKET_NAME is required when STORY_STORAGE_MODE=gcs');
+
+    // Redirect proxy-style paths to GCS objects.
+    // /generated-stories/<runDir>/...  ->  https://storage.googleapis.com/<bucket>/stories/<runDir>/...
+    const proxyPath = `generated-stories/${req.path.replace(/^\/+/, '')}`;
+    const objectPath = mapProxyPathToGcsObjectPath(proxyPath);
+    if (!objectPath) return res.status(404).send('Not found');
+
+    const publicBase = getGcsPublicBaseUrl();
+    const url = `${publicBase}/${objectPath}`.replace(/([^:]\/)\/+/g, '$1');
+    return res.redirect(302, url);
   }
 
   const filePathWithinDir = req.path;

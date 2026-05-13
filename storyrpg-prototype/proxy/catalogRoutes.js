@@ -3,9 +3,12 @@ function registerCatalogRoutes(app, { listLatestStoryRecords, createStoryCatalog
     res.json({ status: 'ok' });
   });
 
-  app.get('/list-stories', (req, res) => {
+  app.get('/list-stories', async (req, res) => {
     try {
-      const { valid, invalid } = listLatestStoryRecords({ includeInvalid: true });
+      const result = await listLatestStoryRecords({ includeInvalid: true });
+      const valid = Array.isArray(result) ? result : result.valid;
+      const invalid = Array.isArray(result) ? [] : (result.invalid || []);
+
       // Surface broken stories to the UI as an `invalid` array; they
       // render in the library with an error card instead of being
       // silently swallowed. Query `?strict=1` to get just the valid
@@ -26,15 +29,18 @@ function registerCatalogRoutes(app, { listLatestStoryRecords, createStoryCatalog
     }
   });
 
-  app.get('/stories/:storyId', (req, res) => {
+  app.get('/stories/:storyId', async (req, res) => {
     try {
       const { storyId } = req.params;
-      const { valid } = listLatestStoryRecords({ includeInvalid: true });
-      const record = valid.find((candidate) => candidate.pkg?.storyId === storyId);
+      const result = await listLatestStoryRecords({ includeInvalid: true });
+      const valid = Array.isArray(result) ? result : result.valid;
+      const record = valid.find(
+        (candidate) => candidate.pkg?.storyId === storyId || candidate.story?.id === storyId,
+      );
       if (!record) {
         return res.status(404).json({ error: 'Story not found' });
       }
-      res.json(createFullStoryResponse(record, req));
+      res.json(await createFullStoryResponse(record, req));
     } catch (error) {
       res.status(500).json({ error: error.message, stack: error.stack });
     }

@@ -162,28 +162,6 @@ export async function fetchStoryCatalog(): Promise<{
   stories: StoryCatalogEntry[];
   fileLoadedStoryIds: Set<string>;
 }> {
-  if (Platform.OS === 'web' && isVercelDeployment() && BLOB_CONFIG.manifestUrl) {
-    const manifestRes = await fetch(BLOB_CONFIG.manifestUrl);
-    if (!manifestRes.ok) throw new Error(`Manifest fetch failed: ${manifestRes.status}`);
-    const manifest = await manifestRes.json() as BlobManifest;
-    const entries = manifest.stories || [];
-    return {
-      stories: entries.map((entry) => ({
-        id: entry.id,
-        title: entry.title,
-        genre: entry.genre,
-        synopsis: entry.synopsis,
-        coverImage: entry.coverImageUrl || '',
-        author: entry.author,
-        tags: entry.tags,
-        episodeCount: entry.episodeCount || 0,
-        episodes: [],
-        fullStoryUrl: entry.blobUrl,
-      })),
-      fileLoadedStoryIds: new Set(entries.map((entry) => entry.id)),
-    };
-  }
-
   if (Platform.OS === 'web') {
     const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/list-stories`, {
       headers: { Accept: 'application/json' },

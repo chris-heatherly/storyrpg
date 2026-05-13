@@ -75,6 +75,14 @@ describe('EncounterArchitect deterministic fallback', () => {
     expect(() => (architect as any).validateStructure(normalized, input)).not.toThrow();
     expect(normalized.storylets?.victory).toBeDefined();
     expect(normalized.storylets?.defeat).toBeDefined();
+    expect(normalized.storyboard?.spine.length).toBeGreaterThanOrEqual(7);
+    expect(normalized.storyboard?.mechanicsVisibility).toBe('current_clocks_only');
+    expect(normalized.storyboard?.sequenceIntent?.objective).toContain('charged confrontation');
+    expect(normalized.storyboard?.sequenceIntent?.visualThread).toBeTruthy();
+    expect(normalized.storylets?.victory.sequenceIntent?.endState).toBeTruthy();
+    expect(normalized.storylets?.defeat.sequenceIntent?.turningPoint).toBeTruthy();
+    expect(normalized.payoffContext?.skillPayoffs?.some((p: any) => p.skill === 'persuasion')).toBe(true);
+    expect(normalized.beats[0].storyboardFrameId).toBeDefined();
   });
 
   it('uses NPC names and skills from input in fallback narrative', () => {
@@ -84,6 +92,32 @@ describe('EncounterArchitect deterministic fallback', () => {
     const allText = JSON.stringify(fallback);
     expect(allText).toContain('Eros');
     expect(allText).toContain('{{player.name}}');
+  });
+
+  it('uses concrete phase-aware visual fallback actions instead of generic pressure reactions', () => {
+    const architect = new EncounterArchitect(config);
+
+    for (const phase of ['setup', 'rising', 'peak', 'resolution'] as const) {
+      const contract = (architect as any).buildDefaultVisualContract(
+        'The room tightens as everyone waits for the next move.',
+        phase,
+      );
+
+      expect(contract.primaryAction).toBeTruthy();
+      expect(contract.primaryAction).not.toContain('reacts under');
+      expect(contract.keyGesture).not.toBe('one decisive hand or body gesture carries the scene');
+    expect(contract.mustShowDetail).toMatch(/stance|distance|object|body|outcome|turn|released|tension/i);
+    }
+  });
+
+  it('prompts for encounter and storylet sequence intent without adding a new mechanics layer', () => {
+    const architect = new EncounterArchitect(config);
+    const prompt = (architect as any).buildPrompt(input);
+
+    expect(prompt).toContain('sequenceIntent');
+    expect(prompt).toContain('required-by-process');
+    expect(prompt).toContain('storyboard panels read as one cinematic sequence');
+    expect(prompt).toContain('aftermath panels have a narrative objective');
   });
 });
 
@@ -98,6 +132,10 @@ describe('EncounterArchitect reliable prompt', () => {
     expect(reliable).toContain(input.sceneId);
     expect(reliable).toContain('beat-1');
     expect(reliable).toContain('beat-2');
+    expect(reliable).toContain('storyboard');
+    expect(reliable).toContain('current_clocks_only');
+    expect(reliable).toContain('position, leverage, information');
+    expect(reliable).toContain('opening setupText MUST anchor');
     // Should NOT contain the heavy structural fields
     expect(reliable).not.toContain('pixarStakes');
     expect(reliable).not.toContain('cinematicSetup');

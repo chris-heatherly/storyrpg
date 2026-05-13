@@ -19,6 +19,10 @@ import {
   PlannedEncounter,
   EncounterCategory,
   EndingMode,
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+  SEVEN_POINT_BEATS,
 } from '../../types/sourceAnalysis';
 import {
   SeasonPlan,
@@ -26,7 +30,27 @@ import {
   SeasonArc,
   EpisodeRecommendation,
   EpisodeSelectionState,
+  CliffhangerPlan,
 } from '../../types/seasonPlan';
+import {
+  distributeSevenPoints,
+  describeDistribution,
+} from '../utils/sevenPointDistribution';
+import { SEASON_PLANNER_CRAFT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
+import {
+  SevenPointCoverageValidator,
+  seasonPlanToCoverageInput,
+} from '../validators/SevenPointCoverageValidator';
+import {
+  buildDefaultCliffhangerPlan,
+  normalizeCliffhangerPlan,
+  selectMappedStructuralRole,
+  shouldForceHighIntensityHook,
+} from '../utils/cliffhangerPlanning';
+import {
+  CRAFT_PRESSURE_GUIDANCE,
+  buildGenreAwareJeopardyGuidance,
+} from '../prompts/storytellingPrinciples';
 
 // ========================================
 // INPUT TYPES
@@ -115,6 +139,7 @@ Your plans must define:
       seasonFlags?: any[];
       episodeEncounters?: Record<number, any[]>;
       episodeEndingRoutes?: Record<number, any[]>;
+      episodeCliffhangers?: Record<number, Partial<CliffhangerPlan>>;
     };
 
     try {
@@ -174,6 +199,21 @@ Your plans must define:
       })
       .join('\n');
 
+    const anchors = analysis.anchors;
+    const sp = analysis.sevenPoint;
+    const anchorBlock = anchors
+      ? [
+          `- Stakes: ${anchors.stakes}`,
+          `- Goal: ${anchors.goal}`,
+          `- Inciting Incident: ${anchors.incitingIncident}`,
+          `- Climax: ${anchors.climax}`,
+        ].join('\n')
+      : '(not yet derived — inherit from episode breakdown)';
+    const sevenPointBlock = sp
+      ? SEVEN_POINT_BEATS.map((b) => `- ${b}: ${sp[b]}`).join('\n')
+      : '(not yet derived — inherit from episode breakdown)';
+    const distributionHint = describeDistribution(distributeSevenPoints(analysis.totalEstimatedEpisodes));
+
     return `
 Create a comprehensive MASTER SEASON PLAN for this interactive fiction series.
 This plan is the BLUEPRINT that guides ALL episode generation - encounters, branches, and consequences.
@@ -184,6 +224,42 @@ This plan is the BLUEPRINT that guides ALL episode generation - encounters, bran
 - **Tone**: ${analysis.tone}
 - **Themes**: ${analysis.themes.join(', ')}
 - **Total Episodes**: ${analysis.totalEstimatedEpisodes}
+
+## Season Narrative Anchors (MUST be honoured end-to-end)
+${anchorBlock}
+
+## Season 7-Point Beat Map
+${sevenPointBlock}
+
+## Default Beat Distribution (HINT — override if the source demands it)
+${distributionHint}
+Every canonical beat MUST land on at least one episode in canonical order.
+Every \`episodeEncounters\` entry should reflect the difficulty implied by
+the beats its episode carries (Midpoint / Pinch 2 / Climax episodes are
+the hardest).
+
+## Story Craft Guidance
+Use the source analysis as the authority, but learn from reusable structure:
+- Establish ordinary world, protagonist core value, and a stronger motivated antagonizing force.
+- Escalate pressure toward the shared Stakes and Goal without assuming every story needs combat.
+- Pressure can be physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure.
+- Make plans go partly wrong often enough that choices require improvisation.
+- After the Climax, resolve quickly: show what was saved or changed, then show future cost, identity change, or legacy.
+- Ensure the Inciting Incident lands in Act 1 and the Climax lands in Act 3.
+- From the Inciting Incident through the Climax, make difficulty rise and make the protagonist's transformation increasingly necessary to achieve the Goal.
+- Following the Climax, include only brief resolution pressure: first what was saved, redeemed, or improved; then the protagonist's future, cost, identity change, or legacy.
+
+${CRAFT_PRESSURE_GUIDANCE}
+
+## Genre-Aware Jeopardy Policy
+${buildGenreAwareJeopardyGuidance(analysis.genre)}
+
+${analysis.schemaAbstraction ? `## Reusable Pattern Abstraction
+- Archetype: ${analysis.schemaAbstraction.archetype}
+- Mode: ${analysis.schemaAbstraction.adaptationMode}
+- Pattern: ${analysis.schemaAbstraction.reusablePatternSummary}
+- Guidance: ${analysis.schemaAbstraction.generalizationGuidance.join('; ')}
+` : ''}${SEASON_PLANNER_CRAFT_EXAMPLE}
 
 ## Episode Breakdown
 ${episodeSummaries}
@@ -315,6 +391,19 @@ Return this JSON:
       }
     ]
   },
+  "episodeCliffhangers": {
+    "1": {
+      "type": "shock|emotional_hook|reframe|revelation|danger|betrayal|arrival|decision|mystery|loss|transformation",
+      "intensity": "low|medium|high",
+      "hook": "The exact serialized-TV hook the final beat should deliver",
+      "setup": "What earlier scene detail, relationship pressure, clue, or promise earns this ending",
+      "resolvedEpisodeTension": "The immediate episode conflict that gets acknowledged or partially resolved before the hook lands",
+      "newOpenQuestion": "The new question the reader must continue to answer",
+      "emotionalCharge": "The dominant feeling: shock, dread, heartbreak, temptation, awe, etc.",
+      "nextEpisodePressure": "How this ending pushes into the next episode",
+      "mappedStructuralRole": "hook|plotTurn1|pinch1|midpoint|pinch2|climax|resolution|rising|falling"
+    }
+  },
   "difficultyCurve": [
     { "episodeNumber": 1, "difficulty": "introduction", "encounterCount": 1 },
     { "episodeNumber": 2, "difficulty": "rising", "encounterCount": 2 }
@@ -420,6 +509,17 @@ CRITICAL RULES:
 - At least 2 cross-episode branches for a season with 3+ episodes (encounter outcomes are the best source)
 - Consequence chains should span at least 2 episodes
 - Difficulty should generally increase through the season
+- Every non-finale episode MUST have an \`episodeCliffhangers\` entry.
+- Cliffhanger style MUST map to the episode's structuralRole:
+  - hook: shock or emotional hook; Episode 1 must be high-intensity and reveal that the story is bigger, darker, or more personal than expected
+  - plotTurn1: danger, decision, or arrival hook that forces commitment
+  - pinch1: antagonist pressure, loss, betrayal, or exposed vulnerability
+  - midpoint: major revelation/reframe; strongest shock ending after Episode 1
+  - pinch2: emotional collapse, moral cost, relationship rupture, or apparent failure
+  - climax: high-stakes fallout hook only if not finale; otherwise move toward resolution
+  - resolution: legacy/next-season pressure, not a fake unresolved main conflict
+  - rising/falling: serialized-TV hooks, with lower intensity unless cadence requires a spike
+- Cadence rule: Episode 1, midpoint, pinch2, and at least every 2-3 episodes in longer seasons should use high-intensity shock, emotional_hook, betrayal, reframe, revelation, or loss.
 - You are NOT limited to what the source material literally contains — invent more dramatically intense encounters that fit the themes
 - Return ONLY valid JSON
 `;
@@ -430,8 +530,9 @@ CRITICAL RULES:
     crossEpisodeBranches?: any[];
     consequenceChains?: any[];
     seasonFlags?: any[];
-    episodeEncounters?: Record<number, any[]>;
-    episodeEndingRoutes?: Record<number, any[]>;
+      episodeEncounters?: Record<number, any[]>;
+      episodeEndingRoutes?: Record<number, any[]>;
+      episodeCliffhangers?: Record<number, Partial<CliffhangerPlan>>;
   } {
     // Fallback plan with auto-generated encounters and basic branching
     const episodeDependencies: Record<number, number[]> = {};
@@ -443,6 +544,7 @@ CRITICAL RULES:
     const encounterTypes: EncounterCategory[] = ['combat', 'social', 'romantic', 'dramatic', 'exploration', 'chase', 'stealth', 'puzzle', 'mixed'];
     const episodeEncounters: Record<number, PlannedEncounter[]> = {};
     const episodeEndingRoutes: Record<number, Array<{ endingId: string; role: string; description: string }>> = {};
+    const episodeCliffhangers: Record<number, Partial<CliffhangerPlan>> = {};
     const totalEps = analysis.totalEstimatedEpisodes;
     const activeEndings = analysis.resolvedEndings || [];
     const activeMode = analysis.resolvedEndingMode || analysis.detectedEndingMode || 'single';
@@ -500,6 +602,13 @@ CRITICAL RULES:
                 : `This episode keeps the season converging toward ${activeEndings[0].name}.`,
             }])
         : [];
+      const nextEpisodeTitle = analysis.episodeBreakdown.find(e => e.episodeNumber === epNum + 1)?.title;
+      episodeCliffhangers[epNum] = buildDefaultCliffhangerPlan({
+        episode: ep,
+        totalEpisodes: totalEps,
+        seasonStakes: analysis.anchors?.stakes,
+        nextEpisodeTitle,
+      });
     });
 
     return {
@@ -519,6 +628,7 @@ CRITICAL RULES:
       crossEpisodeBranches: [],
       consequenceChains: [],
       seasonFlags: [],
+      episodeCliffhangers,
     };
   }
 
@@ -531,6 +641,7 @@ CRITICAL RULES:
       seasonFlags?: any[];
       difficultyCurve?: any[];
       episodeEndingRoutes?: Record<number | string, any[]>;
+      episodeCliffhangers?: Record<number | string, Partial<CliffhangerPlan>>;
     },
     preferences?: SeasonPlannerInput['preferences']
   ): SeasonPlan {
@@ -546,6 +657,8 @@ CRITICAL RULES:
     const rawEncounters = planData.episodeEncounters || {};
     const episodeEndingRoutesMap: Record<number, SeasonEpisode['endingRoutes']> = {};
     const rawEndingRoutes = planData.episodeEndingRoutes || {};
+    const episodeCliffhangerMap: Record<number, Partial<CliffhangerPlan>> = {};
+    const rawCliffhangers = planData.episodeCliffhangers || {};
     for (const [epKey, encounters] of Object.entries(rawEncounters)) {
       const epNum = parseInt(String(epKey));
       if (!isNaN(epNum) && Array.isArray(encounters)) {
@@ -580,6 +693,12 @@ CRITICAL RULES:
             };
           })
           .filter(Boolean) as NonNullable<SeasonEpisode['endingRoutes']>;
+      }
+    }
+    for (const [epKey, cliffhanger] of Object.entries(rawCliffhangers)) {
+      const epNum = parseInt(String(epKey));
+      if (!isNaN(epNum) && cliffhanger && typeof cliffhanger === 'object') {
+        episodeCliffhangerMap[epNum] = cliffhanger as Partial<CliffhangerPlan>;
       }
     }
 
@@ -658,6 +777,21 @@ CRITICAL RULES:
       }
     }
 
+    // Build the season's structuralRole map. Prefer the structuralRole
+    // already present on each EpisodeOutline (set by SourceMaterialAnalyzer
+    // when the source material implied one). Otherwise use the default
+    // distribution so the SevenPointCoverageValidator sees full coverage.
+    const defaultDistribution = distributeSevenPoints(analysis.totalEstimatedEpisodes);
+    const structuralRoleByEpisode = new Map<number, StructuralRole[]>();
+    for (const entry of defaultDistribution) {
+      structuralRoleByEpisode.set(entry.episodeNumber, [...entry.structuralRole]);
+    }
+    for (const ep of analysis.episodeBreakdown) {
+      if (ep.structuralRole && ep.structuralRole.length > 0) {
+        structuralRoleByEpisode.set(ep.episodeNumber, [...ep.structuralRole]);
+      }
+    }
+
     // Build SeasonEpisode objects with encounter data
     const episodes: SeasonEpisode[] = analysis.episodeBreakdown.map(ep => {
       const deps = dependenciesMap[ep.episodeNumber] || 
@@ -700,8 +834,31 @@ CRITICAL RULES:
         .filter(f => f.checkedInEpisodes.includes(ep.episodeNumber))
         .map(f => ({ flag: f.flag, ifTrue: f.description, ifFalse: `No ${f.flag}` }));
 
+      const structuralRole = structuralRoleByEpisode.get(ep.episodeNumber)
+        ?? ep.structuralRole
+        ?? (defaultDistribution.find((e) => e.episodeNumber === ep.episodeNumber)?.structuralRole ?? []);
+      const fallbackCliffhanger = buildDefaultCliffhangerPlan({
+        episode: { ...ep, structuralRole },
+        totalEpisodes: analysis.totalEstimatedEpisodes,
+        seasonStakes: analysis.anchors?.stakes,
+        nextEpisodeTitle: analysis.episodeBreakdown.find(e => e.episodeNumber === ep.episodeNumber + 1)?.title,
+      });
+      const cliffhangerPlan = normalizeCliffhangerPlan(
+        episodeCliffhangerMap[ep.episodeNumber],
+        fallbackCliffhanger,
+      );
+      const mappedRole = selectMappedStructuralRole(structuralRole, ep.episodeNumber);
+      if (shouldForceHighIntensityHook(ep.episodeNumber, analysis.totalEstimatedEpisodes, mappedRole)) {
+        cliffhangerPlan.intensity = 'high';
+        cliffhangerPlan.mappedStructuralRole = mappedRole;
+        if (cliffhangerPlan.type === 'mystery') {
+          cliffhangerPlan.type = mappedRole === 'midpoint' ? 'reframe' : 'emotional_hook';
+        }
+      }
+
       return {
         ...ep,
+        structuralRole,
         status: 'planned' as const,
         dependsOn: deps,
         setupsForEpisodes: setupsFor,
@@ -717,10 +874,15 @@ CRITICAL RULES:
         endingRoutes: episodeEndingRoutesMap[ep.episodeNumber]?.length
           ? episodeEndingRoutesMap[ep.episodeNumber]
           : undefined,
+        cliffhangerPlan,
       };
     });
 
-    // Build arcs from LLM output or source analysis
+    // Build arcs from LLM output or source analysis. Each arc receives a
+    // `beats` array computed from the structuralRoles that fall inside its
+    // episodeRange — this makes it easy for downstream agents (validators,
+    // UI, checkpoint review) to answer "which beats does this arc own?"
+    // without recomputing from the per-episode map.
     const arcs: SeasonArc[] = (planData.arcs || analysis.storyArcs.map(arc => ({
       id: arc.id,
       name: arc.name,
@@ -729,11 +891,23 @@ CRITICAL RULES:
       keyMoments: [],
       status: 'not_started' as const,
       completionPercentage: 0,
-    }))).map(arc => ({
-      ...arc,
-      status: 'not_started' as const,
-      completionPercentage: 0,
-    }));
+    }))).map(arc => {
+      const beats: StructuralRole[] = [];
+      if (arc.episodeRange) {
+        for (let epNum = arc.episodeRange.start; epNum <= arc.episodeRange.end; epNum++) {
+          const roles = structuralRoleByEpisode.get(epNum) || [];
+          for (const r of roles) {
+            if (r !== 'rising' && r !== 'falling' && !beats.includes(r)) beats.push(r);
+          }
+        }
+      }
+      return {
+        ...arc,
+        status: 'not_started' as const,
+        completionPercentage: 0,
+        beats: beats.length > 0 ? beats : undefined,
+      };
+    });
 
     // Build character introductions
     const characterIntroductions = (planData as any).characterIntroductions || 
@@ -752,7 +926,7 @@ CRITICAL RULES:
         introducedInEpisode: loc.firstAppearance,
       }));
 
-    return {
+    const plan: SeasonPlan = {
       id: planId,
       sourceTitle: analysis.sourceTitle,
       sourceAuthor: analysis.sourceAuthor,
@@ -767,6 +941,8 @@ CRITICAL RULES:
       tone: analysis.tone,
       themes: analysis.themes,
       arcs,
+      anchors: analysis.anchors,
+      sevenPoint: analysis.sevenPoint,
       endingMode: preferences?.endingMode || analysis.resolvedEndingMode || analysis.detectedEndingMode || 'single',
       resolvedEndings: analysis.resolvedEndings || [],
       episodes,
@@ -808,6 +984,20 @@ CRITICAL RULES:
       }),
       notes: [],
     };
+
+    // Run the 7-point coverage validator as a DIAGNOSTIC gate. Errors are
+    // surfaced as plan.warnings so the pipeline's Karpathy retry layer can
+    // re-prompt; warnings are accumulated silently. We deliberately do NOT
+    // throw here because the pipeline already has a plan-level fallback
+    // path that should remain callable even when the validator is unhappy.
+    const coverageResult = new SevenPointCoverageValidator().validate(
+      seasonPlanToCoverageInput(plan),
+    );
+    for (const issue of coverageResult.issues) {
+      plan.warnings.push(`[SevenPointCoverage:${issue.severity}] ${issue.message}`);
+    }
+
+    return plan;
   }
 
   private validateEndingPlan(input: {
@@ -860,7 +1050,7 @@ CRITICAL RULES:
 
     for (const episode of plan.episodes) {
       if (selectedEpisodes.includes(episode.episodeNumber)) continue;
-      if (episode.status === 'completed') continue;
+      if (this.isEpisodeGenerated(episode)) continue;
 
       // Check if this episode is needed for selected episodes
       const isNeededBySelected = selectedEpisodes.some(selNum => {
@@ -940,8 +1130,13 @@ CRITICAL RULES:
       const ep = plan.episodes.find(e => e.episodeNumber === epNum);
       if (!ep) continue;
 
+      if (this.isEpisodeGenerated(ep)) {
+        warnings.push(`Episode ${epNum} is already generated. Keeping it selected will regenerate that episode.`);
+      }
+
       for (const dep of ep.dependsOn) {
-        if (!sorted.includes(dep) && plan.episodes.find(e => e.episodeNumber === dep)?.status !== 'completed') {
+        const depEp = plan.episodes.find(e => e.episodeNumber === dep);
+        if (!sorted.includes(dep) && !this.isEpisodeGenerated(depEp)) {
           warnings.push(`Episode ${epNum} depends on Episode ${dep}, which is not selected or completed.`);
         }
       }
@@ -955,10 +1150,11 @@ CRITICAL RULES:
       if (arcEpisodes.length > 0 && arcEpisodes.length < (arc.episodeRange.end - arc.episodeRange.start + 1)) {
         const missing = [];
         for (let i = arc.episodeRange.start; i <= arc.episodeRange.end; i++) {
-          if (!sorted.includes(i)) missing.push(i);
+          const episode = plan.episodes.find(e => e.episodeNumber === i);
+          if (!sorted.includes(i) && !this.isEpisodeGenerated(episode)) missing.push(i);
         }
         if (missing.length > 0) {
-          warnings.push(`Arc "${arc.name}" has gaps: episodes ${missing.join(', ')} are not selected.`);
+          warnings.push(`Arc "${arc.name}" has gaps: episodes ${missing.join(', ')} are not selected or already generated.`);
         }
       }
     }
@@ -981,7 +1177,7 @@ CRITICAL RULES:
     const ordered: number[] = [];
     const remaining = new Set(selectedEpisodes);
     const completed = new Set(
-      plan.episodes.filter(e => e.status === 'completed').map(e => e.episodeNumber)
+      plan.episodes.filter(e => this.isEpisodeGenerated(e)).map(e => e.episodeNumber)
     );
 
     while (remaining.size > 0) {
@@ -1006,5 +1202,18 @@ CRITICAL RULES:
     }
 
     return ordered;
+  }
+
+  private isEpisodeGenerated(episode: Pick<SeasonEpisode, 'status' | 'generatedEpisodeId' | 'generatedStoryId' | 'generatedJobId' | 'outputDir'> | undefined): boolean {
+    return Boolean(
+      episode
+      && (
+        episode.status === 'completed'
+        || episode.generatedEpisodeId
+        || episode.generatedStoryId
+        || episode.generatedJobId
+        || episode.outputDir
+      )
+    );
   }
 }

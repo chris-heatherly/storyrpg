@@ -13,8 +13,6 @@ interface NarrativeTextProps {
 
 export const NarrativeText: React.FC<NarrativeTextProps> = ({
   text,
-  speaker,
-  speakerMood,
   animate = true,
   onAnimationComplete,
 }) => {
@@ -74,16 +72,6 @@ export const NarrativeText: React.FC<NarrativeTextProps> = ({
 
   return (
     <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-      {speaker && (
-        <View style={styles.speakerContainer}>
-          <Text style={[styles.speakerName, { fontSize: fonts.small }]}>
-            {speaker.toUpperCase()}
-          </Text>
-          {speakerMood && (
-            <Text style={[styles.speakerMood, { fontSize: fonts.small }]}> • {speakerMood.toUpperCase()}</Text>
-          )}
-        </View>
-      )}
       <Text
         style={[
           styles.narrativeText,
@@ -110,28 +98,6 @@ const styles = StyleSheet.create({
   container: {
     paddingHorizontal: 0,
     paddingVertical: 0,
-  },
-  speakerContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-    backgroundColor: TERMINAL.colors.primary,
-    alignSelf: 'flex-start',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  speakerName: {
-    fontFamily: 'System',
-    fontWeight: '900',
-    color: 'white',
-    letterSpacing: 1,
-  },
-  speakerMood: {
-    fontFamily: 'System',
-    color: 'rgba(255,255,255,0.7)',
-    marginLeft: 4,
-    fontWeight: '700',
   },
   narrativeText: {
     fontFamily: 'System',

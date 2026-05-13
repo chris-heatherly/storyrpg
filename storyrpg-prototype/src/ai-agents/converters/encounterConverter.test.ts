@@ -22,7 +22,7 @@ function createSceneBlueprint(): SceneBlueprint {
 
 describe('encounterConverter', () => {
   it('preserves partialVictory, style, and authored visual contracts', () => {
-    const structure: EncounterStructure = {
+    const structure = {
       sceneId: 'scene-1',
       encounterType: 'romantic',
       encounterStyle: 'romantic',
@@ -30,11 +30,35 @@ describe('encounterConverter', () => {
       goalClock: { name: 'Trust', segments: 4, description: 'Build trust' },
       threatClock: { name: 'Distance', segments: 4, description: 'Emotional collapse' },
       stakes: { victory: 'Mutual understanding', defeat: 'The relationship fractures' },
+      storyboard: {
+        spine: [
+          {
+            id: 'sb-commit',
+            role: 'commit',
+            title: 'Commit',
+            purpose: 'Confession decision window.',
+            visualMoment: 'They stand close enough to speak honestly.',
+            tacticalFunction: 'Truth can alter relationship pressure and cost.',
+            emotionalState: 'vulnerable',
+            continuityState: { relationshipDistance: 'near but guarded' },
+            decisionWindow: true,
+          },
+        ],
+        styleNotes: 'Romantic encounter uses gaze, hesitation, consent, vulnerability, and emotional risk.',
+        convergencePlan: 'Different confession outcomes converge into aftermath.',
+        mechanicsVisibility: 'current_clocks_only',
+      },
+      payoffContext: {
+        relationshipPayoffs: [{ npcId: 'lover', dimension: 'trust', effect: 'Trust changes the confession.' }],
+        aftermathEchoes: ['The earlier promise is remembered.'],
+      },
       tensionCurve: [],
       beats: [
         {
           id: 'beat-1',
           phase: 'setup',
+          storyboardFrameId: 'sb-commit',
+          storyboardRole: 'commit',
           name: 'Opening distance',
           description: 'They hesitate before speaking.',
           setupText: 'Rain beads on the railing as they decide whether to speak honestly.',
@@ -68,6 +92,7 @@ describe('encounterConverter', () => {
                     keyExpression: 'relief mixed with fear',
                     visibleCost: 'They cannot quite meet each other\'s eyes.',
                   },
+                  tacticalEffect: 'Relationship pressure softens but visible cost increases.',
                 },
                 complicated: {
                   tier: 'complicated',
@@ -151,21 +176,27 @@ describe('encounterConverter', () => {
       },
     };
 
-    const encounter = convertEncounterStructureToEncounter(structure, createSceneBlueprint());
+    const encounter = convertEncounterStructureToEncounter(structure as unknown as EncounterStructure, createSceneBlueprint());
 
     expect(encounter.type).toBe('romantic');
     expect(encounter.style).toBe('romantic');
-    expect(encounter.phases[0].beats[0].visualContract?.visualMoment).toBe('Two people on the edge of confession.');
-    expect(encounter.phases[0].beats[0].choices[0].outcomes.success.encounterOutcome).toBe('partialVictory');
-    expect(encounter.phases[0].beats[0].choices[0].outcomes.success.visualContract?.keyExpression).toBe('relief mixed with fear');
-    expect(encounter.phases[0].beats[0].choices[0].outcomes.success.cost?.visibleComplication).toBe('They cannot quite meet each other\'s eyes.');
+    const firstBeat = encounter.phases[0].beats[0] as any;
+    expect(firstBeat.visualContract?.visualMoment).toBe('Two people on the edge of confession.');
+    expect(firstBeat.storyboardFrameId).toBe('sb-commit');
+    expect(firstBeat.storyboardRole).toBe('commit');
+    expect(firstBeat.choices[0].outcomes.success.encounterOutcome).toBe('partialVictory');
+    expect(firstBeat.choices[0].outcomes.success.tacticalEffect).toContain('Relationship pressure');
+    expect(firstBeat.choices[0].outcomes.success.visualContract?.keyExpression).toBe('relief mixed with fear');
+    expect(firstBeat.choices[0].outcomes.success.cost?.visibleComplication).toBe('They cannot quite meet each other\'s eyes.');
     expect(encounter.storylets?.partialVictory?.beats[0].visualContract?.visualMoment).toBe('Bittersweet aftermath.');
     expect(encounter.outcomes.partialVictory?.cost?.domain).toBe('relationship');
     expect(encounter.outcomes.partialVictory?.cost?.visibleComplication).toBe('They stand closer, but with wounded caution.');
+    expect(encounter.storyboard?.mechanicsVisibility).toBe('current_clocks_only');
+    expect(encounter.payoffContext?.relationshipPayoffs?.[0].npcId).toBe('lover');
   });
 
   it('migrates prose-only partialVictory storylets into a structured cost payload', () => {
-    const structure: EncounterStructure = {
+    const structure = {
       sceneId: 'scene-1',
       encounterType: 'dramatic',
       startingBeatId: 'beat-1',

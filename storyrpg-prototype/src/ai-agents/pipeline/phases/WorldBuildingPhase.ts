@@ -73,9 +73,9 @@ export class WorldBuildingPhase {
         ...input.brief.story,
         userPrompt: input.brief.story.userPrompt,
       },
-      worldPremise: input.worldPremise,
-      timePeriod: input.timePeriod,
-      technologyLevel: input.technologyLevel,
+      worldPremise: input.worldPremise ?? '',
+      timePeriod: input.timePeriod ?? '',
+      technologyLevel: input.technologyLevel ?? '',
       magicSystem: input.magicSystem,
       locationsToCreate: input.keyLocations.map(loc => ({
         id: loc.id,

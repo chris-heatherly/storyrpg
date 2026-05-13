@@ -36,18 +36,22 @@ and visual QA/regeneration live in `docs/IMAGE_PIPELINE_RUNTIME.md`.
 ### Story generation path
 
 1. `WorldBuilder`
-2. `CharacterDesigner`
+2. `CharacterDesigner` — followed by `PhaseValidator.validateCharacterBible` (Phase 2.5); tier requirements shared with `NPCDepthValidator` via `src/ai-agents/config/tierRequirements.ts`.
 3. `StoryArchitect`
 4. `BranchManager`
-5. `SceneWriter` for non-encounter scenes
-6. `ChoiceAuthor` for scene choice points
-7. `EncounterArchitect` for encounter scenes
-8. LLM-backed validation / QA:
-   - `StakesTriangleValidator`
-   - `FiveFactorValidator`
-   - `ContinuityChecker`
-   - `VoiceValidator`
-   - `StakesAnalyzer`
+5. `ThreadPlanner` (Phase 5) — authors the per-episode narrative thread ledger; active threads are handed to `SceneWriter.input.activeThreads` so beats can be marked with `plantsThreadId` / `paysOffThreadId`.
+6. `TwistArchitect` (Phase 6) — schedules one reversal/revelation per episode; emits `twistDirectives` consumed by `SceneWriter` so the reveal beat is marked `plotPointType: 'twist'|'revelation'` and a prior scene plants `plotPointType: 'setup'`.
+7. `CharacterArcTracker` (Phase 7) — produces `CharacterArcTargets` (identity axis deltas, relationship trajectories, arc milestones). Fed into `ChoiceAuthor.input.arcTargets` so consequence design follows the planned arc.
+8. `SceneWriter` for non-encounter scenes (consumes `activeThreads`, `twistDirectives`, `branchContext`; when voice score falls below `voiceRegenerationThreshold` a scoped rewrite runs from the Karpathy repair loop).
+9. `ChoiceAuthor` for scene choice points (receives `growthTemplates` from `GrowthConsequenceBuilder` and `arcTargets` from `CharacterArcTracker`).
+10. `EncounterArchitect` for encounter scenes (now emits `pixarSurprise: { setup, twist, satisfaction }` as required JSON; validated by `PixarPrinciplesValidator`).
+11. LLM-backed validation / QA (all QA agents now set `includeSystemPrompt = true` to share the `CORE_STORYTELLING_PROMPT`, which includes the Branch-and-Bottleneck framework):
+    - `StakesTriangleValidator` (reuses `STAKES_TRIANGLE` principle constant)
+    - `FiveFactorValidator` (reuses `FIVE_FACTOR_TEST` principle constant)
+    - `ContinuityChecker`, `VoiceValidator`, `StakesAnalyzer`
+    - `PixarPrinciplesValidator`, `CliffhangerValidator`, `ChoiceDistributionValidator`
+    - `SetupPayoffValidator`, `TwistQualityValidator`, `ArcDeltaValidator`, `DivergenceValidator` (path-simulator-backed)
+12. Optional rewrite pass: `SceneCritic` (Phase 9) — runs only when `config.sceneCritic.enabled === true`; capped by `maxScenesPerEpisode` and (optionally) `voiceScoreThreshold`. Preserves beat ids, speakers, plot-point markers; rewrites only prose text / variants / speakerMood.
 
 ## Prompt Assembly Logic
 

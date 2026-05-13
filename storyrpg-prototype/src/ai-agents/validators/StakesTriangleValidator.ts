@@ -11,6 +11,7 @@
 
 import { AgentConfig } from '../config';
 import { isWebRuntime } from '../../utils/runtimeEnv';
+import { PROXY_CONFIG } from '../../config/endpoints';
 import {
   ValidationIssue,
   StakesQualityScore,
@@ -22,7 +23,7 @@ import { STAKES_TRIANGLE } from '../prompts/storytellingPrinciples';
 
 // API URL handling for web proxy
 const ANTHROPIC_API_URL = isWebRuntime()
-  ? 'http://localhost:3001/v1/messages'
+  ? `${PROXY_CONFIG.getProxyUrl()}/v1/messages`
   : 'https://api.anthropic.com/v1/messages';
 
 interface StakesAnalysisResponse {

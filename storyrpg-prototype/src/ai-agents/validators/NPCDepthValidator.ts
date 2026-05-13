@@ -15,15 +15,9 @@ import {
   NPCDepthInput,
   ValidationConfig,
 } from '../../types/validation';
+import { DEFAULT_TIER_REQUIREMENTS, RELATIONSHIP_DIMENSIONS } from '../config/tierRequirements';
 
-// Default required dimensions per tier
-const DEFAULT_TIER_REQUIREMENTS: Record<NPCTier, number> = {
-  core: 4,      // All dimensions required
-  supporting: 2, // At least 2 dimensions
-  background: 1, // At least 1 dimension
-};
-
-const ALL_DIMENSIONS: RelationshipDimension[] = ['trust', 'affection', 'respect', 'fear'];
+const ALL_DIMENSIONS: RelationshipDimension[] = [...RELATIONSHIP_DIMENSIONS];
 
 export class NPCDepthValidator {
   private config: ValidationConfig['rules']['npcDepth'];

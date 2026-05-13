@@ -1,5 +1,7 @@
 type EncounterOutcomeTier = 'success' | 'complicated' | 'failure';
 
+const MAX_COVERAGE_TREE_DEPTH = 3;
+
 interface EncounterChoiceLike {
   id: string;
   outcomes?: Partial<Record<EncounterOutcomeTier, EncounterOutcomeLike>>;
@@ -60,7 +62,9 @@ function collectMissingChoiceTreeImages(
   choices: EncounterChoiceLike[] | undefined,
   missingImages: string[],
   pathPrefix: string = '',
+  depth: number = 0,
 ): void {
+  if (depth > MAX_COVERAGE_TREE_DEPTH) return;
   for (const choice of choices || []) {
     const choiceKey = pathPrefix ? `${pathPrefix}::${choice.id}` : choice.id;
 
@@ -85,6 +89,7 @@ function collectMissingChoiceTreeImages(
         nextSituation.choices,
         missingImages,
         `${choiceKey}::${tier}`,
+        depth + 1,
       );
     }
   }

@@ -658,7 +658,7 @@ Each transition between images requires the player's brain to fill in gaps. Choo
 - Key emotional beats: revelation, shock, fear, guilt
 - Building suspense before choices
 - Making outcomes feel weighty
-**Prompt Rule**: "SAME angle, SAME environment, SAME framing, TINY change in [specific detail]"
+**Prompt Rule**: "Micro-progression from the previous beat; preserve emotional continuity and show TINY change in [specific detail]. Keep camera/framing locked only when an explicit locked_micro_progression affordance says so."
 
 ### 2. ACTION_TO_ACTION (Keyframe Motion)
 **Closure Load**: Moderate
@@ -753,11 +753,11 @@ export const TRANSITION_CONTINUITY_RULES = `
 ## VISUAL CONTINUITY RULES BY TRANSITION TYPE
 
 ### MOMENT_TO_MOMENT Continuity:
-- Camera angle: IDENTICAL
-- Environment: IDENTICAL
-- Character position: IDENTICAL (minor adjustment only)
-- Lighting: IDENTICAL
-- Color palette: IDENTICAL
+- Camera angle: fresh by default; IDENTICAL only for explicit locked_micro_progression
+- Environment: recognizable continuity
+- Character position: freshly blocked by default; IDENTICAL only for explicit locked_micro_progression
+- Lighting: compatible continuity
+- Color palette: compatible continuity
 - Change allowed: ONE specific detail (expression, hand, eye, tear, etc.)
 
 ### ACTION_TO_ACTION Continuity:
@@ -805,9 +805,9 @@ export const TRANSITION_PROMPT_TEMPLATES = `
 ## PROMPT TEMPLATES BY TRANSITION TYPE
 
 ### MOMENT_TO_MOMENT Template:
-"[IDENTICAL camera/angle from previous], [IDENTICAL environment], [SAME character in SAME position], 
-ONLY CHANGE: [specific micro-detail: eye movement/tear forming/hand tightening/light flicker], 
-maintaining exact same lighting and palette, time barely moves"
+"Micro-progression from previous beat, fresh composition unless locked_micro_progression is explicit, 
+VISIBLE CHANGE: [specific micro-detail: eye movement/tear forming/hand tightening/light flicker], 
+maintaining recognizable environment and compatible lighting/palette, time barely moves"
 
 ### ACTION_TO_ACTION Template:
 "[Camera following action], [SAME environment as previous], [SAME character], 

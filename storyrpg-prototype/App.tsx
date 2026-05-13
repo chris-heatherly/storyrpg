@@ -1,42 +1,166 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { View, StyleSheet, Modal, Text, TouchableOpacity, Platform } from 'react-native';
+import { Alert, View, StyleSheet, Modal, Text, TouchableOpacity, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GameProvider, useGameActions, useGamePlayerState, useGameStoryState } from './src/stores/gameStore';
 import { SettingsProvider, useSettingsStore } from './src/stores/settingsStore';
 import { useGenerationJobStore } from './src/stores/generationJobStore';
+import { getVisibleGenerationJobs } from './src/types/generationJob';
+import { seasonPlanStore } from './src/stores/seasonPlanStore';
 import {
   HomeScreen,
   EpisodeSelectScreen,
   ReadingScreen,
   VisualizerScreen,
   SettingsScreen,
+  EpisodeRecapScreen,
 } from './src/screens';
 import { GeneratorScreen } from './src/screens/GeneratorScreen';
 import { allStories as builtInStories } from './src/data/stories';
-import { PlayerState, Story } from './src/types';
+import { PlayerState, Story, StoryCatalogEntry } from './src/types';
 import { TERMINAL } from './src/theme';
-import { renameStory } from './src/ai-agents/utils/pipelineOutputWriter';
 import { PROXY_CONFIG } from './src/config/endpoints';
-import { FullStoryPipeline } from './src/ai-agents/pipeline/FullStoryPipeline';
+import {
+  pipelineClient,
+  type PipelineHandle,
+} from './src/ai-agents/pipeline/PipelineClient';
+import { encodeStory } from './src/ai-agents/codec/storyCodec';
 import { loadConfig } from './src/ai-agents/config';
+import type { PipelineConfig } from './src/ai-agents/config';
 import { useVideoJobStore } from './src/stores/videoJobStore';
 import { useStoryLibrary } from './src/hooks/useStoryLibrary';
-import { sanitizeStoryForPersistence } from './src/ai-agents/utils/storyPayloads';
+import { GENERATOR_STORAGE_KEYS } from './src/hooks/useGeneratorSettings';
+import { fetchStoryByCatalogEntry } from './src/services/storyLibrary';
+import { useGeneratorRunner } from './src/hooks/useGeneratorRunner';
 import { useAppNavigationStore } from './src/stores/appNavigationStore';
+import {
+  captureAttributionFromUrl,
+  identifyAnonymousPlayer,
+  incrementPersonProperty,
+  initAnalytics,
+  screen as trackScreen,
+  setSuperProperties,
+  track,
+} from './src/services/analyticsService';
 
 const GENERATED_STORIES_KEY = '@storyrpg_generated_stories';
 const DELETED_STORIES_KEY = '@storyrpg_deleted_stories'; // Track intentionally deleted stories
 
+type SeasonContinuation = {
+  planId: string;
+  nextEpisodeNumber: number;
+  totalEpisodes: number;
+};
+
+const normalizeContinuationKey = (value?: string | null) => {
+  if (!value) return null;
+  return value.trim().toLowerCase().replace(/\/+$/, '');
+};
+
+type PersistedGeneratorSettings = {
+  imageProvider?: string;
+  imageStrategy?: 'selective' | 'all-beats';
+  artStyle?: string;
+  generationSettings?: {
+    panelMode?: 'single' | 'special-beats' | 'all-beats';
+    storyboardMaxPanelsPerSheet?: number;
+  };
+  geminiSettings?: PipelineConfig['imageGen'] extends infer T ? T extends { gemini?: infer G } ? G : never : never;
+  openaiSettings?: {
+    imageModel?: string;
+    imageModeration?: 'auto' | 'low';
+  };
+  midjourneySettings?: PipelineConfig['imageGen'] extends infer T ? T extends { midjourney?: infer M } ? M : never : never;
+  stableDiffusionSettings?: PipelineConfig['imageGen'] extends infer T ? T extends { stableDiffusion?: infer S } ? S : never : never;
+  loraTrainingSettings?: PipelineConfig['imageGen'] extends infer T ? T extends { loraTraining?: infer L } ? L : never : never;
+  atlasCloudModel?: string;
+};
+
+const normalizeImageProviderForPipeline = (provider?: string) => {
+  if (provider === 'useapi') return 'midapi';
+  if (provider === 'scenario-gg') return 'atlas-cloud';
+  return provider;
+};
+
+async function loadImageOnlyPipelineConfigFromSavedSettings(): Promise<PipelineConfig> {
+  const config = loadConfig();
+  let saved: PersistedGeneratorSettings = {};
+  try {
+    const response = await fetch(PROXY_CONFIG.generatorSettings);
+    if (response.ok) {
+      saved = await response.json();
+    }
+  } catch (error) {
+    console.warn('[App] Failed to load generator settings for image-only run; falling back to env config:', error);
+  }
+
+  const entries = await AsyncStorage.multiGet([
+    GENERATOR_STORAGE_KEYS.openaiApiKey,
+    GENERATOR_STORAGE_KEYS.geminiApiKey,
+    GENERATOR_STORAGE_KEYS.atlasCloudApiKey,
+    GENERATOR_STORAGE_KEYS.midapiToken,
+  ]);
+  const stored = Object.fromEntries(entries);
+  const provider = normalizeImageProviderForPipeline(saved.imageProvider) as NonNullable<PipelineConfig['imageGen']>['provider'] | undefined;
+
+  config.imageGen = {
+    ...(config.imageGen || {}),
+    enabled: true,
+    provider: provider || config.imageGen?.provider,
+    strategy: saved.imageStrategy || config.imageGen?.strategy,
+    geminiApiKey: stored[GENERATOR_STORAGE_KEYS.geminiApiKey] || config.imageGen?.geminiApiKey || config.imageGen?.apiKey,
+    apiKey: stored[GENERATOR_STORAGE_KEYS.geminiApiKey] || config.imageGen?.apiKey,
+    openaiApiKey: stored[GENERATOR_STORAGE_KEYS.openaiApiKey] || config.imageGen?.openaiApiKey,
+    atlasCloudApiKey: stored[GENERATOR_STORAGE_KEYS.atlasCloudApiKey] || config.imageGen?.atlasCloudApiKey,
+    atlasCloudModel: saved.atlasCloudModel || config.imageGen?.atlasCloudModel,
+    midapiToken: stored[GENERATOR_STORAGE_KEYS.midapiToken] || config.imageGen?.midapiToken,
+    openaiImageModel: saved.openaiSettings?.imageModel || config.imageGen?.openaiImageModel,
+    openaiModeration: saved.openaiSettings?.imageModeration || config.imageGen?.openaiModeration,
+    gemini: saved.geminiSettings ? { ...(config.imageGen?.gemini || {}), ...(saved.geminiSettings as any) } : config.imageGen?.gemini,
+    midjourney: saved.midjourneySettings ? { ...(config.imageGen?.midjourney || {}), ...(saved.midjourneySettings as any) } : config.imageGen?.midjourney,
+    stableDiffusion: saved.stableDiffusionSettings ? { ...(config.imageGen?.stableDiffusion || {}), ...(saved.stableDiffusionSettings as any) } : config.imageGen?.stableDiffusion,
+    loraTraining: saved.loraTrainingSettings ? { ...(config.imageGen?.loraTraining || {}), ...(saved.loraTrainingSettings as any) } : config.imageGen?.loraTraining,
+    panelMode: saved.generationSettings?.panelMode || config.imageGen?.panelMode,
+    storyboardV2: {
+      ...(config.imageGen?.storyboardV2 || {}),
+      maxPanelsPerSheet: saved.generationSettings?.storyboardMaxPanelsPerSheet || config.imageGen?.storyboardV2?.maxPanelsPerSheet,
+    },
+  };
+  if (saved.artStyle !== undefined) {
+    config.artStyle = saved.artStyle || config.artStyle;
+  }
+  return config;
+}
+
+const isSeasonEpisodeGenerated = (episode?: {
+  status?: string;
+  generatedEpisodeId?: string;
+  generatedStoryId?: string;
+  generatedJobId?: string;
+  outputDir?: string;
+}) => Boolean(
+  episode
+  && (
+    episode.status === 'completed'
+    || episode.generatedEpisodeId
+    || episode.generatedStoryId
+    || episode.generatedJobId
+    || episode.outputDir
+  )
+);
+
 function AppContent() {
   // Protagonist name/pronouns come from the story's established characters
   const [videoGeneratingStoryId, setVideoGeneratingStoryId] = useState<string | null>(null);
-  const videoPipelineRef = useRef<FullStoryPipeline | null>(null);
+  const [imageGeneratingStoryId, setImageGeneratingStoryId] = useState<string | null>(null);
+  const videoPipelineRef = useRef<PipelineHandle | null>(null);
   const [visualizerStory, setVisualizerStory] = useState<Story | null>(null);
+  const [recapEpisodeId, setRecapEpisodeId] = useState<string | null>(null);
   const currentScreen = useAppNavigationStore((state) => state.currentScreen);
   const showPauseMenu = useAppNavigationStore((state) => state.showPauseMenu);
   const visualizerStoryId = useAppNavigationStore((state) => state.visualizerStoryId);
   const resumeJobId = useAppNavigationStore((state) => state.resumeJobId);
+  const generatorSeasonPlanId = useAppNavigationStore((state) => state.generatorSeasonPlanId);
   const navigateTo = useAppNavigationStore((state) => state.navigateTo);
   const openPauseMenu = useAppNavigationStore((state) => state.openPauseMenu);
   const closePauseMenu = useAppNavigationStore((state) => state.closePauseMenu);
@@ -58,24 +182,79 @@ function AppContent() {
     upsertStory,
     removeStory,
   } = useStoryLibrary(builtInStories);
+  const { player } = useGamePlayerState();
+  const { currentStory, currentEpisode } = useGameStoryState();
+  const { initializeStory, updateCurrentStory, loadEpisode, loadScene, setBeat } = useGameActions();
+  const { ensureProxyAvailable, runWorkerJob } = useGeneratorRunner();
   
   // Generation job store for the floating indicator
   const { jobs, loadJobs, registerJob: registerGenJob, updateJob: updateGenJob, addJobEvent } = useGenerationJobStore();
-  const activeGenerationJob = jobs.find(j => j.status === 'running' || j.status === 'pending');
+  const activeGenerationJob = getVisibleGenerationJobs(jobs).find(j => j.status === 'running' || j.status === 'pending');
+  const [seasonContinuations, setSeasonContinuations] = useState<Record<string, SeasonContinuation>>({});
 
   // Video job store for live preview
   const { addJob: addVideoJob, updateJob: updateVideoJob, removeJob: removeVideoJob, clearJobs: clearVideoJobs } = useVideoJobStore();
 
   useEffect(() => {
     loadJobs(); // Load generation jobs on app start
+    initAnalytics();
+    identifyAnonymousPlayer();
+    captureAttributionFromUrl();
+    track('app opened');
     
-    // Initialize season plan store for episode selection persistence
-    import('./src/stores/seasonPlanStore').then(({ seasonPlanStore }) => {
-      seasonPlanStore.initialize().catch(err => {
-        console.warn('[App] Failed to initialize season plan store:', err);
-      });
+    seasonPlanStore.initialize().catch(err => {
+      console.warn('[App] Failed to initialize season plan store:', err);
     });
   }, [loadJobs]);
+
+  useEffect(() => {
+    const rebuildSeasonContinuations = () => {
+      const next: Record<string, SeasonContinuation> = {};
+      const addContinuationKey = (key: string | null | undefined, continuation: SeasonContinuation) => {
+        const normalized = normalizeContinuationKey(key);
+        if (normalized) next[normalized] = continuation;
+      };
+
+      for (const saved of seasonPlanStore.getPlans()) {
+        const nextEpisode = saved.plan.episodes
+          .filter((episode) => !isSeasonEpisodeGenerated(episode))
+          .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
+        if (!nextEpisode) continue;
+
+        const continuation = {
+          planId: saved.plan.id,
+          nextEpisodeNumber: nextEpisode.episodeNumber,
+          totalEpisodes: saved.plan.totalEpisodes,
+        };
+
+        addContinuationKey(saved.plan.id, continuation);
+        addContinuationKey(saved.plan.sourceTitle, continuation);
+        addContinuationKey(saved.plan.seasonTitle, continuation);
+        addContinuationKey(saved.sourceAnalysis?.sourceTitle, continuation);
+
+        for (const episode of saved.plan.episodes) {
+          addContinuationKey(episode.generatedStoryId, continuation);
+          addContinuationKey(episode.outputDir, continuation);
+          addContinuationKey(episode.outputDir?.split('/').filter(Boolean).pop(), continuation);
+        }
+      }
+      setSeasonContinuations(next);
+    };
+
+    seasonPlanStore.initialize()
+      .then(rebuildSeasonContinuations)
+      .catch((err) => console.warn('[App] Failed to load season continuations:', err));
+
+    return seasonPlanStore.subscribe(rebuildSeasonContinuations);
+  }, []);
+
+  useEffect(() => {
+    trackScreen(currentScreen, {
+      has_current_story: Boolean(currentStory?.id),
+      current_story_id: currentStory?.id,
+      current_episode_id: currentEpisode?.id,
+    });
+  }, [currentScreen, currentStory?.id, currentEpisode?.id]);
 
   // Save non-file stories to AsyncStorage (for non-web platforms)
   useEffect(() => {
@@ -83,11 +262,26 @@ function AppContent() {
 
     const saveStories = async () => {
       try {
+        // Persist each client-cached story as a v3 StoryPackage so the
+        // AsyncStorage reader can `decodeStory` it back on the next boot.
+        // encodeStory throws `StoryValidationError` on malformed data —
+        // we skip those (they'd fail to decode anyway).
         const storiesToSave = stories
           .filter((story) => !fileLoadedStoryIds.has(story.id))
           .map((story) => storyCacheRef.current.get(story.id))
           .filter(Boolean)
-          .map((story) => sanitizeStoryForPersistence(story as Story));
+          .map((story) => {
+            try {
+              return encodeStory(story as unknown as Story, {
+                assets: {},
+                generator: { version: '3', pipeline: 'client-cache' },
+              });
+            } catch (err) {
+              console.warn('[App] Skipping story that failed encode:', err instanceof Error ? err.message : err);
+              return null;
+            }
+          })
+          .filter((pkg): pkg is NonNullable<typeof pkg> => pkg !== null);
         
         if (storiesToSave.length === 0) return;
 
@@ -108,9 +302,6 @@ function AppContent() {
     saveStories();
   }, [stories, storiesLoaded, fileLoadedStoryIds]);
 
-  const { player } = useGamePlayerState();
-  const { currentStory, currentEpisode } = useGameStoryState();
-  const { initializeStory, loadEpisode, loadScene, setBeat } = useGameActions();
   const fonts = useSettingsStore((state) => state.getFontSizes());
 
   const normalizePronouns = (value: unknown): PlayerState['characterPronouns'] | null => {
@@ -161,16 +352,40 @@ function AppContent() {
   };
 
   const handleStartStory = async (storyId: string) => {
+    const catalogStory = stories.find((story) => story.id === storyId);
+    track('story selected', {
+      story_id: storyId,
+      story_genre: catalogStory?.genre,
+      episode_count: catalogStory?.episodeCount,
+      is_generated_story: catalogStory?.isBuiltIn === false || Boolean(catalogStory?.outputDir),
+    });
+
     const story = await loadFullStory(storyId);
     if (!story) return;
 
     // Use an actual character name; never derive the player name from story title text.
     const protagonist = resolveProtagonist(story);
     initializeStory(story, protagonist.name, protagonist.pronouns);
+    setSuperProperties({
+      last_story_id: story.id,
+      last_story_genre: story.genre,
+    });
+    incrementPersonProperty('stories_started_count');
+    track('story started', {
+      story_id: story.id,
+      story_genre: story.genre,
+      episode_count: story.episodes.length,
+      is_generated_story: Boolean(story.outputDir),
+    });
     navigateTo('episodes');
   };
 
   const handleContinueStory = () => {
+    track('continue story clicked', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+    });
     navigateTo('episodes');
   };
 
@@ -178,26 +393,85 @@ function AppContent() {
     const episode = currentStory?.episodes.find((e) => e.id === episodeId);
     if (!episode) return;
 
+    setSuperProperties({
+      last_story_id: currentStory?.id,
+      last_story_genre: currentStory?.genre,
+      last_episode_id: episode.id,
+    });
+    track('episode selected', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: episode.id,
+      episode_number: episode.number,
+      scene_count: episode.scenes.length,
+      beat_count: episode.scenes.reduce((sum, scene) => sum + scene.beats.length, 0),
+      is_completed: player.completedEpisodes.includes(episode.id),
+    });
     loadEpisode(episodeId);
     if (episode.startingSceneId) {
       loadScene(episode.startingSceneId, episode);
     }
+    track('episode started', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: episode.id,
+      episode_number: episode.number,
+    });
     navigateTo('reading');
   };
 
   const handleEpisodeComplete = () => {
+    // Plan 2: show the post-episode flowchart recap before returning the
+    // player to the episode-select screen.
+    if (currentEpisode?.id) {
+      incrementPersonProperty('episodes_completed_count');
+      setRecapEpisodeId(currentEpisode.id);
+      navigateTo('recap');
+    } else {
+      navigateTo('episodes');
+    }
+  };
+
+  const handleRecapContinue = () => {
+    setRecapEpisodeId(null);
     navigateTo('episodes');
   };
 
+  const handleRecapRewind = (target: { episodeId: string; sceneId: string; beatId: string }) => {
+    if (!currentStory) return;
+    const episode = currentStory.episodes.find((e) => e.id === target.episodeId);
+    if (!episode) return;
+    loadEpisode(target.episodeId);
+    loadScene(target.sceneId, episode);
+    setBeat(target.beatId);
+    setRecapEpisodeId(null);
+    navigateTo('reading');
+  };
+
   const handlePause = () => {
+    track('pause menu opened', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+    });
     openPauseMenu();
   };
 
   const handleResume = () => {
+    track('pause menu resumed', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+    });
     closePauseMenu();
   };
 
   const handleQuitToMenu = () => {
+    track('quit to menu clicked', {
+      story_id: currentStory?.id,
+      story_genre: currentStory?.genre,
+      episode_id: currentEpisode?.id,
+    });
     closePauseMenu();
     navigateTo('home');
   };
@@ -207,6 +481,7 @@ function AppContent() {
   };
 
   const handleOpenSettings = () => {
+    track('settings opened');
     navigateTo('settings');
   };
 
@@ -227,16 +502,57 @@ function AppContent() {
   };
 
   const handleOpenGenerator = (jobId?: string) => {
+    track('generator opened', {
+      resume_job: Boolean(jobId),
+    });
     openGeneratorRoute(jobId);
   };
 
+  const handleContinueSeasonPlan = async (planId: string) => {
+    await seasonPlanStore.setActivePlan(planId);
+    track('season continuation opened', { plan_id: planId });
+    openGeneratorRoute(undefined, undefined, planId);
+  };
+
   const handleBackFromGenerator = () => {
-    closeGeneratorRoute('settings');
+    // closeGenerator() without an argument defaults to the recorded launch
+    // origin (home or settings), so Back returns the user where they came from.
+    closeGeneratorRoute();
   };
 
   const handleStoryGenerated = (story: Story) => {
     if (!story || !story.id || !story.title) return;
     upsertStory(story);
+  };
+
+  // Called when the user clicks "Play now" on the generator's complete screen.
+  // Initializes the generated story in the game store and navigates to reading.
+  const handlePlayGeneratedStory = async (story: Story) => {
+    if (!story || !story.id) return;
+    upsertStory(story);
+    const full = await loadFullStory(story.id);
+    const target = full || story;
+    const protagonist = resolveProtagonist(target);
+    initializeStory(target, protagonist.name, protagonist.pronouns);
+    setSuperProperties({
+      last_story_id: target.id,
+      last_story_genre: target.genre,
+    });
+    incrementPersonProperty('stories_started_count');
+    track('story started', {
+      story_id: target.id,
+      story_genre: target.genre,
+      episode_count: target.episodes.length,
+      is_generated_story: true,
+      start_source: 'generator',
+    });
+    closeGeneratorRoute('episodes');
+  };
+
+  // Called when the user clicks "View in library" — route back to home so the
+  // story card is visible in the main library.
+  const handleViewLibrary = () => {
+    closeGeneratorRoute('home');
   };
 
   const handleDeleteStory = async (storyId: string) => {
@@ -311,7 +627,7 @@ function AppContent() {
     }));
 
     // Perform the actual rename
-    const success = await renameStory(storyId, oldOutputDir, newTitle);
+    const success = await pipelineClient.renameStory(storyId, oldOutputDir, newTitle);
     
     if (!success) {
       console.warn('[App] Failed to rename story on backend');
@@ -320,6 +636,16 @@ function AppContent() {
       loadStories();
     }
   };
+
+  const handleStoryArtifactsChanged = useCallback(async (storyEntry: StoryCatalogEntry) => {
+    await loadStories();
+    const freshStory = await fetchStoryByCatalogEntry(storyEntry, builtInStories);
+    if (!freshStory) return;
+    upsertStory(freshStory);
+    if (currentStory?.id === freshStory.id) {
+      updateCurrentStory(freshStory);
+    }
+  }, [builtInStories, currentStory?.id, loadStories, updateCurrentStory, upsertStory]);
 
   const handleGenerateVideos = useCallback(async (storyId: string) => {
     if (videoGeneratingStoryId) return;
@@ -351,11 +677,12 @@ function AppContent() {
         enabled: true,
       };
 
-      const pipeline = new FullStoryPipeline(config);
+      const pipeline = await pipelineClient.createPipeline(config);
       pipeline.setExternalJobId(jobId);
       videoPipelineRef.current = pipeline;
+      const rawPipeline = pipeline.raw as any;
 
-      pipeline.videoService.onEvent((event) => {
+      rawPipeline.videoService.onEvent((event: any) => {
         switch (event.type) {
           case 'job_added':
             addVideoJob({
@@ -405,7 +732,7 @@ function AppContent() {
         }
       });
 
-      const result = await pipeline.runVideoOnly(story);
+      const result = await rawPipeline.runVideoOnly(story);
 
       await updateGenJob(jobId, {
         status: 'completed',
@@ -429,6 +756,128 @@ function AppContent() {
     }
   }, [videoGeneratingStoryId, registerGenJob, updateGenJob, addJobEvent, addVideoJob, updateVideoJob, removeVideoJob, clearVideoJobs, loadFullStory]);
 
+  const handleGenerateImages = useCallback(async (storyId: string) => {
+    if (imageGeneratingStoryId) return;
+    const storyEntry = stories.find((candidate) => candidate.id === storyId);
+    const outputDir = storyEntry?.outputDir;
+    if (!outputDir) {
+      Alert.alert('Missing Output Directory', 'This story does not have a saved draft directory for image generation.');
+      return;
+    }
+    const proxyAvailable = await ensureProxyAvailable();
+    if (!proxyAvailable) {
+      Alert.alert('Backend Unavailable', 'Proxy server is not reachable at http://localhost:3001.');
+      return;
+    }
+
+    const jobTitle = `${storyEntry?.title || 'Story'} Images`;
+    let workerJobId: string | null = null;
+    setImageGeneratingStoryId(storyId);
+
+    try {
+      const config = await loadImageOnlyPipelineConfigFromSavedSettings();
+      config.generation = {
+        ...(config.generation || {}),
+        assetGenerationMode: 'image-only',
+      };
+      config.imageGen = {
+        ...(config.imageGen || {}),
+        enabled: true,
+      };
+
+      const worker = await runWorkerJob<any>(
+        {
+          mode: 'image-generation',
+          payload: {
+            config: config as unknown as Record<string, unknown>,
+            imageGenerationInput: {
+              outputDirectory: outputDir,
+            },
+          } as any,
+          idempotencyKey: `image-generation:${outputDir}`,
+          storyTitle: jobTitle,
+          episodeCount: storyEntry?.episodeCount || 1,
+        },
+        (event) => {
+          if (!workerJobId) return;
+          addJobEvent(workerJobId, {
+            type: event.type,
+            phase: event.phase,
+            agent: event.agent,
+            message: event.message,
+            timestamp: new Date().toISOString(),
+          });
+        },
+        (statusData) => {
+          if (!workerJobId) return;
+          updateGenJob(workerJobId, {
+            status: (statusData?.status as any) || 'running',
+            currentPhase: statusData?.currentPhase || 'images',
+            progress: Math.max(0, Math.min(100, Number(statusData?.progress ?? 0))),
+            currentEpisode: Number(statusData?.currentEpisode || 1),
+            episodeCount: Number(statusData?.episodeCount || storyEntry?.episodeCount || 1),
+          });
+        },
+        async (jobId) => {
+          workerJobId = jobId;
+          await registerGenJob({
+            id: jobId,
+            storyTitle: jobTitle,
+            startedAt: new Date().toISOString(),
+            status: 'running',
+            currentPhase: 'queued',
+            progress: 0,
+            episodeCount: storyEntry?.episodeCount || 1,
+            currentEpisode: 1,
+            outputDir,
+            events: [],
+          });
+          openGeneratorRoute(jobId);
+        },
+      );
+
+      if (!worker.result?.success) {
+        throw new Error(worker.result?.error || 'Image generation failed');
+      }
+      if (worker.result?.story) {
+        upsertStory(worker.result.story);
+      } else {
+        await loadStories();
+      }
+      if (workerJobId) {
+        await updateGenJob(workerJobId, {
+          status: 'completed',
+          progress: 100,
+          currentPhase: 'complete',
+          outputDir: worker.result?.outputDirectory || outputDir,
+        });
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error('[App] Image generation failed:', errMsg);
+      if (workerJobId) {
+        await updateGenJob(workerJobId, {
+          status: 'failed',
+          error: errMsg,
+        });
+      }
+      Alert.alert('Image Generation Failed', errMsg);
+    } finally {
+      setImageGeneratingStoryId(null);
+    }
+  }, [
+    imageGeneratingStoryId,
+    stories,
+    ensureProxyAvailable,
+    runWorkerJob,
+    addJobEvent,
+    updateGenJob,
+    registerGenJob,
+    openGeneratorRoute,
+    upsertStory,
+    loadStories,
+  ]);
+
   if (!storiesLoaded) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
@@ -451,6 +900,8 @@ function AppContent() {
           onContinueStory={handleContinueStory}
           onOpenSettings={handleOpenSettings}
           onOpenGenerator={() => handleOpenGenerator()}
+          activeGenerationJob={activeGenerationJob}
+          onOpenActiveGeneration={(jobId) => handleOpenGenerator(jobId)}
         />
       )}
 
@@ -463,10 +914,15 @@ function AppContent() {
           onDeleteStory={handleDeleteStory}
           onRenameStory={handleRenameStory}
           onGenerateVideos={handleGenerateVideos}
+          onGenerateImages={handleGenerateImages}
+          onContinueSeasonPlan={handleContinueSeasonPlan}
+          seasonContinuations={seasonContinuations}
           generatedStoryIds={Array.from(fileLoadedStoryIds)}
           onRefreshStories={loadStories}
+          onStoryArtifactsChanged={handleStoryArtifactsChanged}
           isRefreshing={isRefreshing}
           videoGeneratingStoryId={videoGeneratingStoryId}
+          imageGeneratingStoryId={imageGeneratingStoryId}
         />
       )}
 
@@ -474,7 +930,10 @@ function AppContent() {
         <GeneratorScreen
           onBack={handleBackFromGenerator}
           onStoryGenerated={handleStoryGenerated}
+          onPlayStory={handlePlayGeneratedStory}
+          onViewLibrary={handleViewLibrary}
           resumeJobId={resumeJobId}
+          initialSeasonPlanId={generatorSeasonPlanId}
           onCancelExternalPipeline={() => {
             if (videoPipelineRef.current) {
               videoPipelineRef.current.cancel();
@@ -530,28 +989,12 @@ function AppContent() {
         />
       )}
 
-      {/* Floating Active Generation Indicator */}
-      {activeGenerationJob && currentScreen !== 'generator' && (
-        <TouchableOpacity 
-          style={styles.activeGenIndicator}
-          onPress={() => handleOpenGenerator(activeGenerationJob.id)}
-        >
-          <View style={styles.activeGenPulse} />
-          <View style={styles.activeGenContent}>
-            <Text style={styles.activeGenLabel}>GENERATING</Text>
-            <Text style={styles.activeGenTitle} numberOfLines={1}>
-              {(activeGenerationJob.storyTitle || 'Untitled').toUpperCase()}
-            </Text>
-            <Text style={styles.activeGenMeta} numberOfLines={1}>
-              {(activeGenerationJob.currentPhase || 'PROCESSING').toUpperCase()}
-              {typeof activeGenerationJob.etaSeconds === 'number' ? ` • ETA ${Math.max(0, Math.round(activeGenerationJob.etaSeconds))}S` : ''}
-            </Text>
-            <View style={styles.activeGenProgress}>
-              <View style={[styles.activeGenProgressBar, { width: `${activeGenerationJob.progress || 5}%` }]} />
-            </View>
-          </View>
-          <Text style={styles.activeGenArrow}>→</Text>
-        </TouchableOpacity>
+      {currentScreen === 'recap' && recapEpisodeId && (
+        <EpisodeRecapScreen
+          episodeId={recapEpisodeId}
+          onContinue={handleRecapContinue}
+          onRewindToBeat={handleRecapRewind}
+        />
       )}
 
       <Modal
@@ -638,72 +1081,4 @@ const styles = StyleSheet.create({
   menuButtonText: { color: 'white', fontWeight: '900', textAlign: 'center', letterSpacing: 1 },
   menuButtonTextSecondary: { color: TERMINAL.colors.muted, textAlign: 'center', fontWeight: '900', letterSpacing: 1 },
   pauseFooter: { color: TERMINAL.colors.muted, marginTop: 12, textAlign: 'center', fontSize: 9, fontWeight: '700', letterSpacing: 1 },
-  // Active generation floating indicator
-  activeGenIndicator: {
-    position: 'absolute',
-    bottom: 24,
-    left: 16,
-    right: 16,
-    backgroundColor: '#1e2229',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: TERMINAL.colors.amber,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: TERMINAL.colors.amber,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  activeGenPulse: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: TERMINAL.colors.amber,
-    marginRight: 12,
-  },
-  activeGenContent: {
-    flex: 1,
-  },
-  activeGenLabel: {
-    fontSize: 8,
-    fontWeight: '900',
-    color: TERMINAL.colors.amber,
-    letterSpacing: 1,
-    marginBottom: 2,
-  },
-  activeGenTitle: {
-    fontSize: 12,
-    fontWeight: '900',
-    color: 'white',
-    letterSpacing: 0.5,
-    marginBottom: 6,
-  },
-  activeGenMeta: {
-    color: TERMINAL.colors.muted,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-    marginTop: 2,
-  },
-  activeGenProgress: {
-    height: 3,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  activeGenProgressBar: {
-    height: '100%',
-    backgroundColor: TERMINAL.colors.amber,
-    borderRadius: 2,
-  },
-  activeGenArrow: {
-    fontSize: 18,
-    fontWeight: '900',
-    color: TERMINAL.colors.amber,
-    marginLeft: 12,
-  },
 });

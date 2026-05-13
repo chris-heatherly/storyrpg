@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Pipeline Debugging"
+  short_description: "Debug StoryRPG generation jobs and pipeline failures"
+  default_prompt: "Use $storyrpg-pipeline-debugging to diagnose a failing StoryRPG generation job."
+policy:
+  allow_implicit_invocation: true

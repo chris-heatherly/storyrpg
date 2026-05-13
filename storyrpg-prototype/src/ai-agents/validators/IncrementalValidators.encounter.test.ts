@@ -14,7 +14,7 @@ describe('IncrementalEncounterValidator', () => {
   it('recurses through branching nextSituation trees and recognizes partialVictory paths', () => {
     const validator = new IncrementalEncounterValidator(['empathy', 'wit']);
 
-    const encounter: EncounterStructure = {
+    const encounter = {
       sceneId: 'scene-7',
       encounterType: 'dramatic',
       encounterStyle: 'dramatic',
@@ -144,7 +144,7 @@ describe('IncrementalEncounterValidator', () => {
       },
     };
 
-    const result = validator.validateEncounter(encounter);
+    const result = validator.validateEncounter(encounter as unknown as EncounterStructure);
 
     expect(result.passed).toBe(true);
     expect(result.hasVictoryPath).toBe(true);
@@ -156,7 +156,7 @@ describe('IncrementalEncounterValidator', () => {
   it('rejects partialVictory paths that lack structured cost and visible-cost contracts', () => {
     const validator = new IncrementalEncounterValidator(['empathy']);
 
-    const encounter: EncounterStructure = {
+    const encounter = {
       sceneId: 'scene-bad',
       encounterType: 'dramatic',
       startingBeatId: 'beat-1',
@@ -212,7 +212,7 @@ describe('IncrementalEncounterValidator', () => {
       informationVisibility: { threatClockVisible: true, npcTellsRevealAt: 'immediate', environmentElementsHidden: [], choiceOutcomesUnknown: false },
     };
 
-    const result = validator.validateEncounter(encounter);
+    const result = validator.validateEncounter(encounter as unknown as EncounterStructure);
 
     expect(result.passed).toBe(false);
     expect(result.issues.some(issue => issue.type === 'invalid_partial_victory')).toBe(true);
@@ -221,7 +221,7 @@ describe('IncrementalEncounterValidator', () => {
   it('warns when relationship-heavy encounters never spend relationship state', () => {
     const validator = new IncrementalEncounterValidator(['empathy']);
 
-    const encounter: EncounterStructure = {
+    const encounter = {
       sceneId: 'scene-relationship-gap',
       encounterType: 'dramatic',
       startingBeatId: 'beat-1',
@@ -282,8 +282,123 @@ describe('IncrementalEncounterValidator', () => {
       informationVisibility: { threatClockVisible: true, npcTellsRevealAt: 'immediate', environmentElementsHidden: [], choiceOutcomesUnknown: false },
     };
 
-    const result = validator.validateEncounter(encounter);
+    const result = validator.validateEncounter(encounter as unknown as EncounterStructure);
 
     expect(result.issues.some(issue => issue.type === 'missing_relationship_payoff')).toBe(true);
+  });
+
+  it('fails encounters that use undefined skills or non-terminal dead-end outcomes', () => {
+    const validator = new IncrementalEncounterValidator(['empathy']);
+
+    const encounter = {
+      sceneId: 'scene-invalid-paths',
+      encounterType: 'dramatic',
+      startingBeatId: 'beat-1',
+      goalClock: { name: 'Goal', segments: 4, description: 'Goal' },
+      threatClock: { name: 'Threat', segments: 4, description: 'Threat' },
+      stakes: { victory: 'Win', defeat: 'Lose' },
+      tensionCurve: [],
+      beats: [
+        {
+          id: 'beat-1',
+          phase: 'setup',
+          name: 'Broken opening',
+          description: 'A broken branch.',
+          setupText: 'The branch has bad routing.',
+          choices: [{
+            id: 'choice-1',
+            text: 'Say something clever',
+            approach: 'clever',
+            primarySkill: 'rhetoric',
+            outcomes: {
+              success: { tier: 'success', narrativeText: 'You win.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+              complicated: { tier: 'complicated', narrativeText: 'The branch stops without an ending.', goalTicks: 1, threatTicks: 1 },
+              failure: { tier: 'failure', narrativeText: 'You lose.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+            },
+          }],
+        } as any,
+        {
+          id: 'beat-2',
+          phase: 'resolution',
+          name: 'Resolution',
+          description: 'A valid close.',
+          setupText: 'The encounter closes.',
+          choices: [{
+            id: 'choice-2',
+            text: 'Accept the result',
+            approach: 'steady',
+            primarySkill: 'empathy',
+            outcomes: {
+              success: { tier: 'success', narrativeText: 'You recover.', goalTicks: 1, threatTicks: 0, isTerminal: true, encounterOutcome: 'partialVictory', cost: partialVictoryCost as any, visualContract: { visibleCost: partialVictoryCost.visibleComplication } },
+              complicated: { tier: 'complicated', narrativeText: 'You recover at cost.', goalTicks: 0, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory', cost: partialVictoryCost as any, visualContract: { visibleCost: partialVictoryCost.visibleComplication } },
+              failure: { tier: 'failure', narrativeText: 'You fail.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+            },
+          }],
+        } as any,
+      ],
+      storylets: {
+        partialVictory: { id: 'pv', name: 'pv', triggerOutcome: 'partialVictory', tone: 'bittersweet', narrativeFunction: '', cost: partialVictoryCost as any, startingBeatId: 'pv1', consequences: [], beats: [{ id: 'pv1', text: 'pv', isTerminal: true, visualContract: { visibleCost: partialVictoryCost.visibleComplication } }] },
+        defeat: { id: 'd', name: 'd', triggerOutcome: 'defeat', tone: 'somber', narrativeFunction: '', startingBeatId: 'd1', consequences: [], beats: [{ id: 'd1', text: 'd', isTerminal: true }] },
+      },
+      environmentalElements: [],
+      npcStates: [],
+      escalationTriggers: [],
+      informationVisibility: { threatClockVisible: true, npcTellsRevealAt: 'immediate', environmentElementsHidden: [], choiceOutcomesUnknown: false },
+    };
+
+    const result = validator.validateEncounter(encounter as unknown as EncounterStructure);
+
+    expect(result.passed).toBe(false);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'invalid_skill', severity: 'error' }),
+      expect.objectContaining({ type: 'missing_outcome', severity: 'error' }),
+    ]));
+  });
+
+  it('fails one-beat encounters and encounters without complete win/loss paths', () => {
+    const validator = new IncrementalEncounterValidator(['empathy']);
+
+    const encounter = {
+      sceneId: 'scene-too-small',
+      encounterType: 'dramatic',
+      startingBeatId: 'beat-1',
+      goalClock: { name: 'Goal', segments: 4, description: 'Goal' },
+      threatClock: { name: 'Threat', segments: 4, description: 'Threat' },
+      stakes: { victory: 'Win', defeat: 'Lose' },
+      tensionCurve: [],
+      beats: [
+        {
+          id: 'beat-1',
+          phase: 'setup',
+          name: 'Too small',
+          description: 'No meaningful encounter shape.',
+          setupText: 'Everything resolves instantly.',
+          choices: [{
+            id: 'choice-1',
+            text: 'Try',
+            approach: 'steady',
+            primarySkill: 'empathy',
+            outcomes: {
+              success: { tier: 'success', narrativeText: 'You linger.', goalTicks: 1, threatTicks: 0, isTerminal: true },
+              complicated: { tier: 'complicated', narrativeText: 'You linger.', goalTicks: 0, threatTicks: 1, isTerminal: true },
+              failure: { tier: 'failure', narrativeText: 'You linger.', goalTicks: 0, threatTicks: 1, isTerminal: true },
+            },
+          }],
+        } as any,
+      ],
+      environmentalElements: [],
+      npcStates: [],
+      escalationTriggers: [],
+      informationVisibility: { threatClockVisible: true, npcTellsRevealAt: 'immediate', environmentElementsHidden: [], choiceOutcomesUnknown: false },
+    };
+
+    const result = validator.validateEncounter(encounter as unknown as EncounterStructure);
+
+    expect(result.passed).toBe(false);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'missing_beats', severity: 'error' }),
+      expect.objectContaining({ type: 'missing_outcome', detail: expect.stringContaining('victory') }),
+      expect.objectContaining({ type: 'missing_outcome', detail: expect.stringContaining('defeat') }),
+    ]));
   });
 });

@@ -1,4 +1,4 @@
-import { EncounterCost, EncounterVisualContract } from '../../types';
+import { EncounterCost, EncounterVisualContract, NarrativeSequenceIntent } from '../../types';
 import { StateChange } from './llm-output';
 
 export interface StoryletBeatDraft {
@@ -18,6 +18,7 @@ export interface StoryletBeatDraft {
   isTerminal?: boolean;
   visualContract?: EncounterVisualContract;
   cost?: EncounterCost;
+  sequenceIntent?: NarrativeSequenceIntent;
 }
 
 export interface GeneratedStoryletDraft {
@@ -32,4 +33,5 @@ export interface GeneratedStoryletDraft {
   setsFlags?: { flag: string; value: boolean }[];
   nextSceneId?: string;
   cost?: EncounterCost;
+  sequenceIntent?: NarrativeSequenceIntent;
 }

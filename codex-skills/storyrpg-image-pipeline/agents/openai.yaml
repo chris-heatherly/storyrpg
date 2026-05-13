@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Image Pipeline"
+  short_description: "Work on StoryRPG image providers and style systems"
+  default_prompt: "Use $storyrpg-image-pipeline to adjust StoryRPG image generation while preserving provider-specific behavior."
+policy:
+  allow_implicit_invocation: true

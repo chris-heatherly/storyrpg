@@ -1,8 +1,25 @@
 /**
  * Pipeline Phases
- * 
+ *
  * Each phase handles a distinct stage of story generation.
  * Phases are orchestrated by FullStoryPipeline.
+ *
+ * MIGRATION STATUS (see phases/README.md for full tracker):
+ *   [x] SavingPhase         (this package)
+ *   [x] WorldBuildingPhase  (scaffold — not yet wired)
+ *   [ ] CharacterDesignPhase, NPCDepthValidationPhase
+ *   [ ] EpisodeArchitecturePhase, BranchAnalysisPhase
+ *   [ ] ContentGenerationPhase
+ *   [ ] QuickValidationPhase
+ *   [ ] QAPhase
+ *   [ ] ImagePhase
+ *   [ ] VideoPhase
+ *   [ ] AssemblyPhase
+ *   [ ] AudioPhase
+ *   [ ] BrowserQAPhase
+ *
+ * The monolithic `FullStoryPipeline` keeps `@ts-nocheck` until all phases
+ * have moved out. New phases should type cleanly without `@ts-nocheck`.
  */
 
 import { PipelineEvent } from '../EpisodePipeline';
@@ -23,11 +40,29 @@ import { Story, Episode } from '../../../types';
 
 /**
  * Shared context passed between phases.
+ *
+ * The monolith wires up `emit`, `emitPhaseProgress`, `addCheckpoint`, and
+ * `checkCancellation` from its own methods so phases behave identically to
+ * inline code during migration.
  */
 export interface PipelineContext {
   config: PipelineConfig;
   emit: (event: Omit<PipelineEvent, 'timestamp'>) => void;
+  /** Granular progress emitter (percent within a phase). */
+  emitPhaseProgress?: (
+    phase: string,
+    done: number,
+    total: number,
+    source: string,
+    message?: string
+  ) => void;
+  /**
+   * Add a named checkpoint. `optional` toggles whether resume logic should
+   * treat the checkpoint as resumable.
+   */
   addCheckpoint: (name: string, data: unknown, optional?: boolean) => void;
+  /** Throws `OperationCancelledError` if the job was cancelled. */
+  checkCancellation?: () => Promise<void>;
 }
 
 /**

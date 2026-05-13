@@ -4,14 +4,14 @@ import { AssetRegistry } from './assetRegistry';
 import type { ImageSlot } from './slotTypes';
 
 const beatSlot: ImageSlot = {
-  slotId: 'story-beat:scene-1::beat-1',
+  slotId: 'story-beat:episode-1-scene-1::beat-1',
   family: 'story-beat',
   imageType: 'beat',
   sceneId: 'scene-1',
-  scopedSceneId: 'episode-1::scene-1',
+  scopedSceneId: 'episode-1-scene-1',
   beatId: 'beat-1',
   storyFieldPath: 'episodes[].scenes[id=scene-1].beats[id=beat-1].image',
-  baseIdentifier: 'beat-episode-1scene-1-beat-1',
+  baseIdentifier: 'beat-episode-1-scene-1-beat-1',
   required: true,
   qualityTier: 'standard',
   coverageKey: 'beat:scene-1::beat-1',

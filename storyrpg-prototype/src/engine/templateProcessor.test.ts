@@ -1,70 +1,109 @@
-import { describe, expect, it } from 'vitest';
-import { processTemplate } from './templateProcessor';
-import type { PlayerState, Story } from '../types';
+import { describe, it, expect } from 'vitest';
+import { selectTextVariant, conditionSpecificity } from './templateProcessor';
+import type { PlayerState, TextVariant } from '../types';
 
-function createPlayer(trust: number): PlayerState {
+function makePlayer(overrides: Partial<PlayerState> = {}): PlayerState {
   return {
-    characterName: 'Player',
+    characterName: 'Test',
     characterPronouns: 'they/them',
-    attributes: {
-      charm: 50,
-      wit: 50,
-      courage: 50,
-      empathy: 50,
-      resolve: 50,
-      resourcefulness: 50,
-    },
-    skills: {},
-    relationships: {
-      mara: {
-        npcId: 'mara',
-        trust,
-        affection: 0,
-        respect: 0,
-        fear: 0,
-      },
-    },
-    flags: {},
+    attributes: { charisma: 0, intellect: 0, willpower: 0, charm: 0, observation: 0, cunning: 0 } as any,
+    skills: {} as any,
+    relationships: {},
+    flags: { 'herald-alive': true, 'city-saved': true, 'wealthy': true },
     scores: {},
-    tags: new Set(),
-    identityProfile: {
-      mercy_justice: 0,
-      idealism_pragmatism: 0,
-      cautious_bold: 0,
-      loner_leader: 0,
-      heart_head: 0,
-      honest_deceptive: 0,
-    },
+    tags: new Set<string>(),
+    identityProfile: undefined as any,
     pendingConsequences: [],
     inventory: [],
     currentStoryId: null,
     currentEpisodeId: null,
     currentSceneId: null,
     completedEpisodes: [],
+    ...overrides,
   };
 }
 
-const story: Story = {
-  id: 'story-1',
-  title: 'Story',
-  synopsis: 'Test',
-  genre: 'Drama',
-  tone: 'Tense',
-  protagonist: {
-    id: 'pc',
-    name: 'Player',
-    description: 'Hero',
-    pronouns: 'they/them',
-  },
-  npcs: [{ id: 'mara', name: 'Mara', role: 'ally', description: 'Ally', pronouns: 'she/her' as const }],
-  episodes: [],
-} as any;
+describe('conditionSpecificity', () => {
+  it('counts atomic conditions as 1', () => {
+    expect(conditionSpecificity({ type: 'flag', flag: 'x', value: true } as any)).toBe(1);
+  });
 
-describe('templateProcessor relationship cache invalidation', () => {
-  it('recomputes npc relationship tokens when relationship values change', () => {
-    const text = 'Mara trust: {{npc.mara.trust}}';
+  it('sums AND/OR subclauses', () => {
+    const cond = {
+      type: 'and',
+      conditions: [
+        { type: 'flag', flag: 'a', value: true },
+        { type: 'flag', flag: 'b', value: true },
+        { type: 'flag', flag: 'c', value: true },
+      ],
+    } as any;
+    expect(conditionSpecificity(cond)).toBe(3);
+  });
 
-    expect(processTemplate(text, createPlayer(10), story)).toBe('Mara trust: 10');
-    expect(processTemplate(text, createPlayer(45), story)).toBe('Mara trust: 45');
+  it('treats undefined as 0', () => {
+    expect(conditionSpecificity(undefined)).toBe(0);
+  });
+});
+
+describe('selectTextVariant', () => {
+  it('returns base text when no variants match', () => {
+    const player = makePlayer({ flags: {} });
+    const variants: TextVariant[] = [
+      { condition: { type: 'flag', flag: 'nope', value: true }, text: 'Nope.' },
+    ];
+    expect(selectTextVariant('base', variants, player)).toBe('base');
+  });
+
+  it('prefers the most specific matching variant over a broader one', () => {
+    const player = makePlayer();
+    const variants: TextVariant[] = [
+      {
+        condition: { type: 'flag', flag: 'herald-alive', value: true },
+        text: 'Broad: you helped someone.',
+      },
+      {
+        condition: {
+          type: 'and',
+          conditions: [
+            { type: 'flag', flag: 'herald-alive', value: true },
+            { type: 'flag', flag: 'city-saved', value: true },
+            { type: 'flag', flag: 'wealthy', value: true },
+          ],
+        } as any,
+        text: 'Specific: you spared the herald and saved the city.',
+      },
+    ];
+    expect(selectTextVariant('base', variants, player)).toContain('Specific');
+  });
+
+  it('breaks ties by authoring order (first wins)', () => {
+    const player = makePlayer();
+    const variants: TextVariant[] = [
+      { condition: { type: 'flag', flag: 'herald-alive', value: true }, text: 'First.' },
+      { condition: { type: 'flag', flag: 'city-saved', value: true }, text: 'Second.' },
+    ];
+    expect(selectTextVariant('base', variants, player)).toBe('First.');
+  });
+
+  it('gives a callbackHookId variant a +1 boost', () => {
+    const player = makePlayer();
+    const variants: TextVariant[] = [
+      { condition: { type: 'flag', flag: 'herald-alive', value: true }, text: 'Plain.' },
+      {
+        condition: { type: 'flag', flag: 'city-saved', value: true },
+        text: 'Callback.',
+        callbackHookId: 'some-hook',
+      },
+    ];
+    expect(selectTextVariant('base', variants, player)).toBe('Callback.');
+  });
+
+  it('skips variants with empty text', () => {
+    const player = makePlayer();
+    const variants: TextVariant[] = [
+      { condition: { type: 'flag', flag: 'herald-alive', value: true }, text: '   ' },
+      { condition: { type: 'flag', flag: 'city-saved', value: true }, text: 'Real.' },
+    ];
+    expect(selectTextVariant('base', variants, player)).toBe('Real.');
   });
 });

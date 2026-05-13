@@ -14,6 +14,7 @@ import {
   PipelineEventData,
   normalizeGenerationJob,
 } from '../types/generationJob';
+import { PROXY_CONFIG } from '../config/endpoints';
 
 export type { GenerationJob, JobStatus, PipelineEventData } from '../types/generationJob';
 
@@ -39,19 +40,7 @@ interface GenerationJobStore {
   getJob: (jobId: string) => GenerationJob | undefined;
 }
 
-// Get proxy URL from config or fall back to default
-const getProxyHost = (): string => {
-  try {
-    const { PROXY_CONFIG } = require('../config/endpoints');
-    return PROXY_CONFIG.getProxyUrl();
-  } catch (e) {
-    // Fallback if config not available
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      return `http://${window.location.hostname || 'localhost'}:3001`;
-    }
-    return 'http://localhost:3001';
-  }
-};
+const getProxyHost = (): string => PROXY_CONFIG.getProxyUrl();
 
 /**
  * Strip bulky checkpoint/events data before persisting to localStorage.
@@ -177,12 +166,21 @@ export const useGenerationJobStore = create<GenerationJobStore>((set, get) => ({
         return job;
       });
 
-      // Auto-remove finished jobs (completed, failed, cancelled) that are older than 1 hour
-      // This keeps the job list clean without removing jobs the user might still want to see
+      // Auto-remove finished jobs that are older than 1 hour, but keep
+      // recoverable failed/cancelled jobs so users can resume expensive image runs.
       const oneHourAgo = Date.now() - 60 * 60 * 1000;
       const terminalStatuses: JobStatus[] = ['completed', 'failed', 'cancelled'];
       localJobs = localJobs.filter(job => {
         if (terminalStatuses.includes(job.status)) {
+          const hasResumeData = Boolean(
+            job.checkpoint?.isResumable ||
+            job.checkpoint?.failureContext ||
+            job.checkpoint?.resumeContext ||
+            (job as any).resumeContext
+          );
+          if ((job.status === 'failed' || job.status === 'cancelled') && hasResumeData) {
+            return true;
+          }
           const jobTime = new Date(job.updatedAt).getTime();
           if (jobTime < oneHourAgo) {
             console.log(`[GenerationJobStore] Auto-removing old finished job: ${job.id} (${job.status})`);
@@ -314,13 +312,29 @@ export const useGenerationJobStore = create<GenerationJobStore>((set, get) => ({
   clearCompletedJobs: async () => {
     // Capture updated jobs from the setter for persistence
     let updatedJobs: GenerationJob[] = [];
+    let removedJobIds: string[] = [];
     set(state => {
+      removedJobIds = state.jobs
+        .filter(job => job.status !== 'running' && job.status !== 'pending')
+        .map(job => job.id);
       updatedJobs = state.jobs.filter(job => job.status === 'running' || job.status === 'pending');
       return { jobs: updatedJobs };
     });
 
     // Persist locally (using captured jobs, not get())
     await persistJobs(updatedJobs);
+
+    if (Platform.OS === 'web') {
+      await Promise.all(removedJobIds.map(async (jobId) => {
+        try {
+          await fetch(`${getProxyHost()}/generation-jobs/${jobId}`, {
+            method: 'DELETE',
+          });
+        } catch (e) {
+          console.warn(`[GenerationJobStore] Failed to remove completed job ${jobId} from server`);
+        }
+      }));
+    }
   },
 
   isJobCancelled: (jobId) => {

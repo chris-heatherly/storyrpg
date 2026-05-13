@@ -11,6 +11,10 @@ import {
 } from './encounterSlotManifest';
 
 describe('encounterSlotManifest', () => {
+  it('keeps the default tree depth capped for storyboard encounter image budgets', () => {
+    expect(ENCOUNTER_TREE_MAX_DEPTH).toBeLessThanOrEqual(3);
+  });
+
   it('builds stable identifiers matching pipeline conventions', () => {
     // Branch separators are encoded before sanitization to keep nested paths unique.
     expect(encounterSetupIdentifier('EP1::scene-2', 'beat-a')).toBe('encounter-EP1scene-2-beat-a-setup');

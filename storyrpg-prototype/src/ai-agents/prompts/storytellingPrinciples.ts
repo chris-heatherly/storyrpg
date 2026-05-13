@@ -4,6 +4,69 @@
  * These principles are embedded into every agent's system prompt.
  */
 
+import type {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
+import { SEVEN_POINT_BEATS } from '../../types/sourceAnalysis';
+
+/**
+ * Build a reusable prompt section that gives a narrative agent the
+ * season-level anchors, the 7-point beat map, and which beat(s) the
+ * current episode carries. Call from any agent's prompt builder; returns
+ * an empty string when no structural context is supplied so the agent's
+ * existing behavior is preserved for callers that predate Path A.
+ *
+ * Every downstream narrative writer (SceneWriter, ChoiceAuthor,
+ * EncounterArchitect, ThreadPlanner, TwistArchitect, CharacterArcTracker,
+ * BranchManager, CharacterDesigner) should include this section so the
+ * episode reads as a single story at the season level.
+ */
+export function buildStructuralContextSection(params: {
+  anchors?: StoryAnchors;
+  sevenPoint?: SevenPointStructure;
+  episodeStructuralRole?: StructuralRole[];
+}): string {
+  const { anchors, sevenPoint, episodeStructuralRole } = params;
+  if (!anchors && !sevenPoint && (!episodeStructuralRole || episodeStructuralRole.length === 0)) {
+    return '';
+  }
+
+  const anchorLines = anchors
+    ? [
+        `- Stakes: ${anchors.stakes}`,
+        `- Goal: ${anchors.goal}`,
+        `- Inciting Incident: ${anchors.incitingIncident}`,
+        `- Climax: ${anchors.climax}`,
+      ].join('\n')
+    : '';
+
+  const beatLines = sevenPoint
+    ? SEVEN_POINT_BEATS.map((beat) => `- ${beat}: ${sevenPoint[beat]}`).join('\n')
+    : '';
+
+  const roleLine = episodeStructuralRole && episodeStructuralRole.length > 0
+    ? episodeStructuralRole.join(', ')
+    : '(rising / falling buffer — no named beat lands here)';
+
+  return `
+## Season Anchors (shared reference — every beat, scene, and choice must serve these)
+${anchorLines || '(none supplied)'}
+
+## Season 7-Point Beat Map
+${beatLines || '(none supplied)'}
+
+## This Episode's Structural Role
+${roleLine}
+
+Keep every line of prose, every choice, and every consequence grounded in
+these anchors. When this episode carries the Climax beat, the narrative
+must land the same event described in the Climax anchor above. When it
+carries a Pinch, the setback must pressure the Stakes anchor directly.
+`;
+}
+
 export const FICTION_FIRST_PHILOSOPHY = `
 ## Fiction-First Philosophy
 
@@ -316,12 +379,73 @@ End on a supporting or dominant beat leading into the choice/transition.
 For each beat you generate, assign an \`intensityTier\` field: "dominant", "supporting", or "rest".
 `;
 
+export const CRAFT_PRESSURE_GUIDANCE = `
+## Genre-Aware Craft Pressure (StoryRPG Guardrailed)
+
+Use these rules to make scenes sharper, not narrower. If any craft rule conflicts
+with fiction-first interactivity, genre flexibility, T-rated sensitivity, rest
+beats, selective interiority, or serialized cliffhanger planning, StoryRPG's
+existing principles win.
+
+- Treat scene takeaways as load-bearing: every scene should make the player
+  learn, feel, or understand something specific about plot, character, theme,
+  information, or relationship pressure.
+- Keep scenes active. When characters discuss plans, feelings, secrets, or
+  accusations, give them fitting physical business or situational pressure
+  instead of a static meeting.
+- Make key beats decisive: characters take specific actions, encounter a
+  surprising complication, and leave visible consequences or changed leverage.
+- Escalate across the episode and season while preserving rests. Do not force
+  every beat to be more intense than the previous beat.
+- Let protagonist growth become legible through difficulty: pressure exposes a
+  shortfall, the player acts anyway, and later scenes show new competence,
+  resolve, relationships, or identity.
+- Keep dialogue concise, pointed, and subtextual. Conversations need friction,
+  pressure, competing agendas, avoidance, teasing, or vulnerability; they do not
+  always need overt argument.
+- Prefer action and brief dialogue to express emotion, while allowing restrained
+  interiority when it deepens player connection without over-defining identity.
+- End scenes with pointed forward pressure: a choice, consequence, reveal,
+  cliffhanger, aftermath turn, or newly sharpened question.
+- Match jeopardy to genre. Action-heavy genres should include physical danger or
+  direct conflict; other genres should use serious social, emotional, moral,
+  investigative, environmental, resource, romantic, or identity jeopardy.
+- Do not require graphic wounds, gore, or explicit injury detail. Existing
+  target-rating and sensitivity behavior remain authoritative.
+`;
+
+const ACTION_HEAVY_GENRES = [
+  'action',
+  'adventure',
+  'superhero',
+  'thriller',
+  'war',
+  'martial',
+  'survival',
+  'heist',
+  'western',
+];
+
+export function isActionHeavyGenre(genre?: string): boolean {
+  const normalized = (genre || '').toLowerCase();
+  return ACTION_HEAVY_GENRES.some((token) => normalized.includes(token));
+}
+
+export function buildGenreAwareJeopardyGuidance(genre?: string): string {
+  if (isActionHeavyGenre(genre)) {
+    return 'For this action-heavy genre, include serious physical danger or direct conflict when the story is between the Inciting Incident and the Climax. Keep violence concrete but not graphic unless the rating allows it.';
+  }
+
+  return 'For this genre, do not force combat. Make jeopardy serious through social cost, emotional exposure, moral compromise, investigation risk, environmental pressure, resource loss, romantic vulnerability, or identity pressure.';
+}
+
 export const CORE_STORYTELLING_PROMPT = `
 ${FICTION_FIRST_PHILOSOPHY}
 ${STAKES_TRIANGLE}
 ${CHOICE_GEOMETRY}
 ${CONSEQUENCE_BUDGETING}
 ${THREE_LAYER_MEMORY}
+${BRANCH_AND_BOTTLENECK}
 ${FIVE_FACTOR_TEST}
 ${NPC_DEPTH_TIERING}
 ${CHOICE_DENSITY_REQUIREMENTS}

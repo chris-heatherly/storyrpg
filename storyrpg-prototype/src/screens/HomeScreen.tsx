@@ -19,12 +19,16 @@ import {
   LogOut,
   RotateCcw,
   Sparkles,
+  Cpu,
 } from 'lucide-react-native';
 import { useGameActions, useGamePlayerState, useGameStoryState } from '../stores/gameStore';
 import { StoryCatalogEntry } from '../types';
 import { TERMINAL } from '../theme';
 import { useSettingsStore } from '../stores/settingsStore';
+import { APP_FOOTER_LINE_1, APP_FOOTER_LINE_2 } from '../config/version';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ConfirmDialog } from '../components/ui';
+import { track } from '../services/analyticsService';
 
 const { width } = Dimensions.get('window');
 
@@ -34,6 +38,11 @@ interface HomeScreenProps {
   onContinueStory: () => void;
   onOpenSettings: () => void;
   onOpenGenerator?: () => void;
+  activeGenerationJob?: {
+    id: string;
+    progress?: number;
+  } | null;
+  onOpenActiveGeneration?: (jobId: string) => void;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
@@ -42,31 +51,58 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onContinueStory,
   onOpenSettings,
   onOpenGenerator,
+  activeGenerationJob,
+  onOpenActiveGeneration,
 }) => {
   const { player } = useGamePlayerState();
   const { currentStory } = useGameStoryState();
   const { resetGame } = useGameActions();
   const fonts = useSettingsStore((state) => state.getFontSizes());
   const [isWiping, setIsWiping] = useState(false);
+  const [confirmWipe, setConfirmWipe] = useState(false);
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
+  const compactHeader = width < 390;
+  const activeGenerationProgress = Math.max(0, Math.min(100, Math.round(activeGenerationJob?.progress || 0)));
 
   // Placeholder image for when cover images fail to load
   const PLACEHOLDER_IMAGE = 'https://placehold.co/400x600/1a1a2e/94a3b8?text=Story';
 
   const hasSavedGame = currentStory !== null && player.currentEpisodeId !== null;
 
-  const handleWipeCache = async () => {
-    if (confirm('WIPE ALL CACHE? This will clear all generated stories and save data from browser storage.')) {
-      setIsWiping(true);
-      try {
-        await AsyncStorage.clear();
-        alert('Cache wiped. Restarting...');
+  useEffect(() => {
+    track('home viewed', {
+      story_count: stories.length,
+      has_saved_game: hasSavedGame,
+    });
+  }, [stories.length, hasSavedGame]);
+
+  useEffect(() => {
+    for (const story of stories) {
+      track('story card viewed', {
+        story_id: story.id,
+        story_genre: story.genre,
+        episode_count: story.episodeCount,
+        is_generated_story: story.isBuiltIn === false || Boolean(story.outputDir),
+      });
+    }
+  }, [stories]);
+
+  const handleWipeCache = () => {
+    setConfirmWipe(true);
+  };
+
+  const performWipeCache = async () => {
+    setConfirmWipe(false);
+    setIsWiping(true);
+    try {
+      await AsyncStorage.clear();
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.location.reload();
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setIsWiping(false);
       }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsWiping(false);
     }
   };
 
@@ -89,14 +125,31 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </View>
           <Text style={styles.logoText}>STORY<Text style={{ color: TERMINAL.colors.primary }}>RPG</Text></Text>
         </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <View style={styles.headerActions}>
+          {activeGenerationJob && onOpenActiveGeneration && (
+            <TouchableOpacity
+              style={[styles.headerActionButton, styles.pipelineActionButton, compactHeader && styles.pipelineActionButtonCompact]}
+              onPress={() => onOpenActiveGeneration(activeGenerationJob.id)}
+              activeOpacity={0.82}
+            >
+              <View style={styles.headerActionContent}>
+                <Cpu size={16} color={TERMINAL.colors.primary} />
+                <Text style={styles.headerActionButtonText} numberOfLines={1}>
+                  {compactHeader ? `PIPE ${activeGenerationProgress}%` : `PIPELINE ${activeGenerationProgress}%`}
+                </Text>
+              </View>
+              <View style={styles.pipelineProgressTrack}>
+                <View style={[styles.pipelineProgressFill, { width: `${activeGenerationProgress}%` }]} />
+              </View>
+            </TouchableOpacity>
+          )}
           {onOpenGenerator && (
             <TouchableOpacity 
-              style={[styles.headerIconButton, { flexDirection: 'row', gap: 6, backgroundColor: 'rgba(59, 130, 246, 0.15)', paddingHorizontal: 12, borderRadius: 8 }]} 
+              style={styles.headerActionButton}
               onPress={onOpenGenerator}
             >
               <Sparkles size={16} color={TERMINAL.colors.primary} />
-              <Text style={{ color: TERMINAL.colors.primary, fontSize: 11, fontWeight: '700', letterSpacing: 1 }}>GENERATE</Text>
+              {!compactHeader && <Text style={styles.headerActionButtonText}>GENERATE</Text>}
             </TouchableOpacity>
           )}
           <TouchableOpacity style={styles.headerIconButton} onPress={onOpenSettings}>
@@ -161,12 +214,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   setFailedImages(prev => new Set(prev).add(story.id));
                 }}
               />
+              <View style={styles.storyBadge}>
+                <Text style={styles.storyBadgeText}>{(story.genre || 'unknown').toUpperCase()}</Text>
+              </View>
+              <View pointerEvents="none" style={styles.storyOverlayFadeFaint} />
+              <View pointerEvents="none" style={styles.storyOverlayFadeMid} />
+              <View pointerEvents="none" style={styles.storyOverlayFadeStrong} />
               <View style={styles.storyOverlay}>
-                <View style={styles.storyBadge}>
-                  <Text style={styles.storyBadgeText}>{(story.genre || 'unknown').toUpperCase()}</Text>
-                </View>
-                <Text style={styles.storyCardTitle}>{(story.title || 'Untitled').toUpperCase()}</Text>
-                <Text style={styles.storyCardMeta}>{story.episodeCount} EPISODES</Text>
+                <Text style={[styles.storyCardTitle, { fontSize: fonts.large }]}>{(story.title || 'Untitled').toUpperCase()}</Text>
+                <Text style={[styles.storyCardMeta, { fontSize: fonts.small }]}>{story.episodeCount} EPISODES</Text>
                 <View style={styles.playButtonMini}>
                   <Play size={12} color="white" fill="white" />
                   <Text style={styles.playButtonMiniText}>START</Text>
@@ -184,14 +240,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </View>
 
         <Text style={styles.footerText}>
-          STORYRPG MOBILE • ALPHA VER 1.0.0{'\n'}
-          © 2024 STORYRPG SYSTEMS
+          {APP_FOOTER_LINE_1}{'\n'}
+          {APP_FOOTER_LINE_2}
         </Text>
 
         <TouchableOpacity 
           style={styles.wipeButton} 
           onPress={handleWipeCache}
           disabled={isWiping}
+          accessibilityRole="button"
+          accessibilityLabel="Wipe storage cache"
+          accessibilityState={{ disabled: isWiping }}
         >
           <RotateCcw size={12} color={TERMINAL.colors.error} />
           <Text style={styles.wipeButtonText}>
@@ -199,6 +258,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </Text>
         </TouchableOpacity>
       </ScrollView>
+
+      <ConfirmDialog
+        visible={confirmWipe}
+        title="Wipe all cache?"
+        message="This clears all generated stories and save data from browser storage. This action cannot be undone."
+        confirmLabel="Wipe"
+        cancelLabel="Cancel"
+        destructive
+        onConfirm={performWipeCache}
+        onCancel={() => setConfirmWipe(false)}
+        testID="home-wipe-dialog"
+      />
     </SafeAreaView>
   );
 };
@@ -221,6 +292,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    flexShrink: 1,
   },
   logoIcon: {
     width: 32,
@@ -235,12 +307,63 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: 'white',
     letterSpacing: -0.5,
+    flexShrink: 1,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
   },
   headerIconButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     padding: 8,
+  },
+  headerActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    height: 36,
+    maxWidth: 128,
+    overflow: 'hidden',
+  },
+  pipelineActionButton: {
+    width: 172,
+    maxWidth: 172,
+  },
+  pipelineActionButtonCompact: {
+    width: 132,
+    maxWidth: 132,
+    paddingHorizontal: 10,
+  },
+  headerActionContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    zIndex: 1,
+  },
+  headerActionButtonText: {
+    color: TERMINAL.colors.primary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  pipelineProgressTrack: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 3,
+    backgroundColor: 'rgba(59, 130, 246, 0.16)',
+  },
+  pipelineProgressFill: {
+    height: '100%',
+    backgroundColor: TERMINAL.colors.primary,
   },
   headerButtonText: {
     fontSize: 10,
@@ -327,7 +450,7 @@ const styles = StyleSheet.create({
   },
   storyCard: {
     width: (width - 56) / 2,
-    height: 240,
+    height: 312,
     borderRadius: 24,
     overflow: 'hidden',
     backgroundColor: '#1e2229',
@@ -335,13 +458,38 @@ const styles = StyleSheet.create({
   storyImage: {
     width: '100%',
     height: '100%',
-    opacity: 0.6,
   },
   storyOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
     padding: 16,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(15, 17, 21, 0.4)',
+  },
+  storyOverlayFadeFaint: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 140,
+    backgroundColor: 'rgba(15, 17, 21, 0.25)',
+  },
+  storyOverlayFadeMid: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 90,
+    backgroundColor: 'rgba(15, 17, 21, 0.45)',
+  },
+  storyOverlayFadeStrong: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 50,
+    backgroundColor: 'rgba(15, 17, 21, 0.6)',
   },
   storyBadge: {
     position: 'absolute',
@@ -351,6 +499,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
+    zIndex: 2,
   },
   storyBadgeText: {
     fontSize: 8,
@@ -384,7 +533,7 @@ const styles = StyleSheet.create({
   },
   lockedCard: {
     width: (width - 56) / 2,
-    height: 240,
+    height: 312,
     borderRadius: 24,
     borderWidth: 2,
     borderStyle: 'dashed',

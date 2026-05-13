@@ -13,6 +13,7 @@ import { compileStoryboardScenePacket, type StoryboardPanelSlot, type Storyboard
 import type { ImageDefectReport } from '../imageDefectGate';
 import { sanitizeStyleContaminationText } from '../imagePromptContracts';
 import { buildVisualGrammarDirective, formatVisualGrammarDirective, type VisualGrammarDirective } from './visualGrammar';
+import { auditSequenceContinuity } from '../../validators/sequenceContinuityAudit';
 
 let nodeFs: typeof import('fs/promises') | undefined;
 let sharp: any;
@@ -1178,6 +1179,11 @@ export class StoryboardV2Pipeline {
         this.sanitizedPanelLine('Relationship dynamic', panel.relationshipDynamic, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Visible cost', panel.visibleCost, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Visual narrative', panel.visualNarrative, rawArtStyle, packet, panel),
+        this.sanitizedPanelLine('Sequence objective', panel.sequenceIntent?.objective || packet.sequenceIntent?.objective, rawArtStyle, packet, panel),
+        this.sanitizedPanelLine('Sequence activity', panel.sequenceIntent?.activity || packet.sequenceIntent?.activity, rawArtStyle, packet, panel),
+        this.sanitizedPanelLine('Sequence role', panel.sequenceIntent?.beatRole, rawArtStyle, packet, panel),
+        this.sanitizedPanelLine('Sequence turn', panel.sequenceIntent?.turningPoint || packet.sequenceIntent?.turningPoint, rawArtStyle, packet, panel),
+        this.sanitizedPanelLine('Sequence visual thread', panel.sequenceIntent?.visualThread || packet.sequenceIntent?.visualThread, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Encounter storyboard role', panel.storyboardRole, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Encounter storyboard frame', panel.storyboardFrameId, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Branch context', panel.branchLabel, rawArtStyle, packet, panel),
@@ -1202,8 +1208,14 @@ export class StoryboardV2Pipeline {
       `Story: ${sanitizeStoryboardText(brief.story.title, rawArtStyle).text}. Episode ${brief.episode.number}: ${sanitizeStoryboardText(brief.episode.title, rawArtStyle).text}. Scene: ${sanitizeStoryboardText(packet.sceneName, rawArtStyle).text}.`,
       sanitizedLine('Setting', packet.setting, rawArtStyle),
       sanitizedLine('Scene mood arc', packet.mood, rawArtStyle),
+      sanitizedLine('Scene sequence objective', packet.sequenceIntent?.objective, rawArtStyle),
+      sanitizedLine('Scene sequence activity', packet.sequenceIntent?.activity, rawArtStyle),
+      sanitizedLine('Scene sequence obstacle', packet.sequenceIntent?.obstacle, rawArtStyle),
+      sanitizedLine('Scene sequence start/turn/end', [packet.sequenceIntent?.startState, packet.sequenceIntent?.turningPoint, packet.sequenceIntent?.endState].filter(Boolean).join(' -> '), rawArtStyle),
+      sanitizedLine('Scene sequence visual thread', packet.sequenceIntent?.visualThread, rawArtStyle),
       sanitizedLine('Branch/path context for this sheet', chunk.branchPath, rawArtStyle),
       'Make the staging expressive and alive: asymmetric poses, active hands, clear body language, and specific story moments rather than static portraits.',
+      'SEQUENCE CONTINUITY: this sheet is a visual sequence, not a random contact sheet. Preserve the sequence objective, obstacle, turning point, end state, and visual thread across adjacent panels.',
       'SHEET STYLE CONSISTENCY GATE: every panel on this sheet must share the same rendering language, palette logic, line/edge treatment, lighting language, texture density, and finish required by the ART STYLE and episodeStyleLockRef. Do not drift toward a different renderer or compensate by overcorrecting into a new style.',
       chunk.panels.some((panel) => panel.family.startsWith('encounter') || panel.family === 'storylet-aftermath')
         ? 'ENCOUNTER VISUAL DIRECTION: treat this as an escalating sequence from an action scene, heist, tense confrontation, or highly dramatic argument. Show back-and-forth pressure, reversals, movement, tactical changes, emotional intensity, and rising stakes across the panels.'
@@ -1626,7 +1638,7 @@ export class StoryboardV2Pipeline {
     packet: StoryboardScenePacket;
     panels: StoryboardPanelSlot[];
     mode: 'sheet' | 'refinement';
-  }): { passed: boolean; errors: string[]; sanitization: ReturnType<StoryboardV2Pipeline['collectSanitizationAudit']> } {
+  }): { passed: boolean; errors: string[]; sanitization: ReturnType<StoryboardV2Pipeline['collectSanitizationAudit']>; sequenceWarnings: string[] } {
     const { identifier, rawArtStyle, prompt, refs, packet, panels, mode } = params;
     const promptText = prompt.prompt || '';
     const errors: string[] = [];
@@ -1657,6 +1669,7 @@ export class StoryboardV2Pipeline {
       });
     if (leakedTerms.length > 0) errors.push(`sanitized prompt still contains blocked style terms: ${Array.from(new Set(leakedTerms)).join(', ')}`);
     const sanitization = this.collectSanitizationAudit(packet, panels, rawArtStyle);
+    const sequenceWarnings = auditSequenceContinuity(panels).map((issue) => `${issue.category} on ${issue.panelId}: ${issue.message}`);
     const audit = {
       identifier,
       mode,
@@ -1666,13 +1679,14 @@ export class StoryboardV2Pipeline {
       episodeStyleLockHash: referenceHash(this.episodeStyleLockRef),
       referenceRoles: refs.map((ref) => ref.role),
       sanitization,
+      sequenceWarnings,
     };
     this.promptAudits.push(audit);
     if (errors.length > 0) {
       this.styleConsistencyFailures.push({ identifier, error: errors.join(' ') });
       this.failedSlots.push({ slotId: identifier, error: errors.join(' ') });
     }
-    return { passed: errors.length === 0, errors, sanitization };
+    return { passed: errors.length === 0, errors, sanitization, sequenceWarnings };
   }
 
   private async refinePanelCrop(params: {

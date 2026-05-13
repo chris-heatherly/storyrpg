@@ -22,6 +22,7 @@ import {
 } from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
 import { PovClarityValidator } from '../validators/PovClarityValidator';
+import { auditFictionFirstTurns, FICTION_FIRST_TURN_DOMAINS } from '../validators/turnAudit';
 import type { CliffhangerPlan } from '../../types/seasonPlan';
 import {
   CHOICE_DENSITY_REQUIREMENTS,
@@ -277,6 +278,8 @@ export interface GeneratedBeat {
   emotionalRead?: string; // Visible face/body emotional cues
   relationshipDynamic?: string; // Spatial/power dynamic between characters
   mustShowDetail?: string; // Non-negotiable visual clue for this beat
+  dramaticIntent?: Beat['dramaticIntent']; // Objective/status/subtext metadata for image planning
+  sequenceIntent?: Beat['sequenceIntent']; // Multi-beat visual sequence objective/thread metadata
   allowDiegeticText?: boolean; // When true, text in the image is permitted (letter, sign, book)
   shotType?: 'establishing' | 'character' | 'action'; // Camera intent: environment-only, character-focused, or physical action
   intensityTier?: 'dominant' | 'supporting' | 'rest'; // Narrative intensity for scene-level pacing
@@ -304,6 +307,7 @@ export interface SceneContent {
   keyMoments: string[];
   sceneTakeaways?: string[];
   transitionIn?: string;
+  sequenceIntent?: Beat['sequenceIntent'];
 
   // Continuity notes
   continuityNotes: string[];
@@ -389,6 +393,7 @@ You are a master prose writer who brings scene blueprints to life with vivid, im
 ### Scene Craft
 - Every scene needs a purpose players can feel: plot pressure, relationship movement, theme pressure, information gain, or meaningful aftermath.
 - Identify the scene's key moment and build the beat sequence toward it.
+- Prefer turns over topics. A beat should visibly change leverage, trust, evidence, proximity, identity, risk, resources, or knowledge; do not let scenes become chains of explanation.
 - Include scene takeaways: what the player should learn, feel, or understand by the end.
 - Use natural transition phrasing in continuityNotes or transitionIn ("Later that night", "Back at the observatory") when time or place shifts.
 - End the final beat with forward pressure into the next beat, choice, scene, or episode.
@@ -534,10 +539,37 @@ For each beat object, include these fields so image agents do not have to guess:
 - "emotionalRead": What is visibly readable in face/body language, naming each character. Leave empty ("") for "establishing" shots.
 - "relationshipDynamic": Power/proximity/tension between named characters. Leave empty ("") for "establishing" shots.
 - "mustShowDetail": One specific visual clue that must appear.
+- "dramaticIntent": REQUIRED for non-establishing beats. Include: characterObjectives (object keyed by character name/id), obstacle, statusBefore, statusAfter, subtext, visibleTurn, visualSubtextCue.
+- "sequenceIntent": REQUIRED-BY-PROCESS for every non-establishing beat in newly generated multi-beat scenes. The field is optional for old/cached content compatibility, but new output should include objective, activity, obstacle, startState, turningPoint, endState, visualThread, optional mechanicThread, and beatRole.
 - "intensityTier": REQUIRED. One of "dominant", "supporting", or "rest". Assign based on the Narrative Intensity Tiering rules above. A scene needs 1-2 dominant beats, 1-2 rest beats, and the remainder as supporting. Vary the intensity across the scene.
 - "visualContinuity": OPTIONAL but encouraged. Use it to make this beat flow from the previous beat as the next full-screen image: shotType, cameraAngle, focalCharacterId, blocking, proximity, motifOrProp, previousBeatId, transitionIntent, panelMode. Default panelMode is "single". Do NOT request panels, collages, split screens, contact sheets, or multiple moments inside the same image.
 
 Avoid abstract-only phrases like "tension rises" or "emotion deepens." Describe what is physically visible. ALWAYS use character names — never generic references.
+
+## Dramatic Intent (for ALL character-visible beats)
+
+A character-visible beat is never just information transfer. It is someone pursuing something under resistance. For every non-establishing beat:
+- Define what each visible character wants RIGHT NOW, not a season-level desire.
+- Name the obstacle that blocks the objective.
+- Track status/leverage before and after the beat, even if the shift is subtle.
+- Name the subtext beneath the surface action/topic.
+- Make "visibleTurn" the thing a viewer could understand with no captions.
+- Make "visualSubtextCue" a concrete prop, gesture, distance change, posture shift, reaction, or environmental detail.
+
+Quiet/rest beats are allowed, but still need a visible turn: a hand stops mid-task, an object changes possession, someone creates distance, a routine slips, or a face/body reaction betrays the inner change.
+
+## Sequence Intent (for storyboard continuity)
+
+A scene storyboard is a sequence, not a bag of shots. For newly generated multi-beat scenes, include a scene-level "sequenceIntent" and copy/refine it onto each non-establishing beat:
+- objective: what this sequence is trying to accomplish.
+- activity: the concrete visible activity carrying it, such as walking to the store, having an argument, searching a room, negotiating, escaping, sword fighting, recovering after a failure.
+- obstacle: what resists the objective.
+- startState / turningPoint / endState: how the sequence visibly begins, bends, and hands off.
+- visualThread: the prop, distance, blocking, clue, wound, gesture, or motif that ties panels together.
+- mechanicThread: optional fiction-first hook such as trust, leverage, clue, danger, resource, identity, reputation, callback, or encounter clock.
+- beatRole: setup, pressure, escalation, turn, consequence, handoff, or aftermath.
+
+Use sequenceIntent to make consecutive panels read as "setup -> pressure -> turn -> consequence" rather than unrelated illustrations.
 
 **CHARACTER APPEARANCE CONSISTENCY (CRITICAL)**: When describing characters in beat text, visual contract fields, or any visual/descriptive context, you MUST use their canonical Physical Appearance as listed in the Characters section. NEVER invent or change hair color, eye color, body type, or other physical attributes. If a character has "blonde hair" in their physical description, ALWAYS write "blonde hair", NEVER "dark hair" or any other variant. The Physical Appearance entries are the source of truth.
 
@@ -683,6 +715,10 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       content.transitionIn = String(content.transitionIn);
     }
 
+    if (!content.sequenceIntent || this.isWeakSequenceIntent(content.sequenceIntent)) {
+      content.sequenceIntent = this.deriveSceneSequenceIntent(content, input);
+    }
+
     if (!content.beats) {
       content.beats = [];
     } else if (!Array.isArray(content.beats)) {
@@ -762,6 +798,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
 
       // Ensure visual contract fields exist and are concrete enough for downstream image agents.
       this.ensureBeatVisualContract(beat);
+      this.ensureBeatSequenceIntent(beat, content, i);
     }
 
     // Guard against degenerate choice scenes. If the writer returns only one beat for a
@@ -772,6 +809,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
     // Re-run visual contract normalization in case we synthesized structural beats.
     for (const beat of content.beats) {
       this.ensureBeatVisualContract(beat);
+      this.ensureBeatSequenceIntent(beat, content, content.beats.indexOf(beat));
     }
 
     // Normalize beat IDs and fix nextBeatId references
@@ -1095,6 +1133,12 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 - moodProgression should show the scene's tension or emotional movement from start to finish.
 - Give dialogue scenes physical business or situational pressure that fits the moment; avoid static meetings.
 - Each non-rest beat should include a concrete change in action, leverage, information, relationship pressure, or emotional posture.
+- Give the scene a storyboardable sequenceIntent: objective, visible activity, obstacle, startState, turningPoint, endState, visualThread, optional mechanicThread. Treat it as required for new output but backward-compatible for old content.
+- Each non-establishing beat should include sequenceIntent with a beatRole so the storyboard can see setup -> pressure -> escalation -> turn -> consequence/handoff.
+- Every non-rest, non-establishing beat should answer: "What visibly changed by the end?"
+- Prefer turns over topics: not "they discuss the charm," but "the charm changes hands and Mrs. Constantinou loses the ability to dismiss what she saw."
+- Turn domains to use in prose, dramaticIntent, and existing mechanics hooks: ${FICTION_FIRST_TURN_DOMAINS.join(', ')}.
+- When a turn is mechanically relevant, use existing fields only: onShow, textVariants, callbackHookId, plantsThreadId, paysOffThreadId, plotPointType, dramaticIntent, or choice/encounter setup that will carry the residue.
 - Preserve rests and restrained interiority where they serve the player connection; do not force constant combat, argument, or escalation.
 
 ### Genre-Aware Jeopardy
@@ -1104,6 +1148,7 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 - **Dramatic Question**: ${input.sceneBlueprint.dramaticQuestion}
 - **Want vs Need**: ${input.sceneBlueprint.wantVsNeed}
 - **Conflict Engine**: ${input.sceneBlueprint.conflictEngine}
+- **Sequence Intent**: ${this.formatSequenceIntent(input.sceneBlueprint.sequenceIntent)}
 
 ### Key Beats to Hit
 ${input.sceneBlueprint.keyBeats.map(b => `- ${b}`).join('\n')}
@@ -1233,9 +1278,11 @@ Create the scene content following the SceneContent schema. Include:
 4. Natural flow between beats
 5. textVariants where state should affect content
 6. Full beat visual contract fields (visualMoment, primaryAction, emotionalRead, relationshipDynamic, mustShowDetail, intensityTier) for every beat
-7. Optional visualContinuity metadata when it clarifies beat-to-beat flow; keep panelMode as "single" unless an explicit UX/config flag says otherwise
-8. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id
-9. sceneTakeaways and transitionIn when they clarify purpose and flow
+7. dramaticIntent for every non-establishing beat, including visibleTurn and visualSubtextCue
+8. scene-level sequenceIntent and beat-level sequenceIntent for every non-establishing beat in new multi-beat scenes
+9. Optional visualContinuity metadata when it clarifies beat-to-beat flow; keep panelMode as "single" unless an explicit UX/config flag says otherwise
+10. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id
+11. sceneTakeaways and transitionIn when they clarify purpose and flow
 
 Respond with valid JSON matching the SceneContent type.
 `;
@@ -1413,6 +1460,259 @@ Respond with valid JSON matching the SceneContent type.
     if (!beat.mustShowDetail || this.isAbstractOnly(beat.mustShowDetail)) {
       beat.mustShowDetail = this.deriveMustShowDetail(text);
     }
+    if (!beat.dramaticIntent || this.isWeakDramaticIntent(beat.dramaticIntent)) {
+      beat.dramaticIntent = this.deriveDramaticIntent(beat, subject);
+    }
+    this.strengthenStaticVisualContract(beat, subject);
+  }
+
+  private isWeakStaticAction(action?: string): boolean {
+    const normalized = (action || '').trim().toLowerCase();
+    if (!normalized || normalized.length < 8) return true;
+    return /\b(takes? a decisive physical action|reacts? under pressure|reports?|explains?|addresses?|observes?|focuses|voices?|deflects?|compliments?|speaks?|talks?|looks?|watches?|thinks?|realizes?|notices?|listens?|waits?|smiles?|continues)\b/.test(normalized);
+  }
+
+  private isWeakDramaticIntent(intent?: Beat['dramaticIntent']): boolean {
+    if (!intent) return true;
+    return !intent.visibleTurn || !intent.visualSubtextCue || !intent.obstacle;
+  }
+
+  private deriveDramaticIntent(beat: GeneratedBeat, subject: string): NonNullable<Beat['dramaticIntent']> {
+    const text = (beat.text || '').trim();
+    const primaryAction = beat.primaryAction || this.derivePrimaryAction(text, subject);
+    const visibleTurn = this.deriveVisibleTurn(text, primaryAction, subject);
+    const visualSubtextCue = this.deriveVisualSubtextCue(text, primaryAction, subject);
+    const obstacle = this.deriveIntentObstacle(text);
+    const objective = this.deriveCharacterObjective(text, subject);
+    return {
+      ...(beat.dramaticIntent || {}),
+      characterObjectives: {
+        ...(beat.dramaticIntent?.characterObjectives || {}),
+        [subject]: beat.dramaticIntent?.characterObjectives?.[subject] || objective,
+      },
+      obstacle: beat.dramaticIntent?.obstacle || obstacle,
+      statusBefore: beat.dramaticIntent?.statusBefore || this.deriveStatusBefore(text, subject),
+      statusAfter: beat.dramaticIntent?.statusAfter || this.deriveStatusAfter(text, primaryAction, subject),
+      subtext: beat.dramaticIntent?.subtext || this.deriveSubtext(text),
+      visibleTurn: beat.dramaticIntent?.visibleTurn || visibleTurn,
+      visualSubtextCue: beat.dramaticIntent?.visualSubtextCue || visualSubtextCue,
+    };
+  }
+
+  private deriveVisibleTurn(text: string, action: string, subject: string): string {
+    const lowered = text.toLowerCase();
+    if (/(lie|lying|deflect|deny|glitch|imagining|casual|normal)/.test(lowered)) {
+      return `${subject}'s composed surface slips through a small evasive movement.`;
+    }
+    if (/(report|explain|warn|tell|says?|asks?|voice|speaks?)/.test(lowered)) {
+      return `${subject} turns the exchange by making the hidden pressure physically visible.`;
+    }
+    if (/(observe|watch|study|notice|realize|understand)/.test(lowered)) {
+      return `${subject} notices the decisive clue and their posture changes around it.`;
+    }
+    if (/(phone|text|message|screen|photo|app)/.test(lowered)) {
+      return `${subject} uses the phone as evidence, shifting the room's attention to the screen.`;
+    }
+    if (/(charm|ring|key|letter|map|knife|gun|cup|coffee|flower|pansy|bag|napkin)/.test(lowered)) {
+      return `${subject} changes the beat by moving or revealing the key object.`;
+    }
+    const escapedSubject = subject.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return `${subject} ${action.replace(new RegExp(`^${escapedSubject}\\s+`, 'i'), '')}, visibly changing the balance of the moment.`;
+  }
+
+  private deriveVisualSubtextCue(text: string, action: string, subject: string): string {
+    const lowered = text.toLowerCase();
+    const prop = text.match(/\b(phone|text|screen|photo|charm|ring|key|letter|map|knife|gun|cup|coffee|flower|pansy|shopping bag|napkin|counter|door|chair|window)\b/i)?.[0];
+    if (prop) return `${subject}'s hands and attention lock onto the ${prop}, making the subtext visible.`;
+    if (/(lie|deflect|deny|casual|normal|smile)/.test(lowered)) {
+      return `${subject}'s smile, averted eyes, and busy hands betray what the words avoid.`;
+    }
+    if (/(fear|panic|worry|guilt|shame|hurt)/.test(lowered)) {
+      return `${subject}'s weight shifts back while their hands tighten, exposing the feeling they try to contain.`;
+    }
+    if (/(approach|enter|leave|walk|step|back away|retreat)/.test(lowered)) {
+      return `The changing distance around ${subject} shows who is gaining or losing control.`;
+    }
+    return `${subject}'s hands, gaze, and distance from the other characters reveal the beat beneath the words.`;
+  }
+
+  private strengthenStaticVisualContract(beat: GeneratedBeat, subject: string): void {
+    if (beat.shotType === 'establishing') return;
+    const intent = beat.dramaticIntent || this.deriveDramaticIntent(beat, subject);
+    const needsStrength = this.isWeakStaticAction(beat.primaryAction);
+    if (needsStrength) {
+      beat.primaryAction = this.derivePhysicalBusinessFromIntent(beat.text || '', subject, intent);
+    }
+    if (!beat.visualMoment || this.isAbstractOnly(beat.visualMoment) || this.isWeakStaticAction(beat.visualMoment)) {
+      beat.visualMoment = `${intent.visibleTurn} ${intent.visualSubtextCue}`.trim();
+    }
+    const visibleTurn = intent.visibleTurn || this.deriveVisibleTurn(beat.text || '', beat.primaryAction || '', subject);
+    const cue = intent.visualSubtextCue || this.deriveVisualSubtextCue(beat.text || '', beat.primaryAction || '', subject);
+    beat.dramaticIntent = { ...intent, visibleTurn, visualSubtextCue: cue };
+    if (!beat.mustShowDetail || /one concrete prop|body detail|key prop/i.test(beat.mustShowDetail)) {
+      beat.mustShowDetail = cue;
+    }
+    if (!beat.relationshipDynamic || this.isAbstractOnly(beat.relationshipDynamic)) {
+      beat.relationshipDynamic = `${intent.statusBefore || 'status is unsettled'} -> ${intent.statusAfter || 'status visibly shifts'}`;
+    }
+  }
+
+  private formatSequenceIntent(intent?: Beat['sequenceIntent']): string {
+    if (!intent) return 'Derive from dramaticQuestion, conflictEngine, and keyBeats.';
+    return [
+      `objective=${intent.objective || 'derive'}`,
+      `activity=${intent.activity || 'derive'}`,
+      `obstacle=${intent.obstacle || 'derive'}`,
+      `start=${intent.startState || 'derive'}`,
+      `turn=${intent.turningPoint || 'derive'}`,
+      `end=${intent.endState || 'derive'}`,
+      `visualThread=${intent.visualThread || 'derive'}`,
+      `mechanicThread=${intent.mechanicThread || 'optional'}`,
+    ].join('; ');
+  }
+
+  private ensureBeatSequenceIntent(beat: GeneratedBeat, content: SceneContent, index: number): void {
+    if (beat.shotType === 'establishing') return;
+    const sceneIntent = content.sequenceIntent || this.deriveSceneSequenceIntent(content);
+    if (!beat.sequenceIntent || this.isWeakSequenceIntent(beat.sequenceIntent)) {
+      beat.sequenceIntent = {
+        ...sceneIntent,
+        ...(beat.sequenceIntent || {}),
+        beatRole: beat.sequenceIntent?.beatRole || this.deriveSequenceBeatRole(index, content.beats.length, beat),
+        turningPoint: beat.sequenceIntent?.turningPoint || beat.dramaticIntent?.visibleTurn || sceneIntent?.turningPoint,
+        visualThread: beat.sequenceIntent?.visualThread || beat.dramaticIntent?.visualSubtextCue || sceneIntent?.visualThread,
+      };
+    }
+  }
+
+  private isWeakSequenceIntent(intent?: Beat['sequenceIntent']): boolean {
+    if (!intent) return true;
+    return !intent.objective || !intent.activity || !intent.turningPoint || !intent.endState || !intent.visualThread;
+  }
+
+  private deriveSceneSequenceIntent(content: SceneContent, input?: SceneWriterInput): NonNullable<Beat['sequenceIntent']> {
+    const blueprint = input?.sceneBlueprint;
+    const beats = content.beats || [];
+    const firstBeat = beats.find((beat) => beat.shotType !== 'establishing') || beats[0];
+    const turnBeat = beats.find((beat) => beat.isClimaxBeat || beat.isKeyStoryBeat || beat.intensityTier === 'dominant') || beats[Math.max(0, Math.floor(beats.length / 2))] || firstBeat;
+    const lastBeat = beats[beats.length - 1] || firstBeat;
+    const combined = [
+      blueprint?.description,
+      blueprint?.dramaticQuestion,
+      blueprint?.conflictEngine,
+      ...(blueprint?.keyBeats || []),
+      ...beats.map((beat) => beat.text),
+    ].filter(Boolean).join(' ');
+    const subject = firstBeat?.speaker || content.charactersInvolved?.[0] || '{{player.name}}';
+    return {
+      ...(blueprint?.sequenceIntent || content.sequenceIntent || {}),
+      sequenceId: blueprint?.sequenceIntent?.sequenceId || content.sequenceIntent?.sequenceId || `${content.sceneId || 'scene'}-sequence-1`,
+      objective: blueprint?.sequenceIntent?.objective || content.sequenceIntent?.objective || this.deriveSequenceObjective(combined, subject),
+      activity: blueprint?.sequenceIntent?.activity || content.sequenceIntent?.activity || this.deriveSequenceActivity(combined),
+      obstacle: blueprint?.sequenceIntent?.obstacle || content.sequenceIntent?.obstacle || this.deriveIntentObstacle(combined),
+      startState: blueprint?.sequenceIntent?.startState || content.sequenceIntent?.startState || this.deriveSequenceState(firstBeat, 'The sequence starts with pressure still unresolved.'),
+      turningPoint: blueprint?.sequenceIntent?.turningPoint || content.sequenceIntent?.turningPoint || turnBeat?.dramaticIntent?.visibleTurn || this.deriveVisibleTurn(turnBeat?.text || combined, turnBeat?.primaryAction || 'acts', subject),
+      endState: blueprint?.sequenceIntent?.endState || content.sequenceIntent?.endState || this.deriveSequenceState(lastBeat, 'By the end, the relationship, leverage, knowledge, or risk has visibly changed.'),
+      visualThread: blueprint?.sequenceIntent?.visualThread || content.sequenceIntent?.visualThread || this.deriveVisualSubtextCue(combined, turnBeat?.primaryAction || '', subject),
+      mechanicThread: blueprint?.sequenceIntent?.mechanicThread || content.sequenceIntent?.mechanicThread || this.deriveSequenceMechanicThread(combined),
+    };
+  }
+
+  private deriveSequenceBeatRole(index: number, count: number, beat: GeneratedBeat): NonNullable<Beat['sequenceIntent']>['beatRole'] {
+    if (beat.intensityTier === 'rest') return index >= count - 1 ? 'aftermath' : 'pressure';
+    if (index === 0) return 'setup';
+    if (beat.isClimaxBeat || beat.isKeyStoryBeat || beat.intensityTier === 'dominant') return 'turn';
+    if (index >= count - 1) return beat.isChoicePoint ? 'handoff' : 'consequence';
+    return index < Math.max(2, Math.floor(count / 2)) ? 'pressure' : 'escalation';
+  }
+
+  private deriveSequenceObjective(text: string, subject: string): string {
+    const lowered = text.toLowerCase();
+    if (/(argue|accuse|confront|apologize|forgive)/.test(lowered)) return `${subject} tries to change the relationship without losing control of the room.`;
+    if (/(walk|travel|store|market|street|road|cross)/.test(lowered)) return `${subject} tries to reach the next place while the unresolved pressure follows along.`;
+    if (/(search|investigat|clue|evidence|proof|discover)/.test(lowered)) return `${subject} tries to make hidden information visible and actionable.`;
+    if (/(fight|duel|strike|battle|escape|chase|run)/.test(lowered)) return `${subject} tries to survive the pressure and change the tactical position.`;
+    if (/(rest|recover|aftermath|quiet|settle)/.test(lowered)) return `${subject} tries to absorb what happened and recalibrate before the next pressure.`;
+    return `${subject} tries to move the scene from uncertainty to a changed state.`;
+  }
+
+  private deriveSequenceActivity(text: string): string {
+    const lowered = text.toLowerCase();
+    if (/(walk|travel|store|market|street|road|cross)/.test(lowered)) return 'moving through the location while unresolved tension changes distance and attention';
+    if (/(argue|accuse|confront)/.test(lowered)) return 'a confrontation carried through blocking, objects, and shifting status';
+    if (/(search|investigat|clue|evidence|proof|discover)/.test(lowered)) return 'an investigation where attention moves from room to clue to reaction';
+    if (/(fight|duel|strike|battle)/.test(lowered)) return 'a physical exchange where position, control, and cost change';
+    if (/(escape|chase|run)/.test(lowered)) return 'an escape or chase where the route and risk keep changing';
+    if (/(rest|recover|aftermath|quiet|settle)/.test(lowered)) return 'a quiet recovery sequence where posture, distance, and routine reveal the change';
+    return 'a visible exchange of pressure, reaction, and consequence';
+  }
+
+  private deriveSequenceState(beat: GeneratedBeat | undefined, fallback: string): string {
+    return beat?.dramaticIntent?.statusAfter || beat?.dramaticIntent?.visibleTurn || beat?.visualMoment || beat?.primaryAction || fallback;
+  }
+
+  private deriveSequenceMechanicThread(text: string): string | undefined {
+    const lowered = text.toLowerCase();
+    if (/(trust|believe|doubt|betray|forgive)/.test(lowered)) return 'trust';
+    if (/(evidence|proof|clue|photo|phone|letter|key|charm)/.test(lowered)) return 'clue/evidence';
+    if (/(leverage|control|power|corner)/.test(lowered)) return 'leverage';
+    if (/(danger|risk|threat|escape|wound|cost)/.test(lowered)) return 'danger/risk';
+    if (/(identity|mercy|justice|honest|values?)/.test(lowered)) return 'identity';
+    if (/(resource|money|weapon|supplies|inventory)/.test(lowered)) return 'resource';
+    return undefined;
+  }
+
+  private derivePhysicalBusinessFromIntent(text: string, subject: string, intent: NonNullable<Beat['dramaticIntent']>): string {
+    const lowered = text.toLowerCase();
+    if (/(phone|text|message|screen|photo|app)/.test(lowered)) return `${subject} angles the phone like evidence while watching for a reaction`;
+    if (/(charm|ring|key|letter|map|knife|gun|cup|coffee|flower|pansy|bag|napkin)/.test(lowered)) return `${subject} brings the key object into the space between the characters`;
+    if (/(deflect|deny|glitch|imagining|casual|normal|smile|compliment)/.test(lowered)) return `${subject} keeps their hands busy to hide the evasion`;
+    if (/(report|explain|warn|tell|says?|asks?|voice|speaks?)/.test(lowered)) return `${subject} leans in and uses a concrete gesture to press the point`;
+    if (/(observe|watch|study|notice|realize|understand)/.test(lowered)) return `${subject} shifts position to study the clue everyone else is avoiding`;
+    if (/(guilt|shame|fear|hurt|worry)/.test(lowered)) return `${subject} pulls back as the feeling becomes visible in their hands and shoulders`;
+    const cue = intent.visualSubtextCue || 'a visible body-language cue';
+    return `${subject} changes the room's leverage through ${cue}`;
+  }
+
+  private deriveCharacterObjective(text: string, subject: string): string {
+    const lowered = text.toLowerCase();
+    if (/(deflect|deny|glitch|imagining|casual|normal)/.test(lowered)) return 'avoid revealing the truth while preserving control';
+    if (/(ask|question|look at this|show|evidence|proof|photo)/.test(lowered)) return 'make the other person acknowledge what is visible';
+    if (/(report|warn|tell|explain)/.test(lowered)) return 'make someone else understand the danger or truth';
+    if (/(observe|watch|study|notice|realize)/.test(lowered)) return 'read the situation without exposing too much';
+    if (/(leave|door|walk away|retreat)/.test(lowered)) return 'escape the exchange before the real feeling is exposed';
+    return `${subject} wants to shift the moment without saying everything directly`;
+  }
+
+  private deriveIntentObstacle(text: string): string {
+    const lowered = text.toLowerCase();
+    if (/(lie|deny|deflect|secret|hiding)/.test(lowered)) return 'someone is hiding the truth';
+    if (/(guilt|shame|fear|hurt|worry)/.test(lowered)) return 'emotion makes the direct path risky';
+    if (/(trust|love|relationship|family)/.test(lowered)) return 'the relationship cost is immediate';
+    if (/(proof|evidence|photo|phone|screen|charm|key|letter)/.test(lowered)) return 'the evidence is visible but contested';
+    return 'the other character resists the surface objective';
+  }
+
+  private deriveStatusBefore(text: string, subject: string): string {
+    if (/(enters?|arrives?|approaches?)/i.test(text)) return `${subject} enters without full control of the room`;
+    if (/(phone|evidence|proof|charm|key|letter)/i.test(text)) return 'the truth is still deniable';
+    return 'leverage is unresolved at the start of the beat';
+  }
+
+  private deriveStatusAfter(text: string, action: string, subject: string): string {
+    if (/(leave|walks? away|retreat|back away)/i.test(text)) return `${subject} changes status by creating distance`;
+    if (/(shows?|reveals?|holds? up|photo|proof|evidence|charm|key|letter)/i.test(text)) return 'the visible evidence claims leverage';
+    if (/(deny|deflect|glitch|imagining)/i.test(text)) return 'control depends on whether the evasion holds';
+    return `${subject}'s visible action shifts attention and leverage`;
+  }
+
+  private deriveSubtext(text: string): string {
+    const lowered = text.toLowerCase();
+    if (/(deflect|deny|glitch|imagining|casual|normal)/.test(lowered)) return 'the surface reassurance is a cover for fear of exposure';
+    if (/(guilt|shame|violation)/.test(lowered)) return 'the character is paying an emotional cost for the choice';
+    if (/(trust|love|hurt|wrong)/.test(lowered)) return 'the relationship is being tested beneath the words';
+    if (/(proof|evidence|photo|phone|charm|key|letter)/.test(lowered)) return 'an object is forcing an unspoken truth into the open';
+    return 'the visible behavior reveals more than the spoken topic admits';
   }
 
   private deriveShotType(beat: GeneratedBeat, text: string): 'establishing' | 'character' | 'action' {
@@ -1462,7 +1762,7 @@ Respond with valid JSON matching the SceneContent type.
     if (match) {
       return `${subject} ${match[0]}`;
     }
-    return `${subject} takes a decisive physical action`;
+    return `${subject} changes the room's leverage through a visible gesture, object cue, or shift in distance`;
   }
 
   private deriveEmotionalRead(text: string, speakerMood?: string): string {
@@ -1574,6 +1874,10 @@ Respond with valid JSON matching the SceneContent type.
       for (const issue of povResult.issues) {
         issues.push(`POV CLARITY - Beat "${issue.beatId}": ${issue.issue} ${issue.suggestion}`);
       }
+    }
+
+    for (const issue of auditFictionFirstTurns(content.beats || [])) {
+      issues.push(`FICTION-FIRST TURN ${issue.category.toUpperCase()} - Beat "${issue.beatId}": ${issue.message} ${issue.suggestion}`);
     }
 
     // Check for missing choice point

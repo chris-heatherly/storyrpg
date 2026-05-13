@@ -22,7 +22,7 @@ import {
   buildGenreAwareJeopardyGuidance,
 } from '../prompts/storytellingPrinciples';
 import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
-import type { EncounterCost, EncounterNarrativeStyle, EncounterType } from '../../types';
+import type { EncounterCost, EncounterNarrativeStyle, EncounterType, NarrativeSequenceIntent } from '../../types';
 import type { CliffhangerPlan } from '../../types/seasonPlan';
 import type { EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 
@@ -177,6 +177,7 @@ export interface SceneBlueprint {
 
   // Key beats to hit
   keyBeats: string[];
+  sequenceIntent?: NarrativeSequenceIntent;
 
   // Choice point (if any)
   choicePoint?: {
@@ -712,9 +713,15 @@ REQUIREMENTS:
 
       let blueprint: EpisodeBlueprint;
       try {
-        blueprint = this.parseJSON<EpisodeBlueprint>(response);
+        blueprint = this.unwrapDynamoTypedJson(this.parseJSON<EpisodeBlueprint>(response)) as EpisodeBlueprint;
       } catch (parseError) {
         console.error(`[StoryArchitect] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
+        if (retryCount < maxRetries) {
+          this.lastStructuralFeedback = [
+            'Previous response was not parseable strict JSON. Return one plain JSON object only: no markdown, no comments, no trailing commas, no DynamoDB typed wrappers like {"S":"value"} or {"L":[...]}.',
+          ];
+          return this.execute(input, retryCount + 1);
+        }
         throw parseError;
       }
 
@@ -981,10 +988,17 @@ REQUIREMENTS:
                                  errorMsg.includes('Bottleneck scene') ||
                                  errorMsg.includes('Starting scene') ||
                                  errorMsg.includes('must have at least');
+      const isParseError = errorMsg.includes('Failed to parse JSON response') ||
+                           errorMsg.includes('Expected double-quoted property name') ||
+                           errorMsg.includes('Unexpected token');
 
-      if ((isChoiceDensityError || isEncounterPlanningError || isStructuralError) && retryCount < maxRetries) {
+      if ((isChoiceDensityError || isEncounterPlanningError || isStructuralError || isParseError) && retryCount < maxRetries) {
         console.log(`[StoryArchitect] Retrying due to structural blueprint issue: ${errorMsg.slice(0, 120)}`);
-        this.lastStructuralFeedback = [errorMsg];
+        this.lastStructuralFeedback = isParseError
+          ? [
+              'Previous response was not parseable strict JSON. Return one plain JSON object only: no markdown, no comments, no trailing commas, no DynamoDB typed wrappers like {"S":"value"} or {"L":[...]}.',
+            ]
+          : [errorMsg];
         return this.execute(input, retryCount + 1);
       }
 
@@ -993,6 +1007,37 @@ REQUIREMENTS:
         error: errorMsg,
       };
     }
+  }
+
+  private unwrapDynamoTypedJson(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.unwrapDynamoTypedJson(item));
+    }
+    if (!value || typeof value !== 'object') return value;
+
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (keys.length === 1) {
+      if ('S' in record) return String(record.S ?? '');
+      if ('N' in record) {
+        const asNumber = Number(record.N);
+        return Number.isFinite(asNumber) ? asNumber : record.N;
+      }
+      if ('BOOL' in record) return Boolean(record.BOOL);
+      if ('NULL' in record) return null;
+      if ('L' in record && Array.isArray(record.L)) {
+        return record.L.map((item) => this.unwrapDynamoTypedJson(item));
+      }
+      if ('M' in record && record.M && typeof record.M === 'object') {
+        return this.unwrapDynamoTypedJson(record.M);
+      }
+    }
+
+    const out: Record<string, unknown> = {};
+    for (const [key, inner] of Object.entries(record)) {
+      out[key] = this.unwrapDynamoTypedJson(inner);
+    }
+    return out;
   }
 
   private buildPrompt(input: StoryArchitectInput): string {
@@ -1057,6 +1102,10 @@ ${input.memoryContext}
 - **Intensity guidance in keyBeats**: For each scene, indicate which keyBeats are the dominant peak(s) (prefix with "PEAK:") and suggest where rest/breathing beats should fall (prefix with "REST:"). The SceneWriter uses this to shape the intensity arc. Example: ["REST: the quiet village at dawn", "PEAK: confrontation erupts at the market", "the aftermath settles"]
 - **Pressure, not mandatory combat**: Every scene should create story pressure, but the pressure must match the genre and moment. Use physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure as appropriate.
 - **Decisive beats**: keyBeats should include specific actions, surprising complications, character development, visible consequences, and forward pressure.
+- **Turn ladder, not topic list**: Frame each scene as an active situation. keyBeats should bend or flip something: trust shifts, evidence changes hands, a secret becomes harder to deny, leverage is gained/lost, distance/closeness changes, danger/reputation/resources change, identity is expressed, or knowledge becomes actionable.
+- **Sequence intent, not random panels**: Every multi-beat scene should include \`sequenceIntent\` that names the objective, visible activity, obstacle, startState, turningPoint, endState, visualThread, and optional mechanicThread. This field is optional for old content compatibility, but REQUIRED-BY-PROCESS for new generated scenes with multiple beats or storyboard panels.
+- **Fiction-first mechanics**: When a key turn should matter later, route it through existing fields only: choice stakes/consequenceDomain, encounterSetupContext, encounterBuildup, flags/relationships implied by choicePoint stakes, or callback residue. Do not invent a new mechanics layer.
+- **Rest scenes still turn**: REST beats may be quiet, but they should show settling, contrast, recovery, relationship recalibration, or the cost of the prior pressure.
 - **Plans go wrong**: When characters follow a plan, include a plausible complication that forces improvisation unless the scene is deliberately a rest beat.
 - **No arbitrary escalation treadmill**: Escalate the episode's overall pressure, but do not make every conversation an argument or every beat more dangerous than everything before it.
 
@@ -1066,7 +1115,7 @@ ${CRAFT_PRESSURE_GUIDANCE}
 ${buildGenreAwareJeopardyGuidance(input.genre)}
 
 Apply the craft guidance through existing fields only: \`keyBeats\`, \`dramaticQuestion\`, \`conflictEngine\`,
-\`encounterBeatPlan\`, \`encounterBuildup\`, choice stakes, and cliffhanger planning. Do not invent
+\`sequenceIntent\`, \`encounterBeatPlan\`, \`encounterBuildup\`, \`encounterSetupContext\`, choice stakes, consequence domains, and cliffhanger planning. Do not invent
 a new chapter-beat layer.
 ${STORY_ARCHITECT_BLUEPRINT_EXAMPLE}
 ${this.buildSeasonPlanDirectivesSection(input)}
@@ -1099,6 +1148,16 @@ ${this.buildCliffhangerPlanSection(input)}
       "purpose": "bottleneck",
       "npcsPresent": ["npc-id"],
       "narrativeFunction": "What this scene accomplishes",
+      "sequenceIntent": {
+        "objective": "What this visual sequence is trying to accomplish",
+        "activity": "The concrete visible activity carrying it",
+        "obstacle": "What resists or complicates the objective",
+        "startState": "Visible/emotional/mechanical state at the start",
+        "turningPoint": "The moment the sequence bends",
+        "endState": "What has changed by the end",
+        "visualThread": "Recurring prop, distance, blocking, wound, clue, gesture, or motif",
+        "mechanicThread": "Optional fiction-first hook such as trust, leverage, clue, danger, resource, identity, callback, or encounter clock"
+      },
       "keyBeats": ["beat 1", "beat 2"],
       "leadsTo": ["scene-2"],
       "encounterBuildup": "Establishes the antagonist's power and the protagonist's vulnerability — makes the encounter's stakes personal",
@@ -1177,6 +1236,7 @@ ${this.buildCliffhangerPlanSection(input)}
 CRITICAL REQUIREMENTS:
 1. The "scenes" array must contain 3-${input.targetSceneCount} scenes (cap—use fewer if story doesn't need more)
 2. Each scene MUST have: id, name, description, location, mood, purpose, npcsPresent, narrativeFunction, keyBeats, leadsTo
+2a. Each newly generated multi-beat scene SHOULD include sequenceIntent. Missing sequenceIntent is tolerated for compatibility/fallbacks, but lowers storyboard QA quality.
 3. purpose MUST be one of: "bottleneck", "branch", "transition"
 4. startingSceneId MUST match one of the scene ids
 5. Return ONLY valid JSON, no markdown, no extra text

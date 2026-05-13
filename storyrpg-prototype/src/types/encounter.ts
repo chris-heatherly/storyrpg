@@ -9,7 +9,7 @@ import type {
   ReminderPlan,
   ChoiceFeedbackCue,
 } from './choice';
-import type { Beat } from './content';
+import type { Beat, NarrativeSequenceIntent } from './content';
 
 export type EncounterType =
   | 'combat'
@@ -124,6 +124,7 @@ export interface EncounterStoryboard {
   styleNotes: string;
   convergencePlan: string;
   mechanicsVisibility: 'current_clocks_only';
+  sequenceIntent?: NarrativeSequenceIntent;
 }
 
 export interface EncounterPayoffContext {
@@ -534,6 +535,7 @@ export interface StoryletBeat {
   isTerminal?: boolean;
   visualContract?: EncounterVisualContract;
   cost?: EncounterCost;
+  sequenceIntent?: NarrativeSequenceIntent;
 }
 
 // Generated Storylet - aftermath sequences (GDD 6.7)
@@ -549,6 +551,7 @@ export interface GeneratedStorylet {
   setsFlags?: { flag: string; value: boolean }[];
   nextSceneId?: string;
   cost?: EncounterCost;
+  sequenceIntent?: NarrativeSequenceIntent;
 }
 
 export interface Encounter {

@@ -170,6 +170,9 @@ export interface ImagePrompt {
   shotDescription?: string;  // e.g. "low angle medium shot, three-quarter view"
   emotionalCore?: string;    // e.g. "betrayal — the moment he realizes she lied"
   visualNarrative?: string;  // The core visual story: "A woman recoils from a man whose hands are stained red." (Replaces silentStoryTest)
+  visibleTurn?: string;      // The concrete change a viewer can read without captions
+  visualSubtextCue?: string; // Prop, gesture, distance, posture, or reaction that reveals subtext
+  statusShift?: string;      // How leverage changes across the beat
   settingAdaptationNotes?: string[];
   settingBranchLabel?: string;
   settingContext?: SceneSettingContext;

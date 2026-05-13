@@ -76,6 +76,11 @@ function panelText(panel: StoryboardPanelSlot, sceneMood?: string): string {
     panel.visibleCost,
     panel.storyboardRole,
     panel.visualNarrative,
+    panel.sequenceIntent?.objective,
+    panel.sequenceIntent?.activity,
+    panel.sequenceIntent?.turningPoint,
+    panel.sequenceIntent?.endState,
+    panel.sequenceIntent?.visualThread,
     panel.outcomeName,
     panel.outcomeTier,
   ].filter(Boolean).join(' ');

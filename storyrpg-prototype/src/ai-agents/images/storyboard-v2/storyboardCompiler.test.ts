@@ -21,6 +21,41 @@ const characterBible: any = {
 };
 
 describe('compileStoryboardScenePacket', () => {
+  it('passes scene and beat sequence intent into storyboard panel slots', () => {
+    const packet = compileStoryboardScenePacket({
+      scopedSceneId: 'episode-1-scene-seq',
+      protagonistId: 'hero',
+      protagonistName: 'Mara',
+      characterBible,
+      scene: {
+        sceneId: 'scene-seq',
+        sceneName: 'The Walk',
+        startingBeatId: 'b1',
+        charactersInvolved: ['hero'],
+        sequenceIntent: {
+          objective: 'Mara reaches the store while hiding the letter.',
+          activity: 'walking to the store under social pressure',
+          obstacle: 'Ilya notices she is guarding the letter.',
+          startState: 'Mara has the letter hidden.',
+          turningPoint: 'The letter almost slips into view.',
+          endState: 'Ilya knows she is hiding something.',
+          visualThread: 'the folded letter in Mara’s hand',
+        },
+        beats: [
+          {
+            id: 'b1',
+            text: 'Mara walks toward the store with the letter hidden in her fist.',
+            speaker: 'Mara',
+            primaryAction: 'Mara hides the letter while walking',
+          },
+        ],
+      } as any,
+    });
+
+    expect(packet.sequenceIntent?.objective).toContain('reaches the store');
+    expect(packet.panels[0].sequenceIntent?.visualThread).toContain('folded letter');
+  });
+
   it('canonicalizes p1 and named beat text to CharacterBible ids', () => {
     const packet = compileStoryboardScenePacket({
       scopedSceneId: 'episode-1-scene-1',

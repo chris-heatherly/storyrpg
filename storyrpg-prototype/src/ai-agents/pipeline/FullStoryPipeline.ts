@@ -7427,6 +7427,8 @@ export class FullStoryPipeline {
           visualContinuity: genBeat.visualContinuity,
           visualCast: (genBeat as any).visualCast,
           coveragePlan: (genBeat as any).coveragePlan,
+          dramaticIntent: genBeat.dramaticIntent,
+          sequenceIntent: (genBeat as any).sequenceIntent,
         };
 
         if (genBeat.isChoicePoint) {
@@ -10477,6 +10479,8 @@ ${clothingRule}
             emotionalRead: b.emotionalRead,
             relationshipDynamic: b.relationshipDynamic,
             mustShowDetail: b.mustShowDetail,
+            dramaticIntent: (b as any).dramaticIntent,
+            sequenceIntent: (b as any).sequenceIntent || (scene as any).sequenceIntent,
             plantsThreadId: (b as any).plantsThreadId,
             paysOffThreadId: (b as any).paysOffThreadId,
             plotPointType: (b as any).plotPointType,
@@ -10567,6 +10571,8 @@ ${clothingRule}
             emotionalRead: isEstablishing ? '' : b.emotionalRead,
             relationshipDynamic: isEstablishing ? '' : b.relationshipDynamic,
             mustShowDetail: b.mustShowDetail,
+            dramaticIntent: isEstablishing ? undefined : (b as any).dramaticIntent,
+            sequenceIntent: isEstablishing ? undefined : ((b as any).sequenceIntent || (scene as any).sequenceIntent),
             // Shot intent — drives image prompt strategy (establishing = environment-only)
             shotType: resolvedShotType,
           };
@@ -10787,6 +10793,7 @@ ${clothingRule}
             imagePlanningMode,
             storyboardPanelCap: this.getStoryboardMaxPanelsPerSheet(),
             sceneMasterPrompt,
+            sequenceIntent: (scene as any).sequenceIntent || (scene as any).sceneBlueprint?.sequenceIntent,
           };
           const chunks = chunkStoryboardBeats(enrichedBeats, this.getStoryboardMaxPanelsPerSheet());
           for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
@@ -11172,6 +11179,12 @@ ${clothingRule}
             emotionalRead: isEstablishingBeat ? '' : this.sanitizePromptText((beat as any).emotionalRead || '', brief, ''),
             relationshipDynamic: isEstablishingBeat ? '' : this.sanitizePromptText((beat as any).relationshipDynamic || '', brief, ''),
             mustShowDetail: this.sanitizePromptText((beat as any).mustShowDetail || '', brief, ''),
+            visibleTurn: this.sanitizePromptText((beat as any).dramaticIntent?.visibleTurn || '', brief, ''),
+            visualSubtextCue: this.sanitizePromptText((beat as any).dramaticIntent?.visualSubtextCue || '', brief, ''),
+            statusShift: this.sanitizePromptText([
+              (beat as any).dramaticIntent?.statusBefore,
+              (beat as any).dramaticIntent?.statusAfter,
+            ].filter(Boolean).join(' -> '), brief, ''),
             shotType: (beat as any).shotType || 'character',
             isClimaxBeat: beat.isClimaxBeat,
             isKeyStoryBeat: beat.isKeyStoryBeat,
@@ -15060,6 +15073,20 @@ Design the key art. Return STRICT JSON matching the schema.`;
     const cleaned = (text || '').trim();
     const action = cleaned.match(/\b(grabs?|reaches?|recoils?|steps?|stumbles?|lunges?|turns?|pushes?|pulls?|raises?|lowers?|clenches?|releases?|strikes?|dodges?|embraces?|confronts?|retreats?|advances?)\b/i)?.[0];
     const detail = cleaned.match(/\b(key|blade|blood|door|map|weapon|wound|fist|hands?|letter|ring|gun|knife|tear|glance)\b/i)?.[0];
+    const fallbackAction = action
+      ? `protagonist ${action}`
+      : phase === 'setup'
+        ? 'protagonist claims a position in the contested space'
+        : phase === 'peak'
+          ? 'protagonist commits to the decisive move with hands and body engaged'
+          : phase === 'resolution'
+            ? 'protagonist releases or guards the decisive object as the outcome lands'
+            : 'protagonist shifts stance and forces the pressure into a visible new shape';
+    const fallbackCue = detail
+      ? `the ${detail} as the decisive visual clue`
+      : phase === 'resolution'
+        ? 'changed distance, released tension, and one concrete body cue that proves the outcome'
+        : 'a clear shift in stance, distance, or object control that proves the encounter turn';
     const shotDescription = phase === 'setup'
       ? 'establishing medium-wide frame with relational spacing'
       : phase === 'peak'
@@ -15069,7 +15096,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
           : 'medium shot that keeps bodies, faces, and pressure readable';
     return {
       visualMoment: cleaned || 'A tense encounter moment frozen at the decisive instant.',
-      primaryAction: action ? `protagonist ${action}` : `protagonist reacts under ${phase} pressure`,
+      primaryAction: fallbackAction,
       emotionalRead: phase === 'peak'
         ? 'faces and posture show maximum strain and commitment'
         : phase === 'resolution'
@@ -15080,13 +15107,13 @@ Design the key art. Return STRICT JSON matching the schema.`;
         : 'clear pressure exchange between protagonist and opposition',
       mustShowDetail: detail
         ? `the ${detail} as the decisive visual clue`
-        : 'one concrete prop or body cue that proves the outcome',
+        : fallbackCue,
       keyExpression: phase === 'resolution'
         ? 'aftermath visible in the eyes and mouth'
         : phase === 'peak'
           ? 'strain, focus, and emotional commitment readable at a glance'
           : 'emotion clear in the face before the next move lands',
-      keyGesture: action ? `hands and body clearly readable during "${action}"` : 'one decisive hand or body gesture carries the scene',
+      keyGesture: action ? `hands and body clearly readable during "${action}"` : fallbackCue,
       keyBodyLanguage: phase === 'setup'
         ? 'stance and spacing define the power balance'
         : 'posture and weight shift show who is pressing and who is yielding',
@@ -17320,6 +17347,8 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
             emotionalRead: b.emotionalRead,
             relationshipDynamic: b.relationshipDynamic,
             mustShowDetail: b.mustShowDetail,
+            dramaticIntent: (b as any).dramaticIntent,
+            sequenceIntent: (b as any).sequenceIntent || (scene as any).sequenceIntent,
           })),
           sceneCharacterIds,
           characters: characterBible.characters.map(c => ({ id: c.id, name: c.name, role: c.role })),
@@ -17424,6 +17453,12 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           emotionalRead: isEstablishing ? '' : this.sanitizePromptText(openerBeat.emotionalRead || '', brief, ''),
           relationshipDynamic: isEstablishing ? '' : this.sanitizePromptText(openerBeat.relationshipDynamic || '', brief, ''),
           mustShowDetail: this.sanitizePromptText(openerBeat.mustShowDetail || '', brief, ''),
+          visibleTurn: this.sanitizePromptText((openerBeat as any).dramaticIntent?.visibleTurn || '', brief, ''),
+          visualSubtextCue: this.sanitizePromptText((openerBeat as any).dramaticIntent?.visualSubtextCue || '', brief, ''),
+          statusShift: this.sanitizePromptText([
+            (openerBeat as any).dramaticIntent?.statusBefore,
+            (openerBeat as any).dramaticIntent?.statusAfter,
+          ].filter(Boolean).join(' -> '), brief, ''),
           shotType: resolvedShotType,
           isClimaxBeat: openerBeat.isClimaxBeat,
           isKeyStoryBeat: openerBeat.isKeyStoryBeat,
@@ -17887,6 +17922,8 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           visualContinuity: gb.visualContinuity,
           visualCast: (gb as any).visualCast,
           coveragePlan: (gb as any).coveragePlan,
+          dramaticIntent: (gb as any).dramaticIntent,
+          sequenceIntent: (gb as any).sequenceIntent,
           choices: gb.isChoicePoint ? choiceMap.get(`${sb.id}::${gb.id}`)?.choices.map(c => ({
             id: c.id,
             text: c.text,
@@ -17899,6 +17936,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           })) : undefined
         })),
         encounter,
+        sequenceIntent: (content as any).sequenceIntent || (sb as any).sequenceIntent,
         // Branch navigation metadata
         leadsTo: sb.leadsTo,
         isBottleneck,
@@ -19043,6 +19081,8 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
             shotType: (beat as any).shotType,
             visualCast: (beat as any).visualCast,
             coveragePlan: (beat as any).coveragePlan,
+            dramaticIntent: (beat as any).dramaticIntent,
+            sequenceIntent: (beat as any).sequenceIntent || (scene as any).sequenceIntent,
           };
         });
 
@@ -19059,6 +19099,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           charactersInvolved: (scene as any).charactersInvolved || (scene as any).charactersPresent || [],
           keyMoments: [],
           continuityNotes: [],
+          sequenceIntent: (scene as any).sequenceIntent,
         });
       }
     }

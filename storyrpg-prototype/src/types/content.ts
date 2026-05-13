@@ -128,6 +128,46 @@ export interface BeatVisualContinuity {
   changeOnly?: string;
 }
 
+export interface BeatDramaticIntent {
+  /** What each visible character wants in this beat, keyed by character id/name when known. */
+  characterObjectives?: Record<string, string>;
+  /** What blocks the objective from being easy in this exact moment. */
+  obstacle?: string;
+  /** Who has leverage/control before the visible turn. */
+  statusBefore?: string;
+  /** Who has leverage/control after the visible turn. */
+  statusAfter?: string;
+  /** The real emotional or tactical meaning beneath the surface action/topic. */
+  subtext?: string;
+  /** The concrete change a viewer can understand without captions. */
+  visibleTurn?: string;
+  /** The prop, gesture, distance, posture, reaction, or environmental clue that reveals subtext. */
+  visualSubtextCue?: string;
+}
+
+export interface NarrativeSequenceIntent {
+  /** What this multi-beat sequence is trying to accomplish in story terms. */
+  objective?: string;
+  /** The concrete visible activity that carries the sequence. */
+  activity?: string;
+  /** What resists, blocks, or complicates the objective. */
+  obstacle?: string;
+  /** Visible/emotional/mechanical state at the start of the sequence. */
+  startState?: string;
+  /** The moment the sequence bends or changes direction. */
+  turningPoint?: string;
+  /** What has changed by the end of the sequence. */
+  endState?: string;
+  /** Recurring prop, distance, blocking, wound, clue, gesture, or motif tying panels together. */
+  visualThread?: string;
+  /** Optional fiction-first hook: trust, leverage, clue, danger, resource, reputation, identity, callback, encounter clock, etc. */
+  mechanicThread?: string;
+  /** Optional grouping id when a scene has multiple visual sequences. */
+  sequenceId?: string;
+  /** Beat's role inside the visual sequence when attached at beat level. */
+  beatRole?: 'setup' | 'pressure' | 'escalation' | 'turn' | 'consequence' | 'handoff' | 'aftermath';
+}
+
 // A beat is a unit of content within a scene
 export interface Beat {
   id: string;
@@ -179,6 +219,8 @@ export interface Beat {
   visualContinuity?: VisualContinuityHint;
   visualCast?: VisualCast;
   coveragePlan?: BeatCoveragePlan;
+  dramaticIntent?: BeatDramaticIntent;
+  sequenceIntent?: NarrativeSequenceIntent;
 
   allowDiegeticText?: boolean;
 

@@ -54,6 +54,26 @@ export interface IllustrationRequest {
     emotionalRead?: string;
     relationshipDynamic?: string;
     mustShowDetail?: string;
+    dramaticIntent?: {
+      characterObjectives?: Record<string, string>;
+      obstacle?: string;
+      statusBefore?: string;
+      statusAfter?: string;
+      subtext?: string;
+      visibleTurn?: string;
+      visualSubtextCue?: string;
+    };
+    sequenceIntent?: {
+      objective?: string;
+      activity?: string;
+      obstacle?: string;
+      startState?: string;
+      turningPoint?: string;
+      endState?: string;
+      visualThread?: string;
+      mechanicThread?: string;
+      beatRole?: string;
+    };
   };
   visualContractHash?: string;
   // The player choice that led to this beat (only for first beat of branch scenes)
@@ -216,6 +236,15 @@ export class VisualIllustratorAgent extends BaseAgent {
       // Backward compatibility: some model outputs may still use silentStoryTest.
       if (!imagePrompt.visualNarrative && anyPrompt.silentStoryTest) {
         imagePrompt.visualNarrative = anyPrompt.silentStoryTest;
+      }
+      const lockedIntent = input.authoredVisualContract?.dramaticIntent;
+      if (lockedIntent) {
+        imagePrompt.visibleTurn = imagePrompt.visibleTurn || lockedIntent.visibleTurn;
+        imagePrompt.visualSubtextCue = imagePrompt.visualSubtextCue || lockedIntent.visualSubtextCue;
+        imagePrompt.statusShift = imagePrompt.statusShift || [
+          lockedIntent.statusBefore,
+          lockedIntent.statusAfter,
+        ].filter(Boolean).join(' -> ') || undefined;
       }
       
       if (!imagePrompt.aspectRatio) imagePrompt.aspectRatio = '9:19.5';
@@ -451,6 +480,18 @@ ${beatContextSection}`
 - **Emotional Read (LOCKED)**: ${request.authoredVisualContract.emotionalRead || 'Not provided'}
 - **Relationship Dynamic (LOCKED)**: ${request.authoredVisualContract.relationshipDynamic || 'Not provided'}
 - **Must Show Detail (LOCKED)**: ${request.authoredVisualContract.mustShowDetail || 'Not provided'}
+- **Visible Turn (LOCKED)**: ${request.authoredVisualContract.dramaticIntent?.visibleTurn || 'Not provided'}
+- **Visual Subtext Cue (LOCKED)**: ${request.authoredVisualContract.dramaticIntent?.visualSubtextCue || 'Not provided'}
+- **Status Shift (LOCKED)**: ${[
+        request.authoredVisualContract.dramaticIntent?.statusBefore,
+        request.authoredVisualContract.dramaticIntent?.statusAfter,
+      ].filter(Boolean).join(' -> ') || 'Not provided'}
+- **Subtext (LOCKED)**: ${request.authoredVisualContract.dramaticIntent?.subtext || 'Not provided'}
+- **Sequence Objective (LOCKED)**: ${request.authoredVisualContract.sequenceIntent?.objective || 'Not provided'}
+- **Sequence Activity (LOCKED)**: ${request.authoredVisualContract.sequenceIntent?.activity || 'Not provided'}
+- **Sequence Role (LOCKED)**: ${request.authoredVisualContract.sequenceIntent?.beatRole || 'Not provided'}
+- **Sequence Turning Point (LOCKED)**: ${request.authoredVisualContract.sequenceIntent?.turningPoint || 'Not provided'}
+- **Sequence Visual Thread (LOCKED)**: ${request.authoredVisualContract.sequenceIntent?.visualThread || 'Not provided'}
 - You may choose framing and camera grammar, but the story event above is non-negotiable.`
       : '';
 
@@ -518,6 +559,9 @@ ${artStyleDirective}
 - **keyBodyLanguage**: Weight, lean, line of action for each foreground character AND how their bodies relate spatially. (she recoils backward, he crowds forward — the gap between them shrinking) — NOT abstract (defensive posture, tense stance).
 - **emotionalCore**: One CONCRETE OBSERVABLE sentence — what we literally SEE, not an abstraction. YES: "She sees the blood on his hands and steps back." NO: "Tension rises between them."
 - **visualNarrative**: What would a viewer with NO text understand? One specific sentence. This is the core visual story and must be concrete, not vague.
+- **visibleTurn**: The concrete change in leverage, emotion, information, distance, or object control that a viewer understands without captions.
+- **visualSubtextCue**: The prop, gesture, posture, distance, reaction, or environmental detail that reveals what is really happening beneath the surface.
+- **statusShift**: The visible leverage movement across the beat, e.g. "Alex starts in control -> Daphne's phone evidence takes leverage."
 
 These fields are injected DIRECTLY into the image model prompt — they are your most powerful tool for visual storytelling.
 
@@ -584,7 +628,7 @@ For human drama, favor MICRO-DRAMA over theatrical grand gestures:
 - Two characters should have ASYMMETRIC body language reflecting their different internal states, NOT mirrored poses or stiff side-by-side positioning.
 - NEVER describe two characters simply "standing together holding hands" — show what their hands are DOING (squeezing, loosening grip, one pulling away, intertwined fingers with white knuckles).
 
-Return JSON: prompt, negativePrompt, style, aspectRatio (9:19.5), composition, cameraAngle, poseSpec, transitionEnforcement, keyExpression, keyGesture, keyBodyLanguage, shotDescription, emotionalCore, visualNarrative.
+Return JSON: prompt, negativePrompt, style, aspectRatio (9:19.5), composition, cameraAngle, poseSpec, transitionEnforcement, keyExpression, keyGesture, keyBodyLanguage, shotDescription, emotionalCore, visualNarrative, visibleTurn, visualSubtextCue, statusShift.
 The "style" field in JSON MUST be EXACTLY "${beatEffectiveStyle}" — copy it verbatim, do NOT add, remove, or rephrase any words.
 `;
   }

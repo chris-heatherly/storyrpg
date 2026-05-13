@@ -40,6 +40,9 @@ import { sanitizeStyleContaminationText } from '../images/imagePromptContracts';
 let nodeFs: any;
 let nodePath: any;
 
+const OPENAI_IMAGE_PROMPT_MAX_CHARS = 32000;
+const OPENAI_IMAGE_PROMPT_TARGET_CHARS = 31500;
+
 // Only attempt to load Node.js modules if we are definitely not in a mobile app
 if (!isNativeRuntime()) {
   try {
@@ -1419,6 +1422,15 @@ export class ImageGenerationService {
     } else if (prompt.emotionalCore) {
       sections.push(`The moment: ${prompt.emotionalCore}`);
     }
+    if (prompt.visibleTurn) {
+      sections.push(`VISIBLE TURN: ${prompt.visibleTurn}`);
+    }
+    if (prompt.visualSubtextCue) {
+      sections.push(`VISUAL SUBTEXT CUE: ${prompt.visualSubtextCue}`);
+    }
+    if (prompt.statusShift) {
+      sections.push(`STATUS SHIFT: ${prompt.statusShift}`);
+    }
 
     sections.push(prompt.prompt);
 
@@ -2619,6 +2631,54 @@ export class ImageGenerationService {
     ].filter((section) => section.trim().length > 0);
 
     return sections.join('\n\n');
+  }
+
+  private truncateOpenAiSection(section: string, maxChars: number): string {
+    if (section.length <= maxChars) return section;
+    const [header, ...rest] = section.split('\n');
+    const body = rest.join('\n');
+    const suffix = '\n[Shortened to fit OpenAI image prompt limit.]';
+    const available = Math.max(0, maxChars - header.length - suffix.length - 1);
+    return `${header}\n${body.slice(0, available).trimEnd()}${suffix}`;
+  }
+
+  private openAiSectionCap(section: string): number {
+    const label = section.split('\n')[0]?.trim().toUpperCase() || '';
+    if (label.startsWith('STYLE LOCK')) return 2600;
+    if (label.startsWith('VISIBLE CAST')) return 2400;
+    if (label.startsWith('STORY MOMENT')) return 12000;
+    if (label.startsWith('ENVIRONMENT STYLE LOCK')) return 1500;
+    if (label.startsWith('SHOT / COMPOSITION')) return 5200;
+    if (label.startsWith('REFERENCE USAGE')) return 2000;
+    if (label.startsWith('CHARACTER CONTINUITY')) return 4800;
+    if (label.startsWith('FINAL STYLE GUARD')) return 1200;
+    if (label.startsWith('NEGATIVE / DO NOT')) return 1800;
+    return 2200;
+  }
+
+  private clampOpenAiImagePrompt(composedPrompt: string): { prompt: string; originalChars: number; truncated: boolean } {
+    const originalChars = composedPrompt.length;
+    if (originalChars <= OPENAI_IMAGE_PROMPT_MAX_CHARS) {
+      return { prompt: composedPrompt, originalChars, truncated: false };
+    }
+
+    const compacted = composedPrompt
+      .split(/\n{2,}/)
+      .map((section) => this.truncateOpenAiSection(section.trim(), this.openAiSectionCap(section)))
+      .filter(Boolean)
+      .join('\n\n');
+
+    if (compacted.length <= OPENAI_IMAGE_PROMPT_MAX_CHARS) {
+      return { prompt: compacted, originalChars, truncated: true };
+    }
+
+    const note = '\n\n[Prompt shortened at provider boundary to satisfy OpenAI image prompt limit.]';
+    const hard = `${compacted.slice(0, Math.max(0, OPENAI_IMAGE_PROMPT_TARGET_CHARS - note.length)).trimEnd()}${note}`;
+    return {
+      prompt: hard.slice(0, OPENAI_IMAGE_PROMPT_MAX_CHARS),
+      originalChars,
+      truncated: true,
+    };
   }
 
   async generateImage(
@@ -4294,6 +4354,15 @@ export class ImageGenerationService {
     } else if (strengthenedPrompt.emotionalCore) {
       sections.push(`The moment: ${strengthenedPrompt.emotionalCore}`);
     }
+    if (strengthenedPrompt.visibleTurn) {
+      sections.push(`VISIBLE TURN: ${strengthenedPrompt.visibleTurn}`);
+    }
+    if (strengthenedPrompt.visualSubtextCue) {
+      sections.push(`VISUAL SUBTEXT CUE: ${strengthenedPrompt.visualSubtextCue}`);
+    }
+    if (strengthenedPrompt.statusShift) {
+      sections.push(`STATUS SHIFT: ${strengthenedPrompt.statusShift}`);
+    }
 
     // 6. CORE SCENE DESCRIPTION
     sections.push(strengthenedPrompt.prompt);
@@ -5897,13 +5966,21 @@ export class ImageGenerationService {
     );
 
     const resolvedStyle = this.resolveArtStyle(prompt.style, identifier);
-    const composedPrompt = this.buildOpenAiComposedPrompt({
+    const rawComposedPrompt = this.buildOpenAiComposedPrompt({
       prompt,
       resolvedStyle,
       referenceImages: cappedRefs,
       imageType,
       metadata: _metadata,
     });
+    const promptBudget = this.clampOpenAiImagePrompt(rawComposedPrompt);
+    const composedPrompt = promptBudget.prompt;
+    if (promptBudget.truncated) {
+      console.warn(
+        `[ImageGenerationService] OpenAI image prompt for "${identifier}" exceeded ${OPENAI_IMAGE_PROMPT_MAX_CHARS} chars ` +
+        `(${promptBudget.originalChars}); sending ${composedPrompt.length} chars after provider-boundary compaction.`
+      );
+    }
     const referenceUsage = useEdit
       ? cappedRefs.some((ref) => this.isCompositionReferenceRole(ref.role))
         ? 'composition-identity-style'
@@ -5917,6 +5994,9 @@ export class ImageGenerationService {
           effectiveModel: model,
           providerPrompt: composedPrompt,
           openAiComposedPrompt: composedPrompt,
+          openAiComposedPromptOriginalChars: promptBudget.originalChars,
+          openAiComposedPromptChars: composedPrompt.length,
+          openAiComposedPromptTruncated: promptBudget.truncated,
           openAiReferenceUsage: referenceUsage,
           openAiEffectiveReferences: cappedRefs.map((ref) => ({
             role: ref.role,
@@ -5994,7 +6074,7 @@ export class ImageGenerationService {
 
           if (isModerationBlock && !openAiSafetyRetryAttempted) {
             openAiSafetyRetryAttempted = true;
-            body.prompt = this.buildOpenAiSafetyRetryPrompt(composedPrompt);
+            body.prompt = this.clampOpenAiImagePrompt(this.buildOpenAiSafetyRetryPrompt(composedPrompt)).prompt;
             this.pipelineMetrics.permanentFailures++;
             const retryMsg = `${msg} Retrying once with a provider-safe visual rewrite.`;
             console.warn(`[ImageGenerationService] ${retryMsg}`);

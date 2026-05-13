@@ -33,6 +33,8 @@ import {
   ExpressionName
 } from './CharacterReferenceSheetAgent';
 import { selectStyleAdaptation, type SceneSettingContext } from '../../utils/styleAdaptation';
+import { auditSequenceContinuity } from '../../validators/sequenceContinuityAudit';
+import type { NarrativeSequenceIntent } from '../../../types';
 import type {
   ImagePlanningMode,
   SceneContinuityBible,
@@ -564,6 +566,16 @@ export interface StoryboardRequest {
     emotionalRead?: string;
     relationshipDynamic?: string;
     mustShowDetail?: string;
+    dramaticIntent?: {
+      characterObjectives?: Record<string, string>;
+      obstacle?: string;
+      statusBefore?: string;
+      statusAfter?: string;
+      subtext?: string;
+      visibleTurn?: string;
+      visualSubtextCue?: string;
+    };
+    sequenceIntent?: NarrativeSequenceIntent;
   }>;
   genre: string;
   tone: string;
@@ -665,6 +677,7 @@ export interface StoryboardRequest {
     referenceSummary?: Array<{ role: string; characterName?: string; viewType?: string; purpose?: string; required?: boolean }>;
   };
   storyboardReferences?: Array<{ role: string; characterName?: string; viewType?: string; purpose?: string; required?: boolean }>;
+  sequenceIntent?: NarrativeSequenceIntent;
 }
 
 export interface VisualContract {
@@ -675,6 +688,9 @@ export interface VisualContract {
     immediateChoicePayoff: boolean;
     consequenceBeat: boolean;
     mustShowDetail?: string;
+    sequenceObjective?: string;
+    visualThread?: string;
+    turningPoint?: string;
   }>;
   cameraRules: {
     avoidOverDutch: boolean;
@@ -723,6 +739,11 @@ export class StoryboardAgent extends BaseAgent {
       immediateChoicePayoff: Boolean(idx === 0 && input.incomingChoiceContext),
       consequenceBeat: Boolean(idx === 1 && input.incomingChoiceContext),
       mustShowDetail: b.mustShowDetail,
+      visibleTurn: b.dramaticIntent?.visibleTurn,
+      visualSubtextCue: b.dramaticIntent?.visualSubtextCue,
+      sequenceObjective: b.sequenceIntent?.objective || input.sequenceIntent?.objective,
+      visualThread: b.sequenceIntent?.visualThread || input.sequenceIntent?.visualThread,
+      turningPoint: b.sequenceIntent?.turningPoint || input.sequenceIntent?.turningPoint,
     }));
 
     return {
@@ -776,7 +797,7 @@ export class StoryboardAgent extends BaseAgent {
       .join('\n');
     const payoffs = (contract.requiredPayoffs || [])
       .slice(0, 16)
-      .map((p) => `- ${p.beatId}: immediate=${p.immediateChoicePayoff ? 'yes' : 'no'}, consequence=${p.consequenceBeat ? 'yes' : 'no'}, detail=${p.mustShowDetail || 'none'}`)
+      .map((p) => `- ${p.beatId}: immediate=${p.immediateChoicePayoff ? 'yes' : 'no'}, consequence=${p.consequenceBeat ? 'yes' : 'no'}, detail=${p.mustShowDetail || 'none'}, sequenceObjective=${p.sequenceObjective || 'derive'}, visualThread=${p.visualThread || 'derive'}`)
       .join('\n');
     return [
       `ContractHash:${contractHash}`,
@@ -811,7 +832,13 @@ export class StoryboardAgent extends BaseAgent {
       const lock = (b.visualMoment || b.primaryAction || b.emotionalRead || b.relationshipDynamic || b.mustShowDetail)
         ? `; lock={visualMoment:${b.visualMoment || 'derive'}, primaryAction:${b.primaryAction || 'derive'}, emotionalRead:${b.emotionalRead || 'derive'}, relationshipDynamic:${b.relationshipDynamic || 'derive'}, mustShowDetail:${b.mustShowDetail || 'derive'}}`
         : '';
-      return `${i + 1}. ${b.id}: ${b.text}${fg}${bg}${lock}`;
+      const intent = b.dramaticIntent
+        ? `; intent={visibleTurn:${b.dramaticIntent.visibleTurn || 'derive'}, visualSubtextCue:${b.dramaticIntent.visualSubtextCue || 'derive'}, status:${b.dramaticIntent.statusBefore || 'unknown'} -> ${b.dramaticIntent.statusAfter || 'unknown'}, subtext:${b.dramaticIntent.subtext || 'derive'}}`
+        : '';
+      const sequence = b.sequenceIntent || input.sequenceIntent
+        ? `; sequence={objective:${b.sequenceIntent?.objective || input.sequenceIntent?.objective || 'derive'}, activity:${b.sequenceIntent?.activity || input.sequenceIntent?.activity || 'derive'}, role:${b.sequenceIntent?.beatRole || 'derive'}, turn:${b.sequenceIntent?.turningPoint || input.sequenceIntent?.turningPoint || 'derive'}, visualThread:${b.sequenceIntent?.visualThread || input.sequenceIntent?.visualThread || 'derive'}}`
+        : '';
+      return `${i + 1}. ${b.id}: ${b.text}${fg}${bg}${lock}${intent}${sequence}`;
     }).join('\n');
 
     const skeletons = chunkSkeletons.map((s) =>
@@ -824,6 +851,13 @@ ${contractRef}
 Scene:${input.sceneName}
 Genre:${input.genre}; Tone:${input.tone}; Mood:${input.mood}
 IncomingChoice:${input.incomingChoiceContext || 'none'}
+SequenceObjective:${chunk.sequenceIntent?.objective || input.sequenceIntent?.objective || 'derive from beat locks'}
+SequenceActivity:${chunk.sequenceIntent?.activity || input.sequenceIntent?.activity || 'derive from beat locks'}
+SequenceObstacle:${chunk.sequenceIntent?.obstacle || input.sequenceIntent?.obstacle || 'derive from beat locks'}
+SequenceStart:${chunk.sequenceIntent?.startState || input.sequenceIntent?.startState || 'derive'}
+SequenceTurn:${chunk.sequenceIntent?.turningPoint || input.sequenceIntent?.turningPoint || 'derive'}
+SequenceEnd:${chunk.sequenceIntent?.endState || input.sequenceIntent?.endState || 'derive'}
+SequenceVisualThread:${chunk.sequenceIntent?.visualThread || input.sequenceIntent?.visualThread || 'derive recurring prop/distance/blocking/motif'}
 SettingBranch:${settingSelection.branchLabel}
 SettingSummary:${input.sceneContext?.settingContext?.summary || 'none'}
 SettingNotes:${settingSelection.notes.join(' | ') || 'none'}
@@ -907,6 +941,19 @@ Return ONLY JSON matching VisualPlan shape:
     const failedShotIds: string[] = [];
     const issues: string[] = [];
     const byBeat = new Map(input.beats.map(b => [b.id, b]));
+    for (const issue of auditSequenceContinuity(input.beats.map((beat) => ({
+      id: beat.id,
+      beatId: beat.id,
+      narrativeText: beat.text,
+      visualMoment: beat.visualMoment,
+      primaryAction: beat.primaryAction,
+      emotionalRead: beat.emotionalRead,
+      relationshipDynamic: beat.relationshipDynamic,
+      mustShowDetail: beat.mustShowDetail,
+      sequenceIntent: beat.sequenceIntent || input.sequenceIntent,
+    })))) {
+      issues.push(`SEQUENCE CONTINUITY ${issue.category} on ${issue.panelId}: ${issue.message} ${issue.suggestion}`);
+    }
     for (const shot of plan.shots || []) {
       const beat = byBeat.get(shot.beatId);
       if (!beat) continue;
@@ -1402,8 +1449,14 @@ Return a JSON object:
       const visualContract = (b.visualMoment || b.primaryAction || b.emotionalRead || b.relationshipDynamic || b.mustShowDetail)
         ? `\n    - VISUAL MOMENT (LOCKED): ${b.visualMoment || 'derive from beat text'}\n    - PRIMARY ACTION (LOCKED): ${b.primaryAction || 'derive from beat text'}\n    - EMOTIONAL READ (LOCKED): ${b.emotionalRead || 'derive from beat text'}\n    - RELATIONSHIP DYNAMIC (LOCKED): ${b.relationshipDynamic || 'derive from beat text'}\n    - MUST SHOW DETAIL (LOCKED): ${b.mustShowDetail || 'derive from beat text'}`
         : '';
+      const dramaticIntent = b.dramaticIntent
+        ? `\n    - VISIBLE TURN (LOCKED): ${b.dramaticIntent.visibleTurn || 'derive from beat text'}\n    - VISUAL SUBTEXT CUE (LOCKED): ${b.dramaticIntent.visualSubtextCue || 'derive from beat text'}\n    - STATUS SHIFT (LOCKED): ${b.dramaticIntent.statusBefore || 'unknown'} -> ${b.dramaticIntent.statusAfter || 'unknown'}\n    - SUBTEXT (LOCKED): ${b.dramaticIntent.subtext || 'derive from beat text'}`
+        : '';
+      const sequenceIntent = b.sequenceIntent || request.sequenceIntent
+        ? `\n    - SEQUENCE OBJECTIVE: ${b.sequenceIntent?.objective || request.sequenceIntent?.objective || 'derive from scene'}\n    - SEQUENCE ACTIVITY: ${b.sequenceIntent?.activity || request.sequenceIntent?.activity || 'derive from scene'}\n    - SEQUENCE ROLE: ${b.sequenceIntent?.beatRole || 'derive from beat order'}\n    - SEQUENCE TURNING POINT: ${b.sequenceIntent?.turningPoint || request.sequenceIntent?.turningPoint || 'derive from beat text'}\n    - SEQUENCE VISUAL THREAD: ${b.sequenceIntent?.visualThread || request.sequenceIntent?.visualThread || 'derive recurring prop/distance/blocking/motif'}`
+        : '';
       const peakTag = (b as { isClimaxBeat?: boolean; isKeyStoryBeat?: boolean }).isClimaxBeat ? ' [CLIMAX]' : (b as { isKeyStoryBeat?: boolean }).isKeyStoryBeat ? ' [KEY STORY]' : '';
-      return `- Beat ${b.id} (#${i + 1})${peakTag}: ${b.text}${fgChars}${bgChars}${visualContract}${moodHint}${colorHint}`;
+      return `- Beat ${b.id} (#${i + 1})${peakTag}: ${b.text}${fgChars}${bgChars}${visualContract}${dramaticIntent}${sequenceIntent}${moodHint}${colorHint}`;
     }).join('\n');
 
     // Build character body vocabulary section
@@ -1600,6 +1653,8 @@ ${beatsInfo}
 - **USE CHARACTER NAMES**: ALWAYS refer to characters by their actual names (e.g., "Catherine", "Heathcliff"). NEVER use generic terms like "a woman", "a man", "two young people", "the figure", "they/them" as the primary identifier. Every character in the description must be named.
 - The shot description MUST describe the scene as a depiction of the beat — action + emotion + relationship — NOT as a character portrait
 - If beat metadata includes LOCKED visual fields (visualMoment, primaryAction, emotionalRead, relationshipDynamic, mustShowDetail), preserve them exactly and only choose framing/camera around them.
+- If beat metadata includes dramaticIntent, compose around dramaticIntent.visibleTurn and dramaticIntent.visualSubtextCue. The image should prove what changed in leverage, distance, object control, information, or emotional exposure.
+- If scene or beat metadata includes sequenceIntent, plan the shots as one connected visual sequence. Preserve sequenceIntent.objective, activity, obstacle, turningPoint, endState, and visualThread across panels so they read as setup -> pressure -> turn -> consequence instead of unrelated shots.
 - Every shot must be third-person observer or over-shoulder from outside the protagonist body. Never use first-person/player-eye POV, subjective "your hands" framing, or disembodied hands.
 - Plan explicit visible and offscreen cast per beat. Characters not listed for the beat must remain offscreen.
 - Vary shot size, camera angle, height, side, focal subject, and sequence role; avoid more than two solitary neutral eye-level shots in a row.
@@ -1731,7 +1786,7 @@ For each shot, derive moodSpec from the story beat emotion and include lightingC
 **SHOT TYPES** (What we show and why)
 - **establish**: Extreme wide - location/scale, characters tiny. Use for: new locations, world state consequences.
 - **wide**: Full bodies + environment. Use for: action, spatial relationships, group dynamics.
-- **medium**: Waist up - **THE WORKHORSE**. Use for: dialogue, most conversations. THIS IS YOUR DEFAULT.
+- **medium**: Waist up - useful for dialogue and gestures, but NOT an automatic default for consecutive character beats. If two dialogue/character beats already used medium eye-level staging, switch to a prop/hand insert, over-shoulder, wider relational frame, delayed reaction close-up, foreground obstruction, or high/low angle that expresses the visibleTurn.
 - **closeup**: Face/shoulders - emotion intensity. **USE SPARINGLY** for peak emotional moments only.
 - **extreme_closeup**: Single detail - symbolic emphasis. **MAX 0-1 per scene** - more dilutes impact.
 
@@ -1746,6 +1801,7 @@ For each shot, derive moodSpec from the story beat emotion and include lightingC
 **CAMERA HEIGHT** (Power dynamics)
 - **high** (looking down): Vulnerability, loss of power, scrutiny. Use for: defeated characters, guilt moments.
 - **eye** (level): Neutral, balanced relationships. Use for: standard dialogue, unbiased presentation.
+- For consecutive character beats, do not repeat neutral eye-level conversational spacing unless dramaticIntent.statusBefore/statusAfter explicitly says the status is stuck. Show status movement through height, distance, foreground/background, who controls the object, or who can leave.
 - **low** (looking up): Power, imposing, heroic OR threatening. Use for: villain intros, level-up moments.
 
 **DUTCH TILT**

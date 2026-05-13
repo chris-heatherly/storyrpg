@@ -765,6 +765,16 @@ export class EncounterArchitect extends BaseAgent {
       styleNotes: `Storyboard frames should emphasize ${styleFocus}.`,
       convergencePlan: 'Outcome variants can differ sharply in posture, leverage, cost, and clock movement, but should converge back to the cinematic spine when dramatically appropriate.',
       mechanicsVisibility: 'current_clocks_only',
+      sequenceIntent: {
+        objective: input.encounterDescription || input.sceneDescription || 'Resolve the encounter pressure through visible choices and consequences.',
+        activity: `${input.encounterType || 'mixed'} encounter sequence with back-and-forth pressure, decisions, and fallout`,
+        obstacle: input.encounterStakes || 'The opposition makes the objective costly.',
+        startState: frames[0]?.visualMoment || 'Pressure is established.',
+        turningPoint: frames.find((frame) => frame.role === 'reversal' || frame.role === 'decisiveMove')?.visualMoment || 'A decisive choice shifts leverage.',
+        endState: frames[frames.length - 1]?.visualMoment || 'The outcome changes position, cost, or relationship pressure.',
+        visualThread: styleFocus,
+        mechanicThread: 'encounter clock / leverage / cost',
+      },
     };
   }
 
@@ -826,6 +836,8 @@ Outcome branches should not explode into unrelated scenes. They should preserve 
 
 Every encounter should include a \`storyboard\` object with 7-9 frames:
 \`establish\`, \`pressureReveal\`, \`commit\`, \`exchange\`, \`reversal\`, \`opening\`, \`decisiveMove\`, \`fallout\`, \`aftermath\`.
+
+The storyboard should also include \`sequenceIntent\`: objective, activity, obstacle, startState, turningPoint, endState, visualThread, and optional mechanicThread. This is optional for legacy data compatibility but required-by-process for new encounter output so storyboard panels read as one cinematic sequence.
 
 Each frame needs: visual moment, tactical function, emotional state, continuity state, and whether it is a decision window. Place 2-4 meaningful tactical decision windows across the spine.
 
@@ -1015,6 +1027,7 @@ Each encounter outcome (victory/defeat/escape) leads to a storylet that serves a
 - **Consequences**: Include +2 resourcefulness or a relevant survival skill. Set the escape flag.
 
 ### Storylet Design Rules
+- Include \`sequenceIntent\` so aftermath panels have a narrative objective, visual thread, turning point, and end state.
 - Unique tone per outcome (triumphant/somber/relieved/bittersweet)
 - Sets flags for later narrative callbacks
 - Reconverges to main story path
@@ -1368,6 +1381,7 @@ ${priorCtx}
 - This is storyboard-driven, not combat-only. For this encounter emphasize: ${styleFocus}
 - Every encounter must put something serious at risk in genre-appropriate form: body, safety, reputation, trust, evidence, resources, love, moral standing, identity, or future leverage
 - Choices must change at least one tactical state: position, leverage, information, exposure, relationship pressure, resource state, threat clock, goal clock, cost domain, or later storylet
+- Include sequenceIntent on the storyboard and storylets. It is optional for legacy data compatibility but required-by-process for new output so storyboard panels read as one cinematic sequence with a narrative objective, visual thread, turning point, and aftermath state.
 - Keep mechanics fiction-first. Preserve existing clock feedback, but do not add visible stats, dice, numbers, panel markers, or extra meters
 
 ## JSON STRUCTURE (flat with nextBeatId — system converts to tree)
@@ -1408,6 +1422,16 @@ ${priorCtx}
         "allowedApproaches": ["aggressive", "cautious", "clever"]
       }
     ],
+    "sequenceIntent": {
+      "objective": "What this encounter sequence is trying to accomplish",
+      "activity": "The concrete visible encounter activity",
+      "obstacle": "What resists or complicates the objective",
+      "startState": "How the encounter begins visually",
+      "turningPoint": "The reversal, decisive move, or pressure shift",
+      "endState": "What has changed by the aftermath",
+      "visualThread": "Recurring prop, distance, blocking, cost, clue, wound, or motif",
+      "mechanicThread": "Optional fiction-first hook such as encounter clock, leverage, cost, trust, clue, danger, or resource"
+    },
     "styleNotes": "Use 7-9 frames total across establish, pressureReveal, commit, exchange, reversal, opening, decisiveMove, fallout, aftermath. Emphasize ${styleFocus}.",
     "convergencePlan": "Outcome variants alter the next panel and mechanics, then converge back to the cinematic spine when appropriate.",
     "mechanicsVisibility": "current_clocks_only"
@@ -1521,6 +1545,7 @@ ${priorCtx}
       "triggerOutcome": "victory",
       "tone": "triumphant",
       "narrativeFunction": "string",
+      "sequenceIntent": { "objective": "Aftermath objective", "activity": "victory aftermath sequence", "obstacle": "What still complicates the win", "startState": "Outcome lands", "turningPoint": "Growth or cost becomes visible", "endState": "Changed state going forward", "visualThread": "Visible consequence carried across panels" },
       "beats": [{ "id": "${input.sceneId}-sv-1", "text": "1-2 sentences of victory aftermath", "isTerminal": true }],
       "startingBeatId": "${input.sceneId}-sv-1",
       "consequences": [],
@@ -2206,24 +2231,80 @@ RULES:
     const cleaned = (text || '').trim();
     const action = cleaned.match(/\b(grabs?|reaches?|recoils?|steps?|stumbles?|lunges?|turns?|pushes?|pulls?|raises?|lowers?|clenches?|releases?|strikes?|dodges?|embraces?|confronts?|retreats?|advances?|pleads?|reveals?|hides?)\b/i)?.[0];
     const detail = cleaned.match(/\b(key|blade|blood|door|map|weapon|wound|fist|hands?|letter|ring|gun|knife|tear|glance)\b/i)?.[0];
+    const fallbackAction = action
+      ? `the protagonist ${action}`
+      : this.deriveEncounterPhysicalBusiness(cleaned, phase);
+    const visibleTurn = this.deriveEncounterVisibleTurn(cleaned, phase, fallbackAction);
+    const visualSubtextCue = detail
+      ? `the ${detail} becomes the concrete clue that changes the beat`
+      : this.deriveEncounterSubtextCue(cleaned, phase);
     return {
       visualMoment: cleaned || 'A decisive encounter moment.',
-      primaryAction: action ? `the protagonist ${action}` : 'the protagonist reacts under pressure',
+      primaryAction: fallbackAction,
       emotionalRead: phase === 'resolution'
         ? 'the emotional aftermath is readable in the face and shoulders'
         : 'emotion should read clearly in the eyes, jaw, and posture',
       relationshipDynamic: phase === 'setup'
         ? 'the power balance is visible in how characters claim space'
         : 'the relationship pressure is visible in body language and distance',
-      mustShowDetail: detail ? `the ${detail} as the concrete clue that sells the moment` : 'one prop or body cue that makes the moment legible',
+      mustShowDetail: detail ? `the ${detail} as the concrete clue that sells the moment` : visualSubtextCue,
       keyExpression: phase === 'resolution' ? 'aftermath and cost visible at a glance' : 'immediate emotional intent visible at a glance',
-      keyGesture: action ? `a readable gesture built around ${action}` : 'a decisive hand or body gesture',
-      keyBodyLanguage: phase === 'setup' ? 'stance and spacing define the tension' : 'body language shows who is pressing and who is yielding',
+      keyGesture: action ? `a readable gesture built around ${action}` : visualSubtextCue,
+      keyBodyLanguage: phase === 'setup' ? 'stance and spacing define the tension' : `body language shows the visible turn: ${visibleTurn}`,
       shotDescription: phase === 'setup' ? 'establishing frame with readable relational spacing' : 'dramatic story frame with readable faces, hands, and posture',
       emotionalCore: phase === 'resolution' ? 'aftermath' : 'decision under pressure',
-      visualNarrative: cleaned || 'The image should tell the encounter turn clearly without captions.',
+      visualNarrative: cleaned || visibleTurn,
       includeExpressionRefs: phase !== 'setup',
     };
+  }
+
+  private deriveEncounterPhysicalBusiness(text: string, phase: EscalationPhase | 'resolution'): string {
+    const lowered = text.toLowerCase();
+    if (/(key|blade|blood|door|map|weapon|wound|fist|hands?|letter|ring|gun|knife)/.test(lowered)) {
+      return 'the protagonist brings the decisive object into the contested space';
+    }
+    if (/(plead|bargain|persuad|convince|accuse|challenge)/.test(lowered)) {
+      return 'the protagonist closes distance and presses the point with an unmistakable gesture';
+    }
+    if (/(hide|sneak|escape|avoid|cover)/.test(lowered)) {
+      return 'the protagonist uses cover and changing distance to regain leverage';
+    }
+    if (/(hurt|wound|fear|panic|guilt|shame)/.test(lowered)) {
+      return 'the protagonist steadies themselves as the cost becomes visible in their posture';
+    }
+    switch (phase) {
+      case 'setup':
+        return 'the protagonist claims a position in the space while measuring the opposition';
+      case 'rising':
+        return 'the protagonist shifts stance and forces the confrontation into a new shape';
+      case 'peak':
+        return 'the protagonist commits to the decisive move with hands and body fully engaged';
+      case 'resolution':
+        return 'the protagonist lowers their guard as the outcome settles into their body';
+    }
+  }
+
+  private deriveEncounterVisibleTurn(text: string, phase: EscalationPhase | 'resolution', action: string): string {
+    if (text.trim()) return `${action}, making the encounter's leverage visibly change.`;
+    switch (phase) {
+      case 'setup':
+        return 'The first positioning move reveals who controls the space.';
+      case 'rising':
+        return 'The pressure shifts as one side gains ground and the other yields.';
+      case 'peak':
+        return 'The decisive move lands and the balance of power flips.';
+      case 'resolution':
+        return 'The aftermath shows what the encounter cost and who is left standing with leverage.';
+    }
+  }
+
+  private deriveEncounterSubtextCue(text: string, phase: EscalationPhase | 'resolution'): string {
+    const lowered = text.toLowerCase();
+    if (/(door|threshold|exit)/.test(lowered)) return 'the distance to the exit shows whether escape or confrontation is winning';
+    if (/(hands?|fist|grip)/.test(lowered)) return 'hands tighten, release, or reach to show intent without captions';
+    if (/(glance|eyes?|stare)/.test(lowered)) return 'a delayed glance reveals what the character cannot say directly';
+    if (phase === 'resolution') return 'lowered shoulders, changed distance, and one released object show the cost';
+    return 'a clear shift in stance, distance, or object control makes the subtext legible';
   }
 
   private buildDefaultEncounterCost(
@@ -2275,6 +2356,16 @@ RULES:
         triggerOutcome: 'defeat',
         tone: 'somber',
         narrativeFunction: 'Show cost of failure, create learning arc, build resolve for recovery',
+        sequenceIntent: {
+          objective: 'Make the cost of defeat visible while beginning a recovery arc.',
+          activity: 'aftermath recovery sequence after failure',
+          obstacle: 'Failure has immediate emotional and practical consequences.',
+          startState: 'The failed objective lands as visible cost.',
+          turningPoint: 'The protagonist sees what went wrong and what must change.',
+          endState: 'Resolve hardens into a recovery direction.',
+          visualThread: 'the visible cost of failure and the posture shift toward resolve',
+          mechanicThread: 'setback / resolve',
+        },
         beats: [
           {
             id: `${input.sceneId}-storylet-defeat-beat-1`,
@@ -2309,6 +2400,16 @@ RULES:
         triggerOutcome: 'victory',
         tone: 'triumphant',
         narrativeFunction: 'Celebrate success, show growth from triumph',
+        sequenceIntent: {
+          objective: 'Show victory changing confidence and the world response.',
+          activity: 'victory aftermath sequence',
+          obstacle: 'Success still has to settle into visible consequence.',
+          startState: 'The immediate danger has passed.',
+          turningPoint: 'The protagonist recognizes they rose to the challenge.',
+          endState: 'Earned confidence becomes visible.',
+          visualThread: 'the changed space after success and the protagonist’s steadier posture',
+          mechanicThread: 'confidence / courage',
+        },
         beats: [
           {
             id: `${input.sceneId}-storylet-victory-beat-1`,
@@ -2346,6 +2447,16 @@ RULES:
         triggerOutcome: 'partialVictory',
         tone: tones.partialVictory,
         narrativeFunction: 'Show that the objective was achieved, but the price changes what comes next.',
+        sequenceIntent: {
+          objective: 'Show that the goal was won while the cost remains active.',
+          activity: 'costly-victory aftermath sequence',
+          obstacle: 'Relief and damage arrive together.',
+          startState: 'The objective is achieved at a visible price.',
+          turningPoint: 'The cost becomes impossible to ignore.',
+          endState: 'The next scene is shaped by both success and complication.',
+          visualThread: cost.visibleComplication || 'the visible complication left by the victory',
+          mechanicThread: 'confidence / setback / cost',
+        },
         cost,
         beats: [
           {
@@ -2378,6 +2489,16 @@ RULES:
       triggerOutcome: 'escape',
       tone: 'relieved',
       narrativeFunction: 'Tension release, assess what was gained and lost',
+      sequenceIntent: {
+        objective: 'Release immediate danger while keeping the unresolved problem alive.',
+        activity: 'narrow escape aftermath sequence',
+        obstacle: 'Safety is temporary and the threat remains unresolved.',
+        startState: 'The protagonist has escaped but adrenaline still drives the body.',
+        turningPoint: 'Taking stock reveals what is still unresolved.',
+        endState: 'There is time to prepare, but not closure.',
+        visualThread: 'breath, distance from danger, and the route back toward preparation',
+        mechanicThread: 'resourcefulness / escape flag',
+      },
       beats: [
         {
           id: `${input.sceneId}-storylet-escape-beat-1`,
@@ -2552,6 +2673,16 @@ ${choiceSection}
         "allowedApproaches": []
       }
     ],
+    "sequenceIntent": {
+      "objective": "What this encounter sequence is trying to accomplish",
+      "activity": "The concrete visible encounter activity",
+      "obstacle": "What resists or complicates the objective",
+      "startState": "How the encounter begins visually",
+      "turningPoint": "The reversal, decisive move, or pressure shift",
+      "endState": "What has changed by the aftermath",
+      "visualThread": "Recurring prop, distance, blocking, cost, clue, wound, or motif",
+      "mechanicThread": "Optional fiction-first hook such as encounter clock, leverage, cost, trust, clue, danger, or resource"
+    },
     "styleNotes": "7-9 frames across establish, pressureReveal, commit, exchange, reversal, opening, decisiveMove, fallout, aftermath. For this encounter emphasize ${this.describeEncounterStyleFocus(input.encounterStyle, input.encounterType)}.",
     "convergencePlan": "Outcome variants alter the next panel, hidden mechanics, and available choices, then converge back to the cinematic spine when appropriate.",
     "mechanicsVisibility": "current_clocks_only"
@@ -2839,6 +2970,7 @@ ${choiceSection}
       "triggerOutcome": "victory",
       "tone": "triumphant",
       "narrativeFunction": "Celebrate success, show growth from triumph",
+      "sequenceIntent": { "objective": "Aftermath objective", "activity": "victory aftermath sequence", "obstacle": "What still complicates the win", "startState": "Outcome lands", "turningPoint": "Growth or cost becomes visible", "endState": "Changed state going forward", "visualThread": "Visible consequence carried across panels" },
       "beats": [
         {
           "id": "${input.sceneId}-storylet-victory-beat-1",
@@ -2942,6 +3074,7 @@ ${choiceSection}
 7. **THREE-APPROACH MANDATE**: Each set of 3+ choices should cover distinct approaches — one aggressive/direct, one cautious/methodical, one clever/unconventional. This ensures the player always has meaningfully different paths, not just variations on the same tactic.
 7. First beat choices MUST include \`impliedApproach\` field
 8. ALL THREE STORYLETS (victory, defeat, escape) MUST be defined
+8a. Include sequenceIntent on the storyboard and storylets. It is optional for legacy data compatibility but required-by-process for new output so storyboard panels read as one cinematic sequence with a narrative objective, visual thread, turning point, and aftermath state; aftermath panels have a narrative objective rather than loose epilogue stillness.
 9. Text length: setupText ~30-50 words, narrativeText ~30-60 words
 10. Return ONLY valid JSON, no markdown
 11. Do not add any new visible mechanics beyond the current encounter clock visualization.

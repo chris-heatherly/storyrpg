@@ -28,6 +28,7 @@ export const UNIVERSAL_NEGATIVE_PROMPT =
   'triptych, diptych, collage, split-screen, multi-panel, comic panels, storyboard cells, ' +
   'picture-in-picture, composite image, floating portrait, ' +
   'overlaid text, captions, speech bubbles, watermarks, signatures, sound effects, ' +
+  'photorealism, realistic 3D render, architectural visualization, ' +
   'blurry, low quality';
 
 export const SINGLE_FRAME_IMAGE_DIRECTIVE =

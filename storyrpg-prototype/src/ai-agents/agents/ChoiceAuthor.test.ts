@@ -62,6 +62,9 @@ describe('ChoiceAuthor.validateChoices', () => {
     expect(prompt).toContain('Example: StoryRPG Choice Residue');
     expect(prompt).toContain('want, cost, identity');
     expect(prompt).toContain('without exposing stats');
+    expect(prompt).toContain('Turns over topics');
+    expect(prompt).toContain('trust, evidence, leverage');
+    expect(prompt).toContain('visible story changes');
     expect(prompt).not.toContain('schema_chapters');
   });
 

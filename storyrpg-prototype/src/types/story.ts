@@ -11,7 +11,7 @@ import type {
   InventoryItem,
   Relationship,
 } from './player';
-import type { Beat, MediaRef } from './content';
+import type { Beat, MediaRef, NarrativeSequenceIntent } from './content';
 import type { Encounter, EncounterType } from './encounter';
 import type { ResolutionTier } from './choice';
 
@@ -27,6 +27,7 @@ export interface Scene {
   startingBeatId: string;
 
   encounter?: Encounter;
+  sequenceIntent?: NarrativeSequenceIntent;
 
   conditions?: ConditionExpression;
 

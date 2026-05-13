@@ -3,6 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { buildSourceMaterialFidelitySection, SceneWriter } from './SceneWriter';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 
+function createWriter(): SceneWriter {
+  return new SceneWriter({
+    provider: 'anthropic',
+    model: 'test-model',
+    apiKey: 'test-key',
+    maxTokens: 1024,
+    temperature: 0,
+  });
+}
+
 describe('SceneWriter structural guards', () => {
   it('includes adapted scene-craft guidance and StoryRPG-shaped few-shot example', () => {
     const writer = new SceneWriter({
@@ -18,6 +28,8 @@ describe('SceneWriter structural guards', () => {
     expect(prompt).toContain('Do not use film/camera direction terms in player-facing prose');
     expect(prompt).toMatch(/restrained\s+interiority/);
     expect(prompt).toContain('Example: StoryRPG SceneWriter Beat Scale');
+    expect(prompt).toContain('Prefer turns over topics');
+    expect(prompt).toContain('leverage, trust, evidence');
   });
 
   it('expands underspecified choice scenes into a stable three-beat structure', () => {
@@ -223,6 +235,182 @@ describe('SceneWriter structural guards', () => {
     );
 
     expect(issues.join('\n')).toContain('POV CLARITY');
+  });
+
+  it('adds fiction-first turn audit feedback for repeated topic beats', () => {
+    const writer = createWriter();
+    const issues = (writer as any).collectIssues(
+      {
+        sceneId: 'scene-1',
+        sceneName: 'Topic Chain',
+        beats: [
+          {
+            id: 'beat-1',
+            text: 'Mara explains the old rule while Alex listens.',
+            shotType: 'character',
+            primaryAction: 'Mara explains the old rule',
+          },
+          {
+            id: 'beat-2',
+            text: 'Alex observes the room and thinks about what it means.',
+            shotType: 'character',
+            primaryAction: 'Alex observes the room',
+          },
+        ],
+        startingBeatId: 'beat-1',
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      {
+        sceneBlueprint: {
+          id: 'scene-1',
+          name: 'Topic Chain',
+          description: 'Two people discuss a charm.',
+          location: 'cafe',
+          mood: 'tense',
+          purpose: 'bottleneck',
+          narrativeFunction: 'Test.',
+          dramaticQuestion: 'Will it turn?',
+          wantVsNeed: 'Know vs admit',
+          conflictEngine: 'Evasion.',
+          npcsPresent: [],
+          keyBeats: [],
+          leadsTo: [],
+        },
+        targetBeatCount: 2,
+      },
+    );
+
+    expect(issues.join('\n')).toContain('FICTION-FIRST TURN TOPIC_RUN');
+  });
+});
+
+describe('SceneWriter dramatic intent visual contracts', () => {
+  it.each([
+    [
+      'dialogue',
+      {
+        id: 'beat-dialogue',
+        text: 'Mrs. Constantinou reports what she witnessed, clutching her shopping bag as Daphne listens.',
+        primaryAction: 'Mrs. Constantinou reports what she witnessed',
+      },
+    ],
+    [
+      'investigation',
+      {
+        id: 'beat-investigation',
+        text: 'Daphne studies the phone photo, noticing the flowers blooming from the asphalt behind Alex.',
+        primaryAction: 'Daphne notices the evidence',
+      },
+    ],
+    [
+      'romance',
+      {
+        id: 'beat-romance',
+        text: 'Alex deflects with practiced charm, brushing Daphne\'s knuckles while avoiding the question.',
+        primaryAction: 'Alex deflects with practiced charm',
+      },
+    ],
+    [
+      'action',
+      {
+        id: 'beat-action',
+        text: 'Daphne reaches across the counter and pulls the cracked charm into the light.',
+      },
+    ],
+    [
+      'quiet interiority',
+      {
+        id: 'beat-quiet',
+        text: 'Yiayia Eleni observes the situation, her hands stilling in the flour as the room goes quiet.',
+        primaryAction: 'Yiayia Eleni observes the situation',
+        intensityTier: 'rest' as const,
+      },
+    ],
+    [
+      'comedy',
+      {
+        id: 'beat-comedy',
+        text: 'Alex smiles too brightly and checks his phone upside down, trying to pretend nothing strange happened.',
+        primaryAction: 'Alex smiles',
+      },
+    ],
+  ])('strengthens %s beats with visible dramatic intent', (_kind, beat) => {
+    const writer = createWriter();
+    const normalized = (writer as any).normalizeContent({
+      sceneId: 'scene-1',
+      sceneName: 'Dramatic Intent',
+      beats: [{ shotType: 'character', ...beat }],
+      startingBeatId: beat.id,
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    });
+
+    const strengthened = normalized.beats[0];
+    expect(strengthened.dramaticIntent?.visibleTurn).toBeTruthy();
+    expect(strengthened.dramaticIntent?.visualSubtextCue).toBeTruthy();
+    expect(strengthened.dramaticIntent?.obstacle).toBeTruthy();
+    expect(strengthened.sequenceIntent?.objective).toBeTruthy();
+    expect(strengthened.sequenceIntent?.visualThread).toBeTruthy();
+    expect(strengthened.sequenceIntent?.beatRole).toBeTruthy();
+    expect(strengthened.primaryAction).not.toMatch(/reports what she witnessed|observes the situation|deflects with practiced charm|^Alex smiles$/i);
+    expect(strengthened.primaryAction).not.toContain('takes a decisive physical action');
+    expect(strengthened.visualMoment).toContain(strengthened.dramaticIntent.visibleTurn.split(' ')[0]);
+  });
+
+  it('does not replace already concrete physical actions', () => {
+    const writer = createWriter();
+    const beat = {
+      id: 'beat-concrete',
+      text: 'Daphne reaches across the counter and pulls the cracked charm into the light.',
+      shotType: 'action' as const,
+      primaryAction: 'Daphne reaches across the counter',
+    };
+
+    const normalized = (writer as any).normalizeContent({
+      sceneId: 'scene-1',
+      sceneName: 'Concrete Action',
+      beats: [beat],
+      startingBeatId: beat.id,
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    });
+
+    expect(normalized.beats[0].primaryAction).toBe('Daphne reaches across the counter');
+    expect(normalized.beats[0].dramaticIntent?.visibleTurn).toBeTruthy();
+    expect(normalized.sequenceIntent?.objective).toBeTruthy();
+    expect(normalized.beats[0].sequenceIntent?.turningPoint).toBeTruthy();
+  });
+
+  it('derives a quiet rest sequence as recalibration instead of random stillness', () => {
+    const writer = createWriter();
+    const normalized = (writer as any).normalizeContent({
+      sceneId: 'scene-rest',
+      sceneName: 'Aftermath',
+      beats: [
+        {
+          id: 'beat-rest',
+          text: 'Mara sits alone after the argument, turning the ring in her fingers until her breathing steadies.',
+          shotType: 'character' as const,
+          intensityTier: 'rest' as const,
+        },
+      ],
+      startingBeatId: 'beat-rest',
+      moodProgression: [],
+      charactersInvolved: ['Mara'],
+      keyMoments: [],
+      continuityNotes: [],
+    });
+
+    expect(normalized.sequenceIntent?.activity).toMatch(/quiet recovery|visible exchange|recovery/i);
+    expect(normalized.beats[0].sequenceIntent?.beatRole).toBe('aftermath');
+    expect(normalized.beats[0].sequenceIntent?.visualThread).toBeTruthy();
   });
 });
 

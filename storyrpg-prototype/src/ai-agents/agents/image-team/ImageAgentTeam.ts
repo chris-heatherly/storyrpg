@@ -990,6 +990,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           emotionalRead: (correspondingBeat as any).emotionalRead,
           relationshipDynamic: (correspondingBeat as any).relationshipDynamic,
           mustShowDetail: (correspondingBeat as any).mustShowDetail,
+          dramaticIntent: (correspondingBeat as any).dramaticIntent,
+          sequenceIntent: (correspondingBeat as any).sequenceIntent || (request as any).sequenceIntent,
         } : undefined,
         visualContractHash: (shot as any).contractHash,
         // Choice payoff: branch scene first beat OR per-choice payoff beat.
@@ -3003,6 +3005,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           emotionalRead: (firstBeat as any).emotionalRead,
           relationshipDynamic: (firstBeat as any).relationshipDynamic,
           mustShowDetail: (firstBeat as any).mustShowDetail,
+          dramaticIntent: (firstBeat as any).dramaticIntent,
+          sequenceIntent: (firstBeat as any).sequenceIntent || (request as any).sequenceIntent,
         } : undefined,
         visualContractHash: (firstShot as any).contractHash,
         // First beat of a branch scene carries the choice payoff
@@ -3078,6 +3082,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           emotionalRead: (correspondingBeat as any).emotionalRead,
           relationshipDynamic: (correspondingBeat as any).relationshipDynamic,
           mustShowDetail: (correspondingBeat as any).mustShowDetail,
+          dramaticIntent: (correspondingBeat as any).dramaticIntent,
+          sequenceIntent: (correspondingBeat as any).sequenceIntent || (request as any).sequenceIntent,
         } : undefined,
             visualContractHash: (shot as any).contractHash,
         // Choice payoff: branch scene first beat OR per-choice payoff beat.

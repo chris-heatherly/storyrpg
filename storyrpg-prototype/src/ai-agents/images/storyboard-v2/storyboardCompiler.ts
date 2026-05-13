@@ -1,6 +1,7 @@
 import type { SceneContent } from '../../agents/SceneWriter';
 import type { CharacterBible } from '../../agents/CharacterDesigner';
 import type { EncounterStructure } from '../../agents/EncounterArchitect';
+import type { NarrativeSequenceIntent } from '../../../types';
 import { getEncounterBeats } from '../../utils/encounterImageCoverage';
 import { CharacterIdResolver, type CharacterResolutionResult } from './characterIdResolver';
 
@@ -48,6 +49,7 @@ export interface StoryboardPanelSlot {
   characterAliases?: Array<{ input: string; canonicalId: string; reason: string }>;
   characterResolutionWarnings?: string[];
   sequenceIndex?: number;
+  sequenceIntent?: NarrativeSequenceIntent;
 }
 
 export interface StoryboardScenePacket {
@@ -56,6 +58,7 @@ export interface StoryboardScenePacket {
   sceneName: string;
   setting?: string;
   mood?: string;
+  sequenceIntent?: NarrativeSequenceIntent;
   characters: StoryboardCharacter[];
   panels: StoryboardPanelSlot[];
   diagnostics?: {
@@ -285,6 +288,7 @@ function collectEncounterChoicePanels(params: {
         branchLabel: choiceMapKey,
         outcomeTier: tier,
         choiceMapKey,
+        sequenceIntent: (outcome as any).sequenceIntent,
         ...visualContractFields(outcome),
         ...panelCharacterFields(characterResolution),
       });
@@ -313,6 +317,7 @@ function collectEncounterChoicePanels(params: {
           outcomeTier: tier,
           choiceMapKey,
           situationKey,
+          sequenceIntent: (outcome.nextSituation as any).sequenceIntent || (outcome as any).sequenceIntent,
           ...visualContractFields(outcome.nextSituation),
           ...panelCharacterFields(situationCharacterResolution),
         });
@@ -377,6 +382,7 @@ export function compileStoryboardScenePacket(params: {
       primaryAction: beat.primaryAction,
       emotionalRead: beat.emotionalRead,
       mustShowDetail: beat.mustShowDetail,
+      sequenceIntent: (beat as any).sequenceIntent || (scene as any).sequenceIntent,
       ...panelCharacterFields(characterResolution),
     });
   }
@@ -403,6 +409,7 @@ export function compileStoryboardScenePacket(params: {
       label: encounterBeat.name || encounterBeat.id,
       narrativeText: setupText,
       mood: encounterBeat.phase,
+      sequenceIntent: encounter?.storyboard?.sequenceIntent || (encounterBeat as any).sequenceIntent,
       ...visualContractFields(encounterBeat),
       ...panelCharacterFields(characterResolution),
     });
@@ -444,6 +451,7 @@ export function compileStoryboardScenePacket(params: {
         speaker: beat.speaker || beat.speakerName,
         mood: beat.speakerMood || storylet.tone,
         outcomeName,
+        sequenceIntent: (beat as any).sequenceIntent || (storylet as any).sequenceIntent,
         ...visualContractFields(beat),
         ...panelCharacterFields(characterResolution),
       });
@@ -465,6 +473,7 @@ export function compileStoryboardScenePacket(params: {
     sceneName: scene.sceneName,
     setting: normalize((scene.settingContext as any)?.description),
     mood: Array.isArray(scene.moodProgression) ? scene.moodProgression.join(' -> ') : undefined,
+    sequenceIntent: (scene as any).sequenceIntent || encounter?.storyboard?.sequenceIntent,
     characters: characterSummary(characterBible, packetCharacterIds),
     panels,
     diagnostics: {

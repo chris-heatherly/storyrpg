@@ -289,6 +289,8 @@ Branching (routing to different scenes via nextSceneId) is a PROPERTY of a choic
 - **Tint Flags**: Dilemma choices should set tint flags (e.g., "tint:mercy", "tint:justice") that color subsequent scene tone.
 - **Callback Flags**: Expression choices should set memorable flags that NPCs can reference in later dialogue.
 - **Consequence Legibility**: Meaningful choices should name the domain they most affect: relationship, reputation, danger, information, identity, leverage, or resource.
+- **Turns over topics**: Each option should create a visible fiction-first turn, not merely reveal the same information in a different tone. Good turns change trust, evidence, leverage, secrecy pressure, proximity, risk, identity expression, resources, knowledge, or callback residue.
+- **Reminder Planning as Story Memory**: reminderPlan and residueHints should point to visible story changes: colder distance, evidence now in someone else's hands, a secret harder to deny, altered access, changed reputation, or a later callback.
 - **Reminder Planning**: Every meaningful choice should include an immediate echo and a short-term reminder plan.
 - **Risk Framing**: Use fiction-first feedback cues such as "steady", "desperate", "you have leverage", or "you're out of your depth" instead of exposing numbers.
 
@@ -950,7 +952,8 @@ CRITICAL REQUIREMENTS:
 9. Dilemma choices MUST include moralContract with competing values and unavoidable cost
 10. Meaningful non-expression choices MUST include at least one residueHints item
 11. Meaningful choices should include consequenceDomain, reminderPlan, and feedbackCue
-12. Return ONLY valid JSON, no markdown, no extra text
+12. reminderPlan and residueHints should describe visible fiction-first turns, not abstract state deltas
+13. Return ONLY valid JSON, no markdown, no extra text
 `;
   }
 

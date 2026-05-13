@@ -27,6 +27,8 @@ export interface SanitizedText {
 const STYLE_CONTAMINATION: Array<{ pattern: RegExp; replacement: string; label: string }> = [
   { pattern: /\breference sheet style\b/gi, replacement: 'clean full-body character identity reference', label: 'reference sheet style' },
   { pattern: /\brender(?:ed)? in (?:an? )?[^.]{0,80}?(?:style|aesthetic)\b/gi, replacement: '', label: 'alternate render style clause' },
+  { pattern: /\b(?:cinematic\s+)?story frame\b/gi, replacement: 'story moment', label: 'cinematic story frame' },
+  { pattern: /\boil painting texture\b/gi, replacement: 'surface texture', label: 'oil painting texture' },
 ];
 
 const CHARACTER_REDESIGN_TERMS = /\b(change(?:d)? (?:hair|face|eyes|skin|build|body)|different (?:face|hair|eyes|skin|body|outfit)|redesign(?:ed)?|new look|make (?:her|him|them) look)\b/i;

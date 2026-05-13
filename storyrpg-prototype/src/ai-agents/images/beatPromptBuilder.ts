@@ -46,6 +46,9 @@ export interface BeatPromptInput {
   emotionalRead?: string;
   relationshipDynamic?: string;
   mustShowDetail?: string;
+  visibleTurn?: string;
+  visualSubtextCue?: string;
+  statusShift?: string;
   shotType?: 'establishing' | 'character' | 'action';
 
   isClimaxBeat?: boolean;
@@ -596,6 +599,15 @@ function buildCharacterPrompt(
   if (beat.mustShowDetail) {
     narrativeParts.push(`must show: ${beat.mustShowDetail}`);
   }
+  if (beat.visibleTurn) {
+    narrativeParts.push(`visible turn: ${beat.visibleTurn}`);
+  }
+  if (beat.visualSubtextCue) {
+    narrativeParts.push(`visual subtext cue: ${beat.visualSubtextCue}`);
+  }
+  if (beat.statusShift) {
+    narrativeParts.push(`status shift: ${beat.statusShift}`);
+  }
 
   narrativeParts.push(
     'Render the story moment through the season style contract; the style prompt controls rendering, texture, lighting, finish, and camera language.',
@@ -636,6 +648,9 @@ function buildCharacterPrompt(
       : undefined,
     emotionalCore: beat.emotionalRead || undefined,
     visualNarrative,
+    visibleTurn: beat.visibleTurn,
+    visualSubtextCue: beat.visualSubtextCue,
+    statusShift: beat.statusShift,
     beatType: analysis.beatType,
     settingAdaptationNotes: settingSelection.notes,
     settingBranchLabel: settingSelection.branchLabel,

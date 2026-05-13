@@ -460,6 +460,63 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
   });
 });
 
+describe('ImageGenerationService OpenAI prompt budget', () => {
+  it('clamps composed OpenAI image prompts below provider limit before dispatch', async () => {
+    const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'storyrpg-openai-budget-'));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ b64_json: Buffer.from('png').toString('base64') }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const service = new ImageGenerationService({
+        enabled: true,
+        provider: 'dall-e',
+        openaiApiKey: 'test-key',
+        openaiImageModel: 'gpt-image-1',
+        outputDirectory,
+      } as any);
+
+      await service.generateImage(
+        {
+          prompt: [
+            'A storyboard sheet sequence where Mara carries a folded letter through a crowded street.',
+            'STORY MOMENT DETAIL '.repeat(1800),
+            'CHARACTER VISUAL IDENTITY',
+            'Mara: silver hair, storm-gray cloak, scar through left eyebrow. '.repeat(600),
+          ].join('\n'),
+          style: 'messy risograph pulp fantasy with crisp silhouettes',
+          aspectRatio: '9:16',
+          composition: 'Keep the folded letter as the visual thread. '.repeat(500),
+          negativePrompt: 'text, watermark, duplicate character, static lineup, '.repeat(300),
+          characterIdentity: ['Mara'],
+        } as any,
+        'openai-long-prompt',
+        { type: 'beat', characterNames: ['Mara'] } as any,
+        [
+          { role: 'character-reference', characterName: 'Mara', viewType: 'front', data: Buffer.from('mara').toString('base64'), mimeType: 'image/png' },
+        ] as any,
+      );
+
+      const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+      const body = JSON.parse(String(calls[0]?.[1]?.body || '{}'));
+      expect(body.prompt.length).toBeLessThanOrEqual(32000);
+      expect(body.prompt).toContain('STYLE LOCK:');
+      expect(body.prompt).toContain('STORY MOMENT:');
+      expect(body.prompt).toContain('Shortened');
+
+      const promptAudit = JSON.parse(fs.readFileSync(path.join(outputDirectory, 'prompts', 'openai-long-prompt.json'), 'utf8'));
+      expect(promptAudit.metadata.openAiComposedPromptTruncated).toBe(true);
+      expect(promptAudit.metadata.openAiComposedPromptOriginalChars).toBeGreaterThan(32000);
+      expect(promptAudit.metadata.openAiComposedPromptChars).toBeLessThanOrEqual(32000);
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+      fs.rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('ImageGenerationService reference composition guardrails', () => {
   it('keeps style references from becoming composition references', () => {
     const service = new ImageGenerationService({
@@ -499,6 +556,32 @@ describe('ImageGenerationService reference composition guardrails', () => {
 
     expect(prompt).toContain('FRESH COMPOSITION RULE');
     expect(prompt).toContain('Do NOT copy their pose, camera angle, character placement, blocking, focal point, or composition');
+  });
+
+  it('includes dramatic intent fields in narrative prompts', () => {
+    const service = new ImageGenerationService({
+      enabled: true,
+      provider: 'nano-banana',
+      geminiApiKey: 'test-key',
+      outputDirectory: '/tmp/generated-images-test',
+      geminiSettings: {
+        canonicalArtStyle: 'ink wash story art',
+      },
+    } as any);
+
+    const prompt = (service as any).buildNarrativePrompt({
+      prompt: 'Ari slides the folder into the light while Mara goes still.',
+      style: 'ink wash story art',
+      aspectRatio: '9:19.5',
+      visualNarrative: 'Ari reveals the proof and Mara loses control of the room.',
+      visibleTurn: 'The folder changes possession and Ari gains leverage.',
+      visualSubtextCue: 'Mara releases her coffee cup before answering.',
+      statusShift: 'Mara controls the conversation -> Ari controls the evidence.',
+    }, false);
+
+    expect(prompt).toContain('VISIBLE TURN: The folder changes possession and Ari gains leverage.');
+    expect(prompt).toContain('VISUAL SUBTEXT CUE: Mara releases her coffee cup before answering.');
+    expect(prompt).toContain('STATUS SHIFT: Mara controls the conversation -> Ari controls the evidence.');
   });
 });
 

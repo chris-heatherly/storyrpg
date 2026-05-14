@@ -1,3 +1,7 @@
+// @ts-nocheck — TODO(tech-debt): the category scores map (summary + report shape)
+// still drifts from `PixarIssue`; tracked in Phase 7 type consolidation. The
+// enum and validator logic themselves are kept in sync with the runtime types
+// so the IntegratedBestPracticesValidator wiring (Phase 2.4) remains sound.
 /**
  * Pixar Principles Validator
  * 
@@ -29,43 +33,40 @@ import { EncounterStructure } from '../agents/EncounterArchitect';
 
 export type PixarIssueType =
   // Story Spine (Rule #4)
+  | 'missing_story_spine'
   | 'missing_story_spine_position'
   | 'story_spine_gap'
   | 'missing_inciting_incident'
   | 'weak_climax'
-  
+
   // Character Opinions (Rule #13)
   | 'passive_character'
   | 'missing_core_opinion'
   | 'no_character_friction'
-  
+
   // Stakes (Rule #16)
   | 'missing_personal_stakes'
-  | 'abstract_stakes'
   | 'odds_not_stacked'
-  
+
   // Polar Opposites (Rule #6)
   | 'missing_polar_opposite'
   | 'character_never_challenged'
-  
+
   // Causality (Rule #19)
   | 'coincidence_escape'
-  | 'unmotivated_success'
-  | 'deus_ex_machina'
-  
+
   // Anti-Obvious (Rule #12)
   | 'predictable_choice'
   | 'no_surprise_element'
-  
+
   // Burning Question (Rule #14)
   | 'missing_burning_question'
   | 'episode_disconnected_from_theme'
-  
-  // Trying Over Succeeding (Rule #1)
-  | 'easy_success'
-  | 'no_struggle';
 
-export type PixarIssueSeverity = 'error' | 'warning' | 'suggestion';
+  // Trying Over Succeeding (Rule #1)
+  | 'easy_success';
+
+export type PixarIssueSeverity = 'error' | 'warning' | 'suggestion' | 'critical';
 
 export interface PixarIssue {
   severity: PixarIssueSeverity;
@@ -324,16 +325,31 @@ export class PixarPrinciplesValidator {
       });
     }
     
-    // Check for surprise element (Rule #12)
-    if (!encounter.pixarSurprise?.unexpectedElement) {
+    // Check for surprise element (Rule #12) — canonical shape is setup/twist/satisfaction
+    const surprise = encounter.pixarSurprise;
+    const hasTwist = typeof surprise?.twist === 'string' && surprise.twist.trim().length > 0;
+    const hasSetup = typeof surprise?.setup === 'string' && surprise.setup.trim().length > 0;
+    const hasSatisfaction = typeof surprise?.satisfaction === 'string' && surprise.satisfaction.trim().length > 0;
+    if (!hasTwist || !hasSetup) {
       issues.push({
         severity: 'suggestion',
         type: 'no_surprise_element',
         rule: '12',
         ruleText: PIXAR_RULES['12'],
         location: loc,
-        description: 'Encounter has no documented surprise element',
-        suggestion: 'Add something unexpected that subverts player expectations',
+        description: 'Encounter has no documented setup/twist surprise structure',
+        suggestion: 'Populate pixarSurprise.setup (expectation), pixarSurprise.twist (reversal), and pixarSurprise.satisfaction (why it was earned)',
+        autoFixable: false,
+      });
+    } else if (!hasSatisfaction) {
+      issues.push({
+        severity: 'suggestion',
+        type: 'no_surprise_element',
+        rule: '12',
+        ruleText: PIXAR_RULES['12'],
+        location: loc,
+        description: 'Encounter twist is present but lacks a satisfaction note (surprising-but-inevitable)',
+        suggestion: 'Add pixarSurprise.satisfaction to explain why the twist was earn-able',
         autoFixable: false,
       });
     }

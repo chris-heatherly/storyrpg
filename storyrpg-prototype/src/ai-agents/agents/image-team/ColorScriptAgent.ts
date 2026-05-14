@@ -174,7 +174,7 @@ export class ColorScriptAgent extends BaseAgent {
       }
       
       // Try to close open structures
-      let depth = { braces: 0, brackets: 0 };
+      const depth = { braces: 0, brackets: 0 };
       for (const char of json) {
         if (char === '{') depth.braces++;
         if (char === '}') depth.braces--;

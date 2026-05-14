@@ -20,6 +20,38 @@ import { CharacterBible } from './CharacterDesigner';
 import { EpisodeBlueprint } from './StoryArchitect';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
 
+/** Reference image purposes recognized by the Stable Diffusion adapter. */
+export type SDReferencePurpose =
+  | 'ip-adapter'
+  | 'controlnet-depth'
+  | 'controlnet-canny'
+  | 'reference-only'
+  | 'img2img-init'
+  | 'inpaint-mask';
+
+/** A single LoRA applied to an SD prompt. */
+export interface ImagePromptLora {
+  name: string;
+  weight: number;
+}
+
+/** A ControlNet unit configured on an SD prompt. */
+export interface ImagePromptControlNet {
+  module: string;
+  model: string;
+  /** Reference role/purpose used to find the source image in the ref pack. */
+  imageRole: string;
+  weight?: number;
+  controlMode?: string;
+}
+
+/** IP-Adapter configuration for character identity anchoring. */
+export interface ImagePromptIpAdapter {
+  model: string;
+  imageRole: string;
+  weight?: number;
+}
+
 // Image generation request types
 export interface SceneImageRequest {
   sceneId: string;
@@ -109,6 +141,25 @@ export interface ImagePrompt {
   // Metadata for reference-based generation
   referenceCharIds?: string[];
   referenceLocationId?: string;
+
+  // Deterministic prompt contract fields. These are additive metadata for
+  // providers, diagnostics, and tests: style describes how to render; identity
+  // and appearance state describe what to render.
+  styleContract?: {
+    source: 'user-visual' | 'approved-anchor' | 'raw-season-style' | 'default';
+    text: string;
+  };
+  characterIdentity?: string[];
+  appearanceState?: string;
+  sceneAction?: string;
+  compositionContract?: string;
+  negativeContract?: string;
+  promptContract?: {
+    sanitizedTerms?: string[];
+    deterministicRules?: string[];
+    referencePrecedence?: string;
+    stylePrecedence?: string;
+  };
   
   // Micro-direction fields — specific visual details that survive the "telephone game"
   // from StoryboardAgent -> VisualIllustratorAgent -> imageGenerationService.
@@ -119,12 +170,32 @@ export interface ImagePrompt {
   shotDescription?: string;  // e.g. "low angle medium shot, three-quarter view"
   emotionalCore?: string;    // e.g. "betrayal — the moment he realizes she lied"
   visualNarrative?: string;  // The core visual story: "A woman recoils from a man whose hands are stained red." (Replaces silentStoryTest)
+  visibleTurn?: string;      // The concrete change a viewer can read without captions
+  visualSubtextCue?: string; // Prop, gesture, distance, posture, or reaction that reveals subtext
+  statusShift?: string;      // How leverage changes across the beat
   settingAdaptationNotes?: string[];
   settingBranchLabel?: string;
   settingContext?: SceneSettingContext;
   isEncounterImage?: boolean;
   poseSpec?: string;
   beatType?: string;
+
+  // Stable Diffusion knobs — optional. Non-SD providers ignore these fields.
+  /** Deterministic seed; -1 or undefined = random. */
+  seed?: number;
+  /** LoRAs to inject as `<lora:name:weight>` tags for SD. */
+  loras?: ImagePromptLora[];
+  /** ControlNet units (depth/canny/reference-only) for SD. */
+  controlNet?: ImagePromptControlNet[];
+  /** IP-Adapter (identity anchor) for SD. */
+  ipAdapter?: ImagePromptIpAdapter;
+  /** img2img denoising strength (0..1) when an init image is present. */
+  denoisingStrength?: number;
+  sampler?: string;
+  steps?: number;
+  cfgScale?: number;
+  width?: number;
+  height?: number;
 }
 
 // Generated image result

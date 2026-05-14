@@ -12,6 +12,7 @@
  *
  * Usage:
  *   BLOB_READ_WRITE_TOKEN=... npx ts-node --project tsconfig.worker.json scripts/upload-stories-to-blob.ts
+ *   BLOB_READ_WRITE_TOKEN=... npx ts-node --project tsconfig.worker.json scripts/upload-stories-to-blob.ts thrones-of-the-two-moons_2026-05-02T15-40-55
  *
  * Supports incremental uploads -- re-running skips images already in blob.
  */
@@ -66,6 +67,24 @@ async function listExistingBlobs(): Promise<Map<string, string>> {
     cursor = result.hasMore ? result.cursor : undefined;
   } while (cursor);
   return existing;
+}
+
+async function loadExistingManifestEntries(): Promise<StoryManifestEntry[]> {
+  const manifestUrl = process.env.EXPO_PUBLIC_BLOB_MANIFEST_URL;
+  if (!manifestUrl) return [];
+
+  try {
+    const response = await fetch(manifestUrl);
+    if (!response.ok) {
+      console.warn(`[WARN] Existing manifest fetch failed: ${response.status}`);
+      return [];
+    }
+    const manifest = await response.json() as StoriesManifest;
+    return Array.isArray(manifest.stories) ? manifest.stories : [];
+  } catch (err) {
+    console.warn('[WARN] Existing manifest fetch failed:', err);
+    return [];
+  }
 }
 
 async function uploadImageBlob(
@@ -162,7 +181,9 @@ async function rewriteImageField(
   return null;
 }
 
-const IMAGE_KEYS = new Set(['image', 'situationImage', 'backgroundImage', 'coverImage']);
+function isMediaImageKey(key: string): boolean {
+  return key === 'portrait' || /image$/i.test(key);
+}
 
 async function processStoryImages(
   story: any,
@@ -185,7 +206,7 @@ async function processStoryImages(
     for (const key of Object.keys(obj)) {
       const val = obj[key];
 
-      if (IMAGE_KEYS.has(key) && typeof val === 'string' && val.length > 10) {
+      if (isMediaImageKey(key) && typeof val === 'string' && val.length > 10) {
         const label = `img-${labelSeq++}`;
         const url = await rewriteImageField(val, storyDir, label, existingBlobs);
         if (url) {
@@ -271,9 +292,11 @@ async function main() {
   }
 
   console.log('Scanning for stories...');
+  const requestedDirs = new Set(process.argv.slice(2).filter(Boolean));
   const dirs = fs.readdirSync(STORIES_DIR, { withFileTypes: true })
     .filter(d => d.isDirectory())
     .map(d => d.name)
+    .filter(name => requestedDirs.size === 0 || requestedDirs.has(name))
     .sort();
 
   const storyDirs: { dirName: string; filePath: string }[] = [];
@@ -281,6 +304,13 @@ async function main() {
     const fp = path.join(STORIES_DIR, dir, '08-final-story.json');
     if (fs.existsSync(fp)) {
       storyDirs.push({ dirName: dir, filePath: fp });
+    }
+  }
+
+  if (requestedDirs.size > 0) {
+    const found = new Set(storyDirs.map(s => s.dirName));
+    for (const requested of requestedDirs) {
+      if (!found.has(requested)) console.warn(`[WARN] Requested story dir not found or missing 08-final-story.json: ${requested}`);
     }
   }
 
@@ -301,8 +331,13 @@ async function main() {
     if (entry) manifestEntries.push(entry);
   }
 
-  // Deduplicate by story ID (keep the latest)
+  const existingManifestEntries = requestedDirs.size > 0
+    ? await loadExistingManifestEntries()
+    : [];
+
+  // Deduplicate by story ID (keep the latest upload)
   const seen = new Map<string, StoryManifestEntry>();
+  for (const entry of existingManifestEntries) seen.set(entry.id, entry);
   for (const entry of manifestEntries) seen.set(entry.id, entry);
   const dedupedEntries = Array.from(seen.values());
 

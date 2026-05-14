@@ -32,6 +32,7 @@ import {
   Move,
 } from 'lucide-react-native';
 import { Story, Beat, Choice, Scene, Episode } from '../types';
+import { mediaRefAsString } from '../assets/assetRef';
 import { TERMINAL } from '../theme';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -95,7 +96,7 @@ function buildMapData(story: Story) {
           type: 'beat',
           label: beat.speaker || `Beat ${beatIndex + 1}`,
           sublabel: beat.text.slice(0, 50) + (beat.text.length > 50 ? '...' : ''),
-          image: beat.image,
+          image: mediaRefAsString(beat.image) || undefined,
           sceneId: scene.id,
           episodeId: episode.id,
           beatId: beat.id,
@@ -1191,10 +1192,10 @@ const styles = StyleSheet.create({
   mapCanvas: {
     flex: 1,
     overflow: 'hidden',
-    cursor: 'grab',
+    cursor: 'grab' as unknown as undefined,
   },
   mapCanvasDragging: {
-    cursor: 'grabbing',
+    cursor: 'grabbing' as unknown as undefined,
   },
   zoomControls: {
     position: 'absolute',

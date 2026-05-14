@@ -10,6 +10,7 @@
  */
 
 import { CharacterBible } from '../agents/CharacterDesigner';
+import { PROXY_CONFIG } from '../../config/endpoints';
 
 // Voice metadata from ElevenLabs
 export interface ElevenLabsVoice {
@@ -93,14 +94,8 @@ class VoiceCastingService {
   private cacheTimestamp: number = 0;
   private cacheDurationMs: number = 5 * 60 * 1000; // 5 minutes
   
-  // Get proxy URL dynamically
   private get proxyUrl(): string {
-    try {
-      const { PROXY_CONFIG } = require('../../config/endpoints');
-      return PROXY_CONFIG.getProxyUrl();
-    } catch {
-      return 'http://localhost:3001';
-    }
+    return PROXY_CONFIG.getProxyUrl();
   }
 
   /**
@@ -134,11 +129,12 @@ class VoiceCastingService {
       }
 
       const data = await response.json();
-      this.cachedVoices = data.voices || [];
+      const voices: ElevenLabsVoice[] = data.voices || [];
+      this.cachedVoices = voices;
       this.cacheTimestamp = now;
-      
-      console.log(`[VoiceCasting] Loaded ${this.cachedVoices.length} voices from ElevenLabs`);
-      return this.cachedVoices;
+
+      console.log(`[VoiceCasting] Loaded ${voices.length} voices from ElevenLabs`);
+      return voices;
     } catch (error) {
       console.warn('[VoiceCasting] Error fetching voices:', error);
       return this.getDefaultVoicesList();

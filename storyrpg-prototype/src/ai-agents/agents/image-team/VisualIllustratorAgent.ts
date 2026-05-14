@@ -54,6 +54,26 @@ export interface IllustrationRequest {
     emotionalRead?: string;
     relationshipDynamic?: string;
     mustShowDetail?: string;
+    dramaticIntent?: {
+      characterObjectives?: Record<string, string>;
+      obstacle?: string;
+      statusBefore?: string;
+      statusAfter?: string;
+      subtext?: string;
+      visibleTurn?: string;
+      visualSubtextCue?: string;
+    };
+    sequenceIntent?: {
+      objective?: string;
+      activity?: string;
+      obstacle?: string;
+      startState?: string;
+      turningPoint?: string;
+      endState?: string;
+      visualThread?: string;
+      mechanicThread?: string;
+      beatRole?: string;
+    };
   };
   visualContractHash?: string;
   // The player choice that led to this beat (only for first beat of branch scenes)
@@ -217,6 +237,15 @@ export class VisualIllustratorAgent extends BaseAgent {
       if (!imagePrompt.visualNarrative && anyPrompt.silentStoryTest) {
         imagePrompt.visualNarrative = anyPrompt.silentStoryTest;
       }
+      const lockedIntent = input.authoredVisualContract?.dramaticIntent;
+      if (lockedIntent) {
+        imagePrompt.visibleTurn = imagePrompt.visibleTurn || lockedIntent.visibleTurn;
+        imagePrompt.visualSubtextCue = imagePrompt.visualSubtextCue || lockedIntent.visualSubtextCue;
+        imagePrompt.statusShift = imagePrompt.statusShift || [
+          lockedIntent.statusBefore,
+          lockedIntent.statusAfter,
+        ].filter(Boolean).join(' -> ') || undefined;
+      }
       
       if (!imagePrompt.aspectRatio) imagePrompt.aspectRatio = '9:19.5';
       if (!imagePrompt.visualNarrative || imagePrompt.visualNarrative.trim().length < 12) {
@@ -316,7 +345,7 @@ ${TRANSITION_CONTINUITY_RULES}
 ${TRANSITION_PROMPT_TEMPLATES}
 
 When a transition type is specified, you MUST enforce its continuity rules:
-- **moment_to_moment**: Include "IDENTICAL camera angle", "IDENTICAL environment", "SAME position with TINY change in [X]"
+- **moment_to_moment**: Preserve emotional continuity and the specific micro-change. Use locked-off camera/position ONLY when the beat explicitly provides a locked_micro_progression affordance with changeOnly.
 - **action_to_action**: Include "SAME setting", "SAME character", "NOW showing [key pose phase]"
 - **subject_to_subject**: Include "SAME location", "SAME time", "IDENTICAL lighting", "NOW focused on [different subject]"
 - **scene_to_scene**: Include time/space change indicators, but note continuity thread
@@ -329,14 +358,14 @@ ${PROMPT_ASSEMBLY_PATTERN}
 [TRANSITION if applicable] + [CAMERA] + [THE BEAT: action, emotion, relationship] + [VISUAL STYLE: pose, lighting]
 
 ## CRITICAL: SINGLE UNIFIED IMAGE — NO COMPOSITES
-Every output must be ONE continuous full-bleed image from ONE camera angle. NEVER produce triptychs, diptychs, collages, montages, picture-in-picture, inset panels, overlaid cutouts, floating portraits over scenes, split-screen, or ANY multi-image composition. No internal borders or frames.
-The negativePrompt MUST always include: 'triptych, diptych, collage, montage, picture-in-picture, inset panel, overlaid cutout, split-screen, comic panels, image within image, composite image'.
+Every output must be ONE continuous full-bleed image from ONE camera angle. NEVER produce triptychs, diptychs, collages, picture-in-picture, inset panels, floating portraits over scenes, split-screen, or ANY multi-image composition. No internal borders or frames.
+The negativePrompt MUST always include: 'triptych, diptych, collage, picture-in-picture, split-screen, comic panels'.
 
 ## CRITICAL: NO TEXT IN IMAGES
 The negativePrompt MUST always include 'text overlay, caption text, title text, speech bubbles, watermarks, signatures'. The image must contain NO rendered text except text that naturally exists within the scene world (e.g. a shop sign, book title, clothing text, or banner visible to characters). No captions, labels, or annotations.
 
 ## CRITICAL: For MOMENT_TO_MOMENT transitions
-The prompt MUST emphasize: "same angle, same environment, same character position, ONLY change is [specific micro-detail]"
+The prompt MUST emphasize the tiny visible change, but default to fresh composition. Only use "same angle, same character position" when an explicit locked_micro_progression affordance names the one allowed change.
 
 ## CRITICAL: For SUBJECT_TO_SUBJECT transitions  
 The prompt MUST include: "same scene, same time, same lighting direction, now the camera focuses on [different subject]"
@@ -351,7 +380,7 @@ Include "duplicate character, same character appearing twice, cloned figures" in
 Return a JSON object:
 {
   "prompt": "Complete prompt describing the story beat (action, emotion, relationship dynamics). MUST name ALL characters by their actual names — NEVER use generic references like 'a woman', 'a man', 'two people', 'the figure', 'the character'. Transition continuity directives at the START if applicable.",
-  "negativePrompt": "triptych, diptych, collage, montage, picture-in-picture, inset panel, overlaid cutout, split-screen, comic panels, image within image, composite image, floating portrait, duplicate character, same character appearing twice, cloned figures, single character alone when multiple should be present, character portrait, missing characters, static pose, standing straight, symmetrical pose, arms at sides, mannequin pose, centered composition, repeated staging from previous image, text overlay, caption text, title text, speech bubbles, watermarks, signatures, [transition-specific negatives]",
+  "negativePrompt": "triptych, diptych, collage, picture-in-picture, split-screen, comic panels, duplicate character, same character appearing twice, cloned figures, single character alone when multiple should be present, character portrait, missing characters, static pose, standing straight, symmetrical pose, arms at sides, mannequin pose, centered composition, repeated staging from previous image, text overlay, caption text, title text, speech bubbles, watermarks, signatures, [transition-specific negatives]",
   "style": "${effectiveStyle}",
   "aspectRatio": "9:19.5",
   "composition": "Focal point and depth layers — where the ACTION is framed",
@@ -451,6 +480,18 @@ ${beatContextSection}`
 - **Emotional Read (LOCKED)**: ${request.authoredVisualContract.emotionalRead || 'Not provided'}
 - **Relationship Dynamic (LOCKED)**: ${request.authoredVisualContract.relationshipDynamic || 'Not provided'}
 - **Must Show Detail (LOCKED)**: ${request.authoredVisualContract.mustShowDetail || 'Not provided'}
+- **Visible Turn (LOCKED)**: ${request.authoredVisualContract.dramaticIntent?.visibleTurn || 'Not provided'}
+- **Visual Subtext Cue (LOCKED)**: ${request.authoredVisualContract.dramaticIntent?.visualSubtextCue || 'Not provided'}
+- **Status Shift (LOCKED)**: ${[
+        request.authoredVisualContract.dramaticIntent?.statusBefore,
+        request.authoredVisualContract.dramaticIntent?.statusAfter,
+      ].filter(Boolean).join(' -> ') || 'Not provided'}
+- **Subtext (LOCKED)**: ${request.authoredVisualContract.dramaticIntent?.subtext || 'Not provided'}
+- **Sequence Objective (LOCKED)**: ${request.authoredVisualContract.sequenceIntent?.objective || 'Not provided'}
+- **Sequence Activity (LOCKED)**: ${request.authoredVisualContract.sequenceIntent?.activity || 'Not provided'}
+- **Sequence Role (LOCKED)**: ${request.authoredVisualContract.sequenceIntent?.beatRole || 'Not provided'}
+- **Sequence Turning Point (LOCKED)**: ${request.authoredVisualContract.sequenceIntent?.turningPoint || 'Not provided'}
+- **Sequence Visual Thread (LOCKED)**: ${request.authoredVisualContract.sequenceIntent?.visualThread || 'Not provided'}
 - You may choose framing and camera grammar, but the story event above is non-negotiable.`
       : '';
 
@@ -518,6 +559,9 @@ ${artStyleDirective}
 - **keyBodyLanguage**: Weight, lean, line of action for each foreground character AND how their bodies relate spatially. (she recoils backward, he crowds forward — the gap between them shrinking) — NOT abstract (defensive posture, tense stance).
 - **emotionalCore**: One CONCRETE OBSERVABLE sentence — what we literally SEE, not an abstraction. YES: "She sees the blood on his hands and steps back." NO: "Tension rises between them."
 - **visualNarrative**: What would a viewer with NO text understand? One specific sentence. This is the core visual story and must be concrete, not vague.
+- **visibleTurn**: The concrete change in leverage, emotion, information, distance, or object control that a viewer understands without captions.
+- **visualSubtextCue**: The prop, gesture, posture, distance, reaction, or environmental detail that reveals what is really happening beneath the surface.
+- **statusShift**: The visible leverage movement across the beat, e.g. "Alex starts in control -> Daphne's phone evidence takes leverage."
 
 These fields are injected DIRECTLY into the image model prompt — they are your most powerful tool for visual storytelling.
 
@@ -584,7 +628,7 @@ For human drama, favor MICRO-DRAMA over theatrical grand gestures:
 - Two characters should have ASYMMETRIC body language reflecting their different internal states, NOT mirrored poses or stiff side-by-side positioning.
 - NEVER describe two characters simply "standing together holding hands" — show what their hands are DOING (squeezing, loosening grip, one pulling away, intertwined fingers with white knuckles).
 
-Return JSON: prompt, negativePrompt, style, aspectRatio (9:19.5), composition, cameraAngle, poseSpec, transitionEnforcement, keyExpression, keyGesture, keyBodyLanguage, shotDescription, emotionalCore, visualNarrative.
+Return JSON: prompt, negativePrompt, style, aspectRatio (9:19.5), composition, cameraAngle, poseSpec, transitionEnforcement, keyExpression, keyGesture, keyBodyLanguage, shotDescription, emotionalCore, visualNarrative, visibleTurn, visualSubtextCue, statusShift.
 The "style" field in JSON MUST be EXACTLY "${beatEffectiveStyle}" — copy it verbatim, do NOT add, remove, or rephrase any words.
 `;
   }
@@ -635,14 +679,12 @@ For each character, describe: eyebrow position, eyelid openness, mouth shape.`;
 ## TRANSITION CONTINUITY: MOMENT-TO-MOMENT (Time Barely Moves)
 **THIS IS CRITICAL**: This shot is a micro-progression from the previous shot.
 ${request.storyBeat?.isClimaxBeat ? '**CLIMAX EXCEPTION**: At climax moments, slight camera/lighting shifts for dramatic effect are acceptable.' : ''}
-- Camera angle MUST BE IDENTICAL: ${prevRef?.cameraAngle || 'same as previous'}
-- Environment MUST BE IDENTICAL: ${prevRef?.environment || 'same as previous'}
-- Character position MUST BE IDENTICAL (with tiny adjustment only)
-- Lighting MUST BE IDENTICAL: ${prevRef?.lighting || 'same as previous'}
-- Color palette MUST BE IDENTICAL: ${prevRef?.palette || 'same as previous'}
+- Preserve emotional and spatial continuity from the previous shot, but use fresh camera/blocking unless an explicit locked_micro_progression affordance says otherwise.
+- Environment should remain recognizable: ${prevRef?.environment || 'same story setting'}
+- Lighting and palette should remain compatible: ${prevRef?.lighting || 'same mood family'}, ${prevRef?.palette || 'same palette family'}
 - **ONLY CHANGE ALLOWED**: ${transition.whatChanged}
 
-**PROMPT MUST START WITH**: "Same angle, same environment, same character position, ONLY change is [${transition.whatChanged}]"
+**PROMPT MUST START WITH**: "Micro-progression from the previous beat; fresh composition showing [${transition.whatChanged}]"
 **PRESERVED ELEMENTS**: ${transition.whatPreserved.join(', ')}`,
 
       'action_to_action': `

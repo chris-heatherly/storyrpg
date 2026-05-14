@@ -11,15 +11,21 @@ export interface CanonicalPromptSections {
   negatives?: string;
 }
 
+// B3: compressed canonical skeleton.
+// Prior format used "STYLE\n<body>\n\nIDENTITY\n<body>\n\n..." which cost
+// 1 label + 2 newlines per section. Single-line labeled format saves ~6
+// newlines per prompt (trivial for text LLMs but meaningful for
+// image-path tokenization and for Gemini's multimodal input budget
+// where long prompts start getting truncated from the tail).
 function joinSections(sections: CanonicalPromptSections): string {
   return [
-    sections.style && `STYLE\n${sections.style}`,
-    sections.identity && `IDENTITY\n${sections.identity}`,
-    sections.environment && `ENVIRONMENT\n${sections.environment}`,
-    sections.moment && `MOMENT\n${sections.moment}`,
-    sections.composition && `COMPOSITION\n${sections.composition}`,
-    sections.continuity && `CONTINUITY\n${sections.continuity}`,
-  ].filter(Boolean).join('\n\n');
+    sections.style && `STYLE: ${sections.style}`,
+    sections.identity && `IDENTITY: ${sections.identity}`,
+    sections.environment && `ENVIRONMENT: ${sections.environment}`,
+    sections.moment && `MOMENT: ${sections.moment}`,
+    sections.composition && `COMPOSITION: ${sections.composition}`,
+    sections.continuity && `CONTINUITY: ${sections.continuity}`,
+  ].filter(Boolean).join('\n');
 }
 
 export function composeCanonicalPrompt(

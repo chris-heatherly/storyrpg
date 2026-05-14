@@ -9,7 +9,13 @@
  */
 
 import { AgentConfig } from '../config';
+import { describeTierRequirements } from '../config/tierRequirements';
 import { BaseAgent, AgentResponse } from './BaseAgent';
+import type {
+  CharacterFashionStyle,
+  StoryAnchors,
+  SevenPointStructure,
+} from '../../types/sourceAnalysis';
 
 // Input types
 export interface CharacterDesignerInput {
@@ -29,6 +35,7 @@ export interface CharacterDesignerInput {
     role: 'protagonist' | 'antagonist' | 'ally' | 'neutral' | 'wildcard';
     briefDescription: string;
     importance: 'major' | 'supporting' | 'minor';
+    fashionStyle?: CharacterFashionStyle;
   }>;
 
   // Relationship context
@@ -44,6 +51,16 @@ export interface CharacterDesignerInput {
 
   // Pipeline memory context (optimization hints from prior runs, Claude only)
   memoryContext?: string;
+
+  /**
+   * Season-level narrative anchors. The protagonist's internal + external
+   * arc should be grounded in these anchors so character design serves
+   * the story spine.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /** Season-level 7-point beat map (for long-arc character planning). */
+  seasonSevenPoint?: SevenPointStructure;
 }
 
 // Output types
@@ -55,6 +72,22 @@ export interface CharacterProfile {
   pronouns: PronounSet; // Character's pronouns for correct narrative usage
   role: string;
   importance: string;
+
+  /**
+   * First-class NPC tier (Phase 1.3). Authored directly by CharacterDesigner
+   * based on narrative weight (core / supporting / background) rather than
+   * inferred from `role`. Optional for backward compatibility — older
+   * character bibles may omit it and fall back to role-based inference.
+   */
+  tier?: 'core' | 'supporting' | 'background';
+
+  /**
+   * Secrets the character carries. Either a primary `hiddenSecret` (kept for
+   * back-compat) or a list of secrets surfaced across the story. Persisted
+   * into Story.npcs[].secrets so downstream tooling can see them without
+   * reading the CharacterBible.
+   */
+  secrets?: string[];
 
   // Core identity
   overview: string; // 2-3 sentence summary
@@ -74,6 +107,7 @@ export interface CharacterProfile {
   physicalDescription: string;
   distinctiveFeatures: string[];
   typicalAttire: string;
+  fashionStyle?: CharacterFashionStyle;
 
   // Voice
   voiceProfile: VoiceProfile;
@@ -188,6 +222,62 @@ export interface CharacterBible {
   doNotForget: string[]; // Critical character facts
 }
 
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+}
+
+export function normalizeFashionStyle(
+  fashionStyle: Partial<CharacterFashionStyle> | undefined,
+): CharacterFashionStyle | undefined {
+  if (!fashionStyle) return undefined;
+
+  const styleSummary = String(fashionStyle.styleSummary || '').trim();
+  const styleTags = asStringArray(fashionStyle.styleTags);
+  const signatureGarments = asStringArray(fashionStyle.signatureGarments);
+  const materials = asStringArray(fashionStyle.materials);
+  const colorPalette = asStringArray(fashionStyle.colorPalette);
+  const accessories = asStringArray(fashionStyle.accessories);
+  const sourceEvidence = asStringArray(fashionStyle.sourceEvidence);
+
+  if (
+    !styleSummary &&
+    styleTags.length === 0 &&
+    signatureGarments.length === 0 &&
+    materials.length === 0 &&
+    colorPalette.length === 0 &&
+    accessories.length === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    styleSummary,
+    styleTags,
+    signatureGarments,
+    materials,
+    colorPalette,
+    accessories,
+    ...(sourceEvidence.length > 0 ? { sourceEvidence } : {}),
+  };
+}
+
+function formatFashionStyleForPrompt(fashionStyle: CharacterFashionStyle | undefined): string {
+  if (!fashionStyle) return '';
+
+  const parts = [
+    fashionStyle.styleSummary,
+    fashionStyle.styleTags.length ? `tags: ${fashionStyle.styleTags.join(', ')}` : '',
+    fashionStyle.signatureGarments.length ? `garments: ${fashionStyle.signatureGarments.join(', ')}` : '',
+    fashionStyle.materials.length ? `materials: ${fashionStyle.materials.join(', ')}` : '',
+    fashionStyle.colorPalette.length ? `palette: ${fashionStyle.colorPalette.join(', ')}` : '',
+    fashionStyle.accessories.length ? `accessories: ${fashionStyle.accessories.join(', ')}` : '',
+  ].filter(Boolean);
+
+  return parts.join('; ');
+}
+
 export class CharacterDesigner extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Character Designer', config);
@@ -221,6 +311,17 @@ The best characters have wants, fears, and flaws that conflict with each other.
 - Every relationship should have both connection AND tension
 - Relationships should be able to change based on player actions
 - The most interesting NPCs want something FROM the player
+
+### NPC Tier (REQUIRED)
+Every character MUST have a \`tier\` field that classifies them by narrative weight:
+- **core**: Protagonist, primary antagonist, or recurring main cast who carries a full arc. At least one relationship dimension, full voiceProfile, want/fear/flaw, and a secret. Usually 2–4 per story.
+- **supporting**: Named secondary NPCs who appear in multiple scenes, have at least one relationship dimension, and distinct voiceProfile. Usually 3–6 per story.
+- **background**: One-scene or ambient NPCs who add flavor but carry no arc. Voice and personality may be minimal.
+
+Tier is structural, not a rating. An "ally" whose only scene is a brief introduction is \`background\`, not \`core\`.
+
+**Relationship-dimension requirements by tier (enforced by NPCDepthValidator):**
+${describeTierRequirements()}
 
 ### Show, Don't Tell
 - Reveal character through action and dialogue, not description
@@ -299,6 +400,13 @@ Before finalizing:
       // Normalize arrays that the LLM might return as strings or undefined
       characterBible = this.normalizeCharacterBible(characterBible);
 
+      // Reconcile LLM-returned IDs with the canonical requested IDs. LLMs often
+      // rewrite hyphens to underscores (e.g. "char-mr-green" -> "char-mr_green")
+      // or drop casing. We fuzzy-match each returned character back to the
+      // requested id so downstream references stay valid.
+      this.alignCharacterIds(characterBible, input);
+      this.preserveInputFashionStyle(characterBible, input);
+
       this.validateCharacterBible(characterBible, input);
 
       // Run quality checks and attempt revision if needed
@@ -340,7 +448,10 @@ Before finalizing:
 
   private buildPrompt(input: CharacterDesignerInput): string {
     const characterList = input.charactersToCreate
-      .map(c => `- ID: "${c.id}", Name: "${c.name}", Role: ${c.role}, Importance: ${c.importance}\n  Description: ${c.briefDescription}`)
+      .map(c => {
+        const fashion = formatFashionStyleForPrompt(c.fashionStyle);
+        return `- ID: "${c.id}", Name: "${c.name}", Role: ${c.role}, Importance: ${c.importance}\n  Description: ${c.briefDescription}${fashion ? `\n  Fashion Style: ${fashion}` : ''}`;
+      })
       .join('\n');
 
     const characterIds = input.charactersToCreate.map(c => `"${c.id}"`).join(', ');
@@ -384,7 +495,19 @@ ${characterList}
       "overview": "One sentence summary",
       "role": "protagonist/antagonist/ally/neutral",
       "importance": "major/supporting/minor",
+      "tier": "core | supporting | background (NPC tier by narrative weight: 'core' = protagonist, primary antagonist, or recurring main cast with a full arc; 'supporting' = named secondary NPCs who appear in several scenes with a relationship dimension; 'background' = one-scene or ambient NPCs)",
       "physicalDescription": "Brief appearance",
+      "distinctiveFeatures": ["visual feature 1"],
+      "typicalAttire": "One concise outfit description that incorporates any provided Fashion Style",
+      "fashionStyle": {
+        "styleSummary": "Preserve the provided Fashion Style summary if present; otherwise infer a concise wardrobe identity",
+        "styleTags": ["fashion keyword"],
+        "signatureGarments": ["recurring garment"],
+        "materials": ["fabric or material"],
+        "colorPalette": ["clothing color"],
+        "accessories": ["worn or carried accessory"],
+        "sourceEvidence": ["optional short source/prompt evidence"]
+      },
       "want": "What they desire most",
       "fear": "What they're afraid of",
       "flaw": "Their key weakness",
@@ -412,13 +535,14 @@ ${characterList}
 }
 
 CRITICAL REQUIREMENTS:
-1. Each character "id" MUST be EXACTLY one of: ${characterIds}
+1. Each character "id" MUST be EXACTLY one of: ${characterIds} — copy the string VERBATIM. Do NOT substitute underscores for hyphens. Do NOT change case. Do NOT add suffixes. "char-mr-green" is NOT the same as "char-mr_green".
 2. Each character MUST have "pronouns" set to "he/him" or "she/her". Only use "they/them" if the character is explicitly non-binary or transgender. Default to he/him or she/her based on the character's identity.
 3. Each character MUST have want, fear, and flaw filled in
-4. Each voiceProfile MUST have at least 2 greetingExamples and 3 signatureLines
-5. MUST include "voiceDistinctions" at the top level (not nested)
-6. Keep ALL descriptions concise - one sentence each
-7. Return ONLY valid JSON, no markdown, no extra text
+4. If a character has a provided Fashion Style, preserve it in "fashionStyle" and make "typicalAttire" reflect its garments, silhouette, materials, palette, and accessories. Fashion style is wardrobe only, not art style.
+5. Each voiceProfile MUST have at least 2 greetingExamples and 3 signatureLines
+6. MUST include "voiceDistinctions" at the top level (not nested)
+7. Keep ALL descriptions concise - one sentence each
+8. Return ONLY valid JSON, no markdown, no extra text
 `;
   }
 
@@ -473,6 +597,8 @@ CRITICAL REQUIREMENTS:
       } else if (!Array.isArray(character.distinctiveFeatures)) {
         character.distinctiveFeatures = [character.distinctiveFeatures as unknown as string];
       }
+
+      character.fashionStyle = normalizeFashionStyle(character.fashionStyle);
 
       const validPronouns: PronounSet[] = ['he/him', 'she/her', 'they/them'];
       if (!character.pronouns || !validPronouns.includes(character.pronouns)) {
@@ -579,6 +705,71 @@ CRITICAL REQUIREMENTS:
     return bible;
   }
 
+  /**
+   * Reconcile the IDs returned by the LLM with the canonical IDs the pipeline
+   * requested. LLMs frequently rewrite hyphens as underscores, change casing,
+   * or truncate long ids. We:
+   *   1. Accept exact matches as-is.
+   *   2. Try a fuzzy key (stripped of non-alphanumeric chars, lowercased).
+   *   3. If a returned id fuzzy-matches a requested id, rewrite it in place and
+   *      also fix any cross-references in keyDynamics and relationships.
+   *
+   * Characters the LLM invented that don't match any requested id are left
+   * alone so downstream validation can still surface them, but the requested
+   * set is preferred.
+   */
+  private alignCharacterIds(bible: CharacterBible, input: CharacterDesignerInput): void {
+    if (!bible.characters || bible.characters.length === 0) return;
+
+    const fuzzyKey = (s: string): string => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+    const requestedById = new Map<string, { id: string; name: string }>();
+    const requestedByFuzzyId = new Map<string, string>();
+    const requestedByFuzzyName = new Map<string, string>();
+    for (const req of input.charactersToCreate) {
+      requestedById.set(req.id, req);
+      requestedByFuzzyId.set(fuzzyKey(req.id), req.id);
+      if (req.name) requestedByFuzzyName.set(fuzzyKey(req.name), req.id);
+    }
+
+    const idRewrites = new Map<string, string>();
+    for (const character of bible.characters) {
+      const currentId = character.id || '';
+      if (requestedById.has(currentId)) continue;
+
+      const fk = fuzzyKey(currentId);
+      let canonical = requestedByFuzzyId.get(fk);
+      if (!canonical && character.name) {
+        canonical = requestedByFuzzyName.get(fuzzyKey(character.name));
+      }
+      if (canonical && canonical !== currentId) {
+        console.log(`[CharacterDesigner] Re-aligning character id "${currentId}" → "${canonical}"`);
+        idRewrites.set(currentId, canonical);
+        character.id = canonical;
+      }
+    }
+
+    if (idRewrites.size === 0) return;
+
+    // Fix cross-references to the rewritten ids.
+    const rewrite = (v: string): string => idRewrites.get(v) ?? v;
+    for (const dyn of bible.keyDynamics || []) {
+      if (Array.isArray(dyn.characters)) {
+        dyn.characters = dyn.characters.map(rewrite);
+      }
+    }
+    for (const character of bible.characters) {
+      if (Array.isArray(character.relationships)) {
+        for (const rel of character.relationships) {
+          const relId = (rel as { characterId?: string }).characterId;
+          if (relId && idRewrites.has(relId)) {
+            (rel as { characterId?: string }).characterId = idRewrites.get(relId)!;
+          }
+        }
+      }
+    }
+  }
+
   private validateCharacterBible(bible: CharacterBible, input: CharacterDesignerInput): void {
     console.log(`[CharacterDesigner] Validating character bible...`);
     console.log(`[CharacterDesigner] Requested IDs:`, input.charactersToCreate.map(c => c.id).join(', '));
@@ -619,6 +810,39 @@ CRITICAL REQUIREMENTS:
     // Check for voice distinction notes
     if (!bible.voiceDistinctions) {
       throw new Error('Character bible must include voice distinction notes');
+    }
+  }
+
+  private preserveInputFashionStyle(bible: CharacterBible, input: CharacterDesignerInput): void {
+    const inputFashionById = new Map(
+      input.charactersToCreate
+        .map((character) => [character.id, normalizeFashionStyle(character.fashionStyle)] as const)
+        .filter((entry): entry is readonly [string, CharacterFashionStyle] => !!entry[1]),
+    );
+
+    for (const character of bible.characters || []) {
+      const inputFashion = inputFashionById.get(character.id);
+      if (!inputFashion) continue;
+
+      const outputFashion = normalizeFashionStyle(character.fashionStyle);
+      character.fashionStyle = outputFashion
+        ? {
+            styleSummary: outputFashion.styleSummary || inputFashion.styleSummary,
+            styleTags: outputFashion.styleTags.length ? outputFashion.styleTags : inputFashion.styleTags,
+            signatureGarments: outputFashion.signatureGarments.length ? outputFashion.signatureGarments : inputFashion.signatureGarments,
+            materials: outputFashion.materials.length ? outputFashion.materials : inputFashion.materials,
+            colorPalette: outputFashion.colorPalette.length ? outputFashion.colorPalette : inputFashion.colorPalette,
+            accessories: outputFashion.accessories.length ? outputFashion.accessories : inputFashion.accessories,
+            sourceEvidence: outputFashion.sourceEvidence?.length ? outputFashion.sourceEvidence : inputFashion.sourceEvidence,
+          }
+        : inputFashion;
+
+      if (!character.typicalAttire && character.fashionStyle) {
+        character.typicalAttire = [
+          character.fashionStyle.styleSummary,
+          character.fashionStyle.signatureGarments.join(', '),
+        ].filter(Boolean).join('; ');
+      }
     }
   }
 
@@ -767,6 +991,8 @@ Return ONLY valid JSON, no markdown, no extra text.
       try {
         revisedBible = this.parseJSON<CharacterBible>(response);
         revisedBible = this.normalizeCharacterBible(revisedBible);
+        this.alignCharacterIds(revisedBible, input);
+        this.preserveInputFashionStyle(revisedBible, input);
         console.log(`[CharacterDesigner] Revision complete`);
         return revisedBible;
       } catch (parseError) {

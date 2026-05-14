@@ -7,6 +7,7 @@
 
 import { VoiceCast, VoiceAssignment, voiceCastingService } from './voiceCastingService';
 import { CharacterBible } from '../agents/CharacterDesigner';
+import { PROXY_CONFIG } from '../../config/endpoints';
 
 export interface CharacterVoiceConfig {
   characterId: string;
@@ -55,15 +56,7 @@ export class AudioGenerationService {
 
   constructor(apiKey?: string, proxyUrl?: string) {
     this.apiKey = apiKey || process.env.ELEVENLABS_API_KEY || null;
-    // Import dynamically to avoid circular dependencies
-    this.proxyUrl = proxyUrl || 'http://localhost:3001';
-    // Try to get from config if available
-    try {
-      const { PROXY_CONFIG } = require('../../config/endpoints');
-      this.proxyUrl = proxyUrl || PROXY_CONFIG.getProxyUrl();
-    } catch (e) {
-      // Config not available, use default
-    }
+    this.proxyUrl = proxyUrl || PROXY_CONFIG.getProxyUrl();
   }
 
   /**

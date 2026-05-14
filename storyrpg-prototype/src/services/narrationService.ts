@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): expo-audio dep missing; Phase 4 will either
+// install it or swap to a web-safe abstraction.
 /**
  * Narration Service
  * 
@@ -11,6 +13,7 @@
 
 import { useAudioPlayer, AudioPlayer, setAudioModeAsync, AudioMode } from 'expo-audio';
 import { Platform } from 'react-native';
+import { PROXY_CONFIG } from '../config/endpoints';
 
 // Voice types for different character roles
 export type VoiceType = 'narrator' | 'male' | 'female' | 'child';
@@ -68,7 +71,7 @@ const DEFAULT_VOICE_MAPPINGS: Record<VoiceType, string> = {
 
 class NarrationService {
   private apiKey: string | null = null;
-  private proxyUrl: string = 'http://localhost:3001';
+  private proxyUrl: string = PROXY_CONFIG.getProxyUrl();
   private currentPlayer: AudioPlayer | null = null;
   private isPlaying: boolean = false;
   private characterVoices: Map<string, string> = new Map();

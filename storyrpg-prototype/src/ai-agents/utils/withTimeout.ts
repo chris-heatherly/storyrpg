@@ -38,7 +38,7 @@ export function withTimeout<T>(
 }
 
 export const PIPELINE_TIMEOUTS = {
-  llmAgent: 5 * 60_000,
+  llmAgent: 10 * 60_000,
   encounterAgent: 10 * 60_000,
   imageGeneration: 3 * 60_000,
   storyboard: 15 * 60_000,

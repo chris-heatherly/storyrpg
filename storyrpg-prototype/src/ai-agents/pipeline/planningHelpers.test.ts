@@ -25,22 +25,32 @@ describe('planningHelpers', () => {
   });
 
   it('filters the protagonist from major character NPCs', () => {
+    const fashionStyle = {
+      styleSummary: 'Practical expedition layers with brass hardware.',
+      styleTags: ['adventurer tailoring'],
+      signatureGarments: ['waxed field jacket'],
+      materials: ['canvas'],
+      colorPalette: ['olive'],
+      accessories: ['brass compass'],
+    };
     const brief: any = {
       protagonist: { id: 'placeholder', name: 'Placeholder', description: 'n/a' },
       npcs: [],
     };
     const analysis: any = {
-      protagonist: { id: 'hero', name: 'Alex', description: 'The lead.' },
+      protagonist: { id: 'hero', name: 'Alex', description: 'The lead.', fashionStyle },
       majorCharacters: [
         { id: 'hero', name: 'Alex', role: 'ally', importance: 'core', description: 'Duplicate protagonist.' },
-        { id: 'ally-1', name: 'Jordan', role: 'ally', importance: 'supporting', description: 'Trusted ally.' },
+        { id: 'ally-1', name: 'Jordan', role: 'ally', importance: 'supporting', description: 'Trusted ally.', fashionStyle },
       ],
     };
 
     const result = createCharacterBriefFromAnalysis(brief, analysis);
     expect(result.protagonist.id).toBe('hero');
+    expect(result.protagonist.fashionStyle).toBe(fashionStyle);
     expect(result.npcs).toHaveLength(1);
     expect(result.npcs[0]?.id).toBe('ally-1');
+    expect(result.npcs[0]?.fashionStyle).toBe(fashionStyle);
   });
 
   it('builds episode-scoped season plan directives', () => {

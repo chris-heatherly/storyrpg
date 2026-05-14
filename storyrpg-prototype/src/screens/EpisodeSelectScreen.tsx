@@ -100,10 +100,10 @@ export const EpisodeSelectScreen: React.FC<EpisodeSelectScreenProps> = ({
                     </Text>
                   </View>
                   <View style={styles.episodeTextContainer}>
-                    <Text style={[styles.episodeTitle, !unlocked && styles.textLocked]}>
+                    <Text style={[styles.episodeTitle, { fontSize: fonts.large }, !unlocked && styles.textLocked]}>
                       {unlocked ? (episode.title || 'Untitled').toUpperCase() : 'LOCKED CONTENT'}
                     </Text>
-                    <Text style={[styles.episodeSynopsis, !unlocked && styles.textLocked]} numberOfLines={2}>
+                    <Text style={[styles.episodeSynopsis, { fontSize: fonts.base, lineHeight: fonts.base + 6 }, !unlocked && styles.textLocked]} numberOfLines={2}>
                       {unlocked ? episode.synopsis : 'Complete previous episode to unlock this chapter.'}
                     </Text>
                   </View>

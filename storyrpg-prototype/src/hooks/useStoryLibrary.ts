@@ -17,7 +17,15 @@ type CachedStoryRecord = {
 
 function getCatalogSourceKey(entry: StoryCatalogEntry): string {
   if (entry.isBuiltIn) return `builtin:${entry.id}`;
-  return entry.fullStoryUrl || entry.outputDir || `story:${entry.id}`;
+  const artifactState = entry.imageArtifacts
+    ? `refs:${entry.imageArtifacts.hasSeasonReferences ? 1 : 0}:art:${entry.imageArtifacts.hasEpisodeArt ? 1 : 0}`
+    : 'refs:?:art:?';
+  return [
+    entry.fullStoryUrl || entry.outputDir || `story:${entry.id}`,
+    entry.updatedAt || '',
+    entry.imagesStatus || '',
+    artifactState,
+  ].join('|');
 }
 
 function getStorySourceKey(story: Story): string {
@@ -154,10 +162,10 @@ export function useStoryLibrary(builtInStories: Story[]) {
       const existingIndex = prev.findIndex((candidate) => candidate.id === normalizedStory.id);
       if (existingIndex >= 0) {
         const updated = [...prev];
-        updated[existingIndex] = { ...updated[existingIndex], ...catalogEntry };
-        return updated;
+        updated.splice(existingIndex, 1);
+        return [{ ...prev[existingIndex], ...catalogEntry }, ...updated];
       }
-      return [...prev, catalogEntry];
+      return [catalogEntry, ...prev];
     });
 
     setFileLoadedStoryIds((prev) => new Set([...prev, normalizedStory.id]));
@@ -172,7 +180,6 @@ export function useStoryLibrary(builtInStories: Story[]) {
       return next;
     });
   }, []);
-
   return {
     stories,
     setStories,

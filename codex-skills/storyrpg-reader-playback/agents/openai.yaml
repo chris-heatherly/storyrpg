@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Reader Playback"
+  short_description: "Maintain StoryRPG reader UX and playback logic"
+  default_prompt: "Use $storyrpg-reader-playback to change StoryRPG reader behavior while preserving fiction-first UX."
+policy:
+  allow_implicit_invocation: true

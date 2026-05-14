@@ -61,6 +61,13 @@ export interface StoryGenerationResponse {
   result: FullPipelineResult;
 }
 
+export interface ImageGenerationBatchRequest extends PipelineHookOptions {
+  config?: PipelineConfig;
+  outputDirectory: string;
+  resumeCheckpoint?: ResumeCheckpoint;
+  externalJobId?: string;
+}
+
 const DEFAULT_ANALYSIS_PREFERENCES: StoryAnalysisPreferences = {
   targetScenesPerEpisode: 8,
   targetChoicesPerEpisode: 4,
@@ -132,7 +139,14 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
 }
 
 export async function runStoryGeneration(request: StoryGenerationRequest): Promise<StoryGenerationResponse> {
-  const pipeline = new FullStoryPipeline(request.config);
+  const effectiveConfig = request.config?.generation?.assetGenerationMode === 'story-only'
+    ? {
+        ...request.config,
+        imageGen: request.config.imageGen ? { ...request.config.imageGen, enabled: false } : { enabled: false },
+        videoGen: request.config.videoGen ? { ...request.config.videoGen, enabled: false } : request.config.videoGen,
+      }
+    : request.config;
+  const pipeline = new FullStoryPipeline(effectiveConfig);
   if (request.externalJobId) {
     pipeline.setExternalJobId(request.externalJobId);
   }
@@ -146,6 +160,33 @@ export async function runStoryGeneration(request: StoryGenerationRequest): Promi
         request.resumeCheckpoint,
       )
     : await pipeline.generate(request.brief, request.resumeCheckpoint);
+
+  return {
+    pipeline,
+    result,
+  };
+}
+
+export async function runImageGenerationBatch(request: ImageGenerationBatchRequest): Promise<StoryGenerationResponse> {
+  const effectiveConfig = request.config
+    ? {
+        ...request.config,
+        generation: {
+          ...request.config.generation,
+          assetGenerationMode: 'image-only' as const,
+        },
+        imageGen: request.config.imageGen
+          ? { ...request.config.imageGen, enabled: true, strategy: 'all-beats' as const, pipelineMode: request.config.imageGen.pipelineMode || ('storyboard-v2' as const) }
+          : { enabled: true, strategy: 'all-beats' as const, pipelineMode: 'storyboard-v2' as const },
+      }
+    : request.config;
+  const pipeline = new FullStoryPipeline(effectiveConfig);
+  if (request.externalJobId) {
+    pipeline.setExternalJobId(request.externalJobId);
+  }
+  wirePipeline(pipeline, request);
+
+  const result = await pipeline.generateImagesForDraft(request.outputDirectory, request.resumeCheckpoint);
 
   return {
     pipeline,

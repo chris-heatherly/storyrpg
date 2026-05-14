@@ -3,7 +3,7 @@ import type { CharacterBible, CharacterProfile } from '../../agents/CharacterDes
 import type { SceneContent } from '../../agents/SceneWriter';
 import type { ChoiceSet } from '../../agents/ChoiceAuthor';
 import type { EncounterStructure } from '../../agents/EncounterArchitect';
-import type { GeneratedImage, ImagePrompt } from '../../agents/ImageGenerator';
+import type { GeneratedImage, ImagePrompt } from '../../images/imageTypes';
 import { ImageGenerationService, type ImageJobEvent, type ReferenceImage } from '../../services/imageGenerationService';
 import { normalizeManagedOutputPath } from '../../services/imageGenerationHelpers';
 import { PROXY_CONFIG } from '../../../config/endpoints';

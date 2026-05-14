@@ -24,6 +24,14 @@ export { ConsequenceBudgetValidator } from './ConsequenceBudgetValidator';
 export { StakesTriangleValidator } from './StakesTriangleValidator';
 
 export { FiveFactorValidator } from './FiveFactorValidator';
+export { ChoiceImpactValidator } from './ChoiceImpactValidator';
+export type { ChoiceImpactInput, ChoiceImpactMetrics, ChoiceImpactResult } from './ChoiceImpactValidator';
+export { MechanicsLeakageValidator } from './MechanicsLeakageValidator';
+export type {
+  MechanicsLeakageInput,
+  MechanicsLeakageResult,
+  MechanicsLeakageText,
+} from './MechanicsLeakageValidator';
 
 export { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
 export {

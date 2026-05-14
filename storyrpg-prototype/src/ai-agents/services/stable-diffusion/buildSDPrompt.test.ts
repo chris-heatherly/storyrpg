@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildSDPrompt } from './buildSDPrompt';
-import type { ImagePrompt } from '../../agents/ImageGenerator';
+import type { ImagePrompt } from '../../images/imageTypes';
 import type { StableDiffusionSettings } from '../../config';
 
 const basePrompt: ImagePrompt = {

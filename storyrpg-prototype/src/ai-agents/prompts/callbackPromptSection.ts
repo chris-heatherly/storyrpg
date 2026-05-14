@@ -49,7 +49,8 @@ export function buildSceneWriterCallbackSection(
     'Unresolved hooks:',
   ];
   for (const hook of subset) {
-    const flagList = hook.flags.length > 0 ? ` (flags: ${hook.flags.join(', ')})` : '';
+    const keys = hook.conditionKeys?.length ? hook.conditionKeys : hook.flags;
+    const flagList = keys.length > 0 ? ` (condition keys: ${keys.join(', ')})` : '';
     lines.push(`  - id: "${hook.id}" — ep ${hook.sourceEpisode}: ${hook.summary}${flagList}`);
   }
   lines.push(
@@ -119,7 +120,8 @@ function buildPriorHooksSnippet(hooks: CallbackHook[], cap: number): string {
     'The player\'s unresolved memorable moments from earlier episodes:',
   ];
   for (const hook of subset) {
-    const flagList = hook.flags.length > 0 ? ` [flags: ${hook.flags.join(', ')}]` : '';
+    const keys = hook.conditionKeys?.length ? hook.conditionKeys : hook.flags;
+    const flagList = keys.length > 0 ? ` [condition keys: ${keys.join(', ')}]` : '';
     lines.push(`  - ${hook.id}: ${hook.summary}${flagList}`);
   }
   lines.push(

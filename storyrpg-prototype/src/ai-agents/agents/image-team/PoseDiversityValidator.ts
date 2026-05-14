@@ -18,7 +18,7 @@
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse, AgentMessage } from '../BaseAgent';
 import { PoseSpecification, LightingSpecification } from './StoryboardAgent';
-import { ImagePrompt } from '../ImageGenerator';
+import { ImagePrompt } from '../../images/imageTypes';
 import { POSE_DIVERSITY_CHECKLIST, FORBIDDEN_DEFAULTS } from '../../prompts';
 import { downsampleBatch } from '../../utils/imageResizer';
 

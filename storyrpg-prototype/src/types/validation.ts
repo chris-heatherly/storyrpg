@@ -23,9 +23,11 @@ export type EnforcementLevel = 'error' | 'warning' | 'suggestion';
 export type ValidationCategory =
   | 'stakes_triangle'
   | 'five_factor'
+  | 'choice_impact'
   | 'choice_density'
   | 'choice_distribution'
   | 'consequence_budget'
+  | 'mechanics_leakage'
   | 'npc_depth'
   | 'callback_opportunities'
   | 'pov_clarity'
@@ -181,6 +183,15 @@ export interface ValidationMetrics {
     flagsReferenced: number;
     textVariantsCount: number;
     choicesWithReminderPlans: number;
+  };
+  choiceImpact?: {
+    meaningfulChoices: number;
+    choicesWithImpactFactors: number;
+    flavorBranches: number;
+  };
+  mechanicsLeakage?: {
+    textsChecked: number;
+    leaksFound: number;
   };
 }
 

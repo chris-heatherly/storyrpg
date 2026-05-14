@@ -134,6 +134,55 @@ function enrichJobsWithImageStats(jobs, { rootDir, storiesDir }) {
   });
 }
 
+function getResumeSourceId(job) {
+  return job?.resumeFromJobId
+    || job?.resumeContext?.resumeFromJobId
+    || job?.checkpoint?.resumeContext?.resumeFromJobId;
+}
+
+function getProjectId(job, jobs) {
+  if (job?.projectId) return job.projectId;
+  const byId = new Map(jobs.map((candidate) => [candidate.id, candidate]));
+  const seen = new Set([job?.id].filter(Boolean));
+  let cursor = job;
+
+  while (cursor) {
+    const sourceId = getResumeSourceId(cursor);
+    if (!sourceId || seen.has(sourceId)) break;
+    seen.add(sourceId);
+    const source = byId.get(sourceId);
+    if (!source) return sourceId;
+    if (source.projectId) return source.projectId;
+    cursor = source;
+  }
+
+  return cursor?.id || job?.id;
+}
+
+function collectProjectJobIds(projectId, requestedJobIds, jobs, workerJobs) {
+  const allJobs = [...jobs, ...workerJobs];
+  const ids = new Set([projectId, ...requestedJobIds].filter(Boolean));
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    for (const job of allJobs) {
+      if (!job?.id || ids.has(job.id)) continue;
+      const sourceId = getResumeSourceId(job);
+      const shouldInclude = job.projectId === projectId
+        || getProjectId(job, allJobs) === projectId
+        || (sourceId && ids.has(sourceId))
+        || (job.projectId && ids.has(job.projectId));
+      if (shouldInclude) {
+        ids.add(job.id);
+        changed = true;
+      }
+    }
+  }
+
+  return ids;
+}
+
 function scrubStoryImages(story) {
   if (!story || typeof story !== 'object') return;
   story.imagesStatus = 'pending';
@@ -388,6 +437,66 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     activeWorkers,
   } = lifecycle;
 
+  const deleteGenerationJobRecords = (jobIds) => {
+    const ids = new Set(Array.from(jobIds).filter(Boolean));
+    let jobs = loadJobs();
+    const workerJobs = loadWorkerJobs();
+    const checkpoints = loadCheckpoints();
+    const artifacts = { deleted: [], rewritten: [] };
+    const cleanedOutputDirs = new Set();
+
+    const jobsById = new Map([...jobs, ...workerJobs].map((job) => [job.id, job]));
+    const checkpointsByJobId = new Map(checkpoints.map((checkpoint) => [checkpoint.jobId, checkpoint]));
+
+    for (const jobId of ids) {
+      const job = jobsById.get(jobId);
+      const checkpoint = checkpointsByJobId.get(jobId);
+      const outputDir = getJobOutputDir(job)
+        || checkpoint?.resumeContext?.outputDirectory
+        || checkpoint?.outputs?.output_directory?.outputDirectory
+        || checkpoint?.failureContext?.context?.outputDirectory;
+
+      const outputDirAbs = resolveStoryOutputDir(outputDir, { rootDir, storiesDir });
+      if (outputDirAbs && fs.existsSync(outputDirAbs) && !cleanedOutputDirs.has(outputDirAbs)) {
+        const cleanup = deleteImageArtifactsForOutputDir(outputDirAbs);
+        artifacts.deleted.push(...cleanup.deleted);
+        artifacts.rewritten.push(...cleanup.rewritten);
+        cleanedOutputDirs.add(outputDirAbs);
+      } else if (outputDir && !outputDirAbs) {
+        console.warn(`[Proxy] Skipped artifact cleanup for job ${jobId}; unsafe outputDir: ${outputDir}`);
+      }
+
+      const active = activeWorkers.get(jobId);
+      if (active?.proc && !active.proc.killed) {
+        try { active.proc.kill('SIGTERM'); } catch {
+          // best-effort; already-dead processes throw ESRCH
+        }
+      }
+      activeWorkers.delete(jobId);
+
+      const checkpointOutputDir = path.join(workerCheckpointOutputDir, jobId);
+      if (fs.existsSync(checkpointOutputDir)) {
+        fs.rmSync(checkpointOutputDir, { recursive: true, force: true });
+        artifacts.deleted.push(path.relative(rootDir, checkpointOutputDir));
+      }
+    }
+
+    const initialJobsLength = jobs.length;
+    jobs = jobs.filter((job) => !ids.has(job.id));
+    if (jobs.length !== initialJobsLength) saveJobs(jobs);
+
+    const nextWorkerJobs = workerJobs.filter((job) => !ids.has(job.id));
+    if (nextWorkerJobs.length !== workerJobs.length) saveWorkerJobs(nextWorkerJobs);
+
+    const nextCheckpoints = checkpoints.filter((checkpoint) => !ids.has(checkpoint.jobId));
+    if (nextCheckpoints.length !== checkpoints.length) saveCheckpoints(nextCheckpoints);
+
+    return {
+      deletedJobIds: Array.from(ids),
+      artifacts,
+    };
+  };
+
   app.get('/generation-jobs', (req, res) => {
     const jobs = loadJobs();
     const { normalized, changed } = normalizeStaleRunningJobs(jobs);
@@ -407,6 +516,19 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     const { normalized, changed } = normalizeStaleRunningJobs(jobs);
     if (changed) saveJobs(normalized);
     res.json({ success: true, changed, count: normalized.length });
+  });
+
+  app.delete('/generation-projects/:projectId', (req, res) => {
+    const { projectId } = req.params;
+    const requestedJobIds = Array.isArray(req.body?.jobIds)
+      ? req.body.jobIds.filter((id) => typeof id === 'string')
+      : [];
+    const jobs = loadJobs();
+    const workerJobs = loadWorkerJobs();
+    const projectJobIds = collectProjectJobIds(projectId, requestedJobIds, jobs, workerJobs);
+    const result = deleteGenerationJobRecords(projectJobIds);
+    console.log(`[Proxy] Deleted generation project: ${projectId} (${result.deletedJobIds.length} job record(s))`);
+    res.json({ success: true, projectId, ...result });
   });
 
   app.post('/generation-jobs', (req, res) => {
@@ -521,60 +643,9 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
 
   app.delete('/generation-jobs/:jobId', (req, res) => {
     const { jobId } = req.params;
-
-    let jobs = loadJobs();
-    const job = jobs.find((j) => j.id === jobId);
-    const workerJobs = loadWorkerJobs();
-    const workerJob = workerJobs.find((j) => j.id === jobId);
-    const checkpoints = loadCheckpoints();
-    const checkpoint = checkpoints.find((c) => c.jobId === jobId);
-    const outputDir = getJobOutputDir(job)
-      || getJobOutputDir(workerJob)
-      || checkpoint?.resumeContext?.outputDirectory
-      || checkpoint?.outputs?.output_directory?.outputDirectory
-      || checkpoint?.failureContext?.context?.outputDirectory;
-
-    let artifactCleanup = { deleted: [], rewritten: [] };
-    const outputDirAbs = resolveStoryOutputDir(outputDir, { rootDir, storiesDir });
-    if (outputDirAbs && fs.existsSync(outputDirAbs)) {
-      artifactCleanup = deleteImageArtifactsForOutputDir(outputDirAbs);
-    } else if (outputDir) {
-      console.warn(`[Proxy] Skipped artifact cleanup for job ${jobId}; unsafe or missing outputDir: ${outputDir}`);
-    }
-
-    const active = activeWorkers.get(jobId);
-    if (active?.proc && !active.proc.killed) {
-      try { active.proc.kill('SIGTERM'); } catch {
-        // best-effort; already-dead processes throw ESRCH
-      }
-    }
-    activeWorkers.delete(jobId);
-
-    const initialLength = jobs.length;
-    jobs = jobs.filter((j) => j.id !== jobId);
-
-    if (jobs.length < initialLength) {
-      saveJobs(jobs);
-      console.log(`[Proxy] Deleted generation job: ${jobId}`);
-    }
-
-    const nextWorkerJobs = workerJobs.filter((j) => j.id !== jobId);
-    if (nextWorkerJobs.length !== workerJobs.length) {
-      saveWorkerJobs(nextWorkerJobs);
-    }
-
-    const nextCheckpoints = checkpoints.filter((c) => c.jobId !== jobId);
-    if (nextCheckpoints.length !== checkpoints.length) {
-      saveCheckpoints(nextCheckpoints);
-    }
-
-    const checkpointOutputDir = path.join(workerCheckpointOutputDir, jobId);
-    if (fs.existsSync(checkpointOutputDir)) {
-      fs.rmSync(checkpointOutputDir, { recursive: true, force: true });
-      artifactCleanup.deleted.push(path.relative(rootDir, checkpointOutputDir));
-    }
-
-    res.json({ success: true, artifacts: artifactCleanup });
+    const result = deleteGenerationJobRecords(new Set([jobId]));
+    console.log(`[Proxy] Deleted generation job: ${jobId}`);
+    res.json({ success: true, artifacts: result.artifacts });
   });
 
   app.get('/generation-jobs/:jobId/status', (req, res) => {

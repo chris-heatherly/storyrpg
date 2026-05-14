@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { buildReferencePack, filterRefsForProvider } from './referencePackBuilder';
+import {
+  buildReferencePack,
+  filterBranchSafeContinuityRefs,
+  filterRefsForProvider,
+} from './referencePackBuilder';
 import type { ReferenceImage } from '../services/imageGenerationService';
 
 function ref(role: string, opts: Partial<ReferenceImage> = {}): ReferenceImage {
@@ -124,5 +128,24 @@ describe('buildReferencePack — composite-sheet handling', () => {
       'character-reference',
       'episode-style-lock',
     ]);
+  });
+
+  it('drops previous-panel continuity refs from sibling branches', () => {
+    const samePath = ref('previous-panel-continuity', { branchPath: 'loyal' } as any);
+    const siblingPath = ref('previous-panel-continuity', { branchPath: 'rebel' } as any);
+    const storyboardCrop = ref('storyboard-panel-crop', { branchPath: 'rebel' } as any);
+    const character = ref('character-reference-face', { characterName: 'Aoi' });
+
+    const filtered = filterBranchSafeContinuityRefs(
+      [samePath, siblingPath, storyboardCrop, character],
+      { currentBranchPath: 'loyal' },
+    );
+
+    expect(filtered).toContain(samePath);
+    expect(filtered).not.toContain(siblingPath);
+    // Storyboard crops remain authoritative references even when tagged with a
+    // branch; only loose previous-panel continuity refs are stripped.
+    expect(filtered).toContain(storyboardCrop);
+    expect(filtered).toContain(character);
   });
 });

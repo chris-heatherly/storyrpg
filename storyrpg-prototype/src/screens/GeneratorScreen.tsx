@@ -7,7 +7,7 @@
  * Wired to the real FullStoryPipeline for actual AI generation.
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -53,6 +53,7 @@ import {
   Library,
   PauseCircle,
 } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import { TERMINAL } from '../theme';
@@ -98,6 +99,8 @@ import {
 } from '../ai-agents/pipeline/FullStoryPipeline';
 import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, DEFAULT_OPENAI_SETTINGS, DEFAULT_STABLE_DIFFUSION_SETTINGS, DEFAULT_LORA_TRAINING_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
 import { DEFAULT_LLM_MODELS, STABLE_DIFFUSION_UI_ENABLED } from '../config/generatorLlmOptions';
+import { ART_STYLE_PRESETS } from '../ai-agents/config/artStylePresets';
+import { composeCanonicalStyleString } from '../ai-agents/images/artStyleProfile';
 import { EndingMode, SourceMaterialAnalysis, StoryEndingTarget } from '../types/sourceAnalysis';
 import { Story } from '../types';
 import {
@@ -176,7 +179,38 @@ type StyleReferenceUpload = {
   imagePath?: string;
 };
 
+type SavedArtStyle = {
+  id: string;
+  name: string;
+  style: string;
+};
+
 const MAX_STYLE_REFERENCE_UPLOADS = 4;
+const SAVED_ART_STYLES_KEY = '@storyrpg_saved_art_styles';
+const RECENT_ART_STYLES_KEY = '@storyrpg_recent_art_styles';
+const MAX_SAVED_ART_STYLES = 12;
+const MAX_RECENT_ART_STYLES = 8;
+
+const buildSavedArtStyleId = (): string => `style-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const normalizeSavedArtStyle = (item: unknown): SavedArtStyle | null => {
+  if (typeof item === 'string') {
+    const trimmed = item.trim();
+    if (!trimmed) return null;
+    return { id: trimmed, name: trimmed, style: trimmed };
+  }
+  if (!item || typeof item !== 'object') return null;
+  const record = item as { id?: unknown; name?: unknown; style?: unknown };
+  const style = typeof record.style === 'string' ? record.style.trim() : '';
+  if (!style) return null;
+  const name = typeof record.name === 'string' && record.name.trim()
+    ? record.name.trim()
+    : style;
+  const id = typeof record.id === 'string' && record.id.trim()
+    ? record.id.trim()
+    : `${name}:${style}`;
+  return { id, name, style };
+};
 
 const inferImageMimeType = (name?: string, mimeType?: string): string => {
   if (mimeType && mimeType.startsWith('image/')) return mimeType;
@@ -457,21 +491,27 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const { models: availableModels, atlasCloudModels, scannedAt: modelsScanDate, loading: modelsScanLoading, refresh: refreshModels } = useAvailableModels();
   const [showMjSettings, setShowMjSettings] = useState(false);
   const [showGeminiSettings, setShowGeminiSettings] = useState(false);
-  const [showOpenAiSettings, setShowOpenAiSettings] = useState(false);
-  const [showOpenAiImageSettings, setShowOpenAiImageSettings] = useState(false);
   const [showSdSettings, setShowSdSettings] = useState(false);
   const [showLoraSettings, setShowLoraSettings] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [showCredentialsSheet, setShowCredentialsSheet] = useState(false);
   // Keep STORY open by default (the required prompt/doc lives inside); start
   // all other optional buckets collapsed so the primary CTA is reachable
   // without a long scroll. The full wizard refactor (Tranche B) replaces this
   // with an explicit step indicator.
   const [showStoryPanel, setShowStoryPanel] = useState(true);
-  const [assetGenerationMode, setAssetGenerationMode] = useState<'story-only' | 'story-and-images'>('story-only');
+  const [assetGenerationMode] = useState<'story-only' | 'story-and-images'>('story-and-images');
   const [showImagesPanel, setShowImagesPanel] = useState(false);
   const [styleReferenceUploads, setStyleReferenceUploads] = useState<StyleReferenceUpload[]>([]);
   const [styleReferenceStrength, setStyleReferenceStrength] = useState<StyleReferenceStrength>('balanced');
+  const [savedArtStyles, setSavedArtStyles] = useState<SavedArtStyle[]>([]);
+  const [recentArtStyles, setRecentArtStyles] = useState<string[]>([]);
+  const [showArtStyleSheet, setShowArtStyleSheet] = useState(false);
+  const [artStyleEditorVisible, setArtStyleEditorVisible] = useState(false);
+  const [editingArtStyleOriginal, setEditingArtStyleOriginal] = useState<SavedArtStyle | null>(null);
+  const [editingArtStyleName, setEditingArtStyleName] = useState('');
+  const [editingArtStyleDraft, setEditingArtStyleDraft] = useState('');
   const [showNarrationPanel, setShowNarrationPanel] = useState(false);
   const [showVideoPanel, setShowVideoPanel] = useState(false);
   const [confirmCancelGeneration, setConfirmCancelGeneration] = useState(false);
@@ -516,6 +556,138 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     .sort((a, b) => a.episodeNumber - b.episodeNumber)[0] || null;
 
   const fonts = useSettingsStore((state) => state.getFontSizes());
+  const developerMode = useSettingsStore((state) => state.developerMode);
+
+  const presetStyleOptions = useMemo(() => ART_STYLE_PRESETS.slice(0, 9), []);
+  const selectedPresetId = useMemo(() => {
+    const normalized = artStyle.trim();
+    if (!normalized) return null;
+    return ART_STYLE_PRESETS.find((preset) => composeCanonicalStyleString(preset.profile) === normalized)?.id || null;
+  }, [artStyle]);
+  const currentArtStyleLabel = useMemo(() => {
+    if (selectedPresetId) {
+      return ART_STYLE_PRESETS.find((preset) => preset.id === selectedPresetId)?.displayName || 'Preset style';
+    }
+    const trimmed = artStyle.trim();
+    if (!trimmed) return '';
+    return trimmed.length > 80 ? `${trimmed.slice(0, 77)}...` : trimmed;
+  }, [artStyle, selectedPresetId]);
+
+  const applyArtStyle = useCallback((style: string) => {
+    const trimmed = style.trim();
+    handleArtStyleChange(trimmed);
+    if (!trimmed) return;
+    setRecentArtStyles((prev) => {
+      const next = [trimmed, ...prev.filter((item) => item !== trimmed)].slice(0, MAX_RECENT_ART_STYLES);
+      AsyncStorage.setItem(RECENT_ART_STYLES_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, [handleArtStyleChange]);
+
+  const applyPresetArtStyle = useCallback((presetId: string) => {
+    const preset = ART_STYLE_PRESETS.find((item) => item.id === presetId);
+    if (!preset) return;
+    applyArtStyle(composeCanonicalStyleString(preset.profile) || preset.profile.name);
+  }, [applyArtStyle]);
+
+  const openNewArtStyleEditor = useCallback(() => {
+    setEditingArtStyleOriginal(null);
+    setEditingArtStyleName('');
+    setEditingArtStyleDraft('');
+    setArtStyleEditorVisible(true);
+  }, []);
+
+  const openEditArtStyleEditor = useCallback((style: SavedArtStyle) => {
+    setEditingArtStyleOriginal(style);
+    setEditingArtStyleName(style.name);
+    setEditingArtStyleDraft(style.style);
+    setArtStyleEditorVisible(true);
+  }, []);
+
+  const openEditCurrentArtStyleEditor = useCallback(() => {
+    const current = artStyle.trim();
+    if (!current) return;
+    const savedMatch = savedArtStyles.find((item) => item.style === current);
+    if (savedMatch) {
+      openEditArtStyleEditor(savedMatch);
+      return;
+    }
+    setEditingArtStyleOriginal(null);
+    setEditingArtStyleName(currentArtStyleLabel || 'Custom style');
+    setEditingArtStyleDraft(current);
+    setArtStyleEditorVisible(true);
+  }, [artStyle, currentArtStyleLabel, openEditArtStyleEditor, savedArtStyles]);
+
+  const saveEditedArtStyle = useCallback(() => {
+    const name = editingArtStyleName.trim();
+    const trimmed = editingArtStyleDraft.trim();
+    if (!name) {
+      Alert.alert('No Style Name', 'Give this art style a name before saving it.');
+      return;
+    }
+    if (!trimmed) {
+      Alert.alert('No Art Style', 'Describe the visual style before saving it.');
+      return;
+    }
+
+    setSavedArtStyles((prev) => {
+      const id = editingArtStyleOriginal?.id || buildSavedArtStyleId();
+      const saved = { id, name, style: trimmed };
+      const next = [
+        saved,
+        ...prev.filter((item) => item.id !== id && item.name !== name),
+      ].slice(0, MAX_SAVED_ART_STYLES);
+      AsyncStorage.setItem(SAVED_ART_STYLES_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+    applyArtStyle(trimmed);
+    setArtStyleEditorVisible(false);
+    setEditingArtStyleOriginal(null);
+    setEditingArtStyleName('');
+    setEditingArtStyleDraft('');
+  }, [applyArtStyle, editingArtStyleDraft, editingArtStyleName, editingArtStyleOriginal]);
+
+  const removeSavedArtStyle = useCallback((styleId: string) => {
+    setSavedArtStyles((prev) => {
+      const next = prev.filter((item) => item.id !== styleId);
+      AsyncStorage.setItem(SAVED_ART_STYLES_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadArtStyleLists = async () => {
+      try {
+        const [savedRaw, recentRaw] = await Promise.all([
+          AsyncStorage.getItem(SAVED_ART_STYLES_KEY),
+          AsyncStorage.getItem(RECENT_ART_STYLES_KEY),
+        ]);
+        if (!mounted) return;
+        if (savedRaw) {
+          const parsed = JSON.parse(savedRaw);
+          if (Array.isArray(parsed)) {
+            setSavedArtStyles(
+              parsed
+                .map(normalizeSavedArtStyle)
+                .filter((item): item is SavedArtStyle => Boolean(item))
+                .slice(0, MAX_SAVED_ART_STYLES),
+            );
+          }
+        }
+        if (recentRaw) {
+          const parsed = JSON.parse(recentRaw);
+          if (Array.isArray(parsed)) setRecentArtStyles(parsed.filter((item) => typeof item === 'string').slice(0, MAX_RECENT_ART_STYLES));
+        }
+      } catch {
+        // Art style shortcuts are convenience-only; ignore bad persisted data.
+      }
+    };
+    loadArtStyleLists();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const analysisCharacters: AnalysisCharacterTarget[] = sourceAnalysis
     ? [
@@ -2542,9 +2714,13 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     );
   };
 
-  const configuredKeyCount = [apiKey, openaiApiKey, geminiApiKey, atlasCloudApiKey, midapiToken, elevenLabsApiKey]
+  const credentialValues = STABLE_DIFFUSION_UI_ENABLED
+    ? [apiKey, openaiApiKey, geminiApiKey, atlasCloudApiKey, midapiToken, elevenLabsApiKey, stableDiffusionSettings.apiKey || '', loraTrainingSettings.apiKey || '']
+    : [apiKey, openaiApiKey, geminiApiKey, atlasCloudApiKey, midapiToken, elevenLabsApiKey];
+  const configuredKeyCount = credentialValues
     .filter((value) => value.trim().length > 0)
     .length;
+  const credentialTotal = credentialValues.length;
   const imageProviderLabel = imageProvider === 'nano-banana'
     ? 'Gemini'
     : imageProvider === 'dall-e'
@@ -2557,23 +2733,165 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const storySummaryLines = [
     `Source: ${hasSourceInput ? 'ready' : 'missing'}${customStoryTitle.trim() ? ` • title "${customStoryTitle.trim()}"` : ''}`,
     `Writing: ${llmProvider.toUpperCase()} • ${llmModel}`,
-    `Keys configured: ${configuredKeyCount}/6`,
+    `Credentials: ${configuredKeyCount}/${credentialTotal} configured`,
   ];
   const imageSummaryLines = [
-    `${generationSettings.generateImages ? 'Images enabled' : 'Images disabled'} • ${imageProviderLabel} renderer`,
+    `${generationSettings.generateImages ? 'Generate story art after text' : 'Story art disabled'} • ${imageProviderLabel} renderer`,
     `Prompting: ${imageLlmProvider.toUpperCase()} • ${imageLlmModel}`,
-    `Style: ${artStyle.trim() || '⚠ empty — will fall back to default (expressive illustrated)'} • refs ${generationSettings.generateCharacterRefs ? 'on' : 'off'} • style refs ${styleReferenceUploads.length}`,
+    `Style: ${currentArtStyleLabel || '⚠ empty — will fall back to default (expressive illustrated)'} • refs ${generationSettings.generateCharacterRefs ? 'on' : 'off'} • style refs ${styleReferenceUploads.length}`,
   ];
   const videoSummaryLines = [
-    `${videoSettings.enabled ? 'Video enabled' : 'Video disabled'} • ${videoLlmProvider.toUpperCase()} • ${videoLlmModel}`,
+    `${videoSettings.enabled ? 'Experimental video enabled' : 'Experimental video disabled'} • ${videoLlmProvider.toUpperCase()} • ${videoLlmModel}`,
     `${videoSettings.model} • ${videoSettings.durationSeconds}s • ${videoSettings.resolution} • ${videoSettings.aspectRatio}`,
     `Strategy: ${videoSettings.strategy}${!generationSettings.generateImages ? ' • images required' : ''}`,
   ];
   const narrationSummaryLines = [
-    `${narrationSettings.enabled ? 'Narration enabled' : 'Narration disabled'} • ElevenLabs ${elevenLabsApiKey.trim() ? 'ready' : 'missing'}`,
+    `${narrationSettings.enabled ? 'Optional narration enabled' : 'Optional narration disabled'} • ElevenLabs ${elevenLabsApiKey.trim() ? 'ready' : 'missing'}`,
     `${narrationSettings.preGenerateAudio ? 'Pre-generate on' : 'Pre-generate off'} • ${narrationSettings.autoPlay ? 'Auto-play on' : 'Auto-play off'}`,
     `Highlight: ${narrationSettings.highlightMode.toUpperCase()}`,
   ];
+
+  const renderImageSetupControls = () => (
+    <SetupStepCard
+      step="2"
+      title="IMAGE SETUP"
+      description="Choose the planning model, renderer, image model, and art style before opening detailed image options."
+    >
+      <View style={styles.configItem}>
+        <Text style={styles.configLabel}>IMAGE PLANNING LLM</Text>
+        <Text style={styles.configHint}>Controls the model that storyboards scenes and writes image prompts before rendering.</Text>
+        <View style={styles.segmentedControl}>
+          <TouchableOpacity style={[styles.segment, imageLlmProvider === 'anthropic' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('anthropic')}>
+            <Text style={[styles.segmentText, imageLlmProvider === 'anthropic' && styles.segmentTextActive]}>ANTHROPIC</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segment, imageLlmProvider === 'openai' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('openai')}>
+            <Text style={[styles.segmentText, imageLlmProvider === 'openai' && styles.segmentTextActive]}>OPENAI</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segment, imageLlmProvider === 'gemini' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('gemini')}>
+            <Text style={[styles.segmentText, imageLlmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
+          </TouchableOpacity>
+        </View>
+        <ModelDropdown
+          options={availableModels[imageLlmProvider].map(o => ({ value: o.value, label: o.label, subtitle: o.value }))}
+          value={imageLlmModel}
+          onSelect={handleImageLlmModelChange}
+          placeholder="Select model…"
+        />
+      </View>
+
+      <View style={styles.configItem}>
+        <Text style={styles.configLabel}>IMAGE PROVIDER</Text>
+        <View style={styles.segmentedControl}>
+          <TouchableOpacity style={[styles.segment, imageProvider === 'nano-banana' && styles.segmentActive]} onPress={() => handleImageProviderChange('nano-banana')}>
+            <Text style={[styles.segmentText, imageProvider === 'nano-banana' && styles.segmentTextActive]}>GEMINI</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segment, imageProvider === 'dall-e' && styles.segmentActive]} onPress={() => handleImageProviderChange('dall-e')}>
+            <Text style={[styles.segmentText, imageProvider === 'dall-e' && styles.segmentTextActive]}>OPENAI</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segment, imageProvider === 'midapi' && styles.segmentActive]} onPress={() => handleImageProviderChange('midapi')}>
+            <Text style={[styles.segmentText, imageProvider === 'midapi' && styles.segmentTextActive]}>MIDAPI</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segment, imageProvider === 'atlas-cloud' && styles.segmentActive]} onPress={() => handleImageProviderChange('atlas-cloud')}>
+            <Text style={[styles.segmentText, imageProvider === 'atlas-cloud' && styles.segmentTextActive]}>ATLAS</Text>
+          </TouchableOpacity>
+          {STABLE_DIFFUSION_UI_ENABLED && (
+            <TouchableOpacity style={[styles.segment, imageProvider === 'stable-diffusion' && styles.segmentActive]} onPress={() => handleImageProviderChange('stable-diffusion')}>
+              <Text style={[styles.segmentText, imageProvider === 'stable-diffusion' && styles.segmentTextActive]}>SD</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
+      {imageProvider === 'nano-banana' && (
+        <View style={styles.configItem}>
+          <Text style={styles.configLabel}>IMAGE MODEL</Text>
+          <ModelDropdown
+            options={[
+              { value: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash', description: 'Original Nano Banana. Stable, cost-effective.' },
+              { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro', description: 'Nano Banana Pro. Highest quality, supports thinking.' },
+              { value: 'gemini-3.1-flash-image-preview', label: 'Gemini 3.1 Flash', description: 'Nano Banana 2. Pro quality at Flash speed. Recommended.' },
+            ]}
+            value={geminiSettings.model || DEFAULT_GEMINI_SETTINGS.model}
+            onSelect={(v) => handleGeminiSettingsChange({ model: v })}
+          />
+        </View>
+      )}
+
+      {imageProvider === 'dall-e' && (
+        <View style={styles.configItem}>
+          <Text style={styles.configLabel}>IMAGE MODEL</Text>
+          <ModelDropdown
+            options={[
+              { value: 'gpt-image-1', label: 'GPT Image 1', description: 'General-purpose high quality fallback, no org verification required.' },
+              { value: 'gpt-image-1-mini', label: 'GPT Image 1 Mini', description: 'Fastest and lowest cost. No verification required.' },
+              { value: 'gpt-image-1.5', label: 'GPT Image 1.5 (verified org only)', description: 'Requires OpenAI organization verification.' },
+              { value: 'gpt-image-2', label: 'GPT Image 2 (verified org only)', description: 'Default for storyboard pipeline. Strongest consistency + multi-ref editing.' },
+            ]}
+            value={openaiSettings.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel}
+            onSelect={(v) => handleOpenaiSettingsChange({ imageModel: v as any, imageModeration: 'low' })}
+          />
+          <Text style={styles.configHint}>OpenAI image moderation is fixed to low for generated story art.</Text>
+        </View>
+      )}
+
+      {imageProvider === 'atlas-cloud' && (
+        <View style={styles.configItem}>
+          <Text style={styles.configLabel}>IMAGE MODEL</Text>
+          <ModelDropdown
+            options={atlasCloudModels.map(m => ({
+              value: m.value,
+              label: m.label,
+              description: m.description || undefined,
+            }))}
+            value={atlasCloudModel}
+            onSelect={handleAtlasCloudModelChange}
+            placeholder="Select Atlas Cloud model…"
+          />
+        </View>
+      )}
+
+      {STABLE_DIFFUSION_UI_ENABLED && imageProvider === 'stable-diffusion' && (
+        <View style={styles.configItem}>
+          <Text style={styles.configLabel}>IMAGE MODEL</Text>
+          <View style={styles.inputWrapper}>
+            <TextInput
+              style={styles.input}
+              value={stableDiffusionSettings.defaultModel || ''}
+              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultModel: v })}
+              placeholder="e.g. sdxl-base-1.0 or checkpoint filename"
+              placeholderTextColor={TERMINAL.colors.muted}
+              autoCapitalize="none"
+            />
+          </View>
+        </View>
+      )}
+
+      <View style={styles.configItem}>
+        <Text style={styles.configLabel}>ART STYLE</Text>
+        <TouchableOpacity
+          style={styles.styleDropdownButton}
+          onPress={() => setShowArtStyleSheet(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Choose art style"
+        >
+          <View style={styles.styleDropdownTextBlock}>
+            <Text style={styles.styleDropdownValue} numberOfLines={1}>
+              {currentArtStyleLabel || 'Choose an art style'}
+            </Text>
+            <Text style={styles.styleDropdownHint} numberOfLines={1}>
+              Presets, saved styles, recents, and custom styles
+            </Text>
+          </View>
+          <ChevronDown size={16} color={TERMINAL.colors.muted} />
+        </TouchableOpacity>
+        {artStyle.trim().length === 0 ? (
+          <Text style={[styles.configHint, { marginTop: 4, color: TERMINAL.colors.warning || TERMINAL.colors.muted }]}>
+            ⚠ No art style set — images will fall back to &quot;dramatic cinematic story art&quot;.
+          </Text>
+        ) : null}
+      </View>
+    </SetupStepCard>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -2652,6 +2970,11 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 summaryLines={storySummaryLines}
               >
                 <View style={styles.configItem}>
+                  <Text style={styles.configLabel}>STORY DESIGNATION (TITLE)</Text>
+                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={customStoryTitle} onChangeText={setCustomStoryTitle} placeholder="E.G. THE VORTEX AWAKENS" placeholderTextColor={TERMINAL.colors.muted} /></View>
+                </View>
+
+                <View style={styles.configItem}>
                   <Text style={styles.configLabel}>SOURCE MATERIAL</Text>
                   <TouchableOpacity style={[styles.filePicker, selectedFileName ? styles.filePickerActive : null]} onPress={pickDocument}><View style={styles.fileIconBox}>{selectedFileName ? <CheckCircle2 size={20} color="white" /> : <FolderOpen size={20} color={TERMINAL.colors.muted} />}</View><View style={styles.fileInfo}><Text style={styles.fileName}>{selectedFileName || 'SELECT SOURCE DOCUMENT'}</Text><Text style={styles.fileMeta}>MD, TXT, PDF, JSON</Text></View>{selectedFileName && <TouchableOpacity onPress={clearDocument} style={styles.clearBtn}><Trash2 size={16} color={TERMINAL.colors.muted} /></TouchableOpacity>}</TouchableOpacity>
                   {parsedDocument && <View style={styles.parsedCard}><View style={styles.parsedHeader}><CheckCircle2 size={12} color={TERMINAL.colors.primary} /><Text style={styles.parsedTitle}>SOURCE ANALYZED</Text></View><Text style={styles.parsedInfo}>{parsedDocument.title || 'UNTITLED'}</Text><Text style={styles.parsedMeta}>{parsedDocument.genre?.toUpperCase()} • {parsedDocument.npcs?.length || 0} NPCs</Text></View>}
@@ -2660,11 +2983,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 <View style={styles.configItem}>
                   <Text style={styles.configLabel}>CREATIVE PROMPT / INSTRUCTIONS</Text>
                   <View style={[styles.inputWrapper, { height: 100, paddingVertical: 10 }]}><TextInput style={[styles.input, { height: '100%', textAlignVertical: 'top' }]} value={userPrompt} onChangeText={setUserPrompt} placeholder="ENTER STORY IDEAS OR ADAPTATION INSTRUCTIONS..." placeholderTextColor={TERMINAL.colors.muted} multiline numberOfLines={4} /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>STORY DESIGNATION (TITLE)</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={customStoryTitle} onChangeText={setCustomStoryTitle} placeholder="E.G. THE VORTEX AWAKENS" placeholderTextColor={TERMINAL.colors.muted} /></View>
                 </View>
 
                 <View style={styles.configItem}>
@@ -2705,145 +3023,21 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 </View>
 
                 <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>SHARED API KEYS</Text>
-                  <Text style={styles.configHint}>Credentials live here once and are reused by the image, video, and narration sections below.</Text>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>ANTHROPIC API KEY {apiKey ? '✓' : '*'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={apiKey} onChangeText={handleApiKeyChange} placeholder="sk-ant-..." placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>OPENAI API KEY {openaiApiKey ? '✓' : '*'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={openaiApiKey} onChangeText={handleOpenaiApiKeyChange} placeholder="sk-proj-... used for ChatGPT story/orchestration and OpenAI images" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>GEMINI API KEY {geminiApiKey ? '✓' : '*'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={geminiApiKey} onChangeText={handleGeminiApiKeyChange} placeholder="AIzaSy... used for Gemini text, image, and video" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>MIDAPI TOKEN {midapiToken ? '✓' : 'OPTIONAL'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={midapiToken} onChangeText={handleMidapiTokenChange} placeholder="Used only when the image provider is MidAPI" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>ATLAS CLOUD API KEY {atlasCloudApiKey ? '✓' : 'OPTIONAL'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={atlasCloudApiKey} onChangeText={handleAtlasCloudApiKeyChange} placeholder="Used only when the image provider is Atlas Cloud" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>ELEVENLABS API KEY {elevenLabsApiKey ? '✓' : 'OPTIONAL'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={elevenLabsApiKey} onChangeText={handleElevenLabsApiKeyChange} placeholder="Used when narration is enabled" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
                   <TouchableOpacity
-                    style={styles.inlineDisclosure}
-                    onPress={() => setShowOpenAiSettings(!showOpenAiSettings)}
+                    style={styles.credentialsButton}
+                    onPress={() => setShowCredentialsSheet(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open generator credentials"
                   >
-                    <Settings size={16} color={TERMINAL.colors.cyan} style={{ marginRight: 8 }} />
-                    <Text style={[styles.configLabel, { color: TERMINAL.colors.cyan }]}>OPENAI ADVANCED</Text>
-                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showOpenAiSettings ? '90deg' : '0deg' }] }} />
-                  </TouchableOpacity>
-                  {showOpenAiSettings && (
-                    <View style={styles.disclosureBody}>
-                      <View style={{ marginBottom: 12 }}>
-                        <Text style={[styles.configLabel, { marginBottom: 8 }]}>REASONING EFFORT</Text>
-                        <View style={styles.segmentedControl}>
-                          {(['minimal', 'low', 'medium', 'high'] as const).map((effort) => (
-                            <TouchableOpacity
-                              key={effort}
-                              style={[styles.segment, (openaiSettings.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort) === effort && styles.segmentActive]}
-                              onPress={() => handleOpenaiSettingsChange({ reasoningEffort: effort })}
-                            >
-                              <Text style={[styles.segmentText, (openaiSettings.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort) === effort && styles.segmentTextActive]}>{effort.toUpperCase()}</Text>
-                            </TouchableOpacity>
-                          ))}
-                        </View>
-                        <Text style={[styles.configHint, { marginTop: 8 }]}>
-                          Applies to every OpenAI text/orchestration agent (story, image planning, video planning). Image model settings live in the IMAGES panel.
-                        </Text>
-                      </View>
-
-                      <View style={styles.toggleConfigRow}>
-                        <View style={styles.toggleConfigInfo}>
-                          <Text style={styles.configLabel}>FORCE JSON STRUCTURED OUTPUT</Text>
-                          <Text style={styles.configHint}>Keeps OpenAI agent outputs in JSON mode for robust parser reliability.</Text>
-                        </View>
-                        <Switch
-                          value={openaiSettings.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse}
-                          onValueChange={(v) => handleOpenaiSettingsChange({ forceJsonResponse: v })}
-                          trackColor={{ false: '#333', true: TERMINAL.colors.cyan }}
-                          thumbColor="#fff"
-                        />
-                      </View>
-
-                      <TouchableOpacity
-                        style={styles.inlineResetButton}
-                        onPress={() => handleOpenaiSettingsChange({
-                          reasoningEffort: DEFAULT_OPENAI_SETTINGS.reasoningEffort,
-                          forceJsonResponse: DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
-                        })}
-                      >
-                        <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
-                        <Text style={styles.inlineResetButtonText}>RESET TEXT DEFAULTS</Text>
-                      </TouchableOpacity>
+                    <View style={styles.credentialsButtonTextBlock}>
+                      <Text style={styles.configLabel}>CREDENTIALS</Text>
+                      <Text style={styles.configHint}>
+                        {configuredKeyCount}/{credentialTotal} configured. Keys are reused by story, images, video, and narration.
+                      </Text>
                     </View>
-                  )}
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>VALIDATION MODE</Text>
-                  <Text style={styles.configHint}>
-                    Controls how strictly quality checks can block generation.
-                  </Text>
-                  <View style={styles.segmentedControl}>
-                    {GENERATION_MODE_OPTIONS.map((option) => (
-                      <TouchableOpacity
-                        key={option.value}
-                        style={[styles.segment, generationMode === option.value && styles.segmentActive]}
-                        onPress={() => handleGenerationModeChange(option.value)}
-                      >
-                        <Text style={[styles.segmentText, generationMode === option.value && styles.segmentTextActive]}>
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  <Text style={[styles.configHint, { marginTop: 8 }]}>
-                    {GENERATION_MODE_OPTIONS.find((option) => option.value === generationMode)?.description}
-                  </Text>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>ASSET EXECUTION</Text>
-                  <Text style={styles.configHint}>
-                    Story-first saves the complete narrative draft, then lets image jobs run separately.
-                  </Text>
-                  <View style={styles.segmentedControl}>
-                    {[
-                      { value: 'story-only' as const, label: 'STORY FIRST' },
-                      { value: 'story-and-images' as const, label: 'ALL-IN-ONE' },
-                    ].map((option) => (
-                      <TouchableOpacity
-                        key={option.value}
-                        style={[styles.segment, assetGenerationMode === option.value && styles.segmentActive]}
-                        onPress={() => setAssetGenerationMode(option.value)}
-                      >
-                        <Text style={[styles.segmentText, assetGenerationMode === option.value && styles.segmentTextActive]}>
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  <Text style={[styles.configHint, { marginTop: 8 }]}>
-                    {assetGenerationMode === 'story-only'
-                      ? 'Images are queued later from the saved draft package.'
-                      : 'Story and images run in the same worker, matching the legacy flow.'}
-                  </Text>
+                    <Text style={styles.credentialsButtonAction}>MANAGE</Text>
+                    <ChevronRight size={16} color={TERMINAL.colors.muted} />
+                  </TouchableOpacity>
                 </View>
 
                 {/*
@@ -2853,24 +3047,28 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   forced the user through Story bucket -> inline disclosure ->
                   six more collapsible sections to reach advanced controls.
                 */}
-                <View style={styles.configItem}>
-                  <TouchableOpacity
-                    style={styles.inlineDisclosure}
-                    onPress={() => setShowAdvancedSettings(true)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Open advanced story settings"
-                  >
-                    <Settings size={16} color={TERMINAL.colors.primary} style={{ marginRight: 8 }} />
-                    <Text style={styles.configLabel}>ADVANCED STORY SETTINGS</Text>
-                    <Text style={styles.advancedSettingsHint}>OPEN</Text>
-                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 8 }} />
-                  </TouchableOpacity>
-                </View>
+                {developerMode && (
+                  <View style={styles.configItem}>
+                    <TouchableOpacity
+                      style={styles.inlineDisclosure}
+                      onPress={() => setShowAdvancedSettings(true)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Open advanced story settings"
+                    >
+                      <Settings size={16} color={TERMINAL.colors.primary} style={{ marginRight: 8 }} />
+                      <Text style={styles.configLabel}>DEVELOPER GENERATION SETTINGS</Text>
+                      <Text style={styles.advancedSettingsHint}>OPEN</Text>
+                      <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 8 }} />
+                    </TouchableOpacity>
+                  </View>
+                )}
               </ConfigBucketCard>
+
+              {renderImageSetupControls()}
 
               <ConfigBucketCard
                 title="IMAGES"
-                description="Storyboard prompting, renderer choice, style, and still-image outputs."
+                description="Generate story art after text: renderer choice, model, style, and still-image outputs."
                 icon={<ImageIcon size={16} color={generationSettings.generateImages ? TERMINAL.colors.cyan : TERMINAL.colors.muted} />}
                 expanded={showImagesPanel}
                 onToggleExpanded={() => setShowImagesPanel(!showImagesPanel)}
@@ -2879,68 +3077,11 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 onToggleEnabled={(value) => updateGenerationSetting('generateImages', value)}
               >
                 <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>IMAGE PLANNING LLM</Text>
-                  <Text style={styles.configHint}>Controls the model that storyboards scenes and writes image prompts before rendering.</Text>
-                  <View style={styles.segmentedControl}>
-                    <TouchableOpacity style={[styles.segment, imageLlmProvider === 'anthropic' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('anthropic')}>
-                      <Text style={[styles.segmentText, imageLlmProvider === 'anthropic' && styles.segmentTextActive]}>ANTHROPIC</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, imageLlmProvider === 'openai' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('openai')}>
-                      <Text style={[styles.segmentText, imageLlmProvider === 'openai' && styles.segmentTextActive]}>OPENAI</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, imageLlmProvider === 'gemini' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('gemini')}>
-                      <Text style={[styles.segmentText, imageLlmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <ModelDropdown
-                    options={availableModels[imageLlmProvider].map(o => ({ value: o.value, label: o.label, subtitle: o.value }))}
-                    value={imageLlmModel}
-                    onSelect={handleImageLlmModelChange}
-                    placeholder="Select model…"
-                  />
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>IMAGE PROVIDER</Text>
-                  <View style={styles.segmentedControl}>
-                    <TouchableOpacity style={[styles.segment, imageProvider === 'nano-banana' && styles.segmentActive]} onPress={() => handleImageProviderChange('nano-banana')}>
-                      <Text style={[styles.segmentText, imageProvider === 'nano-banana' && styles.segmentTextActive]}>GEMINI</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, imageProvider === 'dall-e' && styles.segmentActive]} onPress={() => handleImageProviderChange('dall-e')}>
-                      <Text style={[styles.segmentText, imageProvider === 'dall-e' && styles.segmentTextActive]}>OPENAI</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, imageProvider === 'midapi' && styles.segmentActive]} onPress={() => handleImageProviderChange('midapi')}>
-                      <Text style={[styles.segmentText, imageProvider === 'midapi' && styles.segmentTextActive]}>MIDAPI</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, imageProvider === 'atlas-cloud' && styles.segmentActive]} onPress={() => handleImageProviderChange('atlas-cloud')}>
-                      <Text style={[styles.segmentText, imageProvider === 'atlas-cloud' && styles.segmentTextActive]}>ATLAS</Text>
-                    </TouchableOpacity>
-                    {STABLE_DIFFUSION_UI_ENABLED && (
-                      <TouchableOpacity style={[styles.segment, imageProvider === 'stable-diffusion' && styles.segmentActive]} onPress={() => handleImageProviderChange('stable-diffusion')}>
-                        <Text style={[styles.segmentText, imageProvider === 'stable-diffusion' && styles.segmentTextActive]}>SD</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>ART STYLE</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={artStyle} onChangeText={handleArtStyleChange} placeholder="e.g. rich digital painting, noir ink wash, anime cel shading, watercolor illustration..." placeholderTextColor={TERMINAL.colors.muted} /></View>
-                  {artStyle.trim().length === 0 ? (
-                    <Text style={[styles.configHint, { marginTop: 4, color: TERMINAL.colors.warning || TERMINAL.colors.muted }]}>
-                      ⚠ No art style set — images will fall back to &quot;dramatic cinematic story art&quot; (a generic illustrated look). Enter a specific style above for consistent, distinctive visuals.
-                    </Text>
-                  ) : (
-                    <Text style={[styles.configHint, { marginTop: 4 }]}>Sets the visual aesthetic for all generated art. This exact string is used as the style directive in every image prompt.</Text>
-                  )}
-                </View>
-
-                <View style={styles.configItem}>
                   <View style={styles.styleReferenceHeader}>
                     <View style={styles.styleReferenceTitleBlock}>
-                      <Text style={styles.configLabel}>STYLE REFERENCES</Text>
+                      <Text style={styles.configLabel}>STYLE REFERENCE IMAGES</Text>
                       <Text style={styles.configHint}>
-                        Upload up to {MAX_STYLE_REFERENCE_UPLOADS} images to seed the style bible and lock downstream image consistency.
+                        Upload up to {MAX_STYLE_REFERENCE_UPLOADS} images to seed the style bible. They influence palette, texture, lighting, finish, and mood, not characters or scene composition.
                       </Text>
                     </View>
                     <TouchableOpacity
@@ -2956,7 +3097,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                         styles.referenceUploadButtonText,
                         !generationSettings.generateImages && styles.referenceUploadButtonTextDisabled,
                       ]}>
-                        {styleReferenceUploads.length > 0 ? 'ADD STYLE REF' : 'UPLOAD STYLE REF'}
+                        {styleReferenceUploads.length > 0 ? 'ADD STYLE IMAGE' : 'UPLOAD STYLE IMAGE'}
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -3037,19 +3178,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       </TouchableOpacity>
                       {showGeminiSettings && (
                         <View style={styles.disclosureBody}>
-                          <View style={{ marginBottom: 16 }}>
-                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>IMAGE MODEL</Text>
-                            <ModelDropdown
-                              options={[
-                                { value: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash', description: 'Original Nano Banana. Stable, cost-effective.' },
-                                { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro', description: 'Nano Banana Pro. Highest quality, supports thinking.' },
-                                { value: 'gemini-3.1-flash-image-preview', label: 'Gemini 3.1 Flash', description: 'Nano Banana 2. Pro quality at Flash speed. Recommended.' },
-                              ]}
-                              value={geminiSettings.model || DEFAULT_GEMINI_SETTINGS.model}
-                              onSelect={(v) => handleGeminiSettingsChange({ model: v })}
-                            />
-                          </View>
-
                           <View style={styles.toggleConfigRow}>
                             <View style={styles.toggleConfigInfo}>
                               <Text style={styles.configLabel}>CONSISTENCY INSTRUCTION</Text>
@@ -3142,68 +3270,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       )}
                     </View>
                   </>
-                )}
-
-                {imageProvider === 'dall-e' && (
-                  <View style={styles.configItem}>
-                    <TouchableOpacity
-                      style={styles.inlineDisclosure}
-                      onPress={() => setShowOpenAiImageSettings(!showOpenAiImageSettings)}
-                    >
-                      <Settings size={16} color={TERMINAL.colors.cyan} style={{ marginRight: 8 }} />
-                      <Text style={[styles.configLabel, { color: TERMINAL.colors.cyan }]}>OPENAI IMAGE PARAMETERS</Text>
-                      <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showOpenAiImageSettings ? '90deg' : '0deg' }] }} />
-                    </TouchableOpacity>
-                    {showOpenAiImageSettings && (
-                      <View style={styles.disclosureBody}>
-                        <View style={{ marginBottom: 16 }}>
-                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>IMAGE MODEL</Text>
-                          <ModelDropdown
-                            options={[
-                              { value: 'gpt-image-1', label: 'GPT Image 1', description: 'General-purpose high quality fallback, no org verification required.' },
-                              { value: 'gpt-image-1-mini', label: 'GPT Image 1 Mini', description: 'Fastest and lowest cost. No verification required.' },
-                              { value: 'gpt-image-1.5', label: 'GPT Image 1.5 (verified org only)', description: 'Requires OpenAI organization verification.' },
-                              { value: 'gpt-image-2', label: 'GPT Image 2 (verified org only)', description: 'Default for storyboard pipeline. Strongest consistency + multi-ref editing. Requires OpenAI organization verification.' },
-                            ]}
-                            value={openaiSettings.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel}
-                            onSelect={(v) => handleOpenaiSettingsChange({ imageModel: v as any })}
-                          />
-                          <Text style={[styles.configHint, { marginTop: 6 }]}>
-                            Requires OPENAI API KEY in the STORY panel. Used only when OPENAI is the selected image provider here.
-                          </Text>
-                        </View>
-
-                        <View style={{ marginBottom: 8 }}>
-                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>IMAGE MODERATION</Text>
-                          <View style={styles.segmentedControl}>
-                            {(['auto', 'low'] as const).map((mode) => (
-                              <TouchableOpacity
-                                key={mode}
-                                style={[styles.segment, (openaiSettings.imageModeration || DEFAULT_OPENAI_SETTINGS.imageModeration) === mode && styles.segmentActive]}
-                                onPress={() => handleOpenaiSettingsChange({ imageModeration: mode })}
-                              >
-                                <Text style={[styles.segmentText, (openaiSettings.imageModeration || DEFAULT_OPENAI_SETTINGS.imageModeration) === mode && styles.segmentTextActive]}>{mode.toUpperCase()}</Text>
-                              </TouchableOpacity>
-                            ))}
-                          </View>
-                          <Text style={[styles.configHint, { marginTop: 6 }]}>
-                            &quot;low&quot; relaxes safety filtering for mature narratives. &quot;auto&quot; uses OpenAI defaults.
-                          </Text>
-                        </View>
-
-                        <TouchableOpacity
-                          style={styles.inlineResetButton}
-                          onPress={() => handleOpenaiSettingsChange({
-                            imageModel: DEFAULT_OPENAI_SETTINGS.imageModel,
-                            imageModeration: DEFAULT_OPENAI_SETTINGS.imageModeration,
-                          })}
-                        >
-                          <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
-                          <Text style={styles.inlineResetButtonText}>RESET IMAGE DEFAULTS</Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
-                  </View>
                 )}
 
                 {imageProvider === 'midapi' && (
@@ -3355,22 +3421,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   </>
                 )}
 
-                {imageProvider === 'atlas-cloud' && (
-                  <View style={styles.configItem}>
-                    <Text style={[styles.configLabel, { marginBottom: 8 }]}>MODEL</Text>
-                    <ModelDropdown
-                      options={atlasCloudModels.map(m => ({
-                        value: m.value,
-                        label: m.label,
-                        description: m.description || undefined,
-                      }))}
-                      value={atlasCloudModel}
-                      onSelect={handleAtlasCloudModelChange}
-                      placeholder="Select Atlas Cloud model…"
-                    />
-                  </View>
-                )}
-
                 {STABLE_DIFFUSION_UI_ENABLED && imageProvider === 'stable-diffusion' && (
                   <View style={styles.configItem}>
                     <TouchableOpacity
@@ -3396,36 +3446,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                             />
                           </View>
                           <Text style={styles.configHint}>Points at Automatic1111/Forge WebUI (or the proxy mount).</Text>
-                        </View>
-
-                        <View style={{ marginBottom: 16 }}>
-                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>API KEY (OPTIONAL)</Text>
-                          <View style={styles.inputWrapper}>
-                            <TextInput
-                              style={styles.input}
-                              value={stableDiffusionSettings.apiKey || ''}
-                              onChangeText={(v) => handleStableDiffusionSettingsChange({ apiKey: v })}
-                              placeholder="Bearer token for remote/secured backends"
-                              placeholderTextColor={TERMINAL.colors.muted}
-                              secureTextEntry
-                              autoCapitalize="none"
-                            />
-                          </View>
-                        </View>
-
-                        <View style={{ marginBottom: 16 }}>
-                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>DEFAULT MODEL</Text>
-                          <View style={styles.inputWrapper}>
-                            <TextInput
-                              style={styles.input}
-                              value={stableDiffusionSettings.defaultModel || ''}
-                              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultModel: v })}
-                              placeholder="e.g. sdxl-base-1.0 or checkpoint filename"
-                              placeholderTextColor={TERMINAL.colors.muted}
-                              autoCapitalize="none"
-                            />
-                          </View>
-                          <Text style={styles.configHint}>Matches a checkpoint name returned by /sdapi/v1/sd-models.</Text>
                         </View>
 
                         <View style={{ marginBottom: 16 }}>
@@ -3569,21 +3589,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                               onChangeText={(v) => handleLoraTrainingSettingsChange({ baseUrl: v })}
                               placeholder="http://localhost:7861 (overrides LORA_TRAINER_BASE_URL)"
                               placeholderTextColor={TERMINAL.colors.muted}
-                              autoCapitalize="none"
-                            />
-                          </View>
-                        </View>
-
-                        <View style={{ marginTop: 16 }}>
-                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>TRAINER API KEY (OPTIONAL)</Text>
-                          <View style={styles.inputWrapper}>
-                            <TextInput
-                              style={styles.input}
-                              value={loraTrainingSettings.apiKey || ''}
-                              onChangeText={(v) => handleLoraTrainingSettingsChange({ apiKey: v })}
-                              placeholder="Bearer token for the trainer sidecar"
-                              placeholderTextColor={TERMINAL.colors.muted}
-                              secureTextEntry
                               autoCapitalize="none"
                             />
                           </View>
@@ -3818,7 +3823,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
 
               <ConfigBucketCard
                 title="VIDEO"
-                description="Optional beat animation using a direction LLM plus Veo rendering."
+                description="Optional experimental beat animation using a direction LLM plus Veo rendering."
                 icon={<Film size={16} color={videoSettings.enabled ? TERMINAL.colors.cyan : TERMINAL.colors.muted} />}
                 expanded={showVideoPanel}
                 onToggleExpanded={() => setShowVideoPanel(!showVideoPanel)}
@@ -3914,7 +3919,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
 
               <ConfigBucketCard
                 title="NARRATION"
-                description="Optional voice playback settings for generated stories."
+                description="Optional experimental voice playback settings for generated stories."
                 icon={<Volume2 size={16} color={narrationSettings.enabled ? TERMINAL.colors.cyan : TERMINAL.colors.muted} />}
                 expanded={showNarrationPanel}
                 onToggleExpanded={() => setShowNarrationPanel(!showNarrationPanel)}
@@ -4184,6 +4189,32 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     </Text>
                   </View>
                 )}
+                {isCreatingSeasonPlan ? (
+                  <View style={styles.loadingContainer}>
+                    <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
+                    <Text style={styles.loadingText}>Creating season plan...</Text>
+                  </View>
+                ) : seasonPlan ? (
+                  <EpisodeSelector
+                    seasonPlan={seasonPlan}
+                    selectedEpisodes={selectedEpisodes}
+                    onSelectionChange={(episodes) => {
+                      setSelectedEpisodes(episodes);
+                      setSelectedEpisodeCount(episodes.length);
+                      const seasonPlanner = new SeasonPlannerAgent({ provider: 'anthropic', model: 'claude-sonnet-4-20250514', apiKey: '', maxTokens: 8000, temperature: 0.7 });
+                      const validation = seasonPlanner.validateSelection(seasonPlan, episodes);
+                      setSelectionWarnings(validation.warnings);
+                      const recs = seasonPlanner.getEpisodeRecommendations(seasonPlan, episodes);
+                      setEpisodeRecommendations(recs);
+                    }}
+                    recommendations={episodeRecommendations}
+                    warnings={selectionWarnings}
+                  />
+                ) : (
+                  <View style={styles.outlineList}>{(analysisResult.episodeOutlines || []).map((ep, idx) => (
+                    <View key={idx} style={styles.outlineItem}><View style={styles.outlineNumber}><Text style={styles.outlineNumberText}>{ep.episodeNumber}</Text></View><View style={styles.outlineInfo}><Text style={styles.outlineTitle}>{(ep.title || 'Untitled').toUpperCase()}</Text><Text style={styles.outlineSynopsis} numberOfLines={2}>{ep.synopsis}</Text></View></View>
+                  ))}</View>
+                )}
                 {analysisCharacters.length > 0 && (
                   <View style={styles.analysisCard}>
                     <View style={styles.analysisCardHeader}>
@@ -4281,33 +4312,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       })}
                     </View>
                   </View>
-                )}
-                {isCreatingSeasonPlan ? (
-                  <View style={styles.loadingContainer}>
-                    <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
-                    <Text style={styles.loadingText}>Creating season plan...</Text>
-                  </View>
-                ) : seasonPlan ? (
-                  <EpisodeSelector
-                    seasonPlan={seasonPlan}
-                    selectedEpisodes={selectedEpisodes}
-                    onSelectionChange={(episodes) => {
-                      setSelectedEpisodes(episodes);
-                      setSelectedEpisodeCount(episodes.length);
-                      // Validate selection and get recommendations
-                      const seasonPlanner = new SeasonPlannerAgent({ provider: 'anthropic', model: 'claude-sonnet-4-20250514', apiKey: '', maxTokens: 8000, temperature: 0.7 });
-                      const validation = seasonPlanner.validateSelection(seasonPlan, episodes);
-                      setSelectionWarnings(validation.warnings);
-                      const recs = seasonPlanner.getEpisodeRecommendations(seasonPlan, episodes);
-                      setEpisodeRecommendations(recs);
-                    }}
-                    recommendations={episodeRecommendations}
-                    warnings={selectionWarnings}
-                  />
-                ) : (
-                  <View style={styles.outlineList}>{(analysisResult.episodeOutlines || []).map((ep, idx) => (
-                    <View key={idx} style={styles.outlineItem}><View style={styles.outlineNumber}><Text style={styles.outlineNumberText}>{ep.episodeNumber}</Text></View><View style={styles.outlineInfo}><Text style={styles.outlineTitle}>{(ep.title || 'Untitled').toUpperCase()}</Text><Text style={styles.outlineSynopsis} numberOfLines={2}>{ep.synopsis}</Text></View></View>
-                  ))}</View>
                 )}
                 {activeEndings.length > 0 && (
                   <View style={styles.analysisCard}>
@@ -4558,6 +4562,287 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         testID="generator-cancel-dialog"
       />
 
+      <Modal
+        visible={showArtStyleSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowArtStyleSheet(false)}
+      >
+        <View style={styles.jobsSheetOverlay}>
+          <Pressable
+            style={styles.jobsSheetBackdrop}
+            onPress={() => setShowArtStyleSheet(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close art style picker"
+          />
+          <View style={styles.jobsSheet}>
+            <View style={styles.jobsSheetHandle} />
+            <View style={styles.jobsSheetHeader}>
+              <View style={styles.jobsSheetTitleRow}>
+                <ImageIcon size={16} color={TERMINAL.colors.primary} />
+                <Text style={styles.jobsSheetTitle}>ART STYLE</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.jobsSheetClose}
+                onPress={() => setShowArtStyleSheet(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close art style picker"
+              >
+                <Text style={styles.jobsSheetCloseText}>CLOSE</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              style={styles.jobsSheetBody}
+              contentContainerStyle={styles.artStyleSheetContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.styleSheetActions}>
+                <TouchableOpacity style={styles.secondaryInlineButton} onPress={openNewArtStyleEditor}>
+                  <Text style={styles.secondaryInlineButtonText}>CREATE NEW STYLE</Text>
+                </TouchableOpacity>
+                {artStyle.trim().length > 0 && (
+                  <TouchableOpacity style={styles.secondaryInlineButton} onPress={openEditCurrentArtStyleEditor}>
+                    <Text style={styles.secondaryInlineButtonText}>EDIT CURRENT STYLE</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {presetStyleOptions.length > 0 ? (
+                <>
+                  <Text style={styles.styleSheetSectionTitle}>CURATED PRESETS</Text>
+                  <View style={styles.stylePresetGrid}>
+                    {presetStyleOptions.map((preset) => (
+                      <TouchableOpacity
+                        key={preset.id}
+                        style={[styles.stylePresetTile, selectedPresetId === preset.id && styles.stylePresetTileActive]}
+                        onPress={() => {
+                          applyPresetArtStyle(preset.id);
+                          setShowArtStyleSheet(false);
+                        }}
+                      >
+                        <Text style={[styles.stylePresetName, selectedPresetId === preset.id && styles.stylePresetNameActive]} numberOfLines={1}>
+                          {preset.displayName}
+                        </Text>
+                        <Text style={styles.stylePresetDescription} numberOfLines={2}>
+                          {preset.description}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              ) : null}
+
+              <Text style={styles.styleSheetSectionTitle}>SAVED STYLES</Text>
+              {savedArtStyles.length > 0 ? (
+                <View style={styles.styleList}>
+                  {savedArtStyles.map((style) => (
+                    <View key={style.id} style={styles.styleListRow}>
+                      <TouchableOpacity
+                        style={styles.styleListSelect}
+                        onPress={() => {
+                          applyArtStyle(style.style);
+                          setShowArtStyleSheet(false);
+                        }}
+                      >
+                        <Text style={styles.styleListName} numberOfLines={1}>{style.name}</Text>
+                        <Text style={styles.styleListText} numberOfLines={2}>{style.style}</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.styleListIconButton} onPress={() => openEditArtStyleEditor(style)}>
+                        <Text style={styles.styleListIconButtonText}>EDIT</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.styleListIconButton} onPress={() => removeSavedArtStyle(style.id)}>
+                        <Trash2 size={13} color={TERMINAL.colors.muted} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.referenceModeHint}>No saved custom styles yet.</Text>
+              )}
+
+              {recentArtStyles.length > 0 && (
+                <>
+                  <Text style={styles.styleSheetSectionTitle}>RECENT</Text>
+                  <View style={styles.styleChipRow}>
+                    {recentArtStyles.map((style) => (
+                      <TouchableOpacity
+                        key={style}
+                        style={styles.styleChip}
+                        onPress={() => {
+                          applyArtStyle(style);
+                          setShowArtStyleSheet(false);
+                        }}
+                      >
+                        <Text style={styles.styleChipText} numberOfLines={1}>{style}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={artStyleEditorVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setArtStyleEditorVisible(false)}
+      >
+        <View style={styles.centerModalOverlay}>
+          <Pressable
+            style={styles.centerModalBackdrop}
+            onPress={() => setArtStyleEditorVisible(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close art style editor"
+          />
+          <View style={styles.centerModalCard}>
+            <Text style={styles.centerModalTitle}>
+              {editingArtStyleOriginal ? 'EDIT ART STYLE' : 'CREATE ART STYLE'}
+            </Text>
+            <Text style={styles.centerModalHint}>
+              Describe the exact visual look. This text becomes the style directive used by the image pipeline.
+            </Text>
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={styles.input}
+                value={editingArtStyleName}
+                onChangeText={setEditingArtStyleName}
+                placeholder="Style name, e.g. Gothic Wash"
+                placeholderTextColor={TERMINAL.colors.muted}
+              />
+            </View>
+            <View style={[styles.inputWrapper, styles.artStyleEditorInputWrap]}>
+              <TextInput
+                style={[styles.input, styles.artStyleEditorInput]}
+                value={editingArtStyleDraft}
+                onChangeText={setEditingArtStyleDraft}
+                placeholder="e.g. gothic ink wash with muted crimson accents and heavy silhouette design"
+                placeholderTextColor={TERMINAL.colors.muted}
+                multiline
+                numberOfLines={4}
+                textAlignVertical="top"
+              />
+            </View>
+            <View style={styles.centerModalActions}>
+              <TouchableOpacity style={styles.centerModalSecondary} onPress={() => setArtStyleEditorVisible(false)}>
+                <Text style={styles.centerModalSecondaryText}>CANCEL</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.centerModalPrimary} onPress={saveEditedArtStyle}>
+                <Text style={styles.centerModalPrimaryText}>SAVE STYLE</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showCredentialsSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowCredentialsSheet(false)}
+      >
+        <View style={styles.jobsSheetOverlay}>
+          <Pressable
+            style={styles.jobsSheetBackdrop}
+            onPress={() => setShowCredentialsSheet(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close credentials sheet"
+          />
+          <View style={styles.jobsSheet}>
+            <View style={styles.jobsSheetHandle} />
+            <View style={styles.jobsSheetHeader}>
+              <View style={styles.jobsSheetTitleRow}>
+                <Settings size={16} color={TERMINAL.colors.primary} />
+                <Text style={styles.jobsSheetTitle}>CREDENTIALS</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.jobsSheetClose}
+                onPress={() => setShowCredentialsSheet(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close credentials"
+              >
+                <Text style={styles.jobsSheetCloseText}>CLOSE</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              style={styles.jobsSheetBody}
+              contentContainerStyle={styles.credentialsSheetContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.configHint}>
+                Keys are stored locally and reused across generator jobs. Provider panels only show readiness badges.
+              </Text>
+
+              <View style={styles.configItem}>
+                <Text style={styles.configLabel}>ANTHROPIC API KEY {apiKey ? '✓' : '*'}</Text>
+                <View style={styles.inputWrapper}><TextInput style={styles.input} value={apiKey} onChangeText={handleApiKeyChange} placeholder="sk-ant-..." placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
+              </View>
+
+              <View style={styles.configItem}>
+                <Text style={styles.configLabel}>OPENAI API KEY {openaiApiKey ? '✓' : '*'}</Text>
+                <View style={styles.inputWrapper}><TextInput style={styles.input} value={openaiApiKey} onChangeText={handleOpenaiApiKeyChange} placeholder="sk-proj-... used for OpenAI text and images" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
+              </View>
+
+              <View style={styles.configItem}>
+                <Text style={styles.configLabel}>GEMINI API KEY {geminiApiKey ? '✓' : '*'}</Text>
+                <View style={styles.inputWrapper}><TextInput style={styles.input} value={geminiApiKey} onChangeText={handleGeminiApiKeyChange} placeholder="AIzaSy... used for Gemini text, images, and video" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
+              </View>
+
+              <View style={styles.configItem}>
+                <Text style={styles.configLabel}>ATLAS CLOUD API KEY {atlasCloudApiKey ? '✓' : 'OPTIONAL'}</Text>
+                <View style={styles.inputWrapper}><TextInput style={styles.input} value={atlasCloudApiKey} onChangeText={handleAtlasCloudApiKeyChange} placeholder="Used only when Atlas Cloud renders images" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
+              </View>
+
+              <View style={styles.configItem}>
+                <Text style={styles.configLabel}>MIDAPI TOKEN {midapiToken ? '✓' : 'OPTIONAL'}</Text>
+                <View style={styles.inputWrapper}><TextInput style={styles.input} value={midapiToken} onChangeText={handleMidapiTokenChange} placeholder="Used only when MidAPI renders images" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
+              </View>
+
+              <View style={styles.configItem}>
+                <Text style={styles.configLabel}>ELEVENLABS API KEY {elevenLabsApiKey ? '✓' : 'OPTIONAL'}</Text>
+                <View style={styles.inputWrapper}><TextInput style={styles.input} value={elevenLabsApiKey} onChangeText={handleElevenLabsApiKeyChange} placeholder="Used when narration is enabled" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
+              </View>
+
+              {STABLE_DIFFUSION_UI_ENABLED && (
+                <>
+                  <View style={styles.configItem}>
+                    <Text style={styles.configLabel}>STABLE DIFFUSION API KEY {stableDiffusionSettings.apiKey ? '✓' : 'OPTIONAL'}</Text>
+                    <View style={styles.inputWrapper}>
+                      <TextInput
+                        style={styles.input}
+                        value={stableDiffusionSettings.apiKey || ''}
+                        onChangeText={(v) => handleStableDiffusionSettingsChange({ apiKey: v })}
+                        placeholder="Bearer token for secured Stable Diffusion backends"
+                        placeholderTextColor={TERMINAL.colors.muted}
+                        secureTextEntry
+                        autoCapitalize="none"
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.configItem}>
+                    <Text style={styles.configLabel}>LORA TRAINER API KEY {loraTrainingSettings.apiKey ? '✓' : 'OPTIONAL'}</Text>
+                    <View style={styles.inputWrapper}>
+                      <TextInput
+                        style={styles.input}
+                        value={loraTrainingSettings.apiKey || ''}
+                        onChangeText={(v) => handleLoraTrainingSettingsChange({ apiKey: v })}
+                        placeholder="Bearer token for the trainer sidecar"
+                        placeholderTextColor={TERMINAL.colors.muted}
+                        secureTextEntry
+                        autoCapitalize="none"
+                      />
+                    </View>
+                  </View>
+                </>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       <AdvancedSettingsSheet
         visible={showAdvancedSettings}
         settings={generationSettings}
@@ -4727,6 +5012,11 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingBottom: 32,
   },
+  credentialsSheetContent: {
+    padding: 16,
+    gap: 16,
+    paddingBottom: 40,
+  },
   jobsSheetEmpty: {
     textAlign: 'center',
     color: TERMINAL.colors.muted,
@@ -4775,6 +5065,13 @@ const styles = StyleSheet.create({
   configItem: { gap: 8 },
   configLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.amber, letterSpacing: 1, marginLeft: 4 },
   configHint: { fontSize: 9, color: TERMINAL.colors.muted, marginLeft: 4, marginTop: 4, fontWeight: '600' },
+  credentialsButton: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', padding: 14 },
+  credentialsButtonTextBlock: { flex: 1, gap: 2 },
+  credentialsButtonAction: { color: TERMINAL.colors.primary, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  styleDropdownButton: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 16, paddingVertical: 10 },
+  styleDropdownTextBlock: { flex: 1, gap: 4 },
+  styleDropdownValue: { color: 'white', fontSize: 13, fontWeight: '900', letterSpacing: 0.3 },
+  styleDropdownHint: { color: TERMINAL.colors.muted, fontSize: 9, fontWeight: '700' },
   inlineDisclosure: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
   advancedSettingsHint: {
     marginLeft: 'auto',
@@ -4820,6 +5117,43 @@ const styles = StyleSheet.create({
   segment: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: 10 },
   segmentActive: { backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   segmentText: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 }, segmentTextActive: { color: 'white' },
+  stylePresetGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  stylePresetTile: { width: '31.8%', minHeight: 78, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', backgroundColor: 'rgba(255,255,255,0.03)', padding: 10, gap: 5 },
+  stylePresetTileActive: { borderColor: TERMINAL.colors.primary, backgroundColor: 'rgba(59,130,246,0.12)' },
+  stylePresetName: { color: 'white', fontSize: 10, fontWeight: '900', letterSpacing: 0.4 },
+  stylePresetNameActive: { color: TERMINAL.colors.primary },
+  stylePresetDescription: { color: TERMINAL.colors.muted, fontSize: 8, lineHeight: 12, fontWeight: '600' },
+  artStyleSheetContent: { padding: 16, gap: 14, paddingBottom: 40 },
+  styleSheetActions: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  styleSheetSectionTitle: { color: TERMINAL.colors.amber, fontSize: 10, fontWeight: '900', letterSpacing: 1, marginLeft: 4, marginTop: 4 },
+  styleList: { gap: 8 },
+  styleListRow: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', padding: 8 },
+  styleListSelect: { flex: 1, paddingVertical: 4, paddingHorizontal: 4 },
+  styleListName: { color: 'white', fontSize: 11, fontWeight: '900', letterSpacing: 0.4, marginBottom: 3 },
+  styleListText: { color: TERMINAL.colors.muted, fontSize: 9, lineHeight: 14, fontWeight: '700' },
+  styleListIconButton: { minWidth: 42, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)' },
+  styleListIconButtonText: { color: TERMINAL.colors.primary, fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+  centerModalOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20, backgroundColor: 'rgba(0,0,0,0.62)' },
+  centerModalBackdrop: { ...StyleSheet.absoluteFillObject },
+  centerModalCard: { width: '100%', maxWidth: 560, borderRadius: 20, backgroundColor: TERMINAL.colors.bg, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', padding: 18, gap: 12 },
+  centerModalTitle: { color: 'white', fontSize: 13, fontWeight: '900', letterSpacing: 1.2 },
+  centerModalHint: { color: TERMINAL.colors.muted, fontSize: 10, lineHeight: 16, fontWeight: '600' },
+  centerModalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 4 },
+  centerModalSecondary: { paddingVertical: 11, paddingHorizontal: 14, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.05)' },
+  centerModalPrimary: { paddingVertical: 11, paddingHorizontal: 14, borderRadius: 10, backgroundColor: TERMINAL.colors.primary },
+  centerModalSecondaryText: { color: TERMINAL.colors.muted, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  centerModalPrimaryText: { color: 'white', fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  artStyleEditorInputWrap: { paddingVertical: 10 },
+  artStyleEditorInput: { height: 110, textAlignVertical: 'top' },
+  styleChipSection: { gap: 8 },
+  styleChipSectionLabel: { color: TERMINAL.colors.muted, fontSize: 8, fontWeight: '900', letterSpacing: 1, marginLeft: 4 },
+  styleChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  styleChip: { maxWidth: '100%', flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 7, paddingHorizontal: 10, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  styleChipText: { color: 'white', fontSize: 9, fontWeight: '800', maxWidth: 260 },
+  styleChipRemove: { padding: 2 },
+  styleActionRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  secondaryInlineButton: { paddingVertical: 9, paddingHorizontal: 12, borderRadius: 10, backgroundColor: 'rgba(59,130,246,0.08)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)' },
+  secondaryInlineButtonText: { color: TERMINAL.colors.primary, fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
   modelPickerContainer: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 14, padding: 4, gap: 2 },
   modelPickerOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 14, borderRadius: 10 },
   modelPickerOptionActive: { backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },

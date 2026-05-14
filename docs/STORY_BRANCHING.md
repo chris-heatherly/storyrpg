@@ -167,6 +167,11 @@ The tone is tracked on the `Scene.branchType` field and recorded in the player's
 
 7. **Branching and Dilemma choices MUST affect at least 1 of the Five Factors** (Outcome, Process, Information, Relationship, Identity). Richer choices affect 2–3.
 
+8. **Meaningful choices should declare their intended impact.** New generated
+   choices can provide `choiceIntent`, `impactFactors`, `consequenceTier`, and
+   `stakes` metadata so validators and repair prompts can preserve the intended
+   agency model.
+
 ### Choice Type Distribution
 
 Choice types follow target percentages across an episode (from `CORE_STORYTELLING_PROMPT` in `storytellingPrinciples.ts` and `GenerationSettingsConfig`):

@@ -1,6 +1,6 @@
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from '../BaseAgent';
-import { ImagePrompt } from '../ImageGenerator';
+import { ImagePrompt } from '../../images/imageTypes';
 import { 
   VISUAL_STORYTELLING_PROMPT,
   POSE_PRINCIPLES_COMPACT,

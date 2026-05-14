@@ -242,7 +242,7 @@ export function buildPipelineConfig(
       geminiApiKey: input.geminiApiKey.trim(),
       openaiApiKey: (input.openaiApiKey || input.apiKey || '').trim() || undefined,
       openaiImageModel: input.openaiSettings?.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel,
-      openaiModeration: input.openaiSettings?.imageModeration || DEFAULT_OPENAI_SETTINGS.imageModeration,
+      openaiModeration: 'low',
       provider: normalizedImageProvider,
       pipelineMode: 'storyboard-v2',
       storyboardV2: {

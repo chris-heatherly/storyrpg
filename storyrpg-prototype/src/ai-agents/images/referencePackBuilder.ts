@@ -475,6 +475,44 @@ export function filterRefsForProvider(
   }
 }
 
+export interface BranchSafeContinuityOptions {
+  /**
+   * Branch/path id for the slot currently being rendered. Undefined means the
+   * shared/root path; refs from explicit sibling branch paths are removed.
+   */
+  currentBranchPath?: string;
+}
+
+/**
+ * Storyboard sheets are the continuity authority. Previous-panel references
+ * are only same-path helpers, so any ref tagged with a sibling branch path is
+ * dropped before provider filtering.
+ */
+export function filterBranchSafeContinuityRefs(
+  refs: ReferenceImage[] | undefined,
+  options: BranchSafeContinuityOptions = {},
+): ReferenceImage[] {
+  if (!refs || refs.length === 0) return [];
+  const current = options.currentBranchPath || '';
+  return refs.filter((ref) => {
+    if (!isPreviousPanelContinuityRef(ref)) return true;
+    const refBranch = getReferenceBranchPath(ref);
+    return refBranch === current;
+  });
+}
+
+function isPreviousPanelContinuityRef(ref: ReferenceImage): boolean {
+  return /previous|continuity|last[-_ ]?panel|last[-_ ]?scene/i.test(ref.role);
+}
+
+function getReferenceBranchPath(ref: ReferenceImage): string {
+  const raw = ref as ReferenceImage & {
+    branchPath?: string;
+    metadata?: { branchPath?: string; branchLabel?: string };
+  };
+  return raw.branchPath || raw.metadata?.branchPath || raw.metadata?.branchLabel || '';
+}
+
 function isFrontIdentityOrNonCharacterRef(ref: ReferenceImage): boolean {
   if (ref.role === 'user-provided-character-reference') return true;
   if (ref.role === 'character-reference-face') return true;

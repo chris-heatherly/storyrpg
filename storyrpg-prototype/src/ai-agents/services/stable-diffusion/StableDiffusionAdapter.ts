@@ -11,7 +11,7 @@
  *    treat SD-generated images the same as Gemini / Atlas / Midjourney ones.
  */
 
-import type { ImagePrompt, GeneratedImage } from '../../agents/ImageGenerator';
+import type { ImagePrompt, GeneratedImage } from '../../images/imageTypes';
 import type { StableDiffusionSettings } from '../../config';
 import type {
   ImageType,

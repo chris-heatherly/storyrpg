@@ -22,7 +22,7 @@ import type {
   LoraTrainingKind,
 } from '../services/lora-training/LoraTrainerAdapter';
 import type { ArtStyleProfile } from './artStyleProfile';
-import type { GeneratedImage } from '../agents/ImageGenerator';
+import type { GeneratedImage } from '../images/imageTypes';
 import type { PreapprovedAnchor } from '../config';
 import type { CharacterFashionStyle } from '../../types/sourceAnalysis';
 

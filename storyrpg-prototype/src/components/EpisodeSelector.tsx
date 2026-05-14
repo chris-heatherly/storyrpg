@@ -376,7 +376,7 @@ const EpisodeRow: React.FC<EpisodeRowProps> = ({
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
+    width: '100%',
   },
   seasonHeader: {
     marginBottom: 16,
@@ -471,7 +471,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   episodeList: {
-    flex: 1,
+    maxHeight: 520,
     marginBottom: 12,
   },
   arcSection: {

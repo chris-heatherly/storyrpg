@@ -16,6 +16,11 @@ It is based on the active code paths in:
 
 This covers the stages that actually send prompts to LLMs for story analysis, planning, generation, and LLM-backed validation.
 
+Story and visual quality rules that are shared across prompts are summarized in
+`docs/STORY_QUALITY_CONTRACT.md`. Prompt call sites should import compact
+fragments from `src/ai-agents/prompts/storyQualityContract.ts` instead of
+copying the full rule stack into every agent prompt.
+
 It does not directly document:
 
 - image-generation prompts (see `docs/IMAGE_PIPELINE_RUNTIME.md`)

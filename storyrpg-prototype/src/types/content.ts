@@ -175,6 +175,7 @@ export interface Beat {
   text: string;
 
   textVariants?: TextVariant[];
+  callbackHookIds?: string[];
 
   conditions?: ConditionExpression;
 

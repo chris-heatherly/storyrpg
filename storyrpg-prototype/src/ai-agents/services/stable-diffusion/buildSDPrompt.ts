@@ -7,7 +7,7 @@
  * HTTP mocking.
  */
 
-import type { ImagePrompt, ImagePromptLora } from '../../agents/ImageGenerator';
+import type { ImagePrompt, ImagePromptLora } from '../../images/imageTypes';
 import type { StableDiffusionSettings } from '../../config';
 
 export interface BuiltSDPrompt {

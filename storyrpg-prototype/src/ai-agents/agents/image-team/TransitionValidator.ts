@@ -15,7 +15,7 @@
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse, AgentMessage } from '../BaseAgent';
 import { TransitionType, TransitionSpecification, VisualPlan } from './StoryboardAgent';
-import { ImagePrompt } from '../ImageGenerator';
+import { ImagePrompt } from '../../images/imageTypes';
 import { TRANSITION_CONTINUITY_RULES, TRANSITION_TYPES } from '../../prompts';
 
 // Transition validation result for a single pair

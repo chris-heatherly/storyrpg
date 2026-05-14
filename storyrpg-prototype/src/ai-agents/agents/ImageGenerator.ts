@@ -18,226 +18,32 @@ import { SceneContent } from './SceneWriter';
 import { WorldBible } from './WorldBuilder';
 import { CharacterBible } from './CharacterDesigner';
 import { EpisodeBlueprint } from './StoryArchitect';
-import type { SceneSettingContext } from '../utils/styleAdaptation';
+import type {
+  BeatImageRequest,
+  CharacterMasterRequest,
+  CoverImageRequest,
+  EncounterSequenceRequest,
+  ImageGenerationResult,
+  ImagePrompt,
+  LocationMasterRequest,
+  SceneImageRequest,
+} from '../images/imageTypes';
 
-/** Reference image purposes recognized by the Stable Diffusion adapter. */
-export type SDReferencePurpose =
-  | 'ip-adapter'
-  | 'controlnet-depth'
-  | 'controlnet-canny'
-  | 'reference-only'
-  | 'img2img-init'
-  | 'inpaint-mask';
-
-/** A single LoRA applied to an SD prompt. */
-export interface ImagePromptLora {
-  name: string;
-  weight: number;
-}
-
-/** A ControlNet unit configured on an SD prompt. */
-export interface ImagePromptControlNet {
-  module: string;
-  model: string;
-  /** Reference role/purpose used to find the source image in the ref pack. */
-  imageRole: string;
-  weight?: number;
-  controlMode?: string;
-}
-
-/** IP-Adapter configuration for character identity anchoring. */
-export interface ImagePromptIpAdapter {
-  model: string;
-  imageRole: string;
-  weight?: number;
-}
-
-// Image generation request types
-export interface SceneImageRequest {
-  sceneId: string;
-  sceneName: string;
-  description: string;
-  location?: {
-    id: string;
-    name: string;
-    description: string;
-  };
-  mood: string;
-  genre: string;
-  tone: string;
-}
-
-export interface BeatImageRequest {
-  beatId: string;
-  beatText: string;
-  sceneContext: {
-    name: string;
-    location?: string;
-    mood: string;
-  };
-  characters?: Array<{
-    name: string;
-    description: string;
-  }>;
-  genre: string;
-  tone: string;
-}
-
-export interface CoverImageRequest {
-  title: string;
-  synopsis: string;
-  genre: string;
-  tone: string;
-  keyElements?: string[];
-}
-
-export interface EncounterSequenceRequest {
-  encounterId: string;
-  beatId: string;
-  outcome: 'situation' | 'full_success' | 'complicated_success' | 'interesting_failure';
-  sceneContext: {
-    name: string;
-    description: string;
-    location?: string;
-    mood: string;
-  };
-  shotDescription: string; // The visualShotDescription from BeatWriter
-  characters: Array<{
-    name: string;
-    description: string;
-    role: string;
-  }>;
-  genre: string;
-  tone: string;
-}
-
-export interface CharacterMasterRequest {
-  characterId: string;
-  name: string;
-  description: string; // From CharacterBible
-  role: string;
-  genre: string;
-  tone: string;
-}
-
-export interface LocationMasterRequest {
-  locationId: string;
-  name: string;
-  description: string; // From WorldBible
-  type: string;
-  genre: string;
-  tone: string;
-}
-
-// Image prompt output
-export interface ImagePrompt {
-  id?: string;  // Optional identifier for the prompt
-  prompt: string;
-  negativePrompt?: string;
-  style?: string;
-  aspectRatio?: string;
-  composition?: string;
-  cameraAngle?: string;
-  // Metadata for reference-based generation
-  referenceCharIds?: string[];
-  referenceLocationId?: string;
-
-  // Deterministic prompt contract fields. These are additive metadata for
-  // providers, diagnostics, and tests: style describes how to render; identity
-  // and appearance state describe what to render.
-  styleContract?: {
-    source: 'user-visual' | 'approved-anchor' | 'raw-season-style' | 'default';
-    text: string;
-  };
-  characterIdentity?: string[];
-  appearanceState?: string;
-  sceneAction?: string;
-  compositionContract?: string;
-  negativeContract?: string;
-  promptContract?: {
-    sanitizedTerms?: string[];
-    deterministicRules?: string[];
-    referencePrecedence?: string;
-    stylePrecedence?: string;
-  };
-  
-  // Micro-direction fields — specific visual details that survive the "telephone game"
-  // from StoryboardAgent -> VisualIllustratorAgent -> imageGenerationService.
-  // These get injected directly into the Gemini prompt by buildNarrativePrompt.
-  keyExpression?: string;    // e.g. "furrowed brow, clenched jaw, narrowed eyes"
-  keyGesture?: string;       // e.g. "fist clenched around crumpled letter, other hand bracing against wall"
-  keyBodyLanguage?: string;  // e.g. "weight forward on front foot, shoulders squared, leaning into confrontation"
-  shotDescription?: string;  // e.g. "low angle medium shot, three-quarter view"
-  emotionalCore?: string;    // e.g. "betrayal — the moment he realizes she lied"
-  visualNarrative?: string;  // The core visual story: "A woman recoils from a man whose hands are stained red." (Replaces silentStoryTest)
-  visibleTurn?: string;      // The concrete change a viewer can read without captions
-  visualSubtextCue?: string; // Prop, gesture, distance, posture, or reaction that reveals subtext
-  statusShift?: string;      // How leverage changes across the beat
-  settingAdaptationNotes?: string[];
-  settingBranchLabel?: string;
-  settingContext?: SceneSettingContext;
-  isEncounterImage?: boolean;
-  poseSpec?: string;
-  beatType?: string;
-
-  // Stable Diffusion knobs — optional. Non-SD providers ignore these fields.
-  /** Deterministic seed; -1 or undefined = random. */
-  seed?: number;
-  /** LoRAs to inject as `<lora:name:weight>` tags for SD. */
-  loras?: ImagePromptLora[];
-  /** ControlNet units (depth/canny/reference-only) for SD. */
-  controlNet?: ImagePromptControlNet[];
-  /** IP-Adapter (identity anchor) for SD. */
-  ipAdapter?: ImagePromptIpAdapter;
-  /** img2img denoising strength (0..1) when an init image is present. */
-  denoisingStrength?: number;
-  sampler?: string;
-  steps?: number;
-  cfgScale?: number;
-  width?: number;
-  height?: number;
-}
-
-// Generated image result
-export interface GeneratedImage {
-  prompt: ImagePrompt;
-  imagePath?: string; // Path where image is saved
-  imageUrl?: string; // URL if hosted
-  imageData?: string; // Raw base64 data (used during pipeline)
-  mimeType?: string;  // Mime type of the image
-  provider?: string;
-  model?: string;
-  metadata?: {
-    width?: number;
-    height?: number;
-    format?: string;
-    provider?: string;
-    model?: string;
-    attempts?: number;
-    providerAttemptCount?: number;
-    effectivePromptChars?: number;
-    effectiveNegativeChars?: number;
-    effectiveRefCount?: number;
-    providerFailureKind?: string;
-    candidateCount?: number;
-    hasCandidates?: boolean;
-    finishReason?: string;
-    blockReason?: string;
-    responseExcerpt?: string;
-    chatMode?: boolean;
-    chatTurns?: number;
-    editMode?: boolean;
-  };
-}
-
-// Batch image generation result
-export interface ImageGenerationResult {
-  sceneImages: Map<string, GeneratedImage>; // sceneId -> image
-  beatImages: Map<string, GeneratedImage>; // beatId -> image
-  episodeCover?: GeneratedImage;
-  storyCover?: GeneratedImage;
-  errors?: Array<{ target: string; error: string }>;
-}
+export type {
+  BeatImageRequest,
+  CharacterMasterRequest,
+  CoverImageRequest,
+  EncounterSequenceRequest,
+  GeneratedImage,
+  ImageGenerationResult,
+  ImagePrompt,
+  ImagePromptControlNet,
+  ImagePromptIpAdapter,
+  ImagePromptLora,
+  LocationMasterRequest,
+  SceneImageRequest,
+  SDReferencePurpose,
+} from '../images/imageTypes';
 
 export class ImageGenerator extends BaseAgent {
   private artStyle?: string;

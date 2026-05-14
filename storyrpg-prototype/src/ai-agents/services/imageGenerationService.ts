@@ -6,9 +6,9 @@
  */
 
 import * as ExpoFileSystem from 'expo-file-system';
-import { ImagePrompt, GeneratedImage } from '../agents/ImageGenerator';
+import { ImagePrompt, GeneratedImage } from '../images/imageTypes';
 import { GeminiSettings, DEFAULT_GEMINI_SETTINGS, MidjourneySettings, DEFAULT_MIDJOURNEY_SETTINGS, ImageProvider, StableDiffusionSettings, StyleReferenceStrength } from '../config';
-import type { SDReferencePurpose } from '../agents/ImageGenerator';
+import type { SDReferencePurpose } from '../images/imageTypes';
 import { budgetCanonicalPrompt } from '../images/promptComposer';
 import { ProviderPolicy } from '../images/providerPolicy';
 import type { ImageSlotFamily } from '../images/slotTypes';
@@ -386,7 +386,7 @@ export class ImageGenerationService {
       geminiApiKey: normalizedGeminiKey,
       openaiApiKey: normalizedOpenAiKey,
       openaiImageModel: (config.openaiImageModel || env?.EXPO_PUBLIC_OPENAI_IMAGE_MODEL || env?.OPENAI_IMAGE_MODEL || 'gpt-image-2').trim(),
-      openaiModeration: (config.openaiModeration || env?.EXPO_PUBLIC_OPENAI_IMAGE_MODERATION || env?.OPENAI_IMAGE_MODERATION || 'auto').trim(),
+      openaiModeration: 'low',
       provider: this.normalizeProvider(config.provider),
       useapiToken: config.useapiToken || config.midapiToken,
       requireCharacterRefsForVisibleCharacters: config.requireCharacterRefsForVisibleCharacters !== false,
@@ -5266,7 +5266,7 @@ export class ImageGenerationService {
 
         if (caps.isGptImage) {
           body.quality = this.resolveAtlasOpenAiQuality(imageType);
-          body.moderation = 'auto';
+          body.moderation = 'low';
           // For gpt-image-2, OpenAI processes image inputs at high fidelity by
           // default and does not accept `input_fidelity`; intentionally omitted.
         }
@@ -6015,7 +6015,7 @@ export class ImageGenerationService {
       size: this.mapAspectRatioForOpenAiImage(prompt.aspectRatio, model),
       quality: this.resolveOpenAiImageQuality(imageType),
       output_format: 'png',
-      moderation: this.config.openaiModeration || 'auto',
+      moderation: 'low',
     };
     if (useEdit) {
       // OpenAI's JSON variant of /v1/images/edits requires the plural `images`

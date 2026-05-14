@@ -12,6 +12,7 @@ import {
   GenerationJob,
   JobStatus,
   PipelineEventData,
+  getGenerationJobProjectId,
   normalizeGenerationJob,
 } from '../types/generationJob';
 import { PROXY_CONFIG } from '../config/endpoints';
@@ -34,6 +35,7 @@ interface GenerationJobStore {
   addJobEvent: (jobId: string, event: PipelineEventData) => void;
   cancelJob: (jobId: string) => Promise<boolean>;
   removeJob: (jobId: string) => Promise<void>;
+  removeProject: (projectId: string, projectJobIds?: string[]) => Promise<void>;
   clearCompletedJobs: () => Promise<void>;
   isJobCancelled: (jobId: string) => boolean;
   setActiveJobId: (jobId: string | null) => void;
@@ -306,6 +308,45 @@ export const useGenerationJobStore = create<GenerationJobStore>((set, get) => ({
       } catch (e) {
         console.warn('[GenerationJobStore] Failed to remove job from server');
       }
+    }
+  },
+
+  removeProject: async (projectId, projectJobIds = []) => {
+    const explicitIds = new Set([projectId, ...projectJobIds].filter(Boolean));
+
+    let updatedJobs: GenerationJob[] = [];
+    let removedJobIds: string[] = [];
+    set(state => {
+      removedJobIds = state.jobs
+        .filter(job => explicitIds.has(job.id) || getGenerationJobProjectId(job, state.jobs) === projectId)
+        .map(job => job.id);
+      updatedJobs = state.jobs.filter(job => !removedJobIds.includes(job.id));
+      return { jobs: updatedJobs };
+    });
+
+    await persistJobs(updatedJobs);
+
+    if (Platform.OS === 'web') {
+      try {
+        const response = await fetch(`${getProxyHost()}/generation-projects/${encodeURIComponent(projectId)}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobIds: Array.from(new Set([...explicitIds, ...removedJobIds])) }),
+        });
+        if (response.ok) return;
+      } catch (e) {
+        console.warn('[GenerationJobStore] Failed to remove generation project from server');
+      }
+
+      await Promise.all(Array.from(new Set([...explicitIds, ...removedJobIds])).map(async (jobId) => {
+        try {
+          await fetch(`${getProxyHost()}/generation-jobs/${jobId}`, {
+            method: 'DELETE',
+          });
+        } catch (e) {
+          console.warn(`[GenerationJobStore] Failed to remove project job ${jobId} from server`);
+        }
+      }));
     }
   },
 

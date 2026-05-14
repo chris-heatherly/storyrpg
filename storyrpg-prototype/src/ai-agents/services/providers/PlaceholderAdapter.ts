@@ -3,7 +3,7 @@
  * generating a real image. Covers both the explicit `placeholder` slug and
  * any unknown provider (so the service never crashes on misconfiguration).
  */
-import type { GeneratedImage } from '../../agents/ImageGenerator';
+import type { GeneratedImage } from '../../images/imageTypes';
 import type {
   ImageProviderAdapter,
   ProviderGenerateRequest,

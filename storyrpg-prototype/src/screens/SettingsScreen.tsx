@@ -129,7 +129,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   }), [artifactOverrides, stories]);
 
   // Generation job tracking
-  const { jobs, isLoaded: jobsLoaded, loadJobs, cancelJob, removeJob, clearCompletedJobs } = useGenerationJobStore();
+  const { jobs, isLoaded: jobsLoaded, loadJobs, cancelJob, removeProject, clearCompletedJobs } = useGenerationJobStore();
 
   // Load jobs on mount and poll for updates
   useEffect(() => {
@@ -166,11 +166,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     setConfirmCancelJob(job);
   };
 
-  const removeGenerationProject = async (jobId: string, projectJobIds?: string[]) => {
-    const ids = projectJobIds && projectJobIds.length > 0 ? projectJobIds : [jobId];
-    for (const id of ids) {
-      await removeJob(id);
-    }
+  const removeGenerationProject = async (jobId: string, projectId?: string, projectJobIds?: string[]) => {
+    await removeProject(projectId || jobId, projectJobIds && projectJobIds.length > 0 ? projectJobIds : [jobId]);
   };
 
   const confirmJobCancel = async () => {

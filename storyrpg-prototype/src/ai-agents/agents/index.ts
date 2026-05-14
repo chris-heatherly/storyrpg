@@ -96,14 +96,16 @@ export {
 // Image Generation Agent Team
 export {
   ImageGenerator,
-  type SceneImageRequest,
-  type BeatImageRequest,
-  type CoverImageRequest,
-  type ImagePrompt,
-  type GeneratedImage,
-  type ImageGenerationResult,
-  type EncounterSequenceRequest,
 } from './ImageGenerator';
+export type {
+  BeatImageRequest,
+  CoverImageRequest,
+  EncounterSequenceRequest,
+  GeneratedImage,
+  ImageGenerationResult,
+  ImagePrompt,
+  SceneImageRequest,
+} from '../images/imageTypes';
 
 export { ImageAgentTeam } from './image-team/ImageAgentTeam';
 export { StoryboardAgent, type VisualPlan, type StoryboardRequest } from './image-team/StoryboardAgent';

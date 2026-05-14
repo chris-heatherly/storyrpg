@@ -308,7 +308,7 @@ export const DEFAULT_OPENAI_SETTINGS: Required<OpenAISettings> = {
   // Users can explicitly select an older GPT Image model when org
   // verification or quota constraints require it.
   imageModel: 'gpt-image-2',
-  imageModeration: 'auto',
+  imageModeration: 'low',
 };
 
 // Midjourney-specific tuning parameters
@@ -853,8 +853,7 @@ export function loadConfig(): PipelineConfig {
       (env.EXPO_PUBLIC_OPENAI_FORCE_JSON_RESPONSE || env.OPENAI_FORCE_JSON_RESPONSE || 'true') !== 'false',
     imageModel:
       (env.EXPO_PUBLIC_OPENAI_IMAGE_MODEL || env.OPENAI_IMAGE_MODEL || DEFAULT_OPENAI_SETTINGS.imageModel) as Required<OpenAISettings>['imageModel'],
-    imageModeration:
-      (env.EXPO_PUBLIC_OPENAI_IMAGE_MODERATION || env.OPENAI_IMAGE_MODERATION || DEFAULT_OPENAI_SETTINGS.imageModeration) as Required<OpenAISettings>['imageModeration'],
+    imageModeration: 'low',
   };
   const resolveProviderApiKey = (provider: AgentConfig['provider']): string => {
     if (provider === 'gemini') {

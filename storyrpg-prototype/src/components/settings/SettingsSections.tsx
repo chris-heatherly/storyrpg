@@ -392,7 +392,7 @@ interface GenerationJobsSectionProps {
   recentJobs: GenerationJob[];
   onOpenGenerator: (jobId?: string) => void;
   onCancelJob: (job: GenerationJob) => void;
-  onRemoveJob: (jobId: string, projectJobIds?: string[]) => void;
+  onRemoveJob: (jobId: string, projectId?: string, projectJobIds?: string[]) => void;
   onClearCompletedJobs: () => void;
   formatJobTime: (dateString: string) => string;
   formatEta: (seconds?: number | null) => string | null;
@@ -567,7 +567,7 @@ export function GenerationJobsSection({
                       style={styles.removeJobButtonInline}
                       onPress={(event: GestureResponderEvent) => {
                         event.stopPropagation();
-                        onRemoveJob(job.id, job.projectJobIds);
+                        onRemoveJob(job.id, job.projectId, job.projectJobIds);
                       }}
                     >
                       <Trash2 size={14} color={TERMINAL.colors.muted} />

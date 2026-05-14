@@ -202,6 +202,55 @@ describe('buildPipelineConfig', () => {
     expect(config.imageGen?.openaiModeration).toBe('low');
   });
 
+  it('forces OpenAI image moderation to low even when older persisted settings say auto', () => {
+    const config = buildPipelineConfig({
+      llmProvider: 'openai',
+      llmModel: 'gpt-5',
+      imageLlmProvider: 'openai',
+      imageLlmModel: 'gpt-5',
+      videoLlmProvider: 'openai',
+      videoLlmModel: 'gpt-5',
+      apiKey: '',
+      openaiApiKey: 'openai-key',
+      geminiApiKey: '',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: 'bytedance/seedream-v4.5',
+      midapiToken: '',
+      imageProvider: 'dall-e',
+      imageStrategy: 'all-beats',
+      panelMode: 'all-beats',
+      artStyle: '',
+      openaiSettings: {
+        reasoningEffort: 'medium',
+        forceJsonResponse: true,
+        imageModel: 'gpt-image-2',
+        imageModeration: 'auto',
+      },
+      geminiSettings: {} as any,
+      midjourneySettings: {} as any,
+      generationSettings,
+      generationMode: 'advisory',
+      narrationSettings: {
+        enabled: false,
+        autoPlay: false,
+        preGenerateAudio: false,
+        voiceId: '',
+        highlightMode: 'word',
+      },
+      videoSettings: {
+        enabled: false,
+        model: 'veo-3.1-fast-generate-preview',
+        durationSeconds: 6,
+        resolution: '1080p',
+        aspectRatio: '9:16',
+        strategy: 'selective',
+      },
+    });
+
+    expect(config.imageGen?.openaiModeration).toBe('low');
+  });
+
   it('keeps Midjourney settings on the normalized provider config', () => {
     const config = buildPipelineConfig({
       llmProvider: 'anthropic',

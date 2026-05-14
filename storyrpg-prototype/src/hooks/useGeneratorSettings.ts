@@ -151,6 +151,14 @@ interface ProxySettingsShape {
   atlasCloudModel?: string;
 }
 
+function normalizeOpenAiSettings(settings?: Partial<OpenAISettings>): OpenAISettings {
+  return {
+    ...DEFAULT_OPENAI_SETTINGS,
+    ...(settings || {}),
+    imageModeration: 'low',
+  };
+}
+
 async function loadProxySettings(): Promise<ProxySettingsShape | null> {
   try {
     const resp = await fetch(PROXY_CONFIG.generatorSettings);
@@ -251,7 +259,7 @@ export function useGeneratorSettings() {
         setGeminiSettings({ ...DEFAULT_GEMINI_SETTINGS, ...ps.geminiSettings });
       }
       if (ps.openaiSettings) {
-        setOpenaiSettings({ ...DEFAULT_OPENAI_SETTINGS, ...ps.openaiSettings });
+        setOpenaiSettings(normalizeOpenAiSettings(ps.openaiSettings));
       }
       if (ps.midjourneySettings) {
         setMidjourneySettings({ ...DEFAULT_MIDJOURNEY_SETTINGS, ...ps.midjourneySettings });
@@ -397,7 +405,7 @@ export function useGeneratorSettings() {
           }
           if (storedOpenaiSettings) {
             try {
-              setOpenaiSettings({ ...DEFAULT_OPENAI_SETTINGS, ...JSON.parse(storedOpenaiSettings) });
+              setOpenaiSettings(normalizeOpenAiSettings(JSON.parse(storedOpenaiSettings)));
             } catch (_) {}
           }
 
@@ -640,7 +648,7 @@ export function useGeneratorSettings() {
   }, [geminiSettings]);
 
   const handleOpenaiSettingsChange = useCallback(async (newSettings: Partial<OpenAISettings>) => {
-    const updated = { ...openaiSettings, ...newSettings };
+    const updated = normalizeOpenAiSettings({ ...openaiSettings, ...newSettings });
     setOpenaiSettings(updated);
     patchProxySettings({ openaiSettings: updated });
     try {

@@ -6,6 +6,8 @@
  * them up, owns periodic cleanup, and handles graceful shutdown.
  */
 
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -37,10 +39,12 @@ const { registerGenerationJobRoutes } = require('./proxy/generationJobRoutes');
 const { createRuntimeLayout } = require('./proxy/runtimePaths');
 const { getStoryStorageMode, getGcsBucketName, getGcsPublicBaseUrl, mapProxyPathToGcsObjectPath } = require('./proxy/gcsConfig');
 const { resolveGeneratedStoryAssetFallback } = require('./proxy/generatedStoryAssetFallback');
-
-require('dotenv').config();
+const { registerAuthRoutes } = require('./proxy/authRoutes');
 
 const app = express();
+if (process.env.TRUST_PROXY === '1' || process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
 const PORT = Number(process.env.PORT) || 3001;
 const ROOT_DIR = __dirname;
 const RUNTIME = createRuntimeLayout(ROOT_DIR);
@@ -121,6 +125,9 @@ app.use('/generated-stories', (req, res, next) => {
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
+
+// OAuth (Passport) + sessions — must run before routes that read req.user
+registerAuthRoutes(app, { port: PORT });
 
 registerCatalogRoutes(app, {
   listLatestStoryRecords,

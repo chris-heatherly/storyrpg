@@ -2,6 +2,7 @@ import React from 'react';
 import {
   ActivityIndicator,
   GestureResponderEvent,
+  Platform,
   Text,
   TouchableOpacity,
   useWindowDimensions,
@@ -19,6 +20,7 @@ import {
   Film,
   Image as ImageIcon,
   Info,
+  LogIn,
   Play,
   RefreshCw,
   StopCircle,
@@ -35,6 +37,8 @@ import { TERMINAL } from '../../theme';
 import { APP_VERSION_LABEL } from '../../config/version';
 import { SegmentedControl, Toggle } from '../ui';
 import { PipelineProgress } from '../PipelineProgress';
+import { PROXY_CONFIG } from '../../config/endpoints';
+import { fetchAuthMe, fetchAuthProviders, postAuthLogout, type AuthUser } from '../../services/authSession';
 
 type SettingsStyles = Record<string, any>;
 
@@ -898,6 +902,163 @@ export function StoryLibrarySection({
           })}
         </View>
       )}
+    </View>
+  );
+}
+
+interface OAuthAccountSectionProps {
+  styles: SettingsStyles;
+}
+
+export function OAuthAccountSection({ styles }: OAuthAccountSectionProps) {
+  const [providers, setProviders] = React.useState<{ google: boolean; discord: boolean } | null>(null);
+  const [user, setUser] = React.useState<AuthUser | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    if (Platform.OS !== 'web') return;
+    setError(null);
+    setLoading(true);
+    try {
+      const [p, me] = await Promise.all([fetchAuthProviders(), fetchAuthMe()]);
+      setProviders(p);
+      setUser(me.user);
+    } catch (e) {
+      console.warn('[OAuthAccountSection]', e);
+      setError('PROXY UNAVAILABLE OR AUTH NOT CONFIGURED');
+      setProviders(null);
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    load();
+  }, [load]);
+
+  React.useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('auth')) return;
+    url.searchParams.delete('auth');
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState({}, '', next);
+    load();
+  }, [load]);
+
+  if (Platform.OS !== 'web') {
+    return null;
+  }
+
+  const startGoogle = () => {
+    if (typeof window !== 'undefined') {
+      window.location.assign(PROXY_CONFIG.authGoogle);
+    }
+  };
+
+  const startDiscord = () => {
+    if (typeof window !== 'undefined') {
+      window.location.assign(PROXY_CONFIG.authDiscord);
+    }
+  };
+
+  const handleLogout = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await postAuthLogout();
+      setUser(null);
+    } catch (e) {
+      console.warn('[OAuthAccountSection] logout', e);
+      setError('LOGOUT FAILED');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hasAnyProvider = providers?.google || providers?.discord;
+
+  return (
+    <View style={styles.section}>
+      <SectionHeader
+        styles={styles}
+        icon={<LogIn size={18} color={TERMINAL.colors.primary} />}
+        title="ACCOUNT (WEB)"
+        description="SIGN IN VIA PROXY — REQUIRES GOOGLE / DISCORD OAUTH APPS AND ENV VARS"
+      />
+
+      <View style={styles.settingCard}>
+        {loading && !error ? (
+          <View style={{ paddingVertical: 12, alignItems: 'center' }}>
+            <ActivityIndicator size="small" color={TERMINAL.colors.muted} />
+            <Text style={[styles.sectionDesc, { marginTop: 8 }]}>CHECKING PROXY SESSION…</Text>
+          </View>
+        ) : null}
+
+        {error ? (
+          <Text style={[styles.sectionDesc, { color: TERMINAL.colors.error, marginBottom: 8 }]}>{error}</Text>
+        ) : null}
+
+        {!loading && user ? (
+          <View style={{ gap: 10 }}>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>SIGNED IN</Text>
+              <Text style={styles.infoValue} numberOfLines={1}>
+                {user.displayName || user.email || user.id}
+              </Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>PROVIDER</Text>
+              <Text style={styles.infoValue}>{user.provider.toUpperCase()}</Text>
+            </View>
+            {user.email ? (
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>EMAIL</Text>
+                <Text style={styles.infoValue} numberOfLines={1}>
+                  {user.email}
+                </Text>
+              </View>
+            ) : null}
+            <TouchableOpacity
+              style={[styles.optionButton, { marginTop: 4, alignItems: 'center' }]}
+              onPress={handleLogout}
+              disabled={busy}
+            >
+              {busy ? (
+                <ActivityIndicator size="small" color={TERMINAL.colors.muted} />
+              ) : (
+                <Text style={styles.optionText}>SIGN OUT</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        ) : !loading ? (
+          <View style={{ gap: 10 }}>
+            {!hasAnyProvider && providers !== null ? (
+              <Text style={styles.sectionDesc}>
+                SET GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET AND/OR DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET ON THE
+                PROXY. OPTIONAL: AUTH_BASE_URL, AUTH_SUCCESS_REDIRECT, SESSION_SECRET.
+              </Text>
+            ) : null}
+            {providers?.google ? (
+              <TouchableOpacity style={[styles.optionButton, styles.optionButtonSelected]} onPress={startGoogle}>
+                <Text style={[styles.optionText, styles.optionTextSelected]}>CONTINUE WITH GOOGLE</Text>
+              </TouchableOpacity>
+            ) : null}
+            {providers?.discord ? (
+              <TouchableOpacity style={styles.optionButton} onPress={startDiscord}>
+                <Text style={styles.optionText}>CONTINUE WITH DISCORD</Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity style={styles.optionButton} onPress={load} disabled={busy}>
+              <Text style={styles.optionText}>REFRESH STATUS</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+      </View>
     </View>
   );
 }

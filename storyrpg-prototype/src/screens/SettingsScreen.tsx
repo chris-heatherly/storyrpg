@@ -24,6 +24,7 @@ import {
   DisplayPreferencesSection,
   GenerationJobsSection,
   GeneratorLauncherSection,
+  OAuthAccountSection,
   StoryLibrarySection,
   SystemInfoSection,
 } from '../components/settings/SettingsSections';
@@ -409,6 +410,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         contentContainerStyle={styles.contentPadding}
       >
         <Text style={styles.systemStatus}>OPTIMIZING INTERFACE PARAMETERS</Text>
+
+        <OAuthAccountSection styles={styles} />
 
         <DisplayPreferencesSection
           styles={styles}

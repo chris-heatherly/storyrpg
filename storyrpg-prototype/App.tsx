@@ -13,6 +13,7 @@ import {
   ReadingScreen,
   VisualizerScreen,
   SettingsScreen,
+  LoginScreen,
 } from './src/screens';
 import { GeneratorScreen } from './src/screens/GeneratorScreen';
 import { allStories as builtInStories } from './src/data/stories';
@@ -166,6 +167,18 @@ function AppContent() {
   const closeVisualizerRoute = useAppNavigationStore((state) => state.closeVisualizer);
   const openGeneratorRoute = useAppNavigationStore((state) => state.openGenerator);
   const closeGeneratorRoute = useAppNavigationStore((state) => state.closeGenerator);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('afterAuth') !== 'home') return;
+    url.searchParams.delete('afterAuth');
+    url.searchParams.delete('auth');
+    const qs = url.searchParams.toString();
+    const next = `${url.pathname}${qs ? `?${qs}` : ''}${url.hash}`;
+    window.history.replaceState({}, document.title, next);
+    navigateTo('home');
+  }, [navigateTo]);
   const {
     stories,
     setStories,
@@ -460,6 +473,14 @@ function AppContent() {
   const handleOpenSettings = () => {
     track('settings opened');
     navigateTo('settings');
+  };
+
+  const handleOpenLogin = () => {
+    navigateTo('login');
+  };
+
+  const handleBackFromLogin = () => {
+    navigateTo('home');
   };
 
   const handleBackFromSettings = () => {
@@ -876,11 +897,14 @@ function AppContent() {
           onStartStory={handleStartStory}
           onContinueStory={handleContinueStory}
           onOpenSettings={handleOpenSettings}
+          onOpenLogin={handleOpenLogin}
           onOpenGenerator={() => handleOpenGenerator()}
           activeGenerationJob={activeGenerationJob}
           onOpenActiveGeneration={(jobId) => handleOpenGenerator(jobId)}
         />
       )}
+
+      {currentScreen === 'login' && <LoginScreen onBack={handleBackFromLogin} />}
 
       {currentScreen === 'settings' && (
         <SettingsScreen

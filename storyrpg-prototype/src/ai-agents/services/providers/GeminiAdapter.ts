@@ -5,7 +5,7 @@
  * decomposition of the provider body out of the monolith is tracked as
  * TODO(tech-debt-phase-6-finish).
  */
-import type { GeneratedImage } from '../../agents/ImageGenerator';
+import type { GeneratedImage } from '../../images/imageTypes';
 import type {
   ImageProviderAdapter,
   ProviderGenerateRequest,

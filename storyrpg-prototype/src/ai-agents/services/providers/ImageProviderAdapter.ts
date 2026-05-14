@@ -12,7 +12,7 @@
  * `ProviderServiceBridge`. That lets us expose a stable, testable seam
  * NOW while the large file is progressively decomposed in a follow-up pass.
  */
-import type { ImagePrompt, GeneratedImage } from '../../agents/ImageGenerator';
+import type { ImagePrompt, GeneratedImage } from '../../images/imageTypes';
 import type {
   ImageType,
   ReferenceImage,

@@ -15,6 +15,25 @@ export type ChoiceType =
   | 'strategic'
   | 'dilemma';
 
+export type ChoiceIntent =
+  | 'flavor'
+  | 'branching'
+  | 'blind'
+  | 'dilemma';
+
+export type ChoiceImpactFactor =
+  | 'outcome'
+  | 'process'
+  | 'information'
+  | 'relationship'
+  | 'identity';
+
+export type ChoiceConsequenceTier =
+  | 'callback'
+  | 'sceneTint'
+  | 'branchlet'
+  | 'structuralBranch';
+
 // Resolution result for skill/stat checks
 export type ResolutionTier = 'success' | 'complicated' | 'failure';
 
@@ -71,6 +90,14 @@ export interface Choice {
   text: string;
 
   choiceType?: ChoiceType;
+  choiceIntent?: ChoiceIntent;
+  impactFactors?: ChoiceImpactFactor[];
+  consequenceTier?: ChoiceConsequenceTier;
+  stakes?: {
+    want: string;
+    cost: string;
+    identity: string;
+  };
 
   conditions?: ConditionExpression;
 

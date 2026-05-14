@@ -22,7 +22,7 @@
  * have moved out. New phases should type cleanly without `@ts-nocheck`.
  */
 
-import { PipelineEvent } from '../EpisodePipeline';
+import { PipelineEvent } from '../events';
 import { PipelineConfig } from '../../config';
 import { WorldBible } from '../../agents/WorldBuilder';
 import { CharacterBible } from '../../agents/CharacterDesigner';
@@ -162,5 +162,5 @@ export interface PipelinePhase<TInput, TResult> {
 }
 
 // Re-export for convenience
-export type { PipelineEvent } from '../EpisodePipeline';
+export type { PipelineEvent } from '../events';
 export type { PipelineConfig } from '../../config';

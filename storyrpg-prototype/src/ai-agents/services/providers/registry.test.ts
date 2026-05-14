@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { GeneratedImage, ImagePrompt } from '../../agents/ImageGenerator';
+import type { GeneratedImage, ImagePrompt } from '../../images/imageTypes';
 import type { ProviderServiceBridge } from './ImageProviderAdapter';
 import {
   createDefaultImageProviderRegistry,

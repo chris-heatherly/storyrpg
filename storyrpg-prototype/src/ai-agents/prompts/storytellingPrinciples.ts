@@ -10,6 +10,7 @@ import type {
   StructuralRole,
 } from '../../types/sourceAnalysis';
 import { SEVEN_POINT_BEATS } from '../../types/sourceAnalysis';
+import { STORY_QUALITY_PIXAR_CRAFT } from './storyQualityContract';
 
 /**
  * Build a reusable prompt section that gives a narrative agent the
@@ -452,5 +453,6 @@ ${CHOICE_DENSITY_REQUIREMENTS}
 ${CHOICE_PAYOFF_AND_RECONVERGENCE}
 ${FICTION_FIRST_STATS_AND_SKILLS}
 ${FICTION_FIRST_GAME_FEEL}
+${STORY_QUALITY_PIXAR_CRAFT}
 ${QUALITY_MANTRAS}
 `;

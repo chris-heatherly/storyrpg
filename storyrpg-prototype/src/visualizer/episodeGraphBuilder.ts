@@ -2,17 +2,16 @@
 // EPISODE GRAPH BUILDER
 // ========================================
 //
-// Plan 2: builds a per-episode graph decorated with the player's visit state
-// for the post-episode flowchart recap UI. Reuses `transformStoryToGraph`
-// so we don't reimplement node/edge construction, then filters down to the
-// episode of interest and attaches `visitState` to each node.
+// Builds a per-episode graph decorated with the player's visit state. Reuses
+// `transformStoryToGraph` so we don't reimplement node/edge construction, then
+// filters down to the episode of interest and attaches `visitState` to each node.
 //
 // Visit states:
 //   - 'taken'    — the node was visited during this playthrough
 //   - 'chosen'   — the node was the target of a committed choice
 //   - 'skipped'  — the node is reachable but was not visited
 //
-// Consumers: EpisodeRecapScreen.
+// Consumers: tests and any future per-episode path recap surfaces.
 
 import type { Story, VisitRecord } from '../types';
 import { transformStoryToGraph } from './storyGraphTransformer';

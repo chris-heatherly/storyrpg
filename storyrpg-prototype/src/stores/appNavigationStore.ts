@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type AppScreen = 'home' | 'episodes' | 'reading' | 'settings' | 'visualizer' | 'generator' | 'recap';
+export type AppScreen = 'home' | 'episodes' | 'reading' | 'settings' | 'visualizer' | 'generator';
 
 /**
  * Screens that are valid "launch origins" for the generator — the screen the

@@ -6,7 +6,7 @@
  * underlying `StableDiffusionAdapter` (A1111 / ComfyUI / Replicate / …) is
  * still chosen by `createStableDiffusionAdapter` at runtime.
  */
-import type { GeneratedImage } from '../../agents/ImageGenerator';
+import type { GeneratedImage } from '../../images/imageTypes';
 import type {
   ImageProviderAdapter,
   ProviderGenerateRequest,

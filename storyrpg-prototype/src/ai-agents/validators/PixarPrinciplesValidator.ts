@@ -1,7 +1,3 @@
-// @ts-nocheck — TODO(tech-debt): the category scores map (summary + report shape)
-// still drifts from `PixarIssue`; tracked in Phase 7 type consolidation. The
-// enum and validator logic themselves are kept in sync with the runtime types
-// so the IntegratedBestPracticesValidator wiring (Phase 2.4) remains sound.
 /**
  * Pixar Principles Validator
  * 
@@ -145,23 +141,30 @@ export class PixarPrinciplesValidator {
     // Guard against null/undefined input
     if (!seasonBible) {
       return {
+        valid: false,
+        overallScore: 0,
+        errorCount: 1,
+        warningCount: 0,
+        suggestionCount: 0,
         issues: [{
           type: 'missing_story_spine',
           severity: 'critical',
-          message: 'Cannot validate: seasonBible is undefined',
-          rule: 4,
-          ruleText: this.PIXAR_RULES[4],
+          rule: '4',
+          ruleText: PIXAR_RULES['4'],
+          location: {},
+          description: 'Cannot validate: seasonBible is undefined',
+          suggestion: 'Provide a valid season bible to validate',
+          autoFixable: false,
         }],
-        overallScore: 0,
-        categoryScores: {
+        scores: {
           storySpine: 0,
-          burningQuestion: 0,
           characterOpinions: 0,
-          polarOpposites: 0,
           stakesAndOdds: 0,
+          polarOpposites: 0,
           causality: 0,
           surprise: 0,
-          admireTrying: 0,
+          burningQuestion: 0,
+          struggleAndTrying: 0,
         },
         summary: 'Validation failed: No season bible provided',
         highlights: [],
@@ -256,7 +259,9 @@ export class PixarPrinciplesValidator {
     }
     
     // Check theme connection
-    if (!plan.themeConnection && seasonBible.burningQuestion) {
+    const burningQuestion = getBurningQuestion(seasonBible);
+    const themeConnection = (plan as unknown as { themeConnection?: string }).themeConnection;
+    if (!themeConnection && burningQuestion) {
       issues.push({
         severity: 'suggestion',
         type: 'episode_disconnected_from_theme',
@@ -264,7 +269,7 @@ export class PixarPrinciplesValidator {
         ruleText: PIXAR_RULES['14'],
         location: loc,
         description: `Episode ${plan.episodeNumber} doesn't explicitly connect to the burning question`,
-        suggestion: `Connect to: "${seasonBible.burningQuestion.question}"`,
+        suggestion: `Connect to: "${burningQuestion}"`,
         autoFixable: false,
       });
     }
@@ -355,7 +360,8 @@ export class PixarPrinciplesValidator {
     }
     
     // Check causality (Rule #19)
-    if (encounter.pixarCausality?.noCoincidenceEscapes === false) {
+    const pixarCausality = encounter.pixarCausality as { noCoincidenceEscapes?: boolean } | undefined;
+    if (pixarCausality?.noCoincidenceEscapes === false) {
       issues.push({
         severity: 'error',
         type: 'coincidence_escape',
@@ -379,7 +385,8 @@ export class PixarPrinciplesValidator {
     const issues: PixarIssue[] = [];
     
     // Check for Story Spine mapping
-    if (!bible.storySpineMapping) {
+    const storySpineMapping = getStorySpineMapping(bible);
+    if (!storySpineMapping) {
       issues.push({
         severity: 'warning',
         type: 'story_spine_gap',
@@ -393,7 +400,7 @@ export class PixarPrinciplesValidator {
       return issues;
     }
     
-    const spine = bible.storySpineMapping;
+    const spine = storySpineMapping;
     
     // Must have inciting incident
     if (!spine.incitingEpisode) {
@@ -459,7 +466,8 @@ export class PixarPrinciplesValidator {
   private validateBurningQuestion(bible: SeasonBible): PixarIssue[] {
     const issues: PixarIssue[] = [];
     
-    if (!bible.burningQuestion || !bible.burningQuestion.question) {
+    const burningQuestion = getBurningQuestion(bible);
+    if (!burningQuestion) {
       issues.push({
         severity: 'error',
         type: 'missing_burning_question',
@@ -474,7 +482,7 @@ export class PixarPrinciplesValidator {
     }
     
     // Check if burning question is substantial
-    if (bible.burningQuestion.question.length < 20) {
+    if (burningQuestion.length < 20) {
       issues.push({
         severity: 'warning',
         type: 'missing_burning_question',
@@ -594,11 +602,11 @@ export class PixarPrinciplesValidator {
       
       // Check if any episode challenges this character with their polar opposite
       const charArcs = seasonBible.characterArcs.filter(a => a.characterId === char.id);
-      const hasPolarOppositeChallenge = charArcs.some(arc => 
-        arc.keyMoments.some(km => 
-          km.moment.toLowerCase().includes('challenge') ||
-          km.moment.toLowerCase().includes('confront') ||
-          km.moment.toLowerCase().includes('face')
+      const hasPolarOppositeChallenge = charArcs.some(arc =>
+        arc.keyBeats.some((beat) =>
+          beat.toLowerCase().includes('challenge') ||
+          beat.toLowerCase().includes('confront') ||
+          beat.toLowerCase().includes('face')
         )
       );
       
@@ -855,8 +863,9 @@ export class PixarPrinciplesValidator {
       highlights.push('Strong Story Spine structure (Rule #4)');
     }
     
-    if (bible.burningQuestion?.question) {
-      highlights.push(`Clear Burning Question: "${bible.burningQuestion.question}" (Rule #14)`);
+    const burningQuestion = getBurningQuestion(bible);
+    if (burningQuestion) {
+      highlights.push(`Clear Burning Question: "${burningQuestion}" (Rule #14)`);
     }
     
     if (characterBible) {
@@ -885,6 +894,42 @@ export class PixarPrinciplesValidator {
     
     return prioritized.slice(0, 5).map(i => `[Rule #${i.rule}] ${i.suggestion}`);
   }
+}
+
+function getBurningQuestion(bible: SeasonBible): string {
+  const legacy = bible as unknown as { burningQuestion?: { question?: string } | string };
+  if (typeof legacy.burningQuestion === 'string') return legacy.burningQuestion;
+  if (legacy.burningQuestion?.question) return legacy.burningQuestion.question;
+  return bible.thematicQuestion || bible.centralQuestion || '';
+}
+
+function getStorySpineMapping(bible: SeasonBible): {
+  incitingEpisode?: number;
+  climaxEpisode?: number;
+  consequenceEpisodes: number[];
+} | undefined {
+  const legacy = bible as unknown as {
+    storySpineMapping?: {
+      incitingEpisode?: number;
+      climaxEpisode?: number;
+      consequenceEpisodes?: number[];
+    };
+  };
+  if (legacy.storySpineMapping) {
+    return {
+      ...legacy.storySpineMapping,
+      consequenceEpisodes: legacy.storySpineMapping.consequenceEpisodes || [],
+    };
+  }
+
+  const incitingEpisode = bible.episodePlans.find((plan) => plan.storySpinePosition === 'inciting')?.episodeNumber;
+  const climaxEpisode = bible.episodePlans.find((plan) => plan.storySpinePosition === 'climax')?.episodeNumber
+    ?? bible.seasonStructure?.finaleEpisode;
+  const consequenceEpisodes = bible.episodePlans
+    .filter((plan) => plan.storySpinePosition === 'consequence')
+    .map((plan) => plan.episodeNumber);
+  if (!incitingEpisode && !climaxEpisode && consequenceEpisodes.length === 0) return undefined;
+  return { incitingEpisode, climaxEpisode, consequenceEpisodes };
 }
 
 export default PixarPrinciplesValidator;

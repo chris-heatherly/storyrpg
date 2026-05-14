@@ -5,7 +5,7 @@
  * `midapi` and legacy `useapi` provider slugs route here. Full decomposition
  * is tracked as TODO(tech-debt-phase-6-finish).
  */
-import type { GeneratedImage } from '../../agents/ImageGenerator';
+import type { GeneratedImage } from '../../images/imageTypes';
 import type {
   ImageProviderAdapter,
   ProviderGenerateRequest,

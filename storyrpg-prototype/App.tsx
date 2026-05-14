@@ -13,7 +13,6 @@ import {
   ReadingScreen,
   VisualizerScreen,
   SettingsScreen,
-  EpisodeRecapScreen,
 } from './src/screens';
 import { GeneratorScreen } from './src/screens/GeneratorScreen';
 import { allStories as builtInStories } from './src/data/stories';
@@ -155,7 +154,6 @@ function AppContent() {
   const [imageGeneratingStoryId, setImageGeneratingStoryId] = useState<string | null>(null);
   const videoPipelineRef = useRef<PipelineHandle | null>(null);
   const [visualizerStory, setVisualizerStory] = useState<Story | null>(null);
-  const [recapEpisodeId, setRecapEpisodeId] = useState<string | null>(null);
   const currentScreen = useAppNavigationStore((state) => state.currentScreen);
   const showPauseMenu = useAppNavigationStore((state) => state.showPauseMenu);
   const visualizerStoryId = useAppNavigationStore((state) => state.visualizerStoryId);
@@ -421,31 +419,10 @@ function AppContent() {
   };
 
   const handleEpisodeComplete = () => {
-    // Plan 2: show the post-episode flowchart recap before returning the
-    // player to the episode-select screen.
     if (currentEpisode?.id) {
       incrementPersonProperty('episodes_completed_count');
-      setRecapEpisodeId(currentEpisode.id);
-      navigateTo('recap');
-    } else {
-      navigateTo('episodes');
     }
-  };
-
-  const handleRecapContinue = () => {
-    setRecapEpisodeId(null);
     navigateTo('episodes');
-  };
-
-  const handleRecapRewind = (target: { episodeId: string; sceneId: string; beatId: string }) => {
-    if (!currentStory) return;
-    const episode = currentStory.episodes.find((e) => e.id === target.episodeId);
-    if (!episode) return;
-    loadEpisode(target.episodeId);
-    loadScene(target.sceneId, episode);
-    setBeat(target.beatId);
-    setRecapEpisodeId(null);
-    navigateTo('reading');
   };
 
   const handlePause = () => {
@@ -986,14 +963,6 @@ function AppContent() {
         <ReadingScreen
           onEpisodeComplete={handleEpisodeComplete}
           onPause={handlePause}
-        />
-      )}
-
-      {currentScreen === 'recap' && recapEpisodeId && (
-        <EpisodeRecapScreen
-          episodeId={recapEpisodeId}
-          onContinue={handleRecapContinue}
-          onRewindToBeat={handleRecapRewind}
         />
       )}
 

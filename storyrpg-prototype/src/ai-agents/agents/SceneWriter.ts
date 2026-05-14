@@ -255,6 +255,9 @@ export interface SceneWriterInput {
     sourceEpisode: number;
     summary: string;
     flags: string[];
+    conditionKeys?: string[];
+    impactFactors?: string[];
+    consequenceTier?: string;
   }>;
 }
 
@@ -1226,6 +1229,9 @@ ${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with 
   sourceSceneId: '',
   sourceChoiceId: '',
   flags: h.flags,
+  conditionKeys: h.conditionKeys,
+  impactFactors: h.impactFactors,
+  consequenceTier: h.consequenceTier,
   summary: h.summary,
   payoffWindow: { minEpisode: 0, maxEpisode: 0 },
   payoffCount: 0,

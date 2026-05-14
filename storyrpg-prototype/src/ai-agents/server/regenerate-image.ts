@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { loadConfig } from '../config';
 import { ImageGenerationService } from '../services/imageGenerationService';
-import type { ImagePrompt } from '../agents/ImageGenerator';
+import type { ImagePrompt } from '../images/imageTypes';
 
 type RegenerationPayload = {
   resultPath: string;

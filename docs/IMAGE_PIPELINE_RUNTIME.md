@@ -11,6 +11,9 @@ This document captures the live runtime behavior of the StoryRPG image pipeline.
 - Make every image communicate a readable story beat.
 - Use model-specific controls when they improve results.
 - Enforce encounter image completeness as a pipeline invariant.
+- Treat storyboard sheets and panel metadata as the primary continuity
+  contract. Previous-panel references are same-path helpers only and must not
+  cross sibling branches or override the storyboard sheet.
 
 ## Recent Improvements (April 2026)
 
@@ -20,7 +23,7 @@ configuration so existing stories render identically unless the operator
 opts in:
 
 - **B1 / two-axis QA toggles** — `EXPO_PUBLIC_IMAGE_PROMPT_MODE`
-  (`deterministic` | `llm` | `compare`) and `EXPO_PUBLIC_IMAGE_QA_MODE`
+  (`deterministic` | `llm`) and `EXPO_PUBLIC_IMAGE_QA_MODE`
   (`off` | `fast` | `full`) let prompt-building and QA rigor be tuned
   independently. The default is now `promptMode=llm` and `qaMode=full`:
   `StoryboardAgent` + `VisualIllustratorAgent` plan story-beat shots, then
@@ -247,7 +250,7 @@ creative shot planning or QA depth for speed.
 6. For each story scene, `runEpisodeImageGeneration` resolves the effective prompt mode:
    - `llm` (default): calls `ImageAgentTeam.generateFullSceneVisuals()`. `StoryboardAgent` plans rhythm, shot grammar, transition logic, pose, lighting, mood, and visual storytelling. `VisualIllustratorAgent` converts those shots into `ImagePrompt`s keyed by beat id.
    - `deterministic`: skips the LLM scene-planning cascade and uses `buildBeatImagePrompt()` plus `shotSequencePlanner`.
-   - `compare`: builds both prompt variants for the configured capped number of beats, saves `images/prompts/<id>.prompt-compare.json`, and binds only the configured canonical variant into the story.
+   - Retired `compare` values from old environments are normalized to `llm`; prompt A/B diagnostics are no longer a production generation path.
 7. Every LLM prompt is treated as a creative draft. The pipeline wraps it with `applyPromptContract`, the raw season `style_contract`, sanitized rendering-language rules, anti-photoreal negatives, character/ref precedence metadata, and the same provider-aware reference filtering used by deterministic prompts. Missing LLM prompts fall back beat-by-beat to the deterministic builder; they do not force the whole scene to fall back.
 8. `ImageGenerationService` routes the contracted prompt to the selected provider and applies provider-specific controls. Every accepted beat writes `images/prompts/<id>.qa.json` from the shared defect gate/retry loop.
 9. Under `qaMode=full`, the split image-only path restores the old scene-level QA cascade after contracted rendering: pose-diversity review and targeted regeneration, full visual QA with guided re-illustration, and the bounded identity-consistency gate. Hero/key beats also receive legacy full visual QA diagnostics at `images/prompts/<id>.visual-qa.json`; each scene receives `images/prompts/<sceneId>.visual-planning.json`, scene-level `visual-qa.json`, diversity diagnostics, and identity diagnostics when those gates run.

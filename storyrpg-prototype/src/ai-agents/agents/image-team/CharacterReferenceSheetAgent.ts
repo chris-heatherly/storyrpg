@@ -13,7 +13,7 @@
 
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from '../BaseAgent';
-import { ImagePrompt } from '../ImageGenerator';
+import { ImagePrompt } from '../../images/imageTypes';
 // NOTE: We intentionally do NOT import CORE_VISUAL_PRINCIPLE or BODY_LANGUAGE_VOCABULARY
 // from the storytelling system. Those principles tell the LLM "every image is a story beat,
 // not a portrait" and forbid "character standing center-frame" — the exact things a reference

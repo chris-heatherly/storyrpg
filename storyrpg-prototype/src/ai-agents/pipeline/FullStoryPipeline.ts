@@ -76,7 +76,7 @@ import type {
   EncounterImageRunDiagnostic,
 } from '../utils/pipelineOutputWriter';
 import { EncounterImageAgent } from '../agents/image-team/EncounterImageAgent';
-import { ImagePrompt } from '../agents/ImageGenerator';
+import { ImagePrompt } from '../images/imageTypes';
 import {
   ImageGenerationService,
   ReferenceImage,
@@ -84,7 +84,7 @@ import {
   type CanonicalAppearance,
   type CharacterAppearanceDescription,
 } from '../services/imageGenerationService';
-import type { GeneratedImage } from '../agents/ImageGenerator';
+import type { GeneratedImage } from '../images/imageTypes';
 import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/VideoDirectorAgent';
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
@@ -111,7 +111,7 @@ import {
   EnvironmentalElement, NPCEncounterState, EscalationTrigger, InformationVisibility, 
   PixarStakes, GeneratedStorylet as TypeGeneratedStorylet, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
-import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './EpisodePipeline';
+import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './events';
 import { SavingPhase } from './phases/SavingPhase';
 import {
   createOutputDirectory,
@@ -7632,6 +7632,11 @@ export class FullStoryPipeline {
         id: b.id,
         text: b.text,
         isChoicePoint: b.isChoicePoint,
+        textVariants: b.textVariants?.map((variant) => ({
+          condition: variant.condition,
+          text: variant.text,
+          callbackHookId: variant.callbackHookId,
+        })),
       })),
     }));
 
@@ -7680,6 +7685,13 @@ export class FullStoryPipeline {
         sceneContext: cs.designNotes,
         nextSceneId: choice.nextSceneId,
         reminderPlan: choice.reminderPlan,
+        choiceIntent: choice.choiceIntent,
+        impactFactors: choice.impactFactors,
+        consequenceTier: choice.consequenceTier,
+        stakes: choice.stakes,
+        outcomeTexts: choice.outcomeTexts,
+        lockedText: choice.lockedText,
+        reactionText: choice.reactionText,
       }))
     );
 
@@ -9969,7 +9981,7 @@ ${clothingRule}
    * Now uses character reference sheets for consistency AND pose diversity validation
    * ENHANCED: Includes color script, scene context, and full story data mapping
    */
-  private getEffectiveImagePromptMode(): 'deterministic' | 'llm' | 'compare' {
+  private getEffectiveImagePromptMode(): 'deterministic' | 'llm' {
     return this.config.imageGen?.qa?.promptMode || 'llm';
   }
 
@@ -10155,27 +10167,6 @@ ${clothingRule}
       const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       return !new RegExp(`\\b${escaped}\\b`, 'i').test(text);
     });
-  }
-
-  private async savePromptCompareDiagnostic(
-    outputDirectory: string | undefined,
-    identifier: string,
-    payload: Record<string, unknown>,
-  ): Promise<void> {
-    if (!outputDirectory) return;
-    try {
-      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${identifier}.prompt-compare.json`, {
-        generatedAt: new Date().toISOString(),
-        identifier,
-        ...payload,
-      });
-    } catch (error) {
-      this.emit({
-        type: 'warning',
-        phase: 'images',
-        message: `Failed to save prompt compare diagnostic for ${identifier}: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    }
   }
 
   private shouldRunHeroVisualQA(
@@ -10705,9 +10696,6 @@ ${clothingRule}
         const promptMode = this.getEffectiveImagePromptMode();
         const qaMode = this.getEffectiveImageQaMode();
         const imagePlanningMode = this.getEffectiveImagePlanningMode();
-        const compareCanonical = this.config.imageGen?.qa?.compareCanonical || 'llm';
-        const compareMaxBeats = this.config.imageGen?.qa?.compareMaxBeats ?? 20;
-        let compareBeatsSeen = 0;
         let llmVisualPlan: VisualPlan | undefined;
         const llmPromptMap = new Map<string, ImagePrompt>();
         const generatedImagesForVisualQA = new Map<string, GeneratedImage>();
@@ -11216,13 +11204,11 @@ ${clothingRule}
           );
 
           const rawLlmPrompt = llmPromptMap.get(beatId);
-          const shouldCompareThisBeat = promptMode === 'compare' && compareBeatsSeen < compareMaxBeats;
-          if (shouldCompareThisBeat) compareBeatsSeen++;
           const wrappedLlmPrompt = rawLlmPrompt
             ? this.wrapLlmImagePromptWithContracts(rawLlmPrompt, beatPromptInput, scenePromptCtx, shotCharacterNames, promptMode, brief)
             : undefined;
           let imagePrompt = deterministicPrompt;
-          let promptSource: 'deterministic' | 'llm' | 'deterministic-fallback' | 'compare-llm' | 'compare-deterministic' = 'deterministic';
+          let promptSource: 'deterministic' | 'llm' | 'deterministic-fallback' = 'deterministic';
 
           if (promptMode === 'llm') {
             if (wrappedLlmPrompt) {
@@ -11253,34 +11239,6 @@ ${clothingRule}
                 phase: 'images',
                 message: `LLM prompt missing for ${scene.sceneId}:${beatId}; deterministic fallback used for this beat only.`,
               });
-            }
-          } else if (shouldCompareThisBeat) {
-            const disallowedNames = wrappedLlmPrompt
-              ? this.promptMentionsDisallowedCharacters(wrappedLlmPrompt, shotCharacterNames, allSceneCharacterNames)
-              : [];
-            const requiredNames = (beat as any).coveragePlan?.requiredVisibleCharacterIds
-              ?.map((id: string) => characterBible.characters.find(c => c.id === id)?.name || id)
-              || shotCharacterNames;
-            const missingRequiredNames = wrappedLlmPrompt
-              ? this.promptMissingRequiredCharacters(wrappedLlmPrompt, requiredNames)
-              : requiredNames;
-            await this.savePromptCompareDiagnostic(outputDirectory, identifier, {
-              promptMode,
-              canonical: compareCanonical,
-              hasLlmPrompt: !!wrappedLlmPrompt,
-              llmContractRejected: disallowedNames.length > 0 || missingRequiredNames.length > 0,
-              disallowedNames,
-              missingRequiredNames,
-              characterStateDiagnostics: characterStateTracker.getDiagnostics(),
-              deterministicPrompt,
-              llmPrompt: wrappedLlmPrompt || null,
-            });
-            if (compareCanonical === 'llm' && wrappedLlmPrompt && disallowedNames.length === 0 && missingRequiredNames.length === 0) {
-              imagePrompt = wrappedLlmPrompt;
-              promptSource = 'compare-llm';
-            } else {
-              imagePrompt = deterministicPrompt;
-              promptSource = 'compare-deterministic';
             }
           }
 
@@ -15989,6 +15947,9 @@ Design the key art. Return STRICT JSON matching the schema.`;
     sourceEpisode: number;
     summary: string;
     flags: string[];
+    conditionKeys?: string[];
+    impactFactors?: string[];
+    consequenceTier?: string;
   }> | undefined {
     if (!episodeNumber || episodeNumber <= 1) return undefined;
     const hooks = this.callbackLedger.unresolvedFor(episodeNumber);
@@ -15998,6 +15959,9 @@ Design the key art. Return STRICT JSON matching the schema.`;
       sourceEpisode: hook.sourceEpisode,
       summary: hook.summary,
       flags: hook.flags,
+      conditionKeys: hook.conditionKeys,
+      impactFactors: hook.impactFactors,
+      consequenceTier: hook.consequenceTier,
     }));
   }
 
@@ -16008,7 +15972,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
    */
   private harvestEpisodeCallbacks(params: {
     episodeNumber: number;
-    sceneContents: Array<{ sceneId: string; beats: Array<{ id?: string; textVariants?: Array<{ callbackHookId?: string }>; choices?: Array<{ id: string; memorableMoment?: { id: string; summary: string; flags?: string[] } }> }> }>;
+    sceneContents: Array<{ sceneId: string; beats: Array<{ id?: string; callbackHookIds?: string[]; textVariants?: Array<{ callbackHookId?: string }>; choices?: Array<{ id: string; memorableMoment?: { id: string; summary: string; flags?: string[] } }> }> }>;
     choiceSets: Array<{ sceneId?: string; beatId?: string; choices: Array<{ id: string; memorableMoment?: { id: string; summary: string; flags?: string[] }; consequences?: unknown[] }> }>;
   }): { newHooks: number; payoffs: number } {
     let newHooks = 0;
@@ -16045,6 +16009,11 @@ Design the key art. Return STRICT JSON matching the schema.`;
         if (beat.textVariants) {
           const matched = this.callbackLedger.recordPayoffsFromVariants(beat.textVariants);
           payoffs += matched.length;
+          if (matched.length > 0) {
+            const hookIds = new Set(beat.callbackHookIds || []);
+            for (const hookId of matched) hookIds.add(hookId);
+            beat.callbackHookIds = Array.from(hookIds);
+          }
         }
       }
     }

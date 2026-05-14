@@ -33,8 +33,22 @@ describe('CallbackLedger', () => {
     expect(hook).toBeDefined();
     expect(hook!.id).toBe('spared-herald');
     expect(hook!.flags).toContain('herald-lives');
+    expect(hook!.conditionKeys).toContain('herald-lives');
+    expect(hook!.consequenceTier).toBe('callback');
     expect(hook!.resolved).toBe(false);
     expect(hook!.payoffWindow.minEpisode).toBe(2);
+  });
+
+  it('records impact factors and explicit consequence tier from the choice', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({
+      memorableMoment: { id: 'truth-told', summary: 'You told Mira the truth.', flags: ['truth-told'] },
+      impactFactors: ['relationship', 'identity'],
+      consequenceTier: 'sceneTint',
+    });
+    const hook = ledger.recordChoice({ choice, episode: 1, sceneId: 'scene-1' });
+    expect(hook!.impactFactors).toEqual(['relationship', 'identity']);
+    expect(hook!.consequenceTier).toBe('sceneTint');
   });
 
   it('uses explicit memorableMoment flags over inferred ones', () => {

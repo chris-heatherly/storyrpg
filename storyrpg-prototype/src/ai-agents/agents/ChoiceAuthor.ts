@@ -13,7 +13,10 @@ import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import {
   Choice,
+  ChoiceConsequenceTier,
   ChoiceFeedbackCue,
+  ChoiceImpactFactor,
+  ChoiceIntent,
   ChoiceType,
   Consequence,
   ConsequenceDomain,
@@ -170,6 +173,9 @@ export interface ChoiceAuthorInput {
     sourceEpisode: number;
     summary: string;
     flags: string[];
+    conditionKeys?: string[];
+    impactFactors?: ChoiceImpactFactor[];
+    consequenceTier?: ChoiceConsequenceTier;
   }>;
 }
 
@@ -561,6 +567,15 @@ Before finalizing:
       }
       choice.choiceType = choiceSet.choiceType;
 
+      choice.choiceIntent = this.normalizeChoiceIntent(choice, choiceSet.choiceType);
+      choice.impactFactors = this.normalizeImpactFactors(choice, choiceSet.choiceType);
+      choice.consequenceTier = this.normalizeConsequenceTier(choice, choiceSet.choiceType);
+      choice.stakes = {
+        want: choice.stakes?.want || choice.stakesAnnotation?.want || blueprintStakes.want,
+        cost: choice.stakes?.cost || choice.stakesAnnotation?.cost || blueprintStakes.cost,
+        identity: choice.stakes?.identity || choice.stakesAnnotation?.identity || blueprintStakes.identity,
+      };
+
       if (choice.consequences && !Array.isArray(choice.consequences)) {
         choice.consequences = [choice.consequences as unknown as Consequence];
       }
@@ -660,6 +675,54 @@ Before finalizing:
     }
   }
 
+  private normalizeChoiceIntent(choice: GeneratedChoice, choiceType: ChoiceType): ChoiceIntent {
+    if (choiceType === 'expression') return 'flavor';
+    if (choice.choiceIntent === 'flavor' || choice.choiceIntent === 'branching' || choice.choiceIntent === 'blind' || choice.choiceIntent === 'dilemma') {
+      if (choice.choiceIntent === 'flavor' && choice.nextSceneId) return 'branching';
+      if (choice.choiceIntent === 'branching' && !choice.nextSceneId && choiceType === 'relationship') return 'blind';
+      return choice.choiceIntent;
+    }
+    if (choiceType === 'dilemma') return 'dilemma';
+    if (choice.nextSceneId) return 'branching';
+    return 'blind';
+  }
+
+  private normalizeImpactFactors(choice: GeneratedChoice, choiceType: ChoiceType): ChoiceImpactFactor[] {
+    const allowed: ChoiceImpactFactor[] = ['outcome', 'process', 'information', 'relationship', 'identity'];
+    const factors = new Set<ChoiceImpactFactor>();
+
+    for (const factor of choice.impactFactors || []) {
+      if (allowed.includes(factor)) factors.add(factor);
+    }
+
+    if (choiceType === 'expression') {
+      return [];
+    }
+    if (choice.nextSceneId) factors.add('outcome');
+    if (choiceType === 'relationship') factors.add('relationship');
+    if (choiceType === 'strategic') factors.add('information');
+    if (choiceType === 'dilemma') {
+      factors.add('identity');
+      factors.add('relationship');
+    }
+    if (Array.isArray(choice.consequences) && choice.consequences.length > 0 && factors.size === 0) {
+      factors.add('process');
+    }
+
+    return Array.from(factors);
+  }
+
+  private normalizeConsequenceTier(choice: GeneratedChoice, choiceType: ChoiceType): ChoiceConsequenceTier {
+    if (choiceType === 'expression') return 'sceneTint';
+    if (choice.consequenceTier === 'callback' || choice.consequenceTier === 'sceneTint' || choice.consequenceTier === 'branchlet' || choice.consequenceTier === 'structuralBranch') {
+      if (choice.consequenceTier === 'structuralBranch' && !choice.nextSceneId) return 'branchlet';
+      return choice.consequenceTier;
+    }
+    if (choice.nextSceneId) return 'structuralBranch';
+    if (choice.memorableMoment?.id || choice.reminderPlan?.later) return 'callback';
+    return choiceType === 'dilemma' ? 'branchlet' : 'sceneTint';
+  }
+
   private buildPrompt(input: ChoiceAuthorInput): string {
     const npcList = input.npcsInScene
       .map(npc => {
@@ -733,6 +796,9 @@ ${buildChoiceAuthorCallbackSection((input.unresolvedCallbacks || []).map(h => ({
   sourceSceneId: '',
   sourceChoiceId: '',
   flags: h.flags,
+  conditionKeys: h.conditionKeys,
+  impactFactors: h.impactFactors,
+  consequenceTier: h.consequenceTier,
   summary: h.summary,
   payoffWindow: { minEpisode: 0, maxEpisode: 0 },
   payoffCount: 0,
@@ -883,6 +949,14 @@ Think about what the situation DEMANDS:
       "id": "choice-1",
       "text": "Choice text here (5-${this.choiceLimits?.maxChoiceWords ?? 15} words)",
       "choiceType": "${choicePoint.type}",
+      "choiceIntent": "branching | blind | dilemma | flavor",
+      "impactFactors": ["relationship", "identity"],
+      "consequenceTier": "callback | sceneTint | branchlet | structuralBranch",
+      "stakes": {
+        "want": "what player wants",
+        "cost": "what they risk",
+        "identity": "what this reveals"
+      },
       "consequences": [],
       "nextSceneId": "scene-id-if-branching-or-omit",
       "statCheck": { "attribute": "charm", "difficulty": 55 },
@@ -944,7 +1018,7 @@ CRITICAL REQUIREMENTS:
 1. Create exactly ${input.optionCount} unique, meaningful choices
 2. The "overallStakes" field is REQUIRED with want, cost, and identity filled in
 3. Each choice needs stakesAnnotation with want, cost, and identity
-4. Include appropriate consequences (flags, scores, relationships)
+4. Each choice needs choiceIntent, impactFactors, consequenceTier, and stakes
 5. ${choicePoint.branches ? 'This is a BRANCHING choice point — set nextSceneId on each choice to one of the available next scenes' : 'Only include nextSceneId if this choice should route to a different scene (expression choices must NOT have nextSceneId)'}
 6. Every choice MUST have outcomeTexts (success, partial, failure) — original prose, not the choice text
 7. Non-branching choices MUST have reactionText and tintFlag
@@ -953,7 +1027,9 @@ CRITICAL REQUIREMENTS:
 10. Meaningful non-expression choices MUST include at least one residueHints item
 11. Meaningful choices should include consequenceDomain, reminderPlan, and feedbackCue
 12. reminderPlan and residueHints should describe visible fiction-first turns, not abstract state deltas
-13. Return ONLY valid JSON, no markdown, no extra text
+13. Expression/flavor choices must use choiceIntent "flavor", consequenceTier "sceneTint", and must NOT branch
+14. Meaningful choices must include at least one impact factor from outcome, process, information, relationship, identity
+15. Return ONLY valid JSON, no markdown, no extra text
 `;
   }
 

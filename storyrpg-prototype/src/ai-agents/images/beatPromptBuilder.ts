@@ -12,7 +12,7 @@
  * 4. Character descriptions and reference images
  */
 
-import type { ImagePrompt } from '../agents/ImageGenerator';
+import type { ImagePrompt } from '../images/imageTypes';
 import type { BeatCoveragePlan, VisualCast, VisualStagingPattern } from '../../types/content';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
 import { selectStyleAdaptation } from '../utils/styleAdaptation';

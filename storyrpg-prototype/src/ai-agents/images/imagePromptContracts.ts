@@ -1,4 +1,4 @@
-import type { ImagePrompt } from '../agents/ImageGenerator';
+import type { ImagePrompt } from '../images/imageTypes';
 
 export type StyleContractSource =
   | 'user-visual'

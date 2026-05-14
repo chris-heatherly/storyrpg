@@ -22,7 +22,10 @@ import { FiveFactorValidator } from './FiveFactorValidator';
 import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
 import { PixarPrinciplesValidator } from './PixarPrinciplesValidator';
 import { CliffhangerValidator } from './CliffhangerValidator';
+import { ChoiceImpactValidator } from './ChoiceImpactValidator';
+import { MechanicsLeakageValidator } from './MechanicsLeakageValidator';
 import { NPCTier, RelationshipDimension, Consequence, ReminderPlan, SeasonBible, Episode, EpisodePlan } from '../../types';
+import type { ChoiceConsequenceTier, ChoiceImpactFactor, ChoiceIntent } from '../../types';
 import type { CliffhangerPlan } from '../../types/seasonPlan';
 import type { EncounterStructure } from '../agents/EncounterArchitect';
 import type { CharacterBible } from '../agents/CharacterDesigner';
@@ -84,6 +87,7 @@ export interface ValidationInput {
       textVariants?: Array<{
         condition: unknown;
         text: string;
+        callbackHookId?: string;
       }>;
       speaker?: string;
     }>;
@@ -108,6 +112,21 @@ export interface ValidationInput {
     sceneContext?: string;
     nextSceneId?: string; // Present if this choice routes to a different scene
     reminderPlan?: ReminderPlan;
+    choiceIntent?: ChoiceIntent;
+    impactFactors?: ChoiceImpactFactor[];
+    consequenceTier?: ChoiceConsequenceTier;
+    stakes?: {
+      want: string;
+      cost: string;
+      identity: string;
+    };
+    outcomeTexts?: {
+      success?: string;
+      partial?: string;
+      failure?: string;
+    };
+    lockedText?: string;
+    reactionText?: string;
   }>;
 
   // Known flags/scores for callback validation
@@ -135,6 +154,8 @@ export class IntegratedBestPracticesValidator {
   private callbackValidator: CallbackOpportunitiesValidator;
   private pixarValidator: PixarPrinciplesValidator;
   private cliffhangerValidator: CliffhangerValidator;
+  private choiceImpactValidator: ChoiceImpactValidator;
+  private mechanicsLeakageValidator: MechanicsLeakageValidator;
 
   constructor(agentConfig: AgentConfig, config?: Partial<ValidationConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -159,6 +180,8 @@ export class IntegratedBestPracticesValidator {
     this.callbackValidator = new CallbackOpportunitiesValidator();
     this.pixarValidator = new PixarPrinciplesValidator();
     this.cliffhangerValidator = new CliffhangerValidator(agentConfig);
+    this.choiceImpactValidator = new ChoiceImpactValidator();
+    this.mechanicsLeakageValidator = new MechanicsLeakageValidator();
   }
 
   /**
@@ -183,6 +206,19 @@ export class IntegratedBestPracticesValidator {
         if (issue.level === 'error') {
           blockingIssues.push(issue);
         } else if (issue.level === 'warning') {
+          warningCount++;
+        }
+      }
+    }
+
+    // 1.5 Choice impact contract (fast, deterministic)
+    if (input.choices.length > 0) {
+      const impactResult = this.choiceImpactValidator.validate({ choices: input.choices as any });
+      for (const issue of impactResult.issues) {
+        const mapped = toValidationIssue('choice_impact', issue);
+        if (mapped.level === 'error') {
+          blockingIssues.push(mapped);
+        } else if (mapped.level === 'warning') {
           warningCount++;
         }
       }
@@ -298,6 +334,19 @@ export class IntegratedBestPracticesValidator {
       }
     }
 
+    // 7. Fiction-first mechanics leakage — block raw mechanics in prose
+    const leakageResult = this.mechanicsLeakageValidator.validate({
+      texts: collectPlayerFacingTexts(input),
+    });
+    for (const issue of leakageResult.issues) {
+      const mapped = toValidationIssue('mechanics_leakage', issue);
+      if (mapped.level === 'error') {
+        blockingIssues.push(mapped);
+      } else if (mapped.level === 'warning') {
+        warningCount++;
+      }
+    }
+
     // In advisory mode, we still block on errors but allow warnings
     // In strict mode, we block on both errors and warnings
     // Errors should ALWAYS block - they indicate broken output
@@ -363,6 +412,24 @@ export class IntegratedBestPracticesValidator {
         totalChoices: densityResult.metrics.choiceCount,
       };
     }
+
+    // 1.5 Choice Impact Validation
+    if (input.choices.length > 0) {
+      const impactResult = this.choiceImpactValidator.validate({ choices: input.choices as any });
+      allIssues.push(...impactResult.issues.map((issue) => toValidationIssue('choice_impact', issue)));
+      metrics.choiceImpact = {
+        meaningfulChoices: impactResult.metrics.meaningfulChoices,
+        choicesWithImpactFactors: impactResult.metrics.choicesWithImpactFactors,
+        flavorBranches: impactResult.metrics.flavorBranches,
+      };
+    }
+
+    // 1.6 Mechanics Leakage Validation
+    const leakageResult = this.mechanicsLeakageValidator.validate({
+      texts: collectPlayerFacingTexts(input),
+    });
+    allIssues.push(...leakageResult.issues.map((issue) => toValidationIssue('mechanics_leakage', issue)));
+    metrics.mechanicsLeakage = leakageResult.metrics;
 
     // 2. NPC Depth Validation
     if (this.config.rules.npcDepth.enabled && input.npcs.length > 0) {
@@ -693,4 +760,124 @@ export class IntegratedBestPracticesValidator {
       cliffhanger: this.cliffhangerValidator,
     };
   }
+}
+
+function toValidationIssue(
+  category: ValidationIssue['category'],
+  issue: {
+    severity: 'error' | 'warning' | 'info';
+    message: string;
+    location?: string;
+    suggestion?: string;
+  }
+): ValidationIssue {
+  const level: ValidationIssue['level'] =
+    issue.severity === 'error'
+      ? 'error'
+      : issue.severity === 'warning'
+      ? 'warning'
+      : 'suggestion';
+
+  return {
+    category,
+    level,
+    message: issue.message,
+    location: parseIssueLocation(issue.location),
+    suggestion: issue.suggestion,
+  };
+}
+
+function parseIssueLocation(raw?: string): ValidationIssue['location'] {
+  if (!raw) return {};
+
+  const parts = raw.split(':').map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 3) {
+    return {
+      sceneId: parts[0],
+      beatId: parts[1],
+      choiceId: parts[2],
+    };
+  }
+  if (parts.length === 2) {
+    return {
+      beatId: parts[0],
+      choiceId: parts[1],
+    };
+  }
+  if (parts.length === 1) {
+    return { choiceId: parts[0] };
+  }
+  return {};
+}
+
+function collectPlayerFacingTexts(input: ValidationInput): Array<{
+  id: string;
+  text: string;
+  sceneId?: string;
+  beatId?: string;
+  choiceId?: string;
+  source?: string;
+}> {
+  const texts: Array<{
+    id: string;
+    text: string;
+    sceneId?: string;
+    beatId?: string;
+    choiceId?: string;
+    source?: string;
+  }> = [];
+
+  const add = (
+    id: string,
+    text: string | undefined,
+    source: string,
+    location: { sceneId?: string; beatId?: string; choiceId?: string } = {}
+  ) => {
+    if (!text || !text.trim()) return;
+    texts.push({ id, text, source, ...location });
+  };
+
+  for (const scene of input.scenes) {
+    for (const beat of scene.beats) {
+      add(`${scene.id}:${beat.id}`, beat.text, 'beat', {
+        sceneId: scene.id,
+        beatId: beat.id,
+      });
+      for (const [index, variant] of (beat.textVariants || []).entries()) {
+        add(`${scene.id}:${beat.id}:variant:${index}`, variant.text, 'textVariant', {
+          sceneId: scene.id,
+          beatId: beat.id,
+        });
+      }
+    }
+  }
+
+  for (const choice of input.choices) {
+    add(choice.id, choice.text, 'choice', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+    add(`${choice.id}:locked`, choice.lockedText, 'lockedText', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+    add(`${choice.id}:reaction`, choice.reactionText, 'reactionText', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+    add(`${choice.id}:success`, choice.outcomeTexts?.success, 'outcomeText', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+    add(`${choice.id}:partial`, choice.outcomeTexts?.partial, 'outcomeText', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+    add(`${choice.id}:failure`, choice.outcomeTexts?.failure, 'outcomeText', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+  }
+
+  return texts;
 }

@@ -11,7 +11,7 @@ import {
   CharacterMasterRequest,
   LocationMasterRequest,
   GeneratedImage
-} from '../ImageGenerator';
+} from '../../images/imageTypes';
 import { StoryboardAgent, StoryboardRequest, VisualPlan } from './StoryboardAgent';
 import {
   attachStoryboardPlanToVisualPlan,

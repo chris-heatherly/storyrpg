@@ -6,7 +6,7 @@
  * Tier 3: Targeted regeneration of flagged images (never discards originals)
  */
 
-import type { GeneratedImage, ImagePrompt } from '../agents/ImageGenerator';
+import type { GeneratedImage, ImagePrompt } from '../images/imageTypes';
 import type { ArtStyleProfile } from './artStyleProfile';
 
 export interface Tier1CheckResult {

@@ -15,7 +15,7 @@
 import type {
   ImagePromptControlNet,
   ImagePromptIpAdapter,
-} from '../../agents/ImageGenerator';
+} from '../../images/imageTypes';
 import type { StableDiffusionSettings } from '../../config';
 import type { ReferenceImage } from '../imageGenerationService';
 

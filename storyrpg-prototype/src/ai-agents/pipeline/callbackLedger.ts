@@ -19,6 +19,7 @@
 // FullStoryPipeline using the existing pipelineOutputWriter helpers.
 
 import type { Choice } from '../../types/choice';
+import type { ChoiceConsequenceTier, ChoiceImpactFactor } from '../../types/choice';
 import type { TextVariant } from '../../types/content';
 
 export interface CallbackHook {
@@ -27,6 +28,9 @@ export interface CallbackHook {
   sourceSceneId: string;
   sourceChoiceId: string;
   flags: string[];
+  conditionKeys?: string[];
+  impactFactors?: ChoiceImpactFactor[];
+  consequenceTier?: ChoiceConsequenceTier;
   summary: string;
   payoffWindow: { minEpisode: number; maxEpisode: number };
   payoffCount: number;
@@ -42,6 +46,18 @@ export interface LedgerConfig {
   // Cap on active (unresolved) hooks kept in prompts. Oldest get retired first.
   maxActiveHooks: number;
 }
+
+type CallbackHookInput = Omit<
+  CallbackHook,
+  'payoffCount' | 'resolved' | 'createdAt' | 'conditionKeys' | 'impactFactors' | 'consequenceTier'
+> & {
+  conditionKeys?: string[];
+  impactFactors?: ChoiceImpactFactor[];
+  consequenceTier?: ChoiceConsequenceTier;
+  payoffCount?: number;
+  resolved?: boolean;
+  createdAt?: string;
+};
 
 export const DEFAULT_LEDGER_CONFIG: LedgerConfig = {
   payoffThreshold: 2,
@@ -70,11 +86,7 @@ export class CallbackLedger {
    * Add a new hook. If an id already exists, updates flags/summary but
    * preserves payoff state and createdAt.
    */
-  add(hook: Omit<CallbackHook, 'payoffCount' | 'resolved' | 'createdAt'> & {
-    payoffCount?: number;
-    resolved?: boolean;
-    createdAt?: string;
-  }): CallbackHook {
+  add(hook: CallbackHookInput): CallbackHook {
     const existing = this.hooks.get(hook.id);
     const merged: CallbackHook = {
       ...hook,
@@ -82,6 +94,13 @@ export class CallbackLedger {
       resolved: existing?.resolved ?? hook.resolved ?? false,
       createdAt: existing?.createdAt ?? hook.createdAt ?? new Date().toISOString(),
       flags: Array.from(new Set([...(existing?.flags ?? []), ...hook.flags])),
+      conditionKeys: Array.from(new Set([
+        ...(existing?.conditionKeys ?? []),
+        ...(hook.conditionKeys ?? []),
+        ...hook.flags,
+      ])),
+      impactFactors: hook.impactFactors ?? existing?.impactFactors ?? [],
+      consequenceTier: hook.consequenceTier ?? existing?.consequenceTier ?? 'callback',
     };
     this.hooks.set(hook.id, merged);
     return merged;
@@ -105,12 +124,25 @@ export class CallbackLedger {
       sourceSceneId: params.sceneId,
       sourceChoiceId: params.choice.id,
       flags: moment.flags ?? this.inferFlagsFromChoice(params.choice),
+      conditionKeys: moment.flags ?? this.inferFlagsFromChoice(params.choice),
+      impactFactors: params.choice.impactFactors ?? [],
+      consequenceTier: params.choice.consequenceTier ?? this.inferConsequenceTier(params.choice),
       summary: moment.summary,
       payoffWindow: {
         minEpisode: params.episode + 1,
         maxEpisode: params.episode + this.config.defaultWindowSpan,
       },
     });
+  }
+
+  private inferConsequenceTier(choice: Choice): ChoiceConsequenceTier {
+    if (choice.nextSceneId) return 'branchlet';
+    if (choice.tintFlag) return 'sceneTint';
+    if (choice.choiceType === 'expression' || choice.choiceIntent === 'flavor') return 'callback';
+    if ((choice.consequences ?? []).some((c) => c.type === 'addItem' || c.type === 'removeItem' || c.type === 'setScore')) {
+      return 'branchlet';
+    }
+    return 'callback';
   }
 
   /**
@@ -200,8 +232,19 @@ export class CallbackLedger {
       config: parsed.config,
     });
     for (const hook of parsed.hooks ?? []) {
-      ledger.hooks.set(hook.id, { ...hook });
+      ledger.hooks.set(hook.id, normalizeHook(hook));
     }
     return ledger;
   }
+}
+
+function normalizeHook(hook: CallbackHook): CallbackHook {
+  const flags = hook.flags ?? [];
+  return {
+    ...hook,
+    flags,
+    conditionKeys: hook.conditionKeys ?? flags,
+    impactFactors: hook.impactFactors ?? [],
+    consequenceTier: hook.consequenceTier ?? 'callback',
+  };
 }

@@ -11,7 +11,7 @@
 
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from '../BaseAgent';
-import { ImagePrompt, EncounterSequenceRequest } from '../ImageGenerator';
+import { ImagePrompt, EncounterSequenceRequest } from '../../images/imageTypes';
 import { 
   CORE_VISUAL_PRINCIPLE, 
   MOBILE_COMPOSITION_FRAMEWORK, 

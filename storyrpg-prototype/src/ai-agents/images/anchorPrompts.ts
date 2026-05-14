@@ -10,7 +10,7 @@
  * (browser, Node worker, proxy) without pulling in agents or services.
  */
 
-import type { ImagePrompt } from '../agents/ImageGenerator';
+import type { ImagePrompt } from '../images/imageTypes';
 import { applyPromptContract, buildStyleContractDirective } from './imagePromptContracts';
 
 export interface AnchorStyleInput {

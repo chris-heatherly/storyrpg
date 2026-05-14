@@ -1,4 +1,4 @@
-import type { GeneratedImage, ImagePrompt } from '../agents/ImageGenerator';
+import type { GeneratedImage, ImagePrompt } from '../images/imageTypes';
 import type { AssetRecord, AssetRegistrySnapshot, ImageSlot, ImageSlotStatus, RenderAttemptRecord, SlotReferencePack } from './slotTypes';
 
 let nodeFs: any;

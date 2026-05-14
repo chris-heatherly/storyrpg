@@ -16,7 +16,7 @@
  * tracking (quarantine / degraded) that Gemini and Atlas already have.
  */
 
-import type { GeneratedImage } from '../../agents/ImageGenerator';
+import type { GeneratedImage } from '../../images/imageTypes';
 import type {
   StableDiffusionAdapter,
   SDRequest,
@@ -24,7 +24,7 @@ import type {
   SDWriteHelpers,
 } from './StableDiffusionAdapter';
 import type { StableDiffusionSettings } from '../../config';
-import type { ImagePromptLora } from '../../agents/ImageGenerator';
+import type { ImagePromptLora } from '../../images/imageTypes';
 import type { ProviderPreflightResult } from '../imageGenerationService';
 import { EXTERNAL_APIS } from '../../../config/endpoints';
 import { buildSDPrompt } from './buildSDPrompt';

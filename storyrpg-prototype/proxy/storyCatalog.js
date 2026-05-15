@@ -1,14 +1,25 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { Storage } = require('@google-cloud/storage');
 
 const codec = require('./storyCodec');
 const manifestModule = require('./storyManifest');
+const {
+  getStoryStorageMode,
+  getGcsBucketName,
+  getGcsStoriesPrefix,
+  getGcsPublicBaseUrl,
+} = require('./gcsConfig');
 
 function createStoryCatalog(storiesDir, port) {
   const storyJsonCache = new Map();
   const LEGACY_STORY_FILENAME = '08-final-story.json';
   const MODERN_STORY_FILENAME = 'story.json';
+  const CATALOG_OBJECT = 'catalog.json';
+
+  let gcsCatalogCache = { loadedAtMs: 0, entries: null };
+  const GCS_CATALOG_CACHE_TTL_MS = 10_000;
 
   function listStoryDirectories() {
     if (!fs.existsSync(storiesDir)) return [];
@@ -307,34 +318,201 @@ function createStoryCatalog(storiesDir, port) {
     return includeInvalid ? { valid, invalid } : valid;
   }
 
-  function createStoryCatalogEntry(record, req) {
-    const entry = codec.projectForCatalog(record.pkg, {
-      req,
-      port,
-      dirName: record.dirName,
-      mtimeMs: record.mtimeMs,
+  async function loadGcsCatalogEntries() {
+    const now = Date.now();
+    if (gcsCatalogCache.entries && now - gcsCatalogCache.loadedAtMs < GCS_CATALOG_CACHE_TTL_MS) {
+      return gcsCatalogCache.entries;
+    }
+
+    const bucketName = getGcsBucketName();
+    const prefix = getGcsStoriesPrefix();
+    if (!bucketName) throw new Error('GCS_BUCKET_NAME is required when STORY_STORAGE_MODE=gcs');
+
+    const storage = new Storage();
+    const bucket = storage.bucket(bucketName);
+    const file = bucket.file(`${prefix}/${CATALOG_OBJECT}`.replace(/\/+/g, '/'));
+
+    const [exists] = await file.exists();
+    if (!exists) {
+      gcsCatalogCache = { loadedAtMs: now, entries: [] };
+      return [];
+    }
+
+    try {
+      const [buf] = await file.download();
+      const parsed = JSON.parse(buf.toString('utf8'));
+      const entries = Array.isArray(parsed?.stories) ? parsed.stories : [];
+      gcsCatalogCache = { loadedAtMs: now, entries };
+      return entries;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[StoryCatalog] Failed to load/parse GCS catalog.json (using cached or empty): ${msg}`);
+      if (gcsCatalogCache.entries) {
+        gcsCatalogCache.loadedAtMs = now;
+        return gcsCatalogCache.entries;
+      }
+      gcsCatalogCache = { loadedAtMs: now, entries: [] };
+      return [];
+    }
+  }
+
+  async function listLatestStoryRecordsAsync(options = {}) {
+    const mode = getStoryStorageMode();
+    if (mode !== 'gcs') return listLatestStoryRecords(options);
+
+    const entries = await loadGcsCatalogEntries();
+    const records = [];
+    for (const entry of entries) {
+      const outputDir = String(entry.outputDir || '');
+      const dirNameMatch = /^generated-stories\/([^/]+)\//.exec(outputDir);
+      const dirName = dirNameMatch ? dirNameMatch[1] : null;
+      if (!dirName) continue;
+      records.push({
+        story: {
+          id: entry.id,
+          title: entry.title,
+          genre: entry.genre,
+          synopsis: entry.synopsis,
+          coverImage: entry.coverImage || '',
+          author: entry.author,
+          tags: entry.tags,
+          episodes: Array.isArray(entry.episodes) ? entry.episodes : [],
+          episodeCount: typeof entry.episodeCount === 'number' ? entry.episodeCount : undefined,
+          outputDir: entry.outputDir,
+        },
+        dirName,
+        storyFile: entry.storyPath || `generated-stories/${dirName}/${LEGACY_STORY_FILENAME}`,
+        mtimeMs: entry.updatedAt ? new Date(entry.updatedAt).getTime() : Date.now(),
+      });
+    }
+
+    records.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+    const seen = new Set();
+    return records.filter((r) => {
+      if (!r?.story?.id || seen.has(r.story.id)) return false;
+      seen.add(r.story.id);
+      return true;
     });
-    const artifactSources = Array.isArray(record.sourceRecords) && record.sourceRecords.length > 0
-      ? record.sourceRecords
-      : [record];
-    const imageArtifacts = artifactSources
-      .map((source) => getImageArtifactSummary(path.join(storiesDir, source.dirName)))
-      .reduce((summary, source) => ({
-        hasSeasonReferences: summary.hasSeasonReferences || source.hasSeasonReferences,
-        hasEpisodeArt: summary.hasEpisodeArt || source.hasEpisodeArt,
-      }), { hasSeasonReferences: false, hasEpisodeArt: false });
+  }
+
+  function createStoryCatalogEntryFromGcsRecord(record, req) {
+    const { story, dirName, mtimeMs } = record;
+    const episodeCount =
+      typeof story.episodeCount === 'number'
+        ? story.episodeCount
+        : Array.isArray(story.episodes)
+          ? story.episodes.length
+          : 0;
     return {
-      ...entry,
-      imageArtifacts,
+      id: story.id,
+      title: story.title,
+      genre: story.genre,
+      synopsis: story.synopsis,
+      coverImage: codec.normalizeAssetUrlForRequest(story.coverImage || '', req, port),
+      author: story.author,
+      tags: story.tags,
+      outputDir: `generated-stories/${dirName}/`,
+      isBuiltIn: story.isBuiltIn === true,
+      updatedAt: new Date(mtimeMs).toISOString(),
+      fullStoryUrl: `${codec.getRequestBaseUrl(req, port)}/stories/${encodeURIComponent(story.id)}`,
+      episodeCount,
+      episodes: Array.isArray(story.episodes)
+        ? story.episodes.map((episode) => ({
+            id: episode.id,
+            number: episode.number,
+            title: episode.title,
+            synopsis: episode.synopsis,
+            coverImage: codec.normalizeAssetUrlForRequest(episode.coverImage || '', req, port),
+          }))
+        : [],
     };
   }
 
-  function createFullStoryResponse(record, req) {
-    return codec.projectForFullResponse(record.pkg, { req, port, dirName: record.dirName });
+  function normalizeFullStoryMedia(story, req) {
+    const publicBase = getGcsPublicBaseUrl();
+    if (!(publicBase && typeof story.coverImage === 'string' && story.coverImage.startsWith(publicBase))) {
+      story.coverImage = codec.normalizeAssetUrlForRequest(story.coverImage || '', req, port);
+    }
+    if (Array.isArray(story.npcs)) {
+      story.npcs = story.npcs.map((npc) => ({
+        ...npc,
+        portrait: codec.normalizeAssetUrlForRequest(npc.portrait || '', req, port),
+      }));
+    }
+    if (Array.isArray(story.episodes)) {
+      story.episodes = story.episodes.map((episode) => ({
+        ...episode,
+        coverImage: codec.normalizeAssetUrlForRequest(episode.coverImage || '', req, port),
+        scenes: Array.isArray(episode.scenes)
+          ? episode.scenes.map((scene) => ({
+              ...scene,
+              backgroundImage: codec.normalizeAssetUrlForRequest(scene.backgroundImage || '', req, port),
+              beats: Array.isArray(scene.beats)
+                ? scene.beats.map((beat) => ({
+                    ...beat,
+                    image: codec.normalizeAssetUrlForRequest(beat.image || '', req, port),
+                    video: codec.normalizeAssetUrlForRequest(beat.video || '', req, port),
+                  }))
+                : [],
+              encounter: scene.encounter ? codec.normalizeNestedMedia(scene.encounter, req, port) : scene.encounter,
+            }))
+          : [],
+      }));
+    }
+    return story;
+  }
+
+  function createStoryCatalogEntry(record, req) {
+    if (record.pkg) {
+      const entry = codec.projectForCatalog(record.pkg, {
+        req,
+        port,
+        dirName: record.dirName,
+        mtimeMs: record.mtimeMs,
+      });
+      const artifactSources = Array.isArray(record.sourceRecords) && record.sourceRecords.length > 0
+        ? record.sourceRecords
+        : [record];
+      const imageArtifacts = artifactSources
+        .map((source) => getImageArtifactSummary(path.join(storiesDir, source.dirName)))
+        .reduce((summary, source) => ({
+          hasSeasonReferences: summary.hasSeasonReferences || source.hasSeasonReferences,
+          hasEpisodeArt: summary.hasEpisodeArt || source.hasEpisodeArt,
+        }), { hasSeasonReferences: false, hasEpisodeArt: false });
+      return {
+        ...entry,
+        imageArtifacts,
+      };
+    }
+
+    return createStoryCatalogEntryFromGcsRecord(record, req);
+  }
+
+  async function createFullStoryResponse(record, req) {
+    if (getStoryStorageMode() === 'gcs') {
+      const bucketName = getGcsBucketName();
+      const prefix = getGcsStoriesPrefix();
+      if (!bucketName) throw new Error('GCS_BUCKET_NAME is required when STORY_STORAGE_MODE=gcs');
+
+      const objectPath = `${prefix}/${record.dirName}/${LEGACY_STORY_FILENAME}`.replace(/\/+/g, '/');
+      const storage = new Storage();
+      const bucket = storage.bucket(bucketName);
+      const file = bucket.file(objectPath);
+      const [buf] = await file.download();
+      const story = JSON.parse(buf.toString('utf8'));
+      story.outputDir = `generated-stories/${record.dirName}/`;
+      return normalizeFullStoryMedia(story, req);
+    }
+
+    if (record.pkg) {
+      return codec.projectForFullResponse(record.pkg, { req, port, dirName: record.dirName });
+    }
+
+    throw new Error('Story record has no decodable package data');
   }
 
   return {
-    listLatestStoryRecords,
+    listLatestStoryRecords: listLatestStoryRecordsAsync,
     createStoryCatalogEntry,
     createFullStoryResponse,
     getStoryRecord,

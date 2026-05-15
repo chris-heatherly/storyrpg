@@ -18,155 +18,32 @@ import { SceneContent } from './SceneWriter';
 import { WorldBible } from './WorldBuilder';
 import { CharacterBible } from './CharacterDesigner';
 import { EpisodeBlueprint } from './StoryArchitect';
-import type { SceneSettingContext } from '../utils/styleAdaptation';
+import type {
+  BeatImageRequest,
+  CharacterMasterRequest,
+  CoverImageRequest,
+  EncounterSequenceRequest,
+  ImageGenerationResult,
+  ImagePrompt,
+  LocationMasterRequest,
+  SceneImageRequest,
+} from '../images/imageTypes';
 
-// Image generation request types
-export interface SceneImageRequest {
-  sceneId: string;
-  sceneName: string;
-  description: string;
-  location?: {
-    id: string;
-    name: string;
-    description: string;
-  };
-  mood: string;
-  genre: string;
-  tone: string;
-}
-
-export interface BeatImageRequest {
-  beatId: string;
-  beatText: string;
-  sceneContext: {
-    name: string;
-    location?: string;
-    mood: string;
-  };
-  characters?: Array<{
-    name: string;
-    description: string;
-  }>;
-  genre: string;
-  tone: string;
-}
-
-export interface CoverImageRequest {
-  title: string;
-  synopsis: string;
-  genre: string;
-  tone: string;
-  keyElements?: string[];
-}
-
-export interface EncounterSequenceRequest {
-  encounterId: string;
-  beatId: string;
-  outcome: 'situation' | 'full_success' | 'complicated_success' | 'interesting_failure';
-  sceneContext: {
-    name: string;
-    description: string;
-    location?: string;
-    mood: string;
-  };
-  shotDescription: string; // The visualShotDescription from BeatWriter
-  characters: Array<{
-    name: string;
-    description: string;
-    role: string;
-  }>;
-  genre: string;
-  tone: string;
-}
-
-export interface CharacterMasterRequest {
-  characterId: string;
-  name: string;
-  description: string; // From CharacterBible
-  role: string;
-  genre: string;
-  tone: string;
-}
-
-export interface LocationMasterRequest {
-  locationId: string;
-  name: string;
-  description: string; // From WorldBible
-  type: string;
-  genre: string;
-  tone: string;
-}
-
-// Image prompt output
-export interface ImagePrompt {
-  id?: string;  // Optional identifier for the prompt
-  prompt: string;
-  negativePrompt?: string;
-  style?: string;
-  aspectRatio?: string;
-  composition?: string;
-  cameraAngle?: string;
-  // Metadata for reference-based generation
-  referenceCharIds?: string[];
-  referenceLocationId?: string;
-  
-  // Micro-direction fields — specific visual details that survive the "telephone game"
-  // from StoryboardAgent -> VisualIllustratorAgent -> imageGenerationService.
-  // These get injected directly into the Gemini prompt by buildNarrativePrompt.
-  keyExpression?: string;    // e.g. "furrowed brow, clenched jaw, narrowed eyes"
-  keyGesture?: string;       // e.g. "fist clenched around crumpled letter, other hand bracing against wall"
-  keyBodyLanguage?: string;  // e.g. "weight forward on front foot, shoulders squared, leaning into confrontation"
-  shotDescription?: string;  // e.g. "low angle medium shot, three-quarter view"
-  emotionalCore?: string;    // e.g. "betrayal — the moment he realizes she lied"
-  visualNarrative?: string;  // The core visual story: "A woman recoils from a man whose hands are stained red." (Replaces silentStoryTest)
-  settingAdaptationNotes?: string[];
-  settingBranchLabel?: string;
-  settingContext?: SceneSettingContext;
-  isEncounterImage?: boolean;
-  poseSpec?: string;
-  beatType?: string;
-}
-
-// Generated image result
-export interface GeneratedImage {
-  prompt: ImagePrompt;
-  imagePath?: string; // Path where image is saved
-  imageUrl?: string; // URL if hosted
-  imageData?: string; // Raw base64 data (used during pipeline)
-  mimeType?: string;  // Mime type of the image
-  provider?: string;
-  model?: string;
-  metadata?: {
-    width?: number;
-    height?: number;
-    format?: string;
-    provider?: string;
-    model?: string;
-    attempts?: number;
-    providerAttemptCount?: number;
-    effectivePromptChars?: number;
-    effectiveNegativeChars?: number;
-    effectiveRefCount?: number;
-    providerFailureKind?: string;
-    candidateCount?: number;
-    hasCandidates?: boolean;
-    finishReason?: string;
-    blockReason?: string;
-    responseExcerpt?: string;
-    chatMode?: boolean;
-    chatTurns?: number;
-    editMode?: boolean;
-  };
-}
-
-// Batch image generation result
-export interface ImageGenerationResult {
-  sceneImages: Map<string, GeneratedImage>; // sceneId -> image
-  beatImages: Map<string, GeneratedImage>; // beatId -> image
-  episodeCover?: GeneratedImage;
-  storyCover?: GeneratedImage;
-  errors?: Array<{ target: string; error: string }>;
-}
+export type {
+  BeatImageRequest,
+  CharacterMasterRequest,
+  CoverImageRequest,
+  EncounterSequenceRequest,
+  GeneratedImage,
+  ImageGenerationResult,
+  ImagePrompt,
+  ImagePromptControlNet,
+  ImagePromptIpAdapter,
+  ImagePromptLora,
+  LocationMasterRequest,
+  SceneImageRequest,
+  SDReferencePurpose,
+} from '../images/imageTypes';
 
 export class ImageGenerator extends BaseAgent {
   private artStyle?: string;

@@ -2,7 +2,12 @@
 
 How StoryRPG creates, manages, and constrains story branches.
 
-**Last Updated:** December 2024
+**Last Updated:** April 2026
+
+See also the companion design plans that extend this system:
+- `PLAN_DELAYED_CONSEQUENCES.md` — how the callback ledger and delayed consequences layer on top of branching
+- `PLAN_MULTI_SCENE_BRANCH_ZONES.md` — proposed multi-scene branch zones between bottlenecks
+- `PLAN_POST_EPISODE_FLOWCHART.md` — post-episode flowchart and ending-mode planning
 
 ---
 
@@ -161,6 +166,11 @@ The tone is tracked on the `Scene.branchType` field and recorded in the player's
 6. **`nextSceneId` must reference a scene in the parent scene's `leadsTo` array.** Choices cannot route to arbitrary scenes.
 
 7. **Branching and Dilemma choices MUST affect at least 1 of the Five Factors** (Outcome, Process, Information, Relationship, Identity). Richer choices affect 2–3.
+
+8. **Meaningful choices should declare their intended impact.** New generated
+   choices can provide `choiceIntent`, `impactFactors`, `consequenceTier`, and
+   `stakes` metadata so validators and repair prompts can preserve the intended
+   agency model.
 
 ### Choice Type Distribution
 

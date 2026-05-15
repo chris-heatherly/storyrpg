@@ -13,7 +13,10 @@ import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import {
   Choice,
+  ChoiceConsequenceTier,
   ChoiceFeedbackCue,
+  ChoiceImpactFactor,
+  ChoiceIntent,
   ChoiceType,
   Consequence,
   ConsequenceDomain,
@@ -21,11 +24,34 @@ import {
   FiveFactorImpact,
   ReminderPlan,
 } from '../../types';
-import { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
-import { STAKES_TRIANGLE, CHOICE_GEOMETRY, FIVE_FACTOR_TEST } from '../prompts/storytellingPrinciples';
+import {
+  SourceMaterialAnalysis,
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
+// Phase 1.4: STAKES_TRIANGLE / CHOICE_GEOMETRY / FIVE_FACTOR_TEST are delivered
+// via the shared CORE_STORYTELLING_PROMPT (BaseAgent system prompt) and no
+// longer re-embedded here, to eliminate token duplication and drift risk.
 import { FiveFactorValidator } from '../validators/FiveFactorValidator';
 import { StakesTriangleValidator } from '../validators/StakesTriangleValidator';
+import { buildChoiceAuthorCallbackSection } from '../prompts/callbackPromptSection';
+import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
+import { CHOICE_AUTHOR_RESIDUE_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
+
+function flattenDirectLanguageFragments(sourceAnalysis?: SourceMaterialAnalysis): string[] {
+  const fragments = sourceAnalysis?.directLanguageFragments;
+  if (!fragments) return [];
+  if (Array.isArray(fragments)) {
+    return fragments.map((fragment) => fragment.text).filter(Boolean);
+  }
+  return [
+    ...(Array.isArray(fragments.dialogue) ? fragments.dialogue : []),
+    ...(Array.isArray(fragments.prose) ? fragments.prose : []),
+    ...(Array.isArray(fragments.terminology) ? fragments.terminology : []),
+  ].filter(Boolean);
+}
 
 // Input types
 export interface ChoiceAuthorInput {
@@ -76,6 +102,25 @@ export interface ChoiceAuthorInput {
   // Source material analysis for IP fidelity (optional)
   sourceAnalysis?: SourceMaterialAnalysis;
 
+  /**
+   * Season-level narrative anchors (from SeasonPlan.anchors). Keeps the
+   * Stakes Triangle on every choice rooted in the SAME shared stakes as
+   * the rest of the season.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /**
+   * Season-level 7-point beat map. ChoiceAuthor uses it to calibrate
+   * choice weight: choices in the Climax / Pinch beats should be more
+   * consequential than choices in Rising / Hook beats.
+   */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Which beat(s) of the season this episode carries.
+   */
+  episodeStructuralRole?: StructuralRole[];
+
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
 
@@ -91,6 +136,47 @@ export interface ChoiceAuthorInput {
       narrativeHook: string;
     };
   };
+
+  // Branch topology context (Phase 1.1). Tells ChoiceAuthor whether this
+  // beat is a true branch point (needs nextSceneId routing), a tinted choice,
+  // or a reconvergence beat where state reconciliation should be expressed
+  // via conditional text.
+  branchContext?: {
+    role: 'bottleneck' | 'branch' | 'reconvergence' | 'linear';
+    isBranchPoint?: boolean;
+    expectedBranches?: number;
+    reconvergenceTargets?: string[];
+    stateReconciliationHints?: string[];
+  };
+
+  // Consequence budget target (Phase 3.1). Default 60/25/10/5.
+  consequenceBudgetTarget?: {
+    callback: number;
+    tint: number;
+    branchlet: number;
+    branch: number;
+  };
+
+  // Character arc milestone targets (Phase 7.3). ChoiceAuthor aligns
+  // consequence design with planned identity/relationship deltas.
+  arcTargets?: {
+    identityDeltaHints?: Array<{ dimension: string; direction: 'positive' | 'negative'; magnitude: 'minor' | 'moderate' | 'major' }>;
+    relationshipTrajectory?: Array<{ npcId: string; dimension: string; direction: 'positive' | 'negative'; hint: string }>;
+  };
+
+  // Unresolved callback hooks from prior episodes (Plan 1: Delayed Consequences).
+  // ChoiceAuthor MAY gate a new choice's `conditions` on one of these flags.
+  // ChoiceAuthor also tags notable new choices with `memorableMoment` for
+  // future episodes to pay off.
+  unresolvedCallbacks?: Array<{
+    id: string;
+    sourceEpisode: number;
+    summary: string;
+    flags: string[];
+    conditionKeys?: string[];
+    impactFactors?: ChoiceImpactFactor[];
+    consequenceTier?: ChoiceConsequenceTier;
+  }>;
 }
 
 // Output types
@@ -172,11 +258,7 @@ export class ChoiceAuthor extends BaseAgent {
 
 You craft the decision points that define the player's journey. Every choice you create should feel meaningful, weighty, and revealing of character.
 
-${STAKES_TRIANGLE}
-
-${CHOICE_GEOMETRY}
-
-${FIVE_FACTOR_TEST}
+(Stakes Triangle, Choice Geometry, and the Five-Factor Test are in the shared system prompt. Apply them rigorously — every choice must name Want/Cost/Identity and move at least one of Outcome/Process/Information/Relationship/Identity.)
 
 ## Choice Types (STRICT CATEGORIZATION)
 Choice types describe the PLAYER EXPERIENCE, not structural routing:
@@ -195,15 +277,10 @@ Branching (routing to different scenes via nextSceneId) is a PROPERTY of a choic
 - When the scene blueprint has \`branches: true\`, include nextSceneId on each choice option.
 - Encounter outcomes (victory/defeat/escape) are the PRIMARY branching mechanism.
 
-## The Five-Factor Test
-Every choice (except expression) MUST affect at least one:
-1. **Outcome**: What happens in the story.
-2. **Process**: How it happens.
-3. **Information**: What is learned.
-4. **Relationship**: Bonds with NPCs.
-5. **Identity**: Who the protagonist is becoming.
-
 ## Type-Specific Requirements (ENFORCED)
+- **dilemma** choices must include a \`moralContract\` object. It names competing value A, competing value B, the unavoidable cost, who benefits, who is harmed, and what remains uncertain. Dilemmas are not good/bad or optimal/suboptimal; each option protects one value under pressure and sacrifices another.
+- Every meaningful non-expression choice must leave at least one residue through \`residueHints\`: immediate prose echo, later textVariant, relationship behavior, encounter advantage/complication, visual staging hint, or recap summary. Keep residue sparse and fictional, not mechanical.
+- Hidden capability should appear as affordance, not visible stats: empathy reveals emotional tells, wit reveals contradictions, courage unlocks bold action, resolve unlocks endurance/refusal, resourcefulness reveals improvised paths, charm unlocks social openings. Do not expose numbers, odds, dice, or stat names in player-facing prose.
 - **expression**: Must set at least one flag (e.g., "was_sarcastic", "chose_humor") for callback tracking. NPCs should be able to reference the player's personality later. NEVER include statCheck.
 - **relationship**: Must include at least one consequence of type "relationship" (shifting trust, affection, respect, or fear with a specific NPC).
 - **strategic**: Must include statCheck on at least one option (attribute or skill check with difficulty). The player's build should matter.
@@ -218,6 +295,8 @@ Every choice (except expression) MUST affect at least one:
 - **Tint Flags**: Dilemma choices should set tint flags (e.g., "tint:mercy", "tint:justice") that color subsequent scene tone.
 - **Callback Flags**: Expression choices should set memorable flags that NPCs can reference in later dialogue.
 - **Consequence Legibility**: Meaningful choices should name the domain they most affect: relationship, reputation, danger, information, identity, leverage, or resource.
+- **Turns over topics**: Each option should create a visible fiction-first turn, not merely reveal the same information in a different tone. Good turns change trust, evidence, leverage, secrecy pressure, proximity, risk, identity expression, resources, knowledge, or callback residue.
+- **Reminder Planning as Story Memory**: reminderPlan and residueHints should point to visible story changes: colder distance, evidence now in someone else's hands, a secret harder to deny, altered access, changed reputation, or a later callback.
 - **Reminder Planning**: Every meaningful choice should include an immediate echo and a short-term reminder plan.
 - **Risk Framing**: Use fiction-first feedback cues such as "steady", "desperate", "you have leverage", or "you're out of your depth" instead of exposing numbers.
 
@@ -271,6 +350,8 @@ For meaningful choices, some consequences should NOT fire immediately. Instead, 
 "Marcus is trapped, but the diamond is right there..."
 - Save Marcus (Want: loyalty | Cost: the score | Identity: puts people first)
 - Grab the diamond (Want: the job | Cost: a friend | Identity: the mission matters more)
+
+${CHOICE_AUTHOR_RESIDUE_EXAMPLE}
 
 ## Character Names and Pronouns
 
@@ -486,6 +567,15 @@ Before finalizing:
       }
       choice.choiceType = choiceSet.choiceType;
 
+      choice.choiceIntent = this.normalizeChoiceIntent(choice, choiceSet.choiceType);
+      choice.impactFactors = this.normalizeImpactFactors(choice, choiceSet.choiceType);
+      choice.consequenceTier = this.normalizeConsequenceTier(choice, choiceSet.choiceType);
+      choice.stakes = {
+        want: choice.stakes?.want || choice.stakesAnnotation?.want || blueprintStakes.want,
+        cost: choice.stakes?.cost || choice.stakesAnnotation?.cost || blueprintStakes.cost,
+        identity: choice.stakes?.identity || choice.stakesAnnotation?.identity || blueprintStakes.identity,
+      };
+
       if (choice.consequences && !Array.isArray(choice.consequences)) {
         choice.consequences = [choice.consequences as unknown as Consequence];
       }
@@ -585,6 +675,54 @@ Before finalizing:
     }
   }
 
+  private normalizeChoiceIntent(choice: GeneratedChoice, choiceType: ChoiceType): ChoiceIntent {
+    if (choiceType === 'expression') return 'flavor';
+    if (choice.choiceIntent === 'flavor' || choice.choiceIntent === 'branching' || choice.choiceIntent === 'blind' || choice.choiceIntent === 'dilemma') {
+      if (choice.choiceIntent === 'flavor' && choice.nextSceneId) return 'branching';
+      if (choice.choiceIntent === 'branching' && !choice.nextSceneId && choiceType === 'relationship') return 'blind';
+      return choice.choiceIntent;
+    }
+    if (choiceType === 'dilemma') return 'dilemma';
+    if (choice.nextSceneId) return 'branching';
+    return 'blind';
+  }
+
+  private normalizeImpactFactors(choice: GeneratedChoice, choiceType: ChoiceType): ChoiceImpactFactor[] {
+    const allowed: ChoiceImpactFactor[] = ['outcome', 'process', 'information', 'relationship', 'identity'];
+    const factors = new Set<ChoiceImpactFactor>();
+
+    for (const factor of choice.impactFactors || []) {
+      if (allowed.includes(factor)) factors.add(factor);
+    }
+
+    if (choiceType === 'expression') {
+      return [];
+    }
+    if (choice.nextSceneId) factors.add('outcome');
+    if (choiceType === 'relationship') factors.add('relationship');
+    if (choiceType === 'strategic') factors.add('information');
+    if (choiceType === 'dilemma') {
+      factors.add('identity');
+      factors.add('relationship');
+    }
+    if (Array.isArray(choice.consequences) && choice.consequences.length > 0 && factors.size === 0) {
+      factors.add('process');
+    }
+
+    return Array.from(factors);
+  }
+
+  private normalizeConsequenceTier(choice: GeneratedChoice, choiceType: ChoiceType): ChoiceConsequenceTier {
+    if (choiceType === 'expression') return 'sceneTint';
+    if (choice.consequenceTier === 'callback' || choice.consequenceTier === 'sceneTint' || choice.consequenceTier === 'branchlet' || choice.consequenceTier === 'structuralBranch') {
+      if (choice.consequenceTier === 'structuralBranch' && !choice.nextSceneId) return 'branchlet';
+      return choice.consequenceTier;
+    }
+    if (choice.nextSceneId) return 'structuralBranch';
+    if (choice.memorableMoment?.id || choice.reminderPlan?.later) return 'callback';
+    return choiceType === 'dilemma' ? 'branchlet' : 'sceneTint';
+  }
+
   private buildPrompt(input: ChoiceAuthorInput): string {
     const npcList = input.npcsInScene
       .map(npc => {
@@ -608,9 +746,10 @@ Before finalizing:
       .join('\n');
 
     let sourceContextStr = '';
-    if (input.sourceAnalysis?.directLanguageFragments?.length) {
-      const directFragments = input.sourceAnalysis.directLanguageFragments
-        .map(fragment => `- "${fragment.text}"`)
+    const directFragments = flattenDirectLanguageFragments(input.sourceAnalysis);
+    if (directFragments.length) {
+      const directFragmentList = directFragments
+        .map(fragment => `- "${fragment}"`)
         .join('\n');
 
       sourceContextStr = `
@@ -619,17 +758,23 @@ The following iconic language and style fragments have been identified from the 
 **Use this specific terminology and character voice when writing choice text.**
 
 ### Iconic Dialogue Fragments
-${directFragments}
+${directFragmentList}
 `;
     }
 
     const choicePoint = input.sceneBlueprint.choicePoint!;
 
+    const structuralContext = buildStructuralContextSection({
+      anchors: input.seasonAnchors,
+      sevenPoint: input.seasonSevenPoint,
+      episodeStructuralRole: input.episodeStructuralRole,
+    });
+
     return `
 Create player choices for the following decision point:
 
 ${sourceContextStr}
-
+${structuralContext}
 ## Story Context
 - **Title**: ${input.storyContext.title}
 - **Genre**: ${input.storyContext.genre}
@@ -645,6 +790,21 @@ This beat leads up to the choice:
 
 "${input.beatText}"
 
+${buildChoiceAuthorCallbackSection((input.unresolvedCallbacks || []).map(h => ({
+  id: h.id,
+  sourceEpisode: h.sourceEpisode,
+  sourceSceneId: '',
+  sourceChoiceId: '',
+  flags: h.flags,
+  conditionKeys: h.conditionKeys,
+  impactFactors: h.impactFactors,
+  consequenceTier: h.consequenceTier,
+  summary: h.summary,
+  payoffWindow: { minEpisode: 0, maxEpisode: 0 },
+  payoffCount: 0,
+  resolved: false,
+  createdAt: '',
+})), { authorNewHooks: true })}
 ## Choice Point Design
 - **Type**: ${choicePoint.type}
 - **Description**: ${choicePoint.description}
@@ -690,6 +850,29 @@ ${flagList || 'None defined'}
 **Scores**:
 ${scoreList || 'None defined'}
 
+${input.branchContext ? `
+## Branch Topology Context (from Branch Manager)
+- **Beat role**: ${input.branchContext.role}
+${input.branchContext.isBranchPoint ? `- This IS a branch point — include \`nextSceneId\` on at least ${Math.max(2, input.branchContext.expectedBranches || 2)} options.` : '- This is NOT a branch point — choices should be tint choices. Do NOT include \`nextSceneId\` unless the scene blueprint routes to different scenes.'}
+${input.branchContext.reconvergenceTargets && input.branchContext.reconvergenceTargets.length > 0 ? `- Reconvergence targets (if branching): ${input.branchContext.reconvergenceTargets.join(', ')}` : ''}
+${input.branchContext.stateReconciliationHints && input.branchContext.stateReconciliationHints.length > 0 ? `- State reconciliation hints:\n${input.branchContext.stateReconciliationHints.map(h => `  - ${h}`).join('\n')}` : ''}
+` : ''}
+${input.consequenceBudgetTarget ? `
+## Consequence Budget Target (episode-wide 60/25/10/5)
+Across the episode, consequences should follow this distribution:
+- ~${input.consequenceBudgetTarget.callback}% callback / flavor (no branching)
+- ~${input.consequenceBudgetTarget.tint}% tint (state-setting, no routing)
+- ~${input.consequenceBudgetTarget.branchlet}% branchlet (short divergence then reconverge)
+- ~${input.consequenceBudgetTarget.branch}% branch (true routing to different scenes)
+For THIS choice set, bias toward callback/tint unless \`branchContext.isBranchPoint\` is true.
+` : ''}
+${input.arcTargets && (input.arcTargets.identityDeltaHints?.length || input.arcTargets.relationshipTrajectory?.length) ? `
+## Character Arc Milestone Targets (from Arc Tracker)
+Design at least ONE choice whose consequences move the protagonist toward these targets.
+Tag any such consequence with \`arcDriving: true\` so downstream validators can measure it.
+${(input.arcTargets.identityDeltaHints || []).map(h => `- Identity \`${h.dimension}\`: target ${h.direction} (${h.magnitude}). A consequence like \`{ type: "setFlag", name: "arc:${h.dimension}:${h.direction}", arcDriving: true }\` is ideal.`).join('\n')}
+${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with ${r.npcId} (${r.dimension}): ${r.direction} — ${r.hint}`).join('\n')}
+` : ''}
 ## Requirements
 - Create ${input.optionCount} distinct choices
 - Each choice must have the complete Stakes Triangle
@@ -719,6 +902,22 @@ This is the echo, not the action itself. It ends the moment and flows into the n
 Provide a \`tintFlag\` string like \`"tint:mercy"\`, \`"tint:reckless"\`, \`"tint:cunning"\`,
 \`"tint:honest"\`, \`"tint:defiant"\`, etc. that best characterises the tone this choice sets.
 Branching choices (those with \`nextSceneId\`) do NOT need a \`tintFlag\`.
+
+## Moral Contract (REQUIRED for dilemma choices)
+
+Every dilemma option must include \`moralContract\`:
+- \`valueA\` and \`valueB\`: the two values in real conflict
+- \`unavoidableCost\`: what cannot be protected no matter what the player chooses
+- \`benefits\`: who gains or is protected
+- \`harms\`: who pays, loses trust, loses safety, or is exposed
+- \`uncertainty\`: what the player cannot know yet
+
+## Residue Hints (REQUIRED for meaningful non-expression choices)
+
+Every relationship, strategic, or dilemma choice must include at least one \`residueHints\` item.
+Use these to tell later systems how the choice should echo without forcing a graph branch.
+Valid kinds: \`immediate_prose_echo\`, \`later_text_variant\`, \`relationship_behavior\`,
+\`encounter_advantage\`, \`encounter_complication\`, \`visual_staging\`, \`recap_summary\`.
 
 ## Stat Check (REQUIRED for relationship, strategic, dilemma)
 
@@ -750,6 +949,14 @@ Think about what the situation DEMANDS:
       "id": "choice-1",
       "text": "Choice text here (5-${this.choiceLimits?.maxChoiceWords ?? 15} words)",
       "choiceType": "${choicePoint.type}",
+      "choiceIntent": "branching | blind | dilemma | flavor",
+      "impactFactors": ["relationship", "identity"],
+      "consequenceTier": "callback | sceneTint | branchlet | structuralBranch",
+      "stakes": {
+        "want": "what player wants",
+        "cost": "what they risk",
+        "identity": "what this reveals"
+      },
       "consequences": [],
       "nextSceneId": "scene-id-if-branching-or-omit",
       "statCheck": { "attribute": "charm", "difficulty": 55 },
@@ -771,6 +978,27 @@ Think about what the situation DEMANDS:
       },
       "reactionText": "1-2 sentence world reaction (omit if nextSceneId is set).",
       "tintFlag": "tint:bold",
+      "moralContract": {
+        "valueA": "protect the vulnerable",
+        "valueB": "tell the truth",
+        "unavoidableCost": "Someone loses safety or trust either way.",
+        "benefits": ["npc-id-or-group"],
+        "harms": ["npc-id-or-group"],
+        "uncertainty": "The player cannot know whether the lie will hold."
+      },
+      "residueHints": [
+        {
+          "kind": "later_text_variant",
+          "description": "Later, this NPC notices whether the player protected them.",
+          "targetNpcId": "npc-id"
+        }
+      ],
+      "visualResidueHint": "The NPC stands closer or farther away in the next shared image.",
+      "memorableMoment": {
+        "id": "slug-style-id",
+        "summary": "One-sentence past-tense recap.",
+        "flags": ["flag-name"]
+      },
       "stakesAnnotation": {
         "want": "what player wants",
         "cost": "what they risk",
@@ -790,13 +1018,18 @@ CRITICAL REQUIREMENTS:
 1. Create exactly ${input.optionCount} unique, meaningful choices
 2. The "overallStakes" field is REQUIRED with want, cost, and identity filled in
 3. Each choice needs stakesAnnotation with want, cost, and identity
-4. Include appropriate consequences (flags, scores, relationships)
+4. Each choice needs choiceIntent, impactFactors, consequenceTier, and stakes
 5. ${choicePoint.branches ? 'This is a BRANCHING choice point — set nextSceneId on each choice to one of the available next scenes' : 'Only include nextSceneId if this choice should route to a different scene (expression choices must NOT have nextSceneId)'}
 6. Every choice MUST have outcomeTexts (success, partial, failure) — original prose, not the choice text
 7. Non-branching choices MUST have reactionText and tintFlag
 8. relationship/strategic/dilemma choices MUST have statCheck
-9. Meaningful choices should include consequenceDomain, reminderPlan, and feedbackCue
-10. Return ONLY valid JSON, no markdown, no extra text
+9. Dilemma choices MUST include moralContract with competing values and unavoidable cost
+10. Meaningful non-expression choices MUST include at least one residueHints item
+11. Meaningful choices should include consequenceDomain, reminderPlan, and feedbackCue
+12. reminderPlan and residueHints should describe visible fiction-first turns, not abstract state deltas
+13. Expression/flavor choices must use choiceIntent "flavor", consequenceTier "sceneTint", and must NOT branch
+14. Meaningful choices must include at least one impact factor from outcome, process, information, relationship, identity
+15. Return ONLY valid JSON, no markdown, no extra text
 `;
   }
 
@@ -838,7 +1071,7 @@ CRITICAL REQUIREMENTS:
         console.warn(`[ChoiceAuthor] Auto-generated text for choice ${choice.id}`);
       }
 
-      let text = typeof choice.text === 'string' ? choice.text : String(choice.text);
+      const text = typeof choice.text === 'string' ? choice.text : String(choice.text);
       
       // Auto-fix too short text
       if (text.length < 5) {
@@ -1084,6 +1317,34 @@ CRITICAL REQUIREMENTS:
           `Dilemma choices should set tint flags (e.g., {type:"setFlag", flag:"tint:mercy", value:true}) ` +
           `so subsequent scenes can adapt their tone via textVariants.`
         );
+      }
+
+      for (const choice of choiceSet.choices) {
+        if (!choice.moralContract) {
+          choice.moralContract = {
+            valueA: choice.stakesAnnotation?.want || choiceSet.overallStakes?.want || 'protect one value',
+            valueB: choice.stakesAnnotation?.identity || choiceSet.overallStakes?.identity || 'protect a competing value',
+            unavoidableCost: choice.stakesAnnotation?.cost || choiceSet.overallStakes?.cost || 'Someone pays a cost either way.',
+            benefits: [],
+            harms: [],
+            uncertainty: 'The full consequence is not yet visible.',
+          };
+          console.warn(`[ChoiceAuthor] Dilemma choice "${choice.id}" missing moralContract — added advisory fallback.`);
+        }
+      }
+    }
+
+    for (const choice of choiceSet.choices) {
+      if (choiceSet.choiceType !== 'expression' && (!choice.residueHints || choice.residueHints.length === 0)) {
+        choice.residueHints = [{
+          kind: choice.reminderPlan?.later ? 'later_text_variant' : 'immediate_prose_echo',
+          description:
+            choice.reminderPlan?.later ||
+            choice.reminderPlan?.shortTerm ||
+            choice.feedbackCue?.progressSummary ||
+            'Let this choice echo in later prose, relationship behavior, or recap language.',
+        }];
+        console.warn(`[ChoiceAuthor] Meaningful choice "${choice.id}" missing residueHints — added advisory fallback.`);
       }
     }
   }

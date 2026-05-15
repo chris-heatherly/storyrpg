@@ -26,10 +26,11 @@ import {
   ChevronUp,
   ThumbsDown,
 } from 'lucide-react-native';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 import { useImageJobStore, ImageJob } from '../stores/imageJobStore';
 import { useImageFeedbackStore } from '../stores/imageFeedbackStore';
 import { PROXY_CONFIG } from '../config/endpoints';
+import { collapseImageJobAttempts, getImageJobDisplayKey } from '../utils/imageJobDisplay';
 
 const GRID_GAP = 10;
 const GRID_PADDING = 16;
@@ -68,11 +69,23 @@ type ReferenceThumbnail = {
 export const ImageJobPanel: React.FC = () => {
   const { jobs, activeJobId, setActiveJob, clearCompletedJobs, updateJob } = useImageJobStore();
   const { loadFeedback, addFeedback, updateFeedback: updateStoredFeedback } = useImageFeedbackStore();
-  const jobList = useMemo(
-    () => Object.values(jobs).sort((a, b) => a.startTime - b.startTime),
+  const rawJobList = useMemo(
+    () => Object.values(jobs),
     [jobs]
   );
-  const activeJob = activeJobId ? jobs[activeJobId] ?? null : null;
+  const jobList = useMemo(
+    () => collapseImageJobAttempts(rawJobList),
+    [rawJobList]
+  );
+  const activeJob = useMemo(() => {
+    if (!activeJobId) return null;
+    const direct = jobList.find((job) => job.id === activeJobId);
+    if (direct) return direct;
+    const rawActive = jobs[activeJobId];
+    if (!rawActive) return null;
+    const activeDisplayKey = getImageJobDisplayKey(rawActive);
+    return jobList.find((job) => getImageJobDisplayKey(job) === activeDisplayKey) ?? rawActive;
+  }, [activeJobId, jobList, jobs]);
   const [brokenThumbs, setBrokenThumbs] = useState<Record<string, boolean>>({});
   const [detailsExpanded, setDetailsExpanded] = useState(true);
   const [promptText, setPromptText] = useState<string | null>(null);
@@ -228,6 +241,7 @@ export const ImageJobPanel: React.FC = () => {
   const renderCard = (job: ImageJob) => {
     const isPending = job.status === 'pending';
     const isProcessing = job.status === 'processing';
+    const supersededAttemptCount = Number(job.metadata?.supersededAttemptCount || 0);
 
     const cardContent = (
       <TouchableOpacity
@@ -258,7 +272,7 @@ export const ImageJobPanel: React.FC = () => {
         </View>
         <View style={styles.jobInfo}>
           <Text style={[styles.jobId, isPending && styles.jobIdPending]} numberOfLines={1}>
-            {job.identifier.toUpperCase()}
+            {(job.identifier || job.id || 'UNKNOWN').toUpperCase()}
           </Text>
           <Text
             style={[
@@ -268,7 +282,9 @@ export const ImageJobPanel: React.FC = () => {
               job.status === 'failed' && { color: TERMINAL.colors.error },
             ]}
           >
-            {(job.status || 'unknown').toUpperCase()}
+            {supersededAttemptCount > 0
+              ? `${(job.status || 'unknown').toUpperCase()} +${supersededAttemptCount}`
+              : (job.status || 'unknown').toUpperCase()}
           </Text>
         </View>
       </TouchableOpacity>

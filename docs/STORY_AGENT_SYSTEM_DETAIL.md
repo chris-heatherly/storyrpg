@@ -1,6 +1,6 @@
 # StoryRPG: Complete System Architecture Document
 
-**Last Updated:** December 2024
+**Last Updated:** April 2026
 
 A comprehensive reference for the story agent structure, storytelling rules, branching mechanics, and choice determination systems.
 
@@ -105,19 +105,19 @@ Always respond with valid JSON that matches the requested schema.
 | Agent | File | Role | Temperature |
 |---|---|---|---|
 | **Story Architect** | `StoryArchitect.ts` | Episode blueprints, scene graphs, branch-and-bottleneck structure, encounter placement | 0.7 |
-| **Scene Writer** | `SceneWriter.ts` | Prose content for beats, atmosphere, dialogue, text variants | 0.85 |
-| **Beat Writer** | `BeatWriter.ts` | Beat-level content generation | 0.85 |
-| **Choice Author** | `ChoiceAuthor.ts` | Player choices, consequences, stat checks, branching routing | 0.75 |
+| **Scene Writer** | `SceneWriter.ts` | Prose content for beats, atmosphere, dialogue, text variants. Absorbs the former `BeatWriter`, `DialogueSpecialist`, and `ScriptCompiler` roles. | 0.85 |
+| **Scene Critic** | `SceneCritic.ts` | Optional Phase-9 subtext / reversals rewrite pass; gated by `config.sceneCritic.enabled`. | 0.7 |
+| **Choice Author** | `ChoiceAuthor.ts` | Player choices, consequences, stat checks, branching routing. Resolution-check difficulty now authored inline (the old `ResolutionDesigner` is gone). | 0.75 |
 | **Branch Manager** | `BranchManager.ts` | Branch analysis, reconvergence validation, state tracking | 0.7 |
 | **Encounter Architect** | `EncounterArchitect.ts` | Encounter structure, skill challenges, decision trees, storylets | 0.75 |
-| **Resolution Designer** | `ResolutionDesigner.ts` | Stat check design, difficulty calibration | 0.7 |
 | **World Builder** | `WorldBuilder.ts` | World bible, locations, cultures, history | 0.8 |
 | **Character Designer** | `CharacterDesigner.ts` | NPC profiles, want/fear/flaw, voice, relationships | 0.8 |
-| **Dialogue Specialist** | `DialogueSpecialist.ts` | Dialogue variants per relationship state, emotional subtext | 0.85 |
-| **Season Architect** | `SeasonArchitect.ts` | Season-level narrative arc planning | 0.7 |
-| **Season Planner** | `SeasonPlannerAgent.ts` | Episode-by-episode plan within a season | 0.7 |
-| **Source Material Analyzer** | `SourceMaterialAnalyzer.ts` | IP analysis for adapted properties | 0.6 |
-| **Script Compiler** | `ScriptCompiler.ts` | Final script assembly | 0.5 |
+| **Thread Planner** | `ThreadPlanner.ts` | Authors the `NarrativeThread` ledger driving setup/payoff tracking and delayed consequences | 0.7 |
+| **Twist Architect** | `TwistArchitect.ts` | Schedules per-episode reversal/revelation with the required foreshadow beat(s) | 0.75 |
+| **Character Arc Tracker** | `CharacterArcTracker.ts` | Per-episode identity/relationship milestone targets consumed by `ArcDeltaValidator` | 0.7 |
+| **Style Architect** | `StyleArchitect.ts` | Expands arbitrary art-style strings into a structured `ArtStyleProfile`; falls back to `buildVerbatimProfile` so unknown styles never inherit cinematic vocabulary | 0.7 |
+| **Season Planner** | `SeasonPlannerAgent.ts` | Season-level planning along the 3-act / 7-point spine (authoritative; replaces the old `SeasonArchitect`) | 0.7 |
+| **Source Material Analyzer** | `SourceMaterialAnalyzer.ts` | IP analysis for adapted properties; emits anchors, seven-point, and episode breakdown | 0.6 |
 
 #### QA and Analysis Agents
 
@@ -125,15 +125,8 @@ Always respond with valid JSON that matches the requested schema.
 |---|---|---|
 | **QA Agents** | `QAAgents.ts` | `ContinuityChecker`, `VoiceValidator`, `StakesAnalyzer`, `QARunner` |
 | **Extended QA** | `QAAgents.ts` | `PlotHoleDetector`, `ToneAnalyzer`, `PacingAuditor`, `SensitivityReviewer`, `ExtendedQARunner` |
-| **Variable Tracker** | `VariableTracker.ts` | State variable tracking across scenes |
-| **Playtest Simulator** | `PlaytestSimulator.ts` | Automated playtest simulation |
 
-#### Growth Agents
-
-| Agent | File | Role |
-|---|---|---|
-| **Blueprint Growth Critic** | `BlueprintGrowthCritic.ts` | Growth arc validation in episode blueprints |
-| **Growth Narrative Critic** | `GrowthNarrativeCritic.ts` | Character growth validation in generated content |
+> **Removed in April 2026** (consolidated into `SceneWriter` or superseded by new structural agents): `BeatWriter`, `DialogueSpecialist`, `ScriptCompiler`, `ResolutionDesigner`, `VariableTracker`, `PlaytestSimulator`, `BlueprintGrowthCritic`, `GrowthNarrativeCritic`, `SeasonArchitect`. Growth-arc legibility is now covered by `CharacterArcTracker` + `ArcDeltaValidator`; variable tracking moved into `IncrementalContinuityChecker`.
 
 #### Image Team Agents
 
@@ -146,12 +139,15 @@ Always respond with valid JSON that matches the requested schema.
 | **Character Reference Sheet** | `image-team/CharacterReferenceSheetAgent.ts` | Reference sheets, expression sheets, body vocabulary, acting direction |
 | **Color Script Agent** | `image-team/ColorScriptAgent.ts` | Episode color arc and thumbnails |
 | **Video Director** | `image-team/VideoDirectorAgent.ts` | Video direction for Veo pipeline |
+| **LoRA Training Agent** | `image-team/LoraTrainingAgent.ts` | Orchestrates auto-train-LoRA eligibility, dataset assembly, dispatch, and cache lookups (Stable-Diffusion-only) |
 | **Image Generator** | `ImageGenerator.ts` | Unified image prompt generation |
 
 #### Image QA Validators
 
 | Agent | File |
 |---|---|
+| **Visual Quality Judge** | `image-team/VisualQualityJudge.ts` — replaces the older `VisualNarrativeValidator` + `DramaExtractionAgent` pair |
+| **Composition Check** | `image-team/visualChecks/CompositionCheck.ts` — modular check invoked by `VisualQualityJudge` |
 | **Consistency Scorer** | `image-team/ConsistencyScorerAgent.ts` |
 | **Composition Validator** | `image-team/CompositionValidatorAgent.ts` |
 | **Transition Validator** | `image-team/TransitionValidator.ts` |
@@ -159,15 +155,14 @@ Always respond with valid JSON that matches the requested schema.
 | **Expression Validator** | `image-team/ExpressionValidator.ts` |
 | **Body Language Validator** | `image-team/BodyLanguageValidator.ts` |
 | **Lighting Color Validator** | `image-team/LightingColorValidator.ts` |
-| **Visual Narrative Validator** | `image-team/VisualNarrativeValidator.ts` |
 | **Visual Storytelling Validator** | `image-team/VisualStorytellingValidator.ts` |
-| **Drama Extraction Agent** | `image-team/DramaExtractionAgent.ts` |
-| **Asset Auditor** | `image-team/AssetAuditorAgent.ts` |
+
+> Removed in April 2026: `AssetAuditorAgent`, `DramaExtractionAgent`, and `VisualNarrativeValidator` were all replaced by `VisualQualityJudge` plus the modular `visualChecks/` directory.
 
 #### Additional Support Agents
 
 | Agent | File |
-|---|---|---|
+|---|---|
 | **Character Action Library** | `image-team/CharacterActionLibrary.ts` |
 | **Cinematic Beat Analyzer** | `image-team/CinematicBeatAnalyzer.ts` |
 | **Lighting Color System** | `image-team/LightingColorSystem.ts` |
@@ -612,127 +607,202 @@ Includes verb conjugation for pronoun substitution and unresolved token fallback
 | **ChoiceDensityValidator** | Choice timing and frequency |
 | **ConsequenceBudgetValidator** | Consequence tier allocation |
 | **FiveFactorValidator** | Five-factor impact (LLM-based) |
-| **StakesTriangleValidator** | Want/Cost/Identity analysis (LLM-based) |
-| **RelationshipDepthValidator** | Relationship dimension requirements for NPCs |
+| **StakesTriangleValidator** | Want/Cost/Identity presence (LLM-based) |
+| **BranchingValidator** | Maximum 2 branching choices, reconvergence |
+| **RequiredNPCValidator** | Planned NPCs appear in scenes |
+| **PlotValidator** | Character motivation consistency |
+| **StructuralValidator** | Scene reachability and dead ends |
+| **IncrementalValidators** | Per-scene voice / stakes / continuity / sensitivity / encounter structure |
+| **storyAssetWalker** | **Tier 1 QA** — HTTP-verify every image URL in the assembled story |
+| **storyPathAnalyzer** | Coverage planner — minimum choice paths to visit every scene/choice |
+| **playwrightQARunner** | **Tier 2 QA** — spawns Playwright to play through every choice path in a real browser |
+| **qaRemediation** | Re-generates broken/placeholder images and patches `08-final-story.json` |
 
-### 13.2 Quality Gates
+### 13.2 QA Agents (LLM-Based Validators)
 
-The validation framework implements tiered quality gates:
+| QA Agent | Expertise |
+|---|---|
+| **ContinuityChecker** | Character behavior, world rules, timeline |
+| **VoiceValidator** | Character voice consistency |
+| **StakesAnalyzer** | Stakes Triangle enforcement |
+| **PlotHoleDetector** | Logic gaps, missed setup/payoff |
+| **ToneAnalyzer** | Tone consistency across the episode |
+| **PacingAuditor** | Narrative rhythm and flow |
+| **SensitivityReviewer** | Content appropriateness |
+| **CharacterArcTracker + ArcDeltaValidator** | Growth-arc legibility across blueprint → prose (replaces the former `BlueprintGrowthCritic` / `GrowthNarrativeCritic` pair) |
 
-1. **Quick Validation** — Fast structural checks (types, counts, rules)
-2. **Core Validation** — Medium-depth semantic validation
-3. **Extended Validation** — Deep LLM-based content analysis
+### 13.3 Two-Tier Final QA
 
-### 13.3 Validation Errors
+After the LLM QA agents have produced their report and the story is assembled, the pipeline runs two deterministic QA passes that exercise the real artifacts:
 
-```typescript
-interface ValidationError {
-  type: 'error' | 'warning' | 'info';
-  code: string;
-  message: string;
-  context?: Record<string, unknown>;
-}
-```
+**Tier 1 — Asset HTTP Verification (`storyAssetWalker.ts`)**
+
+- Walks the assembled `Story` and collects every image URL (story/episode/scene covers, beats, panels, encounter phases/beats/outcomes/situations, storylets, NPC portraits).
+- Issues a concurrent `HEAD` request (with ranged `GET` fallback) against each URL and classifies the result as `ok` / `missing` / `broken` / `unreachable`.
+- Gate controlled by `ValidationConfig.assetHttpCheck` (default `true`) and `assetHttpCheckFailFast` (default `false`, warn-only).
+- Also available standalone via `npm run validate:assets <story-dir>` for quick local verification.
+
+**Tier 2 — Playwright Browser Playthrough (`playwrightQARunner.ts`)**
+
+1. `storyPathAnalyzer.computeCoveragePlan()` builds a scene-level DAG from the generated story and picks the minimum set of choice paths that visit every scene and every choice at least once. It also marks which scenes need specific encounter tiers to be forced.
+2. `runPlaywrightQAMultiPath()` spawns `test/e2e/storyPlaythrough.spec.ts` once per path (up to `maxParallel`, default `3`) against `http://localhost:8081`, passing the choice indices via the `E2E_CHOICE_PATH` env var.
+3. Each run drives the real reader UI, recording broken/placeholder images, console errors, network failures, and a coverage report.
+4. If any issue is fixable, `qaRemediation.remediateImageIssues()` parses the screen identifier, looks up the saved prompt under `prompts/`, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` rewrites `08-final-story.json`. Tier 2 then re-runs up to `playwrightQAMaxRetries` times (default `1`).
+5. When the proxy or web app is not reachable, the runner marks itself `skipped` rather than failing the pipeline — so CLI generations don't require the UI.
 
 ---
 
 ## 14. State Management
 
-### 14.1 React Stores
+### 14.1 React Context (gameStore)
 
-| Store | Type | Purpose |
-|---|---|---|
-| `gameStore` | Context | Core game state (episodes, player, current scene) |
-| `settingsStore` | Zustand | User preferences, generation settings |
-| `appNavigationStore` | Zustand | Navigation state, screen routing |
-| `generationJobStore` | Zustand | Pipeline progress tracking |
-| `imageJobStore` | Zustand | Image generation tracking |
-| `videoJobStore` | Zustand | Video generation tracking |
-| `seasonPlanStore` | Zustand | Season planning state |
-| `imageFeedbackStore` | Zustand | Image QA feedback |
+```typescript
+interface GameStore {
+  // Story state
+  story: GeneratedStory | null;
+  currentEpisodeIndex: number;
+  currentSceneIndex: number;
+  currentBeatIndex: number;
 
-### 14.2 Persistence
+  // Player state
+  player: PlayerState;
 
-- **AsyncStorage**: Primary persistence layer for React Native
-- **encounterStatePersistence**: Encounter-specific state management (`src/stores/encounterStatePersistence.ts`)
-- **playerStatePersistence**: Player state persistence (`src/stores/playerStatePersistence.ts`)
+  // Encounter state
+  encounterState?: EncounterState;
 
-### 14.3 Growth Consequence Builder
+  // Actions
+  loadStory: (story: GeneratedStory) => void;
+  makeChoice: (choiceId: string) => ChoiceResult;
+  navigateToScene: (sceneId: string) => void;
+}
+```
 
-The `growthConsequenceBuilder` (`src/engine/growthConsequenceBuilder.ts`) handles character progression mechanics, working with mentorship systems and skill development.
+### 14.2 Zustand Stores
+
+| Store | Purpose |
+|---|---|
+| **settingsStore** | App configuration, API keys, generation settings |
+| **appNavigationStore** | Screen navigation state |
+| **generationJobStore** | Story generation job progress |
+| **imageJobStore** | Image generation job progress |
+| **videoJobStore** | Video generation job progress |
+| **seasonPlanStore** | Season planning state |
+| **imageFeedbackStore** | Image quality feedback |
+
+### 14.3 AsyncStorage Persistence
+
+| Key | Content |
+|---|---|
+| **playerStatePersistence** | Player attributes, relationships, inventory |
+| **encounterStatePersistence** | Active encounter state |
 
 ---
 
 ## 15. Cross-Episode Continuity
 
-### 15.1 Episode Summary System
+### 15.1 Episode Summaries
 
-Each episode generates a summary for the next episode's context, preserving:
-- Major choices and their consequences
-- Relationship state changes
-- Flag and score modifications
-- Character growth moments
+Each completed episode generates a summary that feeds into the next episode's generation context.
 
-### 15.2 Memory Management
+### 15.2 Persistent State
 
-- **Memory store abstractions**: Support for different memory backends
-- **Character memory**: Persistent NPC relationship tracking
-- **Pipeline memory**: Cross-generation optimization hints
+- **Flags**: Boolean values that persist across episodes
+- **Scores**: Numeric values for ongoing measurement
+- **Tags**: Set membership for complex conditions
+- **Relationships**: NPC relationship dimensions
+- **Identity Profile**: Personality trait accumulation
+
+### 15.3 Delayed Consequences
+
+Consequences can be delayed across episode boundaries with triggers based on story progression.
 
 ---
 
 ## 16. Configuration Reference
 
-### 16.1 Generation Settings
+### 16.1 AgentConfig
 
-Key configuration options in `GenerationSettingsConfig`:
-- `maxParallelEpisodes`: Episode generation concurrency (default: 2)
-- `maxParallelScenes`: Scene generation concurrency (default: 2)
-- `llmMaxGlobalInFlight`: Global LLM call limit (default: 4)
-- `llmMaxPerProviderInFlight`: Per-provider LLM call limit (default: 2)
-- `failurePolicy`: How to handle failures ('fail_fast' | 'recover')
+```typescript
+interface AgentConfig {
+  provider: 'anthropic' | 'openai' | 'gemini';
+  model: string;
+  apiKey: string;
+  maxTokens?: number;
+  temperature?: number;
+}
+```
 
-### 16.2 Text Limits
+### 16.2 GenerationSettingsConfig
 
-Configured in `src/constants/validation.ts` as `TEXT_LIMITS` with defaults from `src/ai-agents/utils/textEnforcer.ts`:
-- Beat text limits, choice text limits, consequence text limits
-- Word count and character count boundaries
+```typescript
+interface GenerationSettingsConfig {
+  maxParallelEpisodes?: number;
+  maxParallelScenes?: number;
+  llmMaxGlobalInFlight?: number;
+  llmMaxPerProviderInFlight?: number;
+  failurePolicy?: 'fail_fast' | 'recover';
+  // ... other settings
+}
+```
 
 ---
 
 ## 17. File Reference
 
-### 17.1 Key Directories
+### 17.1 Core Engine Files
 
-```
-src/
-├── ai-agents/              # AI generation system
-│   ├── agents/            # Individual agent implementations
-│   ├── pipeline/          # Generation pipeline orchestration
-│   ├── utils/            # AI utilities and helpers
-│   └── validators/       # Content validation
-├── engine/               # Story runtime engine
-├── screens/              # React Native UI screens
-├── stores/              # State management
-├── types/               # TypeScript definitions
-└── constants/           # Configuration constants
-```
+- `src/engine/storyEngine.ts` — Main story runtime
+- `src/engine/resolutionEngine.ts` — Stat check resolution
+- `src/engine/conditionEvaluator.ts` — Choice/scene availability
+- `src/engine/templateProcessor.ts` — Dynamic text substitution
+- `src/engine/identityEngine.ts` — Personality tracking
+- `src/engine/growthConsequenceBuilder.ts` — Character growth system
 
-### 17.2 Entry Points
+### 17.2 Agent Files
 
-- `src/ai-agents/example-usage.ts` — CLI story generation
-- `src/ai-agents/generate-from-document.ts` — Document-based generation
-- `src/engine/index.ts` — Engine exports (note: `identityEngine` not included)
+- `src/ai-agents/agents/BaseAgent.ts` — Base agent class
+- `src/ai-agents/agents/StoryArchitect.ts` — Episode structure
+- `src/ai-agents/agents/SceneWriter.ts` — Scene prose
+- `src/ai-agents/agents/ChoiceAuthor.ts` — Player choices
+- `src/ai-agents/agents/EncounterArchitect.ts` — Encounter design
+- `src/ai-agents/agents/WorldBuilder.ts` — World building
+- `src/ai-agents/agents/CharacterDesigner.ts` — NPC design
+- `src/ai-agents/agents/ThreadPlanner.ts` — NarrativeThread ledger (setup/payoff, delayed consequences)
+- `src/ai-agents/agents/TwistArchitect.ts` — Per-episode reversal + foreshadow scheduling
+- `src/ai-agents/agents/CharacterArcTracker.ts` — Per-episode identity/relationship milestones
+- `src/ai-agents/agents/StyleArchitect.ts` — Art-style string → ArtStyleProfile expansion
+- `src/ai-agents/agents/SceneCritic.ts` — Optional Phase-9 subtext/reversals rewrite
+- `src/ai-agents/agents/SeasonPlannerAgent.ts` — Season planning along the 3-act / 7-point spine
 
-### 17.3 Test Files
+### 17.2.1 Validator & QA Files
 
-Major test coverage includes:
-- `src/engine/conditionEvaluator.test.ts`
-- `src/engine/resolutionEngine.test.ts`
-- `src/engine/storyEngine.test.ts`
-- `src/engine/templateProcessor.test.ts`
-- `src/ai-agents/agents/ChoiceAuthor.test.ts`
-- `src/ai-agents/agents/EncounterArchitect.test.ts`
-- `src/ai-agents/agents/GrowthCritics.test.ts`
-- `src/ai-agents/agents/SceneWriter.test.ts`
-- `src/ai-agents/agents/StoryArchitect.test.ts`
+- `src/ai-agents/validators/IncrementalValidators.ts` — Per-scene voice/stakes/continuity/sensitivity/encounter checks
+- `src/ai-agents/validators/storyAssetWalker.ts` — Tier 1 asset HTTP verification
+- `src/ai-agents/validators/storyPathAnalyzer.ts` — Coverage path planner for Tier 2
+- `src/ai-agents/validators/playwrightQARunner.ts` — Tier 2 browser playthrough runner
+- `src/ai-agents/validators/qaRemediation.ts` — Auto-remediation for Tier 2 image issues
+- `test/e2e/storyPlaythrough.spec.ts` — The Playwright test that Tier 2 spawns
+
+### 17.3 Pipeline Files
+
+- `src/ai-agents/pipeline/FullStoryPipeline.ts` — Main generation pipeline
+- `src/ai-agents/utils/concurrency.ts` — Parallelism utilities
+- `src/ai-agents/utils/withTimeout.ts` — Timeout management
+- `src/ai-agents/utils/pipelineTelemetry.ts` — Metrics collection
+
+### 17.4 Store Files
+
+- `src/stores/gameStore.ts` — Runtime game state
+- `src/stores/settingsStore.ts` — App configuration
+- `src/stores/generationJobStore.ts` — Generation progress
+- `src/stores/playerStatePersistence.ts` — Player state persistence
+- `src/stores/encounterStatePersistence.ts` — Encounter state persistence
+
+### 17.5 Screen Files
+
+- `src/screens/ReadingScreen.tsx` — Main story reading interface
+- `src/screens/GeneratorScreen.tsx` — Story generation interface
+- `src/screens/HomeScreen.tsx` — App home screen
+- `src/screens/EpisodeSelectScreen.tsx` — Episode selection
+- `src/screens/SettingsScreen.tsx` — App settings
+- `src/screens/VisualizerScreen.tsx` — Story visualization

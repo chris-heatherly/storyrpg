@@ -26,11 +26,10 @@ import {
   ChevronRight,
   RotateCcw,
   Save,
-  MessageSquare,
   Zap,
   FileText,
 } from 'lucide-react-native';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 import {
   SCENE_DEFAULTS,
   CONCURRENCY_DEFAULTS,
@@ -65,6 +64,8 @@ export interface GenerationSettings {
   generateImages: boolean;
   imageGenerationLimit: number;
   panelMode: 'single' | 'special-beats' | 'all-beats';
+  imagePlanningMode: 'text' | 'visual-storyboard';
+  storyboardMaxPanelsPerSheet: number;
   
   // Validation
   blockingThreshold: number;
@@ -143,6 +144,8 @@ export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
   generateImages: true,
   imageGenerationLimit: CONCURRENCY_DEFAULTS.imageGenerationLimit,
   panelMode: 'single' as const,
+  imagePlanningMode: 'text' as const,
+  storyboardMaxPanelsPerSheet: 6,
   
   // Validation
   blockingThreshold: PHASE_VALIDATION_DEFAULTS.blockingThreshold,
@@ -417,6 +420,26 @@ const PERFORMANCE_FIELDS: SettingFieldConfig[] = [
     condition: (settings) => settings.generateImages,
   },
   {
+    type: 'select',
+    key: 'imagePlanningMode',
+    label: 'Image Planning',
+    description: 'Current text planning, or scene-level visual storyboard planning with continuity maps.',
+    options: [
+      { value: 'text', label: 'Text Plan' },
+      { value: 'visual-storyboard', label: 'Visual Storyboard' },
+    ],
+    condition: (settings) => settings.generateImages,
+  },
+  {
+    type: 'number',
+    key: 'storyboardMaxPanelsPerSheet',
+    label: 'Panels per Storyboard Sheet',
+    description: 'Maximum storyboard panels generated together on one sheet.',
+    min: 1,
+    max: 12,
+    condition: (settings) => settings.generateImages,
+  },
+  {
     type: 'toggle',
     key: 'failFastMode',
     label: 'Fail Fast Pipeline',
@@ -467,12 +490,11 @@ const CHOICE_AND_ENCOUNTER_FIELDS: SettingFieldConfig[] = [
   { type: 'number', key: 'minEncountersLong', label: 'Long Episode Encounters', description: 'Minimum encounters for 8+ scene episodes.', min: 0, max: 5 },
 ];
 
-const CHARACTER_ASSET_FIELDS: SettingFieldConfig[] = [
-  { type: 'toggle', key: 'generateCharacterRefs', label: 'Generate Character Sheets', description: 'Create baseline character reference sheets.' },
-  { type: 'toggle', key: 'generateExpressionSheets', label: 'Generate Expression Sheets', description: 'Create alternate emotion and expression references.' },
-  { type: 'toggle', key: 'generateBodyVocabulary', label: 'Generate Body Vocabulary', description: 'Generate pose and silhouette references for characters.' },
-  { type: 'toggle', key: 'preGenerateAudio', label: 'Pre-generate Audio', description: 'Prepare narration assets during generation.' },
-];
+// NOTE: Character asset toggles (generateCharacterRefs, generateExpressionSheets,
+// generateBodyVocabulary) are owned by the IMAGES bucket in GeneratorScreen, and
+// preGenerateAudio is owned by the NARRATION bucket. They were previously
+// duplicated here under an "ASSETS AND CHARACTER SUPPORT" section and have been
+// removed to keep a single source of truth.
 
 const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
   {
@@ -531,13 +553,6 @@ const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
         </View>
       );
     },
-  },
-  {
-    id: 'assets',
-    title: 'ASSETS AND CHARACTER SUPPORT',
-    icon: <MessageSquare size={16} color={TERMINAL.colors.primary} />,
-    description: 'Optional supporting assets for stronger presentation and continuity.',
-    fields: CHARACTER_ASSET_FIELDS,
   },
 ];
 

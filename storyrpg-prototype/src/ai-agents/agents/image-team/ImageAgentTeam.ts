@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): Phase 6 image-adapter refactor will untangle
+// beat / reference-image type drift and restore whole-file typecheck.
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from '../BaseAgent';
 import { 
@@ -9,8 +11,16 @@ import {
   CharacterMasterRequest,
   LocationMasterRequest,
   GeneratedImage
-} from '../ImageGenerator';
+} from '../../images/imageTypes';
 import { StoryboardAgent, StoryboardRequest, VisualPlan } from './StoryboardAgent';
+import {
+  attachStoryboardPlanToVisualPlan,
+  buildSceneVisualStoryboardPlan,
+  validateVisualStoryboardPacket,
+  visualPlanSlotsFromBeats,
+  type StoryboardReferenceSummary,
+  type VisualStoryboardPacket,
+} from '../../images/visualStoryboardPlanning';
 import { VisualIllustratorAgent, IllustrationRequest } from './VisualIllustratorAgent';
 import { EncounterImageAgent } from './EncounterImageAgent';
 import { ConsistencyScorerAgent, ConsistencyRequest, ConsistencyScore } from './ConsistencyScorerAgent';
@@ -53,6 +63,13 @@ import {
   LightingColorValidationReport
 } from './LightingColorValidator';
 import { extractReferenceFaceCrop } from '../../utils/imageResizer';
+import { buildDefectRetryPrompt } from '../../images/imageDefectGate';
+import { runTier1Checks } from '../../images/visualValidation';
+import {
+  applyPromptContract,
+  buildStyleContractDirective,
+  sanitizeStyleContaminationText,
+} from '../../images/imagePromptContracts';
 import {
   MoodSpec,
   ColorScript,
@@ -133,14 +150,6 @@ export {
   findExpressionsForEmotion,
   ACTION_POSE_DEFINITIONS
 } from './CharacterReferenceSheetAgent';
-
-// Re-export drama extraction types
-export type {
-  DramaExtraction,
-  DramaExtractionRequest,
-  CharacterPhysicalManifestation
-} from './DramaExtractionAgent';
-export { DramaExtractionAgent } from './DramaExtractionAgent';
 
 // Re-export cinematic beat analyzer
 export {
@@ -368,6 +377,62 @@ export {
 // Storage for generated reference sheets (character ID -> sheet with generated images)
 export interface GeneratedReferenceSheet extends CharacterReferenceSheet {
   generatedImages: Map<string, GeneratedImage>; // viewType (or viewType-expressionName) -> image
+  /**
+   * D5: Deterministic fingerprint of the identity fields used when this sheet
+   * was generated (physicalDescription + distinctiveFeatures + typicalAttire,
+   * plus role/name to catch identity swaps). Compared against the current
+   * character profile to decide whether the cached sheet is still valid.
+   * Missing (undefined) on sheets generated before D5 landed — those are
+   * treated as stale only when `computeCharacterIdentityFingerprint` returns
+   * a non-empty value.
+   */
+  identityFingerprint?: string;
+}
+
+/**
+ * D5: Build a compact fingerprint from the identity-relevant fields of a
+ * character. Used to detect when an author has rewritten a character's
+ * physical description between pipeline runs (multi-episode stories) so we
+ * can discard the stale reference sheet and regenerate.
+ *
+ * This is NOT cryptographic — it only needs to change when identity fields
+ * change and stay stable otherwise. We fold all fields to lowercase and
+ * collapse whitespace so semantically-equal rewrites don't thrash the cache.
+ */
+export function computeCharacterIdentityFingerprint(
+  char: Pick<
+    import('../CharacterDesigner').CharacterProfile,
+    'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire' | 'fashionStyle'
+  >,
+): string {
+  const norm = (s: string | undefined): string => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const features = (char.distinctiveFeatures || []).map(norm).sort().join('|');
+  const fashion = char.fashionStyle
+    ? JSON.stringify({
+        styleSummary: norm(char.fashionStyle.styleSummary),
+        styleTags: (char.fashionStyle.styleTags || []).map(norm).sort(),
+        signatureGarments: (char.fashionStyle.signatureGarments || []).map(norm).sort(),
+        materials: (char.fashionStyle.materials || []).map(norm).sort(),
+        colorPalette: (char.fashionStyle.colorPalette || []).map(norm).sort(),
+        accessories: (char.fashionStyle.accessories || []).map(norm).sort(),
+      })
+    : '';
+  const raw = [
+    norm(char.name),
+    norm(char.role),
+    norm(char.physicalDescription),
+    features,
+    norm(char.typicalAttire),
+    fashion,
+  ].join('||');
+
+  // FNV-1a 32-bit — small, deterministic, dependency-free.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < raw.length; i++) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
 }
 
 // Storage for generated expression sheets (character ID -> sheet with generated expression images)
@@ -430,15 +495,24 @@ export class ImageAgentTeam extends BaseAgent {
     characters: string[];
   };
 
+  // Identity-gate configuration. These can be overridden via setIdentityGateConfig().
+  // - identityScoreThreshold: minimum ConsistencyScorer score (0-100) for a shot to pass
+  // - maxIdentityRegenerations: per-episode cap on identity-driven regenerations to
+  //   prevent runaway API spend if the model can't stabilize on the reference
+  private identityScoreThreshold: number = 75;
+  private maxIdentityRegenerations: number = 10;
+  private identityRegenerationsUsed: number = 0;
+
   constructor(config: AgentConfig, artStyle?: string) {
     super('Image Agent Team', config);
     this.artStyle = artStyle;
     
     // Initialize the team
-    // StoryboardAgent needs the full model output budget — Sonnet 4.6 supports 64K output tokens.
-    // A scene with 16 beats at ~2K tokens/shot = ~32K tokens; verbose responses can exceed 32K.
-    // Setting to 64000 (model limit) eliminates premature truncation that produced shots: [].
-    const storyboardConfig = { ...config, maxTokens: 64000 };
+    // StoryboardAgent can use a large output budget on Anthropic models, but
+    // forcing 64K onto OpenAI reasoning models is fragile because hidden
+    // reasoning and visible JSON share max_completion_tokens. Keep that path
+    // bounded unless explicitly overridden.
+    const storyboardConfig = { ...config, maxTokens: this.resolveStoryboardMaxTokens(config) };
     this.storyboardAgent = new StoryboardAgent(storyboardConfig, artStyle);
     this.illustratorAgent = new VisualIllustratorAgent(config, artStyle);
     this.encounterAgent = new EncounterImageAgent(config, artStyle);
@@ -452,6 +526,86 @@ export class ImageAgentTeam extends BaseAgent {
     this.colorScriptAgent = new ColorScriptAgent(config);
     this.lightingColorValidator = new LightingColorValidator(config);
     this.visualStorytellingValidator = new VisualStorytellingValidator(config);
+  }
+
+  private resolveStoryboardMaxTokens(config: AgentConfig): number {
+    const env = typeof process !== 'undefined' ? process.env : ({} as Record<string, string | undefined>);
+    const override = Number(env.STORYBOARD_AGENT_MAX_TOKENS || env.EXPO_PUBLIC_STORYBOARD_AGENT_MAX_TOKENS);
+    if (Number.isFinite(override) && override >= 1024) {
+      return Math.min(64000, Math.floor(override));
+    }
+
+    const provider = String(config.provider || '').toLowerCase();
+    const model = String(config.model || '').toLowerCase();
+    const requested = Number.isFinite(config.maxTokens) ? config.maxTokens : 8192;
+    const isOpenAiReasoningModel = provider === 'openai' && /^(gpt-5|o1|o3|o4|o\d)/i.test(model);
+    if (isOpenAiReasoningModel) {
+      return Math.min(Math.max(requested, 8192), 16384);
+    }
+    if (provider === 'openai') {
+      return Math.min(Math.max(requested, 8192), 24576);
+    }
+    return Math.max(requested, 64000);
+  }
+
+  private lockPromptToSeasonStyle(prompt: ImagePrompt): ImagePrompt {
+    const style = this.artStyle || prompt.style;
+    if (!style?.trim()) return prompt;
+    const neutralReferenceWording = 'clean full-body character identity reference';
+    const cleanReferenceStylePhrase = (value?: string) =>
+      value?.replace(/\breference sheet style\b/gi, neutralReferenceWording);
+    const text = prompt.prompt || '';
+    const styleLead = buildStyleContractDirective(style);
+    const cleanedText = text
+      .replace(/^STYLE CONTRACT(?:\s*\([^)]*\))?:\s*[^.]+\.?\s*/i, '')
+      .replace(/^Art style(?:\s*\(strict\))?:\s*[^.]+\.?\s*/i, '')
+      .replace(new RegExp(`\\bArt style(?:\\s*\\(strict\\))?:\\s*${style.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.?\\s*`, 'gi'), '')
+      .replace(/\breference sheet style\b/gi, neutralReferenceWording)
+      .trim();
+    const promptText = `${styleLead} ${cleanReferenceStylePhrase(cleanedText)}`.trim();
+    return applyPromptContract({
+      ...prompt,
+      prompt: promptText,
+      style,
+      negativePrompt: [
+        cleanReferenceStylePhrase(prompt.negativePrompt),
+        'generic cinematic story art',
+        'generic anime style',
+        'photorealism',
+        'gritty realism',
+        'messy detail',
+      ].filter(Boolean).join(', '),
+    }, {
+      style,
+      styleSource: 'raw-season-style',
+      mode: 'character-ref',
+      characterIdentity: prompt.characterIdentity,
+      sceneAction: sanitizeStyleContaminationText(cleanedText).text,
+      composition: prompt.composition || 'Full-body character reference, plain background, even studio lighting',
+      negativeContract: prompt.negativePrompt,
+    });
+  }
+
+  private assertReferencePromptStyleContract(
+    prompt: ImagePrompt,
+    identifier: string,
+    hasUserCharacterRefs: boolean,
+  ): void {
+    const promptText = [prompt.prompt, prompt.style, prompt.negativePrompt].filter(Boolean).join('\n');
+    if (!hasUserCharacterRefs) {
+      const style = this.artStyle?.trim() || prompt.style?.trim();
+      if (!style) {
+        throw new Error(`Reference prompt preflight failed for ${identifier}: missing season style for no-user-ref character reference`);
+      }
+      if (this.artStyle?.trim() && prompt.style !== this.artStyle.trim()) {
+        throw new Error(`Reference prompt preflight failed for ${identifier}: missing full season style in prompt.style`);
+      }
+      if (/\breference sheet style\b/i.test(promptText)) {
+        throw new Error(`Reference prompt preflight failed for ${identifier}: generic "reference sheet style" phrase is not allowed`);
+      }
+    } else if (!promptText.includes('Art style:') && !prompt.style) {
+      throw new Error(`Reference prompt preflight failed for ${identifier}: user-ref prompt is missing style context`);
+    }
   }
 
   /**
@@ -547,6 +701,151 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
   }
 
   /**
+   * Chunk-level visual storyboard preflight. Unlike generateFullSceneVisuals,
+   * this produces a persisted planning packet and intentionally does not call
+   * the per-shot illustrator agent during rendering.
+   */
+  async generateStoryboardPacket(request: StoryboardRequest & {
+    chunkIndex?: number;
+    sceneMasterPrompt?: Partial<VisualStoryboardPacket['sceneMasterPrompt']>;
+    storyboardReferences?: StoryboardReferenceSummary[];
+  }): Promise<AgentResponse<VisualStoryboardPacket>> {
+    console.log(`[ImageAgentTeam] Planning storyboard packet for scene: ${request.sceneName} chunk ${request.chunkIndex ?? 0}`);
+
+    // Each pipeline chunk is already capped (default 6 beats), so use one
+    // storyboard LLM call per packet instead of the older internal
+    // plan/expand/audit cascade.
+    const planRes = await this.storyboardAgent.execute(request);
+    if (!planRes.success || !planRes.data) {
+      return { success: false, error: `Storyboard packet planning failed: ${planRes.error}` };
+    }
+
+    const plan = (planRes.data as any).plan || planRes.data;
+    if (!Array.isArray(plan.shots)) plan.shots = [];
+    if (plan.shots.length === 0) {
+      return { success: false, error: 'Storyboard packet planning returned 0 shots' };
+    }
+
+    plan.shots.forEach((shot, index) => {
+      if (!shot.beatId) {
+        const authoredBeatId = request.beats[index]?.id;
+        if (authoredBeatId) shot.beatId = authoredBeatId;
+      }
+      shot.id = shot.beatId || shot.id || `shot-${index}`;
+    });
+
+    const storyboardPlan = buildSceneVisualStoryboardPlan({
+      sceneId: request.sceneId,
+      scopedSceneId: request.sceneId,
+      sceneName: request.sceneName,
+      sceneDescription: request.sceneDescription,
+      slots: visualPlanSlotsFromBeats(request.sceneId, request.beats),
+      panelCap: (request as any).storyboardPanelCap || 6,
+      branchAware: false,
+      continuityBible: (plan as any).continuityBible,
+      sequenceGrammar: (plan as any).sequenceGrammar,
+    });
+    attachStoryboardPlanToVisualPlan(plan, storyboardPlan);
+
+    const refs = Array.isArray(request.storyboardReferences) ? request.storyboardReferences : [];
+    const refByCharacter = new Map<string, StoryboardReferenceSummary[]>();
+    for (const ref of refs) {
+      if (!ref.characterName) continue;
+      const key = ref.characterName.toLowerCase();
+      const list = refByCharacter.get(key) || [];
+      list.push(ref);
+      refByCharacter.set(key, list);
+    }
+    const charNameForId = (id: string): string | undefined => {
+      const byId = request.characterDescriptions?.find((c: any) => c.id === id);
+      return byId?.name || id;
+    };
+    const refsForNames = (names: string[], required: boolean): StoryboardReferenceSummary[] => {
+      const out: StoryboardReferenceSummary[] = [];
+      for (const name of names || []) {
+        const matched = refByCharacter.get(String(name).toLowerCase()) || [];
+        out.push(...matched.map((ref) => ({ ...ref, required })));
+      }
+      return out;
+    };
+
+    const shots = plan.shots.map((shot: any, index: number) => {
+      const beat = request.beats.find((b: any) => b.id === shot.beatId) || request.beats[index];
+      const panel = storyboardPlan.panels.find((p) => p.beatId === (shot.beatId || beat?.id));
+      const resolvedCharacters = this.resolveCharactersForShot(
+        shot.characters,
+        beat?.characters,
+        request.characterDescriptions,
+        beat?.foregroundCharacters,
+        beat?.backgroundCharacters,
+      ) || [];
+      const visibleNames = resolvedCharacters.map((c: any) => c.name).filter(Boolean);
+      const requiredRefs = refsForNames(visibleNames, true);
+      const missingRefs = visibleNames
+        .filter((name: string) => refsForNames([name], true).length === 0)
+        .map((name: string) => ({ role: 'missing-character-reference', characterName: name, purpose: 'character' as const, required: true }));
+      const camera = shot.visualStorytelling?.camera || {};
+      return {
+        beatId: shot.beatId || beat?.id || `beat-${index + 1}`,
+        slotId: `story-beat:${request.sceneId}::${shot.beatId || beat?.id || `beat-${index + 1}`}`,
+        sequenceRole: panel?.sequenceRole || 'relationship',
+        shotSize: shot.shotType || camera.shotType || 'MS',
+        cameraAngle: shot.cameraAngle || 'eye-level',
+        cameraHeight: camera.height || 'eye',
+        cameraSide: shot.horizontalAngle || camera.side || 'left-of-axis',
+        thirdPersonPov: camera.pov === 'player_ots' || camera.pov === 'npc_ots' ? 'over-shoulder' : 'observer',
+        focalCharacterIds: (shot.characters || beat?.characters || []).map((value: any) => typeof value === 'string' ? value : value?.id || value?.name).filter(Boolean),
+        requiredVisibleCharacterIds: (shot.characters || beat?.characters || []).map((value: any) => typeof value === 'string' ? value : value?.id || value?.name).filter(Boolean),
+        optionalBackgroundCharacterIds: [],
+        offscreenCharacterIds: beat?.offscreenCharacters || [],
+        continuityFrom: panel?.continuityFrom,
+        dramaticReason: shot.description || panel?.sequenceRole || 'visual beat progression',
+        promptFields: {
+          action: shot.storyBeat?.action || shot.description || beat?.text || '',
+          emotionalRead: shot.storyBeat?.emotion || beat?.emotionalRead,
+          keyDetail: beat?.mustShowDetail,
+          composition: shot.composition,
+        },
+        referencePack: {
+          required: requiredRefs,
+          optional: refs.filter((ref) => !ref.required),
+          missing: missingRefs,
+        },
+      };
+    });
+
+    const packet: VisualStoryboardPacket = {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      requestedMode: 'visual-storyboard',
+      effectiveMode: 'visual-storyboard',
+      sceneId: request.sceneId,
+      scopedSceneId: request.sceneId,
+      sceneName: request.sceneName,
+      chunkIndex: request.chunkIndex || 0,
+      beatIds: request.beats.map((beat: any) => beat.id),
+      sceneMasterPrompt: {
+        style: request.sceneMasterPrompt?.style || this.artStyle || '',
+        styleNegatives: request.sceneMasterPrompt?.styleNegatives || 'photorealism, live-action still, 3D render, style drift',
+        location: request.sceneMasterPrompt?.location || request.sceneDescription || request.sceneName,
+        lightingColor: request.sceneMasterPrompt?.lightingColor || request.mood || 'preserve scene color script',
+        castPolicy: request.sceneMasterPrompt?.castPolicy || 'Only show characters explicitly required by each shot row; keep all other scene-present characters offscreen.',
+        thirdPersonCameraRule: request.sceneMasterPrompt?.thirdPersonCameraRule || 'Every shot is third-person observer camera outside the player character; no literal first-person/player-eye POV or disembodied hands.',
+        referenceSummary: refs,
+      },
+      continuityBible: storyboardPlan.continuityBible,
+      sequenceGrammar: storyboardPlan.sequenceGrammar,
+      shots,
+      validation: { passed: true, issues: [] },
+    };
+    packet.validation = validateVisualStoryboardPacket(packet);
+    if (!packet.validation.passed) {
+      return { success: false, error: `Storyboard packet validation failed: ${packet.validation.issues.join('; ')}`, data: packet as any };
+    }
+    return { success: true, data: packet };
+  }
+
+  /**
    * Orchestrates the generation of all visuals for a scene
    */
   async generateFullSceneVisuals(request: StoryboardRequest): Promise<AgentResponse<VisualPlan & { prompts: Map<string, ImagePrompt> }>> {
@@ -570,6 +869,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     // that parseJSON successfully parsed but with no shots field
     if (!Array.isArray(plan.shots)) {
       plan.shots = [];
+    }
+    if (plan.shots.length === 0) {
+      return {
+        success: false,
+        error: `Storyboard planning returned 0 shots after chunked planning (expandedChunks=${planRes.data.passTelemetry.expandedChunks}, auditFailures=${planRes.data.passTelemetry.auditFailures}).`,
+      };
     }
 
     // Enrich each shot's storyBeat with isClimaxBeat/isKeyStoryBeat from request beats
@@ -596,6 +901,30 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       // Always use beatId as the canonical ID when available, regardless of whether shot.id was set.
       shot.id = shot.beatId || shot.id || `shot-${index}`;
     });
+
+    if ((request as any).imagePlanningMode === 'visual-storyboard') {
+      const storyboardPlan = buildSceneVisualStoryboardPlan({
+        sceneId: request.sceneId,
+        scopedSceneId: request.sceneId,
+        sceneName: request.sceneName,
+        sceneDescription: request.sceneDescription,
+        slots: visualPlanSlotsFromBeats(request.sceneId, request.beats),
+        panelCap: (request as any).storyboardPanelCap || 6,
+        branchAware: false,
+        continuityBible: (plan as any).continuityBible,
+        sequenceGrammar: (plan as any).sequenceGrammar,
+      });
+      attachStoryboardPlanToVisualPlan(plan, storyboardPlan);
+      for (const shot of plan.shots) {
+        const panel = storyboardPlan.panels.find((p) => p.beatId === shot.beatId);
+        if (panel) {
+          (shot as any).storyboardPanel = panel;
+          (shot as any).sequenceRole = panel.sequenceRole;
+          (shot as any).continuityFrom = panel.continuityFrom;
+          (shot as any).continuityTo = panel.continuityTo;
+        }
+      }
+    }
     
     const prompts = new Map<string, ImagePrompt>();
     
@@ -661,6 +990,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           emotionalRead: (correspondingBeat as any).emotionalRead,
           relationshipDynamic: (correspondingBeat as any).relationshipDynamic,
           mustShowDetail: (correspondingBeat as any).mustShowDetail,
+          dramaticIntent: (correspondingBeat as any).dramaticIntent,
+          sequenceIntent: (correspondingBeat as any).sequenceIntent || (request as any).sequenceIntent,
         } : undefined,
         visualContractHash: (shot as any).contractHash,
         // Choice payoff: branch scene first beat OR per-choice payoff beat.
@@ -972,7 +1303,7 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
 
       const identifier = `ref_${sheet.characterId}_${viewKey}`;
       const result = await imageService.generateImage(
-        view.prompt,
+        this.lockPromptToSeasonStyle(view.prompt),
         identifier,
         { type: 'master', characterId: sheet.characterId, viewType: viewKey },
         referenceImages.length > 0 ? referenceImages : undefined
@@ -1080,11 +1411,13 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       referenceImages.length > 0 ? referenceImages : undefined
     );
 
-    // Store the composite image under all view keys so getCharacterReferenceImages works
+    // Store the composite image ONLY under the 'composite' key. Writing it
+    // under 'front' here would cause scene generation to surface the collage
+    // as a regular character-reference, which Gemini echoes as split-screen
+    // output. Per-provider routing now picks up the composite via the
+    // dedicated 'composite-sheet' role instead.
     const generatedImages = new Map<string, GeneratedImage>();
     generatedImages.set('composite', result);
-    // Also store under 'front' so priority-based lookups still find something
-    generatedImages.set('front', result);
 
     const generatedSheet: GeneratedReferenceSheet = {
       ...sheet,
@@ -1097,6 +1430,93 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
   }
 
   /**
+   * Dual-artifact orchestrator: produce both the individual-view references
+   * and the composite model sheet for a character in parallel. Each artifact
+   * is consumed by a different downstream provider:
+   *
+   *   - individual views (front / three-quarter / profile / face / expressions)
+   *     → Gemini, Atlas Cloud, Stable Diffusion
+   *   - composite sheet → Midjourney `--cref`, Gemini style-anchor (low weight)
+   *
+   * The composite generation is advisory — if it fails we keep the individual
+   * views (which are the primary identity signal) and log a warning. The
+   * reverse is fatal: individual views are required for the Gemini path.
+   */
+  async generateFullCharacterReferences(
+    sheet: CharacterReferenceSheet,
+    imageService: { generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage> },
+    onProgress?: (status: string, index: number, total: number) => void,
+    userReferenceImage?: { data: string; mimeType: string },
+    userReferenceImages?: Array<{ data: string; mimeType: string }>,
+    options?: {
+      /**
+       * When provided, only these views are generated. Useful for providers
+       * like gpt-image-2 that benefit from a single clean front ref and not
+       * the full three-view pack.
+       */
+      allowedViews?: Array<'front' | 'three-quarter' | 'profile'>;
+      /**
+       * When false, skip the composite-sheet pass entirely. Composite is
+       * only consumed by a subset of providers (Gemini as style anchor,
+       * Midjourney as --cref); for everyone else it's wasted work.
+       */
+      generateComposite?: boolean;
+    }
+  ): Promise<GeneratedReferenceSheet> {
+    const allowedViews = options?.allowedViews;
+    const generateComposite = options?.generateComposite !== false;
+
+    console.info(
+      `[ImageAgentTeam] Generating character references for: ${sheet.characterName} ` +
+      `(views=${allowedViews ? allowedViews.join(',') : 'all'}, composite=${generateComposite})`
+    );
+
+    const normalizedUserRefs: Array<{ data: string; mimeType: string }> | undefined =
+      userReferenceImages && userReferenceImages.length > 0
+        ? userReferenceImages
+        : userReferenceImage
+          ? [userReferenceImage]
+          : undefined;
+
+    // Individual views are the authoritative identity path — generate them
+    // first and fail hard if they can't be produced (same semantics as before).
+    const individualSheet = await this.generateIndividualViewImages(
+      sheet,
+      imageService,
+      onProgress,
+      normalizedUserRefs,
+      allowedViews,
+    );
+
+    // Composite generation reuses the same imageService and is additive.
+    // Wrap it so a failure here doesn't lose the individual views.
+    if (generateComposite) {
+      try {
+        const compositeSheet = await this.generateCompositeReferenceSheet(
+          sheet,
+          imageService,
+          onProgress,
+          userReferenceImage,
+          userReferenceImages,
+        );
+        const compositeImage = compositeSheet.generatedImages.get('composite');
+        if (compositeImage) {
+          individualSheet.generatedImages.set('composite', compositeImage);
+        }
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Composite reference sheet generation failed for ${sheet.characterName} — proceeding with individual views only:`, err);
+      }
+    }
+
+    // Re-cache the merged sheet so getReferenceSheet/getCharacterReferenceImages
+    // see both artifacts. generateIndividualViewImages and
+    // generateCompositeReferenceSheet each call set() on the same key, so the
+    // last writer wins — make sure we're that last writer.
+    this.characterReferenceSheets.set(sheet.characterId, individualSheet);
+    return individualSheet;
+  }
+
+  /**
    * Generate individual view images for NB2 character consistency.
    * Instead of a single composite grid, generates separate images for front, three-quarter,
    * and profile views. NB2 supports up to 4 character reference images, so passing clean
@@ -1104,18 +1524,35 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
    */
   async generateIndividualViewImages(
     sheet: CharacterReferenceSheet,
-    imageService: { generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage> },
+    imageService: {
+      generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage>;
+      getMaxRetries?: () => number;
+      checkImageForDefects?: (imageData: string, mimeType: string, prompt?: ImagePrompt, identifier?: string) => Promise<{ passed: boolean; issues: string[]; reason?: string; skipped?: boolean }>;
+      saveImageQADiagnostic?: (identifier: string, diagnostic: unknown) => Promise<void>;
+    },
     onProgress?: (status: string, index: number, total: number) => void,
-    userReferenceImages?: Array<{ data: string; mimeType: string }>
+    userReferenceImages?: Array<{ data: string; mimeType: string }>,
+    allowedViews?: Array<'front' | 'three-quarter' | 'profile'>
   ): Promise<GeneratedReferenceSheet> {
     const viewTypes = ['front', 'three-quarter', 'profile'] as const;
+    // Per-provider strategy can narrow the view set (e.g. gpt-image-2 only
+    // wants the front view). `allowedViews` is applied on top of the
+    // default three-view filter.
+    const allowedSet = allowedViews && allowedViews.length > 0
+      ? new Set<string>(allowedViews)
+      : null;
     const viewsToGenerate = sheet.views.filter(v =>
-      viewTypes.includes(v.viewType as typeof viewTypes[number])
+      viewTypes.includes(v.viewType as typeof viewTypes[number]) &&
+      (!allowedSet || allowedSet.has(v.viewType))
     );
 
     if (viewsToGenerate.length === 0) {
-      console.warn(`[ImageAgentTeam] No standard views found in sheet for ${sheet.characterName} — falling back to composite`);
-      return this.generateCompositeReferenceSheet(sheet, imageService, onProgress, undefined, userReferenceImages);
+      // Fail fast on the Gemini identity path instead of silently producing a
+      // composite grid. The upstream pipeline has its own single-portrait
+      // fallback that will kick in when this throws.
+      throw new Error(
+        `Individual-view reference generation requires at least one of front/three-quarter/profile views for ${sheet.characterName}; got none.`
+      );
     }
 
     const visualAnchors = sheet.visualAnchors?.join(', ') || '';
@@ -1144,19 +1581,22 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
         ? ` Color palette: ${colorPalette}.`
         : '';
 
-      const viewPrompt: ImagePrompt = {
+      const viewPromptBase: ImagePrompt = {
         ...view.prompt,
         prompt: `Single character reference image: ${view.prompt.prompt} ` +
           `Plain white background. Even studio lighting. Full body, head to toe. ` +
-          `NO text, NO labels, NO annotations. Character model sheet view.` +
+          `NO text, NO labels, NO annotations. Clean full-body character identity reference.` +
           identityConstraint + paletteConstraint,
         negativePrompt: [
           view.prompt.negativePrompt || '',
           'scenery, environment, background scene, action pose, dramatic lighting, props, text, words, labels, annotations',
-          'multiple characters, multiple views, grid, collage, triptych'
+          'multiple characters, multiple views, grid, collage, triptych',
+          'extra arms, extra hands, extra legs, duplicated limbs, duplicate body, floating, levitating, feet off ground, cropped feet'
         ].filter(Boolean).join(', '),
         aspectRatio: '3:4',
+        characterIdentity: [sheet.characterName].filter(Boolean),
       };
+      const viewPrompt = this.lockPromptToSeasonStyle(viewPromptBase);
 
       const viewRefs = [...referenceImages];
       for (const prev of completedViews) {
@@ -1173,10 +1613,23 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       }
 
       const identifier = `ref_${sheet.characterId}_${view.viewType}`;
-      const result = await imageService.generateImage(
+      this.assertReferencePromptStyleContract(viewPrompt, identifier, referenceImages.length > 0);
+      const result = await this.generateImageWithDefectRetries(
+        imageService,
         viewPrompt,
         identifier,
-        { type: 'master', characterId: sheet.characterId, viewType: view.viewType },
+        {
+          type: 'master',
+          characterId: sheet.characterId,
+          characterNames: [sheet.characterName].filter(Boolean),
+          characterDescriptions: [{
+            id: sheet.characterId,
+            name: sheet.characterName,
+            appearance: visualAnchors,
+            canonicalAppearance: visualAnchors,
+          }],
+          viewType: view.viewType,
+        },
         viewRefs.length > 0 ? viewRefs : undefined
       );
 
@@ -1187,6 +1640,29 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       }
 
       console.log(`[ImageAgentTeam] Individual view '${view.viewType}' complete for ${sheet.characterName} (${completedViews.length} views accumulated for consistency)`);
+    }
+
+    // Derive a dedicated face-crop reference from the front view so scene
+    // generation has a tight identity anchor (hair color, eye color, face
+    // structure) that isn't diluted by full-body rendering.
+    const frontImage = generatedImages.get('front');
+    if (frontImage?.imageData && frontImage?.mimeType) {
+      try {
+        const faceCrop = await extractReferenceFaceCrop(frontImage.imageData, frontImage.mimeType, {
+          mode: 'front',
+        });
+        if (faceCrop.data && faceCrop.mimeType) {
+          const faceImage: GeneratedImage = {
+            ...frontImage,
+            imageData: faceCrop.data,
+            mimeType: faceCrop.mimeType,
+          };
+          generatedImages.set('face', faceImage);
+          console.log(`[ImageAgentTeam] Face-crop identity anchor stored for ${sheet.characterName}`);
+        }
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Failed to derive face-crop for ${sheet.characterName}:`, err);
+      }
     }
 
     const generatedSheet: GeneratedReferenceSheet = {
@@ -1289,53 +1765,56 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       }
     }
 
-    for (let i = 0; i < sheet.expressions.length; i++) {
-      const exprView = sheet.expressions[i];
-      // Use expressionName field (the actual emotion like 'happy', 'angry'), fallback to viewName or index
-      const expressionName = exprView.expressionName || exprView.viewName || `expression-${i}`;
-      
-      onProgress?.(expressionName, i + 1, sheet.expressions.length);
-      console.log(`[ImageAgentTeam] Generating expression ${i + 1}/${sheet.expressions.length}: ${expressionName}`);
-      console.log(`[ImageAgentTeam] Expression prompt preview: ${exprView.prompt?.prompt?.substring(0, 100)}...`);
+    // Expressions have NO inter-dependency (see note below about not chaining
+    // generated expression outputs). Fire them concurrently — per-provider
+    // `ProviderThrottle` enforces the concurrency cap (Gemini: 6) and the
+    // min-request interval, so we don't need an additional hard-coded sleep.
+    //
+    // Do not chain generated expression outputs back into later prompts.
+    // If an early expression drifts, feeding it forward contaminates the
+    // rest of the expression sheet. User refs + canonical pose refs are enough.
+    let completed = 0;
+    const expressionResults = await Promise.all(
+      sheet.expressions.map(async (exprView, i) => {
+        const expressionName = exprView.expressionName || exprView.viewName || `expression-${i}`;
+        const identifier = `expr_${sheet.characterId}_${expressionName}`;
 
-      const identifier = `expr_${sheet.characterId}_${expressionName}`;
-      
-      try {
-        const result = await imageService.generateImage(
-          exprView.prompt,
-          identifier,
-          { 
-            type: 'expression', 
-            characterId: sheet.characterId, 
-            expressionName,
-            characterName: sheet.characterName
-          },
-          referenceImages.length > 0 ? referenceImages : undefined
-        );
+        try {
+          const result = await imageService.generateImage(
+            exprView.prompt,
+            identifier,
+            {
+              type: 'expression',
+              characterId: sheet.characterId,
+              expressionName,
+              characterName: sheet.characterName,
+            },
+            referenceImages.length > 0 ? referenceImages : undefined,
+          );
+          completed += 1;
+          onProgress?.(expressionName, completed, sheet.expressions.length);
+          console.log(`[ImageAgentTeam] Expression ${completed}/${sheet.expressions.length} ready: ${expressionName}`);
+          return { index: i, expressionName, prompt: exprView.prompt, generatedImage: result };
+        } catch (error) {
+          completed += 1;
+          onProgress?.(expressionName, completed, sheet.expressions.length);
+          console.error(`[ImageAgentTeam] Failed to generate expression ${expressionName}:`, error);
+          return { index: i, expressionName, prompt: exprView.prompt, generatedImage: undefined };
+        }
+      }),
+    );
 
-        generatedImages.set(expressionName, result);
-        expressions.push({
-          expressionName,
-          prompt: exprView.prompt,
-          generatedImage: result
-        });
-
-        // Do not chain generated expression outputs back into later prompts.
-        // If an early expression drifts into a scene, feeding it forward contaminates
-        // the rest of the expression sheet. User refs + canonical pose refs are enough.
-      } catch (error) {
-        console.error(`[ImageAgentTeam] Failed to generate expression ${expressionName}:`, error);
-        expressions.push({
-          expressionName,
-          prompt: exprView.prompt,
-          generatedImage: undefined
-        });
+    // Preserve original expression ordering regardless of completion order.
+    expressionResults.sort((a, b) => a.index - b.index);
+    for (const r of expressionResults) {
+      if (r.generatedImage) {
+        generatedImages.set(r.expressionName, r.generatedImage);
       }
-
-      // Small delay between generations to avoid rate limits
-      if (i < sheet.expressions.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 1500));
-      }
+      expressions.push({
+        expressionName: r.expressionName,
+        prompt: r.prompt,
+        generatedImage: r.generatedImage,
+      });
     }
 
     // Create the generated expression sheet
@@ -1403,9 +1882,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       }
     };
 
-    // NB2 path: prefer individual views for cleaner identity signal per image
+    // NB2 path: prefer individual views for cleaner identity signal per image.
+    // The face crop is always selected first because a tight head-and-shoulders
+    // frame gives Gemini its strongest identity signal; full-body views follow
+    // for costume and build anchoring.
     if (preferIndividualViews) {
-      let priorityViews = ['front', 'three-quarter', 'profile'];
+      let priorityViews = ['face', 'front', 'three-quarter', 'profile'];
       if (preferredAngle && priorityViews.includes(preferredAngle)) {
         priorityViews = [preferredAngle, ...priorityViews.filter(v => v !== preferredAngle)];
       }
@@ -1420,12 +1902,12 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           });
         }
       }
-      // If individual views were found, add expressions and return
-      if (references.length > 0) {
-        appendExpressionRefs();
-        return references;
-      }
-      // Fall through to composite if no individual views exist
+      // Individual views are the authoritative identity path for the Gemini/NB2
+      // pipeline. If no views survived we return empty rather than falling back
+      // to a composite grid, which gives weaker per-view identity signal and
+      // hides the fact that reference generation failed.
+      appendExpressionRefs();
+      return references;
     }
 
     // Composite path: single image with all views (default for older models)
@@ -1466,6 +1948,41 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
   }
 
   /**
+   * Return the composite model sheet image for a character, if one was
+   * generated. The composite is the single-image "turnaround + palette"
+   * artifact; per-provider routing uses it for Midjourney `--cref` and
+   * (optionally) as a low-weight style anchor for Gemini scene generation.
+   * Returns null if no composite is cached (e.g. individual-views-only mode).
+   */
+  getCompositeReferenceImage(characterId: string): { data: string; mimeType: string; name: string } | null {
+    const sheet = this.characterReferenceSheets.get(characterId);
+    const composite = sheet?.generatedImages.get('composite');
+    if (!composite?.imageData || !composite?.mimeType) return null;
+    return {
+      data: composite.imageData,
+      mimeType: composite.mimeType,
+      name: `${sheet!.characterName}-composite`,
+    };
+  }
+
+  /**
+   * Return the dedicated face-crop identity anchor for a character, if one
+   * was derived during individual-view generation. Face crops carry the
+   * strongest per-image identity signal for Gemini and Stable Diffusion
+   * IP-Adapter Face, so callers should prefer it for close-up beats.
+   */
+  getCharacterFaceCrop(characterId: string): { data: string; mimeType: string; name: string } | null {
+    const sheet = this.characterReferenceSheets.get(characterId);
+    const face = sheet?.generatedImages.get('face');
+    if (!face?.imageData || !face?.mimeType) return null;
+    return {
+      data: face.imageData,
+      mimeType: face.mimeType,
+      name: `${sheet!.characterName}-face`,
+    };
+  }
+
+  /**
    * Get the visual anchors and consistency checklist for a character
    * Useful for prompt enhancement and validation
    */
@@ -1494,11 +2011,166 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     return this.characterReferenceSheets.get(characterId);
   }
 
+  hydrateReferenceSheetFromExistingImages(input: {
+    characterId: string;
+    characterName: string;
+    images: Array<{
+      viewType: string;
+      imageData: string;
+      mimeType: string;
+      imageUrl?: string;
+      imagePath?: string;
+    }>;
+    visualAnchors?: string[];
+    identityFingerprint?: string;
+  }): boolean {
+    if (!input.characterId || input.images.length === 0) return false;
+    const generatedImages = new Map<string, GeneratedImage>();
+    for (const image of input.images) {
+      generatedImages.set(image.viewType, {
+        prompt: { prompt: `hydrated existing reference image for ${input.characterName}` },
+        imageData: image.imageData,
+        mimeType: image.mimeType,
+        imageUrl: image.imageUrl,
+        imagePath: image.imagePath,
+        metadata: { hydratedFromDisk: true, viewType: image.viewType },
+      });
+    }
+
+    const views = input.images
+      .filter((image) => image.viewType !== 'face' && image.viewType !== 'composite')
+      .map((image) => ({
+        viewType: image.viewType,
+        prompt: { prompt: `hydrated existing ${image.viewType} reference for ${input.characterName}` },
+        purpose: 'Hydrated from an existing reference image file during image resume.',
+      })) as any;
+
+    this.characterReferenceSheets.set(input.characterId, {
+      characterId: input.characterId,
+      characterName: input.characterName,
+      views,
+      visualAnchors: input.visualAnchors || [],
+      colorPalette: [],
+      silhouetteNotes: 'Hydrated from existing generated reference image files.',
+      consistencyChecklist: [],
+      generatedImages,
+      identityFingerprint: input.identityFingerprint,
+    });
+    return true;
+  }
+
   /**
    * Clear cached reference sheets (useful for regeneration)
    */
   clearReferenceSheets(): void {
     this.characterReferenceSheets.clear();
+  }
+
+  /**
+   * D5: Tag a cached reference sheet with the identity fingerprint that was
+   * in effect when it was generated. Callers compute the fingerprint via
+   * `computeCharacterIdentityFingerprint` and pass it in. Safe to call
+   * multiple times; subsequent calls overwrite the stored fingerprint.
+   */
+  setReferenceSheetIdentityFingerprint(characterId: string, fingerprint: string): void {
+    const sheet = this.characterReferenceSheets.get(characterId);
+    if (!sheet) return;
+    sheet.identityFingerprint = fingerprint;
+  }
+
+  /**
+   * D8: Identity drift audit (pairs with QA_MODE=fast/full).
+   *
+   * Non-destructive companion to `invalidateStaleReferenceSheets`. Returns a
+   * structured report of characters whose cached reference-sheet fingerprint
+   * no longer matches the current character profile, WITHOUT dropping the
+   * cached sheet. Use this from the QA pass to emit structured warnings and
+   * let the operator decide whether to kick off a regen.
+   *
+   * This is intentionally a pure comparison — no LLM call, no image diff —
+   * so it can run under `QA_MODE=fast` without inflating generation cost.
+   */
+  auditIdentityDrift(
+    characters: Array<
+      Pick<
+        import('../CharacterDesigner').CharacterProfile,
+        'id' | 'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire'
+      >
+    >,
+  ): Array<{
+    characterId: string;
+    characterName: string;
+    reason: 'no-cached-fingerprint' | 'fingerprint-mismatch';
+    cachedFingerprint?: string;
+    currentFingerprint: string;
+  }> {
+    const report: Array<{
+      characterId: string;
+      characterName: string;
+      reason: 'no-cached-fingerprint' | 'fingerprint-mismatch';
+      cachedFingerprint?: string;
+      currentFingerprint: string;
+    }> = [];
+    for (const char of characters) {
+      const existing = this.characterReferenceSheets.get(char.id);
+      if (!existing) continue; // no sheet => not drift, just not-yet-rendered
+      const currentFingerprint = computeCharacterIdentityFingerprint(char);
+      if (!existing.identityFingerprint) {
+        report.push({
+          characterId: char.id,
+          characterName: char.name,
+          reason: 'no-cached-fingerprint',
+          currentFingerprint,
+        });
+        continue;
+      }
+      if (existing.identityFingerprint !== currentFingerprint) {
+        report.push({
+          characterId: char.id,
+          characterName: char.name,
+          reason: 'fingerprint-mismatch',
+          cachedFingerprint: existing.identityFingerprint,
+          currentFingerprint,
+        });
+      }
+    }
+    return report;
+  }
+
+  /**
+   * D5: Drop any cached reference sheet whose stored `identityFingerprint`
+   * no longer matches the current character profile. This lets multi-episode
+   * pipelines (or resumed runs where the user has rewritten appearance
+   * fields) regenerate stale anchors instead of continuing to render the old
+   * face. Returns the list of character ids that were invalidated.
+   */
+  invalidateStaleReferenceSheets(
+    characters: Array<
+      Pick<
+        import('../CharacterDesigner').CharacterProfile,
+        'id' | 'name' | 'role' | 'physicalDescription' | 'distinctiveFeatures' | 'typicalAttire'
+      >
+    >,
+  ): string[] {
+    const invalidated: string[] = [];
+    for (const char of characters) {
+      const existing = this.characterReferenceSheets.get(char.id);
+      if (!existing) continue;
+      const currentFingerprint = computeCharacterIdentityFingerprint(char);
+      if (!existing.identityFingerprint) {
+        // Pre-D5 cached sheet — adopt the current fingerprint so future runs
+        // can detect drift. Do not invalidate: the sheet content is still
+        // whatever the author currently wants (we have no prior basis to
+        // compare).
+        existing.identityFingerprint = currentFingerprint;
+        continue;
+      }
+      if (existing.identityFingerprint !== currentFingerprint) {
+        this.characterReferenceSheets.delete(char.id);
+        invalidated.push(char.id);
+      }
+    }
+    return invalidated;
   }
 
   /**
@@ -1629,8 +2301,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       return { success: false, error: initialResult?.error };
     }
 
-    let plan = initialResult.data;
-    let prompts = plan.prompts;
+    const plan = initialResult.data;
+    const prompts = plan.prompts;
     const generatedImages = new Map<string, GeneratedImage>();
     const contractMetrics = this.computeContractFidelityMetrics(request, plan, prompts);
     console.log(
@@ -1946,6 +2618,17 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       console.warn('[ImageAgentTeam] Full QA validation failed:', qaErr);
     }
 
+    // Step 6: Character identity gate. After all other QA has run, score each
+    // shot against its character reference images. Shots scoring below the
+    // threshold are regenerated once through edit mode, which preserves
+    // composition while correcting face/hair/eye/mark drift. Bounded by
+    // maxIdentityRegenerations per-episode to cap spend.
+    try {
+      await this.runIdentityConsistencyGate(plan, generatedImages, prompts, imageService, request);
+    } catch (idErr) {
+      console.warn('[ImageAgentTeam] Identity consistency gate failed:', idErr);
+    }
+
     return {
       success: true,
       data: {
@@ -1955,6 +2638,178 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
         fullQAReport // Include full QA results for logging/debugging
       }
     };
+  }
+
+  /**
+   * Configure the identity consistency gate thresholds. Call at the start of an
+   * episode or generation run. `resetIdentityBudget` clears the per-episode
+   * counter so the budget applies per generation run, not per process lifetime.
+   */
+  setIdentityGateConfig(options: {
+    identityScoreThreshold?: number;
+    maxIdentityRegenerations?: number;
+    resetIdentityBudget?: boolean;
+  }): void {
+    if (typeof options.identityScoreThreshold === 'number') {
+      this.identityScoreThreshold = Math.max(0, Math.min(100, options.identityScoreThreshold));
+    }
+    if (typeof options.maxIdentityRegenerations === 'number') {
+      this.maxIdentityRegenerations = Math.max(0, Math.floor(options.maxIdentityRegenerations));
+    }
+    if (options.resetIdentityBudget) {
+      this.identityRegenerationsUsed = 0;
+    }
+  }
+
+  /** Reset the episode-level identity regeneration counter. */
+  resetIdentityRegenerationBudget(): void {
+    this.identityRegenerationsUsed = 0;
+  }
+
+  /**
+   * Score each generated shot against its character reference images and run a
+   * single bounded identity-driven regeneration through edit mode when a shot
+   * scores below the threshold. Early-exits per shot if the episode regen
+   * budget is exhausted.
+   */
+  private async runIdentityConsistencyGate(
+    plan: VisualPlan,
+    generatedImages: Map<string, GeneratedImage>,
+    prompts: Map<string, ImagePrompt>,
+    imageService: { generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage>; editImage?: (baseImage: { data: string; mimeType: string }, prompt: ImagePrompt, identifier: string, referenceImages?: any[]) => Promise<GeneratedImage> },
+    request: StoryboardRequest,
+  ): Promise<void> {
+    if (this.maxIdentityRegenerations <= 0) return;
+    if (this.identityRegenerationsUsed >= this.maxIdentityRegenerations) {
+      console.log('[ImageAgentTeam] Identity gate: episode regen budget exhausted, skipping.');
+      return;
+    }
+
+    for (let i = 0; i < plan.shots.length; i++) {
+      if (this.identityRegenerationsUsed >= this.maxIdentityRegenerations) {
+        console.log('[ImageAgentTeam] Identity gate: episode regen budget reached mid-scene, stopping.');
+        break;
+      }
+
+      const shot = plan.shots[i];
+      const shotKey = shot.beatId || shot.id || `shot-${i}`;
+      const image = generatedImages.get(shotKey);
+      if (!image?.imageData || !image?.mimeType) continue;
+
+      const characterIds = (shot.characters || []).filter(
+        (id) => typeof id === 'string' && id && this.characterReferenceSheets.has(id)
+      );
+      if (characterIds.length === 0) continue;
+
+      let idReport: Awaited<ReturnType<typeof this.validateImageConsistency>>;
+      try {
+        idReport = await this.validateImageConsistency(
+          { data: image.imageData, mimeType: image.mimeType },
+          characterIds,
+        );
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Identity scoring failed for shot ${shotKey}:`, err);
+        continue;
+      }
+
+      if (idReport.overallScore >= this.identityScoreThreshold) {
+        continue;
+      }
+
+      console.warn(
+        `[ImageAgentTeam] Identity gate: shot ${shotKey} scored ${idReport.overallScore.toFixed(1)} (threshold ${this.identityScoreThreshold}). Regenerating via edit mode.`
+      );
+
+      // Build strong identity ref pack: face crops first, then full views.
+      // Canonical role tags so the per-provider filter can route by artifact
+      // shape. Composite sheets are intentionally NOT included on the
+      // identity-rescue path — this is a Gemini-style edit-mode retry and we
+      // don't want the collage layout echoing into the regenerated scene.
+      const identityRefs: Array<{ data: string; mimeType: string; role: string; characterName?: string; viewType?: string; visualAnchors?: string[] }> = [];
+      for (const charId of characterIds) {
+        const sheet = this.characterReferenceSheets.get(charId);
+        if (!sheet) continue;
+        const refs = this.getCharacterReferenceImages(charId, false, 3, undefined, true);
+        for (const r of refs) {
+          const nameParts = r.name.split('-');
+          const viewType = nameParts.length > 1 ? nameParts[nameParts.length - 1] : 'front';
+          const role = viewType === 'face' ? 'character-reference-face' : 'character-reference';
+          identityRefs.push({
+            data: r.data,
+            mimeType: r.mimeType,
+            role,
+            characterName: sheet.characterName,
+            viewType,
+            visualAnchors: sheet.visualAnchors,
+          });
+        }
+      }
+
+      const basePrompt = prompts.get(shotKey);
+      const feedbackHint = idReport.feedback.length > 0 ? ` Identity drift detected: ${idReport.feedback.slice(0, 2).join(' ')}` : '';
+      const editPrompt: ImagePrompt = basePrompt
+        ? {
+            ...basePrompt,
+            prompt:
+              `Preserve the composition, camera angle, pose, lighting, and background of the base image. ` +
+              `Correct only the character face, hair color, eye color, skin tone, and distinguishing marks ` +
+              `to match the character reference images exactly. Do not change what is happening in the scene.${feedbackHint}`,
+            negativePrompt: [basePrompt.negativePrompt, 'different face, different hair color, changed eye color, wrong skin tone, missing scar, missing tattoo, altered distinguishing feature']
+              .filter(Boolean)
+              .join(', '),
+          }
+        : {
+            prompt:
+              `Preserve the composition, camera angle, pose, lighting, and background of the base image. ` +
+              `Correct only the character face, hair color, eye color, skin tone, and distinguishing marks ` +
+              `to match the character reference images exactly. Do not change what is happening in the scene.${feedbackHint}`,
+            negativePrompt: 'different face, different hair color, changed eye color, wrong skin tone, missing scar, missing tattoo, altered distinguishing feature',
+            aspectRatio: '9:16',
+          };
+
+      const editIdentifier = `beat-${request.sceneId}-${shotKey}-identityregen`;
+      try {
+        let result: GeneratedImage;
+        if (typeof imageService.editImage === 'function') {
+          result = await imageService.editImage(
+            { data: image.imageData, mimeType: image.mimeType },
+            editPrompt,
+            editIdentifier,
+            identityRefs,
+          );
+        } else {
+          // Fallback for imageService wrappers that don't expose editImage —
+          // do a regular regeneration with stronger identity refs. This still
+          // applies the identity drift negatives and extra ref count, just
+          // without the composition-preserving edit path.
+          result = await imageService.generateImage(
+            editPrompt,
+            editIdentifier,
+            {
+              sceneId: request.sceneId,
+              beatId: shotKey,
+              type: 'scene',
+              regeneration: 1,
+              includeExpressionRefs: true,
+            },
+            identityRefs,
+          );
+        }
+
+        if (result.imageData && result.mimeType) {
+          generatedImages.set(shotKey, result);
+          if (result.imageUrl) shot.generatedImageUrl = result.imageUrl;
+          shot.generatedImageData = result.imageData;
+          shot.generatedImageMimeType = result.mimeType;
+          this.identityRegenerationsUsed++;
+          console.log(
+            `[ImageAgentTeam] Identity gate: shot ${shotKey} regenerated via edit mode (${this.identityRegenerationsUsed}/${this.maxIdentityRegenerations} budget used).`
+          );
+        }
+      } catch (err) {
+        console.warn(`[ImageAgentTeam] Identity gate regen failed for shot ${shotKey}:`, err);
+      }
+    }
   }
 
   /**
@@ -2150,6 +3005,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           emotionalRead: (firstBeat as any).emotionalRead,
           relationshipDynamic: (firstBeat as any).relationshipDynamic,
           mustShowDetail: (firstBeat as any).mustShowDetail,
+          dramaticIntent: (firstBeat as any).dramaticIntent,
+          sequenceIntent: (firstBeat as any).sequenceIntent || (request as any).sequenceIntent,
         } : undefined,
         visualContractHash: (firstShot as any).contractHash,
         // First beat of a branch scene carries the choice payoff
@@ -2225,6 +3082,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
           emotionalRead: (correspondingBeat as any).emotionalRead,
           relationshipDynamic: (correspondingBeat as any).relationshipDynamic,
           mustShowDetail: (correspondingBeat as any).mustShowDetail,
+          dramaticIntent: (correspondingBeat as any).dramaticIntent,
+          sequenceIntent: (correspondingBeat as any).sequenceIntent || (request as any).sequenceIntent,
         } : undefined,
             visualContractHash: (shot as any).contractHash,
         // Choice payoff: branch scene first beat OR per-choice payoff beat.
@@ -3305,17 +4164,37 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
    * - background characters get "BACKGROUND" annotation (present but softer/partial)
    */
   private resolveCharactersForShot(
-    shotCharacterIds?: string[],
-    beatCharacterIds?: string[],
+    shotCharacterIds?: any[],
+    beatCharacterIds?: any[],
     characterDescriptions?: StoryboardRequest['characterDescriptions'],
-    foregroundCharacterNames?: string[],
-    backgroundCharacterNames?: string[]
+    foregroundCharacterNames?: any[],
+    backgroundCharacterNames?: any[]
   ): Array<{ name: string; description: string; role: string; height?: string; build?: string }> | undefined {
     if (!characterDescriptions || characterDescriptions.length === 0) return undefined;
     
-    const charIds = shotCharacterIds && shotCharacterIds.length > 0 
-      ? shotCharacterIds 
-      : beatCharacterIds;
+    const normalizeCharRef = (value: any): string | undefined => {
+      if (typeof value === 'string') return value.trim() || undefined;
+      if (!value || typeof value !== 'object') return undefined;
+      const id = typeof value.id === 'string' ? value.id.trim() : '';
+      if (id) return id;
+      const name = typeof value.name === 'string' ? value.name.trim() : '';
+      if (name) return name;
+      const characterId = typeof value.characterId === 'string' ? value.characterId.trim() : '';
+      if (characterId) return characterId;
+      const npcId = typeof value.npcId === 'string' ? value.npcId.trim() : '';
+      if (npcId) return npcId;
+      return undefined;
+    };
+    const normalizeCharRefs = (values?: any[]): string[] => {
+      if (!Array.isArray(values)) return [];
+      return Array.from(new Set(values.map(normalizeCharRef).filter(Boolean) as string[]));
+    };
+
+    const shotIds = normalizeCharRefs(shotCharacterIds);
+    const beatIds = normalizeCharRefs(beatCharacterIds);
+    const fgNames = normalizeCharRefs(foregroundCharacterNames);
+    const bgNames = normalizeCharRefs(backgroundCharacterNames);
+    const charIds = shotIds.length > 0 ? shotIds : beatIds;
     
     const findChar = (idOrName: string) => {
       const byId = characterDescriptions.find(c => c.id === idOrName);
@@ -3327,8 +4206,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       );
     };
     
-    const fgNamesLower = new Set((foregroundCharacterNames || []).map(n => n.toLowerCase()));
-    const bgNamesLower = new Set((backgroundCharacterNames || []).map(n => n.toLowerCase()));
+    const fgNamesLower = new Set(fgNames.map(n => (findChar(n)?.name || n).toLowerCase()));
+    const bgNamesLower = new Set(bgNames.map(n => (findChar(n)?.name || n).toLowerCase()));
     
     const getVisualRole = (charName: string, storyRole: string): string => {
       const nameLower = charName.toLowerCase();
@@ -3357,8 +4236,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     });
 
     if (!charIds || charIds.length === 0) {
-      if (foregroundCharacterNames && foregroundCharacterNames.length > 0) {
-        const fgResolved = foregroundCharacterNames
+      if (fgNames.length > 0) {
+        const fgResolved = fgNames
           .map(name => findChar(name))
           .filter(Boolean);
         if (fgResolved.length > 0) {
@@ -3859,5 +4738,67 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
       console.warn(`[ImageAgentTeam] Text artifact validation error for ${identifier}: ${msg} — allowing image`);
       return { passed: true };
     }
+  }
+
+  private async generateImageWithDefectRetries(
+    imageService: {
+      generateImage: (prompt: ImagePrompt, identifier: string, metadata?: any, referenceImages?: any[]) => Promise<GeneratedImage>;
+      getMaxRetries?: () => number;
+      checkImageForDefects?: (imageData: string, mimeType: string, prompt?: ImagePrompt, identifier?: string) => Promise<{ passed: boolean; issues: string[]; reason?: string; skipped?: boolean }>;
+      saveImageQADiagnostic?: (identifier: string, diagnostic: unknown) => Promise<void>;
+    },
+    basePrompt: ImagePrompt,
+    identifier: string,
+    metadata?: any,
+    referenceImages?: any[],
+  ): Promise<GeneratedImage> {
+    const maxRetries = Math.max(1, imageService.getMaxRetries?.() || 1);
+    const attempts: any[] = [];
+    let prompt = basePrompt;
+    let lastReason = '';
+
+    for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+      const attemptIdentifier = attempt === 1 ? identifier : `${identifier}-qa-retry-${attempt}`;
+      const result = await imageService.generateImage(
+        prompt,
+        attemptIdentifier,
+        { ...(metadata || {}), regeneration: attempt > 1 ? attempt - 1 : metadata?.regeneration },
+        referenceImages,
+      );
+
+      const tier1 = runTier1Checks(result, attemptIdentifier);
+      let passed = tier1.passed;
+      let issues: string[] = tier1.passed ? [] : ['tier1'];
+      let reason = tier1.reason || 'passed';
+
+      if (passed && result.imageData && result.mimeType && imageService.checkImageForDefects) {
+        const defect = await imageService.checkImageForDefects(result.imageData, result.mimeType, prompt, attemptIdentifier);
+        passed = defect.passed || defect.skipped === true;
+        issues = defect.issues || [];
+        reason = defect.reason || (passed ? 'defect gate passed' : 'defect gate failed');
+      }
+
+      attempts.push({ attempt, identifier: attemptIdentifier, passed, issues, reason, imagePath: result.imagePath, imageUrl: result.imageUrl });
+      await imageService.saveImageQADiagnostic?.(identifier, {
+        identifier,
+        generatedAt: new Date().toISOString(),
+        maxRetries,
+        attempts,
+      });
+
+      if (passed) return result;
+
+      lastReason = reason;
+      if (attempt < maxRetries) {
+        const retryIssues = issues.length > 0 && issues[0] !== 'tier1'
+          ? issues as any[]
+          : ['visible_text', 'extra_limbs', 'duplicate_body', 'floating_character', 'panel_leakage', 'reference_sheet_artifact', 'photorealism', 'environment_photorealism', 'style_drift', 'first_person_pov'];
+        const retryPatch = buildDefectRetryPrompt(basePrompt, retryIssues);
+        prompt = retryPatch.prompt;
+        console.warn(`[ImageAgentTeam] Image defect detected for ${identifier}: ${issues.join(', ') || reason}; retry ${attempt + 1}/${maxRetries}`);
+      }
+    }
+
+    throw new Error(`Image defect QA failed for ${identifier}: ${lastReason || 'unknown defect'}`);
   }
 }

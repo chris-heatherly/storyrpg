@@ -26,7 +26,7 @@ function getSharp(): SharpFn | null {
   if (_sharpLoaded) return _sharp;
   _sharpLoaded = true;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+     
     const loaded = require('sharp');
     if (typeof loaded === 'function') {
       _sharp = loaded as SharpFn;

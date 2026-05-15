@@ -9,6 +9,13 @@ export type { BeatWithTiming, SceneWithTiming } from './ChoiceDensityValidator';
 
 export { ChoiceDistributionValidator } from './ChoiceDistributionValidator';
 export type { ChoiceDistributionTargets, ChoiceDistributionInput, ChoiceDistributionMetrics } from './ChoiceDistributionValidator';
+export { SceneGraphBranchValidator } from './SceneGraphBranchValidator';
+export type {
+  SceneGraphBranchIssue,
+  SceneGraphBranchMetrics,
+  SceneGraphBranchValidationOptions,
+  SceneGraphBranchValidationResult,
+} from './SceneGraphBranchValidator';
 
 export { NPCDepthValidator } from './NPCDepthValidator';
 
@@ -17,8 +24,24 @@ export { ConsequenceBudgetValidator } from './ConsequenceBudgetValidator';
 export { StakesTriangleValidator } from './StakesTriangleValidator';
 
 export { FiveFactorValidator } from './FiveFactorValidator';
+export { ChoiceImpactValidator } from './ChoiceImpactValidator';
+export type { ChoiceImpactInput, ChoiceImpactMetrics, ChoiceImpactResult } from './ChoiceImpactValidator';
+export { MechanicsLeakageValidator } from './MechanicsLeakageValidator';
+export type {
+  MechanicsLeakageInput,
+  MechanicsLeakageResult,
+  MechanicsLeakageText,
+} from './MechanicsLeakageValidator';
 
 export { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
+export {
+  runNarrativeDiagnostics,
+  type NarrativeDiagnosticCheck,
+  type NarrativeDiagnosticIssue,
+  type NarrativeDiagnosticsInput,
+  type NarrativeDiagnosticsReport,
+  type NarrativeDiagnosticStatus,
+} from './narrativeDiagnostics';
 
 export { IntegratedBestPracticesValidator } from './IntegratedBestPracticesValidator';
 export type { ValidationInput } from './IntegratedBestPracticesValidator';
@@ -27,12 +50,33 @@ export type { ValidationInput } from './IntegratedBestPracticesValidator';
 export { BaseValidator } from './BaseValidator';
 export type { ValidationIssue, ValidationResult } from './BaseValidator';
 
+// Structural validator (story-shape integrity + auto-fix)
+export { StructuralValidator } from './StructuralValidator';
+export type { StructuralIssue, StructuralReport } from './StructuralValidator';
+
 // Future validators (available but not yet integrated into pipeline)
 // TODO: Integrate these validators when multi-episode/season generation is enabled
 export { SeasonValidator } from './SeasonValidator';
 export { CliffhangerValidator } from './CliffhangerValidator';
 export { PhaseValidator } from './PhaseValidator';
 export { PixarPrinciplesValidator } from './PixarPrinciplesValidator';
+
+// Setup/payoff + twist + arc + divergence validators (Phases 5–8)
+export { SetupPayoffValidator } from './SetupPayoffValidator';
+export type { SetupPayoffInput, SetupPayoffMetrics, SetupPayoffResult } from './SetupPayoffValidator';
+export { TwistQualityValidator } from './TwistQualityValidator';
+export type { TwistQualityInput, TwistQualityMetrics, TwistQualityResult } from './TwistQualityValidator';
+export { ArcDeltaValidator } from './ArcDeltaValidator';
+export type { ArcDeltaInput, ArcDeltaMetrics, ArcDeltaResult } from './ArcDeltaValidator';
+export { DivergenceValidator } from './DivergenceValidator';
+export type { DivergenceInput, DivergenceMetrics, DivergenceResult } from './DivergenceValidator';
+export {
+  SevenPointCoverageValidator,
+  seasonPlanToCoverageInput,
+} from './SevenPointCoverageValidator';
+export type { SevenPointCoverageInput } from './SevenPointCoverageValidator';
+export { simulateEpisodePaths } from './pathSimulator';
+export type { TerminalState, PathSimulationResult, SimulatorOptions } from './pathSimulator';
 
 // Incremental validators (per-scene validation during content generation)
 export {
@@ -46,6 +90,8 @@ export {
   aggregateValidationResults,
   DEFAULT_INCREMENTAL_CONFIG,
 } from './IncrementalValidators';
+export { PovClarityValidator, hasPlayerReference } from './PovClarityValidator';
+export { SceneCraftValidator } from './SceneCraftValidator';
 export type {
   IncrementalValidationConfig,
   SceneValidationResult,
@@ -56,3 +102,5 @@ export type {
   IncrementalEncounterResult,
   CharacterVoiceProfile,
 } from './IncrementalValidators';
+export type { PovClarityIssue, PovClarityResult, PovClarityContext } from './PovClarityValidator';
+export type { SceneCraftOptions, SceneCraftResult } from './SceneCraftValidator';

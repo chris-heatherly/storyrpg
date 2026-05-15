@@ -19,7 +19,7 @@ export {
 } from './textEnforcer';
 
 // LLM parsing utilities
-export { llmParser } from './llmParser';
+export * as llmParser from './llmParser';
 
 // ID utilities
 export {

@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): type drift with GeneratedBeat / sourceAnalysis
+// fragments; address in Phase 3 pipeline refactor and Phase 7 type consolidation.
 /**
  * Scene Writer Agent
  *
@@ -12,12 +14,110 @@ import { AgentConfig, GenerationSettingsConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import { Beat, TextVariant, Consequence, TimingMetadata } from '../../types';
-import { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
+import {
+  SourceMaterialAnalysis,
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+} from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
-import { CHOICE_DENSITY_REQUIREMENTS, NARRATIVE_INTENSITY_RULES } from '../prompts/storytellingPrinciples';
+import { PovClarityValidator } from '../validators/PovClarityValidator';
+import { auditFictionFirstTurns, FICTION_FIRST_TURN_DOMAINS } from '../validators/turnAudit';
+import type { CliffhangerPlan } from '../../types/seasonPlan';
+import {
+  CHOICE_DENSITY_REQUIREMENTS,
+  CRAFT_PRESSURE_GUIDANCE,
+  NARRATIVE_INTENSITY_RULES,
+  buildGenreAwareJeopardyGuidance,
+  buildStructuralContextSection,
+} from '../prompts/storytellingPrinciples';
+import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
+import { SCENE_WRITER_BEAT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
+
+function normalizeSourceFragments(sourceAnalysis?: SourceMaterialAnalysis): {
+  dialogue: string[];
+  prose: string[];
+  terminology: string[];
+} {
+  const fragments = sourceAnalysis?.directLanguageFragments;
+  if (!fragments) return { dialogue: [], prose: [], terminology: [] };
+
+  if (Array.isArray(fragments)) {
+    return {
+      dialogue: fragments.map((fragment) => fragment.text).filter(Boolean),
+      prose: fragments
+        .filter((fragment) => fragment.context && !fragment.speaker)
+        .map((fragment) => fragment.text)
+        .filter(Boolean),
+      terminology: [],
+    };
+  }
+
+  return {
+    dialogue: Array.isArray(fragments.dialogue) ? fragments.dialogue.filter(Boolean) : [],
+    prose: Array.isArray(fragments.prose) ? fragments.prose.filter(Boolean) : [],
+    terminology: Array.isArray(fragments.terminology) ? fragments.terminology.filter(Boolean) : [],
+  };
+}
+
+export function buildSourceMaterialFidelitySection(sourceAnalysis?: SourceMaterialAnalysis): string {
+  if (!sourceAnalysis) return '';
+
+  const fragments = normalizeSourceFragments(sourceAnalysis);
+  const guide = sourceAnalysis.writingStyleGuide;
+  const guidance = sourceAnalysis.adaptationGuidance;
+  const elementsToPreserve = Array.isArray(guidance?.elementsToPreserve) ? guidance.elementsToPreserve : [];
+  const elementsToAdapt = Array.isArray(guidance?.elementsToAdapt) ? guidance.elementsToAdapt : [];
+  const themes = Array.isArray(guidance?.keyThemesToPreserve)
+    ? guidance.keyThemesToPreserve
+    : elementsToPreserve;
+  const moments = Array.isArray(guidance?.iconicMoments) ? guidance.iconicMoments : [];
+
+  return `
+## Source Material Fidelity (IP Research)
+The following language, terminology, and prose-style rules have been identified from the source material.
+**Prioritize this writing contract when drafting player-facing prose.**
+
+${guide ? `### Writing Style Guide (${guide.source})
+- **Summary**: ${guide.summary}
+- **Narrative Voice**: ${guide.narrativeVoice}
+- **Sentence Rhythm**: ${guide.sentenceRhythm}
+- **Diction**: ${guide.diction}
+- **Dialogue Style**: ${guide.dialogueStyle}
+- **POV / Distance**: ${guide.povAndDistance}
+- **Imagery / Sensory Focus**: ${guide.imageryAndSensoryFocus}
+- **Pacing**: ${guide.pacing}
+- **Do**: ${guide.doList.join('; ')}
+- **Avoid**: ${guide.avoidList.join('; ')}
+${guide.evidence?.length ? `- **Evidence**: ${guide.evidence.join('; ')}` : ''}
+` : ''}
+
+${fragments.dialogue.length ? `### Iconic Dialogue
+${fragments.dialogue.map(d => `- "${d}"`).join('\n')}
+` : ''}
+
+${fragments.prose.length ? `### Notable Prose & Style
+${fragments.prose.map(p => `- ${p}`).join('\n')}
+` : ''}
+
+${fragments.terminology.length ? `### Key Terminology
+${fragments.terminology.join(', ')}
+` : ''}
+
+${guidance ? `### Adaptation Guidance
+- **Narrative Voice**: ${guidance.narrativeVoice}
+- **Tone Notes**: ${guidance.toneNotes}
+- **Dialogue Style**: ${guidance.dialogueStyle}
+- **Elements to Preserve**: ${elementsToPreserve.join(', ')}
+${elementsToAdapt.length ? `- **Elements to Adapt**: ${elementsToAdapt.join(', ')}` : ''}
+${themes.length ? `- **Themes to Preserve**: ${themes.join(', ')}` : ''}
+${moments.length ? `- **Iconic Moments**: ${moments.join(', ')}` : ''}
+` : ''}
+`;
+}
 
 // Input types
 export interface SceneWriterInput {
@@ -69,6 +169,31 @@ export interface SceneWriterInput {
   // Source material analysis for IP fidelity (optional)
   sourceAnalysis?: SourceMaterialAnalysis;
 
+  /**
+   * Season-level narrative anchors (from SeasonPlan.anchors).
+   * When present, SceneWriter keeps every prose beat grounded in the
+   * shared Stakes / Goal / Inciting Incident / Climax anchors.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /**
+   * Season-level 7-point beat map (from SeasonPlan.sevenPoint). Used to
+   * tell SceneWriter where this scene sits on the season's dramatic curve.
+   */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Which beat(s) of the season this episode is carrying (from
+   * SeasonEpisode.structuralRole). Drives scene mood / intensity defaults.
+   */
+  episodeStructuralRole?: StructuralRole[];
+
+  /**
+   * Role-mapped ending contract for the final scene of the episode.
+   * Only supplied to scenes that may need to land the episode ending.
+   */
+  cliffhangerPlan?: CliffhangerPlan;
+
   // Context about the episode's climactic encounter that this scene is building toward.
   // Provided for all non-encounter scenes so the writer can plant seeds, establish stakes,
   // and frame choices in ways that make the encounter feel earned when players reach it.
@@ -81,6 +206,59 @@ export interface SceneWriterInput {
 
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
+
+  // Branch topology context from BranchManager (Phase 1.1).
+  // When provided, SceneWriter knows whether this scene is a bottleneck,
+  // a branch-only scene, or a reconvergence point, and what state differences
+  // must be acknowledged.
+  branchContext?: {
+    role: 'bottleneck' | 'branch' | 'reconvergence' | 'linear';
+    branchPathIds?: string[];
+    incomingBranchIds?: string[];
+    stateReconciliationNotes?: string[];
+    reconvergenceNarrativeAcknowledgment?: string;
+  };
+
+  // Narrative threads active for this scene (Phase 5.3).
+  // SceneWriter must plant or pay off these threads in the beat text
+  // and set `plantsThreadId` / `paysOffThreadId` on the corresponding beat.
+  activeThreads?: Array<{
+    id: string;
+    kind: 'seed' | 'clue' | 'promise' | 'secret' | 'foreshadow';
+    label: string;
+    action: 'plant' | 'payoff' | 'reference';
+    hint?: string;
+  }>;
+
+  // Twist scheduling from TwistArchitect (Phase 6).
+  // When provided, SceneWriter marks the designated beat as a twist or revelation
+  // and drops subtle setup cues in the named setup beats.
+  twistDirectives?: Array<{
+    twistKind: 'reversal' | 'revelation' | 'betrayal' | 'reframe';
+    beatRole: 'setup' | 'twist' | 'satisfaction';
+    hint: string;
+  }>;
+
+  // Character arc milestone targets (Phase 7.1).
+  // When provided, SceneWriter frames beats so protagonist choices can move
+  // identity and relationship dimensions in the direction of these targets.
+  arcTargets?: {
+    identityDeltaHints?: Array<{ dimension: string; direction: 'positive' | 'negative'; magnitude: 'minor' | 'moderate' | 'major' }>;
+    relationshipTrajectory?: Array<{ npcId: string; dimension: string; direction: 'positive' | 'negative'; hint: string }>;
+  };
+
+  // Unresolved callback hooks from prior episodes (Plan 1: Delayed Consequences).
+  // When present, SceneWriter SHOULD author TextVariants that reference one of
+  // these hooks via `callbackHookId`, gated on the hook's flags.
+  unresolvedCallbacks?: Array<{
+    id: string;
+    sourceEpisode: number;
+    summary: string;
+    flags: string[];
+    conditionKeys?: string[];
+    impactFactors?: string[];
+    consequenceTier?: string;
+  }>;
 }
 
 // Output types
@@ -103,9 +281,20 @@ export interface GeneratedBeat {
   emotionalRead?: string; // Visible face/body emotional cues
   relationshipDynamic?: string; // Spatial/power dynamic between characters
   mustShowDetail?: string; // Non-negotiable visual clue for this beat
+  dramaticIntent?: Beat['dramaticIntent']; // Objective/status/subtext metadata for image planning
+  sequenceIntent?: Beat['sequenceIntent']; // Multi-beat visual sequence objective/thread metadata
   allowDiegeticText?: boolean; // When true, text in the image is permitted (letter, sign, book)
   shotType?: 'establishing' | 'character' | 'action'; // Camera intent: environment-only, character-focused, or physical action
   intensityTier?: 'dominant' | 'supporting' | 'rest'; // Narrative intensity for scene-level pacing
+  visualContinuity?: Beat['visualContinuity']; // Optional beat-to-beat flow metadata
+  visualCast?: Beat['visualCast'];
+  coveragePlan?: Beat['coveragePlan'];
+
+  // Setup-payoff + plot-point metadata (Phases 5, 6)
+  plantsThreadId?: string;
+  paysOffThreadId?: string;
+  plotPointType?: 'setup' | 'payoff' | 'twist' | 'revelation';
+  twistKind?: 'reversal' | 'revelation' | 'betrayal' | 'reframe';
 }
 
 export interface SceneContent {
@@ -119,6 +308,9 @@ export interface SceneContent {
   moodProgression: string[];
   charactersInvolved: string[];
   keyMoments: string[];
+  sceneTakeaways?: string[];
+  transitionIn?: string;
+  sequenceIntent?: Beat['sequenceIntent'];
 
   // Continuity notes
   continuityNotes: string[];
@@ -127,6 +319,10 @@ export interface SceneContent {
   branchType?: 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption';
   isBottleneck?: boolean;
   isConvergencePoint?: boolean;
+
+  // Threads planted/paid off in this scene (Phase 5.3).
+  plantedThreadIds?: string[];
+  paidOffThreadIds?: string[];
 
   // Choice payoff context — the player choice that led to this scene.
   // Threaded to the image pipeline so the first beat's image reflects the choice.
@@ -196,6 +392,20 @@ You are a master prose writer who brings scene blueprints to life with vivid, im
 - Match prose length to moment importance.
 - Quick beats for tension, longer for reflection.
 - Vary the rhythm within scenes.
+
+### Scene Craft
+- Every scene needs a purpose players can feel: plot pressure, relationship movement, theme pressure, information gain, or meaningful aftermath.
+- Identify the scene's key moment and build the beat sequence toward it.
+- Prefer turns over topics. A beat should visibly change leverage, trust, evidence, proximity, identity, risk, resources, or knowledge; do not let scenes become chains of explanation.
+- Include scene takeaways: what the player should learn, feel, or understand by the end.
+- Use natural transition phrasing in continuityNotes or transitionIn ("Later that night", "Back at the observatory") when time or place shifts.
+- End the final beat with forward pressure into the next beat, choice, scene, or episode.
+- When a Seven-Point Cliffhanger Plan is supplied, the final beat must satisfy that plan: close the immediate scene/episode tension enough to feel authored, then open the specified next pressure.
+- Keep dialogue concise, pointed, and subtextual; characters may disagree, tease, avoid, or reveal, but not every conversation needs to become an argument.
+- Use selective interiority when it deepens player connection, but avoid over-defining the player character's identity.
+- Do not use film/camera direction terms in player-facing prose. Visual metadata may still use the required shotType and visualContinuity fields.
+
+${CRAFT_PRESSURE_GUIDANCE}
 
 ${NARRATIVE_INTENSITY_RULES}
 
@@ -287,6 +497,7 @@ You can use these in text (will be replaced at runtime):
 ## CRITICAL: Character Names and Pronouns
 
 **ABSOLUTE REQUIREMENTS:**
+0. **Opening POV anchor:** The first non-empty player-facing beat MUST establish the player character as the viewpoint/focal character using second-person language ("you", "your") or player templates such as {{player.name}} / {{player.they}}. Do not open with pure NPC action, world exposition, or an unnamed camera-like view.
 1. **Use EXACT character names** as provided in the Characters section. Do NOT invent names, alter spellings, or use nicknames unless established.
 2. **Use CORRECT pronouns** for each character as specified:
    - "he/him" characters: he, him, his, himself
@@ -301,6 +512,7 @@ You can use these in text (will be replaced at runtime):
 **VERB CONJUGATION WITH TEMPLATES (IMPORTANT):**
 The player's pronouns may change at runtime, so verb forms must be written carefully:
 - **Prefer {{player.name}} as the sentence subject** when an action verb follows. This avoids conjugation issues entirely. Example: "{{player.name}} catches her wrist" — correct for all pronoun sets.
+- Use "you/your" for direct reader address and immediate sensory framing.
 - When you DO use {{player.they}} as the subject, **write the verb for "they" (plural form)**. The runtime engine auto-conjugates for singular pronouns. Example: "{{player.they}} catch her wrist" will render correctly as "He catches" / "She catches" / "They catch".
 - Use {{player.are}}, {{player.were}}, {{player.have}} for those specific verbs.
 - **Capitalize the template at sentence starts**: Use {{Player.they}} (capital P) when the template begins a sentence, so the pronoun is capitalized ("He"/"She"/"They" instead of "he"/"she"/"they").
@@ -330,11 +542,41 @@ For each beat object, include these fields so image agents do not have to guess:
 - "emotionalRead": What is visibly readable in face/body language, naming each character. Leave empty ("") for "establishing" shots.
 - "relationshipDynamic": Power/proximity/tension between named characters. Leave empty ("") for "establishing" shots.
 - "mustShowDetail": One specific visual clue that must appear.
+- "dramaticIntent": REQUIRED for non-establishing beats. Include: characterObjectives (object keyed by character name/id), obstacle, statusBefore, statusAfter, subtext, visibleTurn, visualSubtextCue.
+- "sequenceIntent": REQUIRED-BY-PROCESS for every non-establishing beat in newly generated multi-beat scenes. The field is optional for old/cached content compatibility, but new output should include objective, activity, obstacle, startState, turningPoint, endState, visualThread, optional mechanicThread, and beatRole.
 - "intensityTier": REQUIRED. One of "dominant", "supporting", or "rest". Assign based on the Narrative Intensity Tiering rules above. A scene needs 1-2 dominant beats, 1-2 rest beats, and the remainder as supporting. Vary the intensity across the scene.
+- "visualContinuity": OPTIONAL but encouraged. Use it to make this beat flow from the previous beat as the next full-screen image: shotType, cameraAngle, focalCharacterId, blocking, proximity, motifOrProp, previousBeatId, transitionIntent, panelMode. Default panelMode is "single". Do NOT request panels, collages, split screens, contact sheets, or multiple moments inside the same image.
 
 Avoid abstract-only phrases like "tension rises" or "emotion deepens." Describe what is physically visible. ALWAYS use character names — never generic references.
 
+## Dramatic Intent (for ALL character-visible beats)
+
+A character-visible beat is never just information transfer. It is someone pursuing something under resistance. For every non-establishing beat:
+- Define what each visible character wants RIGHT NOW, not a season-level desire.
+- Name the obstacle that blocks the objective.
+- Track status/leverage before and after the beat, even if the shift is subtle.
+- Name the subtext beneath the surface action/topic.
+- Make "visibleTurn" the thing a viewer could understand with no captions.
+- Make "visualSubtextCue" a concrete prop, gesture, distance change, posture shift, reaction, or environmental detail.
+
+Quiet/rest beats are allowed, but still need a visible turn: a hand stops mid-task, an object changes possession, someone creates distance, a routine slips, or a face/body reaction betrays the inner change.
+
+## Sequence Intent (for storyboard continuity)
+
+A scene storyboard is a sequence, not a bag of shots. For newly generated multi-beat scenes, include a scene-level "sequenceIntent" and copy/refine it onto each non-establishing beat:
+- objective: what this sequence is trying to accomplish.
+- activity: the concrete visible activity carrying it, such as walking to the store, having an argument, searching a room, negotiating, escaping, sword fighting, recovering after a failure.
+- obstacle: what resists the objective.
+- startState / turningPoint / endState: how the sequence visibly begins, bends, and hands off.
+- visualThread: the prop, distance, blocking, clue, wound, gesture, or motif that ties panels together.
+- mechanicThread: optional fiction-first hook such as trust, leverage, clue, danger, resource, identity, reputation, callback, or encounter clock.
+- beatRole: setup, pressure, escalation, turn, consequence, handoff, or aftermath.
+
+Use sequenceIntent to make consecutive panels read as "setup -> pressure -> turn -> consequence" rather than unrelated illustrations.
+
 **CHARACTER APPEARANCE CONSISTENCY (CRITICAL)**: When describing characters in beat text, visual contract fields, or any visual/descriptive context, you MUST use their canonical Physical Appearance as listed in the Characters section. NEVER invent or change hair color, eye color, body type, or other physical attributes. If a character has "blonde hair" in their physical description, ALWAYS write "blonde hair", NEVER "dark hair" or any other variant. The Physical Appearance entries are the source of truth.
+
+${SCENE_WRITER_BEAT_EXAMPLE}
 
 ## Quality Standards
 
@@ -466,6 +708,20 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       content.continuityNotes = [content.continuityNotes as unknown as string];
     }
 
+    if (!content.sceneTakeaways) {
+      content.sceneTakeaways = [];
+    } else if (!Array.isArray(content.sceneTakeaways)) {
+      content.sceneTakeaways = [content.sceneTakeaways as unknown as string];
+    }
+
+    if (content.transitionIn && typeof content.transitionIn !== 'string') {
+      content.transitionIn = String(content.transitionIn);
+    }
+
+    if (!content.sequenceIntent || this.isWeakSequenceIntent(content.sequenceIntent)) {
+      content.sequenceIntent = this.deriveSceneSequenceIntent(content, input);
+    }
+
     if (!content.beats) {
       content.beats = [];
     } else if (!Array.isArray(content.beats)) {
@@ -545,6 +801,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
 
       // Ensure visual contract fields exist and are concrete enough for downstream image agents.
       this.ensureBeatVisualContract(beat);
+      this.ensureBeatSequenceIntent(beat, content, i);
     }
 
     // Guard against degenerate choice scenes. If the writer returns only one beat for a
@@ -555,6 +812,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
     // Re-run visual contract normalization in case we synthesized structural beats.
     for (const beat of content.beats) {
       this.ensureBeatVisualContract(beat);
+      this.ensureBeatSequenceIntent(beat, content, content.beats.indexOf(beat));
     }
 
     // Normalize beat IDs and fix nextBeatId references
@@ -843,36 +1101,19 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       ? input.relevantFlags.map(f => `- ${f.name}: ${f.description}`).join('\n')
       : 'None specified';
 
-    let sourceContextStr = '';
-    if (input.sourceAnalysis) {
-      sourceContextStr = `
-## Source Material Fidelity (IP Research)
-The following iconic language and style fragments have been identified from the source IP. 
-**PRIORITIZE using this exact language, terminology, and tone where appropriate.**
+    const sourceContextStr = buildSourceMaterialFidelitySection(input.sourceAnalysis);
 
-### Iconic Dialogue
-${input.sourceAnalysis.directLanguageFragments.dialogue.map(d => `- "${d}"`).join('\n')}
-
-### Notable Prose & Style
-${input.sourceAnalysis.directLanguageFragments.prose.map(p => `- ${p}`).join('\n')}
-
-### Key Terminology
-${input.sourceAnalysis.directLanguageFragments.terminology.join(', ')}
-
-${input.sourceAnalysis.adaptationGuidance ? `
-### Adaptation Guidance
-- **Narrative Voice**: ${input.sourceAnalysis.adaptationGuidance.narrativeVoice}
-- **Themes to Preserve**: ${input.sourceAnalysis.adaptationGuidance.keyThemesToPreserve.join(', ')}
-- **Iconic Moments**: ${input.sourceAnalysis.adaptationGuidance.iconicMoments.join(', ')}
-` : ''}
-`;
-    }
+    const structuralContext = buildStructuralContextSection({
+      anchors: input.seasonAnchors,
+      sevenPoint: input.seasonSevenPoint,
+      episodeStructuralRole: input.episodeStructuralRole,
+    });
 
     return `
 Write the scene content for the following scene blueprint:
 
 ${sourceContextStr}
-
+${structuralContext}
 ## Story Context
 - **Title**: ${input.storyContext.title}
 - **Genre**: ${input.storyContext.genre}
@@ -888,10 +1129,29 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 - **Purpose**: ${input.sceneBlueprint.purpose}
 - **Narrative Function**: ${input.sceneBlueprint.narrativeFunction}
 
+### Scene Craft Targets
+- Define 1-4 sceneTakeaways in the output: what the player learns, feels, or understands.
+- If this scene begins after a time/place shift, include transitionIn with a short natural phrase.
+- keyMoments should name the emotional or narrative payoff, not just a location or mood.
+- moodProgression should show the scene's tension or emotional movement from start to finish.
+- Give dialogue scenes physical business or situational pressure that fits the moment; avoid static meetings.
+- Each non-rest beat should include a concrete change in action, leverage, information, relationship pressure, or emotional posture.
+- Give the scene a storyboardable sequenceIntent: objective, visible activity, obstacle, startState, turningPoint, endState, visualThread, optional mechanicThread. Treat it as required for new output but backward-compatible for old content.
+- Each non-establishing beat should include sequenceIntent with a beatRole so the storyboard can see setup -> pressure -> escalation -> turn -> consequence/handoff.
+- Every non-rest, non-establishing beat should answer: "What visibly changed by the end?"
+- Prefer turns over topics: not "they discuss the charm," but "the charm changes hands and Mrs. Constantinou loses the ability to dismiss what she saw."
+- Turn domains to use in prose, dramaticIntent, and existing mechanics hooks: ${FICTION_FIRST_TURN_DOMAINS.join(', ')}.
+- When a turn is mechanically relevant, use existing fields only: onShow, textVariants, callbackHookId, plantsThreadId, paysOffThreadId, plotPointType, dramaticIntent, or choice/encounter setup that will carry the residue.
+- Preserve rests and restrained interiority where they serve the player connection; do not force constant combat, argument, or escalation.
+
+### Genre-Aware Jeopardy
+${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
+
 ### Expert Design Template
 - **Dramatic Question**: ${input.sceneBlueprint.dramaticQuestion}
 - **Want vs Need**: ${input.sceneBlueprint.wantVsNeed}
 - **Conflict Engine**: ${input.sceneBlueprint.conflictEngine}
+- **Sequence Intent**: ${this.formatSequenceIntent(input.sceneBlueprint.sequenceIntent)}
 
 ### Key Beats to Hit
 ${input.sceneBlueprint.keyBeats.map(b => `- ${b}`).join('\n')}
@@ -936,15 +1196,78 @@ Write this scene with the encounter in mind. Every beat should move players emot
 
 The player should finish this scene feeling that something significant is coming. The encounter should feel INEVITABLE by the time they reach it.
 ` : ''}
+${input.branchContext ? `
+## Branch Topology Context
+- **Scene role**: ${input.branchContext.role}
+${input.branchContext.role === 'bottleneck' ? '- This scene is a **bottleneck**: every player path converges here. Acknowledge different prior paths when possible via textVariants.' : ''}
+${input.branchContext.role === 'branch' ? '- This scene is **branch-only**: not every player reaches it. Earn its distinct tone and avoid redundant setup.' : ''}
+${input.branchContext.role === 'reconvergence' ? `- This scene is a **reconvergence point**. Incoming branches: ${(input.branchContext.incomingBranchIds || []).join(', ') || 'multiple'}. Acknowledge different paths via conditional textVariants.` : ''}
+${input.branchContext.stateReconciliationNotes && input.branchContext.stateReconciliationNotes.length > 0 ? `- State reconciliation notes:\n${input.branchContext.stateReconciliationNotes.map(n => `  - ${n}`).join('\n')}` : ''}
+${input.branchContext.reconvergenceNarrativeAcknowledgment ? `- Suggested acknowledgment: "${input.branchContext.reconvergenceNarrativeAcknowledgment}"` : ''}
+` : ''}
+${input.activeThreads && input.activeThreads.length > 0 ? `
+## Active Narrative Threads (setup/payoff)
+You MUST plant or pay off the following threads in this scene. Set \`plantsThreadId\` or \`paysOffThreadId\` on the beat where each action happens.
+${input.activeThreads.map(t => `- [${t.action.toUpperCase()}] thread \`${t.id}\` (${t.kind}): ${t.label}${t.hint ? ` — hint: ${t.hint}` : ''}`).join('\n')}
+- Payoff must feel surprising-but-inevitable — the plant should read as incidental on first encounter.
+- If planting, be subtle: a sensory detail, an off-hand remark, a named object. Never lampshade.
+` : ''}
+${input.twistDirectives && input.twistDirectives.length > 0 ? `
+## Twist / Revelation Directives
+This scene participates in an episode-level twist. Honor the role for each beat and set \`plotPointType\` accordingly.
+${input.twistDirectives.map(d => `- Beat role: **${d.beatRole}** for a \`${d.twistKind}\` — ${d.hint}`).join('\n')}
+- Twist beats MUST be preceded by at least one earlier setup beat in this or an earlier scene.
+` : ''}
+${input.arcTargets && (input.arcTargets.identityDeltaHints?.length || input.arcTargets.relationshipTrajectory?.length) ? `
+## Character Arc Milestone Targets
+Frame beats so the player's available choices can nudge the protagonist toward these milestones.
+${(input.arcTargets.identityDeltaHints || []).map(h => `- Identity dimension \`${h.dimension}\`: target ${h.direction} (${h.magnitude})`).join('\n')}
+${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with ${r.npcId} (${r.dimension}): ${r.direction} — ${r.hint}`).join('\n')}
+` : ''}${buildSceneWriterCallbackSection((input.unresolvedCallbacks || []).map(h => ({
+  id: h.id,
+  sourceEpisode: h.sourceEpisode,
+  sourceSceneId: '',
+  sourceChoiceId: '',
+  flags: h.flags,
+  conditionKeys: h.conditionKeys,
+  impactFactors: h.impactFactors,
+  consequenceTier: h.consequenceTier,
+  summary: h.summary,
+  payoffWindow: { minEpisode: 0, maxEpisode: 0 },
+  payoffCount: 0,
+  resolved: false,
+  createdAt: '',
+})))}
+${input.cliffhangerPlan ? `
+## Seven-Point Cliffhanger Plan (CRITICAL if this is the episode's final scene)
+- Style: ${input.cliffhangerPlan.style}
+- Structural role: ${input.cliffhangerPlan.mappedStructuralRole}
+- Type: ${input.cliffhangerPlan.type}
+- Intensity: ${input.cliffhangerPlan.intensity}
+- Hook to deliver: ${input.cliffhangerPlan.hook}
+- Setup that earns it: ${input.cliffhangerPlan.setup}
+- Immediate episode tension to acknowledge/resolve: ${input.cliffhangerPlan.resolvedEpisodeTension}
+- New open question: ${input.cliffhangerPlan.newOpenQuestion}
+- Emotional charge: ${input.cliffhangerPlan.emotionalCharge}
+- Next-episode pressure: ${input.cliffhangerPlan.nextEpisodePressure}
+
+If this scene has no outgoing scene, write the last beat as serialized-TV craft:
+1. Acknowledge the episode's immediate conflict or consequence.
+2. Land the planned shock/emotional/reveal/danger/legacy hook as a concrete event or realization.
+3. End with forward pressure, but do not rely on ellipses or a generic question as the whole hook.
+4. Make the visual contract show the hook: the object, face, gesture, arrival, absence, or rupture the reader should remember.
+` : ''}
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
 - ${input.dialogueHeavy ? 'This is dialogue-heavy - focus on conversation' : 'Balance description with any dialogue'}
+- The first non-empty player-facing beat MUST anchor POV to the player character with "you", "your", {{player.name}}, or another player template before focusing on NPCs or setting.
 ${input.previousSceneSummary ? `- Previous scene context: ${input.previousSceneSummary}` : ''}
 ${input.sceneBlueprint.choicePoint ? '- Mark the final beat as isChoicePoint: true for the Choice Author to add options' : ''}
 ${input.incomingChoiceContext ? `
 ## CHOICE PAYOFF (CRITICAL — the player CHOSE this)
 This scene is entered because the player chose: "${input.incomingChoiceContext}"
 The FIRST beat MUST visually and textually pay off this choice. Do not delay, hedge, or skip the payoff.
+- The first beat must show what you / {{player.name}} did or immediately experiences because of that choice.
 - The first beat's text must show the immediate consequence of the choice — the SPECIFIC physical action the player chose.
 - The first beat's visual contract MUST directly depict the choice's consequence:
   - "visualMoment": Describe the EXACT action from the choice playing out (e.g., if they chose to spin in circles, show spinning in circles — not a generic pose)
@@ -961,6 +1284,11 @@ Create the scene content following the SceneContent schema. Include:
 4. Natural flow between beats
 5. textVariants where state should affect content
 6. Full beat visual contract fields (visualMoment, primaryAction, emotionalRead, relationshipDynamic, mustShowDetail, intensityTier) for every beat
+7. dramaticIntent for every non-establishing beat, including visibleTurn and visualSubtextCue
+8. scene-level sequenceIntent and beat-level sequenceIntent for every non-establishing beat in new multi-beat scenes
+9. Optional visualContinuity metadata when it clarifies beat-to-beat flow; keep panelMode as "single" unless an explicit UX/config flag says otherwise
+10. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id
+11. sceneTakeaways and transitionIn when they clarify purpose and flow
 
 Respond with valid JSON matching the SceneContent type.
 `;
@@ -1138,6 +1466,259 @@ Respond with valid JSON matching the SceneContent type.
     if (!beat.mustShowDetail || this.isAbstractOnly(beat.mustShowDetail)) {
       beat.mustShowDetail = this.deriveMustShowDetail(text);
     }
+    if (!beat.dramaticIntent || this.isWeakDramaticIntent(beat.dramaticIntent)) {
+      beat.dramaticIntent = this.deriveDramaticIntent(beat, subject);
+    }
+    this.strengthenStaticVisualContract(beat, subject);
+  }
+
+  private isWeakStaticAction(action?: string): boolean {
+    const normalized = (action || '').trim().toLowerCase();
+    if (!normalized || normalized.length < 8) return true;
+    return /\b(takes? a decisive physical action|reacts? under pressure|reports?|explains?|addresses?|observes?|focuses|voices?|deflects?|compliments?|speaks?|talks?|looks?|watches?|thinks?|realizes?|notices?|listens?|waits?|smiles?|continues)\b/.test(normalized);
+  }
+
+  private isWeakDramaticIntent(intent?: Beat['dramaticIntent']): boolean {
+    if (!intent) return true;
+    return !intent.visibleTurn || !intent.visualSubtextCue || !intent.obstacle;
+  }
+
+  private deriveDramaticIntent(beat: GeneratedBeat, subject: string): NonNullable<Beat['dramaticIntent']> {
+    const text = (beat.text || '').trim();
+    const primaryAction = beat.primaryAction || this.derivePrimaryAction(text, subject);
+    const visibleTurn = this.deriveVisibleTurn(text, primaryAction, subject);
+    const visualSubtextCue = this.deriveVisualSubtextCue(text, primaryAction, subject);
+    const obstacle = this.deriveIntentObstacle(text);
+    const objective = this.deriveCharacterObjective(text, subject);
+    return {
+      ...(beat.dramaticIntent || {}),
+      characterObjectives: {
+        ...(beat.dramaticIntent?.characterObjectives || {}),
+        [subject]: beat.dramaticIntent?.characterObjectives?.[subject] || objective,
+      },
+      obstacle: beat.dramaticIntent?.obstacle || obstacle,
+      statusBefore: beat.dramaticIntent?.statusBefore || this.deriveStatusBefore(text, subject),
+      statusAfter: beat.dramaticIntent?.statusAfter || this.deriveStatusAfter(text, primaryAction, subject),
+      subtext: beat.dramaticIntent?.subtext || this.deriveSubtext(text),
+      visibleTurn: beat.dramaticIntent?.visibleTurn || visibleTurn,
+      visualSubtextCue: beat.dramaticIntent?.visualSubtextCue || visualSubtextCue,
+    };
+  }
+
+  private deriveVisibleTurn(text: string, action: string, subject: string): string {
+    const lowered = text.toLowerCase();
+    if (/(lie|lying|deflect|deny|glitch|imagining|casual|normal)/.test(lowered)) {
+      return `${subject}'s composed surface slips through a small evasive movement.`;
+    }
+    if (/(report|explain|warn|tell|says?|asks?|voice|speaks?)/.test(lowered)) {
+      return `${subject} turns the exchange by making the hidden pressure physically visible.`;
+    }
+    if (/(observe|watch|study|notice|realize|understand)/.test(lowered)) {
+      return `${subject} notices the decisive clue and their posture changes around it.`;
+    }
+    if (/(phone|text|message|screen|photo|app)/.test(lowered)) {
+      return `${subject} uses the phone as evidence, shifting the room's attention to the screen.`;
+    }
+    if (/(charm|ring|key|letter|map|knife|gun|cup|coffee|flower|pansy|bag|napkin)/.test(lowered)) {
+      return `${subject} changes the beat by moving or revealing the key object.`;
+    }
+    const escapedSubject = subject.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return `${subject} ${action.replace(new RegExp(`^${escapedSubject}\\s+`, 'i'), '')}, visibly changing the balance of the moment.`;
+  }
+
+  private deriveVisualSubtextCue(text: string, action: string, subject: string): string {
+    const lowered = text.toLowerCase();
+    const prop = text.match(/\b(phone|text|screen|photo|charm|ring|key|letter|map|knife|gun|cup|coffee|flower|pansy|shopping bag|napkin|counter|door|chair|window)\b/i)?.[0];
+    if (prop) return `${subject}'s hands and attention lock onto the ${prop}, making the subtext visible.`;
+    if (/(lie|deflect|deny|casual|normal|smile)/.test(lowered)) {
+      return `${subject}'s smile, averted eyes, and busy hands betray what the words avoid.`;
+    }
+    if (/(fear|panic|worry|guilt|shame|hurt)/.test(lowered)) {
+      return `${subject}'s weight shifts back while their hands tighten, exposing the feeling they try to contain.`;
+    }
+    if (/(approach|enter|leave|walk|step|back away|retreat)/.test(lowered)) {
+      return `The changing distance around ${subject} shows who is gaining or losing control.`;
+    }
+    return `${subject}'s hands, gaze, and distance from the other characters reveal the beat beneath the words.`;
+  }
+
+  private strengthenStaticVisualContract(beat: GeneratedBeat, subject: string): void {
+    if (beat.shotType === 'establishing') return;
+    const intent = beat.dramaticIntent || this.deriveDramaticIntent(beat, subject);
+    const needsStrength = this.isWeakStaticAction(beat.primaryAction);
+    if (needsStrength) {
+      beat.primaryAction = this.derivePhysicalBusinessFromIntent(beat.text || '', subject, intent);
+    }
+    if (!beat.visualMoment || this.isAbstractOnly(beat.visualMoment) || this.isWeakStaticAction(beat.visualMoment)) {
+      beat.visualMoment = `${intent.visibleTurn} ${intent.visualSubtextCue}`.trim();
+    }
+    const visibleTurn = intent.visibleTurn || this.deriveVisibleTurn(beat.text || '', beat.primaryAction || '', subject);
+    const cue = intent.visualSubtextCue || this.deriveVisualSubtextCue(beat.text || '', beat.primaryAction || '', subject);
+    beat.dramaticIntent = { ...intent, visibleTurn, visualSubtextCue: cue };
+    if (!beat.mustShowDetail || /one concrete prop|body detail|key prop/i.test(beat.mustShowDetail)) {
+      beat.mustShowDetail = cue;
+    }
+    if (!beat.relationshipDynamic || this.isAbstractOnly(beat.relationshipDynamic)) {
+      beat.relationshipDynamic = `${intent.statusBefore || 'status is unsettled'} -> ${intent.statusAfter || 'status visibly shifts'}`;
+    }
+  }
+
+  private formatSequenceIntent(intent?: Beat['sequenceIntent']): string {
+    if (!intent) return 'Derive from dramaticQuestion, conflictEngine, and keyBeats.';
+    return [
+      `objective=${intent.objective || 'derive'}`,
+      `activity=${intent.activity || 'derive'}`,
+      `obstacle=${intent.obstacle || 'derive'}`,
+      `start=${intent.startState || 'derive'}`,
+      `turn=${intent.turningPoint || 'derive'}`,
+      `end=${intent.endState || 'derive'}`,
+      `visualThread=${intent.visualThread || 'derive'}`,
+      `mechanicThread=${intent.mechanicThread || 'optional'}`,
+    ].join('; ');
+  }
+
+  private ensureBeatSequenceIntent(beat: GeneratedBeat, content: SceneContent, index: number): void {
+    if (beat.shotType === 'establishing') return;
+    const sceneIntent = content.sequenceIntent || this.deriveSceneSequenceIntent(content);
+    if (!beat.sequenceIntent || this.isWeakSequenceIntent(beat.sequenceIntent)) {
+      beat.sequenceIntent = {
+        ...sceneIntent,
+        ...(beat.sequenceIntent || {}),
+        beatRole: beat.sequenceIntent?.beatRole || this.deriveSequenceBeatRole(index, content.beats.length, beat),
+        turningPoint: beat.sequenceIntent?.turningPoint || beat.dramaticIntent?.visibleTurn || sceneIntent?.turningPoint,
+        visualThread: beat.sequenceIntent?.visualThread || beat.dramaticIntent?.visualSubtextCue || sceneIntent?.visualThread,
+      };
+    }
+  }
+
+  private isWeakSequenceIntent(intent?: Beat['sequenceIntent']): boolean {
+    if (!intent) return true;
+    return !intent.objective || !intent.activity || !intent.turningPoint || !intent.endState || !intent.visualThread;
+  }
+
+  private deriveSceneSequenceIntent(content: SceneContent, input?: SceneWriterInput): NonNullable<Beat['sequenceIntent']> {
+    const blueprint = input?.sceneBlueprint;
+    const beats = content.beats || [];
+    const firstBeat = beats.find((beat) => beat.shotType !== 'establishing') || beats[0];
+    const turnBeat = beats.find((beat) => beat.isClimaxBeat || beat.isKeyStoryBeat || beat.intensityTier === 'dominant') || beats[Math.max(0, Math.floor(beats.length / 2))] || firstBeat;
+    const lastBeat = beats[beats.length - 1] || firstBeat;
+    const combined = [
+      blueprint?.description,
+      blueprint?.dramaticQuestion,
+      blueprint?.conflictEngine,
+      ...(blueprint?.keyBeats || []),
+      ...beats.map((beat) => beat.text),
+    ].filter(Boolean).join(' ');
+    const subject = firstBeat?.speaker || content.charactersInvolved?.[0] || '{{player.name}}';
+    return {
+      ...(blueprint?.sequenceIntent || content.sequenceIntent || {}),
+      sequenceId: blueprint?.sequenceIntent?.sequenceId || content.sequenceIntent?.sequenceId || `${content.sceneId || 'scene'}-sequence-1`,
+      objective: blueprint?.sequenceIntent?.objective || content.sequenceIntent?.objective || this.deriveSequenceObjective(combined, subject),
+      activity: blueprint?.sequenceIntent?.activity || content.sequenceIntent?.activity || this.deriveSequenceActivity(combined),
+      obstacle: blueprint?.sequenceIntent?.obstacle || content.sequenceIntent?.obstacle || this.deriveIntentObstacle(combined),
+      startState: blueprint?.sequenceIntent?.startState || content.sequenceIntent?.startState || this.deriveSequenceState(firstBeat, 'The sequence starts with pressure still unresolved.'),
+      turningPoint: blueprint?.sequenceIntent?.turningPoint || content.sequenceIntent?.turningPoint || turnBeat?.dramaticIntent?.visibleTurn || this.deriveVisibleTurn(turnBeat?.text || combined, turnBeat?.primaryAction || 'acts', subject),
+      endState: blueprint?.sequenceIntent?.endState || content.sequenceIntent?.endState || this.deriveSequenceState(lastBeat, 'By the end, the relationship, leverage, knowledge, or risk has visibly changed.'),
+      visualThread: blueprint?.sequenceIntent?.visualThread || content.sequenceIntent?.visualThread || this.deriveVisualSubtextCue(combined, turnBeat?.primaryAction || '', subject),
+      mechanicThread: blueprint?.sequenceIntent?.mechanicThread || content.sequenceIntent?.mechanicThread || this.deriveSequenceMechanicThread(combined),
+    };
+  }
+
+  private deriveSequenceBeatRole(index: number, count: number, beat: GeneratedBeat): NonNullable<Beat['sequenceIntent']>['beatRole'] {
+    if (beat.intensityTier === 'rest') return index >= count - 1 ? 'aftermath' : 'pressure';
+    if (index === 0) return 'setup';
+    if (beat.isClimaxBeat || beat.isKeyStoryBeat || beat.intensityTier === 'dominant') return 'turn';
+    if (index >= count - 1) return beat.isChoicePoint ? 'handoff' : 'consequence';
+    return index < Math.max(2, Math.floor(count / 2)) ? 'pressure' : 'escalation';
+  }
+
+  private deriveSequenceObjective(text: string, subject: string): string {
+    const lowered = text.toLowerCase();
+    if (/(argue|accuse|confront|apologize|forgive)/.test(lowered)) return `${subject} tries to change the relationship without losing control of the room.`;
+    if (/(walk|travel|store|market|street|road|cross)/.test(lowered)) return `${subject} tries to reach the next place while the unresolved pressure follows along.`;
+    if (/(search|investigat|clue|evidence|proof|discover)/.test(lowered)) return `${subject} tries to make hidden information visible and actionable.`;
+    if (/(fight|duel|strike|battle|escape|chase|run)/.test(lowered)) return `${subject} tries to survive the pressure and change the tactical position.`;
+    if (/(rest|recover|aftermath|quiet|settle)/.test(lowered)) return `${subject} tries to absorb what happened and recalibrate before the next pressure.`;
+    return `${subject} tries to move the scene from uncertainty to a changed state.`;
+  }
+
+  private deriveSequenceActivity(text: string): string {
+    const lowered = text.toLowerCase();
+    if (/(walk|travel|store|market|street|road|cross)/.test(lowered)) return 'moving through the location while unresolved tension changes distance and attention';
+    if (/(argue|accuse|confront)/.test(lowered)) return 'a confrontation carried through blocking, objects, and shifting status';
+    if (/(search|investigat|clue|evidence|proof|discover)/.test(lowered)) return 'an investigation where attention moves from room to clue to reaction';
+    if (/(fight|duel|strike|battle)/.test(lowered)) return 'a physical exchange where position, control, and cost change';
+    if (/(escape|chase|run)/.test(lowered)) return 'an escape or chase where the route and risk keep changing';
+    if (/(rest|recover|aftermath|quiet|settle)/.test(lowered)) return 'a quiet recovery sequence where posture, distance, and routine reveal the change';
+    return 'a visible exchange of pressure, reaction, and consequence';
+  }
+
+  private deriveSequenceState(beat: GeneratedBeat | undefined, fallback: string): string {
+    return beat?.dramaticIntent?.statusAfter || beat?.dramaticIntent?.visibleTurn || beat?.visualMoment || beat?.primaryAction || fallback;
+  }
+
+  private deriveSequenceMechanicThread(text: string): string | undefined {
+    const lowered = text.toLowerCase();
+    if (/(trust|believe|doubt|betray|forgive)/.test(lowered)) return 'trust';
+    if (/(evidence|proof|clue|photo|phone|letter|key|charm)/.test(lowered)) return 'clue/evidence';
+    if (/(leverage|control|power|corner)/.test(lowered)) return 'leverage';
+    if (/(danger|risk|threat|escape|wound|cost)/.test(lowered)) return 'danger/risk';
+    if (/(identity|mercy|justice|honest|values?)/.test(lowered)) return 'identity';
+    if (/(resource|money|weapon|supplies|inventory)/.test(lowered)) return 'resource';
+    return undefined;
+  }
+
+  private derivePhysicalBusinessFromIntent(text: string, subject: string, intent: NonNullable<Beat['dramaticIntent']>): string {
+    const lowered = text.toLowerCase();
+    if (/(phone|text|message|screen|photo|app)/.test(lowered)) return `${subject} angles the phone like evidence while watching for a reaction`;
+    if (/(charm|ring|key|letter|map|knife|gun|cup|coffee|flower|pansy|bag|napkin)/.test(lowered)) return `${subject} brings the key object into the space between the characters`;
+    if (/(deflect|deny|glitch|imagining|casual|normal|smile|compliment)/.test(lowered)) return `${subject} keeps their hands busy to hide the evasion`;
+    if (/(report|explain|warn|tell|says?|asks?|voice|speaks?)/.test(lowered)) return `${subject} leans in and uses a concrete gesture to press the point`;
+    if (/(observe|watch|study|notice|realize|understand)/.test(lowered)) return `${subject} shifts position to study the clue everyone else is avoiding`;
+    if (/(guilt|shame|fear|hurt|worry)/.test(lowered)) return `${subject} pulls back as the feeling becomes visible in their hands and shoulders`;
+    const cue = intent.visualSubtextCue || 'a visible body-language cue';
+    return `${subject} changes the room's leverage through ${cue}`;
+  }
+
+  private deriveCharacterObjective(text: string, subject: string): string {
+    const lowered = text.toLowerCase();
+    if (/(deflect|deny|glitch|imagining|casual|normal)/.test(lowered)) return 'avoid revealing the truth while preserving control';
+    if (/(ask|question|look at this|show|evidence|proof|photo)/.test(lowered)) return 'make the other person acknowledge what is visible';
+    if (/(report|warn|tell|explain)/.test(lowered)) return 'make someone else understand the danger or truth';
+    if (/(observe|watch|study|notice|realize)/.test(lowered)) return 'read the situation without exposing too much';
+    if (/(leave|door|walk away|retreat)/.test(lowered)) return 'escape the exchange before the real feeling is exposed';
+    return `${subject} wants to shift the moment without saying everything directly`;
+  }
+
+  private deriveIntentObstacle(text: string): string {
+    const lowered = text.toLowerCase();
+    if (/(lie|deny|deflect|secret|hiding)/.test(lowered)) return 'someone is hiding the truth';
+    if (/(guilt|shame|fear|hurt|worry)/.test(lowered)) return 'emotion makes the direct path risky';
+    if (/(trust|love|relationship|family)/.test(lowered)) return 'the relationship cost is immediate';
+    if (/(proof|evidence|photo|phone|screen|charm|key|letter)/.test(lowered)) return 'the evidence is visible but contested';
+    return 'the other character resists the surface objective';
+  }
+
+  private deriveStatusBefore(text: string, subject: string): string {
+    if (/(enters?|arrives?|approaches?)/i.test(text)) return `${subject} enters without full control of the room`;
+    if (/(phone|evidence|proof|charm|key|letter)/i.test(text)) return 'the truth is still deniable';
+    return 'leverage is unresolved at the start of the beat';
+  }
+
+  private deriveStatusAfter(text: string, action: string, subject: string): string {
+    if (/(leave|walks? away|retreat|back away)/i.test(text)) return `${subject} changes status by creating distance`;
+    if (/(shows?|reveals?|holds? up|photo|proof|evidence|charm|key|letter)/i.test(text)) return 'the visible evidence claims leverage';
+    if (/(deny|deflect|glitch|imagining)/i.test(text)) return 'control depends on whether the evasion holds';
+    return `${subject}'s visible action shifts attention and leverage`;
+  }
+
+  private deriveSubtext(text: string): string {
+    const lowered = text.toLowerCase();
+    if (/(deflect|deny|glitch|imagining|casual|normal)/.test(lowered)) return 'the surface reassurance is a cover for fear of exposure';
+    if (/(guilt|shame|violation)/.test(lowered)) return 'the character is paying an emotional cost for the choice';
+    if (/(trust|love|hurt|wrong)/.test(lowered)) return 'the relationship is being tested beneath the words';
+    if (/(proof|evidence|photo|phone|charm|key|letter)/.test(lowered)) return 'an object is forcing an unspoken truth into the open';
+    return 'the visible behavior reveals more than the spoken topic admits';
   }
 
   private deriveShotType(beat: GeneratedBeat, text: string): 'establishing' | 'character' | 'action' {
@@ -1187,7 +1768,7 @@ Respond with valid JSON matching the SceneContent type.
     if (match) {
       return `${subject} ${match[0]}`;
     }
-    return `${subject} takes a decisive physical action`;
+    return `${subject} changes the room's leverage through a visible gesture, object cue, or shift in distance`;
   }
 
   private deriveEmotionalRead(text: string, speakerMood?: string): string {
@@ -1274,6 +1855,9 @@ Respond with valid JSON matching the SceneContent type.
       if (wordCount > maxWords || sentenceCount > MAX_SENTENCES) {
         longBeats.push(`Beat "${beat.id}" (${beat.isClimaxBeat ? 'climax' : beat.isKeyStoryBeat ? 'key' : 'standard'}): ${wordCount} words, ${sentenceCount} sentences (cap: ${maxWords} words)`);
       }
+      if (/\{[A-Z][A-Za-z0-9]*\}/.test(text)) {
+        issues.push(`SCHEMA PLACEHOLDER LEAK - Beat "${beat.id}" contains an unresolved {Variable} placeholder. Rewrite it as concrete player-facing prose.`);
+      }
     }
     if (climaxCount > 2) {
       issues.push(`TOO MANY CLIMAX BEATS - ${climaxCount} marked isClimaxBeat. Use max 1-2 per scene for true climaxes only.`);
@@ -1283,6 +1867,23 @@ Respond with valid JSON matching the SceneContent type.
     }
     if (longBeats.length > 0) {
       issues.push(`BEATS EXCEED CAP - Split or shorten:\n${longBeats.join('\n')}`);
+    }
+
+    if (input.protagonistInfo) {
+      const povResult = new PovClarityValidator().validateScene(content, {
+        protagonistName: input.protagonistInfo.name,
+        characterNames: [
+          input.protagonistInfo.name,
+          ...(input.npcs || []).map(npc => npc.name),
+        ],
+      });
+      for (const issue of povResult.issues) {
+        issues.push(`POV CLARITY - Beat "${issue.beatId}": ${issue.issue} ${issue.suggestion}`);
+      }
+    }
+
+    for (const issue of auditFictionFirstTurns(content.beats || [])) {
+      issues.push(`FICTION-FIRST TURN ${issue.category.toUpperCase()} - Beat "${issue.beatId}": ${issue.message} ${issue.suggestion}`);
     }
 
     // Check for missing choice point
@@ -1328,6 +1929,8 @@ Please revise the content to fix these issues. Return the COMPLETE revised scene
 
 Key requirements:
 - Each beat must stay under cap: 4 sentences, ${TEXT_LIMITS.maxBeatWordCount} words (climax: ${TEXT_LIMITS.maxClimaxBeatWordCount}, key: ${TEXT_LIMITS.maxKeyStoryBeatWordCount})
+- Preserve existing beat IDs, choice-point flags, visual contract fields, thread IDs, callback IDs, and nextBeatId navigation unless a listed issue explicitly requires splitting or relinking beats
+- For POV clarity issues, rewrite only prose/textVariants needed to anchor the first non-empty beat to the player character with you/your or {{player.name}}
 - If a beat is too long, split it into multiple beats
 - Maintain the narrative flow when splitting
 - Keep beat IDs logical (beat-1, beat-2, etc.)

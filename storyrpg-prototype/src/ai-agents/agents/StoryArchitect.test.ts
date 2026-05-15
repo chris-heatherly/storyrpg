@@ -116,4 +116,54 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
     expect(result).toContain('DEVELOPMENT SCENES');
     expect(result).toContain('FAILURE-RECOVERY BRANCH');
   });
+
+  it('includes adapted story-craft guidance without requiring combat-only pressure', () => {
+    const input = makeInput();
+    const result = (architect as any).buildPrompt(input);
+
+    expect(result).toContain('Pressure, not mandatory combat');
+    expect(result).toContain('romantic vulnerability');
+    expect(result).toContain('Plans go wrong');
+    expect(result).toContain('Do not require every conversation to become an argument');
+    expect(result).toContain('Turn ladder, not topic list');
+    expect(result).toContain('evidence changes hands');
+    expect(result).toContain('encounterSetupContext');
+    expect(result).toContain('Sequence intent, not random panels');
+    expect(result).toContain('REQUIRED-BY-PROCESS');
+    expect(result).toContain('"sequenceIntent"');
+    expect(result).toContain('visualThread');
+  });
+
+  it('unwraps DynamoDB-style typed JSON wrappers before blueprint normalization', () => {
+    const architect = new StoryArchitect(config);
+    const unwrapped = (architect as any).unwrapDynamoTypedJson({
+      episodeId: { S: 'episode-1' },
+      title: { S: 'Silver Dawn' },
+      scenes: {
+        L: [
+          {
+            M: {
+              id: { S: 'scene-1' },
+              keyBeats: { L: [{ S: 'Aethavyr reaches the caravan.' }] },
+              isEncounter: { BOOL: true },
+              encounterDifficulty: { S: 'hard' },
+            },
+          },
+        ],
+      },
+      suggestedScores: { L: [{ M: { name: { S: 'trust' }, description: { S: 'Caravan trust' } } }] },
+    });
+
+    expect(unwrapped).toEqual({
+      episodeId: 'episode-1',
+      title: 'Silver Dawn',
+      scenes: [{
+        id: 'scene-1',
+        keyBeats: ['Aethavyr reaches the caravan.'],
+        isEncounter: true,
+        encounterDifficulty: 'hard',
+      }],
+      suggestedScores: [{ name: 'trust', description: 'Caravan trust' }],
+    });
+  });
 });

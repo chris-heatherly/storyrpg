@@ -28,6 +28,17 @@ import { SeasonPlan, SeasonEpisode, EpisodeRecommendation } from '../types/seaso
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
+const isEpisodeGenerated = (episode?: SeasonEpisode): boolean => Boolean(
+  episode
+  && (
+    episode.status === 'completed'
+    || episode.generatedEpisodeId
+    || episode.generatedStoryId
+    || episode.generatedJobId
+    || episode.outputDir
+  )
+);
+
 interface EpisodeSelectorProps {
   seasonPlan: SeasonPlan;
   selectedEpisodes: number[];
@@ -48,7 +59,7 @@ export const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
 
   const toggleEpisode = (episodeNumber: number) => {
     const episode = seasonPlan.episodes.find(e => e.episodeNumber === episodeNumber);
-    if (!episode || episode.status === 'completed') return;
+    if (!episode) return;
 
     if (selectedEpisodes.includes(episodeNumber)) {
       onSelectionChange(selectedEpisodes.filter(n => n !== episodeNumber));
@@ -59,9 +70,29 @@ export const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
 
   const selectAll = () => {
     const available = seasonPlan.episodes
-      .filter(e => e.status !== 'completed')
+      .filter(e => !isEpisodeGenerated(e))
       .map(e => e.episodeNumber);
     onSelectionChange(available);
+  };
+
+  const selectFirst = () => {
+    const first = seasonPlan.episodes.find(e => e.episodeNumber === 1 && !isEpisodeGenerated(e));
+    if (first) onSelectionChange([first.episodeNumber]);
+  };
+
+  const selectNext = () => {
+    const completed = new Set(
+      seasonPlan.episodes.filter(e => isEpisodeGenerated(e)).map(e => e.episodeNumber)
+    );
+    const next = seasonPlan.episodes
+      .filter(e => !isEpisodeGenerated(e))
+      .sort((a, b) => a.episodeNumber - b.episodeNumber)
+      .find(e => e.dependsOn.every(dep => completed.has(dep)));
+    const fallback = seasonPlan.episodes
+      .filter(e => !isEpisodeGenerated(e))
+      .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
+    const target = next || fallback;
+    if (target) onSelectionChange([target.episodeNumber]);
   };
 
   const clearSelection = () => {
@@ -80,7 +111,7 @@ export const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
   const hasUnmetDependencies = (episode: SeasonEpisode): boolean => {
     return episode.dependsOn.some(dep => {
       const depEp = seasonPlan.episodes.find(e => e.episodeNumber === dep);
-      return depEp?.status !== 'completed' && !selectedEpisodes.includes(dep);
+      return !isEpisodeGenerated(depEp) && !selectedEpisodes.includes(dep);
     });
   };
 
@@ -98,6 +129,8 @@ export const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
       e => e.episodeNumber >= arc.episodeRange.start && e.episodeNumber <= arc.episodeRange.end
     ),
   }));
+  const generatedCount = seasonPlan.episodes.filter(isEpisodeGenerated).length;
+  const generatedPercent = Math.round((generatedCount / Math.max(1, seasonPlan.totalEpisodes)) * 100);
 
   return (
     <View style={styles.container}>
@@ -106,17 +139,23 @@ export const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
         <Text style={styles.seasonTitle}>{seasonPlan.seasonTitle.toUpperCase()}</Text>
         <Text style={styles.seasonSynopsis}>{seasonPlan.seasonSynopsis}</Text>
         <View style={styles.progressBar}>
-          <View style={[styles.progressFill, { width: `${seasonPlan.progress.percentComplete}%` }]} />
+          <View style={[styles.progressFill, { width: `${generatedPercent}%` }]} />
         </View>
         <Text style={styles.progressText}>
-          {seasonPlan.progress.completedCount}/{seasonPlan.totalEpisodes} COMPLETED
+          {generatedCount}/{seasonPlan.totalEpisodes} EPISODES GENERATED
         </Text>
       </View>
 
       {/* Selection Controls */}
       <View style={styles.controls}>
+        <TouchableOpacity style={styles.controlBtn} onPress={selectFirst}>
+          <Text style={styles.controlBtnText}>FIRST EPISODE</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.controlBtn} onPress={selectNext}>
+          <Text style={styles.controlBtnText}>NEXT EPISODE</Text>
+        </TouchableOpacity>
         <TouchableOpacity style={styles.controlBtn} onPress={selectAll}>
-          <Text style={styles.controlBtnText}>SELECT ALL</Text>
+          <Text style={styles.controlBtnText}>REMAINING</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.controlBtn} onPress={clearSelection}>
           <Text style={styles.controlBtnText}>CLEAR</Text>
@@ -233,24 +272,22 @@ const EpisodeRow: React.FC<EpisodeRowProps> = ({
   onToggle,
   onExpand,
 }) => {
-  const isCompleted = episode.status === 'completed';
-  const isDisabled = isCompleted;
+  const isGenerated = isEpisodeGenerated(episode);
 
   return (
     <View style={[
       styles.episodeRow,
       isSelected && styles.episodeRowSelected,
-      isCompleted && styles.episodeRowCompleted,
+      isGenerated && styles.episodeRowCompleted,
     ]}>
       <TouchableOpacity 
         style={styles.episodeCheckbox}
         onPress={onToggle}
-        disabled={isDisabled}
       >
-        {isCompleted ? (
-          <CheckCircle2 size={24} color={TERMINAL.colors.primary} />
-        ) : isSelected ? (
+        {isSelected ? (
           <CheckCircle2 size={24} color={TERMINAL.colors.cyan} />
+        ) : isGenerated ? (
+          <CheckCircle2 size={24} color={TERMINAL.colors.primary} />
         ) : (
           <Circle size={24} color={TERMINAL.colors.muted} />
         )}
@@ -264,10 +301,17 @@ const EpisodeRow: React.FC<EpisodeRowProps> = ({
           <View style={styles.episodeTitleContainer}>
             <Text style={[
               styles.episodeTitle,
-              isCompleted && styles.episodeTitleCompleted,
+              isGenerated && styles.episodeTitleCompleted,
             ]}>
               {(episode.title || 'Untitled').toUpperCase()}
             </Text>
+            {isGenerated && (
+              <View style={styles.generatedBadge}>
+                <Text style={styles.generatedBadgeText}>
+                  {isSelected ? 'REGENERATE' : 'GENERATED'}
+                </Text>
+              </View>
+            )}
             {recommendation && (
               <View style={[
                 styles.recommendationBadge,
@@ -332,7 +376,7 @@ const EpisodeRow: React.FC<EpisodeRowProps> = ({
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
+    width: '100%',
   },
   seasonHeader: {
     marginBottom: 16,
@@ -368,6 +412,7 @@ const styles = StyleSheet.create({
   },
   controls: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     marginBottom: 12,
   },
@@ -426,7 +471,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   episodeList: {
-    flex: 1,
+    maxHeight: 520,
     marginBottom: 12,
   },
   arcSection: {
@@ -530,6 +575,18 @@ const styles = StyleSheet.create({
     fontSize: 8,
     fontWeight: '900',
     color: 'white',
+    letterSpacing: 0.5,
+  },
+  generatedBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 3,
+    backgroundColor: 'rgba(34, 197, 94, 0.16)',
+  },
+  generatedBadgeText: {
+    fontSize: 8,
+    fontWeight: '900',
+    color: TERMINAL.colors.primary,
     letterSpacing: 0.5,
   },
   episodeSynopsisPreview: {

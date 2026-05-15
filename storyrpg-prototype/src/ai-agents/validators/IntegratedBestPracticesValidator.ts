@@ -20,7 +20,15 @@ import { ConsequenceBudgetValidator } from './ConsequenceBudgetValidator';
 import { StakesTriangleValidator } from './StakesTriangleValidator';
 import { FiveFactorValidator } from './FiveFactorValidator';
 import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
-import { NPCTier, RelationshipDimension, Consequence, ReminderPlan } from '../../types';
+import { PixarPrinciplesValidator } from './PixarPrinciplesValidator';
+import { CliffhangerValidator } from './CliffhangerValidator';
+import { ChoiceImpactValidator } from './ChoiceImpactValidator';
+import { MechanicsLeakageValidator } from './MechanicsLeakageValidator';
+import { NPCTier, RelationshipDimension, Consequence, ReminderPlan, SeasonBible, Episode, EpisodePlan } from '../../types';
+import type { ChoiceConsequenceTier, ChoiceImpactFactor, ChoiceIntent } from '../../types';
+import type { CliffhangerPlan } from '../../types/seasonPlan';
+import type { EncounterStructure } from '../agents/EncounterArchitect';
+import type { CharacterBible } from '../agents/CharacterDesigner';
 import { StakesAnnotation } from '../agents/ChoiceAuthor';
 import {
   ValidationIssue,
@@ -79,6 +87,7 @@ export interface ValidationInput {
       textVariants?: Array<{
         condition: unknown;
         text: string;
+        callbackHookId?: string;
       }>;
       speaker?: string;
     }>;
@@ -103,11 +112,36 @@ export interface ValidationInput {
     sceneContext?: string;
     nextSceneId?: string; // Present if this choice routes to a different scene
     reminderPlan?: ReminderPlan;
+    choiceIntent?: ChoiceIntent;
+    impactFactors?: ChoiceImpactFactor[];
+    consequenceTier?: ChoiceConsequenceTier;
+    stakes?: {
+      want: string;
+      cost: string;
+      identity: string;
+    };
+    outcomeTexts?: {
+      success?: string;
+      partial?: string;
+      failure?: string;
+    };
+    lockedText?: string;
+    reactionText?: string;
   }>;
 
   // Known flags/scores for callback validation
   knownFlags?: string[];
   knownScores?: string[];
+
+  // Optional encounter structures for Pixar principles validation
+  encounterStructures?: EncounterStructure[];
+
+  // Optional contextual inputs for season/episode-level checks
+  characterBible?: CharacterBible;
+  seasonBible?: SeasonBible;
+  episode?: Episode;
+  episodePlan?: EpisodePlan;
+  cliffhangerPlan?: CliffhangerPlan;
 }
 
 export class IntegratedBestPracticesValidator {
@@ -118,11 +152,14 @@ export class IntegratedBestPracticesValidator {
   private stakesTriangleValidator: StakesTriangleValidator;
   private fiveFactorValidator: FiveFactorValidator;
   private callbackValidator: CallbackOpportunitiesValidator;
+  private pixarValidator: PixarPrinciplesValidator;
+  private cliffhangerValidator: CliffhangerValidator;
+  private choiceImpactValidator: ChoiceImpactValidator;
+  private mechanicsLeakageValidator: MechanicsLeakageValidator;
 
   constructor(agentConfig: AgentConfig, config?: Partial<ValidationConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
 
-    // Initialize all validators
     this.choiceDensityValidator = new ChoiceDensityValidator(
       this.config.rules.choiceDensity
     );
@@ -141,6 +178,10 @@ export class IntegratedBestPracticesValidator {
       this.config.rules.fiveFactor
     );
     this.callbackValidator = new CallbackOpportunitiesValidator();
+    this.pixarValidator = new PixarPrinciplesValidator();
+    this.cliffhangerValidator = new CliffhangerValidator(agentConfig);
+    this.choiceImpactValidator = new ChoiceImpactValidator();
+    this.mechanicsLeakageValidator = new MechanicsLeakageValidator();
   }
 
   /**
@@ -165,6 +206,19 @@ export class IntegratedBestPracticesValidator {
         if (issue.level === 'error') {
           blockingIssues.push(issue);
         } else if (issue.level === 'warning') {
+          warningCount++;
+        }
+      }
+    }
+
+    // 1.5 Choice impact contract (fast, deterministic)
+    if (input.choices.length > 0) {
+      const impactResult = this.choiceImpactValidator.validate({ choices: input.choices as any });
+      for (const issue of impactResult.issues) {
+        const mapped = toValidationIssue('choice_impact', issue);
+        if (mapped.level === 'error') {
+          blockingIssues.push(mapped);
+        } else if (mapped.level === 'warning') {
           warningCount++;
         }
       }
@@ -237,6 +291,62 @@ export class IntegratedBestPracticesValidator {
       }
     }
 
+    // 5. Consequence Budget — fast, deterministic check for 60/25/10/5 target
+    if (this.config.rules.consequenceBudget.enabled && input.choices.length > 0) {
+      const budgetResult = await this.consequenceBudgetValidator.validate({
+        choices: input.choices.map(c => ({
+          id: c.id,
+          choiceType: c.choiceType,
+          consequences: c.consequences,
+        })),
+      });
+
+      for (const issue of budgetResult.issues) {
+        if (issue.level === 'error') {
+          blockingIssues.push(issue);
+        } else if (issue.level === 'warning') {
+          warningCount++;
+        }
+      }
+    }
+
+    // 6. Callback Opportunities — drive SceneWriter textVariants repair
+    if (input.choices.length > 0) {
+      const callbackResult = await this.callbackValidator.validate({
+        scenes: input.scenes,
+        choices: input.choices.map(c => ({
+          id: c.id,
+          sceneId: c.sceneId || '',
+          text: c.text,
+          consequences: c.consequences,
+          reminderPlan: c.reminderPlan,
+        })),
+        knownFlags: input.knownFlags,
+        knownScores: input.knownScores,
+      });
+
+      for (const issue of callbackResult.issues) {
+        if (issue.level === 'error') {
+          blockingIssues.push(issue);
+        } else if (issue.level === 'warning') {
+          warningCount++;
+        }
+      }
+    }
+
+    // 7. Fiction-first mechanics leakage — block raw mechanics in prose
+    const leakageResult = this.mechanicsLeakageValidator.validate({
+      texts: collectPlayerFacingTexts(input),
+    });
+    for (const issue of leakageResult.issues) {
+      const mapped = toValidationIssue('mechanics_leakage', issue);
+      if (mapped.level === 'error') {
+        blockingIssues.push(mapped);
+      } else if (mapped.level === 'warning') {
+        warningCount++;
+      }
+    }
+
     // In advisory mode, we still block on errors but allow warnings
     // In strict mode, we block on both errors and warnings
     // Errors should ALWAYS block - they indicate broken output
@@ -302,6 +412,24 @@ export class IntegratedBestPracticesValidator {
         totalChoices: densityResult.metrics.choiceCount,
       };
     }
+
+    // 1.5 Choice Impact Validation
+    if (input.choices.length > 0) {
+      const impactResult = this.choiceImpactValidator.validate({ choices: input.choices as any });
+      allIssues.push(...impactResult.issues.map((issue) => toValidationIssue('choice_impact', issue)));
+      metrics.choiceImpact = {
+        meaningfulChoices: impactResult.metrics.meaningfulChoices,
+        choicesWithImpactFactors: impactResult.metrics.choicesWithImpactFactors,
+        flavorBranches: impactResult.metrics.flavorBranches,
+      };
+    }
+
+    // 1.6 Mechanics Leakage Validation
+    const leakageResult = this.mechanicsLeakageValidator.validate({
+      texts: collectPlayerFacingTexts(input),
+    });
+    allIssues.push(...leakageResult.issues.map((issue) => toValidationIssue('mechanics_leakage', issue)));
+    metrics.mechanicsLeakage = leakageResult.metrics;
 
     // 2. NPC Depth Validation
     if (this.config.rules.npcDepth.enabled && input.npcs.length > 0) {
@@ -427,6 +555,94 @@ export class IntegratedBestPracticesValidator {
       };
     }
 
+    // 7. Pixar Principles Validation (optional — requires seasonBible)
+    if (input.seasonBible) {
+      try {
+        const pixarReport = this.pixarValidator.validateSeason(
+          input.seasonBible,
+          input.characterBible,
+        );
+        // Convert each Pixar issue into a ValidationIssue
+        for (const pxIssue of pixarReport.issues ?? []) {
+          const level: 'error' | 'warning' | 'suggestion' =
+            pxIssue.severity === 'error' || pxIssue.severity === 'critical'
+              ? 'error'
+              : pxIssue.severity === 'warning'
+              ? 'warning'
+              : 'suggestion';
+          allIssues.push({
+            category: 'pixar_principles',
+            level,
+            message:
+              pxIssue.description ||
+              (pxIssue as unknown as { message?: string }).message ||
+              pxIssue.type,
+            location: {
+              sceneId: pxIssue.location?.sceneId,
+              beatId: pxIssue.location?.beatId,
+              choiceId: (pxIssue.location as unknown as { choiceId?: string })?.choiceId,
+            },
+            suggestion: pxIssue.suggestion,
+          });
+        }
+      } catch (err) {
+        // Keep validator non-fatal; Pixar coverage is advisory
+        console.warn('[IBPV] PixarPrinciplesValidator failed:', err);
+      }
+
+      // Encounter-level Pixar surprise checks
+      if (input.encounterStructures && input.encounterStructures.length > 0) {
+        for (const enc of input.encounterStructures) {
+          try {
+            const issues = this.pixarValidator.validateEncounter(
+              enc,
+              enc.sceneId || '',
+            );
+            for (const pxIssue of issues ?? []) {
+              const level: 'error' | 'warning' | 'suggestion' =
+                pxIssue.severity === 'error' || pxIssue.severity === 'critical'
+                  ? 'error'
+                  : pxIssue.severity === 'warning'
+                  ? 'warning'
+                  : 'suggestion';
+              allIssues.push({
+                category: 'pixar_principles',
+                level,
+                message: pxIssue.description || pxIssue.type,
+                location: {
+                  sceneId: pxIssue.location?.sceneId,
+                },
+                suggestion: pxIssue.suggestion,
+              });
+            }
+          } catch (err) {
+            console.warn('[IBPV] PixarPrinciplesValidator.validateEncounter failed:', err);
+          }
+        }
+      }
+    }
+
+    // 8. Cliffhanger Validation (episode-level)
+    if (input.episode && (input.episodePlan || input.cliffhangerPlan)) {
+      try {
+        const analysis = this.cliffhangerValidator.quickAnalyze(
+          input.episode,
+          input.cliffhangerPlan || input.episodePlan!,
+        );
+        if (analysis.quality === 'missing' || analysis.quality === 'weak') {
+          allIssues.push({
+            category: 'cliffhanger',
+            level: analysis.quality === 'missing' ? 'error' : 'warning',
+            message: `Episode cliffhanger is ${analysis.quality} (score ${analysis.score}/100)`,
+            location: { sceneId: undefined },
+            suggestion: analysis.suggestions.join('; '),
+          });
+        }
+      } catch (err) {
+        console.warn('[IBPV] CliffhangerValidator failed:', err);
+      }
+    }
+
     // Categorize issues
     const blockingIssues = allIssues.filter(i => i.level === 'error');
     const warnings = allIssues.filter(i => i.level === 'warning');
@@ -539,6 +755,129 @@ export class IntegratedBestPracticesValidator {
       consequenceBudget: this.consequenceBudgetValidator,
       stakesTriangle: this.stakesTriangleValidator,
       fiveFactor: this.fiveFactorValidator,
+      callbackOpportunities: this.callbackValidator,
+      pixarPrinciples: this.pixarValidator,
+      cliffhanger: this.cliffhangerValidator,
     };
   }
+}
+
+function toValidationIssue(
+  category: ValidationIssue['category'],
+  issue: {
+    severity: 'error' | 'warning' | 'info';
+    message: string;
+    location?: string;
+    suggestion?: string;
+  }
+): ValidationIssue {
+  const level: ValidationIssue['level'] =
+    issue.severity === 'error'
+      ? 'error'
+      : issue.severity === 'warning'
+      ? 'warning'
+      : 'suggestion';
+
+  return {
+    category,
+    level,
+    message: issue.message,
+    location: parseIssueLocation(issue.location),
+    suggestion: issue.suggestion,
+  };
+}
+
+function parseIssueLocation(raw?: string): ValidationIssue['location'] {
+  if (!raw) return {};
+
+  const parts = raw.split(':').map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 3) {
+    return {
+      sceneId: parts[0],
+      beatId: parts[1],
+      choiceId: parts[2],
+    };
+  }
+  if (parts.length === 2) {
+    return {
+      beatId: parts[0],
+      choiceId: parts[1],
+    };
+  }
+  if (parts.length === 1) {
+    return { choiceId: parts[0] };
+  }
+  return {};
+}
+
+function collectPlayerFacingTexts(input: ValidationInput): Array<{
+  id: string;
+  text: string;
+  sceneId?: string;
+  beatId?: string;
+  choiceId?: string;
+  source?: string;
+}> {
+  const texts: Array<{
+    id: string;
+    text: string;
+    sceneId?: string;
+    beatId?: string;
+    choiceId?: string;
+    source?: string;
+  }> = [];
+
+  const add = (
+    id: string,
+    text: string | undefined,
+    source: string,
+    location: { sceneId?: string; beatId?: string; choiceId?: string } = {}
+  ) => {
+    if (!text || !text.trim()) return;
+    texts.push({ id, text, source, ...location });
+  };
+
+  for (const scene of input.scenes) {
+    for (const beat of scene.beats) {
+      add(`${scene.id}:${beat.id}`, beat.text, 'beat', {
+        sceneId: scene.id,
+        beatId: beat.id,
+      });
+      for (const [index, variant] of (beat.textVariants || []).entries()) {
+        add(`${scene.id}:${beat.id}:variant:${index}`, variant.text, 'textVariant', {
+          sceneId: scene.id,
+          beatId: beat.id,
+        });
+      }
+    }
+  }
+
+  for (const choice of input.choices) {
+    add(choice.id, choice.text, 'choice', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+    add(`${choice.id}:locked`, choice.lockedText, 'lockedText', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+    add(`${choice.id}:reaction`, choice.reactionText, 'reactionText', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+    add(`${choice.id}:success`, choice.outcomeTexts?.success, 'outcomeText', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+    add(`${choice.id}:partial`, choice.outcomeTexts?.partial, 'outcomeText', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+    add(`${choice.id}:failure`, choice.outcomeTexts?.failure, 'outcomeText', {
+      sceneId: choice.sceneId,
+      choiceId: choice.id,
+    });
+  }
+
+  return texts;
 }

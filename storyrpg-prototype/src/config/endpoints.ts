@@ -33,12 +33,29 @@ export const PROXY_CONFIG = {
   get writeFile() { return `${this.getProxyUrl()}/write-file`; },
   get atlasCloudApi() { return `${this.getProxyUrl()}/atlas-cloud-api`; },
   get midapi() { return `${this.getProxyUrl()}/midapi`; },
+  get stableDiffusionApi() { return `${this.getProxyUrl()}/sd-api`; },
   get elevenLabs() { return `${this.getProxyUrl()}/elevenlabs`; },
   get generationJobs() { return `${this.getProxyUrl()}/generation-jobs`; },
   get workerJobs() { return `${this.getProxyUrl()}/worker-jobs`; },
   get modelsAvailable() { return `${this.getProxyUrl()}/models/available`; },
   get modelsScan() { return `${this.getProxyUrl()}/models/scan`; },
   get generatorSettings() { return `${this.getProxyUrl()}/generator-settings`; },
+};
+
+// ========================================
+// EXPO WEB DEV SERVER (for QA tooling / E2E)
+// ========================================
+
+export const EXPO_WEB_CONFIG = {
+  DEFAULT_HOST: 'localhost',
+  DEFAULT_PORT: 8081,
+  getBaseUrl(): string {
+    const explicit = process.env.EXPO_PUBLIC_WEB_URL || process.env.EXPO_WEB_URL;
+    if (explicit && explicit.trim().length > 0) {
+      return explicit.replace(/\/+$/, '');
+    }
+    return `http://${this.DEFAULT_HOST}:${this.DEFAULT_PORT}`;
+  },
 };
 
 // ========================================
@@ -72,6 +89,18 @@ export const EXTERNAL_APIS = {
   midjourney: {
     get generate() { return `${PROXY_CONFIG.midapi}/api/v1/mj/generate`; },
     getRecordInfo(taskId: string) { return `${PROXY_CONFIG.midapi}/api/v1/mj/record-info?taskId=${encodeURIComponent(taskId)}`; },
+  },
+
+  // Stable Diffusion backend (via proxy). Paths align with AUTOMATIC1111 / Forge
+  // WebUI's REST surface. The proxy forwards everything under /sd-api/* to the
+  // host configured via STABLE_DIFFUSION_BASE_URL.
+  stableDiffusion: {
+    get txt2img() { return `${PROXY_CONFIG.stableDiffusionApi}/sdapi/v1/txt2img`; },
+    get img2img() { return `${PROXY_CONFIG.stableDiffusionApi}/sdapi/v1/img2img`; },
+    get models() { return `${PROXY_CONFIG.stableDiffusionApi}/sdapi/v1/sd-models`; },
+    get loras() { return `${PROXY_CONFIG.stableDiffusionApi}/sdapi/v1/loras`; },
+    get samplers() { return `${PROXY_CONFIG.stableDiffusionApi}/sdapi/v1/samplers`; },
+    get health() { return `${PROXY_CONFIG.stableDiffusionApi}/health`; },
   },
 };
 
@@ -113,6 +142,9 @@ export const STORAGE_KEYS = {
   atlasCloudApiKey: '@storyrpg_atlas_cloud_api_key',
   atlasCloudModel: '@storyrpg_atlas_cloud_model',
   midapiToken: '@storyrpg_midapi_token',
+  stableDiffusionBaseUrl: '@storyrpg_sd_base_url',
+  stableDiffusionApiKey: '@storyrpg_sd_api_key',
+  stableDiffusionSettings: '@storyrpg_sd_settings',
   
   // User preferences
   settings: '@storyrpg_settings',

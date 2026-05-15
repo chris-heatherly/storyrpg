@@ -1,6 +1,6 @@
 type EndingMode = 'single' | 'multiple';
 
-export type WorkerMode = 'analysis' | 'generation';
+export type WorkerMode = 'analysis' | 'generation' | 'image-generation';
 
 export type ResumeCheckpointPayload = {
   steps?: Record<string, { status?: string }>;
@@ -28,6 +28,9 @@ export type WorkerPayload = {
     brief: Record<string, unknown>;
     sourceAnalysis?: Record<string, unknown>;
     episodeRange?: { start: number; end: number; specific?: number[] };
+  };
+  imageGenerationInput?: {
+    outputDirectory: string;
   };
 };
 
@@ -66,8 +69,8 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
   if (!isRecord(value)) {
     throw new Error('Worker payload must be an object.');
   }
-  if (value.mode !== 'analysis' && value.mode !== 'generation') {
-    throw new Error('Worker payload mode must be "analysis" or "generation".');
+  if (value.mode !== 'analysis' && value.mode !== 'generation' && value.mode !== 'image-generation') {
+    throw new Error('Worker payload mode must be "analysis", "generation", or "image-generation".');
   }
   if (!isRecord(value.config)) {
     throw new Error('Worker payload is missing a valid config object.');
@@ -94,6 +97,15 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
     }
     if (!isRecord(value.generationInput.brief)) {
       throw new Error('generationInput.brief is required for generation mode.');
+    }
+  }
+
+  if (value.mode === 'image-generation') {
+    if (!isRecord(value.imageGenerationInput)) {
+      throw new Error('imageGenerationInput is required for image-generation mode.');
+    }
+    if (typeof value.imageGenerationInput.outputDirectory !== 'string' || value.imageGenerationInput.outputDirectory.length === 0) {
+      throw new Error('imageGenerationInput.outputDirectory is required for image-generation mode.');
     }
   }
 }

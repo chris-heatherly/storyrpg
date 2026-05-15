@@ -147,13 +147,13 @@ export class ChoiceDistributionValidator extends BaseValidator {
     const deviations: Record<string, number> = {};
     for (const t of canonicalTypes) {
       actualPercentages[t] = (counts[t] / totalChoiceSets) * 100;
-      deviations[t] = actualPercentages[t] - (targets as Record<string, number>)[t];
+      deviations[t] = actualPercentages[t] - targets[t as keyof ChoiceDistributionTargets];
     }
 
     // Check each type against its target
     for (const t of canonicalTypes) {
       const actual = actualPercentages[t];
-      const target = (targets as Record<string, number>)[t];
+      const target = targets[t as keyof ChoiceDistributionTargets];
       const deviation = Math.abs(deviations[t]);
 
       if (deviation > this.errorTolerance) {
@@ -219,7 +219,7 @@ export class ChoiceDistributionValidator extends BaseValidator {
     const deviations: Record<string, number> = {};
     for (const t of canonicalTypes) {
       actualPercentages[t] = total > 0 ? (counts[t] / total) * 100 : 0;
-      deviations[t] = actualPercentages[t] - (input.targets as Record<string, number>)[t];
+      deviations[t] = actualPercentages[t] - input.targets[t as keyof ChoiceDistributionTargets];
     }
 
     return {

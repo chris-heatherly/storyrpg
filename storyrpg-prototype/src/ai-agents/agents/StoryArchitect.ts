@@ -9,9 +9,21 @@
  */
 
 import { AgentConfig, GenerationSettingsConfig } from '../config';
+import {
+  StoryAnchors,
+  SevenPointStructure,
+  StructuralRole,
+  SEVEN_POINT_BEATS,
+} from '../../types/sourceAnalysis';
 import { BaseAgent, AgentResponse, AgentMessage } from './BaseAgent';
-import { BRANCH_AND_BOTTLENECK } from '../prompts/storytellingPrinciples';
-import type { EncounterCost, EncounterNarrativeStyle, EncounterType } from '../../types';
+import {
+  BRANCH_AND_BOTTLENECK,
+  CRAFT_PRESSURE_GUIDANCE,
+  buildGenreAwareJeopardyGuidance,
+} from '../prompts/storytellingPrinciples';
+import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
+import type { EncounterCost, EncounterNarrativeStyle, EncounterType, NarrativeSequenceIntent } from '../../types';
+import type { CliffhangerPlan } from '../../types/seasonPlan';
 import type { EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 
 // Input types
@@ -53,6 +65,33 @@ export interface StoryArchitectInput {
 
   // User instructions
   userPrompt?: string;
+
+  /**
+   * Season-level narrative anchors (from SeasonPlan.anchors). When present,
+   * StoryArchitect keeps the episode's drama grounded to the same stakes,
+   * goal, and final climax the rest of the pipeline targets.
+   */
+  seasonAnchors?: StoryAnchors;
+
+  /**
+   * Season-level 7-point beat map (from SeasonPlan.sevenPoint). Gives
+   * StoryArchitect the text of every beat so it can weave the correct
+   * beat into this episode's arc block.
+   */
+  seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Which beat(s) of the season sevenPoint this specific episode carries
+   * (from SeasonEpisode.structuralRole). Drives which `arc.*` fields are
+   * required vs. optional and what dramatic function the episode serves.
+   */
+  episodeStructuralRole?: StructuralRole[];
+
+  /**
+   * Role-mapped episode ending contract. The final non-encounter scene should
+   * resolve the episode's immediate tension, then open this hook.
+   */
+  cliffhangerPlan?: CliffhangerPlan;
 
   // Season plan data (encounter and branching directives from the master blueprint)
   seasonPlanDirectives?: {
@@ -138,6 +177,7 @@ export interface SceneBlueprint {
 
   // Key beats to hit
   keyBeats: string[];
+  sequenceIntent?: NarrativeSequenceIntent;
 
   // Choice point (if any)
   choicePoint?: {
@@ -208,13 +248,38 @@ export interface EpisodeBlueprint {
   title: string;
   synopsis: string;
 
-  // Narrative arc
+  /**
+   * Episode-level 7-point arc summary.
+   *
+   * This is a REPLACEMENT for the old `{ hook, risingAction, climax, resolution }`
+   * shape. `risingAction` is no longer captured as a single field; the
+   * progressive tension is now carried by the dedicated beat fields below.
+   * `plotTurn2` is intentionally fused into `climax` (the season's Plot Turn 2
+   * IS the decisive confrontation), matching how the season-level
+   * {@link SevenPointStructure} is laid out.
+   *
+   * For buffer episodes (episodes with `structuralRole` of `rising` or
+   * `falling`), the writer fills the 1-2 beats the episode actually lands and
+   * leaves the others as empty strings. The SevenPointCoverageValidator only
+   * enforces coverage at the SEASON level.
+   */
   arc: {
-    hook: string;
-    risingAction: string;
-    climax: string;
-    resolution: string;
+    hook: string;          // Ordinary world + core value introduced
+    plotTurn1: string;     // Inciting incident / world-disruption
+    pinch1: string;        // First major setback against the antagonizing force
+    midpoint: string;      // Commitment / reversal / path-to-victory discovered
+    pinch2: string;        // Crisis + transformation culmination
+    climax: string;        // Decisive confrontation (fuses PT2 + Climax)
+    resolution: string;    // Aftermath + legacy
   };
+
+  /**
+   * Which beats of the season-level sevenPoint this episode is responsible
+   * for landing. Copied through from the SeasonPlannerAgent's assignment so
+   * validators can assert the episode's arc fields are populated for the
+   * beats it owns.
+   */
+  structuralRole?: StructuralRole[];
 
   // Themes to weave through
   themes: string[];
@@ -245,6 +310,11 @@ export class StoryArchitect extends BaseAgent {
     medium: number;   // 5-7 scenes
     long: number;     // 8+ scenes
   };
+  private sceneGraphBranching: {
+    required: boolean;
+    minPerEpisode: number;
+    allowLinearBottleneckEpisodes: boolean;
+  };
   private lastStructuralFeedback: string[] = [];
 
   constructor(config: AgentConfig, generationConfig?: GenerationSettingsConfig) {
@@ -257,6 +327,11 @@ export class StoryArchitect extends BaseAgent {
       medium: generationConfig?.minEncountersMedium ?? 1,
       long: generationConfig?.minEncountersLong ?? 1,
     };
+    this.sceneGraphBranching = {
+      required: generationConfig?.requireSceneGraphBranching !== false,
+      minPerEpisode: generationConfig?.minSceneGraphBranchesPerEpisode ?? 1,
+      allowLinearBottleneckEpisodes: generationConfig?.allowLinearBottleneckEpisodes === true,
+    };
   }
   
   // Get minimum encounters based on scene count
@@ -264,6 +339,110 @@ export class StoryArchitect extends BaseAgent {
     if (sceneCount <= 4) return this.encounterMinimums?.short ?? 0;
     if (sceneCount <= 7) return this.encounterMinimums?.medium ?? 1;
     return this.encounterMinimums?.long ?? 1;
+  }
+
+  private getMinimumChoiceSceneCount(sceneCount: number): number {
+    return Math.ceil(sceneCount * 0.4);
+  }
+
+  private createExpressionChoicePoint(scene: SceneBlueprint, reason: string): NonNullable<SceneBlueprint['choicePoint']> {
+    const sceneGoal = scene.dramaticQuestion || scene.narrativeFunction || scene.description || scene.name;
+
+    return {
+      type: 'expression',
+      branches: false,
+      stakes: {
+        want: `Express how the protagonist responds to ${sceneGoal}`,
+        cost: 'The story beat continues, but the response colors how others read the protagonist.',
+        identity: 'This choice defines the protagonist through tone, values, and emotional posture.',
+      },
+      description: `Let the player choose how they meet this moment: ${reason}.`,
+      optionHints: [
+        'Answer with restraint and careful attention.',
+        'Answer with directness, making the feeling plain.',
+        'Answer obliquely, revealing only part of the truth.',
+      ],
+      consequenceDomain: 'identity',
+      reminderPlan: {
+        immediate: 'Reflect the chosen tone in the next line of dialogue or narration.',
+        shortTerm: 'Let a later scene echo how the protagonist carried themself here.',
+      },
+      expectedResidue: [
+        `The protagonist's response in ${scene.name} leaves an emotional trace.`,
+      ],
+    };
+  }
+
+  private addChoicePointIfEligible(scene: SceneBlueprint, reason: string): boolean {
+    if (scene.choicePoint || scene.isEncounter) return false;
+    scene.choicePoint = this.createExpressionChoicePoint(scene, reason);
+    console.log(`[StoryArchitect] Auto-added expression choicePoint to ${scene.id}: ${reason}`);
+    return true;
+  }
+
+  private repairChoiceDensity(blueprint: EpisodeBlueprint): void {
+    const scenes = blueprint.scenes || [];
+    if (scenes.length === 0) return;
+
+    const minimumChoiceScenes = this.getMinimumChoiceSceneCount(scenes.length);
+    let choiceSceneCount = scenes.filter(scene => scene.choicePoint).length;
+
+    const startingScene = scenes.find(scene => scene.id === blueprint.startingSceneId) || scenes[0];
+    if (startingScene && !startingScene.choicePoint) {
+      const followUps = startingScene.leadsTo
+        .map(id => scenes.find(scene => scene.id === id))
+        .filter((scene): scene is SceneBlueprint => Boolean(scene));
+      const secondSceneHasChoice = followUps.some(scene => scene.choicePoint);
+
+      if (!secondSceneHasChoice) {
+        if (this.addChoicePointIfEligible(startingScene, 'early player agency')) {
+          choiceSceneCount++;
+        } else {
+          const repairedFollowUp = followUps.find(scene => this.addChoicePointIfEligible(scene, 'early player agency after an encounter opening'));
+          if (repairedFollowUp) choiceSceneCount++;
+        }
+      }
+    }
+
+    const sceneMap = new Map(scenes.map(scene => [scene.id, scene]));
+    const visited = new Set<string>();
+    const repairLongNonChoiceRuns = (sceneId: string, nonChoiceStreak: number): void => {
+      const visitKey = `${sceneId}:${nonChoiceStreak}`;
+      if (visited.has(visitKey)) return;
+      visited.add(visitKey);
+
+      const scene = sceneMap.get(sceneId);
+      if (!scene) return;
+
+      let currentStreak = scene.choicePoint ? 0 : nonChoiceStreak + 1;
+      if (currentStreak > 2 && this.addChoicePointIfEligible(scene, 'breaking up a long passive scene run')) {
+        choiceSceneCount++;
+        currentStreak = 0;
+      }
+
+      for (const nextId of scene.leadsTo) {
+        repairLongNonChoiceRuns(nextId, currentStreak);
+      }
+    };
+
+    if (startingScene) {
+      repairLongNonChoiceRuns(startingScene.id, 0);
+    }
+
+    const preferredScenes = [
+      ...scenes.filter(scene => scene.purpose === 'bottleneck'),
+      ...scenes.filter(scene => scene.purpose === 'transition'),
+      ...scenes.filter(scene => scene.purpose === 'branch'),
+    ];
+    const seen = new Set<string>();
+    for (const scene of preferredScenes) {
+      if (choiceSceneCount >= minimumChoiceScenes) break;
+      if (seen.has(scene.id)) continue;
+      seen.add(scene.id);
+      if (this.addChoicePointIfEligible(scene, 'meeting the episode choice-density requirement')) {
+        choiceSceneCount++;
+      }
+    }
   }
 
   private tokenizeEncounterText(value: string | undefined): string[] {
@@ -454,8 +633,10 @@ Every non-encounter scene must earn its place by making the encounter MORE meani
 
 Branching is a PROPERTY of any non-expression choice.
 - Set \`branches: true\` on the choicePoint when the scene should diverge
-- Max 1-2 branching choice points per episode (encounter outcomes ARE the primary branching)
-- Encounter outcomes (victory/defeat/escape) create the most meaningful divergence
+- Include at least ${this.sceneGraphBranching?.minPerEpisode ?? 1} scene-graph branch choice point(s) per episode unless the request explicitly says linear
+- A scene-graph branch means: a non-expression choicePoint with \`branches: true\` AND at least two distinct \`leadsTo\` scene IDs
+- Max 1-2 branching choice points per episode; keep them small and reconvergent
+- Encounter outcomes (victory/defeat/escape) are valuable, but they DO NOT count as regular scene-graph branching
 
 ## Choice Architecture Rules
 
@@ -532,9 +713,15 @@ REQUIREMENTS:
 
       let blueprint: EpisodeBlueprint;
       try {
-        blueprint = this.parseJSON<EpisodeBlueprint>(response);
+        blueprint = this.unwrapDynamoTypedJson(this.parseJSON<EpisodeBlueprint>(response)) as EpisodeBlueprint;
       } catch (parseError) {
         console.error(`[StoryArchitect] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
+        if (retryCount < maxRetries) {
+          this.lastStructuralFeedback = [
+            'Previous response was not parseable strict JSON. Return one plain JSON object only: no markdown, no comments, no trailing commas, no DynamoDB typed wrappers like {"S":"value"} or {"L":[...]}.',
+          ];
+          return this.execute(input, retryCount + 1);
+        }
         throw parseError;
       }
 
@@ -727,15 +914,40 @@ REQUIREMENTS:
         blueprint.synopsis = '';
       }
 
-      // Ensure arc object exists
+      // Ensure arc object exists with the full 7-point shape. Missing fields
+      // are backfilled to '' so downstream code can rely on their presence;
+      // SevenPointCoverageValidator enforces that episodes actually populate
+      // the beats their structuralRole claims to cover.
       if (!blueprint.arc) {
         blueprint.arc = {
           hook: '',
-          risingAction: '',
+          plotTurn1: '',
+          pinch1: '',
+          midpoint: '',
+          pinch2: '',
           climax: '',
-          resolution: ''
+          resolution: '',
+        };
+      } else {
+        const a: Partial<EpisodeBlueprint['arc']> = blueprint.arc as Partial<EpisodeBlueprint['arc']>;
+        blueprint.arc = {
+          hook: a.hook ?? '',
+          plotTurn1: a.plotTurn1 ?? '',
+          pinch1: a.pinch1 ?? '',
+          midpoint: a.midpoint ?? '',
+          pinch2: a.pinch2 ?? '',
+          climax: a.climax ?? '',
+          resolution: a.resolution ?? '',
         };
       }
+
+      // Propagate the caller's structuralRole assignment so validators and
+      // downstream writers can see which beats this episode owns.
+      if (!blueprint.structuralRole && input.episodeStructuralRole) {
+        blueprint.structuralRole = [...input.episodeStructuralRole];
+      }
+
+      this.repairChoiceDensity(blueprint);
 
       // Log choice point info BEFORE validation
       const scenesWithChoices = blueprint.scenes?.filter(s => s.choicePoint) || [];
@@ -776,10 +988,17 @@ REQUIREMENTS:
                                  errorMsg.includes('Bottleneck scene') ||
                                  errorMsg.includes('Starting scene') ||
                                  errorMsg.includes('must have at least');
+      const isParseError = errorMsg.includes('Failed to parse JSON response') ||
+                           errorMsg.includes('Expected double-quoted property name') ||
+                           errorMsg.includes('Unexpected token');
 
-      if ((isChoiceDensityError || isEncounterPlanningError || isStructuralError) && retryCount < maxRetries) {
+      if ((isChoiceDensityError || isEncounterPlanningError || isStructuralError || isParseError) && retryCount < maxRetries) {
         console.log(`[StoryArchitect] Retrying due to structural blueprint issue: ${errorMsg.slice(0, 120)}`);
-        this.lastStructuralFeedback = [errorMsg];
+        this.lastStructuralFeedback = isParseError
+          ? [
+              'Previous response was not parseable strict JSON. Return one plain JSON object only: no markdown, no comments, no trailing commas, no DynamoDB typed wrappers like {"S":"value"} or {"L":[...]}.',
+            ]
+          : [errorMsg];
         return this.execute(input, retryCount + 1);
       }
 
@@ -788,6 +1007,37 @@ REQUIREMENTS:
         error: errorMsg,
       };
     }
+  }
+
+  private unwrapDynamoTypedJson(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.unwrapDynamoTypedJson(item));
+    }
+    if (!value || typeof value !== 'object') return value;
+
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (keys.length === 1) {
+      if ('S' in record) return String(record.S ?? '');
+      if ('N' in record) {
+        const asNumber = Number(record.N);
+        return Number.isFinite(asNumber) ? asNumber : record.N;
+      }
+      if ('BOOL' in record) return Boolean(record.BOOL);
+      if ('NULL' in record) return null;
+      if ('L' in record && Array.isArray(record.L)) {
+        return record.L.map((item) => this.unwrapDynamoTypedJson(item));
+      }
+      if ('M' in record && record.M && typeof record.M === 'object') {
+        return this.unwrapDynamoTypedJson(record.M);
+      }
+    }
+
+    const out: Record<string, unknown> = {};
+    for (const [key, inner] of Object.entries(record)) {
+      out[key] = this.unwrapDynamoTypedJson(inner);
+    }
+    return out;
   }
 
   private buildPrompt(input: StoryArchitectInput): string {
@@ -850,7 +1100,27 @@ ${input.memoryContext}
 - Use branch-and-bottleneck structure
 - Every major choice needs WANT, COST, and IDENTITY stakes
 - **Intensity guidance in keyBeats**: For each scene, indicate which keyBeats are the dominant peak(s) (prefix with "PEAK:") and suggest where rest/breathing beats should fall (prefix with "REST:"). The SceneWriter uses this to shape the intensity arc. Example: ["REST: the quiet village at dawn", "PEAK: confrontation erupts at the market", "the aftermath settles"]
+- **Pressure, not mandatory combat**: Every scene should create story pressure, but the pressure must match the genre and moment. Use physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure as appropriate.
+- **Decisive beats**: keyBeats should include specific actions, surprising complications, character development, visible consequences, and forward pressure.
+- **Turn ladder, not topic list**: Frame each scene as an active situation. keyBeats should bend or flip something: trust shifts, evidence changes hands, a secret becomes harder to deny, leverage is gained/lost, distance/closeness changes, danger/reputation/resources change, identity is expressed, or knowledge becomes actionable.
+- **Sequence intent, not random panels**: Every multi-beat scene should include \`sequenceIntent\` that names the objective, visible activity, obstacle, startState, turningPoint, endState, visualThread, and optional mechanicThread. This field is optional for old content compatibility, but REQUIRED-BY-PROCESS for new generated scenes with multiple beats or storyboard panels.
+- **Fiction-first mechanics**: When a key turn should matter later, route it through existing fields only: choice stakes/consequenceDomain, encounterSetupContext, encounterBuildup, flags/relationships implied by choicePoint stakes, or callback residue. Do not invent a new mechanics layer.
+- **Rest scenes still turn**: REST beats may be quiet, but they should show settling, contrast, recovery, relationship recalibration, or the cost of the prior pressure.
+- **Plans go wrong**: When characters follow a plan, include a plausible complication that forces improvisation unless the scene is deliberately a rest beat.
+- **No arbitrary escalation treadmill**: Escalate the episode's overall pressure, but do not make every conversation an argument or every beat more dangerous than everything before it.
+
+${CRAFT_PRESSURE_GUIDANCE}
+
+## Genre-Aware Jeopardy Policy
+${buildGenreAwareJeopardyGuidance(input.genre)}
+
+Apply the craft guidance through existing fields only: \`keyBeats\`, \`dramaticQuestion\`, \`conflictEngine\`,
+\`sequenceIntent\`, \`encounterBeatPlan\`, \`encounterBuildup\`, \`encounterSetupContext\`, choice stakes, consequence domains, and cliffhanger planning. Do not invent
+a new chapter-beat layer.
+${STORY_ARCHITECT_BLUEPRINT_EXAMPLE}
 ${this.buildSeasonPlanDirectivesSection(input)}
+${this.buildStructuralContextSection(input)}
+${this.buildCliffhangerPlanSection(input)}
 
 ## Required JSON Structure
 
@@ -859,10 +1129,13 @@ ${this.buildSeasonPlanDirectivesSection(input)}
   "title": "Episode Title",
   "synopsis": "Brief episode summary",
   "arc": {
-    "hook": "Opening hook description",
-    "risingAction": "Rising action description",
-    "climax": "Climax description",
-    "resolution": "Resolution description"
+    "hook": "Ordinary world + core value introduced (fill if this episode carries the 'hook' beat)",
+    "plotTurn1": "Inciting incident / world-disruption (fill if this episode carries 'plotTurn1')",
+    "pinch1": "First major setback against the antagonizing force (fill if this episode carries 'pinch1')",
+    "midpoint": "Commitment / reversal / path-to-victory discovered (fill if this episode carries 'midpoint')",
+    "pinch2": "Crisis + transformation culmination (fill if this episode carries 'pinch2')",
+    "climax": "Decisive confrontation that fuses PT2 and the season Climax (fill if this episode carries 'climax')",
+    "resolution": "Aftermath and legacy (fill if this episode carries 'resolution')"
   },
   "themes": ["theme1", "theme2"],
   "scenes": [
@@ -875,6 +1148,16 @@ ${this.buildSeasonPlanDirectivesSection(input)}
       "purpose": "bottleneck",
       "npcsPresent": ["npc-id"],
       "narrativeFunction": "What this scene accomplishes",
+      "sequenceIntent": {
+        "objective": "What this visual sequence is trying to accomplish",
+        "activity": "The concrete visible activity carrying it",
+        "obstacle": "What resists or complicates the objective",
+        "startState": "Visible/emotional/mechanical state at the start",
+        "turningPoint": "The moment the sequence bends",
+        "endState": "What has changed by the end",
+        "visualThread": "Recurring prop, distance, blocking, wound, clue, gesture, or motif",
+        "mechanicThread": "Optional fiction-first hook such as trust, leverage, clue, danger, resource, identity, callback, or encounter clock"
+      },
       "keyBeats": ["beat 1", "beat 2"],
       "leadsTo": ["scene-2"],
       "encounterBuildup": "Establishes the antagonist's power and the protagonist's vulnerability — makes the encounter's stakes personal",
@@ -953,6 +1236,7 @@ ${this.buildSeasonPlanDirectivesSection(input)}
 CRITICAL REQUIREMENTS:
 1. The "scenes" array must contain 3-${input.targetSceneCount} scenes (cap—use fewer if story doesn't need more)
 2. Each scene MUST have: id, name, description, location, mood, purpose, npcsPresent, narrativeFunction, keyBeats, leadsTo
+2a. Each newly generated multi-beat scene SHOULD include sequenceIntent. Missing sequenceIntent is tolerated for compatibility/fallbacks, but lowers storyboard QA quality.
 3. purpose MUST be one of: "bottleneck", "branch", "transition"
 4. startingSceneId MUST match one of the scene ids
 5. Return ONLY valid JSON, no markdown, no extra text
@@ -979,6 +1263,13 @@ ENCOUNTER REQUIREMENTS:
 - Encounter scenes should be bottlenecks and should NOT have a regular choicePoint (they have skill-based choices instead)
 - The encounter should be the episode's dramatic climax — roughly scene 3 of 5, or scene 4 of 6
 
+CLIFFHANGER REQUIREMENTS:
+- The final scene should usually be an aftermath / consequence scene, not the encounter itself.
+- The final scene must acknowledge what happened in the episode's central conflict before opening the next pressure.
+- If a Cliffhanger Plan is supplied, the final scene's narrativeFunction and keyBeats MUST explicitly support it.
+- For high-intensity cliffhangers, make the final keyBeat a concrete shock, emotional rupture, betrayal, reframe, arrival, loss, or decision — not vague unease.
+- Do not fake unresolved tension by simply stopping mid-action; make the hook earned by prior setup.
+
 CHOICE DENSITY REQUIREMENTS (CRITICAL - Interactive fiction requires player choices):
 6. At least 40% of scenes MUST have a choicePoint defined (branching, dilemma, or flavor)
 7. Players need agency early - either the FIRST scene has a choicePoint, OR the first scene is very brief (< 200 words) and the SECOND scene has one
@@ -988,6 +1279,7 @@ CHOICE DENSITY REQUIREMENTS (CRITICAL - Interactive fiction requires player choi
 11. BOTTLENECK scenes CAN have flavor choices - players still get agency in HOW they react even if the story beat is fixed
 12. Major choicePoints should include consequenceDomain and reminderPlan so later agents know how to preserve residue
 13. Use competenceArc and failureBranchPurpose when a future confrontation should open recovery, training, leverage, alliance, investigation, or regrouping paths
+14. At least ${this.sceneGraphBranching?.minPerEpisode ?? 1} non-expression choicePoint MUST set branches=true and offer at least two distinct leadsTo targets, unless the user's prompt explicitly asks for a linear episode.
 
 SCENE LINKING & CONTINUITY (CRITICAL):
 12. Every scene (except the final scene) MUST have at least one valid ID in the "leadsTo" array.
@@ -998,6 +1290,73 @@ SCENE LINKING & CONTINUITY (CRITICAL):
 17. Naming: Use consistent IDs like scene-1, scene-2, scene-3a, scene-3b, etc.
 
 If you don't include enough choice points, the story will be rejected as non-interactive.
+`;
+  }
+
+  /**
+   * Surface the season-level anchors, the full 7-point map, and the beats
+   * this episode is responsible for landing. The 7-point / anchor data
+   * drives the `arc.*` fields and the dramatic function of every scene.
+   */
+  private buildStructuralContextSection(input: StoryArchitectInput): string {
+    const { seasonAnchors, seasonSevenPoint, episodeStructuralRole } = input;
+    if (!seasonAnchors && !seasonSevenPoint && (!episodeStructuralRole || episodeStructuralRole.length === 0)) {
+      return '';
+    }
+
+    const anchorLines = seasonAnchors
+      ? [
+          `- Stakes: ${seasonAnchors.stakes}`,
+          `- Goal: ${seasonAnchors.goal}`,
+          `- Inciting Incident: ${seasonAnchors.incitingIncident}`,
+          `- Climax: ${seasonAnchors.climax}`,
+        ].join('\n')
+      : '';
+
+    const beatLines = seasonSevenPoint
+      ? SEVEN_POINT_BEATS.map((beat) => `- ${beat}: ${seasonSevenPoint[beat]}`).join('\n')
+      : '';
+
+    const roleLine = episodeStructuralRole && episodeStructuralRole.length > 0
+      ? episodeStructuralRole.join(', ')
+      : '(not assigned — treat as a rising / falling buffer episode)';
+
+    return `
+## Season Anchors (shared reference — every beat must serve these)
+${anchorLines || '(none supplied)'}
+
+## Season 7-Point Beat Map
+${beatLines || '(none supplied)'}
+
+## This Episode's Structural Role
+${roleLine}
+
+Populate \`arc.<beat>\` ONLY for beats listed in this episode's structural role.
+Leave the other \`arc.*\` fields as empty strings — the season sevenPoint above
+already carries them at other episodes. The \`arc.climax\` field MUST, when
+filled, reference or rephrase the season Climax anchor above so the season
+reads as a single story.
+`;
+  }
+
+  private buildCliffhangerPlanSection(input: StoryArchitectInput): string {
+    const plan = input.cliffhangerPlan;
+    if (!plan) return '';
+
+    return `
+## Seven-Point Cliffhanger Plan (final scene contract)
+- Style: ${plan.style}
+- Structural role: ${plan.mappedStructuralRole}
+- Type: ${plan.type}
+- Intensity: ${plan.intensity}
+- Hook to deliver: ${plan.hook}
+- Setup that must make it earned: ${plan.setup}
+- Immediate episode tension to acknowledge/resolve: ${plan.resolvedEpisodeTension}
+- New open question: ${plan.newOpenQuestion}
+- Emotional charge: ${plan.emotionalCharge}
+- Next-episode pressure: ${plan.nextEpisodePressure}
+
+Design the final scene as "aftermath plus hook": show the consequence of this episode's encounter/choice, then end on the new question or pressure above.
 `;
   }
 
@@ -1177,6 +1536,20 @@ If you don't include enough choice points, the story will be rejected as non-int
       }
     }
 
+    if (this.sceneGraphBranching.required && !this.sceneGraphBranching.allowLinearBottleneckEpisodes) {
+      const branchPointCount = blueprint.scenes.filter(scene =>
+        scene.choicePoint?.branches &&
+        scene.choicePoint.type !== 'expression' &&
+        new Set(scene.leadsTo || []).size >= 2
+      ).length;
+      if (branchPointCount < this.sceneGraphBranching.minPerEpisode) {
+        issues.push(
+          `Only ${branchPointCount} scene-graph branch choicePoint(s); need at least ${this.sceneGraphBranching.minPerEpisode}. ` +
+          `Add a non-expression choicePoint with branches=true and 2 distinct leadsTo targets that later reconverge.`
+        );
+      }
+    }
+
     // Choice density pre-check (non-throwing)
     const scenesWithChoices = blueprint.scenes.filter(s => s.choicePoint);
     const density = scenesWithChoices.length / blueprint.scenes.length;
@@ -1238,6 +1611,20 @@ If you don't include enough choice points, the story will be rejected as non-int
       }
       if (!scene.choicePoint?.reminderPlan?.immediate || !scene.choicePoint?.reminderPlan?.shortTerm) {
         throw new Error(`Scene ${scene.id} has a major choice but no usable reminderPlan`);
+      }
+    }
+
+    if (this.sceneGraphBranching.required && !this.sceneGraphBranching.allowLinearBottleneckEpisodes) {
+      const validBranchPointCount = blueprint.scenes.filter(scene =>
+        scene.choicePoint?.branches &&
+        scene.choicePoint.type !== 'expression' &&
+        new Set(scene.leadsTo || []).size >= 2
+      ).length;
+      if (validBranchPointCount < this.sceneGraphBranching.minPerEpisode) {
+        throw new Error(
+          `Insufficient scene-graph branching: ${validBranchPointCount}/${this.sceneGraphBranching.minPerEpisode} valid branch point(s). ` +
+          `At least one non-expression choicePoint must set branches=true and lead to 2+ distinct future scenes.`
+        );
       }
     }
 

@@ -297,7 +297,7 @@ describe('IncrementalContinuityChecker', () => {
               consequences: [],
             },
           ] as any,
-        }
+        } as any
       );
 
       expect(issues.issues).toHaveLength(1);

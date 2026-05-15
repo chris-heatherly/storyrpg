@@ -27,10 +27,49 @@ describe('storyImageSlotManifest', () => {
     );
 
     expect(manifest.slots.map((slot) => slot.slotId)).toEqual([
-      'story-scene:scene-1',
-      'story-beat:scene-1::beat-1',
-      'story-beat:scene-1::beat-2',
+      'story-scene:episode-1::scene-1',
+      'story-beat:episode-1::scene-1::beat-1',
+      'story-beat:episode-1::scene-1::beat-2',
     ]);
+  });
+
+  it('does not create orphan story-scene slots for encounter-only scenes', () => {
+    const manifest = buildStoryImageSlotManifest(
+      {
+        sceneId: 'scene-encounter',
+        startingBeatId: 'encounter-start',
+        beats: [],
+        encounter: { id: 'encounter-1' },
+      },
+      'episode-1::scene-encounter',
+    );
+
+    expect(manifest.slots).toEqual([]);
+  });
+
+  it('scopes slot IDs by episode so scene IDs reused across episodes do not collide', () => {
+    const ep1 = buildStoryImageSlotManifest(
+      {
+        sceneId: 'scene-1',
+        startingBeatId: 'beat-1',
+        beats: [{ id: 'beat-1', text: 'A' } as any],
+      },
+      'episode-1-scene-1',
+    );
+    const ep2 = buildStoryImageSlotManifest(
+      {
+        sceneId: 'scene-1',
+        startingBeatId: 'beat-1',
+        beats: [{ id: 'beat-1', text: 'A' } as any],
+      },
+      'episode-2-scene-1',
+    );
+
+    const ep1Ids = new Set(ep1.slots.map((s) => s.slotId));
+    const ep2Ids = new Set(ep2.slots.map((s) => s.slotId));
+    for (const id of ep2Ids) {
+      expect(ep1Ids.has(id)).toBe(false);
+    }
   });
 
   it('reports missing beat and scene coverage from the pipeline maps', () => {

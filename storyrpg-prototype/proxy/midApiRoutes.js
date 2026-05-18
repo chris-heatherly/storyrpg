@@ -12,7 +12,8 @@
 const fs = require('fs');
 const path = require('path');
 
-function registerMidApiRoutes(app, { rootDir }) {
+function registerMidApiRoutes(app, { rootDir, refImagesDir: refImagesDirInput }) {
+  const refImagesDir = refImagesDirInput || path.resolve(rootDir, '.ref-images');
   const midapiCallbackCache = new Map(); // taskId → { receivedAt, data }
   let lastMidapiToken = null;
 
@@ -22,7 +23,6 @@ function registerMidApiRoutes(app, { rootDir }) {
     }
 
     const publicImageUrl = 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png';
-    const refImagesDir = path.resolve(rootDir, '.ref-images');
     let ngrokImageUrl = null;
     if (fs.existsSync(refImagesDir)) {
       const files = fs.readdirSync(refImagesDir).filter((f) => f.match(/\.(jpg|jpeg|png)$/i));

@@ -17,8 +17,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
 const { sanitizeJobState } = require('./sanitizeJobState');
+const { spawnTsNodeWorker } = require('./tsNodeSpawn');
 
 const WORKER_STALE_RUNNING_MS = 3 * 60 * 1000;
 const WORKER_MAX_TIMELINE = 200;
@@ -200,8 +200,30 @@ function mergeJsonLike(base, patch) {
   return merged;
 }
 
+function normalizePipelineOutputDir(cfg, { storiesDir, runtimeRoot, appRoot }) {
+  if (!cfg || typeof cfg !== 'object') return;
+  const raw = typeof cfg.outputDir === 'string' ? cfg.outputDir.trim() : '';
+  if (!raw || raw === './generated' || raw === 'generated') {
+    cfg.outputDir = storiesDir;
+    return;
+  }
+  if (path.isAbsolute(raw)) {
+    cfg.outputDir = raw;
+    return;
+  }
+  const base = runtimeRoot || appRoot;
+  cfg.outputDir = path.resolve(base, raw);
+}
+
 function createWorkerLifecycle({
   rootDir,
+  storiesDir: storiesDirInput,
+  runtimeRoot: runtimeRootInput,
+  generationJobsFile,
+  workerJobsFile,
+  workerCheckpointsFile,
+  workerDeadLetterFile,
+  workerCheckpointOutputDir: workerCheckpointOutputDirInput,
   port,
   cachedJsonStore,
   createStoryCatalogApi, // unused directly; retained for callers that need listLatestStoryRecords
@@ -212,11 +234,15 @@ function createWorkerLifecycle({
     throw new Error('createWorkerLifecycle requires rootDir, port, cachedJsonStore, createSyncGenerationMirrorFromWorker, and estimateWorkerProgress');
   }
 
-  const JOBS_FILE = path.resolve(rootDir, '.generation-jobs.json');
-  const WORKER_JOBS_FILE = path.resolve(rootDir, '.worker-jobs.json');
-  const WORKER_CHECKPOINTS_FILE = path.resolve(rootDir, '.worker-checkpoints.json');
-  const WORKER_DEAD_LETTER_FILE = path.resolve(rootDir, '.worker-dead-letter.json');
-  const WORKER_CHECKPOINT_OUTPUT_DIR = path.resolve(rootDir, '.worker-checkpoint-outputs');
+  const appRoot = path.resolve(rootDir);
+  const runtimeRoot = runtimeRootInput ? path.resolve(runtimeRootInput) : appRoot;
+  const storiesDir = storiesDirInput ? path.resolve(storiesDirInput) : path.join(runtimeRoot, 'generated-stories');
+  const JOBS_FILE = generationJobsFile || path.join(runtimeRoot, '.generation-jobs.json');
+  const WORKER_JOBS_FILE = workerJobsFile || path.join(runtimeRoot, '.worker-jobs.json');
+  const WORKER_CHECKPOINTS_FILE = workerCheckpointsFile || path.join(runtimeRoot, '.worker-checkpoints.json');
+  const WORKER_DEAD_LETTER_FILE = workerDeadLetterFile || path.join(runtimeRoot, '.worker-dead-letter.json');
+  const WORKER_CHECKPOINT_OUTPUT_DIR = workerCheckpointOutputDirInput
+    || path.join(runtimeRoot, '.worker-checkpoint-outputs');
 
   const jobsStore = cachedJsonStore(JOBS_FILE, 'generation-jobs');
   const workerJobsStore = cachedJsonStore(WORKER_JOBS_FILE, 'worker-jobs');
@@ -277,9 +303,21 @@ function createWorkerLifecycle({
 
   function resolveOutputDirectory(outputDirectory) {
     if (!outputDirectory || typeof outputDirectory !== 'string') return null;
-    return path.isAbsolute(outputDirectory)
-      ? outputDirectory
-      : path.resolve(rootDir, outputDirectory);
+    if (path.isAbsolute(outputDirectory)) return path.resolve(outputDirectory);
+    const normalized = outputDirectory.replace(/^\/+/, '');
+    if (normalized === 'generated' || normalized === './generated') {
+      return path.resolve(storiesDir);
+    }
+    const resolved = path.resolve(runtimeRoot, normalized);
+    const storiesRoot = path.resolve(storiesDir);
+    if (resolved === storiesRoot || resolved.startsWith(`${storiesRoot}${path.sep}`)) {
+      return resolved;
+    }
+    const legacy = path.resolve(appRoot, normalized);
+    if (legacy === storiesRoot || legacy.startsWith(`${storiesRoot}${path.sep}`)) {
+      return legacy;
+    }
+    return resolved;
   }
 
   function getOutputDirectoryFromJob(job, checkpoint) {
@@ -293,7 +331,7 @@ function createWorkerLifecycle({
   function computeImageStatsForOutputDirectory(outputDirectory) {
     const outputDirAbs = resolveOutputDirectory(outputDirectory);
     if (!outputDirAbs || !fs.existsSync(outputDirAbs)) return undefined;
-    const storiesRoot = path.resolve(rootDir, 'generated-stories');
+    const storiesRoot = path.resolve(storiesDir);
     const resolvedOutputDir = path.resolve(outputDirAbs);
     if (resolvedOutputDir !== storiesRoot && !resolvedOutputDir.startsWith(`${storiesRoot}${path.sep}`)) {
       return undefined;
@@ -708,29 +746,15 @@ function createWorkerLifecycle({
   }
 
   function startWorkerProcess(workerJob, payload) {
-    const runnerPath = path.resolve(rootDir, 'src/ai-agents/server/worker-runner.ts');
+    const runnerPath = path.resolve(appRoot, 'src/ai-agents/server/worker-runner.ts');
     const payloadPath = path.join(os.tmpdir(), `storyrpg-worker-${workerJob.id}.payload.json`);
     const resultPath = path.join(os.tmpdir(), `storyrpg-worker-${workerJob.id}.result.json`);
     fs.writeFileSync(payloadPath, JSON.stringify({ ...payload, externalJobId: workerJob.id, resultPath }, null, 2), 'utf8');
 
-    const proc = spawn('npx', [
-      'ts-node',
-      '-r',
-      'tsconfig-paths/register',
-      '--project',
-      'tsconfig.worker.json',
-      '--transpile-only',
-      runnerPath,
+    const proc = spawnTsNodeWorker({
+      appRootDir: appRoot,
+      entryScriptPath: runnerPath,
       payloadPath,
-    ], {
-      cwd: rootDir,
-      env: {
-        ...process.env,
-        FORCE_COLOR: '0',
-        TS_NODE_PREFER_TS_EXTS: 'true',
-        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
     });
     activeWorkers.set(workerJob.id, { proc, payloadPath, resultPath });
     upsertWorkerJob(workerJob.id, { status: 'running', pid: proc.pid, startedAt: new Date().toISOString() });
@@ -1046,6 +1070,7 @@ function createWorkerLifecycle({
     if (!payload || typeof payload !== 'object') return payload;
     const cfg = payload.config;
     if (!cfg || typeof cfg !== 'object') return payload;
+    normalizePipelineOutputDir(cfg, { storiesDir, runtimeRoot, appRoot });
     const agents = cfg.agents;
 
     const envAnthropicKey =

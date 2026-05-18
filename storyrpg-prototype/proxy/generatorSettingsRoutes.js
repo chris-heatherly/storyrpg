@@ -1,12 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 
-const SETTINGS_FILE = path.resolve(__dirname, '..', '.generator-settings.json');
+function resolveSettingsFile(options = {}) {
+  return options.settingsFile || path.resolve(__dirname, '..', '.generator-settings.json');
+}
 
-function loadSettings() {
+function loadSettings(settingsFile) {
   try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+    if (fs.existsSync(settingsFile)) {
+      return JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
     }
   } catch (err) {
     console.warn('[GeneratorSettings] Failed to load:', err.message);
@@ -14,9 +16,9 @@ function loadSettings() {
   return {};
 }
 
-function saveSettings(data) {
+function saveSettings(settingsFile, data) {
   try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    fs.writeFileSync(settingsFile, JSON.stringify(data, null, 2), 'utf-8');
     return true;
   } catch (err) {
     console.warn('[GeneratorSettings] Failed to save:', err.message);
@@ -24,10 +26,12 @@ function saveSettings(data) {
   }
 }
 
-function registerGeneratorSettingsRoutes(app) {
+function registerGeneratorSettingsRoutes(app, options = {}) {
+  const settingsFile = resolveSettingsFile(options);
+
   app.get('/generator-settings', (_req, res) => {
     try {
-      const settings = loadSettings();
+      const settings = loadSettings(settingsFile);
       res.json(settings);
     } catch (err) {
       console.error('[GeneratorSettings] Load error:', err);
@@ -41,7 +45,7 @@ function registerGeneratorSettingsRoutes(app) {
       if (!settings || typeof settings !== 'object') {
         return res.status(400).json({ error: 'Body must be a JSON object' });
       }
-      const ok = saveSettings(settings);
+      const ok = saveSettings(settingsFile, settings);
       if (!ok) {
         return res.status(500).json({ error: 'Failed to write settings file' });
       }
@@ -59,9 +63,9 @@ function registerGeneratorSettingsRoutes(app) {
       if (!patch || typeof patch !== 'object') {
         return res.status(400).json({ error: 'Body must be a JSON object' });
       }
-      const current = loadSettings();
+      const current = loadSettings(settingsFile);
       const merged = { ...current, ...patch };
-      const ok = saveSettings(merged);
+      const ok = saveSettings(settingsFile, merged);
       if (!ok) {
         return res.status(500).json({ error: 'Failed to write settings file' });
       }

@@ -14,15 +14,16 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
 const manifestModule = require('./storyManifest');
 const codec = require('./storyCodec');
+const { spawnTsNodeWorker } = require('./tsNodeSpawn');
 
-function registerImageFeedbackRoutes(app, { rootDir, storiesDir, cachedJsonStore }) {
+function registerImageFeedbackRoutes(app, { rootDir, storiesDir, feedbackFile, cachedJsonStore }) {
   if (!rootDir || !storiesDir || !cachedJsonStore) {
     throw new Error('registerImageFeedbackRoutes requires rootDir, storiesDir, and cachedJsonStore');
   }
-  const FEEDBACK_FILE = path.resolve(rootDir, '.image-feedback.json');
+  const appRoot = path.resolve(rootDir);
+  const FEEDBACK_FILE = feedbackFile || path.resolve(rootDir, '.image-feedback.json');
   const feedbackStore = cachedJsonStore(FEEDBACK_FILE, 'image-feedback');
 
   function loadFeedback() { return feedbackStore.get(); }
@@ -90,25 +91,16 @@ function registerImageFeedbackRoutes(app, { rootDir, storiesDir, cachedJsonStore
 
   function runRegenerationWorker(payload) {
     return new Promise((resolve, reject) => {
-      const runnerPath = path.resolve(rootDir, 'src/ai-agents/server/regenerate-image.ts');
+      const runnerPath = path.resolve(appRoot, 'src/ai-agents/server/regenerate-image.ts');
       const payloadPath = path.join(os.tmpdir(), `storyrpg-regenerate-${Date.now()}-${Math.random().toString(36).slice(2)}.payload.json`);
       const resultPath = path.join(os.tmpdir(), `storyrpg-regenerate-${Date.now()}-${Math.random().toString(36).slice(2)}.result.json`);
 
       fs.writeFileSync(payloadPath, JSON.stringify({ ...payload, resultPath }, null, 2), 'utf8');
 
-      const proc = spawn('npx', [
-        'ts-node',
-        '-r',
-        'tsconfig-paths/register',
-        '--project',
-        'tsconfig.worker.json',
-        '--transpile-only',
-        runnerPath,
+      const proc = spawnTsNodeWorker({
+        appRootDir: appRoot,
+        entryScriptPath: runnerPath,
         payloadPath,
-      ], {
-        cwd: rootDir,
-        env: { ...process.env, FORCE_COLOR: '0', TS_NODE_PREFER_TS_EXTS: 'true' },
-        stdio: ['ignore', 'pipe', 'pipe'],
       });
 
       let stderr = '';

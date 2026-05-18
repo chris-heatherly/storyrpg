@@ -54,6 +54,9 @@
     "react-native-svg": "15.12.1",
     "react-native-web": "^0.21.0",
     "sharp": "^0.34.5",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "~5.9.2",
     "zod": "^4.3.6",
     "zustand": "^5.0.10"
   },
@@ -72,9 +75,6 @@
     "path-browserify": "^1.0.1",
     "process": "^0.11.10",
     "stream-browserify": "^3.0.0",
-    "ts-node": "^10.9.2",
-    "tsconfig-paths": "^4.2.0",
-    "typescript": "~5.9.2",
     "typescript-eslint": "^8.58.2",
     "vitest": "^4.0.18"
   },

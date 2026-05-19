@@ -963,6 +963,12 @@ Do not use markdown code blocks around the JSON.
       }
     }
 
+    // 1c. FIX EMPTY VALUES
+    // LLM retries can occasionally omit a scalar value while keeping the key,
+    // e.g. {"episodeId":,"title":"..."}. Use null so agent-specific
+    // normalization/defaulting can repair the field without losing the object.
+    repaired = repaired.replace(/:\s*(?=[,}\]])/g, ':null');
+
     // 2. Remove trailing commas before ] or }
     repaired = repaired.replace(/,(\s*[}\]])/g, '$1');
 

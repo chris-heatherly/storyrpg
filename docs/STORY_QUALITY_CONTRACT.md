@@ -60,13 +60,13 @@ story and image-quality rules, not the old orchestration model.
 | Deprecated / Legacy Item | Replacement | Compatibility Policy | Status |
 |---|---|---|---|
 | `ParallelStoryPipeline` | `FullStoryPipeline` | No write or runtime path | Removed |
-| `EpisodePipeline` generation path | `FullStoryPipeline` | Removed from public barrels; stale class remains quarantined until direct legacy imports are deleted | In progress |
-| `ImageGenerator` as type container | `images/imageTypes.ts` | Internal imports now use the neutral module; legacy re-export remains for external compatibility | In progress |
+| `EpisodePipeline` generation path | `FullStoryPipeline` | Not exported from pipeline barrel; legacy file remains quarantined for deletion/migration cleanup | Quarantined |
+| `ImageGenerator` as type container | `images/imageTypes.ts` + `ImageAgentTeam` | Legacy re-export remains for external compatibility; active image generation is service/team driven | Compatibility |
 | Image prompt `compare` mode | `llm` default + deterministic fallback | Old env value normalizes to `llm`; production compare diagnostics removed | Removed |
 | Legacy flat `encounter.beats` | `encounter.phases[].beats` | Read-only fallback/migration for old stories | Planned |
-| `08-final-story.json` write mirror | `story.json` + manifest | Keep read fallback until scripts/proxy/upload migrate | Planned |
-| `useapi` provider slug | `midapi` | Normalize old settings at load; stop exposing as selectable | Planned |
-| Image-team coordinator scaffolds | Real storyboard-v2 / visual QA path | Delete unless wired into active path | Planned |
+| `08-final-story.json` as primary story file | `story.json` + `manifest.json` | `08-final-story.json` is still written as a legacy mirror; catalog reads manifest → story.json → legacy fallback | Compatibility |
+| `useapi` provider slug | `midapi` | Treat as historical; current provider selection uses `midapi` | Removed from current docs |
+| Image-team coordinator scaffolds | Real storyboard-v2 / visual QA path | Keep only if wired into `ImageAgentTeam`/visual checks; otherwise candidate cleanup | Review |
 
 ## Prompt Budget Rule
 

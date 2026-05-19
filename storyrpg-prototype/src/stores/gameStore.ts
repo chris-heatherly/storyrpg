@@ -504,8 +504,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.warn(`[GameStore] WARNING: Scene "${sceneId}" has NO beats with choices and no encounter!`);
     }
 
+    const firstEncounterBeatId = (scene.encounter as any)?.phases?.[0]?.beats?.[0]?.id;
+    const resolvedStartingBeatId = scene.startingBeatId || scene.beats?.[0]?.id || firstEncounterBeatId || '';
     setCurrentScene(scene);
-    setCurrentBeatId(scene.startingBeatId);
+    setCurrentBeatId(resolvedStartingBeatId);
 
     // Process pending delayed consequences on scene transition
     const firedButterflies: { description: string; consequence: Consequence }[] = [];

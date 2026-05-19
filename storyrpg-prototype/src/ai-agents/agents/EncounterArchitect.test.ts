@@ -91,7 +91,7 @@ describe('EncounterArchitect deterministic fallback', () => {
 
     const allText = JSON.stringify(fallback);
     expect(allText).toContain('Eros');
-    expect(allText).toContain('{{player.name}}');
+    expect(allText).toContain('Alex');
   });
 
   it('uses concrete phase-aware visual fallback actions instead of generic pressure reactions', () => {

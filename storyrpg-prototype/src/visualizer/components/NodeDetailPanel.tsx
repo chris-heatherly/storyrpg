@@ -8,8 +8,9 @@ import {
   Dimensions,
 } from 'react-native';
 import { GraphNode, VISUALIZER_COLORS } from '../types';
+import type { ChoiceSystemChoiceSummary, SyntheticGraphNodeData, VisualizerMode } from '../types';
 import { Beat, EncounterPhase } from '../../types';
-import { TERMINAL, createBoxTop, createBoxBottom, createDivider } from '../../theme';
+import { TERMINAL } from '../../theme';
 import { useSettingsStore } from '../../stores/settingsStore';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -17,50 +18,27 @@ const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 interface NodeDetailPanelProps {
   node: GraphNode | null;
   onClose: () => void;
+  mode: VisualizerMode;
+  selectedNpcId: string | null;
 }
 
-export const NodeDetailPanel: React.FC<NodeDetailPanelProps> = ({ node, onClose }) => {
+export const NodeDetailPanel: React.FC<NodeDetailPanelProps> = ({ node, onClose, mode, selectedNpcId }) => {
   const fonts = useSettingsStore((state) => state.getFontSizes());
 
   if (!node) return null;
 
   return (
     <View style={styles.container}>
-      {/* Header Border */}
-      <Text style={[styles.borderText, { fontSize: 10 }]} numberOfLines={1}>
-        {createBoxTop(60)}
-      </Text>
-
-      {/* Title Row */}
       <View style={styles.titleRow}>
-        <Text style={[styles.typeLabel, { fontSize: fonts.small }]}>
-          {TERMINAL.symbols.prompt} NODE.TYPE::{node.type.toUpperCase()}
+        <Text style={[styles.title, { fontSize: fonts.medium }]} numberOfLines={1}>
+          {node.label.toUpperCase()}
         </Text>
         <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-          <Text style={[styles.closeButtonText, { fontSize: fonts.medium }]}>[CLOSE_X]</Text>
+          <Text style={[styles.closeButtonText, { fontSize: fonts.small }]}>CLOSE</Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.labelRow}>
-        <Text style={[styles.title, { fontSize: fonts.large }]}>
-          {node.label.toUpperCase()}
-        </Text>
-      </View>
-
-      <Text style={[styles.divider, { fontSize: 10 }]} numberOfLines={1}>
-        {createDivider(60)}
-      </Text>
-
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {node.sublabel && (
-          <View style={styles.sublabelContainer}>
-            <Text style={[styles.sublabel, { fontSize: fonts.small }]}>
-              {TERMINAL.symbols.bullet} SUB_LABEL: {node.sublabel}
-            </Text>
-          </View>
-        )}
-
-        {/* Indicators Section */}
         {(node.hasStatCheck || node.hasConditions || node.hasConsequences) && (
           <View style={styles.indicators}>
             {node.hasStatCheck && (
@@ -81,101 +59,116 @@ export const NodeDetailPanel: React.FC<NodeDetailPanelProps> = ({ node, onClose 
           </View>
         )}
 
-        {/* Node-specific content */}
         <View style={styles.dataContainer}>
-          {node.type === 'beat' && renderBeatDetails(node.data as Beat, fonts)}
-          {node.type === 'phase' && renderPhaseDetails(node.data as EncounterPhase, fonts)}
-        </View>
-
-        {/* Metadata Section */}
-        <View style={styles.debugSection}>
-          <Text style={[styles.sectionHeader, { fontSize: 9 }]}>:: SYSTEM_METADATA ::</Text>
-          <View style={styles.debugGrid}>
-            <View style={styles.debugItem}>
-              <Text style={[styles.debugLabel, { fontSize: 9 }]}>ID:</Text>
-              <Text style={[styles.debugValue, { fontSize: 9 }]}>{node.id}</Text>
-            </View>
-            {node.sceneId && (
-              <View style={styles.debugItem}>
-                <Text style={[styles.debugLabel, { fontSize: 9 }]}>SCENE:</Text>
-                <Text style={[styles.debugValue, { fontSize: 9 }]}>{node.sceneId}</Text>
-              </View>
-            )}
-            {node.episodeId && (
-              <View style={styles.debugItem}>
-                <Text style={[styles.debugLabel, { fontSize: 9 }]}>EPISODE:</Text>
-                <Text style={[styles.debugValue, { fontSize: 9 }]}>{node.episodeId}</Text>
-              </View>
-            )}
-          </View>
+          {node.type === 'beat' && renderBeatDetails(node.data as Beat, fonts, node.choiceSystem?.choices ?? [], mode, selectedNpcId)}
+          {node.type === 'phase' && renderPhaseDetails(node.data as EncounterPhase, fonts, mode)}
+          {node.synthetic && renderSyntheticDetails(node.synthetic, fonts, mode)}
         </View>
       </ScrollView>
-
-      {/* Footer Border */}
-      <Text style={[styles.borderText, { fontSize: 10 }]} numberOfLines={1}>
-        {createBoxBottom(60)}
-      </Text>
     </View>
   );
 };
 
-function renderBeatDetails(beat: Beat, fonts: any) {
+function renderBeatDetails(
+  beat: Beat,
+  fonts: any,
+  choiceSummaries: ChoiceSystemChoiceSummary[],
+  mode: VisualizerMode,
+  selectedNpcId: string | null,
+) {
   return (
     <View style={styles.detailSection}>
-      <Text style={[styles.sectionLabel, { fontSize: fonts.small }]}>[CONTENT_STREAM]</Text>
       <View style={styles.textBubble}>
         <Text style={[styles.beatText, { fontSize: fonts.medium }]}>
           {beat.text}
         </Text>
       </View>
 
-      {beat.speaker && (
-        <View style={styles.metaRow}>
-          <Text style={[styles.metaLabel, { fontSize: fonts.small }]}>SOURCE:</Text>
-          <Text style={[styles.metaValue, { fontSize: fonts.small }]}>{beat.speaker.toUpperCase()}</Text>
-          {beat.speakerMood && (
-            <Text style={[styles.metaMuted, { fontSize: fonts.small }]}>[{beat.speakerMood.toUpperCase()}]</Text>
-          )}
-        </View>
-      )}
-
       {beat.choices && beat.choices.length > 0 && (
         <View style={styles.subSection}>
-          <Text style={[styles.sectionLabel, { fontSize: fonts.small }]}>[OUTPUT_VECTORS]</Text>
           {beat.choices.map((choice, index) => (
             <View key={choice.id} style={styles.choiceRow}>
               <Text style={[styles.choiceIndex, { fontSize: fonts.small }]}>{index + 1}.</Text>
               <View style={styles.choiceBody}>
                 <Text style={[styles.choiceText, { fontSize: fonts.small }]}>{choice.text.toUpperCase()}</Text>
-                <View style={styles.choiceBadges}>
-                  <Text style={[styles.choiceType, { fontSize: 9 }]}>TYPE::{choice.choiceType?.toUpperCase() || 'STANDARD'}</Text>
-                  {choice.statCheck && (
-                    <Text style={[styles.choiceStat, { fontSize: 9 }]}>
-                      CHECK::{choice.statCheck.attribute?.toUpperCase() || choice.statCheck.skill?.toUpperCase()}::{choice.statCheck.difficulty}
-                    </Text>
-                  )}
-                  {choice.nextBeatId && (
-                    <Text style={[styles.choiceLink, { fontSize: 9 }]}>GOTO::{choice.nextBeatId}</Text>
-                  )}
-                </View>
+                {renderChoiceSystem(choiceSummaries.find((summary) => summary.id === choice.id), mode, selectedNpcId)}
               </View>
             </View>
           ))}
-        </View>
-      )}
-
-      {(beat.nextBeatId || beat.nextSceneId) && !beat.choices?.length && (
-        <View style={styles.subSection}>
-          <Text style={[styles.sectionLabel, { fontSize: fonts.small }]}>[AUTO_NAV]</Text>
-          {beat.nextBeatId && <Text style={[styles.navLink, { fontSize: fonts.small }]}>NEXT_BEAT {'>>'} {beat.nextBeatId}</Text>}
-          {beat.nextSceneId && <Text style={[styles.navLink, { fontSize: fonts.small }]}>NEXT_SCENE {'>>'} {beat.nextSceneId}</Text>}
         </View>
       )}
     </View>
   );
 }
 
-function renderPhaseDetails(phase: EncounterPhase, fonts: any) {
+function renderChoiceSystem(
+  summary: ChoiceSystemChoiceSummary | undefined,
+  mode: VisualizerMode,
+  selectedNpcId: string | null,
+) {
+  if (!summary) return null;
+
+  const visibleConditions = selectedNpcId
+    ? summary.conditions.filter((item) => !item.npcId || item.npcId === selectedNpcId)
+    : summary.conditions;
+  const visibleEffects = selectedNpcId
+    ? summary.effects.filter((item) => !item.npcId || item.npcId === selectedNpcId)
+    : summary.effects;
+
+  return (
+    <View style={styles.choiceSystemBlock}>
+      <View style={styles.choiceBadges}>
+        {summary.route.isMeaningfulBranch && (
+          <Text style={[styles.choiceLink, { fontSize: 9 }]}>
+            {mode === 'author' ? summary.route.authorLabel : summary.route.playerLabel}
+          </Text>
+        )}
+        {summary.route.isMeaningfulBranch && (
+          <Text style={[styles.choiceBranch, { fontSize: 9 }]}>
+            {mode === 'author' ? 'HARD_BRANCH' : 'PATH'}
+          </Text>
+        )}
+      </View>
+
+      {visibleConditions.length > 0 && (
+        <View style={styles.systemList}>
+          <Text style={[styles.systemListLabel, { fontSize: 9 }]}>
+            {mode === 'author' ? 'GATES' : 'OPENS WHEN'}
+          </Text>
+          {visibleConditions.map((condition, index) => (
+            <Text key={`${summary.id}-condition-${index}`} style={[styles.systemListItem, { fontSize: 9 }]}>
+              {mode === 'author' ? condition.authorLabel : condition.playerLabel}
+            </Text>
+          ))}
+        </View>
+      )}
+
+      {summary.check && (
+        <View style={styles.systemList}>
+          <Text style={[styles.systemListLabel, { fontSize: 9 }]}>
+            {mode === 'author' ? 'CHECK' : 'PRESSURE'}
+          </Text>
+          <Text style={[styles.systemListItem, { fontSize: 9 }]}>
+            {mode === 'author' ? summary.check.authorLabel : summary.check.playerLabel}
+          </Text>
+        </View>
+      )}
+
+      {visibleEffects.length > 0 && (
+        <View style={styles.systemList}>
+          <Text style={[styles.systemListLabel, { fontSize: 9 }]}>
+            {mode === 'author' ? 'EFFECTS' : 'AFTERMATH'}
+          </Text>
+          <Text style={[styles.systemListItem, { fontSize: 9 }]}>
+            {visibleEffects.map((effect) => mode === 'author' ? effect.authorLabel : effect.playerLabel).join(', ')}
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+function renderPhaseDetails(phase: EncounterPhase, fonts: any, mode: VisualizerMode) {
   return (
     <View style={styles.detailSection}>
       <Text style={[styles.sectionLabel, { fontSize: fonts.small }]}>[PHASE_DATA]</Text>
@@ -184,16 +177,91 @@ function renderPhaseDetails(phase: EncounterPhase, fonts: any) {
       
       <View style={styles.phaseStats}>
         <View style={styles.phaseStatItem}>
-          <Text style={[styles.metaLabel, { fontSize: 9 }]}>SUCCESS_MIN:</Text>
-          <Text style={[styles.metaValue, { fontSize: 9, color: '#33cc33' }]}>{phase.successThreshold}</Text>
+          <Text style={[styles.metaLabel, { fontSize: 9 }]}>{mode === 'author' ? 'SUCCESS_MIN:' : 'SUCCESS:'}</Text>
+          <Text style={[styles.metaValue, { fontSize: 9, color: '#33cc33' }]}>
+            {mode === 'author' ? phase.successThreshold : 'possible'}
+          </Text>
         </View>
         <View style={styles.phaseStatItem}>
-          <Text style={[styles.metaLabel, { fontSize: 9 }]}>FAILURE_MAX:</Text>
-          <Text style={[styles.metaValue, { fontSize: 9, color: '#cc3333' }]}>{phase.failureThreshold}</Text>
+          <Text style={[styles.metaLabel, { fontSize: 9 }]}>{mode === 'author' ? 'FAILURE_MAX:' : 'FAILURE:'}</Text>
+          <Text style={[styles.metaValue, { fontSize: 9, color: '#cc3333' }]}>
+            {mode === 'author' ? phase.failureThreshold : 'possible'}
+          </Text>
         </View>
       </View>
     </View>
   );
+}
+
+function renderSyntheticDetails(data: SyntheticGraphNodeData, fonts: any, mode: VisualizerMode) {
+  return (
+    <View style={styles.detailSection}>
+      <Text style={[styles.sectionLabel, { fontSize: fonts.small }]}>
+        [{data.kind.toUpperCase().replace('-', '_')}]
+      </Text>
+      <Text style={[styles.systemSummary, { fontSize: fonts.medium }]}>
+        {mode === 'author' ? data.authorLabel : data.playerLabel}
+      </Text>
+
+      {data.text && (
+        <View style={styles.textBubble}>
+          <Text style={[styles.beatText, { fontSize: fonts.small }]}>
+            {data.text}
+          </Text>
+        </View>
+      )}
+
+      <View style={styles.systemList}>
+        {mode === 'author' ? (
+          <>
+            {data.flag && <Text style={[styles.systemListItem, { fontSize: 9 }]}>FLAG::{data.flag}</Text>}
+            {data.hookId && <Text style={[styles.systemListItem, { fontSize: 9 }]}>HOOK::{data.hookId}</Text>}
+            {data.sourceChoiceId && <Text style={[styles.systemListItem, { fontSize: 9 }]}>SOURCE_CHOICE::{data.sourceChoiceId}</Text>}
+            {data.sourceBeatId && <Text style={[styles.systemListItem, { fontSize: 9 }]}>SOURCE_BEAT::{data.sourceBeatId}</Text>}
+            {data.targetBeatId && <Text style={[styles.systemListItem, { fontSize: 9 }]}>TARGET_BEAT::{data.targetBeatId}</Text>}
+            {data.targetSceneId && <Text style={[styles.systemListItem, { fontSize: 9 }]}>TARGET_SCENE::{data.targetSceneId}</Text>}
+            {data.outcome && <Text style={[styles.systemListItem, { fontSize: 9 }]}>OUTCOME::{data.outcome}</Text>}
+            {data.tier && <Text style={[styles.systemListItem, { fontSize: 9 }]}>TIER::{data.tier}</Text>}
+          </>
+        ) : (
+          <Text style={[styles.systemListItem, { fontSize: 9 }]}>
+            {getSyntheticPlayerHint(data.kind)}
+          </Text>
+        )}
+      </View>
+
+      {mode === 'author' && data.details && data.details.length > 0 && (
+        <View style={styles.systemList}>
+          <Text style={[styles.systemListLabel, { fontSize: 9 }]}>DETAILS</Text>
+          {data.details.map((detail, index) => (
+            <Text key={`${data.id}-detail-${index}`} style={[styles.systemListItem, { fontSize: 9 }]}>
+              {detail}
+            </Text>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function getSyntheticPlayerHint(kind: SyntheticGraphNodeData['kind']): string {
+  switch (kind) {
+    case 'tint':
+      return 'A tone choice has been planted for later scenes.';
+    case 'tint-payoff':
+      return 'This moment changes because of an earlier tone choice.';
+    case 'branchlet':
+      return 'This is a short detour that lets the choice breathe before the main path continues.';
+    case 'storylet':
+    case 'storylet-beat':
+      return 'This belongs to the aftermath sequence after an encounter outcome.';
+    case 'callback-source':
+      return 'This is a memory the story can bring back later.';
+    case 'callback-payoff':
+      return 'This moment pays off a memory from earlier play.';
+    default:
+      return 'This node explains hidden story residue.';
+  }
 }
 
 const styles = StyleSheet.create({
@@ -202,20 +270,19 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    maxHeight: SCREEN_HEIGHT * 0.5,
+    maxHeight: SCREEN_HEIGHT * 0.28,
     backgroundColor: TERMINAL.colors.bg,
-    paddingHorizontal: 12,
-  },
-  borderText: {
-    fontFamily: TERMINAL.fonts.mono,
-    color: TERMINAL.colors.bgHighlight,
-    lineHeight: 12,
+    borderTopWidth: 1,
+    borderTopColor: TERMINAL.colors.bgHighlight,
+    paddingHorizontal: 10,
+    paddingTop: 6,
+    paddingBottom: 8,
   },
   titleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingBottom: 6,
   },
   typeLabel: {
     fontFamily: TERMINAL.fonts.mono,
@@ -223,8 +290,8 @@ const styles = StyleSheet.create({
   },
   closeButton: {
     backgroundColor: TERMINAL.colors.bgHighlight,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingHorizontal: 7,
+    paddingVertical: 1,
     borderWidth: 1,
     borderColor: TERMINAL.colors.border,
   },
@@ -232,33 +299,20 @@ const styles = StyleSheet.create({
     fontFamily: TERMINAL.fonts.mono,
     color: TERMINAL.colors.error,
   },
-  labelRow: {
-    paddingVertical: 4,
-  },
   title: {
     fontFamily: TERMINAL.fonts.mono,
     fontWeight: 'bold',
     color: TERMINAL.colors.primary,
-  },
-  divider: {
-    fontFamily: TERMINAL.fonts.mono,
-    color: TERMINAL.colors.bgHighlight,
-    marginVertical: 4,
+    flex: 1,
+    paddingRight: 12,
   },
   content: {
-    flex: 1,
-  },
-  sublabelContainer: {
-    marginBottom: 8,
-  },
-  sublabel: {
-    fontFamily: TERMINAL.fonts.mono,
-    color: TERMINAL.colors.muted,
+    maxHeight: SCREEN_HEIGHT * 0.2,
   },
   indicators: {
     flexDirection: 'row',
     gap: 8,
-    marginBottom: 12,
+    marginBottom: 6,
   },
   badge: {
     borderWidth: 1,
@@ -270,10 +324,10 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   dataContainer: {
-    marginBottom: 12,
+    marginBottom: 0,
   },
   detailSection: {
-    gap: 12,
+    gap: 8,
   },
   sectionLabel: {
     fontFamily: TERMINAL.fonts.mono,
@@ -281,14 +335,14 @@ const styles = StyleSheet.create({
   },
   textBubble: {
     backgroundColor: 'rgba(51, 255, 51, 0.05)',
-    padding: 10,
+    padding: 8,
     borderLeftWidth: 2,
     borderLeftColor: TERMINAL.colors.primaryDim,
   },
   beatText: {
     fontFamily: TERMINAL.fonts.mono,
     color: TERMINAL.colors.primaryBright,
-    lineHeight: 20,
+    lineHeight: 18,
   },
   metaRow: {
     flexDirection: 'row',
@@ -308,13 +362,13 @@ const styles = StyleSheet.create({
     color: TERMINAL.colors.muted,
   },
   subSection: {
-    marginTop: 8,
-    gap: 8,
+    marginTop: 2,
+    gap: 4,
   },
   choiceRow: {
     flexDirection: 'row',
     gap: 8,
-    marginBottom: 6,
+    marginBottom: 4,
   },
   choiceIndex: {
     fontFamily: TERMINAL.fonts.mono,
@@ -327,7 +381,7 @@ const styles = StyleSheet.create({
   choiceText: {
     fontFamily: TERMINAL.fonts.mono,
     color: TERMINAL.colors.primary,
-    marginBottom: 4,
+    marginBottom: 2,
   },
   choiceBadges: {
     flexDirection: 'row',
@@ -345,6 +399,31 @@ const styles = StyleSheet.create({
   choiceLink: {
     fontFamily: TERMINAL.fonts.mono,
     color: TERMINAL.colors.cyan,
+  },
+  choiceBranch: {
+    fontFamily: TERMINAL.fonts.mono,
+    color: VISUALIZER_COLORS.indicators.branching,
+  },
+  choiceSystemBlock: {
+    gap: 3,
+  },
+  systemSummary: {
+    fontFamily: TERMINAL.fonts.mono,
+    color: TERMINAL.colors.primaryDim,
+    lineHeight: 14,
+  },
+  systemList: {
+    gap: 2,
+  },
+  systemListLabel: {
+    fontFamily: TERMINAL.fonts.mono,
+    color: TERMINAL.colors.amber,
+    fontWeight: 'bold',
+  },
+  systemListItem: {
+    fontFamily: TERMINAL.fonts.mono,
+    color: TERMINAL.colors.muted,
+    lineHeight: 13,
   },
   navLink: {
     fontFamily: TERMINAL.fonts.mono,

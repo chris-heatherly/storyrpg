@@ -181,8 +181,9 @@ flowchart TD
         O1[Convert generated artifacts to runtime Story model]
         O2[SavingPhase / pipelineOutputWriter]
         O3[Write generated-stories story directory]
-        O4[08-final-story.json]
-        O5[Images, audio, video, manifests, prompts, reports]
+        O4[story.json primary package]
+        O4b[08-final-story.json legacy mirror]
+        O5[Images, audio, video, manifest, prompts, reports]
         O6[Tier 1 asset HTTP validation]
         O7[storyPathAnalyzer coverage plan]
         O8[Tier 2 Playwright multi-path QA]
@@ -198,6 +199,7 @@ flowchart TD
     O1 --> O2
     O2 --> O3
     O3 --> O4
+    O3 --> O4b
     O3 --> O5
     O4 --> O6
     O5 --> O6
@@ -206,6 +208,7 @@ flowchart TD
     O8 --> O9
     O9 -- yes --> O10
     O10 --> O4
+    O10 --> O4b
     O10 --> O8
     O9 -- no --> O11
 

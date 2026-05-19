@@ -1,6 +1,6 @@
 # Story Pipeline Prompting
 
-**Last Updated:** April 2026
+**Last Updated:** May 2026
 
 This document captures the live prompting logic currently wired into the StoryRPG narrative pipeline.
 
@@ -35,8 +35,9 @@ and visual QA/regeneration live in `docs/IMAGE_PIPELINE_RUNTIME.md`.
 
 ### Analysis / planning path
 
-1. `SourceMaterialAnalyzer`
-2. `SeasonPlannerAgent`
+1. `SourceMaterialAnalyzer` for source-document/IP analysis.
+2. `SeasonPlannerAgent` for season plans and 3-act / 7-point distribution.
+3. `SevenPointCoverageValidator` as deterministic repair feedback for season plans.
 
 ### Story generation path
 
@@ -56,7 +57,10 @@ and visual QA/regeneration live in `docs/IMAGE_PIPELINE_RUNTIME.md`.
     - `ContinuityChecker`, `VoiceValidator`, `StakesAnalyzer`
     - `PixarPrinciplesValidator`, `CliffhangerValidator`, `ChoiceDistributionValidator`
     - `SetupPayoffValidator`, `TwistQualityValidator`, `ArcDeltaValidator`, `DivergenceValidator` (path-simulator-backed)
-12. Optional rewrite pass: `SceneCritic` (Phase 9) — runs only when `config.sceneCritic.enabled === true`; capped by `maxScenesPerEpisode` and (optionally) `voiceScoreThreshold`. Preserves beat ids, speakers, plot-point markers; rewrites only prose text / variants / speakerMood.
+12. Optional rewrite pass: `SceneCritic` — runs only when `config.sceneCritic.enabled === true`; capped by `maxScenesPerEpisode` and (optionally) `voiceScoreThreshold`. Preserves beat ids, speakers, plot-point markers; rewrites only prose text / variants / speakerMood.
+
+`EpisodePipeline.ts` is not part of the active prompt path; all active calls flow
+through `FullStoryPipeline.ts`.
 
 ## Prompt Assembly Logic
 

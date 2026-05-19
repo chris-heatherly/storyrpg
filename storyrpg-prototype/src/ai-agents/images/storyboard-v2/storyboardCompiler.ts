@@ -1,7 +1,7 @@
 import type { SceneContent } from '../../agents/SceneWriter';
 import type { CharacterBible } from '../../agents/CharacterDesigner';
 import type { EncounterStructure } from '../../agents/EncounterArchitect';
-import type { NarrativeSequenceIntent } from '../../../types';
+import type { BeatCoveragePlan, NarrativeSequenceIntent, SceneVisualSequencePlan } from '../../../types';
 import { getEncounterBeats } from '../../utils/encounterImageCoverage';
 import { CharacterIdResolver, type CharacterResolutionResult } from './characterIdResolver';
 
@@ -50,6 +50,7 @@ export interface StoryboardPanelSlot {
   characterResolutionWarnings?: string[];
   sequenceIndex?: number;
   sequenceIntent?: NarrativeSequenceIntent;
+  coveragePlan?: BeatCoveragePlan;
 }
 
 export interface StoryboardScenePacket {
@@ -59,6 +60,7 @@ export interface StoryboardScenePacket {
   setting?: string;
   mood?: string;
   sequenceIntent?: NarrativeSequenceIntent;
+  sceneVisualSequencePlan?: SceneVisualSequencePlan;
   characters: StoryboardCharacter[];
   panels: StoryboardPanelSlot[];
   diagnostics?: {
@@ -236,6 +238,99 @@ function visualContractFields(source: any): Partial<StoryboardPanelSlot> {
   };
 }
 
+const REPAIR_CAMERA_SIDES = ['front-left', 'side-profile', 'front-right', 'over-shoulder', 'high-side', 'low-side'];
+const REPAIR_CAMERA_ANGLES = ['eye-level', 'high angle', 'low angle', 'overhead', 'dutch angle', 'ground-level'];
+
+function panelText(panel: StoryboardPanelSlot): string {
+  return [
+    panel.narrativeText,
+    panel.visualMoment,
+    panel.primaryAction,
+    panel.emotionalRead,
+    panel.relationshipDynamic,
+    panel.mustShowDetail,
+    panel.visibleCost,
+    panel.visualNarrative,
+    panel.label,
+  ].map(normalize).filter(Boolean).join(' ');
+}
+
+function inferRepairedStagingPattern(panel: StoryboardPanelSlot, index: number, total: number): BeatCoveragePlan['stagingPattern'] {
+  const text = panelText(panel);
+  if (index === 0 || /\b(arrive|enter|room|street|city|apartment|park|club|landscape|establish)\b/i.test(text)) return 'environment';
+  if (/\b(clue|detail|object|letter|key|ring|phone|screen|map|knife|cup|wound|blood|hand|door|scarf|pendant|journal)\b/i.test(text)) return 'insert';
+  if ((panel.visibleCharacterIds || []).length >= 3) return 'ensemble';
+  if ((panel.visibleCharacterIds || []).length === 2) return 'two-shot';
+  if (index >= total - 1 || /\b(aftermath|settle|recover|quiet|relief)\b/i.test(text)) return 'environmental-aftermath';
+  if (/\b(realizes?|reveals?|turns?|changes?|refuses?|chooses?|breaks?|discovers?)\b/i.test(text)) return 'solo-reaction';
+  return 'single';
+}
+
+function inferRepairedShotDistance(panel: StoryboardPanelSlot, index: number, total: number): BeatCoveragePlan['shotDistance'] {
+  const text = panelText(panel);
+  if (index === 0) return 'LS';
+  if (index >= total - 1) return 'LS';
+  if (/\b(clue|detail|object|hand|eyes|mouth|wound|blood|scarf|pendant|journal)\b/i.test(text)) return 'CU';
+  if (/\b(realizes?|shock|fear|hurt|longing|anger|smiles?|stares?)\b/i.test(text)) return 'MCU';
+  return index % 2 === 0 ? 'MLS' : 'MS';
+}
+
+function repairMissingCoveragePlans(packet: StoryboardScenePacket): number {
+  let repaired = 0;
+  const storyBeatPanels = packet.panels.filter((panel) => panel.family === 'story-beat');
+  storyBeatPanels.forEach((panel, index) => {
+    if (panel.coveragePlan) return;
+    const sequenceIntent = {
+      ...(packet.sequenceIntent || {}),
+      ...(panel.sequenceIntent || {}),
+      objective: panel.sequenceIntent?.objective || packet.sequenceIntent?.objective || packet.sceneVisualSequencePlan?.objective,
+      activity: panel.sequenceIntent?.activity || packet.sequenceIntent?.activity || packet.sceneVisualSequencePlan?.activity,
+      obstacle: panel.sequenceIntent?.obstacle || packet.sequenceIntent?.obstacle || packet.sceneVisualSequencePlan?.obstacle,
+      visualThread: panel.sequenceIntent?.visualThread
+        || packet.sequenceIntent?.visualThread
+        || packet.sceneVisualSequencePlan?.visualThread
+        || panel.mustShowDetail
+        || panel.relationshipDynamic
+        || 'the visible distance, gaze, posture, and object control across the scene',
+      turningPoint: panel.sequenceIntent?.turningPoint || packet.sequenceIntent?.turningPoint || packet.sceneVisualSequencePlan?.turningPoint,
+      endState: panel.sequenceIntent?.endState || packet.sequenceIntent?.endState || packet.sceneVisualSequencePlan?.endState,
+      beatRole: panel.sequenceIntent?.beatRole
+        || (index === 0 ? 'setup' : index >= storyBeatPanels.length - 1 ? 'handoff' : index >= Math.floor(storyBeatPanels.length / 2) ? 'turn' : 'pressure'),
+    };
+    const requiredVisibleCharacterIds = Array.from(new Set(panel.visibleCharacterIds || []));
+    panel.sequenceIntent = sequenceIntent;
+    panel.coveragePlan = {
+      stagingPattern: inferRepairedStagingPattern(panel, index, storyBeatPanels.length),
+      shotDistance: inferRepairedShotDistance(panel, index, storyBeatPanels.length),
+      cameraAngle: REPAIR_CAMERA_ANGLES[index % REPAIR_CAMERA_ANGLES.length],
+      cameraSide: REPAIR_CAMERA_SIDES[index % REPAIR_CAMERA_SIDES.length],
+      focalCharacterIds: requiredVisibleCharacterIds.slice(0, 1),
+      requiredVisibleCharacterIds,
+      optionalVisibleCharacterIds: [],
+      offscreenCharacterIds: packet.characters
+        .map((character) => character.id)
+        .filter((id) => !requiredVisibleCharacterIds.includes(id)),
+      relationshipBlocking: panel.relationshipDynamic
+        || `${sequenceIntent.visualThread}; show the visible change in leverage, attention, distance, or object control.`,
+      coverageReason: `Repaired storyboard-v2 coverage plan for ${sequenceIntent.beatRole} beat: ${panel.visualMoment || panel.primaryAction || panel.narrativeText}`,
+      visualContinuity: {
+        mode: sequenceIntent.beatRole === 'turn' ? 'preserve_scene_axis' : 'fresh_composition',
+        reason: `Coverage repair preserves ${sequenceIntent.visualThread} while maintaining shot variety.`,
+        preserve: ['environment', 'lighting'],
+      },
+    };
+    repaired += 1;
+  });
+  if (repaired > 0) {
+    packet.diagnostics = packet.diagnostics || { unresolvedCharacterIds: [], warnings: [] };
+    packet.diagnostics.warnings = Array.from(new Set([
+      ...(packet.diagnostics.warnings || []),
+      `Repaired ${repaired} missing story-beat coveragePlan(s) before storyboard prompt audit.`,
+    ]));
+  }
+  return repaired;
+}
+
 function collectEncounterChoicePanels(params: {
   panels: StoryboardPanelSlot[];
   choices: Array<{ id: string; text?: string; outcomes?: Record<string, any> }>;
@@ -382,7 +477,9 @@ export function compileStoryboardScenePacket(params: {
       primaryAction: beat.primaryAction,
       emotionalRead: beat.emotionalRead,
       mustShowDetail: beat.mustShowDetail,
+      relationshipDynamic: beat.relationshipDynamic,
       sequenceIntent: (beat as any).sequenceIntent || (scene as any).sequenceIntent,
+      coveragePlan: beat.coveragePlan,
       ...panelCharacterFields(characterResolution),
     });
   }
@@ -458,22 +555,19 @@ export function compileStoryboardScenePacket(params: {
     }
   }
 
-  panels.forEach((panel, index) => {
-    panel.sequenceIndex = index + 1;
-  });
-
   const packetCharacterIds = Array.from(new Set([
     ...sceneCharacterIds,
     ...panels.flatMap((panel) => panel.visibleCharacterIds),
   ]));
 
-  return {
+  const packet: StoryboardScenePacket = {
     sceneId: scene.sceneId,
     scopedSceneId,
     sceneName: scene.sceneName,
     setting: normalize((scene.settingContext as any)?.description),
     mood: Array.isArray(scene.moodProgression) ? scene.moodProgression.join(' -> ') : undefined,
     sequenceIntent: (scene as any).sequenceIntent || encounter?.storyboard?.sequenceIntent,
+    sceneVisualSequencePlan: (scene as any).sceneVisualSequencePlan,
     characters: characterSummary(characterBible, packetCharacterIds),
     panels,
     diagnostics: {
@@ -487,4 +581,9 @@ export function compileStoryboardScenePacket(params: {
       ])),
     },
   };
+  repairMissingCoveragePlans(packet);
+  packet.panels.forEach((panel, index) => {
+    panel.sequenceIndex = index + 1;
+  });
+  return packet;
 }

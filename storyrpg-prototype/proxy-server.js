@@ -36,6 +36,7 @@ const { createWorkerLifecycle } = require('./proxy/workerLifecycle');
 const { registerGenerationJobRoutes } = require('./proxy/generationJobRoutes');
 const { createRuntimeLayout } = require('./proxy/runtimePaths');
 const { getStoryStorageMode, getGcsBucketName, getGcsPublicBaseUrl, mapProxyPathToGcsObjectPath } = require('./proxy/gcsConfig');
+const { resolveGeneratedStoryAssetFallback } = require('./proxy/generatedStoryAssetFallback');
 
 require('dotenv').config();
 
@@ -90,10 +91,14 @@ app.use('/generated-stories', (req, res, next) => {
   }
 
   const filePathWithinDir = req.path;
-  const fullPath = path.join(STORIES_DIR, filePathWithinDir);
+  let fullPath = path.join(STORIES_DIR, filePathWithinDir);
 
   if (!fs.existsSync(fullPath)) {
-    return res.status(404).send('File not found');
+    const fallbackPath = resolveGeneratedStoryAssetFallback(STORIES_DIR, filePathWithinDir);
+    if (!fallbackPath) {
+      return res.status(404).send('File not found');
+    }
+    fullPath = fallbackPath;
   }
 
   let contentType = 'application/octet-stream';

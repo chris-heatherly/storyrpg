@@ -14,6 +14,233 @@ function createWriter(): SceneWriter {
 }
 
 describe('SceneWriter structural guards', () => {
+  const preEncounterInput = {
+    sceneBlueprint: {
+      id: 'scene-3b',
+      name: 'Underground Club Scene',
+      description: 'Carmen takes Lena to the deeper supernatural nightlife scene.',
+      location: 'loc-underground-club',
+      mood: 'intoxicating',
+      purpose: 'branch',
+      narrativeFunction: 'Introduces Mika and the more dangerous edge of Bucharest nightlife.',
+      dramaticQuestion: 'Who in this room knows Lena before she knows them?',
+      wantVsNeed: 'Belong in the city vs understand its danger',
+      conflictEngine: 'Mika knows more about Lena than Lena knows about Mika.',
+      npcsPresent: ['char-mika'],
+      keyBeats: [
+        'Mika approaches with knowing eyes',
+        'Mika offers cryptic advice about being careful who you trust',
+      ],
+      leadsTo: ['scene-4'],
+    },
+    storyContext: {
+      title: 'Bite Me',
+      genre: 'paranormal romance',
+      tone: 'sumptuous and dangerous',
+      worldContext: 'Modern Bucharest nightlife.',
+    },
+    protagonistInfo: {
+      name: 'Lena',
+      pronouns: 'she/her',
+      description: 'An American food writer starting over.',
+    },
+    npcs: [],
+    targetBeatCount: 5,
+    dialogueHeavy: true,
+    nextSceneContext: {
+      id: 'scene-4',
+      name: 'The Attack in Cismigiu Park',
+      location: 'loc-cismigiu-park',
+      description: 'Walking home alone through the foggy park, Lena is stalked and attacked.',
+      isEncounter: true,
+      encounterType: 'combat',
+      encounterDescription: 'Lena must survive a supernatural predator in the foggy park.',
+      encounterBeatPlan: ['Fog rolls in as Lena takes a shortcut through the dark park'],
+    },
+  } as any;
+
+  it('rejects a pre-encounter scene that ends without a handoff beat', async () => {
+    class BadHandoffSceneWriter extends SceneWriter {
+      protected async callLLM(): Promise<string> {
+        return JSON.stringify({
+          sceneId: 'scene-3b',
+          sceneName: 'Underground Club Scene',
+          description: 'Mika introduces herself.',
+          startingBeatId: 'beat-1',
+          beats: [
+            {
+              id: 'beat-1',
+              text: 'A platinum-haired woman smiles through the crimson light.',
+              nextBeatId: 'beat-2',
+              visualMoment: 'Mika approaches Lena.',
+              primaryAction: 'approaches',
+              emotionalRead: 'calculated warmth',
+              relationshipDynamic: 'Mika holds the information advantage',
+              mustShowDetail: 'bracelets catching the light',
+            },
+            {
+              id: 'beat-2',
+              text: '"You have your grandmother\'s eyes," she says, extending a manicured hand. "I am Mika."',
+              visualMoment: 'Mika extends her hand.',
+              primaryAction: 'offers a greeting',
+              emotionalRead: 'Lena is startled',
+              relationshipDynamic: 'Mika controls the exchange',
+              mustShowDetail: 'the extended hand',
+            },
+          ],
+          moodProgression: ['intoxicating'],
+          charactersInvolved: ['char-mika'],
+          keyMoments: ['Mika reveals she knows Lena'],
+          continuityNotes: [],
+        });
+      }
+    }
+
+    const writer = new BadHandoffSceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const result = await writer.execute(preEncounterInput);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Pre-encounter handoff missing');
+  });
+
+  it('accepts a pre-encounter scene whose final beat bridges into the encounter', async () => {
+    class GoodHandoffSceneWriter extends SceneWriter {
+      protected async callLLM(): Promise<string> {
+        return JSON.stringify({
+          sceneId: 'scene-3b',
+          sceneName: 'Underground Club Scene',
+          description: 'Mika introduces herself.',
+          startingBeatId: 'beat-1',
+          beats: [
+            {
+              id: 'beat-1',
+              text: 'A platinum-haired woman smiles through the crimson light.',
+              nextBeatId: 'beat-2',
+              visualMoment: 'Mika approaches Lena.',
+              primaryAction: 'approaches',
+              emotionalRead: 'calculated warmth',
+              relationshipDynamic: 'Mika holds the information advantage',
+              mustShowDetail: 'bracelets catching the light',
+            },
+            {
+              id: 'beat-2',
+              text: '"Be careful who you trust," Mika warns as Carmen leads you back outside into the Bucharest night.',
+              visualMoment: 'Mika warns Lena near the club exit.',
+              primaryAction: 'warns Lena',
+              emotionalRead: 'Lena is unsettled',
+              relationshipDynamic: 'Mika releases Lena with a warning',
+              mustShowDetail: 'the club door opening to the night street',
+            },
+          ],
+          moodProgression: ['intoxicating', 'uneasy'],
+          charactersInvolved: ['char-mika'],
+          keyMoments: ['Mika warns Lena'],
+          continuityNotes: [],
+        });
+      }
+    }
+
+    const writer = new GoodHandoffSceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const result = await writer.execute(preEncounterInput);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.beats.at(-1)?.text).toContain('warns');
+  });
+
+  it('repairs malformed JSON once before failing the scene', async () => {
+    class RepairableSceneWriter extends SceneWriter {
+      calls = 0;
+
+      protected async callLLM(): Promise<string> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return '```json\n{"sceneId":"scene-2a","sceneName":"Bold Entrance","beats":[{"id":"beat-1","text":"You step into the club';
+        }
+        return JSON.stringify({
+          sceneId: 'scene-2a',
+          sceneName: 'Bold Entrance',
+          description: 'Lena enters the club and draws attention.',
+          startingBeatId: 'beat-1',
+          beats: [
+            {
+              id: 'beat-1',
+              text: 'You step into Vâlcescu Club before the velvet rope has stopped swaying, and every nearby conversation tilts toward you.',
+              shotType: 'character',
+              visualMoment: 'Lena enters the club with the rope still moving behind her.',
+              primaryAction: 'steps confidently into the club',
+              emotionalRead: 'confident but watchful',
+              relationshipDynamic: 'attention shifts toward Lena',
+              mustShowDetail: 'the moving velvet rope behind Lena',
+            },
+          ],
+          moodProgression: ['electric'],
+          charactersInvolved: ['lena'],
+          keyMoments: ['Lena enters with confidence'],
+          continuityNotes: [],
+        });
+      }
+    }
+
+    const writer = new RepairableSceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const result = await writer.execute({
+      sceneBlueprint: {
+        id: 'scene-2a',
+        name: 'Bold Entrance',
+        description: 'Lena enters Vâlcescu Club with confidence.',
+        location: 'club',
+        mood: 'electric',
+        purpose: 'branch',
+        narrativeFunction: 'Shows Lena choosing boldness.',
+        dramaticQuestion: 'Will boldness draw the right attention?',
+        wantVsNeed: 'Be seen vs stay safe',
+        conflictEngine: 'The club notices her before she knows who is watching.',
+        npcsPresent: [],
+        keyBeats: ['Lena enters boldly'],
+        leadsTo: [],
+      },
+      storyContext: {
+        title: 'Bite Me',
+        genre: 'romance',
+        tone: 'darkly playful',
+        worldContext: 'Modern Bucharest nightlife.',
+      },
+      protagonistInfo: {
+        name: 'Lena',
+        pronouns: 'she/her',
+        description: 'An American starting over.',
+      },
+      npcs: [],
+      targetBeatCount: 3,
+      dialogueHeavy: false,
+    } as any, 1);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.sceneId).toBe('scene-2a');
+    expect(result.data?.beats?.[0]?.text).toContain('You step into');
+    expect(writer.calls).toBe(2);
+  });
+
   it('includes adapted scene-craft guidance and StoryRPG-shaped few-shot example', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',
@@ -357,6 +584,9 @@ describe('SceneWriter dramatic intent visual contracts', () => {
     expect(strengthened.sequenceIntent?.objective).toBeTruthy();
     expect(strengthened.sequenceIntent?.visualThread).toBeTruthy();
     expect(strengthened.sequenceIntent?.beatRole).toBeTruthy();
+    expect(strengthened.coveragePlan?.shotDistance).toBeTruthy();
+    expect(strengthened.coveragePlan?.cameraAngle).toBeTruthy();
+    expect(strengthened.coveragePlan?.coverageReason).toContain(strengthened.sequenceIntent?.beatRole);
     expect(strengthened.primaryAction).not.toMatch(/reports what she witnessed|observes the situation|deflects with practiced charm|^Alex smiles$/i);
     expect(strengthened.primaryAction).not.toContain('takes a decisive physical action');
     expect(strengthened.visualMoment).toContain(strengthened.dramaticIntent.visibleTurn.split(' ')[0]);
@@ -411,6 +641,7 @@ describe('SceneWriter dramatic intent visual contracts', () => {
     expect(normalized.sequenceIntent?.activity).toMatch(/quiet recovery|visible exchange|recovery/i);
     expect(normalized.beats[0].sequenceIntent?.beatRole).toBe('aftermath');
     expect(normalized.beats[0].sequenceIntent?.visualThread).toBeTruthy();
+    expect(normalized.beats[0].coveragePlan?.stagingPattern).toBeTruthy();
   });
 });
 

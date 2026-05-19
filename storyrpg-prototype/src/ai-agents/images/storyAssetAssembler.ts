@@ -163,5 +163,15 @@ export function assembleStoryAssetsFromRegistry(story: Story, registry: AssetReg
     }
   }
 
+  for (const episode of next.episodes || []) {
+    for (const scene of episode.scenes || []) {
+      if (scene.startingBeatId || !scene.encounter || scene.beats?.length) continue;
+      const firstEncounterBeatId = (scene.encounter as any).phases?.[0]?.beats?.[0]?.id;
+      if (typeof firstEncounterBeatId === 'string' && firstEncounterBeatId) {
+        scene.startingBeatId = firstEncounterBeatId;
+      }
+    }
+  }
+
   return next;
 }

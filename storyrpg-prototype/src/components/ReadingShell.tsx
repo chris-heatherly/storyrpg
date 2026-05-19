@@ -7,6 +7,7 @@ import {
   ScrollView,
   Animated,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { sharedStyles, TERMINAL } from '../theme';
 
@@ -71,6 +72,7 @@ export const ReadingShell: React.FC<ReadingShellProps> = ({
   onImageLoad,
   onImageError,
 }) => {
+  const { height: viewportHeight } = useWindowDimensions();
   // shakeAnim takes precedence over slideAnim — slideAnim is for scene transitions,
   // shakeAnim is for in-mode shake feedback. Only one should be set per container.
   const translate = shakeAnim || slideAnim;
@@ -82,8 +84,11 @@ export const ReadingShell: React.FC<ReadingShellProps> = ({
 
   // Force opacity 1 on web to avoid RN-Web's CSS fade getting stuck when the
   // image loads while a parent is transitioning.
+  const topSafeNudge = Math.min(48, Math.max(20, viewportHeight * 0.04));
+  const verticalOverscan = topSafeNudge * 2;
   const imageStyle = [
     styles.fullBleedImage,
+    { height: viewportHeight + verticalOverscan },
     Platform.OS === 'web' && { opacity: 1 },
   ];
 

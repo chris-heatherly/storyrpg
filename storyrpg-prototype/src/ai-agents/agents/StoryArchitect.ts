@@ -155,6 +155,8 @@ export interface StoryArchitectInput {
   memoryContext?: string;
 }
 
+type PlannedEncounterDirective = NonNullable<NonNullable<StoryArchitectInput['seasonPlanDirectives']>['plannedEncounters']>[number];
+
 // Output types
 export interface SceneBlueprint {
   id: string;
@@ -380,7 +382,11 @@ export class StoryArchitect extends BaseAgent {
     return true;
   }
 
-  private repairChoiceDensity(blueprint: EpisodeBlueprint): void {
+  private isFirstSeasonEpisode(input: StoryArchitectInput): boolean {
+    return input.episodeNumber === 1;
+  }
+
+  private repairChoiceDensity(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const scenes = blueprint.scenes || [];
     if (scenes.length === 0) return;
 
@@ -389,17 +395,23 @@ export class StoryArchitect extends BaseAgent {
 
     const startingScene = scenes.find(scene => scene.id === blueprint.startingSceneId) || scenes[0];
     if (startingScene && !startingScene.choicePoint) {
-      const followUps = startingScene.leadsTo
-        .map(id => scenes.find(scene => scene.id === id))
-        .filter((scene): scene is SceneBlueprint => Boolean(scene));
-      const secondSceneHasChoice = followUps.some(scene => scene.choicePoint);
-
-      if (!secondSceneHasChoice) {
+      if (this.isFirstSeasonEpisode(input)) {
         if (this.addChoicePointIfEligible(startingScene, 'early player agency')) {
           choiceSceneCount++;
-        } else {
-          const repairedFollowUp = followUps.find(scene => this.addChoicePointIfEligible(scene, 'early player agency after an encounter opening'));
-          if (repairedFollowUp) choiceSceneCount++;
+        }
+      } else {
+        const followUps = startingScene.leadsTo
+          .map(id => scenes.find(scene => scene.id === id))
+          .filter((scene): scene is SceneBlueprint => Boolean(scene));
+        const secondSceneHasChoice = followUps.some(scene => scene.choicePoint);
+
+        if (!secondSceneHasChoice) {
+          if (this.addChoicePointIfEligible(startingScene, 'early player agency')) {
+            choiceSceneCount++;
+          } else {
+            const repairedFollowUp = followUps.find(scene => this.addChoicePointIfEligible(scene, 'early player agency after an encounter opening'));
+            if (repairedFollowUp) choiceSceneCount++;
+          }
         }
       }
     }
@@ -456,13 +468,12 @@ export class StoryArchitect extends BaseAgent {
 
   private sceneMatchesPlannedEncounter(
     scene: SceneBlueprint,
-    plannedEncounter: NonNullable<NonNullable<StoryArchitectInput['seasonPlanDirectives']>['plannedEncounters']>[number]
+    plannedEncounter: PlannedEncounterDirective
   ): boolean {
     if (!scene.isEncounter || !scene.encounterType) return false;
     if (scene.plannedEncounterId) {
-      return scene.plannedEncounterId === plannedEncounter.id && scene.encounterType === plannedEncounter.type;
+      return scene.plannedEncounterId === plannedEncounter.id;
     }
-    if (scene.encounterType !== plannedEncounter.type) return false;
 
     const sceneTokens = new Set([
       ...this.tokenizeEncounterText(scene.name),
@@ -474,6 +485,191 @@ export class StoryArchitect extends BaseAgent {
     const overlap = plannedTokens.filter((token) => sceneTokens.has(token));
 
     return overlap.length >= Math.min(3, plannedTokens.length);
+  }
+
+  private normalizeEncounterType(value: string | undefined): EncounterType {
+    const validTypes: EncounterType[] = [
+      'combat',
+      'chase',
+      'heist',
+      'negotiation',
+      'investigation',
+      'survival',
+      'social',
+      'romantic',
+      'dramatic',
+      'puzzle',
+      'exploration',
+      'stealth',
+      'mixed',
+    ];
+    return validTypes.includes(value as EncounterType) ? value as EncounterType : 'dramatic';
+  }
+
+  private normalizeEncounterDifficulty(value: string | undefined): 'easy' | 'moderate' | 'hard' | 'extreme' {
+    const normalized = (value || '').toLowerCase();
+    if (normalized.includes('extreme') || normalized.includes('climax') || normalized.includes('finale') || normalized.includes('peak')) {
+      return 'extreme';
+    }
+    if (normalized.includes('hard') || normalized.includes('high') || normalized.includes('danger')) {
+      return 'hard';
+    }
+    if (normalized.includes('easy') || normalized.includes('intro') || normalized.includes('low')) {
+      return 'easy';
+    }
+    return 'moderate';
+  }
+
+  private inferEncounterStyle(type: EncounterType, description: string): EncounterNarrativeStyle {
+    const text = description.toLowerCase();
+    if (type === 'romantic' || text.includes('romantic') || text.includes('desire')) return 'romantic';
+    if (type === 'social' || type === 'negotiation') return 'social';
+    if (type === 'stealth') return 'stealth';
+    if (type === 'investigation' || type === 'puzzle') return 'mystery';
+    if (type === 'exploration' || text.includes('unknown')) return 'adventure';
+    if (type === 'combat' || type === 'chase' || type === 'survival' || text.includes('attack')) return 'action';
+    return 'dramatic';
+  }
+
+  private defaultSkillsForEncounterType(type: EncounterType): string[] {
+    switch (type) {
+      case 'combat':
+      case 'chase':
+      case 'survival':
+        return ['resolve', 'athletics', 'awareness'];
+      case 'stealth':
+      case 'heist':
+        return ['stealth', 'deception', 'awareness'];
+      case 'investigation':
+      case 'puzzle':
+        return ['investigation', 'insight', 'focus'];
+      case 'romantic':
+        return ['empathy', 'honesty', 'resolve'];
+      case 'social':
+      case 'negotiation':
+        return ['persuasion', 'empathy', 'resolve'];
+      case 'exploration':
+        return ['awareness', 'survival', 'resolve'];
+      default:
+        return ['resolve', 'empathy', 'awareness'];
+    }
+  }
+
+  private buildEncounterBeatPlan(plannedEncounter: PlannedEncounterDirective, existingBeats: string[] | undefined): string[] {
+    const beats = [...(existingBeats || []).filter((beat) => beat.trim())];
+    const description = plannedEncounter.description || 'The planned encounter arrives and forces a decisive response.';
+    const stakes = plannedEncounter.stakes || 'The outcome changes what the protagonist can risk next.';
+    const outcomes = plannedEncounter.branchOutcomes;
+
+    beats.push(`Opening pressure: ${description}`);
+    beats.push(`Escalation: ${stakes}`);
+    if (outcomes?.victory || outcomes?.defeat || outcomes?.escape) {
+      beats.push(`Outcome fork: victory means ${outcomes.victory || 'gaining ground'}, defeat means ${outcomes.defeat || 'paying a visible cost'}${outcomes.escape ? `, escape means ${outcomes.escape}` : ''}`);
+    } else {
+      beats.push('Decision point: the protagonist must choose whether to fight, flee, freeze, bargain, or reveal who they are becoming.');
+    }
+
+    return Array.from(new Set(beats)).slice(0, Math.max(3, Math.min(5, beats.length)));
+  }
+
+  private scoreSceneForPlannedEncounter(scene: SceneBlueprint, plannedEncounter: PlannedEncounterDirective): number {
+    const plannedTokens = new Set([
+      ...this.tokenizeEncounterText(plannedEncounter.description),
+      ...this.tokenizeEncounterText(plannedEncounter.stakes),
+      ...(plannedEncounter.npcsInvolved || []).map((npcId) => npcId.toLowerCase()),
+    ]);
+    const sceneTokens = new Set([
+      ...this.tokenizeEncounterText(scene.name),
+      ...this.tokenizeEncounterText(scene.description),
+      ...this.tokenizeEncounterText(scene.encounterDescription),
+      ...this.tokenizeEncounterText(scene.narrativeFunction),
+      ...(scene.keyBeats || []).flatMap((beat) => this.tokenizeEncounterText(beat)),
+      ...(scene.npcsPresent || []).map((npcId) => npcId.toLowerCase()),
+    ]);
+
+    let score = 0;
+    for (const token of plannedTokens) {
+      if (sceneTokens.has(token)) score += 2;
+    }
+    if (scene.isEncounter) score += 6;
+    if (scene.purpose === 'bottleneck') score += 3;
+    if (scene.encounterType === plannedEncounter.type) score += 2;
+    if (scene.name.toLowerCase().includes('encounter') || scene.name.toLowerCase().includes('confront')) score += 2;
+    return score;
+  }
+
+  private findSceneForPlannedEncounter(blueprint: EpisodeBlueprint, plannedEncounter: PlannedEncounterDirective): SceneBlueprint | undefined {
+    const exact = blueprint.scenes.find((scene) => scene.plannedEncounterId === plannedEncounter.id);
+    if (exact) return exact;
+
+    const ranked = [...blueprint.scenes]
+      .map((scene, index) => ({ scene, index, score: this.scoreSceneForPlannedEncounter(scene, plannedEncounter) }))
+      .sort((a, b) => b.score - a.score || (a.scene.isEncounter === b.scene.isEncounter ? 0 : a.scene.isEncounter ? -1 : 1));
+
+    const semanticMatch = ranked.find((entry) => entry.score >= 6);
+    if (semanticMatch) return semanticMatch.scene;
+
+    const preferredIndex = Math.min(Math.max(1, Math.floor(blueprint.scenes.length * 0.65)), Math.max(0, blueprint.scenes.length - 2));
+    return blueprint.scenes.find((scene, index) => scene.isEncounter || (scene.purpose === 'bottleneck' && index >= preferredIndex))
+      || blueprint.scenes[preferredIndex]
+      || blueprint.scenes[0];
+  }
+
+  private applyPlannedEncounterToScene(scene: SceneBlueprint, plannedEncounter: PlannedEncounterDirective): void {
+    const encounterType = this.normalizeEncounterType(plannedEncounter.type);
+    const existingSkills = scene.encounterRelevantSkills || [];
+    const plannedSkills = plannedEncounter.relevantSkills || [];
+    const npcIds = new Set([...(scene.npcsPresent || []), ...(scene.encounterRequiredNpcIds || []), ...(plannedEncounter.npcsInvolved || [])]);
+
+    scene.isEncounter = true;
+    scene.plannedEncounterId = plannedEncounter.id;
+    scene.encounterType = encounterType;
+    scene.encounterStyle = scene.encounterStyle || this.inferEncounterStyle(encounterType, plannedEncounter.description);
+    scene.encounterDescription = scene.encounterDescription?.trim()
+      ? scene.encounterDescription
+      : plannedEncounter.description;
+    scene.encounterStakes = scene.encounterStakes?.trim()
+      ? scene.encounterStakes
+      : plannedEncounter.stakes || `The outcome of ${plannedEncounter.description} changes the protagonist's immediate safety and trust.`;
+    scene.encounterRequiredNpcIds = Array.from(npcIds);
+    scene.npcsPresent = Array.from(npcIds);
+    scene.encounterRelevantSkills = Array.from(new Set([
+      ...existingSkills,
+      ...plannedSkills,
+      ...this.defaultSkillsForEncounterType(encounterType),
+    ])).slice(0, 5);
+    scene.encounterBeatPlan = this.buildEncounterBeatPlan(plannedEncounter, scene.encounterBeatPlan);
+    scene.encounterDifficulty = scene.encounterDifficulty || this.normalizeEncounterDifficulty(plannedEncounter.difficulty);
+    scene.encounterBuildup = scene.encounterBuildup?.trim()
+      ? scene.encounterBuildup
+      : plannedEncounter.encounterBuildup || `Earlier scenes establish why ${plannedEncounter.description} is unavoidable and personal.`;
+    scene.encounterSetupContext = Array.from(new Set([
+      ...(scene.encounterSetupContext || []),
+      ...(plannedEncounter.encounterSetupContext || []),
+    ]));
+    scene.purpose = scene.purpose || 'bottleneck';
+  }
+
+  private repairPlannedEncounterCoverage(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const plannedEncounters = input.seasonPlanDirectives?.plannedEncounters || [];
+    if (plannedEncounters.length === 0 || blueprint.scenes.length === 0) return;
+
+    for (const plannedEncounter of plannedEncounters) {
+      const matchedScene = this.findSceneForPlannedEncounter(blueprint, plannedEncounter);
+      if (!matchedScene) continue;
+
+      const wasBound = matchedScene.plannedEncounterId === plannedEncounter.id && matchedScene.isEncounter;
+      this.applyPlannedEncounterToScene(matchedScene, plannedEncounter);
+      if (!blueprint.bottleneckScenes.includes(matchedScene.id)) {
+        blueprint.bottleneckScenes.push(matchedScene.id);
+      }
+
+      if (!wasBound) {
+        console.warn(
+          `[StoryArchitect] Repaired planned encounter "${plannedEncounter.id}" by binding it to scene "${matchedScene.id}"`
+        );
+      }
+    }
   }
 
   private validatePlannedEncounterCoverage(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
@@ -499,6 +695,7 @@ export class StoryArchitect extends BaseAgent {
           `Encounter scene "${matchedScene.id}" must set plannedEncounterId="${plannedEncounter.id}" to bind the blueprint to the season plan`
         );
       }
+      matchedScene.encounterType = this.normalizeEncounterType(plannedEncounter.type);
       if (!matchedScene.encounterStakes?.trim()) {
         throw new Error(`Encounter scene "${matchedScene.id}" is missing encounterStakes`);
       }
@@ -641,7 +838,7 @@ Branching is a PROPERTY of any non-expression choice.
 ## Choice Architecture Rules
 
 1. **Choice Density**: At least 50% of scenes MUST have a choicePoint.
-2. **First Choice Rule**: The first scene MUST have a choicePoint.
+2. **Season Opening Choice Rule**: In Episode 1, the first scene MUST have a choicePoint. No delayed second-scene exception.
 3. **No Choice Gaps**: Never more than 2 consecutive scenes without a choicePoint.
 4. **Stakes Triangle**: Every choicePoint must define Want, Cost, and Identity.
 5. **Consequence Legibility**: Major choicePoints should name the consequence domain and how the story will remember the decision.
@@ -683,13 +880,7 @@ Remember: The encounter is the heart. Design outward from it.
         { role: 'user', content: prompt }
       ];
 
-      const assistantPrefill = retryCount > 0 ? '{"episodeId":' : '';
       if (retryCount > 0) {
-        messages.push({
-          role: 'assistant',
-          content: assistantPrefill
-        });
-
         const structuralFeedback = this.lastStructuralFeedback.length > 0
           ? `\nSTRUCTURAL ISSUES FROM PREVIOUS ATTEMPT:\n${this.lastStructuralFeedback.map(f => `- ${f}`).join('\n')}\n`
           : '';
@@ -706,8 +897,7 @@ REQUIREMENTS:
       }
 
       const rawResponse = await this.callLLM(messages);
-      // Anthropic prefill: the API returns only the continuation, so re-attach the prefix
-      const response = assistantPrefill + rawResponse;
+      const response = rawResponse;
 
       console.log(`[StoryArchitect] Received response (${response.length} chars)`);
 
@@ -947,7 +1137,8 @@ REQUIREMENTS:
         blueprint.structuralRole = [...input.episodeStructuralRole];
       }
 
-      this.repairChoiceDensity(blueprint);
+      this.repairChoiceDensity(blueprint, input);
+      this.repairPlannedEncounterCoverage(blueprint, input);
 
       // Log choice point info BEFORE validation
       const scenesWithChoices = blueprint.scenes?.filter(s => s.choicePoint) || [];
@@ -1104,6 +1295,7 @@ ${input.memoryContext}
 - **Decisive beats**: keyBeats should include specific actions, surprising complications, character development, visible consequences, and forward pressure.
 - **Turn ladder, not topic list**: Frame each scene as an active situation. keyBeats should bend or flip something: trust shifts, evidence changes hands, a secret becomes harder to deny, leverage is gained/lost, distance/closeness changes, danger/reputation/resources change, identity is expressed, or knowledge becomes actionable.
 - **Sequence intent, not random panels**: Every multi-beat scene should include \`sequenceIntent\` that names the objective, visible activity, obstacle, startState, turningPoint, endState, visualThread, and optional mechanicThread. This field is optional for old content compatibility, but REQUIRED-BY-PROCESS for new generated scenes with multiple beats or storyboard panels.
+- **Visible activity, not just topic**: Scene descriptions and keyBeats should name the physical carrier of the scene: object transfer, pursuit, concealment, search, ritual, repair, argument blocking, distance change, environmental pressure, or another visible action pattern. Avoid static "they discuss X" scenes unless the visible business makes the power shift readable.
 - **Fiction-first mechanics**: When a key turn should matter later, route it through existing fields only: choice stakes/consequenceDomain, encounterSetupContext, encounterBuildup, flags/relationships implied by choicePoint stakes, or callback residue. Do not invent a new mechanics layer.
 - **Rest scenes still turn**: REST beats may be quiet, but they should show settling, contrast, recovery, relationship recalibration, or the cost of the prior pressure.
 - **Plans go wrong**: When characters follow a plan, include a plausible complication that forces improvisation unless the scene is deliberately a rest beat.
@@ -1236,7 +1428,7 @@ ${this.buildCliffhangerPlanSection(input)}
 CRITICAL REQUIREMENTS:
 1. The "scenes" array must contain 3-${input.targetSceneCount} scenes (cap—use fewer if story doesn't need more)
 2. Each scene MUST have: id, name, description, location, mood, purpose, npcsPresent, narrativeFunction, keyBeats, leadsTo
-2a. Each newly generated multi-beat scene SHOULD include sequenceIntent. Missing sequenceIntent is tolerated for compatibility/fallbacks, but lowers storyboard QA quality.
+2a. Each newly generated multi-beat scene SHOULD include sequenceIntent with a visible activity, visualThread, turningPoint, and endState. Missing sequenceIntent is tolerated for compatibility/fallbacks, but lowers storyboard QA quality.
 3. purpose MUST be one of: "bottleneck", "branch", "transition"
 4. startingSceneId MUST match one of the scene ids
 5. Return ONLY valid JSON, no markdown, no extra text
@@ -1272,7 +1464,7 @@ CLIFFHANGER REQUIREMENTS:
 
 CHOICE DENSITY REQUIREMENTS (CRITICAL - Interactive fiction requires player choices):
 6. At least 40% of scenes MUST have a choicePoint defined (branching, dilemma, or flavor)
-7. Players need agency early - either the FIRST scene has a choicePoint, OR the first scene is very brief (< 200 words) and the SECOND scene has one
+7. For Episode 1, the FIRST scene MUST have a choicePoint. For later episodes, players need agency early: either the first scene has a choicePoint, OR the first scene is very brief (< 200 words) and the SECOND scene has one
 8. NEVER have more than 2 scenes in a row without a choicePoint
 9. Every choicePoint must have type, stakes, and description
 10. Major branching/dilemma choices MUST have complete stakes (want, cost, identity)
@@ -1557,6 +1749,16 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       issues.push(`Choice density ${Math.round(density * 100)}% is below 40% minimum (${scenesWithChoices.length}/${blueprint.scenes.length} scenes have choices)`);
     }
 
+    if (this.isFirstSeasonEpisode(input)) {
+      const startingScene = blueprint.scenes.find(s => s.id === blueprint.startingSceneId);
+      if (startingScene && !startingScene.choicePoint) {
+        issues.push(
+          `First scene "${startingScene.id}" of episode 1 has no choicePoint. ` +
+          `The first scene of the first episode of each season must include a player choice.`
+        );
+      }
+    }
+
     // Encounter coverage pre-check
     const encounterScenes = blueprint.scenes.filter(s => s.isEncounter);
     const minEncounters = this.getMinEncounters(blueprint.scenes.length);
@@ -1675,9 +1877,20 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       );
     }
 
-    // Rule 2: Early player agency - first scene has choice OR is brief and second scene has choice
+    // Rule 2: Season-opening player agency. Episode 1 establishes the
+    // season's playable contract, so the starting scene itself must include
+    // a choice. Later episodes keep the existing "brief opening into
+    // second-scene choice" flexibility.
     const firstScene = blueprint.scenes.find(s => s.id === blueprint.startingSceneId);
-    if (firstScene && !firstScene.choicePoint) {
+    if (firstScene && this.isFirstSeasonEpisode(input) && !firstScene.choicePoint) {
+      console.warn(`[StoryArchitect] First scene of episode 1 has no choice point`);
+      throw new Error(
+        `First scene "${firstScene.name}" has no choicePoint. ` +
+        `The first scene of the first episode of each season must include a player choice.`
+      );
+    }
+
+    if (firstScene && !this.isFirstSeasonEpisode(input) && !firstScene.choicePoint) {
       // First scene doesn't have a choice - check if second scene does
       const secondSceneIds = firstScene.leadsTo;
       const secondScenes = secondSceneIds.map(id => blueprint.scenes.find(s => s.id === id)).filter(Boolean);

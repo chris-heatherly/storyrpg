@@ -4,7 +4,7 @@
 //
 // Tracks "memorable moments" across episodes so later episodes can author
 // TextVariants that reference earlier choices. Implements the Witcher-style
-// delayed-consequence pattern described in docs/PLAN_DELAYED_CONSEQUENCES.md.
+// delayed-consequence pattern.
 //
 // Shape:
 //   - ChoiceAuthor / authors tag notable choices with a `memorableMoment`.

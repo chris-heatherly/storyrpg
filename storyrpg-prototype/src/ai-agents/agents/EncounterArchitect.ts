@@ -1371,9 +1371,9 @@ ${npcsList || 'None'}
 - Defeat → ${input.defeatNextSceneId || 'next scene'}
 ${priorCtx}
 ## TEXT RULES
-- Use {{player.name}} for protagonist name, {{player.they}}/{{player.them}}/{{player.their}} for pronouns
-- The opening setupText MUST anchor the encounter POV to {{player.name}} or a player pronoun template before focusing on NPCs, setting, or threat
-- Prefer {{player.name}} as the subject for concrete protagonist actions; use you/your only for direct reader-facing immediacy
+- Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
+- The opening setupText MUST anchor the encounter POV to the protagonist before focusing on NPCs, setting, or threat.
+- Prefer the protagonist's actual name as the subject for concrete protagonist actions; use you/your only for direct reader-facing immediacy.
 - NPCs use their actual names
 - setupText: 30-50 words setting the situation
 - narrativeText: 30-60 words showing THE RESULT of the action (not the action itself)
@@ -1593,7 +1593,12 @@ RULES:
    * structural fields (visual contracts, storylets, NPC states, etc).
    */
   private buildDeterministicFallback(input: EncounterArchitectInput): EncounterStructure {
-    const protagonist = input.protagonistInfo.name || '{{player.name}}';
+    const protagonist = input.protagonistInfo.name || 'the protagonist';
+    const objectPronoun = input.protagonistInfo.pronouns === 'he/him'
+      ? 'him'
+      : input.protagonistInfo.pronouns === 'she/her'
+        ? 'her'
+        : 'them';
     const npc = input.npcsInvolved[0];
     const npcName = npc?.name || 'the opponent';
     const skill1 = input.availableSkills[0]?.name || 'athletics';
@@ -1607,7 +1612,7 @@ RULES:
         phase: 'setup' as EscalationPhase,
         name: 'The Confrontation',
         description: `${npcName} forces a decision.`,
-        setupText: `The moment arrives. ${npcName} stands before {{player.name}}, and there is no avoiding what comes next. ${stakeText.substring(0, 80)}`,
+        setupText: `The moment arrives. ${npcName} stands before ${protagonist}, and there is no avoiding what comes next. ${stakeText.substring(0, 80)}`,
         choices: [
           {
             id: 'b1-c1',
@@ -1616,9 +1621,9 @@ RULES:
             impliedApproach: 'aggressive' as EncounterApproach,
             primarySkill: skill1,
             outcomes: {
-              success: { tier: 'success' as const, narrativeText: `{{player.name}} presses forward with conviction. ${npcName} gives ground.`, goalTicks: 2, threatTicks: 0, nextBeatId: 'beat-2' },
-              complicated: { tier: 'complicated' as const, narrativeText: `The confrontation is messy — {{player.name}} holds firm but ${npcName} doesn't back down easily.`, goalTicks: 1, threatTicks: 1, nextBeatId: 'beat-2' },
-              failure: { tier: 'failure' as const, narrativeText: `${npcName} turns {{player.name}}'s aggression against {{player.them}}. The situation worsens.`, goalTicks: 0, threatTicks: 2, nextBeatId: 'beat-2' },
+              success: { tier: 'success' as const, narrativeText: `${protagonist} presses forward with conviction. ${npcName} gives ground.`, goalTicks: 2, threatTicks: 0, nextBeatId: 'beat-2' },
+              complicated: { tier: 'complicated' as const, narrativeText: `The confrontation is messy — ${protagonist} holds firm but ${npcName} doesn't back down easily.`, goalTicks: 1, threatTicks: 1, nextBeatId: 'beat-2' },
+              failure: { tier: 'failure' as const, narrativeText: `${npcName} turns ${protagonist}'s aggression against ${objectPronoun}. The situation worsens.`, goalTicks: 0, threatTicks: 2, nextBeatId: 'beat-2' },
             },
           },
           {
@@ -1628,8 +1633,8 @@ RULES:
             impliedApproach: 'cautious' as EncounterApproach,
             primarySkill: skill2,
             outcomes: {
-              success: { tier: 'success' as const, narrativeText: `{{player.name}}'s patience pays off — a weakness reveals itself.`, goalTicks: 2, threatTicks: 0, nextBeatId: 'beat-2' },
-              complicated: { tier: 'complicated' as const, narrativeText: `{{player.name}} learns something useful, but the delay has a cost.`, goalTicks: 1, threatTicks: 1, nextBeatId: 'beat-2' },
+              success: { tier: 'success' as const, narrativeText: `${protagonist}'s patience pays off — a weakness reveals itself.`, goalTicks: 2, threatTicks: 0, nextBeatId: 'beat-2' },
+              complicated: { tier: 'complicated' as const, narrativeText: `${protagonist} learns something useful, but the delay has a cost.`, goalTicks: 1, threatTicks: 1, nextBeatId: 'beat-2' },
               failure: { tier: 'failure' as const, narrativeText: `Hesitation proves costly. ${npcName} seizes the initiative.`, goalTicks: 0, threatTicks: 2, nextBeatId: 'beat-2' },
             },
           },
@@ -1642,7 +1647,7 @@ RULES:
             outcomes: {
               success: { tier: 'success' as const, narrativeText: `The gambit works — ${npcName} is caught completely off guard.`, goalTicks: 2, threatTicks: 0, nextBeatId: 'beat-2' },
               complicated: { tier: 'complicated' as const, narrativeText: `It half-works. ${npcName} is thrown off balance, but recovers quickly.`, goalTicks: 1, threatTicks: 1, nextBeatId: 'beat-2' },
-              failure: { tier: 'failure' as const, narrativeText: `${npcName} sees through it immediately. {{player.name}} is exposed.`, goalTicks: 0, threatTicks: 2, nextBeatId: 'beat-2' },
+              failure: { tier: 'failure' as const, narrativeText: `${npcName} sees through it immediately. ${protagonist} is exposed.`, goalTicks: 0, threatTicks: 2, nextBeatId: 'beat-2' },
             },
           },
         ],
@@ -1652,7 +1657,7 @@ RULES:
         phase: 'resolution' as EscalationPhase,
         name: 'The Decisive Moment',
         description: 'Everything comes to a head.',
-        setupText: `This is the moment that decides everything. ${npcName} and {{player.name}} face the final test.`,
+        setupText: `This is the moment that decides everything. ${npcName} and ${protagonist} face the final test.`,
         isTerminal: true,
         choices: [
           {
@@ -1661,9 +1666,9 @@ RULES:
             approach: 'bold' as EncounterApproach,
             primarySkill: skill1,
             outcomes: {
-              success: { tier: 'success' as const, narrativeText: `{{player.name}} seizes the moment. The outcome is decisive and clear.`, goalTicks: 3, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' as EncounterOutcome },
+              success: { tier: 'success' as const, narrativeText: `${protagonist} seizes the moment. The outcome is decisive and clear.`, goalTicks: 3, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' as EncounterOutcome },
               complicated: { tier: 'complicated' as const, narrativeText: `Victory, but not clean. The cost will linger.`, goalTicks: 2, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' as EncounterOutcome },
-              failure: { tier: 'failure' as const, narrativeText: `The gamble doesn't pay off. {{player.name}} comes up short.`, goalTicks: 0, threatTicks: 3, isTerminal: true, encounterOutcome: 'defeat' as EncounterOutcome },
+              failure: { tier: 'failure' as const, narrativeText: `The gamble doesn't pay off. ${protagonist} comes up short.`, goalTicks: 0, threatTicks: 3, isTerminal: true, encounterOutcome: 'defeat' as EncounterOutcome },
             },
           },
           {
@@ -1672,9 +1677,9 @@ RULES:
             approach: 'cautious' as EncounterApproach,
             primarySkill: skill2,
             outcomes: {
-              success: { tier: 'success' as const, narrativeText: `{{player.name}}'s resolve outlasts the challenge.`, goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' as EncounterOutcome },
-              complicated: { tier: 'complicated' as const, narrativeText: `{{player.name}} survives, barely. Retreat is the wise option.`, goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'escape' as EncounterOutcome },
-              failure: { tier: 'failure' as const, narrativeText: `The pressure is too much. {{player.name}} is overwhelmed.`, goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' as EncounterOutcome },
+              success: { tier: 'success' as const, narrativeText: `${protagonist}'s resolve outlasts the challenge.`, goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' as EncounterOutcome },
+              complicated: { tier: 'complicated' as const, narrativeText: `${protagonist} survives, barely. Retreat is the wise option.`, goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'escape' as EncounterOutcome },
+              failure: { tier: 'failure' as const, narrativeText: `The pressure is too much. ${protagonist} is overwhelmed.`, goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' as EncounterOutcome },
             },
           },
           {
@@ -1683,9 +1688,9 @@ RULES:
             approach: 'clever' as EncounterApproach,
             primarySkill: skill3,
             outcomes: {
-              success: { tier: 'success' as const, narrativeText: `An unexpected solution presents itself. {{player.name}} takes it.`, goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' as EncounterOutcome },
-              complicated: { tier: 'complicated' as const, narrativeText: `It works, mostly. {{player.name}} escapes, but not cleanly.`, goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'escape' as EncounterOutcome },
-              failure: { tier: 'failure' as const, narrativeText: `There is no clever way out. {{player.name}} faces the consequences.`, goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' as EncounterOutcome },
+              success: { tier: 'success' as const, narrativeText: `An unexpected solution presents itself. ${protagonist} takes it.`, goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' as EncounterOutcome },
+              complicated: { tier: 'complicated' as const, narrativeText: `It works, mostly. ${protagonist} escapes, but not cleanly.`, goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'escape' as EncounterOutcome },
+              failure: { tier: 'failure' as const, narrativeText: `There is no clever way out. ${protagonist} faces the consequences.`, goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' as EncounterOutcome },
             },
           },
         ],
@@ -2342,6 +2347,7 @@ RULES:
     outcome: 'victory' | 'partialVictory' | 'defeat' | 'escape',
     input: EncounterArchitectInput
   ): GeneratedStorylet {
+    const protagonist = input.protagonistInfo.name || 'the protagonist';
     const tones: Record<string, GeneratedStorylet['tone']> = {
       victory: 'triumphant',
       partialVictory: 'bittersweet',
@@ -2369,12 +2375,12 @@ RULES:
         beats: [
           {
             id: `${input.sceneId}-storylet-defeat-beat-1`,
-            text: `{{player.name}} has failed. The weight of it settles in — there will be consequences for this.`,
+            text: `${protagonist} has failed. The weight of it settles in — there will be consequences for this.`,
             nextBeatId: `${input.sceneId}-storylet-defeat-beat-2`,
           },
           {
             id: `${input.sceneId}-storylet-defeat-beat-2`,
-            text: `But even in defeat, something has shifted. {{player.name}} sees more clearly now — what went wrong, and what must be done differently next time.`,
+            text: `But even in defeat, something has shifted. ${protagonist} sees more clearly now — what went wrong, and what must be done differently next time.`,
             nextBeatId: `${input.sceneId}-storylet-defeat-beat-3`,
           },
           {
@@ -2413,12 +2419,12 @@ RULES:
         beats: [
           {
             id: `${input.sceneId}-storylet-victory-beat-1`,
-            text: `{{player.name}} has succeeded. The immediate danger has passed, and the world shifts in response.`,
+            text: `${protagonist} has succeeded. The immediate danger has passed, and the world shifts in response.`,
             nextBeatId: `${input.sceneId}-storylet-victory-beat-2`,
           },
           {
             id: `${input.sceneId}-storylet-victory-beat-2`,
-            text: `There's a quiet sense of earned confidence — not arrogance, but the knowledge that {{player.name}} rose to the challenge.`,
+            text: `There's a quiet sense of earned confidence — not arrogance, but the knowledge that ${protagonist} rose to the challenge.`,
             isTerminal: true,
           },
         ],
@@ -2461,7 +2467,7 @@ RULES:
         beats: [
           {
             id: `${input.sceneId}-storylet-partial-victory-beat-1`,
-            text: `{{player.name}} gets what they fought for, but the cost lands immediately. Relief and damage arrive together.`,
+            text: `${protagonist} gets what they fought for, but the cost lands immediately. Relief and damage arrive together.`,
             nextBeatId: `${input.sceneId}-storylet-partial-victory-beat-2`,
             cost,
           },
@@ -2502,12 +2508,12 @@ RULES:
       beats: [
         {
           id: `${input.sceneId}-storylet-escape-beat-1`,
-          text: `{{player.name}} has escaped, but barely. The adrenaline is still coursing.`,
+          text: `${protagonist} has escaped, but barely. The adrenaline is still coursing.`,
           nextBeatId: `${input.sceneId}-storylet-escape-beat-2`,
         },
         {
           id: `${input.sceneId}-storylet-escape-beat-2`,
-          text: `Taking stock, {{player.name}} realizes the situation remains unresolved — but at least there's time to prepare.`,
+          text: `Taking stock, ${protagonist} realizes the situation remains unresolved — but at least there's time to prepare.`,
           isTerminal: true,
         },
       ],
@@ -3079,19 +3085,12 @@ ${choiceSection}
 10. Return ONLY valid JSON, no markdown
 11. Do not add any new visible mechanics beyond the current encounter clock visualization.
 
-## CHARACTER NAME TEMPLATES (CRITICAL)
+## PROTAGONIST LANGUAGE (CRITICAL)
 
-All encounter text (setupText, narrativeText, storylet beat text) MUST use template variables for the protagonist — NEVER use the protagonist's literal name or the story title:
-- **{{player.name}}** — the player character's name
-- **{{player.they}}** — subject pronoun (he/she/they)
-- **{{player.them}}** — object pronoun (him/her/them)
-- **{{player.their}}** — possessive pronoun (his/her/their)
+All encounter text (setupText, narrativeText, storylet beat text) MUST use concrete player-facing prose.
+Use the protagonist's actual name, concrete pronouns, or direct second person ("you", "your"). Never emit template variables or unresolved placeholders.
 
-**Verb conjugation**: Prefer {{player.name}} as the sentence subject when an action verb follows ("{{player.name}} catches the blade" not "{{player.they}} catch the blade"). When you do use {{player.they}} with a verb, write the plural/base form ("{{player.they}} catch", "{{player.they}} dodge") — the engine auto-conjugates for singular pronouns. Use {{Player.they}} (capital P) at sentence starts.
-
-**Opening POV anchor**: The first setupText / opening storylet text MUST establish {{player.name}} as the viewpoint/focal character before focusing on NPCs, setting, or threat.
-
-Example: "{{player.name}} presses close to the wall, water dripping from {{player.their}} dark hair."
+Opening POV anchor: the first setupText / opening storylet text MUST establish the protagonist as the viewpoint/focal character before focusing on NPCs, setting, or threat.
 NPCs should be referred to by their actual names.
 
 ## TEXT QUALITY - ACTION/REACTION
@@ -3168,9 +3167,9 @@ ${(input.encounterBeatPlan && input.encounterBeatPlan.length > 0)
 ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 
 ## CHARACTER NAME TEMPLATES (CRITICAL)
-All text fields (setupText, narrativeText, storylet text) MUST use {{player.name}} for the protagonist — NEVER the literal name or story title.
-Use {{player.they}}/{{player.them}}/{{player.their}} for pronouns. NPCs use their actual names.
-The opening setupText MUST anchor POV to {{player.name}} before describing NPC action or the environment.
+All text fields (setupText, narrativeText, storylet text) MUST use the protagonist's actual name, concrete pronouns, or you/your. Never emit template variables.
+NPCs use their actual names.
+The opening setupText MUST anchor POV to the protagonist before describing NPC action or the environment.
 
 ## REQUIRED: Return ONLY this JSON structure (no markdown, no prose)
 
@@ -3593,7 +3592,7 @@ CRITICAL RULES:
   }
 
   private buildPhase1Prompt(input: EncounterArchitectInput, brief: RelationshipDynamicsBrief): string {
-    const protagonist = input.protagonistInfo.name || '{{player.name}}';
+    const protagonist = input.protagonistInfo.name || 'the protagonist';
     const npcsList = input.npcsInvolved
       .map(npc => `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} — ${npc.description}`)
       .join('\n');
@@ -3628,9 +3627,9 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 ${npcsList || 'None'}
 ${relationshipSection}
 ## TEXT RULES
-- Use {{player.name}} for protagonist, {{player.they}}/{{player.them}}/{{player.their}} for pronouns
-- The opening setupText MUST establish {{player.name}} as the focal character before NPC action or environmental exposition
-- Prefer {{player.name}} as the subject for concrete protagonist actions; use you/your only for direct reader-facing immediacy
+- Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
+- The opening setupText MUST establish the protagonist as the focal character before NPC action or environmental exposition.
+- Prefer the protagonist's actual name as the subject for concrete protagonist actions; use you/your only for direct reader-facing immediacy.
 - setupText: 30-50 words setting the opening situation
 - narrativeText: 30-60 words showing THE RESULT of the action (not the action itself)
 - Each outcome narrative must be SPECIFIC to the choice taken
@@ -3724,7 +3723,7 @@ For EACH outcome tier (afterSuccess, afterComplicated, afterFailure), generate:
 5. Include relationshipConsequences on outcomes where choices affect NPC relationships
 
 ## TEXT RULES
-- Use {{player.name}} for protagonist, {{player.they}}/{{player.them}}/{{player.their}} for pronouns
+- Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
 - narrativeText must be SPECIFIC to the choice and situation, 30-60 words
 - Each of the 3 situations (afterSuccess/afterComplicated/afterFailure) must feel DIFFERENT
 
@@ -3872,7 +3871,7 @@ Generate 3 storylets for: victory, defeat, escape. Each is a short aftermath seq
 ### Escape (2 beats): Close call → Assessment. Tone: relieved/tense.
 
 ## TEXT RULES
-- Use {{player.name}} for protagonist, {{player.they}}/{{player.them}}/{{player.their}} for pronouns
+- Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
 - Beat text: 2-3 sentences max. Reference specific NPCs and the encounter's stakes.
 - Last beat in each storylet must have "isTerminal": true
 
@@ -4155,11 +4154,10 @@ Return ONLY the JSON object.`;
    * Fallback storylets used by `assemblePhasedEncounter` when Phase 4's
    * LLM call fails (timeout, parse error, empty response, etc.).
    *
-   * Historically this produced single-beat, placeholder-style prose
-   * (e.g. "{{player.name}} overcame the challenge. The victory is
-   * earned.") that subsequently shipped verbatim in player-facing
-   * stories because `normalizeStructure` / `validateStructure` only
-   * *add* missing storylets and do not *replace* existing ones.
+   * Historically this produced single-beat, placeholder-style prose that
+   * subsequently shipped verbatim in player-facing stories because
+   * `normalizeStructure` / `validateStructure` only *add* missing storylets
+   * and do not *replace* existing ones.
    *
    * We now delegate to `createDefaultStorylet` so both the phased
    * fallback and the lean / deterministic fallbacks emit the same

@@ -13,7 +13,7 @@
 import { AgentConfig, GenerationSettingsConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
-import { Beat, TextVariant, Consequence, TimingMetadata } from '../../types';
+import { Beat, TextVariant, Consequence, TimingMetadata, SceneVisualSequencePlan } from '../../types';
 import {
   SourceMaterialAnalysis,
   StoryAnchors,
@@ -36,6 +36,7 @@ import { SCENE_WRITER_BEAT_EXAMPLE } from '../prompts/examples/storyCraftExample
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
+import { applySequenceDirectorPlan } from './SequenceDirector';
 
 function normalizeSourceFragments(sourceAnalysis?: SourceMaterialAnalysis): {
   dialogue: string[];
@@ -162,6 +163,19 @@ export interface SceneWriterInput {
   // Previous scene summary (for continuity)
   previousSceneSummary?: string;
 
+  // Next-scene context for continuity handoffs, especially when a prose scene
+  // flows directly into an encounter scaffold.
+  nextSceneContext?: {
+    id: string;
+    name: string;
+    location: string;
+    description: string;
+    isEncounter?: boolean;
+    encounterType?: string;
+    encounterDescription?: string;
+    encounterBeatPlan?: string[];
+  };
+
   // Choice payoff context: describes what player choice led to this scene.
   // When present, the FIRST beat must visually and textually pay off this choice.
   incomingChoiceContext?: string;
@@ -286,6 +300,8 @@ export interface GeneratedBeat {
   allowDiegeticText?: boolean; // When true, text in the image is permitted (letter, sign, book)
   shotType?: 'establishing' | 'character' | 'action'; // Camera intent: environment-only, character-focused, or physical action
   intensityTier?: 'dominant' | 'supporting' | 'rest'; // Narrative intensity for scene-level pacing
+  isClimaxBeat?: boolean;
+  isKeyStoryBeat?: boolean;
   visualContinuity?: Beat['visualContinuity']; // Optional beat-to-beat flow metadata
   visualCast?: Beat['visualCast'];
   coveragePlan?: Beat['coveragePlan'];
@@ -311,6 +327,7 @@ export interface SceneContent {
   sceneTakeaways?: string[];
   transitionIn?: string;
   sequenceIntent?: Beat['sequenceIntent'];
+  sceneVisualSequencePlan?: SceneVisualSequencePlan;
 
   // Continuity notes
   continuityNotes: string[];
@@ -473,31 +490,16 @@ Use onShow consequences when entering a beat should:
 - Modify a relationship
 - Update a score
 
-## Template Variables
+## Player-Facing Prose
 
-You can use these in text (will be replaced at runtime):
-
-**Player Templates:**
-- {{player.name}} - Player's character name
-- {{player.they}} - Subject pronoun (he/she/they)
-- {{player.them}} - Object pronoun (him/her/them)
-- {{player.their}} - Possessive pronoun (his/her/their)
-- {{player.theirs}} - Possessive pronoun (his/hers/theirs)
-- {{player.themselves}} - Reflexive pronoun (himself/herself/themselves)
-- {{player.are}} - Verb form (is/are)
-- {{player.were}} - Past tense verb (was/were)
-- {{player.have}} - Verb form (has/have)
-
-**NPC Templates:**
-- {{npc.CHARACTER_ID.name}} - NPC's name (replace CHARACTER_ID with actual ID)
-- {{npc.CHARACTER_ID.they}} - NPC's subject pronoun
-- {{npc.CHARACTER_ID.them}} - NPC's object pronoun
-- {{npc.CHARACTER_ID.their}} - NPC's possessive pronoun
+Do not emit template variables or unresolved placeholders in story text, textVariants, visual contracts, choice text, or callbacks.
+Use the protagonist's actual name from the Characters section, concrete pronouns, or direct second-person prose ("you", "your").
+NPCs should use exact names and concrete pronouns.
 
 ## CRITICAL: Character Names and Pronouns
 
 **ABSOLUTE REQUIREMENTS:**
-0. **Opening POV anchor:** The first non-empty player-facing beat MUST establish the player character as the viewpoint/focal character using second-person language ("you", "your") or player templates such as {{player.name}} / {{player.they}}. Do not open with pure NPC action, world exposition, or an unnamed camera-like view.
+0. **Opening POV anchor:** The first non-empty player-facing beat MUST establish the player character as the viewpoint/focal character using second-person language ("you", "your"), the protagonist's actual name, or a concrete pronoun. Do not open with pure NPC action, world exposition, or an unnamed camera-like view.
 1. **Use EXACT character names** as provided in the Characters section. Do NOT invent names, alter spellings, or use nicknames unless established.
 2. **Use CORRECT pronouns** for each character as specified:
    - "he/him" characters: he, him, his, himself
@@ -506,23 +508,15 @@ You can use these in text (will be replaced at runtime):
 3. **Use he/him or she/her by default.** Only use they/them pronouns for characters explicitly designated as non-binary or transgender. Never default to they/them for a character whose gender is simply unspecified.
 4. **Be consistent** - do not switch between pronouns for the same character.
 5. **Use names frequently** to avoid ambiguous pronoun references when multiple characters are present.
-6. For the protagonist, use {{player.name}} and the appropriate pronoun templates ({{player.they}}, {{player.them}}, etc.).
-7. For NPCs, use their exact names and correct pronouns as listed, or use NPC templates like {{npc.CHARACTER_ID.name}}.
-
-**VERB CONJUGATION WITH TEMPLATES (IMPORTANT):**
-The player's pronouns may change at runtime, so verb forms must be written carefully:
-- **Prefer {{player.name}} as the sentence subject** when an action verb follows. This avoids conjugation issues entirely. Example: "{{player.name}} catches her wrist" — correct for all pronoun sets.
-- Use "you/your" for direct reader address and immediate sensory framing.
-- When you DO use {{player.they}} as the subject, **write the verb for "they" (plural form)**. The runtime engine auto-conjugates for singular pronouns. Example: "{{player.they}} catch her wrist" will render correctly as "He catches" / "She catches" / "They catch".
-- Use {{player.are}}, {{player.were}}, {{player.have}} for those specific verbs.
-- **Capitalize the template at sentence starts**: Use {{Player.they}} (capital P) when the template begins a sentence, so the pronoun is capitalized ("He"/"She"/"They" instead of "he"/"she"/"they").
+6. For the protagonist, use the exact protagonist name, concrete pronouns, or "you/your"; never use template syntax.
+7. For NPCs, use their exact names and correct pronouns as listed; never use NPC template syntax.
 
 **COMMON ERRORS TO AVOID:**
 - Using "he" for a she/her character (or vice versa)
 - Inventing names not in the character list
 - Using generic terms like "the stranger" when you have the character's name
 - Ambiguous pronoun references when multiple same-pronoun characters are present
-- Using {{player.they}} with a singular verb like "catches" — always use the plural form ("catch") with pronoun templates
+- Emitting unresolved template syntax or schema placeholders in prose
 
 ## Choice Points (STRICT ENFORCEMENT)
 
@@ -544,6 +538,7 @@ For each beat object, include these fields so image agents do not have to guess:
 - "mustShowDetail": One specific visual clue that must appear.
 - "dramaticIntent": REQUIRED for non-establishing beats. Include: characterObjectives (object keyed by character name/id), obstacle, statusBefore, statusAfter, subtext, visibleTurn, visualSubtextCue.
 - "sequenceIntent": REQUIRED-BY-PROCESS for every non-establishing beat in newly generated multi-beat scenes. The field is optional for old/cached content compatibility, but new output should include objective, activity, obstacle, startState, turningPoint, endState, visualThread, optional mechanicThread, and beatRole.
+- "coveragePlan": REQUIRED-BY-PROCESS for every non-establishing beat. Include stagingPattern, shotDistance, cameraAngle, cameraSide, focalCharacterIds, requiredVisibleCharacterIds, optionalVisibleCharacterIds, offscreenCharacterIds, relationshipBlocking, coverageReason, and visualContinuity. The SequenceDirector will repair weak/missing plans, but the writer should author the intended visual coverage.
 - "intensityTier": REQUIRED. One of "dominant", "supporting", or "rest". Assign based on the Narrative Intensity Tiering rules above. A scene needs 1-2 dominant beats, 1-2 rest beats, and the remainder as supporting. Vary the intensity across the scene.
 - "visualContinuity": OPTIONAL but encouraged. Use it to make this beat flow from the previous beat as the next full-screen image: shotType, cameraAngle, focalCharacterId, blocking, proximity, motifOrProp, previousBeatId, transitionIntent, panelMode. Default panelMode is "single". Do NOT request panels, collages, split screens, contact sheets, or multiple moments inside the same image.
 
@@ -610,9 +605,16 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       let content: SceneContent;
       try {
         content = this.parseJSON<SceneContent>(response);
+        if (this.shouldRepairParsedSceneResponse(response, content)) {
+          content = await this.repairMalformedSceneJson(
+            input,
+            response,
+            new Error('SceneWriter response appears truncated or structurally incomplete after JSON repair'),
+          );
+        }
       } catch (parseError) {
         console.error(`[SceneWriter] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
-        throw parseError;
+        content = await this.repairMalformedSceneJson(input, response, parseError);
       }
 
       // Normalize arrays that the LLM might return as strings or undefined
@@ -671,6 +673,102 @@ ${CHOICE_DENSITY_REQUIREMENTS}
         success: false,
         error: errorMsg,
       };
+    }
+  }
+
+  private shouldRepairParsedSceneResponse(response: string, content: SceneContent): boolean {
+    const trimmed = response.trim();
+    const openedFence = /^```(?:json|JSON)?/.test(trimmed);
+    const closedFence = /```\s*$/.test(trimmed);
+    if (openedFence && !closedFence) return true;
+    if (!trimmed.endsWith('}') && !trimmed.endsWith(']') && !closedFence) return true;
+    if (!content?.sceneId || !Array.isArray(content.beats) || content.beats.length === 0) return true;
+    const firstBadBeat = content.beats.find((beat: any) => typeof beat?.text !== 'string' || beat.text.trim().length < 12);
+    return Boolean(firstBadBeat);
+  }
+
+  private async repairMalformedSceneJson(
+    input: SceneWriterInput,
+    malformedResponse: string,
+    parseError: unknown,
+  ): Promise<SceneContent> {
+    const errorMessage = parseError instanceof Error ? parseError.message : String(parseError);
+    const compactBlueprint = {
+      id: input.sceneBlueprint.id,
+      name: input.sceneBlueprint.name,
+      description: input.sceneBlueprint.description,
+      location: input.sceneBlueprint.location,
+      mood: input.sceneBlueprint.mood,
+      purpose: input.sceneBlueprint.purpose,
+      narrativeFunction: input.sceneBlueprint.narrativeFunction,
+      dramaticQuestion: input.sceneBlueprint.dramaticQuestion,
+      wantVsNeed: input.sceneBlueprint.wantVsNeed,
+      conflictEngine: input.sceneBlueprint.conflictEngine,
+      keyBeats: input.sceneBlueprint.keyBeats,
+      choicePoint: input.sceneBlueprint.choicePoint,
+      leadsTo: input.sceneBlueprint.leadsTo,
+    };
+    const visibleCharacters = [
+      {
+        role: 'protagonist',
+        name: input.protagonistInfo.name,
+        pronouns: input.protagonistInfo.pronouns,
+        description: input.protagonistInfo.description,
+      },
+      ...input.npcs
+        .filter((npc) => input.sceneBlueprint.npcsPresent.includes(npc.id))
+        .map((npc) => ({
+          id: npc.id,
+          name: npc.name,
+          pronouns: npc.pronouns,
+          description: npc.description,
+          voiceNotes: npc.voiceNotes,
+        })),
+    ];
+    const repairPrompt = `
+The previous SceneWriter response for scene "${input.sceneBlueprint.id}" was malformed JSON and could not be parsed.
+
+Parse error:
+${errorMessage}
+
+Your job is to RE-EMIT the complete scene as valid JSON only. Do not explain. Do not use markdown fences. Do not return a partial object.
+
+Scene blueprint:
+${JSON.stringify(compactBlueprint)}
+
+Story context:
+${JSON.stringify({
+  title: input.storyContext.title,
+  genre: input.storyContext.genre,
+  tone: input.storyContext.tone,
+  targetBeatCount: input.targetBeatCount,
+  dialogueHeavy: input.dialogueHeavy,
+})}
+
+Characters:
+${JSON.stringify(visibleCharacters)}
+
+Malformed/truncated response to repair or regenerate from:
+${malformedResponse.slice(0, 24000)}
+
+Return exactly one complete SceneContent JSON object with:
+- sceneId, sceneName, description, startingBeatId, beats, moodProgression, charactersInvolved, keyMoments, continuityNotes
+- up to ${input.targetBeatCount} beats
+- concise strings so the response cannot truncate
+- no markdown code block
+- no prose outside JSON
+`;
+
+    console.warn(`[SceneWriter] Attempting JSON repair pass for ${input.sceneBlueprint.id}`);
+    const repairedResponse = await this.callLLM([{ role: 'user', content: repairPrompt }], 2);
+    try {
+      const repaired = this.parseJSON<SceneContent>(repairedResponse);
+      console.log(`[SceneWriter] JSON repair pass succeeded for ${input.sceneBlueprint.id}`);
+      return repaired;
+    } catch (repairError) {
+      const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
+      console.error(`[SceneWriter] JSON repair pass failed for ${input.sceneBlueprint.id}: ${repairMessage}`);
+      throw new Error(`SceneWriter JSON repair failed after malformed response: ${repairMessage}`);
     }
   }
 
@@ -814,6 +912,13 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       this.ensureBeatVisualContract(beat);
       this.ensureBeatSequenceIntent(beat, content, content.beats.indexOf(beat));
     }
+
+    applySequenceDirectorPlan(content, {
+      sceneDescription: input?.sceneBlueprint?.description,
+      locationName: input?.sceneBlueprint?.location,
+      genre: input?.storyContext?.genre,
+      tone: input?.storyContext?.tone,
+    });
 
     // Normalize beat IDs and fix nextBeatId references
     const beatIds = new Set(content.beats.map(b => b.id));
@@ -1138,6 +1243,7 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 - Each non-rest beat should include a concrete change in action, leverage, information, relationship pressure, or emotional posture.
 - Give the scene a storyboardable sequenceIntent: objective, visible activity, obstacle, startState, turningPoint, endState, visualThread, optional mechanicThread. Treat it as required for new output but backward-compatible for old content.
 - Each non-establishing beat should include sequenceIntent with a beatRole so the storyboard can see setup -> pressure -> escalation -> turn -> consequence/handoff.
+- Each non-establishing beat should include a coveragePlan so the storyboard can see shot scale, angle, staging, visible/offscreen cast, relationship blocking, and continuity. Avoid vague "dialogue coverage"; make the shot prove what changed.
 - Every non-rest, non-establishing beat should answer: "What visibly changed by the end?"
 - Prefer turns over topics: not "they discuss the charm," but "the charm changes hands and Mrs. Constantinou loses the ability to dismiss what she saw."
 - Turn domains to use in prose, dramaticIntent, and existing mechanics hooks: ${FICTION_FIRST_TURN_DOMAINS.join(', ')}.
@@ -1260,14 +1366,24 @@ If this scene has no outgoing scene, write the last beat as serialized-TV craft:
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
 - ${input.dialogueHeavy ? 'This is dialogue-heavy - focus on conversation' : 'Balance description with any dialogue'}
-- The first non-empty player-facing beat MUST anchor POV to the player character with "you", "your", {{player.name}}, or another player template before focusing on NPCs or setting.
+- The first non-empty player-facing beat MUST anchor POV to the player character with "you", "your", the protagonist's actual name, or a concrete pronoun before focusing on NPCs or setting.
 ${input.previousSceneSummary ? `- Previous scene context: ${input.previousSceneSummary}` : ''}
+${input.nextSceneContext ? `- Next scene context: ${input.nextSceneContext.name} (${input.nextSceneContext.location}) — ${input.nextSceneContext.encounterDescription || input.nextSceneContext.description}` : ''}
 ${input.sceneBlueprint.choicePoint ? '- Mark the final beat as isChoicePoint: true for the Choice Author to add options' : ''}
+${input.nextSceneContext?.isEncounter && !input.sceneBlueprint.choicePoint ? `
+## PRE-ENCOUNTER HANDOFF (CRITICAL)
+This scene leads directly into an encounter scene: "${input.nextSceneContext.name}".
+- The FINAL beat must bridge from the current scene into that encounter.
+- Include one concrete handoff: a warning, departure, walk home, shortcut, pursuit setup, location shift, ominous sign, or unresolved danger that makes the encounter feel inevitable.
+- Do not end on a newly introduced fact if the next scene starts in a different place or tactical situation; give the player a readable cause-and-effect path into the encounter.
+- Preserve the final planned key beat from this scene while adding the bridge.
+${input.nextSceneContext.encounterBeatPlan?.length ? `- Upcoming encounter beat plan:\n${input.nextSceneContext.encounterBeatPlan.map(beat => `  - ${beat}`).join('\n')}` : ''}
+` : ''}
 ${input.incomingChoiceContext ? `
 ## CHOICE PAYOFF (CRITICAL — the player CHOSE this)
 This scene is entered because the player chose: "${input.incomingChoiceContext}"
 The FIRST beat MUST visually and textually pay off this choice. Do not delay, hedge, or skip the payoff.
-- The first beat must show what you / {{player.name}} did or immediately experiences because of that choice.
+- The first beat must show what you or the protagonist did or immediately experiences because of that choice.
 - The first beat's text must show the immediate consequence of the choice — the SPECIFIC physical action the player chose.
 - The first beat's visual contract MUST directly depict the choice's consequence:
   - "visualMoment": Describe the EXACT action from the choice playing out (e.g., if they chose to spin in circles, show spinning in circles — not a generic pose)
@@ -1286,11 +1402,12 @@ Create the scene content following the SceneContent schema. Include:
 6. Full beat visual contract fields (visualMoment, primaryAction, emotionalRead, relationshipDynamic, mustShowDetail, intensityTier) for every beat
 7. dramaticIntent for every non-establishing beat, including visibleTurn and visualSubtextCue
 8. scene-level sequenceIntent and beat-level sequenceIntent for every non-establishing beat in new multi-beat scenes
+9. coveragePlan for every non-establishing beat, including shot scale, angle, staging, visible/offscreen cast, relationship blocking, and continuity
 9. Optional visualContinuity metadata when it clarifies beat-to-beat flow; keep panelMode as "single" unless an explicit UX/config flag says otherwise
 10. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id
 11. sceneTakeaways and transitionIn when they clarify purpose and flow
 
-Respond with valid JSON matching the SceneContent type.
+Respond with valid JSON matching the SceneContent type. Return raw JSON only: no markdown fences, no commentary, no trailing prose.
 `;
   }
 
@@ -1376,6 +1493,8 @@ Respond with valid JSON matching the SceneContent type.
       }
     }
 
+    this.validatePreEncounterHandoff(content, input);
+
     // Check text length - warn on too short OR too long
     const MAX_SENTENCES = 4;
     const MAX_WORDS = TEXT_LIMITS.maxBeatWordCount;
@@ -1425,6 +1544,64 @@ Respond with valid JSON matching the SceneContent type.
         }
       }
     }
+  }
+
+  private validatePreEncounterHandoff(content: SceneContent, input: SceneWriterInput): void {
+    if (!input.nextSceneContext?.isEncounter || input.sceneBlueprint.choicePoint) return;
+    if (!content.beats.length) return;
+
+    const finalBeat = content.beats[content.beats.length - 1];
+    const finalText = this.normalizeForHandoffCheck(finalBeat.text);
+    if (!finalText) return;
+
+    const bridgeMarkers = [
+      'after', 'alone', 'approach', 'careful', 'danger', 'door', 'exit', 'follow',
+      'fog', 'gate', 'home', 'leave', 'leaves', 'leaving', 'night', 'outside',
+      'park', 'path', 'pursue', 'shortcut', 'stalk', 'street', 'trust', 'warn',
+      'warning', 'watch', 'watched', 'walk',
+    ];
+    const nextContextTerms = [
+      input.nextSceneContext.name,
+      input.nextSceneContext.location,
+      input.nextSceneContext.description,
+      input.nextSceneContext.encounterDescription,
+      ...(input.nextSceneContext.encounterBeatPlan || []),
+    ]
+      .flatMap((text) => this.extractHandoffKeywords(text))
+      .filter((term) => term.length >= 4);
+
+    const hasBridgeMarker = bridgeMarkers.some((marker) => finalText.includes(marker));
+    const hasNextContextTerm = nextContextTerms.some((term) => finalText.includes(term));
+
+    if (!hasBridgeMarker && !hasNextContextTerm) {
+      throw new Error(
+        `Pre-encounter handoff missing for ${input.sceneBlueprint.id}: final beat must bridge into ` +
+        `${input.nextSceneContext.id} (${input.nextSceneContext.name}) with a warning, departure, ` +
+        `location shift, pursuit setup, or other concrete cause-and-effect transition.`
+      );
+    }
+  }
+
+  private normalizeForHandoffCheck(text?: string): string {
+    return String(text || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private extractHandoffKeywords(text?: string): string[] {
+    const stopWords = new Set([
+      'about', 'after', 'again', 'being', 'from', 'have', 'into', 'must',
+      'scene', 'that', 'their', 'there', 'this', 'through', 'using', 'what',
+      'when', 'where', 'with', 'your',
+    ]);
+    return this.normalizeForHandoffCheck(text)
+      .split(' ')
+      .filter((word) => word.length >= 4 && !stopWords.has(word))
+      .slice(0, 20);
   }
 
   private ensureBeatVisualContract(beat: GeneratedBeat): void {
@@ -1609,7 +1786,7 @@ Respond with valid JSON matching the SceneContent type.
       ...(blueprint?.keyBeats || []),
       ...beats.map((beat) => beat.text),
     ].filter(Boolean).join(' ');
-    const subject = firstBeat?.speaker || content.charactersInvolved?.[0] || '{{player.name}}';
+    const subject = firstBeat?.speaker || content.charactersInvolved?.[0] || 'the protagonist';
     return {
       ...(blueprint?.sequenceIntent || content.sequenceIntent || {}),
       sequenceId: blueprint?.sequenceIntent?.sequenceId || content.sequenceIntent?.sequenceId || `${content.sceneId || 'scene'}-sequence-1`,
@@ -1930,7 +2107,7 @@ Please revise the content to fix these issues. Return the COMPLETE revised scene
 Key requirements:
 - Each beat must stay under cap: 4 sentences, ${TEXT_LIMITS.maxBeatWordCount} words (climax: ${TEXT_LIMITS.maxClimaxBeatWordCount}, key: ${TEXT_LIMITS.maxKeyStoryBeatWordCount})
 - Preserve existing beat IDs, choice-point flags, visual contract fields, thread IDs, callback IDs, and nextBeatId navigation unless a listed issue explicitly requires splitting or relinking beats
-- For POV clarity issues, rewrite only prose/textVariants needed to anchor the first non-empty beat to the player character with you/your or {{player.name}}
+- For POV clarity issues, rewrite only prose/textVariants needed to anchor the first non-empty beat to the player character with you/your, the protagonist's actual name, or a concrete pronoun.
 - If a beat is too long, split it into multiple beats
 - Maintain the narrative flow when splitting
 - Keep beat IDs logical (beat-1, beat-2, etc.)
@@ -1987,7 +2164,7 @@ Return ONLY valid JSON matching the SceneContent schema.
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[SceneWriter] Revision failed: ${errorMsg}, using original content`);
+      console.error(`[SceneWriter] Revision failed: ${errorMsg}, checking whether original content is safe to use`);
 
       // Check if original content has missing isChoicePoint - pipeline will apply fallback
       if (input.sceneBlueprint.choicePoint) {
@@ -1995,6 +2172,16 @@ Return ONLY valid JSON matching the SceneContent schema.
         if (!hasChoicePoint) {
           console.warn(`[SceneWriter] Original content missing isChoicePoint - pipeline fallback will auto-mark last beat`);
         }
+      }
+
+      try {
+        this.validatePreEncounterHandoff(originalContent, input);
+      } catch (originalError) {
+        const originalErrorMsg = originalError instanceof Error ? originalError.message : String(originalError);
+        return {
+          success: false,
+          error: originalErrorMsg,
+        };
       }
 
       // Return original content if revision fails

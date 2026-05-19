@@ -168,6 +168,19 @@ export interface NarrativeSequenceIntent {
   beatRole?: 'setup' | 'pressure' | 'escalation' | 'turn' | 'consequence' | 'handoff' | 'aftermath';
 }
 
+export interface SceneVisualSequencePlan {
+  objective: string;
+  activity: string;
+  obstacle: string;
+  geography: string;
+  movementLine: string;
+  visualThread: string;
+  shotRhythm: Array<'establishing' | 'relationship' | 'insert' | 'reaction' | 'confrontation' | 'reversal' | 'outcome' | 'aftermath'>;
+  powerBlocking: string;
+  turningPoint: string;
+  endState: string;
+}
+
 // A beat is a unit of content within a scene
 export interface Beat {
   id: string;

@@ -23,6 +23,8 @@ interface AppNavigationState {
   closeVisualizer: () => void;
   openGenerator: (jobId?: string, origin?: GeneratorOrigin, seasonPlanId?: string) => void;
   closeGenerator: (nextScreen?: AppScreen) => void;
+  /** Clear in-app routes after sign-out (avoids stale screen when session is restored). */
+  resetAfterLogout: () => void;
 }
 
 export const useAppNavigationStore = create<AppNavigationState>((set, get) => ({
@@ -37,6 +39,7 @@ export const useAppNavigationStore = create<AppNavigationState>((set, get) => ({
   closePauseMenu: () => set({ showPauseMenu: false }),
   openVisualizer: (storyId) => set({ visualizerStoryId: storyId, currentScreen: 'visualizer' }),
   closeVisualizer: () => set({ visualizerStoryId: null, currentScreen: 'settings' }),
+<<<<<<< HEAD
   openGenerator: (jobId, origin, seasonPlanId) => {
     // Infer origin from the screen the user is currently on if not explicitly
     // provided, so back-nav always returns them to where they came from.
@@ -54,4 +57,15 @@ export const useAppNavigationStore = create<AppNavigationState>((set, get) => ({
     const origin = get().generatorOrigin;
     set({ resumeJobId: undefined, generatorSeasonPlanId: undefined, currentScreen: nextScreen || origin });
   },
+=======
+  openGenerator: (jobId) => set({ resumeJobId: jobId, currentScreen: 'generator' }),
+  closeGenerator: (nextScreen = 'settings') => set({ resumeJobId: undefined, currentScreen: nextScreen }),
+  resetAfterLogout: () =>
+    set({
+      currentScreen: 'home',
+      showPauseMenu: false,
+      visualizerStoryId: null,
+      resumeJobId: undefined,
+    }),
+>>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
 }));

@@ -38,7 +38,13 @@ import { APP_VERSION_LABEL } from '../../config/version';
 import { SegmentedControl, Toggle } from '../ui';
 import { PipelineProgress } from '../PipelineProgress';
 import { PROXY_CONFIG } from '../../config/endpoints';
-import { fetchAuthMe, fetchAuthProviders, postAuthLogout, type AuthUser } from '../../services/authSession';
+import {
+  fetchAuthMe,
+  fetchAuthProviders,
+  postAuthLogout,
+  type AuthProviders,
+  type AuthUser,
+} from '../../services/authSession';
 
 type SettingsStyles = Record<string, any>;
 
@@ -908,10 +914,11 @@ export function StoryLibrarySection({
 
 interface OAuthAccountSectionProps {
   styles: SettingsStyles;
+  onSignedOut?: () => void;
 }
 
-export function OAuthAccountSection({ styles }: OAuthAccountSectionProps) {
-  const [providers, setProviders] = React.useState<{ google: boolean; discord: boolean } | null>(null);
+export function OAuthAccountSection({ styles, onSignedOut }: OAuthAccountSectionProps) {
+  const [providers, setProviders] = React.useState<AuthProviders | null>(null);
   const [user, setUser] = React.useState<AuthUser | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -972,6 +979,7 @@ export function OAuthAccountSection({ styles }: OAuthAccountSectionProps) {
     try {
       await postAuthLogout();
       setUser(null);
+      onSignedOut?.();
     } catch (e) {
       console.warn('[OAuthAccountSection] logout', e);
       setError('LOGOUT FAILED');
@@ -980,7 +988,7 @@ export function OAuthAccountSection({ styles }: OAuthAccountSectionProps) {
     }
   };
 
-  const hasAnyProvider = providers?.google || providers?.discord;
+  const hasAnyProvider = providers?.google || providers?.discord || providers?.local;
 
   return (
     <View style={styles.section}>
@@ -988,7 +996,7 @@ export function OAuthAccountSection({ styles }: OAuthAccountSectionProps) {
         styles={styles}
         icon={<LogIn size={18} color={TERMINAL.colors.primary} />}
         title="ACCOUNT (WEB)"
-        description="SIGN IN VIA PROXY — REQUIRES GOOGLE / DISCORD OAUTH APPS AND ENV VARS"
+        description="EMAIL, GOOGLE, OR DISCORD — SESSION ON PROXY (PORT 3001)"
       />
 
       <View style={styles.settingCard}>
@@ -1039,8 +1047,7 @@ export function OAuthAccountSection({ styles }: OAuthAccountSectionProps) {
           <View style={{ gap: 10 }}>
             {!hasAnyProvider && providers !== null ? (
               <Text style={styles.sectionDesc}>
-                SET GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET AND/OR DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET ON THE
-                PROXY. OPTIONAL: AUTH_BASE_URL, AUTH_SUCCESS_REDIRECT, SESSION_SECRET.
+                EMAIL SIGN-IN IS ENABLED BY DEFAULT. OPTIONAL: GOOGLE / DISCORD OAUTH ENV VARS ON THE PROXY.
               </Text>
             ) : null}
             {providers?.google ? (

@@ -5,226 +5,243 @@ import {
   StyleSheet,
   TouchableOpacity,
   SafeAreaView,
-  Modal,
   Platform,
   ActivityIndicator,
   ScrollView,
+  TextInput,
 } from 'react-native';
-import { ChevronRight, LogIn, Shield } from 'lucide-react-native';
+import { LogIn } from 'lucide-react-native';
 import { TERMINAL } from '../theme';
 import { PROXY_CONFIG } from '../config/endpoints';
-import { fetchAuthMe, fetchAuthProviders, type AuthUser } from '../services/authSession';
+import {
+  fetchAuthMe,
+  fetchAuthProviders,
+  postAuthLogin,
+  postAuthRegister,
+  type AuthProviders,
+  type AuthUser,
+} from '../services/authSession';
 
 export interface LoginScreenProps {
-  onBack: () => void;
+  onAuthenticated: (user: AuthUser) => void;
 }
 
-export const LoginScreen: React.FC<LoginScreenProps> = ({ onBack }) => {
-  const [providers, setProviders] = useState<{ google: boolean; discord: boolean } | null>(null);
-  const [user, setUser] = useState<AuthUser | null>(null);
+export const LoginScreen: React.FC<LoginScreenProps> = ({ onAuthenticated }) => {
+  const [providers, setProviders] = useState<AuthProviders | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   const load = useCallback(async () => {
-    if (Platform.OS !== 'web') {
-      setLoading(false);
-      setProviders(null);
-      setUser(null);
-      return;
-    }
     setError(null);
     setLoading(true);
     try {
       const [p, me] = await Promise.all([fetchAuthProviders(), fetchAuthMe()]);
       setProviders(p);
-      setUser(me.user);
+      if (me.user) {
+        onAuthenticated(me.user);
+        return;
+      }
     } catch (e) {
       console.warn('[LoginScreen]', e);
-      setError('Could not reach the proxy or auth is not configured.');
+      setError('Could not reach the proxy. Start it with npm run proxy (port 3001).');
       setProviders(null);
-      setUser(null);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onAuthenticated]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   const startGoogle = () => {
-    setPickerOpen(false);
     if (typeof window !== 'undefined') {
       window.location.assign(PROXY_CONFIG.authGoogle);
     }
   };
 
   const startDiscord = () => {
-    setPickerOpen(false);
     if (typeof window !== 'undefined') {
       window.location.assign(PROXY_CONFIG.authDiscord);
     }
   };
 
-  const hasAnyProvider = Boolean(providers?.google || providers?.discord);
+  const handleEmailSubmit = async () => {
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) {
+      setError('Enter email and password.');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const result =
+        mode === 'signup'
+          ? await postAuthRegister(trimmedEmail, password, displayName)
+          : await postAuthLogin(trimmedEmail, password);
+      onAuthenticated(result.user);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Sign-in failed');
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
-  if (Platform.OS !== 'web') {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity style={styles.headerButton} onPress={onBack}>
-            <ChevronRight size={20} color={TERMINAL.colors.muted} style={{ transform: [{ rotate: '180deg' }] }} />
-            <Text style={styles.headerButtonText}>BACK</Text>
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>SIGN IN</Text>
-          <View style={{ width: 72 }} />
-        </View>
-        <ScrollView contentContainerStyle={styles.body}>
-          <Shield size={40} color={TERMINAL.colors.muted} style={{ alignSelf: 'center', marginBottom: 16 }} />
-          <Text style={styles.lead}>
-            Google and Discord sign-in run in the browser against the StoryRPG proxy. Use the web build
-            (npm run web) with the proxy on port 3001 to sign in.
-          </Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={onBack}>
-            <Text style={styles.primaryButtonText}>RETURN TO LIBRARY</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
+  const hasOAuth = Boolean(providers?.google || providers?.discord);
+  const showLocal = providers?.local !== false;
+  const canRegister = providers?.registration !== false;
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.headerButton} onPress={onBack}>
-          <ChevronRight size={20} color={TERMINAL.colors.muted} style={{ transform: [{ rotate: '180deg' }] }} />
-          <Text style={styles.headerButtonText}>BACK</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>SIGN IN</Text>
-        <View style={{ width: 72 }} />
-      </View>
-
       <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-        <View style={styles.logoRow}>
-          <View style={styles.logoIcon}>
-            <LogIn size={22} color="white" />
-          </View>
-          <Text style={styles.logoText}>
-            STORY<Text style={{ color: TERMINAL.colors.primary }}>RPG</Text>
-          </Text>
-        </View>
-
-        <Text style={styles.systemStatus}>AUTHENTICATION GATEWAY</Text>
-
-        {loading ? (
-          <View style={styles.card}>
-            <ActivityIndicator size="small" color={TERMINAL.colors.primary} />
-            <Text style={[styles.muted, { marginTop: 12 }]}>CHECKING SESSION…</Text>
-          </View>
-        ) : null}
-
-        {error ? (
-          <View style={styles.card}>
-            <Text style={styles.errorText}>{error}</Text>
-            <TouchableOpacity style={styles.secondaryButton} onPress={load}>
-              <Text style={styles.secondaryButtonText}>RETRY</Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
-
-        {!loading && user ? (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>SIGNED IN</Text>
-            <Text style={styles.cardLine}>{user.displayName || user.email || user.id}</Text>
-            <Text style={styles.muted}>{user.provider.toUpperCase()}</Text>
-            <TouchableOpacity style={[styles.primaryButton, { marginTop: 16 }]} onPress={onBack}>
-              <Text style={styles.primaryButtonText}>CONTINUE TO LIBRARY</Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
-
-        {!loading && !user && !error ? (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>ACCOUNT</Text>
-            <Text style={styles.muted}>
-              {hasAnyProvider
-                ? 'Choose Google or Discord. You will be redirected to the proxy to complete sign-in.'
-                : 'Configure GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET and/or DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET on the proxy, then refresh.'}
+        <View style={styles.formColumn}>
+          <View style={styles.logoRow}>
+            <View style={styles.logoIcon}>
+              <LogIn size={22} color="white" />
+            </View>
+            <Text style={styles.logoText}>
+              STORY<Text style={{ color: TERMINAL.colors.primary }}>RPG</Text>
             </Text>
-            <TouchableOpacity
-              style={[styles.primaryButton, { marginTop: 20 }]}
-              onPress={() => (hasAnyProvider ? setPickerOpen(true) : load())}
-              disabled={!hasAnyProvider && providers === null}
-            >
-              <Text style={styles.primaryButtonText}>{hasAnyProvider ? 'SIGN IN' : 'REFRESH'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.secondaryButton, { marginTop: 12 }]} onPress={onBack}>
-              <Text style={styles.secondaryButtonText}>CONTINUE WITHOUT ACCOUNT</Text>
-            </TouchableOpacity>
           </View>
-        ) : null}
-      </ScrollView>
 
-      <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>CHOOSE PROVIDER</Text>
-            {providers?.google ? (
-              <TouchableOpacity style={[styles.modalChoice, styles.modalChoicePrimary]} onPress={startGoogle}>
-                <Text style={styles.modalChoiceTextPrimary}>GOOGLE</Text>
+          <Text style={styles.systemStatus}>SIGN IN REQUIRED</Text>
+
+          {loading ? (
+            <View style={styles.card}>
+              <ActivityIndicator size="small" color={TERMINAL.colors.primary} />
+              <Text style={[styles.muted, { marginTop: 12 }]}>CHECKING SESSION…</Text>
+            </View>
+          ) : null}
+
+          {error ? (
+            <View style={styles.card}>
+              <Text style={styles.errorText}>{error}</Text>
+              <TouchableOpacity style={styles.secondaryButton} onPress={load}>
+                <Text style={styles.secondaryButtonText}>RETRY</Text>
               </TouchableOpacity>
-            ) : null}
-            {providers?.discord ? (
-              <TouchableOpacity style={styles.modalChoice} onPress={startDiscord}>
-                <Text style={styles.modalChoiceText}>DISCORD</Text>
-              </TouchableOpacity>
-            ) : null}
-            <TouchableOpacity style={styles.modalCancel} onPress={() => setPickerOpen(false)}>
-              <Text style={styles.modalCancelText}>CANCEL</Text>
-            </TouchableOpacity>
-          </View>
+            </View>
+          ) : null}
+
+          {!loading ? (
+            <>
+              {showLocal ? (
+                <View style={styles.card}>
+                  <Text style={styles.cardTitle}>{mode === 'signin' ? 'EMAIL' : 'CREATE ACCOUNT'}</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Email"
+                    placeholderTextColor={TERMINAL.colors.muted}
+                    value={email}
+                    onChangeText={setEmail}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="email-address"
+                    textContentType="emailAddress"
+                  />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Password (8+ characters)"
+                    placeholderTextColor={TERMINAL.colors.muted}
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry
+                    textContentType={mode === 'signin' ? 'password' : 'newPassword'}
+                  />
+                  {mode === 'signup' ? (
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Display name (optional)"
+                      placeholderTextColor={TERMINAL.colors.muted}
+                      value={displayName}
+                      onChangeText={setDisplayName}
+                      autoCapitalize="words"
+                    />
+                  ) : null}
+                  <TouchableOpacity
+                    style={[styles.primaryButton, { marginTop: 12 }]}
+                    onPress={handleEmailSubmit}
+                    disabled={submitting}
+                  >
+                    {submitting ? (
+                      <ActivityIndicator size="small" color="white" />
+                    ) : (
+                      <Text style={styles.primaryButtonText}>
+                        {mode === 'signin' ? 'SIGN IN WITH EMAIL' : 'CREATE ACCOUNT'}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                  {canRegister ? (
+                    <TouchableOpacity
+                      style={[styles.linkButton, { marginTop: 12 }]}
+                      onPress={() => {
+                        setMode(mode === 'signin' ? 'signup' : 'signin');
+                        setError(null);
+                      }}
+                    >
+                      <Text style={styles.linkButtonText}>
+                        {mode === 'signin' ? 'NEED AN ACCOUNT? REGISTER' : 'ALREADY HAVE AN ACCOUNT? SIGN IN'}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              ) : null}
+
+              {hasOAuth && Platform.OS === 'web' ? (
+                <View style={[styles.card, styles.cardSpaced]}>
+                  <Text style={styles.cardTitle}>OR CONTINUE WITH</Text>
+                  {providers?.google ? (
+                    <TouchableOpacity
+                      style={[styles.oauthButton, styles.oauthButtonGoogle]}
+                      onPress={startGoogle}
+                    >
+                      <Text style={styles.oauthButtonTextGoogle}>GOOGLE</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  {providers?.discord ? (
+                    <TouchableOpacity style={styles.oauthButton} onPress={startDiscord}>
+                      <Text style={styles.oauthButtonText}>DISCORD</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              ) : null}
+
+              {Platform.OS !== 'web' && hasOAuth ? (
+                <Text style={[styles.muted, styles.nativeOAuthNote]}>
+                  Google and Discord sign-in are available in the web app. Use email and password here, or open the web
+                  build.
+                </Text>
+              ) : null}
+            </>
+          ) : null}
         </View>
-      </Modal>
+      </ScrollView>
     </SafeAreaView>
   );
 };
+
+const cardWidth = Platform.OS === 'web' ? ('50%' as const) : ('100%' as const);
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: TERMINAL.colors.background,
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
-  },
-  headerButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    width: 72,
-  },
-  headerButtonText: {
-    color: TERMINAL.colors.muted,
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1,
-  },
-  headerTitle: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 2,
-  },
   body: {
     padding: 24,
     paddingBottom: 48,
+    flexGrow: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  formColumn: {
+    width: '100%',
+    maxWidth: 1200,
+    alignItems: 'center',
   },
   logoRow: {
     flexDirection: 'row',
@@ -232,6 +249,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 10,
     marginBottom: 8,
+    width: cardWidth,
   },
   logoIcon: {
     width: 40,
@@ -254,43 +272,53 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     textAlign: 'center',
     marginBottom: 24,
+    width: cardWidth,
   },
   card: {
+    width: cardWidth,
+    minWidth: Platform.OS === 'web' ? 300 : undefined,
+    maxWidth: Platform.OS === 'web' ? 520 : undefined,
     backgroundColor: '#1e2229',
     borderRadius: 20,
     padding: 20,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
   },
+  cardSpaced: {
+    marginTop: 16,
+  },
   cardTitle: {
     fontSize: 11,
     fontWeight: '900',
     color: TERMINAL.colors.primary,
     letterSpacing: 2,
-    marginBottom: 8,
+    marginBottom: 12,
   },
-  cardLine: {
-    fontSize: 16,
-    fontWeight: '800',
+  input: {
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     color: 'white',
-    marginBottom: 4,
+    fontSize: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
   },
   muted: {
     fontSize: 12,
     color: TERMINAL.colors.muted,
     lineHeight: 18,
   },
+  nativeOAuthNote: {
+    marginTop: 16,
+    textAlign: 'center',
+    width: cardWidth,
+  },
   errorText: {
     fontSize: 12,
     color: TERMINAL.colors.error,
     marginBottom: 12,
-  },
-  lead: {
-    fontSize: 14,
-    color: TERMINAL.colors.muted,
-    lineHeight: 22,
-    textAlign: 'center',
-    marginBottom: 24,
   },
   primaryButton: {
     backgroundColor: TERMINAL.colors.primary,
@@ -316,63 +344,40 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    justifyContent: 'center',
+  linkButton: {
     alignItems: 'center',
-    padding: 24,
+    paddingVertical: 8,
   },
-  modalCard: {
-    width: '100%',
-    maxWidth: 400,
-    backgroundColor: '#1a1d24',
-    borderRadius: 20,
-    padding: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+  linkButtonText: {
+    color: TERMINAL.colors.primary,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
   },
-  modalTitle: {
-    fontSize: 12,
-    fontWeight: '900',
-    color: 'white',
-    letterSpacing: 2,
-    marginBottom: 20,
-    textAlign: 'center',
-  },
-  modalChoice: {
+  oauthButton: {
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: 'center',
-    marginBottom: 10,
+    marginTop: 10,
     backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  modalChoicePrimary: {
-    backgroundColor: 'rgba(59, 130, 246, 0.25)',
     borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  oauthButtonGoogle: {
+    marginTop: 0,
+    backgroundColor: 'rgba(59, 130, 246, 0.25)',
     borderColor: 'rgba(59, 130, 246, 0.45)',
   },
-  modalChoiceText: {
+  oauthButtonText: {
     color: 'white',
     fontSize: 11,
     fontWeight: '900',
     letterSpacing: 2,
   },
-  modalChoiceTextPrimary: {
+  oauthButtonTextGoogle: {
     color: TERMINAL.colors.primary,
     fontSize: 11,
     fontWeight: '900',
     letterSpacing: 2,
-  },
-  modalCancel: {
-    marginTop: 8,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  modalCancelText: {
-    color: TERMINAL.colors.muted,
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1,
   },
 });

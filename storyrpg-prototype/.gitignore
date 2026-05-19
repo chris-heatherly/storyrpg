@@ -43,6 +43,8 @@ yarn-error.*
 /android
 
 # proxy temp files
+.auth-users.json
+# legacy file-based auth (replaced by Postgres users table)
 .ref-images/
 .generation-jobs.json
 .image-feedback.json

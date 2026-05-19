@@ -19,8 +19,11 @@ import {
   LogOut,
   RotateCcw,
   Sparkles,
+<<<<<<< HEAD
   Cpu,
   LogIn,
+=======
+>>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
 } from 'lucide-react-native';
 import { useGameActions, useGamePlayerState, useGameStoryState } from '../stores/gameStore';
 import { StoryCatalogEntry } from '../types';
@@ -38,8 +41,6 @@ interface HomeScreenProps {
   onStartStory: (storyId: string) => void;
   onContinueStory: () => void;
   onOpenSettings: () => void;
-  /** Web: opens dedicated sign-in screen (proxy OAuth). */
-  onOpenLogin?: () => void;
   onOpenGenerator?: () => void;
   activeGenerationJob?: {
     id: string;
@@ -53,7 +54,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onStartStory,
   onContinueStory,
   onOpenSettings,
-  onOpenLogin,
   onOpenGenerator,
   activeGenerationJob,
   onOpenActiveGeneration,
@@ -129,6 +129,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </View>
           <Text style={styles.logoText}>STORY<Text style={{ color: TERMINAL.colors.primary }}>RPG</Text></Text>
         </View>
+<<<<<<< HEAD
         <View style={styles.headerActions}>
           {activeGenerationJob && onOpenActiveGeneration && (
             <TouchableOpacity
@@ -158,6 +159,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               </Text>
             </TouchableOpacity>
           ) : null}
+=======
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+>>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
           {onOpenGenerator && (
             <TouchableOpacity 
               style={styles.headerActionButton}

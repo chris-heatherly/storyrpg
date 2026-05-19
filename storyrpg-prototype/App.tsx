@@ -33,6 +33,7 @@ import { GENERATOR_STORAGE_KEYS } from './src/hooks/useGeneratorSettings';
 import { fetchStoryByCatalogEntry } from './src/services/storyLibrary';
 import { useGeneratorRunner } from './src/hooks/useGeneratorRunner';
 import { useAppNavigationStore } from './src/stores/appNavigationStore';
+<<<<<<< HEAD
 import {
   captureAttributionFromUrl,
   identifyAnonymousPlayer,
@@ -42,6 +43,14 @@ import {
   setSuperProperties,
   track,
 } from './src/services/analyticsService';
+=======
+import { fetchAuthMe, type AuthUser } from './src/services/authSession';
+import {
+  installWebAuthHistoryGuards,
+  markWebHistoryAuthenticated,
+  sealWebHistoryAfterLogout,
+} from './src/utils/webAuthHistory';
+>>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
 
 const GENERATED_STORIES_KEY = '@storyrpg_generated_stories';
 const DELETED_STORIES_KEY = '@storyrpg_deleted_stories'; // Track intentionally deleted stories
@@ -155,6 +164,8 @@ function AppContent() {
   const [imageGeneratingStoryId, setImageGeneratingStoryId] = useState<string | null>(null);
   const videoPipelineRef = useRef<PipelineHandle | null>(null);
   const [visualizerStory, setVisualizerStory] = useState<Story | null>(null);
+  /** undefined = checking session; null = signed out; AuthUser = signed in */
+  const [authUser, setAuthUser] = useState<AuthUser | null | undefined>(undefined);
   const currentScreen = useAppNavigationStore((state) => state.currentScreen);
   const showPauseMenu = useAppNavigationStore((state) => state.showPauseMenu);
   const visualizerStoryId = useAppNavigationStore((state) => state.visualizerStoryId);
@@ -167,18 +178,81 @@ function AppContent() {
   const closeVisualizerRoute = useAppNavigationStore((state) => state.closeVisualizer);
   const openGeneratorRoute = useAppNavigationStore((state) => state.openGenerator);
   const closeGeneratorRoute = useAppNavigationStore((state) => state.closeGenerator);
+  const resetNavigationAfterLogout = useAppNavigationStore((state) => state.resetAfterLogout);
+
+  const refreshAuthSession = useCallback(async () => {
+    try {
+      const me = await fetchAuthMe();
+      setAuthUser(me.user);
+      if (Platform.OS === 'web') {
+        if (me.user) {
+          markWebHistoryAuthenticated();
+        } else {
+          resetNavigationAfterLogout();
+          sealWebHistoryAfterLogout();
+        }
+      }
+      return me.user;
+    } catch (err) {
+      console.warn('[App] Auth session check failed:', err);
+      setAuthUser(null);
+      if (Platform.OS === 'web') {
+        resetNavigationAfterLogout();
+        sealWebHistoryAfterLogout();
+      }
+      return null;
+    }
+  }, [resetNavigationAfterLogout]);
+
+  useEffect(() => {
+    refreshAuthSession();
+  }, [refreshAuthSession]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    return installWebAuthHistoryGuards({
+      onNavigate: () => {
+        void refreshAuthSession();
+      },
+    });
+  }, [refreshAuthSession]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
     const url = new URL(window.location.href);
-    if (url.searchParams.get('afterAuth') !== 'home') return;
+    const afterOAuth = url.searchParams.get('afterAuth') === 'home';
+    const authError = url.searchParams.has('auth');
+    if (!afterOAuth && !authError) return;
     url.searchParams.delete('afterAuth');
     url.searchParams.delete('auth');
     const qs = url.searchParams.toString();
     const next = `${url.pathname}${qs ? `?${qs}` : ''}${url.hash}`;
     window.history.replaceState({}, document.title, next);
-    navigateTo('home');
-  }, [navigateTo]);
+    refreshAuthSession().then((user) => {
+      if (user) {
+        navigateTo('home');
+      }
+    });
+  }, [navigateTo, refreshAuthSession]);
+
+  const handleAuthenticated = useCallback(
+    (user: AuthUser) => {
+      setAuthUser(user);
+      navigateTo('home');
+      if (Platform.OS === 'web') {
+        markWebHistoryAuthenticated();
+      }
+    },
+    [navigateTo],
+  );
+
+  const handleSignedOut = useCallback(() => {
+    resetNavigationAfterLogout();
+    setAuthUser(null);
+    if (Platform.OS === 'web') {
+      sealWebHistoryAfterLogout();
+    }
+  }, [resetNavigationAfterLogout]);
   const {
     stories,
     setStories,
@@ -475,14 +549,6 @@ function AppContent() {
     navigateTo('settings');
   };
 
-  const handleOpenLogin = () => {
-    navigateTo('login');
-  };
-
-  const handleBackFromLogin = () => {
-    navigateTo('home');
-  };
-
   const handleBackFromSettings = () => {
     navigateTo('home');
   };
@@ -754,6 +820,7 @@ function AppContent() {
     }
   }, [videoGeneratingStoryId, registerGenJob, updateGenJob, addJobEvent, addVideoJob, updateVideoJob, removeVideoJob, clearVideoJobs, loadFullStory]);
 
+<<<<<<< HEAD
   const handleGenerateImages = useCallback(async (storyId: string) => {
     if (imageGeneratingStoryId) return;
     const storyEntry = stories.find((candidate) => candidate.id === storyId);
@@ -877,12 +944,24 @@ function AppContent() {
   ]);
 
   if (!storiesLoaded) {
+=======
+  if (authUser === undefined || !storiesLoaded) {
+>>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
         <StatusBar style="light" />
         <Text style={{ color: TERMINAL.colors.primary, fontSize: fonts.medium }}>
           {TERMINAL.symbols.prompt} LOADING...
         </Text>
+      </View>
+    );
+  }
+
+  if (authUser === null) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="light" />
+        <LoginScreen onAuthenticated={handleAuthenticated} />
       </View>
     );
   }
@@ -897,19 +976,17 @@ function AppContent() {
           onStartStory={handleStartStory}
           onContinueStory={handleContinueStory}
           onOpenSettings={handleOpenSettings}
-          onOpenLogin={handleOpenLogin}
           onOpenGenerator={() => handleOpenGenerator()}
           activeGenerationJob={activeGenerationJob}
           onOpenActiveGeneration={(jobId) => handleOpenGenerator(jobId)}
         />
       )}
 
-      {currentScreen === 'login' && <LoginScreen onBack={handleBackFromLogin} />}
-
       {currentScreen === 'settings' && (
         <SettingsScreen
           stories={stories}
           onBack={handleBackFromSettings}
+          onSignedOut={handleSignedOut}
           onOpenVisualizer={handleOpenVisualizer}
           onOpenGenerator={handleOpenGenerator}
           onDeleteStory={handleDeleteStory}

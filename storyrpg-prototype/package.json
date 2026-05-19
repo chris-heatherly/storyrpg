@@ -18,10 +18,18 @@
     "typecheck:app": "tsc -p tsconfig.app.json --noEmit",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
     "typecheck:contracts": "tsc -p tsconfig.contracts.json --noEmit",
+<<<<<<< HEAD
     "typecheck:worker": "tsc -p tsconfig.worker.json --noEmit",
     "typecheck": "npm run typecheck:app && npm run typecheck:test && npm run typecheck:contracts && npm run typecheck:worker",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "validate": "npm run typecheck && npm run lint && npm test",
+=======
+    "typecheck": "npm run typecheck:app && npm run typecheck:test && npm run typecheck:contracts",
+    "validate": "npm run typecheck && npm test",
+    "db:proxy": "bash scripts/run-db-proxy.sh",
+    "db:migrate": "node scripts/db-migrate.mjs",
+    "db:verify": "node scripts/verify-db-connection.mjs",
+>>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
     "clean:runtime": "node scripts/clean-runtime-artifacts.mjs",
     "generate": "npx ts-node --esm src/ai-agents/example-usage.ts",
     "generate:heist": "STORY_TYPE=heist npx ts-node --esm src/ai-agents/example-usage.ts",
@@ -69,14 +77,22 @@
     "@vitest/coverage-v8": "^4.1.4",
     "babel-plugin-module-resolver": "^5.0.2",
     "babel-preset-expo": "^54.0.9",
+    "bcryptjs": "^3.0.3",
     "buffer": "^6.0.3",
+<<<<<<< HEAD
+=======
+    "connect-pg-simple": "^10.0.0",
+    "cors": "^2.8.5",
+>>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
     "crypto-browserify": "^3.12.1",
     "express-session": "^1.19.0",
     "os-browserify": "^0.3.0",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
+    "passport-local": "^1.0.0",
     "passport-oauth2": "^1.8.0",
     "path-browserify": "^1.0.1",
+    "pg": "^8.21.0",
     "process": "^0.11.10",
     "stream-browserify": "^3.0.0",
     "typescript-eslint": "^8.58.2",

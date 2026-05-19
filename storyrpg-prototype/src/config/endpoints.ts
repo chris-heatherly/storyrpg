@@ -47,6 +47,8 @@ export const PROXY_CONFIG = {
   get authLogout() { return `${this.getProxyUrl()}/auth/logout`; },
   get authGoogle() { return `${this.getProxyUrl()}/auth/google`; },
   get authDiscord() { return `${this.getProxyUrl()}/auth/discord`; },
+  get authLogin() { return `${this.getProxyUrl()}/auth/login`; },
+  get authRegister() { return `${this.getProxyUrl()}/auth/register`; },
 };
 
 // ========================================

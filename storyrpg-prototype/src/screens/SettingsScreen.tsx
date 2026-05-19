@@ -50,7 +50,11 @@ interface SettingsScreenProps {
   onStoryArtifactsChanged?: (story: StoryCatalogEntry) => Promise<void> | void;
   isRefreshing?: boolean;
   videoGeneratingStoryId?: string | null;
+<<<<<<< HEAD
   imageGeneratingStoryId?: string | null;
+=======
+  onSignedOut?: () => void;
+>>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
@@ -69,7 +73,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onStoryArtifactsChanged,
   isRefreshing = false,
   videoGeneratingStoryId = null,
+<<<<<<< HEAD
   imageGeneratingStoryId = null,
+=======
+  onSignedOut,
+>>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
 }) => {
   const fontSize = useSettingsStore((state) => state.fontSize);
   const setFontSize = useSettingsStore((state) => state.setFontSize);
@@ -411,7 +419,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       >
         <Text style={styles.systemStatus}>OPTIMIZING INTERFACE PARAMETERS</Text>
 
-        <OAuthAccountSection styles={styles} />
+        <OAuthAccountSection styles={styles} onSignedOut={onSignedOut} />
 
         <DisplayPreferencesSection
           styles={styles}

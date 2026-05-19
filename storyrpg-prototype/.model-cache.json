@@ -1,5 +1,9 @@
 {
+<<<<<<< HEAD
   "scannedAt": 1778444749392,
+=======
+  "scannedAt": 1779115724979,
+>>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
   "providers": {
     "anthropic": [
       {

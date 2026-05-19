@@ -1,7 +1,7 @@
 # StoryRPG - Technical Design Document
 
 **Version:** 3.1 (Comprehensive Reference Edition)  
-**Last Updated:** April 2026  
+**Last Updated:** May 2026
 **Status:** Active Development
 
 ---
@@ -179,6 +179,7 @@ StoryRPG_New/
 ├── docs/                               # All project documentation
 │   ├── GDD.md                          # Game Design Document
 │   ├── TDD.md                          # Technical Design Document (this file)
+│   ├── CURRENT_PIPELINE_STATUS.md      # Current pipeline and compatibility status
 │   ├── INSTALL.md                      # Installation Guide
 │   ├── IMAGE_PIPELINE_RUNTIME.md       # Image generation pipeline docs
 │   ├── INCREMENTAL_VALIDATION_PLAN.md  # Validation system docs
@@ -187,7 +188,9 @@ StoryRPG_New/
 │   ├── QA_FIXES_SUMMARY.md             # Quality assurance improvements
 │   ├── STORY_AGENT_SYSTEM_DETAIL.md    # Agent system details
 │   ├── STORY_BRANCHING.md              # Branching story design
+│   ├── STORY_PIPELINE_MERMAID.md       # Story pipeline diagrams
 │   ├── STORY_PIPELINE_PROMPTING.md     # LLM prompting strategies
+│   ├── STORY_QUALITY_CONTRACT.md       # Story quality rules and validator contract
 │   ├── sample-story.md                 # Sample story reference
 │   ├── visual_storytelling_guide.md    # Visual direction reference
 │   ├── visual_storytelling_quick_reference.md
@@ -252,12 +255,12 @@ StoryRPG_New/
     │   │   │   ├── CharacterArcTracker.ts # Per-episode identity/relationship milestone targets
     │   │   │   ├── SeasonPlannerAgent.ts # Season planning (3-act / 7-point structural spine)
     │   │   │   ├── SourceMaterialAnalyzer.ts # Source analysis (anchors, seven-point, episode breakdown)
-    │   │   │   ├── ImageGenerator.ts   # Image generation coordination
+    │   │   │   ├── ImageGenerator.ts   # Legacy compatibility export for image prompt types
     │   │   │   └── image-team/         # Image generation agents (see below)
     │   │   │
     │   │   ├── pipeline/               # Pipeline orchestrators
     │   │   │   ├── FullStoryPipeline.ts # Main pipeline coordinator
-    │   │   │   ├── EpisodePipeline.ts  # Per-episode generation
+    │   │   │   ├── EpisodePipeline.ts  # Legacy / quarantined; not exported as an active path
     │   │   │   ├── PipelineClient.ts   # Typed client the UI uses to drive the pipeline over the proxy
     │   │   │   ├── checkpointing.ts    # Extracted checkpoint writer/loader
     │   │   │   ├── events.ts           # Typed pipeline progress events
@@ -433,7 +436,9 @@ StoryRPG_New/
     │
     ├── generated-stories/              # Output directory for generated stories
     │   └── {story-slug}_{timestamp}/   # Per-story output directory
-    │       ├── 08-final-story.json     # The complete story data file
+    │       ├── story.json              # Primary versioned story package
+    │       ├── manifest.json           # Primary-file pointer and package checksum
+    │       ├── 08-final-story.json     # Legacy story mirror for fallback readers/scripts
     │       ├── images/                 # Generated images
     │       ├── audio/                  # Generated audio files
     │       │   ├── {beatId}.mp3
@@ -489,7 +494,7 @@ On app start, the story catalog is assembled from three sources:
 
 1. **Built-in stories:** Four pre-authored stories bundled in the app code (`src/data/stories/`). On web platform, these are installed as physical files on the proxy server if not already present.
 
-2. **Generated stories:** The client calls `GET /list-stories` on the proxy server to discover stories in the `generated-stories/` directory. Each story directory is scanned for `08-final-story.json`.
+2. **Generated stories:** The client calls `GET /list-stories` on the proxy server to discover stories in the `generated-stories/` directory. The catalog reads `manifest.json` first, then falls back to `story.json`, then `08-final-story.json` for legacy directories.
 
 3. **AsyncStorage cache:** A fallback for cases where the proxy is unavailable. Previously loaded stories are cached in AsyncStorage.
 
@@ -743,7 +748,7 @@ The proxy is organized into modular route handlers:
 
 ### Pipeline Overview
 
-The AI generation pipeline (`src/ai-agents/`) is a multi-agent system that creates complete interactive stories from high-level inputs. The pipeline is orchestrated by `FullStoryPipeline.ts` and executed in worker processes.
+The AI generation pipeline (`src/ai-agents/`) is a multi-agent system that creates complete interactive stories from high-level inputs. The active pipeline is `FullStoryPipeline.ts`, executed in worker processes through `proxy/workerLifecycle.js`. `EpisodePipeline.ts` is legacy/quarantined and `ParallelStoryPipeline` has been removed.
 
 ### Agent Hierarchy
 
@@ -831,9 +836,10 @@ graph TD
 
 Modern versions of the pipeline support parallel processing:
 
-- **Scene-level parallelization:** Multiple scenes within an episode can be written simultaneously
-- **Image generation batching:** Images for an entire episode are generated in parallel batches
-- **Validation pipelining:** QA validation runs concurrently with content generation
+- **Episode parallelism:** Available only when `episodeParallelismEnabled === true` and `episodeDependencyMode === 'independent'`; sequential remains the dependency-safe default.
+- **Scene/image worker queues:** Scene-related image work and audio/video work use `LocalWorkerQueue` plus provider throttles, not a second orchestration pipeline.
+- **LLM concurrency guardrails:** `BaseAgent` enforces global and per-provider in-flight limits with jittered retry/backoff.
+- **Provider throttling:** `providerThrottle.ts` and image adapters enforce provider-specific RPM/concurrency limits.
 
 ### Checkpoint System
 
@@ -920,7 +926,7 @@ The validation system operates at multiple levels and — for the final playthro
 
 ### Two-Tier Final QA
 
-After the pipeline finishes writing `08-final-story.json`, two deterministic QA passes run back-to-back:
+After the pipeline assembles the runtime story, it writes `story.json` as the primary versioned package, `manifest.json` as the catalog contract, and `08-final-story.json` as a legacy mirror. Two deterministic QA passes then run against the real artifacts:
 
 **Tier 1 — Asset HTTP verification**
 - `walkStoryAssets()` recursively visits every image slot (story/episode/scene covers, beat images and panels, encounter phase/beat/outcome/situation images, storylet beats, NPC portraits) and issues a `HEAD` request (falling back to ranged `GET`).
@@ -929,7 +935,7 @@ After the pipeline finishes writing `08-final-story.json`, two deterministic QA 
 **Tier 2 — Browser playthrough**
 - `storyPathAnalyzer.computeCoveragePlan()` analyses the scene DAG and produces the minimum set of choice paths that visit every scene and choice at least once.
 - `runPlaywrightQAMultiPath()` spawns the Playwright test (`test/e2e/storyPlaythrough.spec.ts`) once per path (up to `maxParallel`, default 3), passing the choice indices via `E2E_CHOICE_PATH`. Each run records broken images, placeholder frames, console errors, network failures, and coverage.
-- If any issue is fixable, `qaRemediation.remediateImageIssues()` looks up the original image prompt, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` writes `08-final-story.json` atop the old one. The pipeline then re-runs Tier 2 up to `validation.playwrightQAMaxRetries` times.
+- If any issue is fixable, `qaRemediation.remediateImageIssues()` looks up the original image prompt, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` re-saves the story package/legacy mirror. The pipeline then re-runs Tier 2 up to `validation.playwrightQAMaxRetries` times.
 - Tier 2 gracefully skips itself if the proxy/app is not reachable, so CLI-only generations never fail because of a missing UI.
 
 ### Validation Configuration

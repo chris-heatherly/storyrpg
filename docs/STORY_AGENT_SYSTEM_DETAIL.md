@@ -1,6 +1,6 @@
 # StoryRPG: Complete System Architecture Document
 
-**Last Updated:** April 2026
+**Last Updated:** May 2026
 
 A comprehensive reference for the story agent structure, storytelling rules, branching mechanics, and choice determination systems.
 
@@ -59,7 +59,7 @@ The platform is built as a React Native/Expo app with LLM integration via Anthro
 │  growthConsequenceBuilder                           │
 ├──────────────────────────────────────────────────────┤
 │              Generation Layer                         │
-│  FullStoryPipeline · EpisodePipeline                 │
+│  FullStoryPipeline (authoritative)                   │
 │  AI Agents · Validators · Prompts                    │
 │  Image/Video Infrastructure · Converters             │
 ├──────────────────────────────────────────────────────┤
@@ -140,7 +140,7 @@ Always respond with valid JSON that matches the requested schema.
 | **Color Script Agent** | `image-team/ColorScriptAgent.ts` | Episode color arc and thumbnails |
 | **Video Director** | `image-team/VideoDirectorAgent.ts` | Video direction for Veo pipeline |
 | **LoRA Training Agent** | `image-team/LoraTrainingAgent.ts` | Orchestrates auto-train-LoRA eligibility, dataset assembly, dispatch, and cache lookups (Stable-Diffusion-only) |
-| **Image Generator** | `ImageGenerator.ts` | Unified image prompt generation |
+| **Image Generator** | `ImageGenerator.ts` | Legacy compatibility export for image prompt types; active image work is coordinated by `ImageAgentTeam` + `ImageGenerationService` |
 
 #### Image QA Validators
 
@@ -191,7 +191,7 @@ interface AgentConfig {
 
 ### 3.1 FullStoryPipeline
 
-The `FullStoryPipeline` (`src/ai-agents/pipeline/FullStoryPipeline.ts`) orchestrates the complete story generation process:
+The `FullStoryPipeline` (`src/ai-agents/pipeline/FullStoryPipeline.ts`) is the authoritative story-generation path. `EpisodePipeline.ts` remains in the tree as legacy/quarantined code but is not exported from `src/ai-agents/pipeline/index.ts`; new work should not call it. `ParallelStoryPipeline` has been removed.
 
 ```
 1. Source Material Analysis (if adapting IP)
@@ -214,12 +214,12 @@ The `FullStoryPipeline` (`src/ai-agents/pipeline/FullStoryPipeline.ts`) orchestr
    i. Image Generation → Scene art, character images, encounter images
    j. Video Generation (optional) → Scene video via Veo
      ↓
-6. Final Story Assembly + Output Writing
+6. Final Story Assembly + Output Writing (`story.json` primary, `08-final-story.json` legacy mirror)
 ```
 
-### 3.2 Episode Pipeline
+### 3.2 Per-Episode Flow Inside FullStoryPipeline
 
-Each episode goes through its own sub-pipeline:
+Each episode goes through a sub-flow inside `FullStoryPipeline`:
 
 1. **Blueprint Phase**: Story Architect creates the `EpisodeBlueprint` with branch structure, choice points, and encounter placement.
 2. **Content Phase**: Scene Writer generates beat-level prose. Choice Author creates choices. Incremental validators check quality after each scene/choice.
@@ -230,10 +230,10 @@ Each episode goes through its own sub-pipeline:
 
 ### 3.3 Pipeline Parallelism
 
-- **Episode parallelism**: Multiple episodes can be generated concurrently (configurable via `maxParallelEpisodes`, default 2).
-- **Scene parallelism**: Scenes within an episode can be generated in parallel (configurable via `maxParallelScenes`, default 2).
-- **Dependency mode**: `sequential` preserves episode-to-episode summary dependency chains. `independent` allows full parallelism.
-- **Concurrency utilities**: `AsyncSemaphore`, `mapWithConcurrency`, `LocalWorkerQueue` in `src/ai-agents/utils/concurrency.ts`.
+- **Episode parallelism**: Available only when `episodeParallelismEnabled === true` and `episodeDependencyMode === 'independent'`; sequential remains the dependency-safe default.
+- **Image/audio/video worker queues**: `LocalWorkerQueue` handles local work queues; image worker mode is on by default and capped by generation settings.
+- **LLM guardrails**: `BaseAgent` enforces global and per-provider in-flight limits, retries, jitter, and quota/circuit-breaker behavior.
+- **Provider throttling**: Image providers use adapter-level rate/concurrency controls via `providerThrottle.ts`.
 
 ### 3.4 Pipeline Memory
 
@@ -616,7 +616,7 @@ Includes verb conjugation for pronoun substitution and unresolved token fallback
 | **storyAssetWalker** | **Tier 1 QA** — HTTP-verify every image URL in the assembled story |
 | **storyPathAnalyzer** | Coverage planner — minimum choice paths to visit every scene/choice |
 | **playwrightQARunner** | **Tier 2 QA** — spawns Playwright to play through every choice path in a real browser |
-| **qaRemediation** | Re-generates broken/placeholder images and patches `08-final-story.json` |
+| **qaRemediation** | Re-generates broken/placeholder images and re-saves the story package/legacy mirror |
 
 ### 13.2 QA Agents (LLM-Based Validators)
 
@@ -647,7 +647,7 @@ After the LLM QA agents have produced their report and the story is assembled, t
 1. `storyPathAnalyzer.computeCoveragePlan()` builds a scene-level DAG from the generated story and picks the minimum set of choice paths that visit every scene and every choice at least once. It also marks which scenes need specific encounter tiers to be forced.
 2. `runPlaywrightQAMultiPath()` spawns `test/e2e/storyPlaythrough.spec.ts` once per path (up to `maxParallel`, default `3`) against `http://localhost:8081`, passing the choice indices via the `E2E_CHOICE_PATH` env var.
 3. Each run drives the real reader UI, recording broken/placeholder images, console errors, network failures, and a coverage report.
-4. If any issue is fixable, `qaRemediation.remediateImageIssues()` parses the screen identifier, looks up the saved prompt under `prompts/`, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` rewrites `08-final-story.json`. Tier 2 then re-runs up to `playwrightQAMaxRetries` times (default `1`).
+4. If any issue is fixable, `qaRemediation.remediateImageIssues()` parses the screen identifier, looks up the saved prompt under `prompts/`, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` rewrites the story package/legacy mirror. Tier 2 then re-runs up to `playwrightQAMaxRetries` times (default `1`).
 5. When the proxy or web app is not reachable, the runner marks itself `skipped` rather than failing the pipeline — so CLI generations don't require the UI.
 
 ---

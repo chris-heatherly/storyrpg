@@ -89,6 +89,7 @@ import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
 import { buildFashionPrimaryClothing, buildFashionStyleSummary } from '../images/characterFashionStyle';
+import { resolvePlayerTemplatesInObject } from '../utils/playerTemplateResolver';
 import { applyPromptContract, sanitizeStyleContaminationText } from '../images/imagePromptContracts';
 import {
   attachStoryboardPlanToVisualPlan,
@@ -2360,7 +2361,10 @@ export class FullStoryPipeline {
     terminalReason: 'cancelled' | 'failed' | 'completed' = 'completed',
     startTime = Date.now(),
   ): Promise<Story> {
-    const finalStory = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
+    const finalStory = this.resolveGeneratedStoryPlayerTemplates(
+      assembleStoryAssetsFromRegistry(story, this.assetRegistry),
+      brief,
+    );
     finalStory.outputDir = outputDirectory;
     const imageIntegrity = await this.repairBoundImageReferences(finalStory, outputDirectory);
     const manifest = this.buildImageManifestFromStory(finalStory);
@@ -2515,9 +2519,11 @@ export class FullStoryPipeline {
       beats: (scene.beats || []) as unknown as GeneratedBeat[],
       startingBeatId: scene.startingBeatId || scene.beats?.[0]?.id || '',
       moodProgression: [],
-      charactersInvolved: [],
+      charactersInvolved: scene.charactersInvolved || [],
       keyMoments: [],
       continuityNotes: [],
+      sequenceIntent: scene.sequenceIntent,
+      sceneVisualSequencePlan: scene.sceneVisualSequencePlan,
       branchType: scene.branchType,
       isBottleneck: scene.isBottleneck,
       isConvergencePoint: scene.isConvergencePoint,
@@ -2691,8 +2697,11 @@ export class FullStoryPipeline {
 	        }
 	      }
 
-      const coverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible);
-      let finalStory = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
+      const coverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible, normalizedOutputDir);
+      let finalStory = this.resolveGeneratedStoryPlayerTemplates(
+        assembleStoryAssetsFromRegistry(story, this.assetRegistry),
+        brief,
+      );
       if (coverUrl) finalStory.coverImage = coverUrl;
       finalStory.outputDir = normalizedOutputDir;
       const imageIntegrity = await this.repairBoundImageReferences(finalStory, normalizedOutputDir);
@@ -3445,7 +3454,7 @@ export class FullStoryPipeline {
                 r.povClarity!.issues
                   .slice(0, 3)
                   .map(i => i.suggestion || i.issue)
-                  .join('; ') || 'Rewrite the first beat with you/your or {{player.name}} before NPC or setting exposition.',
+                  .join('; ') || 'Rewrite the first beat with you/your, the protagonist name, or a concrete pronoun before NPC or setting exposition.',
             }));
             quickValidation = {
               canProceed: false,
@@ -3628,7 +3637,7 @@ export class FullStoryPipeline {
                     genre: brief.story.genre,
                     tone: brief.story.tone,
                     userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL ${issue.category === 'pov_clarity' ? 'POV CLARITY' : 'VOICE FIDELITY'} FIX:\n${issue.message}\n${issue.suggestion || ''}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${existingSceneJson}\n\n${issue.category === 'pov_clarity'
-                      ? 'Rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, {{player.name}}, or another player template before focusing on NPCs, setting, or exposition.'
+                      ? 'Rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, the protagonist name, or a concrete pronoun before focusing on NPCs, setting, or exposition. Do not emit template variables.'
                       : 'Re-author this scene\'s beats with stricter voice adherence; match each character\'s vocabulary, formality, sentence length, and avoided-words list.'}`,
                     worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
                   },
@@ -4235,7 +4244,7 @@ export class FullStoryPipeline {
       // === COVER ART ===
       let storyCoverUrl: string | undefined;
       if (this.config.imageGen?.enabled) {
-        storyCoverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible);
+        storyCoverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible, outputDirectory);
       }
 
       // === PHASE 6: ASSEMBLY ===
@@ -4284,6 +4293,7 @@ export class FullStoryPipeline {
           );
         }
       }
+      story = this.resolveGeneratedStoryPlayerTemplates(story, brief);
 
       // === PRE-GENERATION COMPLETENESS GATE ===
       // Strict: ANY missing image halts the pipeline. No silent fallbacks.
@@ -4452,7 +4462,7 @@ export class FullStoryPipeline {
         story.imagesStatus = 'pending';
         if (outputDirectory) await this.saveDraftImageManifest(outputDirectory, story);
       } else if (story && this.config.imageGen?.enabled) {
-        story.imagesStatus = 'complete';
+        story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
       }
 
       this.addCheckpoint('Final Story', story, false);
@@ -5632,6 +5642,19 @@ export class FullStoryPipeline {
       // Resolve authored location first so downstream image systems do not re-guess scene setting.
       const location = this.resolveWorldLocationForScene(sceneBlueprint, worldBible);
       const sceneSettingContext = buildSceneSettingContext(sceneBlueprint, location, worldBible, brief);
+      const primaryNextScene = sceneBlueprint.leadsTo?.length === 1
+        ? blueprint.scenes.find((scene) => scene.id === sceneBlueprint.leadsTo[0])
+        : undefined;
+      const nextSceneContext = primaryNextScene ? {
+        id: primaryNextScene.id,
+        name: primaryNextScene.name,
+        location: primaryNextScene.location,
+        description: primaryNextScene.description,
+        isEncounter: primaryNextScene.isEncounter,
+        encounterType: primaryNextScene.encounterType,
+        encounterDescription: primaryNextScene.encounterDescription,
+        encounterBeatPlan: primaryNextScene.encounterBeatPlan,
+      } : undefined;
 
       const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
 
@@ -5721,6 +5744,7 @@ export class FullStoryPipeline {
           previousSceneSummary: previousScene
             ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
             : undefined,
+          nextSceneContext,
           incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
           sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
           episodeEncounterContext: primaryEncounterContext && !sceneBlueprint.isEncounter
@@ -5872,6 +5896,7 @@ export class FullStoryPipeline {
             previousSceneSummary: previousScene
               ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
               : undefined,
+            nextSceneContext,
             incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
             sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
             memoryContext: this.cachedPipelineMemory || undefined,
@@ -6370,7 +6395,7 @@ export class FullStoryPipeline {
                   title: brief.story.title,
                   genre: brief.story.genre,
                   tone: brief.story.tone,
-                  userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Fix these issues from validation:\n${issueDescriptions.join('\n')}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${JSON.stringify(sceneContent).slice(0, 12000)}\n\nFor POV clarity fixes, rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, {{player.name}}, or another player template before focusing on NPCs, setting, or exposition.`,
+                  userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Fix these issues from validation:\n${issueDescriptions.join('\n')}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${JSON.stringify(sceneContent).slice(0, 12000)}\n\nFor POV clarity fixes, rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, the protagonist name, or a concrete pronoun before focusing on NPCs, setting, or exposition. Do not emit template variables.`,
                   worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
                 },
                 protagonistInfo: {
@@ -7490,6 +7515,8 @@ export class FullStoryPipeline {
         startingBeatId: content.startingBeatId,
         backgroundImage: sceneImages.get(this.getEpisodeScopedSceneId(brief, sceneBlueprint.id)),
         encounter,
+        sequenceIntent: content.sequenceIntent,
+        sceneVisualSequencePlan: content.sceneVisualSequencePlan,
         leadsTo: sceneBlueprint.leadsTo,
         isBottleneck: blueprint.bottleneckScenes?.includes(sceneBlueprint.id) || sceneBlueprint.purpose === 'bottleneck',
         isConvergencePoint: blueprint.scenes.filter(s => s.leadsTo?.includes(sceneBlueprint.id)).length > 1,
@@ -8264,7 +8291,7 @@ export class FullStoryPipeline {
       // 5. Generate cover art + Assemble final story
       let multiCoverUrl: string | undefined;
       if (this.config.imageGen?.enabled) {
-        multiCoverUrl = await this.generateStoryCoverArt(baseBrief, characterBible, worldBible);
+        multiCoverUrl = await this.generateStoryCoverArt(baseBrief, characterBible, worldBible, outputDirectory);
       }
 
       const storyCoverImage = multiCoverUrl
@@ -8319,7 +8346,7 @@ export class FullStoryPipeline {
         story.imagesStatus = 'pending';
         await this.saveDraftImageManifest(outputDirectory, story);
       } else if (this.config.imageGen?.enabled) {
-        story.imagesStatus = 'complete';
+        story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
       }
 
       this.addCheckpoint('Final Story', story, false);
@@ -12236,6 +12263,10 @@ ${clothingRule}
           const visibleCastClause = shotCharacterNames.length > 0
             ? ` Visible characters in this shot: ${shotCharacterNames.join(', ')}. Do not include other scene-present characters.`
             : ' No characters are visible in this establishing shot.';
+          const coverage = (beat as any).coveragePlan;
+          const coverageClause = coverage
+            ? ` Coverage plan: staging=${coverage.stagingPattern || 'derive'}, shot=${coverage.shotDistance || 'derive'}, angle=${coverage.cameraAngle || 'derive'}, side=${coverage.cameraSide || 'derive'}, blocking=${coverage.relationshipBlocking || 'derive'}, continuity=${coverage.visualContinuity?.mode || 'fresh_composition'}, reason=${coverage.coverageReason || 'sequence repair'}.`
+            : '';
           const referenceImages = this.gatherCharacterReferenceImages(
             shotCharacterIds,
             characterBible,
@@ -12243,7 +12274,7 @@ ${clothingRule}
             { family: 'story-beat', slotId: `story-beat:${scopedSceneId}::${beat.id}:repair` }
           );
           const fallbackPrompt: ImagePrompt = this.withSettingAwarePrompt({
-            prompt: `${this.sanitizePromptText(beat.text, brief, '')}${visibleCastClause} Text-plan repair render. Translate second-person prose into third-person visual action centered on the protagonist from outside the body. Show exactly one concrete story moment in a single continuous frame from one camera angle. Do not show multiple moments, repeated figures, or stacked scenes inside the image.`,
+            prompt: `${this.sanitizePromptText(beat.text, brief, '')}${visibleCastClause}${coverageClause} Text-plan repair render. Translate second-person prose into third-person visual action centered on the protagonist from outside the body. Show exactly one concrete story moment in a single continuous frame from one camera angle. Do not show multiple moments, repeated figures, or stacked scenes inside the image.`,
             style: this.config.artStyle || undefined,
             aspectRatio: '9:19.5',
             composition: `Scene: ${scene.sceneName}. Genre: ${brief.story.genre}, Tone: ${brief.story.tone}. Generate exactly ONE single full-bleed third-person image with ONE unified scene and ONE camera angle. No first-person POV, no split-screen, no diptych, no stacked panels, no repeated subject, no image-within-image.`,
@@ -12658,7 +12689,8 @@ ${clothingRule}
   private async generateStoryCoverArt(
     brief: FullCreativeBrief,
     characterBible: CharacterBible,
-    worldBible: WorldBible
+    worldBible: WorldBible,
+    outputDirectory?: string
   ): Promise<string | undefined> {
     if (!this.config.imageGen?.enabled) return undefined;
 
@@ -12702,8 +12734,12 @@ ${clothingRule}
       }
       const artDirection = artDirectionLines.join(' ');
 
-      const profileNegatives = artStyleProfile?.genreNegatives?.length
-        ? ', ' + artStyleProfile.genreNegatives.join(', ')
+      const styleNegativeTerms = Array.from(new Set([
+        ...(artStyleProfile?.genreNegatives || []),
+        ...(artStyleProfile?.inappropriateVocabulary || []),
+      ].filter(Boolean)));
+      const profileNegatives = styleNegativeTerms.length
+        ? ', ' + styleNegativeTerms.join(', ')
         : '';
 
       // --- Step 1: Distill the story into a structured PosterConcept ------------------
@@ -12755,6 +12791,7 @@ ${clothingRule}
           // Art direction — match the story's established look
           `ART DIRECTION (match the story's established visual language exactly): ${artDirection} ` +
           `Apply this art direction to every pixel — rendering technique, palette, lighting, and edge treatment must be instantly recognizable as belonging to this story. Do NOT default to generic photoreal cinematic — obey the style DNA above. ` +
+          `If the style DNA rejects photorealism or live-action rendering, the cover must be clearly illustrated in the declared rendering technique, not photographic key art. ` +
           // Layout / tile safe zones
           `LAYOUT: PORTRAIT 2:3 aspect ratio (taller than wide). Vertical rhythm — upper third: atmospheric world / antagonist presence / symbolic element; middle third: focal subject at peak clarity; lower ~25%: quiet, darker, low-detail atmospheric foreground (smoke, mist, rain, shallow water, shadow, gradient) reserved as a UI-overlay SAFE ZONE. No critical visual detail in the bottom 25%. Generous negative space top and bottom. ` +
           // Cliché avoidance (explicit)
@@ -12877,7 +12914,7 @@ ${clothingRule}
           },
           referenceImages.length > 0 ? referenceImages : undefined,
           'StoryCoverArt',
-          undefined,
+          outputDirectory,
         ),
         PIPELINE_TIMEOUTS.storyboard,
         'StoryCoverArt'
@@ -14349,8 +14386,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
   private getCharacterIdsInScene(scene: SceneContent, characterBible: CharacterBible, protagonistId?: string): string[] {
     const characterIds = new Set<string>();
     
-    // ALWAYS include the protagonist — they are in every scene even if not explicitly named
-    // (beat text often uses {{player.name}} templates instead of the actual name)
+    // ALWAYS include the protagonist — they are in every scene even if not explicitly named.
     if (protagonistId) {
       const protagonistExists = characterBible.characters.some(c => c.id === protagonistId);
       if (protagonistExists) characterIds.add(protagonistId);
@@ -14839,6 +14875,22 @@ Design the key art. Return STRICT JSON matching the schema.`;
     return this.scrubPromptArtifacts(resolved);
   }
 
+  private resolveGeneratedStoryPlayerTemplates(story: Story, brief: FullCreativeBrief): Story {
+    const resolution = resolvePlayerTemplatesInObject(story, {
+      name: brief.protagonist.name,
+      pronouns: brief.protagonist.pronouns,
+    });
+    if (resolution.replacements > 0) {
+      this.emit({
+        type: 'warning',
+        phase: 'assembly',
+        message: `Resolved ${resolution.replacements} protagonist template token(s) before saving story output.`,
+      });
+      console.warn(`[Pipeline] Resolved ${resolution.replacements} protagonist template token(s) before saving story output.`);
+    }
+    return resolution.value;
+  }
+
   private sanitizeImagePrompt(prompt: ImagePrompt, brief: FullCreativeBrief): ImagePrompt {
     const sanitize = (value: unknown) => this.sanitizePromptText(value, brief, '');
     return {
@@ -14981,21 +15033,10 @@ Design the key art. Return STRICT JSON matching the schema.`;
    * Image generation happens outside runtime text rendering, so these must be concretized.
    */
   private resolvePlayerTemplates(text: string, brief: FullCreativeBrief): string {
-    const name = brief.protagonist?.name || 'Protagonist';
-    const pronounsRaw = (brief.protagonist?.pronouns || 'he/him').toLowerCase();
-    const pronounMap: Record<string, { they: string; them: string; their: string; theirs: string; themselves: string }> = {
-      'he/him': { they: 'he', them: 'him', their: 'his', theirs: 'his', themselves: 'himself' },
-      'she/her': { they: 'she', them: 'her', their: 'her', theirs: 'hers', themselves: 'herself' },
-      'they/them': { they: 'they', them: 'them', their: 'their', theirs: 'theirs', themselves: 'themselves' },
-    };
-    const pronouns = pronounMap[pronounsRaw] || pronounMap['he/him'];
-    return (text || '')
-      .replace(/\{\{player\.name\}\}/gi, name)
-      .replace(/\{\{player\.they\}\}/gi, pronouns.they)
-      .replace(/\{\{player\.them\}\}/gi, pronouns.them)
-      .replace(/\{\{player\.their\}\}/gi, pronouns.their)
-      .replace(/\{\{player\.theirs\}\}/gi, pronouns.theirs)
-      .replace(/\{\{player\.themselves\}\}/gi, pronouns.themselves);
+    return resolvePlayerTemplatesInObject(text || '', {
+      name: brief.protagonist?.name || 'Protagonist',
+      pronouns: brief.protagonist?.pronouns || 'they/them',
+    }).value;
   }
 
   private inferEncounterCameraAngle(
@@ -15940,7 +15981,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
   /**
    * Shape the unresolved callback hooks for SceneWriter/ChoiceAuthor prompts.
    * Returns `undefined` when there are no hooks, so the prompt section is
-   * skipped cleanly. See Plan 1 (docs/PLAN_DELAYED_CONSEQUENCES.md).
+   * skipped cleanly.
    */
   private getUnresolvedCallbacksForPrompt(episodeNumber: number | undefined): Array<{
     id: string;

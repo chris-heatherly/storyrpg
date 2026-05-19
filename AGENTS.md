@@ -20,9 +20,12 @@ StoryRPG_New/                          ← Workspace root (you are here)
 docs/
 ├── GDD.md                         ← Game Design Document (design intent, systems, UX)
 ├── TDD.md                         ← Technical Design Document (architecture, data model, subsystems)
+├── CURRENT_PIPELINE_STATUS.md     ← Current generation path, output contract, and compatibility status
 ├── INSTALL.md                     ← Setup instructions and env var reference
 ├── STORY_BRANCHING.md             ← Story branching mechanics
 ├── STORY_PIPELINE_PROMPTING.md    ← Pipeline prompting contracts
+├── STORY_PIPELINE_MERMAID.md      ← Story pipeline diagrams
+├── STORY_QUALITY_CONTRACT.md      ← Story quality rules and validator contract
 ├── STORY_AGENT_SYSTEM_DETAIL.md   ← Deep agent system notes
 ├── IMAGE_PIPELINE_AUDIT.md        ← Image pipeline audit documentation
 ├── IMAGE_PIPELINE_RUNTIME.md      ← Image generation runtime behavior
@@ -31,10 +34,6 @@ docs/
 ├── QA_FIXES_SUMMARY.md            ← QA fixes and patterns
 ├── MOBILE_REDESIGN.md             ← Mobile-first reader redesign notes
 ├── PARALLEL_GENERATION.md         ← Parallel generation status (ParallelStoryPipeline has been removed)
-├── PLAN_DELAYED_CONSEQUENCES.md   ← Design plan: delayed consequences / callback ledger
-├── PLAN_MULTI_SCENE_BRANCH_ZONES.md ← Design plan: multi-scene branch zones
-├── PLAN_POST_EPISODE_FLOWCHART.md ← Design plan: post-episode flowchart
-├── WEEKLY_SUMMARY_2026-04-23.md   ← Weekly change summary (Apr 16–23, 2026)
 ├── visual_storytelling_guide.md   ← Visual storytelling design guide
 ├── visual_storytelling_quick_reference.md
 ├── sample-story.md                ← Example story structure
@@ -248,9 +247,12 @@ All documentation lives in `docs/` at the workspace root:
 |---|---|
 | `docs/GDD.md` | Game design: vision, systems, UX philosophy, all gameplay mechanics |
 | `docs/TDD.md` | Technical architecture: data model detail, engine internals, pipeline deep dive, proxy API surface |
+| `docs/CURRENT_PIPELINE_STATUS.md` | Current generation path, output contract, and compatibility status |
 | `docs/INSTALL.md` | Setup, API key acquisition, troubleshooting, full env var reference |
 | `docs/STORY_BRANCHING.md` | Story branching mechanics and structure |
 | `docs/STORY_PIPELINE_PROMPTING.md` | Pipeline prompting contracts and agent instructions |
+| `docs/STORY_PIPELINE_MERMAID.md` | Story pipeline diagrams |
+| `docs/STORY_QUALITY_CONTRACT.md` | Story quality rules and validator contract |
 | `docs/STORY_AGENT_SYSTEM_DETAIL.md` | Deep agent system implementation notes |
 | `docs/IMAGE_PIPELINE_AUDIT.md` | Image pipeline audit documentation |
 | `docs/IMAGE_PIPELINE_RUNTIME.md` | Image generation runtime behavior |
@@ -259,10 +261,8 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/QA_FIXES_SUMMARY.md` | QA fixes and recurring patterns |
 | `docs/MOBILE_REDESIGN.md` | Mobile-first reader redesign notes + April 2026 unified reader/settings UX primitives |
 | `docs/PARALLEL_GENERATION.md` | Parallel generation status (ParallelStoryPipeline removed; concurrency lives in `FullStoryPipeline`) |
-| `docs/PLAN_DELAYED_CONSEQUENCES.md` | Design plan for delayed consequences and the callback ledger |
-| `docs/PLAN_MULTI_SCENE_BRANCH_ZONES.md` | Design plan for multi-scene branch zones |
-| `docs/PLAN_POST_EPISODE_FLOWCHART.md` | Design plan for the post-episode flowchart |
-| `docs/WEEKLY_SUMMARY_2026-04-23.md` | Weekly change summary (Apr 16–23, 2026) — see for recent architectural shifts |
 | `docs/visual_storytelling_guide.md` | Visual storytelling design principles |
+| `docs/visual_storytelling_quick_reference.md` | Compact visual storytelling reference |
+| `docs/sample-story.md` | Example story structure |
 | `docs/reference/` | Original reference materials (PDF text extracts) |
 | `.cursor/skills/` | Cursor agent skills: pipeline debugging, validation, orchestration, agent development, image generation, story playback, proxy server, audio narration, testing tooling, UX design, story structure rules, update docs |

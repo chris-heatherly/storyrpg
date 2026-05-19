@@ -820,7 +820,7 @@ storyrpg-prototype/               ← The application root
 │   │   │   ├── StoryArchitect.ts ← Overall story planning
 │   │   │   ├── SceneWriter.ts    ← Scene content generation
 │   │   │   ├── ChoiceAuthor.ts   ← Choice generation
-│   │   │   ├── ImageGenerator.ts ← Visual content
+│   │   │   ├── ImageGenerator.ts ← Legacy compatibility export for image prompt types
 │   │   │   └── image-team/       ← Advanced visual generation
 │   │   ├── pipeline/             ← Generation orchestration
 │   │   ├── services/             ← External API integrations

@@ -167,3 +167,301 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
     });
   });
 });
+
+describe('StoryArchitect planned encounter repair', () => {
+  function makePlannedEncounterInput(): StoryArchitectInput {
+    return makeInput({
+      seasonPlanDirectives: {
+        plannedEncounters: [{
+          id: 'enc-1-1',
+          type: 'social',
+          description: 'Confrontation with mysterious attacker in Cismigiu Park while Andrei watches from shadows',
+          difficulty: 'hard',
+          npcsInvolved: ['mysterious_attacker', 'andrei'],
+          stakes: 'Lena must decide whether she fights, flees, or freezes when faced with a supernatural predator.',
+          relevantSkills: ['resolve', 'empathy'],
+          encounterBuildup: 'The prior scenes establish Andrei as a watcher and the park as a place of threat.',
+          encounterSetupContext: ['flag:noticed_andrei — Andrei reacts if Lena clocks him before the attack'],
+          isBranchPoint: true,
+        }],
+      },
+    });
+  }
+
+  it('binds a matching unbound encounter scene even when the model chose the wrong encounter type', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Night Teeth',
+      synopsis: 'Lena is tested.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      scenes: [
+        {
+          id: 'scene-1',
+          name: 'Club Exit',
+          description: 'Lena leaves the club with Andrei watching.',
+          location: 'club',
+          mood: 'uneasy',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['andrei'],
+          narrativeFunction: 'Moves Lena toward the park.',
+          keyBeats: ['Andrei watches Lena from a distance.'],
+          leadsTo: ['scene-2'],
+        },
+        {
+          id: 'scene-2',
+          name: 'The Park Attack',
+          description: 'A mysterious attacker corners Lena in Cismigiu Park.',
+          location: 'park',
+          mood: 'terrifying',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['mysterious_attacker'],
+          narrativeFunction: 'The supernatural predator tests Lena.',
+          keyBeats: ['Lena must decide whether to fight, flee, or freeze.'],
+          leadsTo: ['scene-3'],
+          isEncounter: true,
+          encounterType: 'exploration',
+          encounterDescription: 'A park confrontation with the mysterious attacker.',
+          encounterDifficulty: 'hard',
+        },
+        {
+          id: 'scene-3',
+          name: 'Aftermath',
+          description: 'The consequences settle.',
+          location: 'park',
+          mood: 'shaken',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['andrei'],
+          narrativeFunction: 'Aftermath.',
+          keyBeats: ['Andrei steps from the shadows.'],
+          leadsTo: [],
+        },
+      ],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1', 'scene-3'],
+      themes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+
+    (architect as any).repairPlannedEncounterCoverage(blueprint, makePlannedEncounterInput());
+
+    expect(blueprint.scenes[1]).toMatchObject({
+      isEncounter: true,
+      plannedEncounterId: 'enc-1-1',
+      encounterType: 'social',
+      encounterStakes: expect.stringContaining('Lena must decide'),
+    });
+    expect(blueprint.scenes[1].encounterRequiredNpcIds).toEqual(expect.arrayContaining(['mysterious_attacker', 'andrei']));
+    expect(blueprint.scenes[1].encounterRelevantSkills).toEqual(expect.arrayContaining(['resolve', 'empathy']));
+    expect(blueprint.scenes[1].encounterBeatPlan.length).toBeGreaterThanOrEqual(3);
+    expect(blueprint.bottleneckScenes).toContain('scene-2');
+  });
+
+  it('upgrades the strongest scene when the model omitted an encounter scene entirely', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Night Teeth',
+      synopsis: 'Lena is tested.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      scenes: [
+        {
+          id: 'scene-1',
+          name: 'Bold Entrance',
+          description: 'Lena enters the club.',
+          location: 'club',
+          mood: 'charged',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: [],
+          narrativeFunction: 'Introduces Lena.',
+          keyBeats: ['Lena enters with confidence.'],
+          leadsTo: ['scene-2'],
+        },
+        {
+          id: 'scene-2',
+          name: 'Cismigiu Park Confrontation',
+          description: 'The mysterious attacker confronts Lena in Cismigiu Park while Andrei watches.',
+          location: 'park',
+          mood: 'dangerous',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['mysterious_attacker'],
+          narrativeFunction: 'Tests Lena under supernatural pressure.',
+          keyBeats: ['Andrei watches from the shadows.', 'Lena faces the predator.'],
+          leadsTo: ['scene-3'],
+        },
+        {
+          id: 'scene-3',
+          name: 'Aftermath',
+          description: 'Lena processes what happened.',
+          location: 'street',
+          mood: 'haunted',
+          purpose: 'transition',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['andrei'],
+          narrativeFunction: 'Aftermath.',
+          keyBeats: ['Andrei reveals he saw everything.'],
+          leadsTo: [],
+        },
+      ],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1'],
+      themes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+
+    (architect as any).repairPlannedEncounterCoverage(blueprint, makePlannedEncounterInput());
+
+    expect(blueprint.scenes[1].isEncounter).toBe(true);
+    expect(blueprint.scenes[1].plannedEncounterId).toBe('enc-1-1');
+    expect(blueprint.scenes[1].encounterType).toBe('social');
+    expect(blueprint.scenes[1].encounterDescription).toContain('Confrontation with mysterious attacker');
+    expect(blueprint.scenes[1].encounterSetupContext).toEqual(expect.arrayContaining([
+      'flag:noticed_andrei — Andrei reacts if Lena clocks him before the attack',
+    ]));
+  });
+});
+
+describe('StoryArchitect opening agency requirements', () => {
+  function makeOpeningChoiceBlueprint(): any {
+    return {
+      episodeId: 'episode-1',
+      title: 'Opening',
+      synopsis: 'The season begins.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      scenes: [
+        {
+          id: 'scene-1',
+          name: 'Arrival',
+          description: 'Alex arrives.',
+          location: 'station',
+          mood: 'curious',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'How does Alex enter this world?',
+          wantVsNeed: 'Safety vs discovery',
+          conflictEngine: 'The city watches newcomers.',
+          npcsPresent: [],
+          narrativeFunction: 'Starts the season.',
+          keyBeats: ['Alex crosses the threshold.'],
+          leadsTo: ['scene-2'],
+        },
+        {
+          id: 'scene-2',
+          name: 'First Pressure',
+          description: 'Someone asks for help.',
+          location: 'street',
+          mood: 'tense',
+          purpose: 'branch',
+          dramaticQuestion: 'Will Alex get involved?',
+          wantVsNeed: 'Stay unnoticed vs act',
+          conflictEngine: 'A stranger needs help.',
+          npcsPresent: [],
+          narrativeFunction: 'Offers early agency.',
+          keyBeats: ['A stranger blocks the path.'],
+          leadsTo: ['scene-3'],
+          choicePoint: {
+            type: 'relationship',
+            branches: false,
+            stakes: { want: 'Stay safe', cost: 'Risk attention', identity: 'Detached observer or participant' },
+            description: 'How does Alex respond?',
+            optionHints: ['Help', 'Refuse'],
+            consequenceDomain: 'identity',
+            reminderPlan: { immediate: 'Reflect the tone immediately.', shortTerm: 'Echo the response later.' },
+          },
+        },
+        {
+          id: 'scene-3',
+          name: 'Confrontation',
+          description: 'Alex is tested.',
+          location: 'alley',
+          mood: 'dangerous',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'Can Alex stand firm?',
+          wantVsNeed: 'Escape vs commit',
+          conflictEngine: 'A threat closes in.',
+          npcsPresent: [],
+          narrativeFunction: 'Central encounter.',
+          keyBeats: ['The threat appears.', 'Alex commits.', 'The cost lands.'],
+          leadsTo: [],
+          isEncounter: true,
+          encounterType: 'social',
+          encounterStyle: 'dramatic',
+          encounterDescription: 'Alex must face a public accusation.',
+          encounterStakes: 'Alex risks their reputation.',
+          encounterRequiredNpcIds: ['accuser'],
+          encounterRelevantSkills: ['resolve', 'empathy'],
+          encounterBeatPlan: ['The accusation lands.', 'The crowd turns.', 'Alex chooses a response.'],
+          encounterDifficulty: 'moderate',
+          encounterBuildup: 'Earlier scenes establish why public trust matters.',
+        },
+      ],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1', 'scene-3'],
+      themes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+  }
+
+  it('auto-adds a choicePoint to the first scene of episode 1 even when scene 2 already has agency', () => {
+    const architect = new StoryArchitect({
+      ...config,
+      generation: { requireSceneGraphBranching: false },
+    } as any);
+    const blueprint = makeOpeningChoiceBlueprint();
+
+    (architect as any).repairChoiceDensity(blueprint, makeInput({ episodeNumber: 1 }));
+
+    expect(blueprint.scenes[0].choicePoint).toMatchObject({
+      type: 'expression',
+      consequenceDomain: 'identity',
+    });
+  });
+
+  it('allows later episodes to use a brief opening scene when the second scene has a choice', () => {
+    const architect = new StoryArchitect({
+      ...config,
+      generation: { requireSceneGraphBranching: false },
+    } as any);
+    const blueprint = makeOpeningChoiceBlueprint();
+    blueprint.episodeId = 'episode-2';
+    blueprint.scenes[1].leadsTo = ['scene-3', 'scene-4'];
+    blueprint.scenes[1].choicePoint.branches = true;
+    blueprint.scenes[2].leadsTo = ['scene-4'];
+    blueprint.scenes.push({
+      ...blueprint.scenes[1],
+      id: 'scene-4',
+      name: 'Aftermath Choice',
+      description: 'Alex chooses how to carry the aftermath.',
+      location: 'street',
+      purpose: 'transition',
+      leadsTo: [],
+    });
+
+    expect(() => (architect as any).validateBlueprint(blueprint, makeInput({ episodeNumber: 2 }))).not.toThrow();
+  });
+});

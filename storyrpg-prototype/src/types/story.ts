@@ -11,7 +11,7 @@ import type {
   InventoryItem,
   Relationship,
 } from './player';
-import type { Beat, MediaRef, NarrativeSequenceIntent } from './content';
+import type { Beat, MediaRef, NarrativeSequenceIntent, SceneVisualSequencePlan } from './content';
 import type { Encounter, EncounterType } from './encounter';
 import type { ResolutionTier } from './choice';
 
@@ -28,6 +28,7 @@ export interface Scene {
 
   encounter?: Encounter;
   sequenceIntent?: NarrativeSequenceIntent;
+  sceneVisualSequencePlan?: SceneVisualSequencePlan;
 
   conditions?: ConditionExpression;
 

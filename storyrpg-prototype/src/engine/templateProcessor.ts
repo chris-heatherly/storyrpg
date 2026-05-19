@@ -268,7 +268,7 @@ export function processTemplate(
 /**
  * Count the number of atomic condition clauses in an expression. Callback
  * variants that gate on more flags / tags / scores win over generic
- * "always-true" variants. See Plan 1 (docs/PLAN_DELAYED_CONSEQUENCES.md).
+ * "always-true" variants.
  */
 export function conditionSpecificity(expression: ConditionExpression | undefined): number {
   if (!expression) return 0;

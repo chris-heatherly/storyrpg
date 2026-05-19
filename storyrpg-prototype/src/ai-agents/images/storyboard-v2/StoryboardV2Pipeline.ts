@@ -14,6 +14,7 @@ import type { ImageDefectReport } from '../imageDefectGate';
 import { sanitizeStyleContaminationText } from '../imagePromptContracts';
 import { buildVisualGrammarDirective, formatVisualGrammarDirective, type VisualGrammarDirective } from './visualGrammar';
 import { auditSequenceContinuity } from '../../validators/sequenceContinuityAudit';
+import { applySequenceDirectorPlan } from '../../agents/SequenceDirector';
 
 let nodeFs: typeof import('fs/promises') | undefined;
 let sharp: any;
@@ -393,7 +394,18 @@ export class StoryboardV2Pipeline {
     characterBible: CharacterBible;
     encounters?: Map<string, EncounterStructure>;
   }): Promise<StoryboardV2Result> {
-    const { brief, sceneContents, characterBible } = params;
+    const { brief, characterBible } = params;
+    const sequenceDiagnostics = params.sceneContents.map((scene) => applySequenceDirectorPlan(scene, {
+      sceneDescription: scene.settingContext?.summary || scene.settingContext?.locationName,
+      genre: brief.story.genre,
+      tone: brief.story.tone,
+      protagonistId: brief.protagonist?.id,
+    }));
+    await this.saveJson('images/storyboard-v2/sequence-director-diagnostics.json', {
+      generatedAt: new Date().toISOString(),
+      diagnostics: sequenceDiagnostics,
+    });
+    const sceneContents = params.sceneContents;
     const rawArtStyle = compact(this.config.artStyle, 'expressive illustrated story art');
     const model = this.config.imageGen?.openaiImageModel || 'gpt-image-2';
 
@@ -789,15 +801,21 @@ export class StoryboardV2Pipeline {
     report: ImageDefectReport;
     attempt: number;
     retryOf?: string;
+    panel?: StoryboardPanelSlot;
   }): StoryboardVisualQaSummary {
     const issues = this.mapStoryboardQaIssues(params.report);
+    const crowdDuplicateIsAdvisory = params.stage === 'panel'
+      && issues.includes('duplicate_body')
+      && this.isCrowdDuplicateAdvisory(params.panel);
     const advisoryIssues = params.stage === 'sheet'
       ? issues.filter((issue) => this.isSheetAdvisoryQaIssue(issue))
-      : [];
+      : crowdDuplicateIsAdvisory
+        ? issues.filter((issue) => issue === 'duplicate_body')
+        : [];
     const blockingIssues = params.stage === 'sheet'
       ? issues.filter((issue) => !this.isSheetAdvisoryQaIssue(issue))
-      : issues;
-    const passed = params.report.passed || (params.stage === 'sheet' && blockingIssues.length === 0);
+      : issues.filter((issue) => !(crowdDuplicateIsAdvisory && issue === 'duplicate_body'));
+    const passed = params.report.passed || ((params.stage === 'sheet' || crowdDuplicateIsAdvisory) && blockingIssues.length === 0);
     const repairMode = passed ? 'none' : this.chooseStoryboardRepairMode(blockingIssues, params.report.skipped);
     const styleDriftReason = issues.some((issue) => /style|rendering|palette|linework|lighting|texture|detail/.test(issue))
       ? params.report.reason
@@ -820,6 +838,19 @@ export class StoryboardV2Pipeline {
     };
   }
 
+  private isCrowdDuplicateAdvisory(panel?: StoryboardPanelSlot): boolean {
+    if (!panel || panel.visibleCharacterIds.length > 1) return false;
+    const text = [
+      panel.label,
+      panel.narrativeText,
+      panel.visualMoment,
+      panel.primaryAction,
+      panel.mustShowDetail,
+      panel.relationshipDynamic,
+    ].filter(Boolean).join(' ').toLowerCase();
+    return /\b(crowd|crowded|dancers?|guests?|patrons?|bystanders?|onlookers?|extras?|party|circle|group|gather|gathering|audience)\b/.test(text);
+  }
+
   private async runStoryboardVisualQa(params: {
     stage: 'sheet' | 'panel';
     result: GeneratedImage;
@@ -829,6 +860,7 @@ export class StoryboardV2Pipeline {
     attempt: number;
     retryOf?: string;
     allowStoryboardSheet?: boolean;
+    panel?: StoryboardPanelSlot;
   }): Promise<StoryboardVisualQaSummary> {
     if (!hasImageData(params.result) || typeof (this.imageService as any).checkImageForDefects !== 'function') {
       return {
@@ -867,6 +899,7 @@ export class StoryboardV2Pipeline {
       report,
       attempt: params.attempt,
       retryOf: params.retryOf,
+      panel: params.panel,
     });
   }
 
@@ -1010,7 +1043,7 @@ export class StoryboardV2Pipeline {
       this.styleConsistencyFailures.push({ identifier: params.identifier, error: message });
       this.failedSlots.push({ slotId: params.chunk.sheetId, error: message });
       this.emit('warning', 'images', message);
-      return undefined;
+      return retryResult;
     }
     return retryResult;
   }
@@ -1184,6 +1217,15 @@ export class StoryboardV2Pipeline {
         this.sanitizedPanelLine('Sequence role', panel.sequenceIntent?.beatRole, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Sequence turn', panel.sequenceIntent?.turningPoint || packet.sequenceIntent?.turningPoint, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Sequence visual thread', panel.sequenceIntent?.visualThread || packet.sequenceIntent?.visualThread, rawArtStyle, packet, panel),
+        panel.coveragePlan ? this.sanitizedPanelLine('Coverage plan', [
+          `staging=${panel.coveragePlan.stagingPattern}`,
+          `shot=${panel.coveragePlan.shotDistance}`,
+          `angle=${panel.coveragePlan.cameraAngle}`,
+          `side=${panel.coveragePlan.cameraSide}`,
+          `blocking=${panel.coveragePlan.relationshipBlocking}`,
+          `reason=${panel.coveragePlan.coverageReason}`,
+          panel.coveragePlan.visualContinuity?.mode ? `continuity=${panel.coveragePlan.visualContinuity.mode}` : '',
+        ].filter(Boolean).join('; '), rawArtStyle, packet, panel) : '',
         this.sanitizedPanelLine('Encounter storyboard role', panel.storyboardRole, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Encounter storyboard frame', panel.storyboardFrameId, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Branch context', panel.branchLabel, rawArtStyle, packet, panel),
@@ -1213,6 +1255,10 @@ export class StoryboardV2Pipeline {
       sanitizedLine('Scene sequence obstacle', packet.sequenceIntent?.obstacle, rawArtStyle),
       sanitizedLine('Scene sequence start/turn/end', [packet.sequenceIntent?.startState, packet.sequenceIntent?.turningPoint, packet.sequenceIntent?.endState].filter(Boolean).join(' -> '), rawArtStyle),
       sanitizedLine('Scene sequence visual thread', packet.sequenceIntent?.visualThread, rawArtStyle),
+      sanitizedLine('Scene visual geography', packet.sceneVisualSequencePlan?.geography, rawArtStyle),
+      sanitizedLine('Scene visual movement line', packet.sceneVisualSequencePlan?.movementLine, rawArtStyle),
+      sanitizedLine('Scene visual shot rhythm', packet.sceneVisualSequencePlan?.shotRhythm?.join(' -> '), rawArtStyle),
+      sanitizedLine('Scene visual power blocking', packet.sceneVisualSequencePlan?.powerBlocking, rawArtStyle),
       sanitizedLine('Branch/path context for this sheet', chunk.branchPath, rawArtStyle),
       'Make the staging expressive and alive: asymmetric poses, active hands, clear body language, and specific story moments rather than static portraits.',
       'SEQUENCE CONTINUITY: this sheet is a visual sequence, not a random contact sheet. Preserve the sequence objective, obstacle, turning point, end state, and visual thread across adjacent panels.',
@@ -1669,7 +1715,18 @@ export class StoryboardV2Pipeline {
       });
     if (leakedTerms.length > 0) errors.push(`sanitized prompt still contains blocked style terms: ${Array.from(new Set(leakedTerms)).join(', ')}`);
     const sanitization = this.collectSanitizationAudit(packet, panels, rawArtStyle);
-    const sequenceWarnings = auditSequenceContinuity(panels).map((issue) => `${issue.category} on ${issue.panelId}: ${issue.message}`);
+    const sequenceAuditPanels = panels.filter((panel) => panel.family === 'story-beat');
+    const sequenceIssues = auditSequenceContinuity(
+      sequenceAuditPanels.length >= 2 ? sequenceAuditPanels : panels,
+      {
+        requireCoveragePlan: sequenceAuditPanels.length >= 2,
+        requireShotVariety: sequenceAuditPanels.length >= 3,
+      },
+    );
+    const sequenceWarnings = sequenceIssues.map((issue) => `${issue.category} on ${issue.panelId}: ${issue.message}`);
+    if (sequenceAuditPanels.length >= 2 && sequenceIssues.length > 0) {
+      errors.push(`sequence continuity audit failed: ${sequenceWarnings.join('; ')}`);
+    }
     const audit = {
       identifier,
       mode,
@@ -1765,6 +1822,7 @@ export class StoryboardV2Pipeline {
       identifier,
       rawArtStyle,
       attempt: 1,
+      panel,
     });
     firstResult.metadata = {
       ...(firstResult.metadata || {}),
@@ -1818,6 +1876,7 @@ export class StoryboardV2Pipeline {
       rawArtStyle,
       attempt: 2,
       retryOf: identifier,
+      panel,
     });
     retryResult.metadata = {
       ...(retryResult.metadata || {}),

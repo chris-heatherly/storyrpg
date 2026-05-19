@@ -328,9 +328,14 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   // Check if scene has an encounter that hasn't been completed
   const sceneEncounter = currentScene?.encounter;
+  const firstEncounterBeatId = (sceneEncounter as any)?.phases?.[0]?.beats?.[0]?.id;
+  const isEncounterEntryBeat = Boolean(
+    currentBeatId &&
+    (currentBeatId === currentScene?.startingBeatId || currentBeatId === firstEncounterBeatId)
+  );
   const shouldShowEncounter = sceneEncounter && 
     !completedEncounters.has(sceneEncounter.id) && 
-    (showingEncounter || currentBeatId === currentScene?.startingBeatId);
+    (showingEncounter || isEncounterEntryBeat || (!(currentScene?.beats?.length) && !currentScene?.startingBeatId));
 
   useEffect(() => {
     if (!shouldShowEncounter || !sceneEncounter || !currentStory || !currentEpisode || !currentScene) return;
@@ -351,11 +356,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   useEffect(() => {
     if (currentScene?.encounter && 
         !completedEncounters.has(currentScene.encounter.id) && 
-        currentBeatId === currentScene.startingBeatId) {
+        (isEncounterEntryBeat || (!(currentScene.beats?.length) && !currentScene.startingBeatId))) {
       console.log('[StoryReader] Scene has encounter, showing it:', currentScene.encounter.id);
       setShowingEncounter(true);
     }
-  }, [currentScene?.id, currentBeatId]);
+  }, [currentScene?.id, currentBeatId, isEncounterEntryBeat]);
 
   // Handle encounter completion (GDD 6.7 - now with storylet support)
   const handleEncounterComplete = (outcome: EncounterOutcome, encounterFeedback?: AppliedConsequence[], lastImage?: string) => {

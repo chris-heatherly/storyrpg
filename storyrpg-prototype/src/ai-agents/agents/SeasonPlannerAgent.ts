@@ -52,6 +52,17 @@ import {
   buildGenreAwareJeopardyGuidance,
 } from '../prompts/storytellingPrinciples';
 
+type MutablePlanData = Partial<SeasonPlan> & {
+  encounterPlan?: any;
+  crossEpisodeBranches?: any[];
+  consequenceChains?: any[];
+  seasonFlags?: any[];
+  episodeEncounters?: Record<number | string, any[]>;
+  episodeEndingRoutes?: Record<number | string, any[]>;
+  episodeCliffhangers?: Record<number | string, Partial<CliffhangerPlan>>;
+  difficultyCurve?: any[];
+};
+
 // ========================================
 // INPUT TYPES
 // ========================================
@@ -132,15 +143,7 @@ Your plans must define:
     console.log(`[SeasonPlanner] Creating season plan for: ${sourceAnalysis.sourceTitle}`);
 
     // Always use LLM - we need it for encounter planning and cross-episode branching
-    let planData: Partial<SeasonPlan> & { 
-      encounterPlan?: any; 
-      crossEpisodeBranches?: any[];
-      consequenceChains?: any[];
-      seasonFlags?: any[];
-      episodeEncounters?: Record<number, any[]>;
-      episodeEndingRoutes?: Record<number, any[]>;
-      episodeCliffhangers?: Record<number, Partial<CliffhangerPlan>>;
-    };
+    let planData: MutablePlanData;
 
     try {
       const prompt = this.buildPlanningPrompt(sourceAnalysis, preferences);
@@ -159,6 +162,7 @@ Your plans must define:
       console.warn(`[SeasonPlanner] LLM planning failed, using fallback:`, error);
       planData = this.buildFallbackPlan(sourceAnalysis);
     }
+    planData = this.mergeTreatmentGuidanceIntoPlanData(sourceAnalysis, planData);
 
     // Build the complete season plan
     const seasonPlan = this.buildSeasonPlan(sourceAnalysis, planData, preferences);
@@ -632,6 +636,154 @@ CRITICAL RULES:
     };
   }
 
+  private mergeTreatmentGuidanceIntoPlanData(analysis: SourceMaterialAnalysis, planData: MutablePlanData): MutablePlanData {
+    const hasTreatment = analysis.episodeBreakdown.some((ep) => ep.treatmentGuidance)
+      || (analysis.treatmentBranches || []).length > 0;
+    if (!hasTreatment) return planData;
+
+    const merged: MutablePlanData = {
+      ...planData,
+      episodeEncounters: { ...(planData.episodeEncounters || {}) },
+      episodeCliffhangers: { ...(planData.episodeCliffhangers || {}) },
+      episodeEndingRoutes: { ...(planData.episodeEndingRoutes || {}) },
+      crossEpisodeBranches: [...(planData.crossEpisodeBranches || [])],
+      consequenceChains: [...(planData.consequenceChains || [])],
+      seasonFlags: [...(planData.seasonFlags || [])],
+    };
+    const endingIds = (analysis.resolvedEndings || []).map((ending) => ending.id);
+
+    for (const ep of analysis.episodeBreakdown) {
+      const guidance = ep.treatmentGuidance;
+      if (!guidance) continue;
+      const epKey = String(ep.episodeNumber);
+      const anchors = guidance.encounterAnchors || [];
+      if (anchors.length > 0) {
+        merged.episodeEncounters![epKey] = anchors.map((anchor, index) => ({
+          id: `treatment-enc-${ep.episodeNumber}-${index + 1}`,
+          type: this.inferEncounterType(anchor, analysis.genre),
+          description: anchor,
+          difficulty: this.inferEncounterDifficulty(ep.episodeNumber, analysis.totalEstimatedEpisodes),
+          npcsInvolved: ep.mainCharacters,
+          stakes: guidance.episodePromise || ep.narrativeFunction.conflict,
+          relevantSkills: this.inferRelevantSkills(anchor),
+          encounterBuildup: guidance.encounterBuildup,
+          encounterSetupContext: (guidance.consequenceSeeds || []).slice(0, 4).map((seed, seedIndex) =>
+            `flag:treatment_seed_ep${ep.episodeNumber}_${seedIndex + 1} — ${seed}`
+          ),
+          isBranchPoint: (guidance.alternativePaths || []).length > 0,
+          branchOutcomes: (guidance.alternativePaths || []).length > 0 ? {
+            victory: guidance.alternativePaths![0] || `The player earns a better version of ${ep.title}.`,
+            partialVictory: guidance.alternativePaths![1] || `The player gets what they want, but residue follows.`,
+            defeat: guidance.alternativePaths![2] || `The player pays a visible cost in ${ep.title}.`,
+          } : undefined,
+        }));
+      }
+
+      if (guidance.authoredCliffhanger && ep.episodeNumber < analysis.totalEstimatedEpisodes) {
+        merged.episodeCliffhangers![epKey] = {
+          hook: guidance.authoredCliffhanger,
+          setup: guidance.consequenceSeeds?.join(' | ') || guidance.encounterBuildup || ep.narrativeFunction.conflict,
+          resolvedEpisodeTension: ep.narrativeFunction.resolution,
+          newOpenQuestion: guidance.authoredCliffhanger,
+          nextEpisodePressure: guidance.authoredCliffhanger,
+        };
+      }
+
+      if (endingIds.length > 0) {
+        merged.episodeEndingRoutes![epKey] = endingIds.map((endingId) => ({
+          endingId,
+          role: ep.episodeNumber === analysis.totalEstimatedEpisodes ? 'locks' : ep.episodeNumber === 1 ? 'opens' : 'reinforces',
+          description: `${ep.title} keeps ${endingId} available through authored treatment choice pressure.`,
+        }));
+      }
+
+      for (const [index, seed] of (guidance.consequenceSeeds || []).entries()) {
+        const id = `treatment-chain-ep${ep.episodeNumber}-${index + 1}`;
+        if (!merged.consequenceChains!.some((chain: any) => chain.id === id)) {
+          merged.consequenceChains!.push({
+            id,
+            origin: { episodeNumber: ep.episodeNumber, description: seed },
+            consequences: [
+              {
+                episodeNumber: Math.min(analysis.totalEstimatedEpisodes, ep.episodeNumber + 1),
+                description: seed,
+                severity: ep.episodeNumber + 1 >= analysis.totalEstimatedEpisodes ? 'dramatic' : 'noticeable',
+              },
+            ],
+          });
+        }
+      }
+    }
+
+    for (const branch of analysis.treatmentBranches || []) {
+      if (merged.crossEpisodeBranches!.some((existing: any) => existing.name === branch.name || existing.id === branch.id)) continue;
+      const originEpisode = branch.originEpisode || 1;
+      merged.crossEpisodeBranches!.push({
+        id: branch.id,
+        name: branch.name,
+        originEpisode,
+        trigger: { type: 'story_choice', description: branch.summary },
+        paths: [
+          {
+            id: `${branch.id}-authored`,
+            name: branch.name,
+            condition: branch.summary,
+            targetEndingIds: endingIds.length > 0 ? endingIds : undefined,
+            affectedEpisodes: [
+              {
+                episodeNumber: branch.reconvergenceEpisode || Math.min(analysis.totalEstimatedEpisodes, originEpisode + 2),
+                impact: 'major',
+                description: branch.summary,
+              },
+            ],
+          },
+        ],
+        reconvergence: branch.reconvergenceEpisode ? {
+          episodeNumber: branch.reconvergenceEpisode,
+          description: `Authored treatment reconvergence for ${branch.name}.`,
+        } : undefined,
+      });
+      merged.seasonFlags!.push({
+        flag: branch.id.replace(/-/g, '_'),
+        description: branch.summary,
+        setInEpisode: originEpisode,
+        checkedInEpisodes: [branch.reconvergenceEpisode || Math.min(analysis.totalEstimatedEpisodes, originEpisode + 2)],
+      });
+    }
+
+    return merged;
+  }
+
+  private inferEncounterType(text: string, genre: string): EncounterCategory {
+    const lower = `${text} ${genre}`.toLowerCase();
+    if (lower.includes('kiss') || lower.includes('romance') || lower.includes('bedroom')) return 'romantic';
+    if (lower.includes('conversation') || lower.includes('confession') || lower.includes('friend')) return 'dramatic';
+    if (lower.includes('club') || lower.includes('ball') || lower.includes('door')) return 'social';
+    if (lower.includes('chase') || lower.includes('run')) return 'chase';
+    if (lower.includes('investigat') || lower.includes('mystery')) return 'investigation';
+    if (lower.includes('fight') || lower.includes('attack') || lower.includes('combat')) return 'combat';
+    return 'dramatic';
+  }
+
+  private inferEncounterDifficulty(episodeNumber: number, totalEpisodes: number): PlannedEncounter['difficulty'] {
+    const progress = episodeNumber / Math.max(1, totalEpisodes);
+    if (progress >= 0.8) return 'extreme';
+    if (progress >= 0.55) return 'hard';
+    if (progress >= 0.25) return 'moderate';
+    return 'easy';
+  }
+
+  private inferRelevantSkills(text: string): string[] {
+    const lower = text.toLowerCase();
+    const skills = new Set<string>();
+    if (lower.includes('conversation') || lower.includes('club') || lower.includes('ball')) skills.add('persuasion');
+    if (lower.includes('confession') || lower.includes('friend') || lower.includes('romance')) skills.add('empathy');
+    if (lower.includes('attack') || lower.includes('fight') || lower.includes('run')) skills.add('athletics');
+    if (lower.includes('mystery') || lower.includes('realiz') || lower.includes('reveal')) skills.add('perception');
+    if (skills.size === 0) skills.add('resolve');
+    return [...skills];
+  }
+
   private buildSeasonPlan(
     analysis: SourceMaterialAnalysis,
     planData: Partial<SeasonPlan> & {
@@ -993,11 +1145,50 @@ CRITICAL RULES:
     const coverageResult = new SevenPointCoverageValidator().validate(
       seasonPlanToCoverageInput(plan),
     );
+    for (const warning of this.validateTreatmentHandoff(analysis, plan)) {
+      plan.warnings.push(warning);
+    }
     for (const issue of coverageResult.issues) {
       plan.warnings.push(`[SevenPointCoverage:${issue.severity}] ${issue.message}`);
     }
 
     return plan;
+  }
+
+  private validateTreatmentHandoff(analysis: SourceMaterialAnalysis, plan: SeasonPlan): string[] {
+    const warnings: string[] = [];
+    const treatmentEpisodes = analysis.episodeBreakdown.filter((ep) => ep.treatmentGuidance);
+    if (treatmentEpisodes.length === 0 && !(analysis.treatmentBranches || []).length) return warnings;
+
+    if ((analysis.resolvedEndings || []).length !== 3 || plan.endingMode !== 'multiple') {
+      warnings.push('[TreatmentHandoff] Treatment-driven seasons should preserve exactly 3 alternate endings in multiple-ending mode.');
+    }
+
+    for (const episode of plan.episodes) {
+      const hadTreatment = Boolean(analysis.episodeBreakdown.find((ep) => ep.episodeNumber === episode.episodeNumber)?.treatmentGuidance);
+      if (!hadTreatment) continue;
+      if (!(episode.plannedEncounters || []).length) {
+        warnings.push(`[TreatmentHandoff] Episode ${episode.episodeNumber} has treatment guidance but no planned encounter.`);
+      }
+      if (episode.episodeNumber < plan.totalEpisodes && !episode.cliffhangerPlan?.hook) {
+        warnings.push(`[TreatmentHandoff] Episode ${episode.episodeNumber} has treatment guidance but no cliffhanger hook.`);
+      }
+    }
+
+    for (const branch of analysis.treatmentBranches || []) {
+      const found = plan.crossEpisodeBranches.some((candidate) => candidate.name === branch.name || candidate.id === branch.id)
+        || plan.consequenceChains.some((candidate) => candidate.id.includes(branch.id) || candidate.origin.description.includes(branch.name));
+      if (!found) {
+        warnings.push(`[TreatmentHandoff] Treatment branch "${branch.name}" was not preserved as a branch or consequence chain.`);
+      }
+    }
+
+    const authoredAlternativeCount = treatmentEpisodes.reduce((sum, ep) => sum + (ep.treatmentGuidance?.alternativePaths?.length || 0), 0);
+    if (authoredAlternativeCount > 0 && plan.crossEpisodeBranches.length === 0 && plan.consequenceChains.length === 0) {
+      warnings.push('[TreatmentHandoff] Authored alternative paths exist but no downstream branch or residue chain was produced.');
+    }
+
+    return warnings;
   }
 
   private validateEndingPlan(input: {

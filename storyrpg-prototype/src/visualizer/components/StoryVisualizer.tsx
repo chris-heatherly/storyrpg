@@ -147,6 +147,11 @@ export const StoryVisualizer: React.FC<StoryVisualizerProps> = ({ story, onBack,
     setSelectedEdge(edge);
   };
 
+  const handleCanvasPress = useCallback(() => {
+    setSelectedNode(null);
+    setSelectedEdge(null);
+  }, []);
+
   const handleZoomIn = useCallback(() => {
     zoomAroundFocusNode(1.25);
   }, [zoomAroundFocusNode]);
@@ -223,6 +228,7 @@ export const StoryVisualizer: React.FC<StoryVisualizerProps> = ({ story, onBack,
         onViewStateChange={setViewState}
         onNodePress={handleNodePress}
         onEdgePress={handleEdgePress}
+        onCanvasPress={handleCanvasPress}
         selectedNodeId={selectedNode?.id || null}
         selectedEdgeId={selectedEdge?.id || null}
         mode={mode}

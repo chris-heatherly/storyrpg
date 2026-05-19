@@ -1122,9 +1122,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   const navigateAfterChoice = (nextBeatId?: string, nextSceneId?: string, choiceId?: string) => {
     setChoiceFeedback(null);
-    if (nextBeatId) {
-      transitionTo(() => setBeat(nextBeatId), 'crossfade');
-    } else if (nextSceneId) {
+    if (nextSceneId) {
       if (currentEpisode) {
         const targetScene = currentEpisode.scenes.find(s => s.id === nextSceneId);
         const targetHasBeats = targetScene && targetScene.beats && targetScene.beats.length > 0;
@@ -1141,9 +1139,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       const targetScene = currentEpisode?.scenes.find(s => s.id === nextSceneId);
       const isEncounterEntry = !!targetScene?.encounter;
       transitionTo(
-        () => loadScene(nextSceneId),
+        () => loadScene(nextSceneId, undefined, nextBeatId),
         isEncounterEntry ? 'dramatic' : 'slide'
       );
+    } else if (nextBeatId) {
+      transitionTo(() => setBeat(nextBeatId), 'crossfade');
     } else {
       const nextBeatId = processedBeat?.nextBeatId;
       if (nextBeatId) {
@@ -1212,10 +1212,10 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     const nextBeatId = processedBeat.nextBeatId;
     const nextSceneId = processedBeat.nextSceneId;
     
-    if (nextBeatId) {
+    if (nextSceneId) {
+      transitionTo(() => loadScene(nextSceneId, undefined, nextBeatId));
+    } else if (nextBeatId) {
       transitionTo(() => setBeat(nextBeatId));
-    } else if (nextSceneId) {
-      transitionTo(() => loadScene(nextSceneId));
     } else {
       advanceToNextScene();
     }

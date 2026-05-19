@@ -297,6 +297,55 @@ function makeSinglePathIntoEncounterStory(): Story {
   return story;
 }
 
+function makeScopedChoiceTargetStory(): Story {
+  return {
+    id: 'story-scoped-choice-target',
+    metadata: { id: 'story-scoped-choice-target', title: 'Test', genre: 'fantasy' } as any,
+    title: 'Test',
+    genre: 'fantasy',
+    synopsis: '',
+    npcs: [],
+    episodes: [
+      {
+        id: 'ep-1',
+        number: 1,
+        title: 'Episode 1',
+        synopsis: '',
+        scenes: [
+          {
+            id: 'scene-1',
+            title: 'Scene 1',
+            startingBeatId: 'beat-1',
+            beats: [
+              {
+                id: 'beat-4',
+                text: 'Choose where to land.',
+                choices: [
+                  {
+                    id: 'choice-scoped',
+                    text: 'Skip to the second beat',
+                    nextSceneId: 'scene-2',
+                    nextBeatId: 'beat-2',
+                  },
+                ],
+              },
+            ],
+          } as any,
+          {
+            id: 'scene-2',
+            title: 'Scene 2',
+            startingBeatId: 'beat-1',
+            beats: [
+              { id: 'beat-1', text: 'Scene opening.' },
+              { id: 'beat-2', text: 'Scoped landing.' },
+            ],
+          } as any,
+        ],
+      } as any,
+    ],
+  } as any;
+}
+
 describe('residueGraphExpander', () => {
   it('creates tint source and tint payoff nodes and links matching flags', () => {
     const graph = expand(makeResidueStory());
@@ -452,19 +501,110 @@ describe('residueGraphExpander', () => {
     expect(Math.abs(center(phase!) - center(introBeat!))).toBeLessThan(1);
   });
 
+  it('routes choices with nextSceneId and nextBeatId to the exact cross-scene beat', () => {
+    const graph = expand(makeScopedChoiceTargetStory());
+    const source = graph.nodes.find((node) => node.sceneId === 'scene-1' && (node.data as any).id === 'beat-4');
+    const sceneStart = graph.nodes.find((node) => node.sceneId === 'scene-2' && (node.data as any).id === 'beat-1');
+    const scopedTarget = graph.nodes.find((node) => node.sceneId === 'scene-2' && (node.data as any).id === 'beat-2');
+    const edge = graph.edges.find((candidate) => candidate.choiceSystem?.choiceId === 'choice-scoped');
+
+    expect(edge?.source).toBe(source?.id);
+    expect(edge?.target).toBe(scopedTarget?.id);
+    expect(edge?.target).not.toBe(sceneStart?.id);
+  });
+
+  it('preserves choice metadata on scene-level branch edges', () => {
+    const story = makeScopedChoiceTargetStory();
+    const sourceBeat = story.episodes[0].scenes[0].beats[0] as any;
+    sourceBeat.choices = [
+      {
+        id: 'choice-scene-only',
+        text: 'Go to the other scene',
+        nextSceneId: 'scene-2',
+      },
+    ];
+    const graph = expand(story);
+    const sceneStart = graph.nodes.find((node) => node.sceneId === 'scene-2' && (node.data as any).id === 'beat-1');
+    const edge = graph.edges.find((candidate) => candidate.choiceSystem?.choiceId === 'choice-scene-only');
+
+    expect(edge?.target).toBe(sceneStart?.id);
+    expect(edge?.choiceSystem?.route?.isMeaningfulBranch).toBe(true);
+  });
+
+  it('keeps metadata distinct when choice ids repeat in different scenes', () => {
+    const story = makeScopedChoiceTargetStory();
+    story.episodes[0].scenes.push({
+      id: 'scene-3',
+      title: 'Scene 3',
+      startingBeatId: 'beat-1',
+      beats: [
+        {
+          id: 'beat-1',
+          text: 'Another repeated id.',
+          choices: [
+            {
+              id: 'choice-scoped',
+              text: 'Same choice id, different route',
+              nextBeatId: 'beat-2',
+            },
+          ],
+        },
+        { id: 'beat-2', text: 'Local target.' },
+      ],
+    } as any);
+
+    const graph = expand(story);
+    const crossSceneSource = graph.nodes.find((node) => node.sceneId === 'scene-1' && (node.data as any).id === 'beat-4');
+    const crossSceneTarget = graph.nodes.find((node) => node.sceneId === 'scene-2' && (node.data as any).id === 'beat-2');
+    const localSource = graph.nodes.find((node) => node.sceneId === 'scene-3' && (node.data as any).id === 'beat-1');
+    const localTarget = graph.nodes.find((node) => node.sceneId === 'scene-3' && (node.data as any).id === 'beat-2');
+
+    const repeatedChoiceEdges = graph.edges.filter((edge) => edge.choiceSystem?.choiceId === 'choice-scoped');
+
+    expect(repeatedChoiceEdges).toHaveLength(2);
+    expect(repeatedChoiceEdges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: crossSceneSource?.id, target: crossSceneTarget?.id }),
+      expect.objectContaining({ source: localSource?.id, target: localTarget?.id }),
+    ]));
+  });
+
   it('clusters encounter choice chips under their source situation', () => {
-    const graph = layoutGraph(expand(makeEncounterChoiceStory()));
+    const story = makeEncounterChoiceStory();
+    const choices = (story.episodes[0].scenes[0].encounter as any).phases[0].beats[0].choices;
+    choices.push(
+      {
+        id: 'choice-3',
+        text: 'Look for an opening',
+        outcomes: {
+          success: { narrativeText: 'You spot a gap.', encounterOutcome: 'victory' },
+        },
+      },
+      {
+        id: 'choice-4',
+        text: 'Call for help',
+        outcomes: {
+          failure: { narrativeText: 'No one answers.', encounterOutcome: 'defeat' },
+        },
+      },
+    );
+    const graph = layoutGraph(expand(story));
 
     const phase = graph.nodes.find((node) => node.type === 'phase');
-    const choices = graph.edges
+    const choiceNodes = graph.edges
       .filter((edge) => edge.source === phase?.id)
       .map((edge) => graph.nodes.find((node) => node.id === edge.target))
       .filter((node): node is NonNullable<typeof node> => node?.type === 'encounter-choice');
 
     const phaseCenter = phase ? phase.x + phase.width / 2 : 0;
-    const averageChoiceCenter = choices.reduce((sum, choice) => sum + choice.x + choice.width / 2, 0) / choices.length;
+    const averageChoiceCenter = choiceNodes.reduce((sum, choice) => sum + choice.x + choice.width / 2, 0) / choiceNodes.length;
+    const sortedChoices = [...choiceNodes].sort((a, b) => a.y - b.y);
 
-    expect(choices.length).toBeGreaterThan(1);
+    expect(choiceNodes).toHaveLength(4);
     expect(Math.abs(averageChoiceCenter - phaseCenter)).toBeLessThan(1);
+    for (let i = 1; i < sortedChoices.length; i++) {
+      const previous = sortedChoices[i - 1];
+      const current = sortedChoices[i];
+      expect(current.y).toBeGreaterThanOrEqual(previous.y + previous.height + 8);
+    }
   });
 });

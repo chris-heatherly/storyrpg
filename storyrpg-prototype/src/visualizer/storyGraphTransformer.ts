@@ -63,7 +63,7 @@ export function transformStoryToGraph(story: Story): StoryGraph {
   }
 
   // Resolve cross-scene references
-  resolveSceneReferences(story, edges);
+  resolveSceneReferences(story, nodes, edges);
 
   return {
     nodes,
@@ -140,16 +140,23 @@ function processScene(
           if (targetNode) {
             edges.push({
               id: `edge-${sourceNode.id}-choice-${choice.id}-to-${targetNode.id}`,
-                  source: sourceNode.id,
-                  target: targetNode.id,
-                  type: 'choice',
-                  label: String(choice.text || ''),
-                  conditioned: !!choice.conditions,
-                });
+              source: sourceNode.id,
+              target: targetNode.id,
+              type: 'choice',
+              label: String(choice.text || ''),
+              conditioned: !!choice.conditions,
+            });
+          } else if (choice.nextSceneId) {
+            edges.push({
+              id: `edge-${sourceNode.id}-choice-${choice.id}-to-scene-${choice.nextSceneId}-beat-${choice.nextBeatId}`,
+              source: sourceNode.id,
+              target: createSceneBeatRef(choice.nextSceneId, choice.nextBeatId),
+              type: 'choice',
+              label: String(choice.text || ''),
+              conditioned: !!choice.conditions,
+            });
           }
-        }
-
-        if (choice.nextSceneId) {
+        } else if (choice.nextSceneId) {
           edges.push({
             id: `edge-${sourceNode.id}-choice-${choice.id}-to-scene-${choice.nextSceneId}`,
             source: sourceNode.id,
@@ -695,10 +702,18 @@ function addSceneTransitions(episode: Episode, edges: GraphEdge[]) {
   }
 }
 
-function resolveSceneReferences(story: Story, edges: GraphEdge[]) {
+function resolveSceneReferences(story: Story, nodes: GraphNode[], edges: GraphEdge[]) {
   // Build maps of scene IDs to their entry and exit node IDs
   const sceneEntryMap = new Map<string, string>();
   const sceneExitMap = new Map<string, string>();
+  const sceneBeatMap = new Map<string, string>();
+
+  for (const node of nodes) {
+    const beatId = (node.data as { id?: string })?.id;
+    if (node.type === 'beat' && node.sceneId && beatId) {
+      sceneBeatMap.set(`${node.sceneId}:${beatId}`, node.id);
+    }
+  }
 
   for (const edge of edges) {
     if (edge.id.startsWith('scene-entry-marker-')) {
@@ -717,6 +732,14 @@ function resolveSceneReferences(story: Story, edges: GraphEdge[]) {
     if (edge.target.startsWith('scene-entry-')) {
       const sceneId = edge.target.replace('scene-entry-', '');
       const actualTarget = sceneEntryMap.get(sceneId);
+      if (actualTarget) {
+        edge.target = actualTarget;
+      }
+    }
+
+    if (edge.target.startsWith('scene-beat:')) {
+      const { sceneId, beatId } = parseSceneBeatRef(edge.target);
+      const actualTarget = sceneId && beatId ? sceneBeatMap.get(`${sceneId}:${beatId}`) : undefined;
       if (actualTarget) {
         edge.target = actualTarget;
       }
@@ -745,7 +768,7 @@ function resolveSceneReferences(story: Story, edges: GraphEdge[]) {
 
   // Remove edges with unresolved references (they would have no valid source/target)
   const unresolvedEdges = edges.filter(
-    (e) => e.source.startsWith('scene-exit-') || e.target.startsWith('scene-entry-')
+    (e) => e.source.startsWith('scene-exit-') || e.target.startsWith('scene-entry-') || e.target.startsWith('scene-beat:')
   );
   for (const unresolved of unresolvedEdges) {
     const index = edges.indexOf(unresolved);
@@ -753,6 +776,20 @@ function resolveSceneReferences(story: Story, edges: GraphEdge[]) {
       edges.splice(index, 1);
     }
   }
+}
+
+function createSceneBeatRef(sceneId: string, beatId: string): string {
+  return `scene-beat:${encodeURIComponent(sceneId)}:${encodeURIComponent(beatId)}`;
+}
+
+function parseSceneBeatRef(ref: string): { sceneId?: string; beatId?: string } {
+  const [, sceneId, beatId] = ref.split(':');
+  if (!sceneId || !beatId) return {};
+
+  return {
+    sceneId: decodeURIComponent(sceneId),
+    beatId: decodeURIComponent(beatId),
+  };
 }
 
 function truncateText(text: unknown, maxLength: number): string {

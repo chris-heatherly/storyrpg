@@ -81,6 +81,12 @@ describe('planningHelpers', () => {
           {
             episodeNumber: 2,
             difficultyTier: 'hard',
+            treatmentGuidance: {
+              episodePromise: 'Can the protagonist keep both friends?',
+              majorChoicePressures: ['Choose who to trust when both allies disagree.'],
+              alternativePaths: ['Trusting the ally changes the later confrontation.'],
+              authoredCliffhanger: 'A trusted ally arrives with impossible news.',
+            },
             incomingBranches: ['branch-1'],
             setsFlags: ['met_rival'],
             checksFlags: ['saved_friend'],
@@ -106,6 +112,8 @@ describe('planningHelpers', () => {
     expect(directives?.plannedEncounters?.[0]?.id).toBe('enc-2-1');
     expect(directives?.incomingBranchEffects?.[0]?.branchName).toBe('Main Branch');
     expect(directives?.consequenceEffects?.[0]?.severity).toBe('high');
+    expect(directives?.treatmentGuidance?.episodePromise).toContain('keep both friends');
+    expect(directives?.treatmentGuidance?.majorChoicePressures?.[0]).toContain('trust');
   });
 
   it('includes growthContext when seasonPlan has growthCurve entry for episode', () => {

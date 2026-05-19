@@ -40,7 +40,7 @@ export function enrichStoryGraphWithChoiceSystems(story: Story, graph: StoryGrap
   const nodes = graph.nodes.map((node) => ({ ...node }));
   const edges = graph.edges.map((edge) => ({ ...edge }));
   const nodeBySceneBeat = new Map<string, GraphNode>();
-  const edgeByChoiceId = new Map<string, GraphEdge>();
+  const edgeByChoiceKey = new Map<string, GraphEdge>();
   const npcAccumulator = new Map<string, ChoiceSystemNpcSummary>();
 
   for (const node of nodes) {
@@ -51,9 +51,11 @@ export function enrichStoryGraphWithChoiceSystems(story: Story, graph: StoryGrap
   }
 
   for (const edge of edges) {
+    const sourceNode = nodes.find((node) => node.id === edge.source);
+    const sourceBeatId = (sourceNode?.data as { id?: string })?.id;
     const match = edge.id.match(/-choice-(.+?)-to-/);
-    if (match?.[1]) {
-      edgeByChoiceId.set(match[1], edge);
+    if (match?.[1] && sourceNode?.sceneId && sourceBeatId) {
+      edgeByChoiceKey.set(buildChoiceEdgeKey(sourceNode.sceneId, sourceBeatId, match[1]), edge);
     }
   }
 
@@ -86,7 +88,7 @@ export function enrichStoryGraphWithChoiceSystems(story: Story, graph: StoryGrap
             }
           }
 
-          const edge = edgeByChoiceId.get(summary.id);
+          const edge = edgeByChoiceKey.get(buildChoiceEdgeKey(scene.id, beat.id, summary.id));
           if (edge) {
             edge.choiceSystem = buildEdgeMetadata(summary);
             edge.conditioned = edge.conditioned || summary.hasLockedGate;
@@ -104,6 +106,10 @@ export function enrichStoryGraphWithChoiceSystems(story: Story, graph: StoryGrap
       npcs: Array.from(npcAccumulator.values()).sort((a, b) => a.npcId.localeCompare(b.npcId)),
     },
   };
+}
+
+function buildChoiceEdgeKey(sceneId: string, beatId: string, choiceId: string): string {
+  return `${sceneId}:${beatId}:${choiceId}`;
 }
 
 export function summarizeChoice(choice: Choice): ChoiceSystemChoiceSummary {
@@ -160,8 +166,12 @@ function summarizeRoute(choice: Choice): ChoiceSystemRouteSummary {
   if (choice.nextSceneId) {
     return {
       kind: 'nextScene',
-      authorLabel: `goes to ${humanizeId(choice.nextSceneId)}`,
-      playerLabel: 'This choice opens a different scene.',
+      authorLabel: choice.nextBeatId
+        ? `goes to ${humanizeId(choice.nextSceneId)} / ${humanizeId(choice.nextBeatId)}`
+        : `goes to ${humanizeId(choice.nextSceneId)}`,
+      playerLabel: choice.nextBeatId
+        ? 'This choice opens a specific moment in another scene.'
+        : 'This choice opens a different scene.',
       isMeaningfulBranch: true,
     };
   }

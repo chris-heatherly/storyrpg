@@ -93,6 +93,7 @@ export function buildSeasonPlanDirectives(
     flagsToCheck: seasonEp.checksFlags?.length ? seasonEp.checksFlags : undefined,
     consequenceEffects: consequenceEffects.length > 0 ? consequenceEffects : undefined,
     endingRoutes: seasonEp.endingRoutes?.length ? seasonEp.endingRoutes : undefined,
+    treatmentGuidance: seasonEp.treatmentGuidance,
     growthContext,
   };
 }

@@ -14,6 +14,7 @@ import {
   SevenPointStructure,
   StructuralRole,
   SEVEN_POINT_BEATS,
+  TreatmentEpisodeGuidance,
 } from '../../types/sourceAnalysis';
 import { BaseAgent, AgentResponse, AgentMessage } from './BaseAgent';
 import {
@@ -25,6 +26,7 @@ import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraf
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType, NarrativeSequenceIntent } from '../../types';
 import type { CliffhangerPlan } from '../../types/seasonPlan';
 import type { EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
+import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
 
 // Input types
 export interface StoryArchitectInput {
@@ -138,6 +140,7 @@ export interface StoryArchitectInput {
       role: 'opens' | 'reinforces' | 'threatens' | 'locks';
       description: string;
     }>;
+    treatmentGuidance?: TreatmentEpisodeGuidance;
     growthContext?: {
       focusSkills: string[];
       developmentScene: string;
@@ -1179,11 +1182,12 @@ REQUIREMENTS:
                                  errorMsg.includes('Bottleneck scene') ||
                                  errorMsg.includes('Starting scene') ||
                                  errorMsg.includes('must have at least');
+      const isTreatmentFidelityError = errorMsg.includes('[TreatmentFidelity]');
       const isParseError = errorMsg.includes('Failed to parse JSON response') ||
                            errorMsg.includes('Expected double-quoted property name') ||
                            errorMsg.includes('Unexpected token');
 
-      if ((isChoiceDensityError || isEncounterPlanningError || isStructuralError || isParseError) && retryCount < maxRetries) {
+      if ((isChoiceDensityError || isEncounterPlanningError || isStructuralError || isTreatmentFidelityError || isParseError) && retryCount < maxRetries) {
         console.log(`[StoryArchitect] Retrying due to structural blueprint issue: ${errorMsg.slice(0, 120)}`);
         this.lastStructuralFeedback = isParseError
           ? [
@@ -1591,6 +1595,46 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       }
     }
 
+    if (directives.treatmentGuidance) {
+      const guidance = directives.treatmentGuidance;
+      section += '### Authored Treatment Guidance\n';
+      section += 'These details came from the user-authored treatment. Preserve them as binding episode intent, not optional flavor. Do not compress away authored setup/opening beats when they are needed to earn the listed choices, consequences, or cliffhanger.\n\n';
+      if (guidance.episodePromise) {
+        section += `- Episode promise: ${guidance.episodePromise}\n`;
+      }
+      if (guidance.toneRegister) {
+        section += `- Tone register: ${guidance.toneRegister}\n`;
+      }
+      if (guidance.encounterAnchors?.length) {
+        section += `- Encounter anchors: ${guidance.encounterAnchors.join(' | ')}\n`;
+      }
+      if (guidance.encounterBuildup) {
+        section += `- Encounter buildup: ${guidance.encounterBuildup}\n`;
+      }
+      if (guidance.majorChoicePressures?.length) {
+        section += 'Major authored choice pressures that MUST become real choicePoint scenes when treatment-driven:\n';
+        for (const pressure of guidance.majorChoicePressures) {
+          section += `- ${pressure}\n`;
+        }
+      }
+      if (guidance.alternativePaths?.length) {
+        section += 'Authored alternative paths and reconvergence/residue notes:\n';
+        for (const path of guidance.alternativePaths) {
+          section += `- ${path}\n`;
+        }
+      }
+      if (guidance.consequenceSeeds?.length) {
+        section += 'Consequence seeds that should become flags, callbacks, scene tints, or later route pressure:\n';
+        for (const seed of guidance.consequenceSeeds) {
+          section += `- ${seed}\n`;
+        }
+      }
+      if (guidance.authoredCliffhanger) {
+        section += `- Authored cliffhanger (MUST be supported by the final scene narrativeFunction/keyBeats): ${guidance.authoredCliffhanger}\n`;
+      }
+      section += '\nCRITICAL: At least one authored major choice pressure must appear as a concrete scene choicePoint unless the episode is structurally impossible without breaking the treatment. Alternative paths must leave visible residue after reconvergence. If you change scene order for pacing, keep the authored setup/choice/consequence/cliffhanger chain legible.\n\n';
+    }
+
     if (directives.plannedEncounters && directives.plannedEncounters.length > 0) {
       section += '### Pre-Planned Encounters\n';
       section += 'These encounters MUST be included as encounter scenes in the blueprint. Copy each encounter ID into the scene field `plannedEncounterId` exactly so downstream generation can bind the scene to the season plan.\n\n';
@@ -1766,6 +1810,8 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       issues.push(`Only ${encounterScenes.length} encounter scene(s), need at least ${minEncounters}`);
     }
 
+    issues.push(...this.collectTreatmentFidelityIssues(blueprint, input));
+
     return issues;
   }
 
@@ -1860,6 +1906,10 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       }
     }
     this.validatePlannedEncounterCoverage(blueprint, input);
+    const treatmentIssues = this.collectTreatmentFidelityIssues(blueprint, input);
+    if (treatmentIssues.length > 0) {
+      throw new Error(treatmentIssues.join('\n'));
+    }
 
     // === CHOICE DENSITY VALIDATION ===
     // This is critical for interactive fiction - stories without choices aren't interactive
@@ -1940,5 +1990,15 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     }
 
     console.log(`[StoryArchitect] Choice density validation passed: ${scenesWithChoices.length}/${blueprint.scenes.length} scenes have choices (${Math.round(choiceDensity * 100)}%)`);
+  }
+
+  private collectTreatmentFidelityIssues(blueprint: EpisodeBlueprint, input: StoryArchitectInput): string[] {
+    const result = new TreatmentFidelityValidator().validate({
+      blueprint,
+      treatmentGuidance: input.seasonPlanDirectives?.treatmentGuidance,
+      cliffhangerPlan: input.cliffhangerPlan,
+      plannedEncounters: input.seasonPlanDirectives?.plannedEncounters,
+    });
+    return result.issues;
   }
 }

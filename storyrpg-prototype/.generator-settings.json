@@ -22,7 +22,7 @@
     "standardBeatCount": 8,
     "bottleneckBeatCount": 10,
     "encounterBeatCount": 3,
-    "generateImages": true,
+    "generateImages": false,
     "imageGenerationLimit": 10,
     "panelMode": "single",
     "imagePlanningMode": "text",

@@ -9,6 +9,7 @@ import {
 } from './visualStoryboardPlanning';
 import type { EncounterImageSlot } from '../encounters/encounterSlotManifest';
 import type { StoryletSlot } from '../encounters/storyletSlotManifest';
+import type { VisualStoryboardPacket } from './visualStoryboardPlanning';
 
 describe('visualStoryboardPlanning', () => {
   it('splits beat scenes into readable storyboard sheets with complete slot coverage', () => {
@@ -131,7 +132,7 @@ describe('visualStoryboardPlanning', () => {
   });
 
   it('validates packet coverage, shot variety, and third-person camera rules', () => {
-    const packet = {
+    const packet: VisualStoryboardPacket = {
       version: 1 as const,
       generatedAt: 'now',
       requestedMode: 'visual-storyboard' as const,
@@ -191,5 +192,150 @@ describe('visualStoryboardPlanning', () => {
     expect(result.passed).toBe(false);
     expect(result.issues).toContain('missing shot for beat-2');
     expect(result.issues).toContain('missing shot for beat-3');
+  });
+
+  it('reports structural storyboard packet failures as hard issues', () => {
+    const packet: VisualStoryboardPacket = {
+      version: 1,
+      generatedAt: 'now',
+      requestedMode: 'visual-storyboard',
+      effectiveMode: 'visual-storyboard',
+      sceneId: 'scene-1',
+      scopedSceneId: 'episode-1-scene-1',
+      sceneName: 'Lobby',
+      chunkIndex: 0,
+      beatIds: ['beat-1'],
+      sceneMasterPrompt: {
+        style: 'cartoon',
+        styleNegatives: 'photorealism',
+        location: 'hotel lobby',
+        lightingColor: 'warm',
+        castPolicy: 'only planned cast',
+        thirdPersonCameraRule: 'third-person observer only',
+        referenceSummary: [],
+      },
+      continuityBible: {
+        locationLayout: 'hotel',
+        lightingArc: 'warm',
+        characterBlocking: 'consistent',
+        costumeState: 'consistent',
+        importantProps: [],
+      },
+      sequenceGrammar: {
+        sceneVisualArc: 'arc',
+        cameraProgression: 'progression',
+        shotRhythm: ['establishing'] as any,
+        motifProgression: [],
+        powerBlocking: 'clear',
+        silentReadabilityGoal: 'readable',
+      },
+      shots: [
+        {
+          beatId: '',
+          slotId: 'story-beat:episode-1-scene-1::beat-1',
+          sequenceRole: 'establishing',
+          shotSize: 'LS',
+          cameraAngle: 'eye-level',
+          cameraHeight: 'eye',
+          cameraSide: 'left',
+          thirdPersonPov: 'subjective' as never,
+          focalCharacterIds: [],
+          requiredVisibleCharacterIds: [],
+          optionalBackgroundCharacterIds: [],
+          offscreenCharacterIds: [],
+          dramaticReason: 'establish geography',
+          promptFields: { action: 'Lobby gleams.' },
+          referencePack: { required: [], optional: [], missing: [] },
+        },
+      ],
+      validation: { passed: true, issues: [] },
+    };
+    const malformedPacket = {
+      ...packet,
+      requestedMode: 'text',
+      effectiveMode: 'bogus',
+      sceneMasterPrompt: {
+        ...packet.sceneMasterPrompt,
+        thirdPersonCameraRule: '',
+      },
+      shots: [],
+    } as unknown as VisualStoryboardPacket;
+
+    const malformedResult = validateVisualStoryboardPacket(malformedPacket);
+    expect(malformedResult.passed).toBe(false);
+    expect(malformedResult.issues).toContain('requestedMode must be visual-storyboard');
+    expect(malformedResult.issues).toContain('effectiveMode must be text or visual-storyboard');
+    expect(malformedResult.issues).toContain('missing third-person camera rule');
+    expect(malformedResult.issues).toContain('packet has no shots');
+    expect(malformedResult.issues).toContain('missing shot for beat-1');
+
+    const shotResult = validateVisualStoryboardPacket(packet);
+    expect(shotResult.passed).toBe(false);
+    expect(shotResult.issues).toContain('shot missing beatId');
+    expect(shotResult.issues).toContain('unknown uses invalid POV');
+    expect(shotResult.issues).toContain('missing shot for beat-1');
+  });
+
+  it('keeps shot-variety diagnostics as warnings instead of hard issues', () => {
+    const packet: VisualStoryboardPacket = {
+      version: 1,
+      generatedAt: 'now',
+      requestedMode: 'visual-storyboard',
+      effectiveMode: 'visual-storyboard',
+      sceneId: 'scene-1',
+      scopedSceneId: 'episode-1-scene-1',
+      sceneName: 'Lobby',
+      chunkIndex: 0,
+      beatIds: ['beat-1', 'beat-2', 'beat-3'],
+      sceneMasterPrompt: {
+        style: 'cartoon',
+        styleNegatives: 'photorealism',
+        location: 'hotel lobby',
+        lightingColor: 'warm',
+        castPolicy: 'only planned cast',
+        thirdPersonCameraRule: 'third-person observer only',
+        referenceSummary: [],
+      },
+      continuityBible: {
+        locationLayout: 'hotel',
+        lightingArc: 'warm',
+        characterBlocking: 'consistent',
+        costumeState: 'consistent',
+        importantProps: [],
+      },
+      sequenceGrammar: {
+        sceneVisualArc: 'arc',
+        cameraProgression: 'progression',
+        shotRhythm: ['relationship', 'relationship', 'relationship'] as any,
+        motifProgression: [],
+        powerBlocking: 'clear',
+        silentReadabilityGoal: 'readable',
+      },
+      shots: ['beat-1', 'beat-2', 'beat-3'].map((beatId) => ({
+        beatId,
+        slotId: `story-beat:episode-1-scene-1::${beatId}`,
+        sequenceRole: 'relationship' as const,
+        shotSize: 'MS',
+        cameraAngle: 'eye-level',
+        cameraHeight: 'eye',
+        cameraSide: 'left',
+        thirdPersonPov: 'observer' as const,
+        focalCharacterIds: ['hero'],
+        requiredVisibleCharacterIds: ['hero'],
+        optionalBackgroundCharacterIds: [],
+        offscreenCharacterIds: [],
+        dramaticReason: 'dialogue coverage',
+        promptFields: { action: `${beatId} dialogue beat.` },
+        referencePack: { required: [], optional: [], missing: [] },
+      })),
+      validation: { passed: true, issues: [] },
+    };
+
+    const result = validateVisualStoryboardPacket(packet);
+    expect(result.passed).toBe(true);
+    expect(result.issues).toEqual([]);
+    expect(result.warnings).toContain('beat-2 repeats previous camera without locked micro-progression');
+    expect(result.warnings).toContain('beat-3 repeats previous camera without locked micro-progression');
+    expect(result.warnings).toContain('beat-3 repeats solitary neutral composition more than twice');
   });
 });

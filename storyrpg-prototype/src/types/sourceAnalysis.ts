@@ -209,6 +209,25 @@ export interface StoryEndingTarget {
   sourceConfidence: EndingSourceConfidence;
 }
 
+export interface TreatmentEpisodeGuidance {
+  episodePromise?: string;
+  toneRegister?: string;
+  encounterAnchors?: string[];
+  encounterBuildup?: string;
+  majorChoicePressures?: string[];
+  alternativePaths?: string[];
+  consequenceSeeds?: string[];
+  authoredCliffhanger?: string;
+}
+
+export interface TreatmentBranchGuidance {
+  id: string;
+  name: string;
+  summary: string;
+  originEpisode?: number;
+  reconvergenceEpisode?: number;
+}
+
 // ========================================
 // EPISODE BREAKDOWN TYPES
 // ========================================
@@ -383,6 +402,13 @@ export interface EpisodeOutline {
   setsFlags?: Array<{ flag: string; description: string }>;
   // Flags/state from previous episodes that this episode checks
   checksFlags?: Array<{ flag: string; ifTrue: string; ifFalse: string }>;
+
+  /**
+   * Authored treatment details extracted from StoryRPG treatment documents.
+   * This is planning metadata only; downstream agents use it as high-signal
+   * guidance while preserving the canonical Story/Episode/Scene/Choice schema.
+   */
+  treatmentGuidance?: TreatmentEpisodeGuidance;
 }
 
 export interface SourceMaterialAnalysis {
@@ -445,6 +471,11 @@ export interface SourceMaterialAnalysis {
   // Complete episode breakdown
   episodeBreakdown: EpisodeOutline[];
   totalEstimatedEpisodes: number;
+
+  /**
+   * Authored season-level branch chains extracted from a treatment document.
+   */
+  treatmentBranches?: TreatmentBranchGuidance[];
 
   // Character analysis
   protagonist: {

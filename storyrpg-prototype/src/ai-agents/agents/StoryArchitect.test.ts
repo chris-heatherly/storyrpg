@@ -117,6 +117,30 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
     expect(result).toContain('FAILURE-RECOVERY BRANCH');
   });
 
+  it('includes authored treatment guidance as concrete choice and path directives', () => {
+    const input = makeInput({
+      seasonPlanDirectives: {
+        treatmentGuidance: {
+          episodePromise: 'Can Kylie trust the friend who keeps saving her?',
+          toneRegister: 'Rom-com banter curdling into betrayal.',
+          majorChoicePressures: ['Help Mika, cut her off, or ask for time.'],
+          alternativePaths: ['Helping Mika opens the Witness ending and leaves warmth after reconvergence.'],
+          consequenceSeeds: ['The black rose in the apartment.'],
+          authoredCliffhanger: 'Radu admits he tried to be there the first night.',
+        },
+      },
+    });
+    const result = (architect as any).buildSeasonPlanDirectivesSection(input);
+
+    expect(result).toContain('Authored Treatment Guidance');
+    expect(result).toContain('Can Kylie trust');
+    expect(result).toContain('Help Mika');
+    expect(result).toContain('Witness ending');
+    expect(result).toContain('black rose');
+    expect(result).toContain('Radu admits');
+    expect(result).toContain('concrete scene choicePoint');
+  });
+
   it('includes adapted story-craft guidance without requiring combat-only pressure', () => {
     const input = makeInput();
     const result = (architect as any).buildPrompt(input);

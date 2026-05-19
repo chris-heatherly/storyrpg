@@ -371,13 +371,7 @@ function resolveSceneCollisions(nodes: GraphNode[], edges: GraphEdge[]) {
     while (true) {
       const collision = placed.find((other) => rectanglesOverlap(node, other, 18));
       if (!collision) break;
-      if (node.type === 'encounter-choice' && choiceParentById.get(node.id)?.id !== collision.id) {
-        moveNodeBelow(collision, node);
-        guard += 1;
-        if (guard > placed.length + 4) break;
-        continue;
-      }
-      node.y = collision.y + collision.height + 28;
+      moveNodeBelow(node, collision);
       guard += 1;
       if (guard > placed.length + 4) break;
     }

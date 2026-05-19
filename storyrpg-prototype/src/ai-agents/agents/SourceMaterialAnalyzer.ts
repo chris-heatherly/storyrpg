@@ -48,6 +48,7 @@ import {
   buildAnalysisFromEndingSeeds,
   normalizeEndingTargets,
 } from '../utils/endingResolver';
+import { extractTreatmentFromMarkdown, looksLikeTreatmentMarkdown } from '../utils/treatmentExtraction';
 import {
   BRANCH_AND_BOTTLENECK,
   STAKES_TRIANGLE,
@@ -626,6 +627,14 @@ Return ONLY valid JSON.
     breakdown: EpisodeBreakdownResponse
   ): SourceMaterialAnalysis {
     const totalEpisodes = breakdown.totalEpisodes;
+    const sourceText = input.sourceText || '';
+    const treatment = extractTreatmentFromMarkdown(sourceText);
+    if (looksLikeTreatmentMarkdown(sourceText) && Object.keys(treatment.episodes).length === 0) {
+      throw new Error(
+        'Treatment extraction failed: source looks like a StoryRPG treatment, but no episode guidance could be parsed. ' +
+        'Check the treatment template headings before generating a generic adaptation.'
+      );
+    }
 
     // Default structuralRole distribution — used as a fallback when the LLM
     // did not tag an episode with its own structuralRole array, and as the
@@ -671,6 +680,7 @@ Return ONLY valid JSON.
         estimatedChoiceCount: input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode,
         structuralRole,
         narrativeFunction: ep.narrativeArc,
+        treatmentGuidance: treatment.episodes[ep.episodeNumber],
       };
     });
 
@@ -755,6 +765,16 @@ Return ONLY valid JSON.
       detectedEndingMode,
       input.preferences?.endingMode,
     );
+    const treatmentEndings = treatment.endings.length === 3
+      ? treatment.endings
+      : [];
+    if (treatmentEndings.length === 3) {
+      const noEndingWarningIndex = warnings.findIndex((warning) => warning.includes('No explicit ending set found'));
+      if (noEndingWarningIndex >= 0) warnings.splice(noEndingWarningIndex, 1);
+    }
+    const resolvedEndingMode = treatmentEndings.length === 3
+      ? 'multiple'
+      : endingFields.resolvedEndingMode;
 
     return {
       sourceTitle: input.title || 'Untitled',
@@ -781,14 +801,17 @@ Return ONLY valid JSON.
       ),
 
       storyArcs,
-      detectedEndingMode: endingFields.detectedEndingMode,
-      resolvedEndingMode: endingFields.resolvedEndingMode,
-      endingModeReasoning: structure.endingAnalysis?.reasoning,
-      extractedEndings: endingFields.extractedEndings,
+      detectedEndingMode: treatmentEndings.length === 3 ? 'multiple' : endingFields.detectedEndingMode,
+      resolvedEndingMode,
+      endingModeReasoning: treatmentEndings.length === 3
+        ? 'Exactly three alternate endings were extracted from the treatment document.'
+        : structure.endingAnalysis?.reasoning,
+      extractedEndings: treatmentEndings.length === 3 ? treatmentEndings : endingFields.extractedEndings,
       generatedEndings: endingFields.generatedEndings,
-      resolvedEndings: endingFields.resolvedEndings,
+      resolvedEndings: treatmentEndings.length === 3 ? treatmentEndings : endingFields.resolvedEndings,
       episodeBreakdown: episodeOutlines,
       totalEstimatedEpisodes: breakdown.totalEpisodes,
+      treatmentBranches: treatment.branches.length > 0 ? treatment.branches : undefined,
 
       protagonist: {
         id: `char-${slugify(structure.protagonist.name)}`,

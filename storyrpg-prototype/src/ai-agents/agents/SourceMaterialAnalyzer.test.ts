@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import {
   containsSchemaPlaceholder,
@@ -12,6 +14,7 @@ import {
   SourceMaterialAnalyzer,
 } from './SourceMaterialAnalyzer';
 import type { StoryAnchors, StorySchemaAbstraction } from '../../types/sourceAnalysis';
+import { extractTreatmentFromMarkdown, looksLikeTreatmentMarkdown } from '../utils/treatmentExtraction';
 
 const anchors: StoryAnchors = {
   stakes: 'The mountain village and the protagonist dignity.',
@@ -70,6 +73,164 @@ describe('SourceMaterialAnalyzer schema abstraction helpers', () => {
     )!;
 
     expect(normalized.adaptationMode).toBe('inspired_by');
+  });
+});
+
+describe('SourceMaterialAnalyzer treatment extraction', () => {
+  const treatment = readFileSync(join(__dirname, '../fixtures/bite-me-treatment.md'), 'utf8');
+
+  it('extracts treatment episode guidance and exactly three endings', () => {
+    const extracted = extractTreatmentFromMarkdown(treatment);
+
+    expect(extracted.isTreatment).toBe(true);
+    expect(Object.keys(extracted.episodes)).toHaveLength(8);
+    expect(extracted.episodes[1]?.episodePromise).toContain('first fabulous night');
+    expect(extracted.episodes[1]?.majorChoicePressures).toEqual(
+      expect.arrayContaining([expect.stringContaining('Accept Mika')]),
+    );
+    expect(extracted.episodes[1]?.alternativePaths).toEqual(
+      expect.arrayContaining([expect.stringContaining('quartz')]),
+    );
+    expect(extracted.episodes[1]?.consequenceSeeds).toEqual(
+      expect.arrayContaining([expect.stringContaining('black roses')]),
+    );
+    expect(extracted.episodes[1]?.authoredCliffhanger).toContain('horrible dream');
+    expect(extracted.episodes[5]?.authoredCliffhanger).toContain('stag-crest ring');
+    expect(extracted.branches.map((branch) => branch.name)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('The Quartz'),
+        expect.stringContaining('The Blog War'),
+        expect.stringContaining('Mika'),
+        expect.stringContaining('The Mountain Confession'),
+      ]),
+    );
+    expect(extracted.endings).toHaveLength(3);
+    expect(extracted.endings.map((ending) => ending.name)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('The Consort'),
+        expect.stringContaining('The Mountain Wife'),
+        expect.stringContaining('The Witness'),
+      ]),
+    );
+    expect(extracted.endings[0]?.targetConditions.join(' ')).toContain('Victor-aligned');
+  });
+
+  it('detects malformed treatment-like input and blocks silent generic fallback', () => {
+    const malformedTreatment = `
+# Bite Me Story Treatment
+
+## 1. Episode Outline
+
+### Ep One - Dating After Dusk
+- **Episode promise:** Can Kylie survive her first fabulous night?
+- **Major choice pressure:** Accept Mika's key card or keep distance.
+- **Cliffhanger:** Stela texts that she had a horrible dream and is coming over with herbs.
+
+## 2. Alternate Endings
+
+### Ending One - "The Consort"
+- **Summary:** Kylie chooses Victor.
+`;
+    const analyzer = new SourceMaterialAnalyzer({
+      provider: 'anthropic',
+      model: 'test',
+      apiKey: 'test',
+      maxTokens: 1000,
+      temperature: 0,
+    });
+    const structure: any = {
+      genre: 'paranormal romance',
+      tone: 'dangerous',
+      themes: [],
+      setting: { timePeriod: 'present', location: 'Bucharest', worldDetails: '' },
+      protagonist: { name: 'Kylie', description: 'A blogger.', arc: 'Claims her voice.' },
+      majorCharacters: [],
+      keyLocations: [],
+      directLanguageFragments: { dialogue: [], prose: [], terminology: [] },
+      storyArcs: [],
+      majorPlotPoints: [],
+      estimatedScope: { complexity: 'moderate', estimatedEpisodes: 1, reasoning: 'test' },
+      endingAnalysis: { detectedMode: 'single', reasoning: 'fallback', explicitEndings: [] },
+    };
+    const breakdown: any = {
+      episodes: [{
+        episodeNumber: 1,
+        title: 'Episode 1',
+        synopsis: 'Synopsis',
+        sourceChapters: '1',
+        plotPoints: ['Plot'],
+        mainCharacters: ['Kylie'],
+        locations: ['Bucharest'],
+        narrativeArc: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        structuralRole: ['hook'],
+      }],
+      totalEpisodes: 1,
+      breakdownNotes: 'test',
+    };
+
+    expect(looksLikeTreatmentMarkdown(malformedTreatment)).toBe(true);
+    expect(() => (analyzer as any).assembleAnalysis(
+      { title: 'Bite Me', sourceText: malformedTreatment },
+      structure,
+      breakdown,
+    )).toThrow(/Treatment extraction failed/);
+  });
+
+  it('overlays treatment guidance and endings onto assembled source analysis', () => {
+    const analyzer = new SourceMaterialAnalyzer({
+      provider: 'anthropic',
+      model: 'test',
+      apiKey: 'test',
+      maxTokens: 1000,
+      temperature: 0,
+    });
+
+    const structure: any = {
+      genre: 'paranormal romance',
+      tone: 'glamorous and dangerous',
+      themes: ['voice', 'friendship'],
+      setting: { timePeriod: 'present', location: 'Bucharest', worldDetails: 'Nightlife with supernatural pressure' },
+      protagonist: { name: 'Kylie', description: 'A blogger.', arc: 'Claims her voice.' },
+      majorCharacters: [],
+      keyLocations: [],
+      directLanguageFragments: { dialogue: [], prose: [], terminology: [] },
+      storyArcs: [{ name: 'Dusk', description: 'Kylie learns the city.', chapters: 'all' }],
+      majorPlotPoints: [
+        { description: 'Kylie is attacked and rescued.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
+        { description: 'Kylie confronts Victor.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+      ],
+      estimatedScope: { complexity: 'moderate', estimatedEpisodes: 8, reasoning: 'treatment has eight episodes' },
+      endingAnalysis: { detectedMode: 'single', reasoning: 'fallback', explicitEndings: [] },
+    };
+    const breakdown: any = {
+      episodes: Array.from({ length: 8 }, (_, index) => ({
+        episodeNumber: index + 1,
+        title: `Episode ${index + 1}`,
+        synopsis: `Synopsis ${index + 1}`,
+        sourceChapters: `${index + 1}`,
+        plotPoints: [`Plot ${index + 1}`],
+        mainCharacters: ['Kylie'],
+        locations: ['Bucharest'],
+        narrativeArc: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        structuralRole: index === 4 ? ['midpoint'] : index === 7 ? ['climax', 'resolution'] : ['rising'],
+      })),
+      totalEpisodes: 8,
+      breakdownNotes: 'eight episodes',
+    };
+
+    const analysis = (analyzer as any).assembleAnalysis(
+      { title: 'Bite Me', sourceText: treatment },
+      structure,
+      breakdown,
+    );
+
+    expect(analysis.resolvedEndingMode).toBe('multiple');
+    expect(analysis.resolvedEndings).toHaveLength(3);
+    expect(analysis.episodeBreakdown[0].treatmentGuidance.authoredCliffhanger).toContain('horrible dream');
+    expect(analysis.episodeBreakdown[4].treatmentGuidance.encounterAnchors[0]).toContain('mirror moment');
+    expect(analysis.treatmentBranches.map((branch: any) => branch.name)).toEqual(
+      expect.arrayContaining([expect.stringContaining('The Blog War')]),
+    );
   });
 });
 

@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const CACHE_FILE = path.resolve(__dirname, '..', '.model-cache.json');
+let CACHE_FILE = path.resolve(__dirname, '..', '.model-cache.json');
 const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 function loadCache() {
@@ -274,7 +274,11 @@ async function performScan(overrideKeys) {
   return result;
 }
 
-function registerModelScanRoutes(app) {
+function registerModelScanRoutes(app, options = {}) {
+  if (options.cacheFile) {
+    CACHE_FILE = options.cacheFile;
+  }
+
   app.get('/models/available', async (_req, res) => {
     try {
       let cache = loadCache();

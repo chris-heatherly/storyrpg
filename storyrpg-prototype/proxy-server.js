@@ -34,6 +34,8 @@ const { registerImageFeedbackRoutes } = require('./proxy/imageFeedbackRoutes');
 const { registerStyleRoutes } = require('./proxy/styleRoutes');
 const { createWorkerLifecycle } = require('./proxy/workerLifecycle');
 const { registerGenerationJobRoutes } = require('./proxy/generationJobRoutes');
+const { createRuntimeLayout } = require('./proxy/runtimePaths');
+const { getStoryStorageMode, getGcsBucketName, getGcsPublicBaseUrl, mapProxyPathToGcsObjectPath } = require('./proxy/gcsConfig');
 const { resolveGeneratedStoryAssetFallback } = require('./proxy/generatedStoryAssetFallback');
 
 require('dotenv').config();
@@ -41,11 +43,15 @@ require('dotenv').config();
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
 const ROOT_DIR = __dirname;
-const STORIES_DIR = path.resolve(ROOT_DIR, 'generated-stories');
-const REF_IMAGES_DIR = path.resolve(ROOT_DIR, '.ref-images');
-const PIPELINE_MEMORY_ROOT = path.resolve(process.env.MEMORY_DIR || path.join(ROOT_DIR, 'pipeline-memories'));
-const DELETED_STORIES_FILE = path.resolve(STORIES_DIR, '.deleted-stories.json');
-const WORKER_CHECKPOINT_OUTPUT_DIR = path.resolve(ROOT_DIR, '.worker-checkpoint-outputs');
+const RUNTIME = createRuntimeLayout(ROOT_DIR);
+process.env.STORYRPG_RUNTIME_DIR = RUNTIME.runtimeRoot;
+process.env.STORIES_DIR = RUNTIME.storiesDir;
+process.env.MEMORY_DIR = RUNTIME.pipelineMemoryRoot;
+const STORIES_DIR = RUNTIME.storiesDir;
+const REF_IMAGES_DIR = RUNTIME.refImagesDir;
+const PIPELINE_MEMORY_ROOT = RUNTIME.pipelineMemoryRoot;
+const DELETED_STORIES_FILE = RUNTIME.deletedStoriesFile;
+const WORKER_CHECKPOINT_OUTPUT_DIR = RUNTIME.workerCheckpointOutputDir;
 
 const { listLatestStoryRecords, createStoryCatalogEntry, createFullStoryResponse } =
   createStoryCatalog(STORIES_DIR, PORT);
@@ -66,6 +72,22 @@ app.use('/generated-stories', (req, res, next) => {
 
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
+  }
+
+  const mode = getStoryStorageMode();
+  if (mode === 'gcs') {
+    const bucket = getGcsBucketName();
+    if (!bucket) return res.status(500).send('GCS_BUCKET_NAME is required when STORY_STORAGE_MODE=gcs');
+
+    // Redirect proxy-style paths to GCS objects.
+    // /generated-stories/<runDir>/...  ->  https://storage.googleapis.com/<bucket>/stories/<runDir>/...
+    const proxyPath = `generated-stories/${req.path.replace(/^\/+/, '')}`;
+    const objectPath = mapProxyPathToGcsObjectPath(proxyPath);
+    if (!objectPath) return res.status(404).send('Not found');
+
+    const publicBase = getGcsPublicBaseUrl();
+    const url = `${publicBase}/${objectPath}`.replace(/([^:]\/)\/+/g, '$1');
+    return res.redirect(302, url);
   }
 
   const filePathWithinDir = req.path;
@@ -119,13 +141,20 @@ registerStoryMutationRoutes(app, {
   storiesDir: STORIES_DIR,
   deletedStoriesFile: DELETED_STORIES_FILE,
 });
-registerModelScanRoutes(app);
-registerGeneratorSettingsRoutes(app);
+registerModelScanRoutes(app, { cacheFile: RUNTIME.modelCacheFile });
+registerGeneratorSettingsRoutes(app, { settingsFile: RUNTIME.generatorSettingsFile });
 
 // Worker lifecycle owns the generation-jobs / worker-jobs stores and the
 // ts-node worker spawn state machine.
 const lifecycle = createWorkerLifecycle({
   rootDir: ROOT_DIR,
+  storiesDir: STORIES_DIR,
+  runtimeRoot: RUNTIME.runtimeRoot,
+  generationJobsFile: RUNTIME.generationJobsFile,
+  workerJobsFile: RUNTIME.workerJobsFile,
+  workerCheckpointsFile: RUNTIME.workerCheckpointsFile,
+  workerDeadLetterFile: RUNTIME.workerDeadLetterFile,
+  workerCheckpointOutputDir: WORKER_CHECKPOINT_OUTPUT_DIR,
   port: PORT,
   cachedJsonStore: createCachedStore,
   createSyncGenerationMirrorFromWorker,
@@ -143,15 +172,21 @@ registerElevenLabsRoutes(app, { audioRootDir: STORIES_DIR, port: PORT });
 const { feedbackStore } = registerImageFeedbackRoutes(app, {
   rootDir: ROOT_DIR,
   storiesDir: STORIES_DIR,
+  feedbackFile: RUNTIME.imageFeedbackFile,
   cachedJsonStore: createCachedStore,
 });
 registerStyleRoutes(app, { storiesDir: STORIES_DIR });
 registerAtlasCloudRoutes(app);
-const { midapiCallbackCache } = registerMidApiRoutes(app, { rootDir: ROOT_DIR });
+const { midapiCallbackCache } = registerMidApiRoutes(app, {
+  rootDir: ROOT_DIR,
+  refImagesDir: REF_IMAGES_DIR,
+});
 registerAnthropicProxyRoutes(app, { getLlmTransportBudgets });
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Proxy running on http://localhost:${PORT}`);
+  console.log(`[Proxy] Runtime root: ${RUNTIME.runtimeRoot}${RUNTIME.ephemeral ? ' (ephemeral)' : ''}`);
+  console.log(`[Proxy] Stories dir: ${STORIES_DIR}`);
 
   // Startup cleanup: fail orphaned worker jobs left over from a prior session.
   const startupJobs = lifecycle.loadWorkerJobs();

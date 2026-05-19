@@ -1,6 +1,6 @@
 import React from 'react';
 import { Story } from '../types';
-import { StoryBrowser } from '../components/StoryBrowser';
+import { StoryVisualizer } from '../visualizer';
 
 interface VisualizerScreenProps {
   story: Story;
@@ -11,16 +11,8 @@ interface VisualizerScreenProps {
 export const VisualizerScreen: React.FC<VisualizerScreenProps> = ({
   story,
   onBack,
-  onJumpToNode,
 }) => {
-  // StoryBrowser now handles both columns and flow map views internally
-  return (
-    <StoryBrowser 
-      story={story} 
-      onClose={onBack} 
-      onJumpToNode={onJumpToNode}
-    />
-  );
+  return <StoryVisualizer story={story} onBack={onBack} />;
 };
 
 export default VisualizerScreen;

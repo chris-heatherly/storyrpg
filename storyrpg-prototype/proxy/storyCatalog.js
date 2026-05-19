@@ -82,6 +82,24 @@ function createStoryCatalog(storiesDir, port) {
     return { hasSeasonReferences, hasEpisodeArt };
   }
 
+  function stripGeneratedStoryTimestamp(dirName) {
+    return dirName.replace(/_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$/, '');
+  }
+
+  function getImageArtifactSummaryForSlug(dirName) {
+    const slugBase = stripGeneratedStoryTimestamp(dirName);
+    let summary = { hasSeasonReferences: false, hasEpisodeArt: false };
+    for (const candidate of listStoryDirectories()) {
+      if (stripGeneratedStoryTimestamp(candidate) !== slugBase) continue;
+      const source = getImageArtifactSummary(path.join(storiesDir, candidate));
+      summary = {
+        hasSeasonReferences: summary.hasSeasonReferences || source.hasSeasonReferences,
+        hasEpisodeArt: summary.hasEpisodeArt || source.hasEpisodeArt,
+      };
+    }
+    return summary;
+  }
+
   function getStoryRecord(dirName) {
     const dirAbs = path.join(storiesDir, dirName);
     const primary = resolvePrimaryStoryFile(dirAbs);
@@ -425,6 +443,7 @@ function createStoryCatalog(storiesDir, port) {
             coverImage: codec.normalizeAssetUrlForRequest(episode.coverImage || '', req, port),
           }))
         : [],
+      imageArtifacts: getImageArtifactSummaryForSlug(dirName),
     };
   }
 
@@ -470,18 +489,9 @@ function createStoryCatalog(storiesDir, port) {
         dirName: record.dirName,
         mtimeMs: record.mtimeMs,
       });
-      const artifactSources = Array.isArray(record.sourceRecords) && record.sourceRecords.length > 0
-        ? record.sourceRecords
-        : [record];
-      const imageArtifacts = artifactSources
-        .map((source) => getImageArtifactSummary(path.join(storiesDir, source.dirName)))
-        .reduce((summary, source) => ({
-          hasSeasonReferences: summary.hasSeasonReferences || source.hasSeasonReferences,
-          hasEpisodeArt: summary.hasEpisodeArt || source.hasEpisodeArt,
-        }), { hasSeasonReferences: false, hasEpisodeArt: false });
       return {
         ...entry,
-        imageArtifacts,
+        imageArtifacts: getImageArtifactSummaryForSlug(record.dirName),
       };
     }
 
@@ -501,11 +511,15 @@ function createStoryCatalog(storiesDir, port) {
       const [buf] = await file.download();
       const story = JSON.parse(buf.toString('utf8'));
       story.outputDir = `generated-stories/${record.dirName}/`;
-      return normalizeFullStoryMedia(story, req);
+      const normalized = normalizeFullStoryMedia(story, req);
+      normalized.imageArtifacts = getImageArtifactSummaryForSlug(record.dirName);
+      return normalized;
     }
 
     if (record.pkg) {
-      return codec.projectForFullResponse(record.pkg, { req, port, dirName: record.dirName });
+      const story = codec.projectForFullResponse(record.pkg, { req, port, dirName: record.dirName });
+      story.imageArtifacts = getImageArtifactSummaryForSlug(record.dirName);
+      return story;
     }
 
     throw new Error('Story record has no decodable package data');

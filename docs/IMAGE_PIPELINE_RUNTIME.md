@@ -468,7 +468,7 @@ Runtime features in use:
 - style-bible and previous-scene references folded into the reference set
 - concise provider-specific prompt shaping
 
-### Midjourney via useapi.net/midapi
+### Midjourney via MidAPI
 
 Runtime provider name is normalized so UI/provider config reaches the Midjourney path consistently.
 

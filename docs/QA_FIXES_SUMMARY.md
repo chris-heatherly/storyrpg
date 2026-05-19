@@ -4,6 +4,11 @@
 
 This document summarizes all fixes implemented during QA audits and bug-fixing sessions.
 
+Current status note: older entries that mention `EpisodePipeline.ts` are
+historical. New generation work runs through `FullStoryPipeline.ts`; the
+current story package is `story.json` + `manifest.json`, with
+`08-final-story.json` kept as a legacy mirror.
+
 ---
 
 ## Critical Fixes
@@ -718,7 +723,7 @@ Two deterministic QA passes now run at the end of every generation, after the LL
 - **New file:** `src/ai-agents/validators/storyPathAnalyzer.ts` — builds a scene-level DAG and computes the minimum set of choice paths that exercise every scene and every choice at least once.
 - **New file:** `src/ai-agents/validators/playwrightQARunner.ts` — `runPlaywrightQAMultiPath()` spawns `test/e2e/storyPlaythrough.spec.ts` once per computed path (up to `maxParallel`, default `3`), passing the choice indices via `E2E_CHOICE_PATH`. Each run collects broken/placeholder images, console errors, network failures, and a coverage report.
 - **New file:** `test/e2e/storyPlaythrough.spec.ts` — the actual Playwright test. Also runnable standalone via `npm run test:e2e` (or `npm run test:e2e:story -- "Story Title"`) as long as the proxy and web app are running.
-- **New file:** `src/ai-agents/validators/qaRemediation.ts` — `remediateImageIssues()` parses each Tier-2 issue, looks up the original prompt from `prompts/`, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` writes `08-final-story.json` atop the old one. The pipeline then re-runs Tier 2 up to `ValidationConfig.playwrightQAMaxRetries` times (default `1`).
+- **New file:** `src/ai-agents/validators/qaRemediation.ts` — `remediateImageIssues()` parses each Tier-2 issue, looks up the original prompt from `prompts/`, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` re-saves the current story package plus legacy mirror. The pipeline then re-runs Tier 2 up to `ValidationConfig.playwrightQAMaxRetries` times (default `1`).
 - **Auto-skip:** The runner detects when the proxy/app is offline and marks the Tier-2 phase as `skipped` with a reason, so headless generations never fail because the UI isn't running.
 
 **Why this matters**

@@ -1,4 +1,5 @@
 import type { NarrativeSequenceIntent } from '../../types';
+import type { BeatCoveragePlan } from '../../types';
 
 export interface SequenceAuditPanel {
   id?: string;
@@ -13,6 +14,7 @@ export interface SequenceAuditPanel {
   visibleCost?: string;
   visualNarrative?: string;
   sequenceIntent?: NarrativeSequenceIntent;
+  coveragePlan?: BeatCoveragePlan;
   storyboardRole?: string;
 }
 
@@ -22,6 +24,11 @@ export interface SequenceContinuityIssue {
   severity: 'warning';
   message: string;
   suggestion: string;
+}
+
+export interface SequenceContinuityAuditOptions {
+  requireCoveragePlan?: boolean;
+  requireShotVariety?: boolean;
 }
 
 function panelId(panel: SequenceAuditPanel, index: number): string {
@@ -68,7 +75,7 @@ function isQuietAllowed(panel: SequenceAuditPanel): boolean {
   return /\b(rest|aftermath|quiet|settle|recover|relief|somber|release|taking stock|recalibrat)\b/i.test(panelText(panel));
 }
 
-export function auditSequenceContinuity(panels: SequenceAuditPanel[]): SequenceContinuityIssue[] {
+export function auditSequenceContinuity(panels: SequenceAuditPanel[], options: SequenceContinuityAuditOptions = {}): SequenceContinuityIssue[] {
   const issues: SequenceContinuityIssue[] = [];
   if (panels.length < 2) return issues;
 
@@ -94,6 +101,38 @@ export function auditSequenceContinuity(panels: SequenceAuditPanel[]): SequenceC
         severity: 'warning',
         message: 'Adjacent storyboard panels do not preserve a visible thread such as a prop, distance, blocking, cost, clue, or motif.',
         suggestion: 'Carry a visualThread across the sequence so the storyboard reads as a connected action, argument, investigation, travel, or aftermath.',
+      });
+    }
+  }
+
+  if (options.requireCoveragePlan) {
+    for (let index = 0; index < panels.length; index += 1) {
+      const panel = panels[index];
+      if (isQuietAllowed(panel)) continue;
+      if (!panel.coveragePlan) {
+        issues.push({
+          panelId: panelId(panel, index),
+          category: 'missing_visual_thread',
+          severity: 'warning',
+          message: 'Storyboard panel is missing a coveragePlan, so shot scale, angle, staging, visible cast, and continuity are being inferred too late.',
+          suggestion: 'Run SequenceDirector or author coveragePlan before image generation.',
+        });
+      }
+    }
+  }
+
+  if (options.requireShotVariety) {
+    const coverageKeys = panels
+      .map((panel) => panel.coveragePlan)
+      .filter(Boolean)
+      .map((coverage) => `${coverage!.shotDistance}|${coverage!.cameraAngle}|${coverage!.cameraSide}|${coverage!.stagingPattern}`);
+    if (coverageKeys.length >= 3 && new Set(coverageKeys).size <= 1) {
+      issues.push({
+        panelId: panelId(panels[panels.length - 1], panels.length - 1),
+        category: 'missing_sequence_turn',
+        severity: 'warning',
+        message: 'Storyboard sequence repeats the same coverage shape across the scene.',
+        suggestion: 'Vary shot distance, angle, camera side, staging pattern, focal subject, or continuity mode according to the sequence role.',
       });
     }
   }

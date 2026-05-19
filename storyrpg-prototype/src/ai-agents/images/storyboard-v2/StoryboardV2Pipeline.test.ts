@@ -130,6 +130,10 @@ describe('StoryboardV2Pipeline', () => {
     expect(sheetCall.prompt.prompt).toContain('episodeStyleLockRef controls palette');
     expect(sheetCall.prompt.prompt).toContain('each visible canonical character may appear exactly once');
     expect(sheetCall.prompt.prompt).toContain('VISUAL STORYTELLING DIRECTIVE');
+    expect(sheetCall.prompt.prompt).toContain('Scene visual geography');
+    expect(sheetCall.prompt.prompt).toContain('Scene visual movement line');
+    expect(sheetCall.prompt.prompt).toContain('Scene visual shot rhythm');
+    expect(sheetCall.prompt.prompt).toContain('Coverage plan');
     expect(sheetCall.prompt.prompt).toContain('60% base');
     expect(sheetCall.prompt.prompt).toContain('Lighting and color are variations inside the master art style, not new style instructions.');
     expect(sheetCall.prompt.prompt.indexOf('REFERENCE ROLE HIERARCHY:')).toBeLessThan(sheetCall.prompt.prompt.indexOf('VISUAL STORYTELLING DIRECTIVE'));
@@ -672,6 +676,66 @@ describe('StoryboardV2Pipeline', () => {
     ]);
   });
 
+  it('treats duplicate-body QA as advisory for unnamed crowd panels around one canonical character', async () => {
+    const prompts: any[] = [];
+    const outputDirectory = `${await fs.mkdtemp(path.join(os.tmpdir(), 'storyboard-v2-'))}/`;
+    const mockImageService = await makeMockImageService(outputDirectory, prompts, [
+      { passed: true, issues: [], reason: 'sheet clean' },
+      { passed: false, issues: ['duplicate_body'], reason: 'unnamed dancers resemble the hero' },
+    ]);
+    const registry = new AssetRegistry('test');
+    const pipeline = new StoryboardV2Pipeline({
+      config: baseConfig,
+      imageService: mockImageService as any,
+      assetRegistry: registry,
+      outputDirectory,
+    });
+
+    await pipeline.generateEpisode({
+      brief: {
+        story: { title: 'Test Story', genre: 'fantasy', tone: 'ominous' },
+        episode: { number: 1, title: 'Pilot' },
+        protagonist: { id: 'hero', name: 'Mara' },
+      },
+      characterBible: {
+        characters: [{
+          id: 'hero',
+          name: 'Mara',
+          role: 'protagonist',
+          importance: 'major',
+          overview: 'A worried scout.',
+          physicalDescription: 'short silver hair and brown skin',
+          typicalAttire: 'gray cloak',
+          distinctiveFeatures: ['scar through eyebrow'],
+        }],
+      } as any,
+      sceneContents: [{
+        sceneId: 'scene-1',
+        sceneName: 'Gate',
+        startingBeatId: 'b1',
+        charactersInvolved: ['hero'],
+        beats: [{
+          id: 'b1',
+          text: 'Dancers gather around Mara in a loose circle.',
+          speaker: 'Mara',
+          visualMoment: 'A circle of unnamed dancers surrounds Mara while the crowd moves in rhythm',
+          primaryAction: 'Dancers gather around Mara',
+          mustShowDetail: 'circle of dancers',
+        }],
+      } as any],
+      encounters: new Map(),
+    });
+
+    expect(prompts.some((call) => call.identifier.includes('duplicate-character-retry'))).toBe(false);
+    const record = registry.get('story-beat:episode-1-scene-1::b1');
+    expect(record?.status).toBe('succeeded');
+    const sheetManifest = JSON.parse(await fs.readFile(`${outputDirectory}images/storyboard-v2/sheet-manifest.json`, 'utf8'));
+    const crop = sheetManifest.sheets[0].crops[0];
+    expect(crop.finalImagePath).toContain('images/storyboard-v2/panels/');
+    expect(crop.panelQa.final.passed).toBe(true);
+    expect(crop.panelQa.final.advisoryIssues).toContain('duplicate_body');
+  });
+
   it('repairs style-only storyboard sheet QA failures with image edit before cropping', async () => {
     const prompts: any[] = [];
     const outputDirectory = `${await fs.mkdtemp(path.join(os.tmpdir(), 'storyboard-v2-'))}/`;
@@ -784,6 +848,60 @@ describe('StoryboardV2Pipeline', () => {
       'character-reference',
       'episode-style-lock',
     ]);
+  });
+
+  it('continues to derive panels when repaired sheet QA remains unresolved', async () => {
+    const prompts: any[] = [];
+    const outputDirectory = `${await fs.mkdtemp(path.join(os.tmpdir(), 'storyboard-v2-'))}/`;
+    const mockImageService = await makeMockImageService(outputDirectory, prompts, [
+      { passed: false, issues: ['visible_text'], reason: 'laptop text is readable' },
+      { passed: false, issues: ['visible_text'], reason: 'one screen still has readable text' },
+      { passed: true, issues: [], reason: 'panel clean' },
+    ]);
+    const registry = new AssetRegistry('test');
+    const pipeline = new StoryboardV2Pipeline({
+      config: baseConfig,
+      imageService: mockImageService as any,
+      assetRegistry: registry,
+      outputDirectory,
+    });
+
+    const result = await pipeline.generateEpisode({
+      brief: {
+        story: { title: 'Test Story', genre: 'fantasy', tone: 'ominous' },
+        episode: { number: 1, title: 'Pilot' },
+        protagonist: { id: 'hero', name: 'Mara' },
+      },
+      characterBible: {
+        characters: [{
+          id: 'hero',
+          name: 'Mara',
+          role: 'protagonist',
+          importance: 'major',
+          overview: 'A worried scout.',
+          physicalDescription: 'short silver hair and brown skin',
+          typicalAttire: 'gray cloak',
+          distinctiveFeatures: ['scar through eyebrow'],
+        }],
+      } as any,
+      sceneContents: [{
+        sceneId: 'scene-1',
+        sceneName: 'Desk',
+        startingBeatId: 'b1',
+        charactersInvolved: ['hero'],
+        beats: [{ id: 'b1', text: 'Mara writes beside the cold lamp.', speaker: 'Mara' }],
+      } as any],
+      encounters: new Map(),
+    });
+
+    expect(result.beatImages.get('episode-1-scene-1::b1')).toBeTruthy();
+    expect(registry.get('story-beat:episode-1-scene-1::b1')?.status).toBe('succeeded');
+    expect(result.diagnostics.failedSlots).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        slotId: 'episode-1-scene-1-sheet-1',
+        error: expect.stringContaining('Storyboard sheet QA failed after regenerate repair'),
+      }),
+    ]));
   });
 
   it('keeps sheet character QA advisory while final panel character QA remains blocking', async () => {

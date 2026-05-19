@@ -166,7 +166,7 @@ export const STORAGE_KEYS = {
 // ========================================
 
 export const BLOB_CONFIG = {
-  manifestUrl: process.env.EXPO_PUBLIC_BLOB_MANIFEST_URL || '',
+  manifestUrl: (process.env.EXPO_PUBLIC_BLOB_MANIFEST_URL || '').trim(),
 };
 
 /**

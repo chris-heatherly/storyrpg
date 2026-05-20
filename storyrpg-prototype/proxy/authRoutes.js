@@ -152,7 +152,7 @@ function registerAuthRoutes(app, { port }) {
   const discordClientId = (process.env.DISCORD_CLIENT_ID || '').trim();
   const discordClientSecret = (process.env.DISCORD_CLIENT_SECRET || '').trim();
 
-  const googleCallbackURL = (process.env.GOOGLE_CALLBACK_URL || `${authBase}/auth/google/authorized`).trim();
+  const googleCallbackURL = (process.env.GOOGLE_CALLBACK_URL || `${authBase}/auth/google/callback`).trim();
   const discordCallbackURL = (process.env.DISCORD_CALLBACK_URL || `${authBase}/auth/discord/callback`).trim();
 
   const sessionMiddleware = session({
@@ -331,7 +331,7 @@ function registerAuthRoutes(app, { port }) {
   });
 
   app.get(
-    '/auth/google/authorized',
+    '/auth/google/callback',
     passport.authenticate('google', {
       failureRedirect: getFailureRedirect(),
       session: true,

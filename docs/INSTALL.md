@@ -723,7 +723,7 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 # AUTH_BASE_URL=http://localhost:3001
 #
 # Optional explicit callback URLs (default: AUTH_BASE_URL + /auth/.../callback)
-# GOOGLE_CALLBACK_URL=http://localhost:3001/auth/google/authorized
+# GOOGLE_CALLBACK_URL=http://localhost:3001/auth/google/callback
 # DISCORD_CALLBACK_URL=http://localhost:3001/auth/discord/callback
 #
 # Where the browser returns after successful OAuth (Expo web). Default proxy value

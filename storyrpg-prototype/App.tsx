@@ -33,7 +33,6 @@ import { GENERATOR_STORAGE_KEYS } from './src/hooks/useGeneratorSettings';
 import { fetchStoryByCatalogEntry } from './src/services/storyLibrary';
 import { useGeneratorRunner } from './src/hooks/useGeneratorRunner';
 import { useAppNavigationStore } from './src/stores/appNavigationStore';
-<<<<<<< HEAD
 import {
   captureAttributionFromUrl,
   identifyAnonymousPlayer,
@@ -43,14 +42,15 @@ import {
   setSuperProperties,
   track,
 } from './src/services/analyticsService';
-=======
 import { fetchAuthMe, type AuthUser } from './src/services/authSession';
 import {
+  clearSignedOutLatch,
   installWebAuthHistoryGuards,
+  isSignedOutLatchActive,
+  markSignedOutLatch,
   markWebHistoryAuthenticated,
   sealWebHistoryAfterLogout,
 } from './src/utils/webAuthHistory';
->>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
 
 const GENERATED_STORIES_KEY = '@storyrpg_generated_stories';
 const DELETED_STORIES_KEY = '@storyrpg_deleted_stories'; // Track intentionally deleted stories
@@ -165,7 +165,10 @@ function AppContent() {
   const videoPipelineRef = useRef<PipelineHandle | null>(null);
   const [visualizerStory, setVisualizerStory] = useState<Story | null>(null);
   /** undefined = checking session; null = signed out; AuthUser = signed in */
-  const [authUser, setAuthUser] = useState<AuthUser | null | undefined>(undefined);
+  const [authUser, setAuthUser] = useState<AuthUser | null | undefined>(() => {
+    if (Platform.OS === 'web' && isSignedOutLatchActive()) return null;
+    return undefined;
+  });
   const currentScreen = useAppNavigationStore((state) => state.currentScreen);
   const showPauseMenu = useAppNavigationStore((state) => state.showPauseMenu);
   const visualizerStoryId = useAppNavigationStore((state) => state.visualizerStoryId);
@@ -181,28 +184,41 @@ function AppContent() {
   const resetNavigationAfterLogout = useAppNavigationStore((state) => state.resetAfterLogout);
 
   const refreshAuthSession = useCallback(async () => {
+    if (Platform.OS === 'web' && isSignedOutLatchActive()) {
+      resetNavigationAfterLogout();
+      setAuthUser(null);
+      return null;
+    }
     try {
       const me = await fetchAuthMe();
-      setAuthUser(me.user);
-      if (Platform.OS === 'web') {
-        if (me.user) {
+      if (me.user) {
+        if (Platform.OS === 'web') {
+          clearSignedOutLatch();
           markWebHistoryAuthenticated();
-        } else {
-          resetNavigationAfterLogout();
-          sealWebHistoryAfterLogout();
         }
+        setAuthUser(me.user);
+      } else {
+        resetNavigationAfterLogout();
+        setAuthUser(null);
       }
       return me.user;
     } catch (err) {
       console.warn('[App] Auth session check failed:', err);
+      resetNavigationAfterLogout();
       setAuthUser(null);
-      if (Platform.OS === 'web') {
-        resetNavigationAfterLogout();
-        sealWebHistoryAfterLogout();
-      }
       return null;
     }
   }, [resetNavigationAfterLogout]);
+
+  const handleHistoryNavigation = useCallback(() => {
+    resetNavigationAfterLogout();
+    if (Platform.OS === 'web' && isSignedOutLatchActive()) {
+      setAuthUser(null);
+      return;
+    }
+    setAuthUser(undefined);
+    void refreshAuthSession();
+  }, [resetNavigationAfterLogout, refreshAuthSession]);
 
   useEffect(() => {
     refreshAuthSession();
@@ -211,11 +227,9 @@ function AppContent() {
   useEffect(() => {
     if (Platform.OS !== 'web') return;
     return installWebAuthHistoryGuards({
-      onNavigate: () => {
-        void refreshAuthSession();
-      },
+      onNavigate: handleHistoryNavigation,
     });
-  }, [refreshAuthSession]);
+  }, [handleHistoryNavigation]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
@@ -237,11 +251,12 @@ function AppContent() {
 
   const handleAuthenticated = useCallback(
     (user: AuthUser) => {
-      setAuthUser(user);
-      navigateTo('home');
       if (Platform.OS === 'web') {
+        clearSignedOutLatch();
         markWebHistoryAuthenticated();
       }
+      setAuthUser(user);
+      navigateTo('home');
     },
     [navigateTo],
   );
@@ -250,6 +265,7 @@ function AppContent() {
     resetNavigationAfterLogout();
     setAuthUser(null);
     if (Platform.OS === 'web') {
+      markSignedOutLatch();
       sealWebHistoryAfterLogout();
     }
   }, [resetNavigationAfterLogout]);
@@ -820,7 +836,6 @@ function AppContent() {
     }
   }, [videoGeneratingStoryId, registerGenJob, updateGenJob, addJobEvent, addVideoJob, updateVideoJob, removeVideoJob, clearVideoJobs, loadFullStory]);
 
-<<<<<<< HEAD
   const handleGenerateImages = useCallback(async (storyId: string) => {
     if (imageGeneratingStoryId) return;
     const storyEntry = stories.find((candidate) => candidate.id === storyId);
@@ -943,10 +958,10 @@ function AppContent() {
     loadStories,
   ]);
 
-  if (!storiesLoaded) {
-=======
-  if (authUser === undefined || !storiesLoaded) {
->>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
+  const signedOutLatch = Platform.OS === 'web' && isSignedOutLatchActive();
+  const showAppShell = !signedOutLatch && authUser != null;
+
+  if ((!signedOutLatch && authUser === undefined) || !storiesLoaded) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
         <StatusBar style="light" />
@@ -957,7 +972,7 @@ function AppContent() {
     );
   }
 
-  if (authUser === null) {
+  if (!showAppShell) {
     return (
       <View style={styles.container}>
         <StatusBar style="light" />

@@ -229,7 +229,7 @@ const cardWidth = Platform.OS === 'web' ? ('50%' as const) : ('100%' as const);
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: TERMINAL.colors.background,
+    backgroundColor: TERMINAL.colors.bg,
   },
   body: {
     padding: 24,

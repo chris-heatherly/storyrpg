@@ -39,7 +39,6 @@ export const useAppNavigationStore = create<AppNavigationState>((set, get) => ({
   closePauseMenu: () => set({ showPauseMenu: false }),
   openVisualizer: (storyId) => set({ visualizerStoryId: storyId, currentScreen: 'visualizer' }),
   closeVisualizer: () => set({ visualizerStoryId: null, currentScreen: 'settings' }),
-<<<<<<< HEAD
   openGenerator: (jobId, origin, seasonPlanId) => {
     // Infer origin from the screen the user is currently on if not explicitly
     // provided, so back-nav always returns them to where they came from.
@@ -57,15 +56,13 @@ export const useAppNavigationStore = create<AppNavigationState>((set, get) => ({
     const origin = get().generatorOrigin;
     set({ resumeJobId: undefined, generatorSeasonPlanId: undefined, currentScreen: nextScreen || origin });
   },
-=======
-  openGenerator: (jobId) => set({ resumeJobId: jobId, currentScreen: 'generator' }),
-  closeGenerator: (nextScreen = 'settings') => set({ resumeJobId: undefined, currentScreen: nextScreen }),
   resetAfterLogout: () =>
     set({
       currentScreen: 'home',
       showPauseMenu: false,
       visualizerStoryId: null,
       resumeJobId: undefined,
+      generatorSeasonPlanId: undefined,
+      generatorOrigin: 'home',
     }),
->>>>>>> 48904bb (Add database-backed authentication and login-first web flow)
 }));

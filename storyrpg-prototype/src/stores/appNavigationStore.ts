@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type AppScreen = 'home' | 'episodes' | 'reading' | 'settings' | 'visualizer' | 'generator';
+export type AppScreen = 'home' | 'login' | 'episodes' | 'reading' | 'settings' | 'visualizer' | 'generator';
 
 /**
  * Screens that are valid "launch origins" for the generator — the screen the
@@ -23,6 +23,8 @@ interface AppNavigationState {
   closeVisualizer: () => void;
   openGenerator: (jobId?: string, origin?: GeneratorOrigin, seasonPlanId?: string) => void;
   closeGenerator: (nextScreen?: AppScreen) => void;
+  /** Clear in-app routes after sign-out (avoids stale screen when session is restored). */
+  resetAfterLogout: () => void;
 }
 
 export const useAppNavigationStore = create<AppNavigationState>((set, get) => ({
@@ -54,4 +56,13 @@ export const useAppNavigationStore = create<AppNavigationState>((set, get) => ({
     const origin = get().generatorOrigin;
     set({ resumeJobId: undefined, generatorSeasonPlanId: undefined, currentScreen: nextScreen || origin });
   },
+  resetAfterLogout: () =>
+    set({
+      currentScreen: 'home',
+      showPauseMenu: false,
+      visualizerStoryId: null,
+      resumeJobId: undefined,
+      generatorSeasonPlanId: undefined,
+      generatorOrigin: 'home',
+    }),
 }));

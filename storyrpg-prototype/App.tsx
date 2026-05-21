@@ -13,6 +13,7 @@ import {
   ReadingScreen,
   VisualizerScreen,
   SettingsScreen,
+  LoginScreen,
 } from './src/screens';
 import { GeneratorScreen } from './src/screens/GeneratorScreen';
 import { allStories as builtInStories } from './src/data/stories';
@@ -41,6 +42,15 @@ import {
   setSuperProperties,
   track,
 } from './src/services/analyticsService';
+import { fetchAuthMe, type AuthUser } from './src/services/authSession';
+import {
+  clearSignedOutLatch,
+  installWebAuthHistoryGuards,
+  isSignedOutLatchActive,
+  markSignedOutLatch,
+  markWebHistoryAuthenticated,
+  sealWebHistoryAfterLogout,
+} from './src/utils/webAuthHistory';
 
 const GENERATED_STORIES_KEY = '@storyrpg_generated_stories';
 const DELETED_STORIES_KEY = '@storyrpg_deleted_stories'; // Track intentionally deleted stories
@@ -154,6 +164,11 @@ function AppContent() {
   const [imageGeneratingStoryId, setImageGeneratingStoryId] = useState<string | null>(null);
   const videoPipelineRef = useRef<PipelineHandle | null>(null);
   const [visualizerStory, setVisualizerStory] = useState<Story | null>(null);
+  /** undefined = checking session; null = signed out; AuthUser = signed in */
+  const [authUser, setAuthUser] = useState<AuthUser | null | undefined>(() => {
+    if (Platform.OS === 'web' && isSignedOutLatchActive()) return null;
+    return undefined;
+  });
   const currentScreen = useAppNavigationStore((state) => state.currentScreen);
   const showPauseMenu = useAppNavigationStore((state) => state.showPauseMenu);
   const visualizerStoryId = useAppNavigationStore((state) => state.visualizerStoryId);
@@ -166,6 +181,94 @@ function AppContent() {
   const closeVisualizerRoute = useAppNavigationStore((state) => state.closeVisualizer);
   const openGeneratorRoute = useAppNavigationStore((state) => state.openGenerator);
   const closeGeneratorRoute = useAppNavigationStore((state) => state.closeGenerator);
+  const resetNavigationAfterLogout = useAppNavigationStore((state) => state.resetAfterLogout);
+
+  const refreshAuthSession = useCallback(async () => {
+    if (Platform.OS === 'web' && isSignedOutLatchActive()) {
+      resetNavigationAfterLogout();
+      setAuthUser(null);
+      return null;
+    }
+    try {
+      const me = await fetchAuthMe();
+      if (me.user) {
+        if (Platform.OS === 'web') {
+          clearSignedOutLatch();
+          markWebHistoryAuthenticated();
+        }
+        setAuthUser(me.user);
+      } else {
+        resetNavigationAfterLogout();
+        setAuthUser(null);
+      }
+      return me.user;
+    } catch (err) {
+      console.warn('[App] Auth session check failed:', err);
+      resetNavigationAfterLogout();
+      setAuthUser(null);
+      return null;
+    }
+  }, [resetNavigationAfterLogout]);
+
+  const handleHistoryNavigation = useCallback(() => {
+    resetNavigationAfterLogout();
+    if (Platform.OS === 'web' && isSignedOutLatchActive()) {
+      setAuthUser(null);
+      return;
+    }
+    setAuthUser(undefined);
+    void refreshAuthSession();
+  }, [resetNavigationAfterLogout, refreshAuthSession]);
+
+  useEffect(() => {
+    refreshAuthSession();
+  }, [refreshAuthSession]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    return installWebAuthHistoryGuards({
+      onNavigate: handleHistoryNavigation,
+    });
+  }, [handleHistoryNavigation]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    const afterOAuth = url.searchParams.get('afterAuth') === 'home';
+    const authError = url.searchParams.has('auth');
+    if (!afterOAuth && !authError) return;
+    url.searchParams.delete('afterAuth');
+    url.searchParams.delete('auth');
+    const qs = url.searchParams.toString();
+    const next = `${url.pathname}${qs ? `?${qs}` : ''}${url.hash}`;
+    window.history.replaceState({}, document.title, next);
+    refreshAuthSession().then((user) => {
+      if (user) {
+        navigateTo('home');
+      }
+    });
+  }, [navigateTo, refreshAuthSession]);
+
+  const handleAuthenticated = useCallback(
+    (user: AuthUser) => {
+      if (Platform.OS === 'web') {
+        clearSignedOutLatch();
+        markWebHistoryAuthenticated();
+      }
+      setAuthUser(user);
+      navigateTo('home');
+    },
+    [navigateTo],
+  );
+
+  const handleSignedOut = useCallback(() => {
+    resetNavigationAfterLogout();
+    setAuthUser(null);
+    if (Platform.OS === 'web') {
+      markSignedOutLatch();
+      sealWebHistoryAfterLogout();
+    }
+  }, [resetNavigationAfterLogout]);
   const {
     stories,
     setStories,
@@ -855,13 +958,25 @@ function AppContent() {
     loadStories,
   ]);
 
-  if (!storiesLoaded) {
+  const signedOutLatch = Platform.OS === 'web' && isSignedOutLatchActive();
+  const showAppShell = !signedOutLatch && authUser != null;
+
+  if ((!signedOutLatch && authUser === undefined) || !storiesLoaded) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
         <StatusBar style="light" />
         <Text style={{ color: TERMINAL.colors.primary, fontSize: fonts.medium }}>
           {TERMINAL.symbols.prompt} LOADING...
         </Text>
+      </View>
+    );
+  }
+
+  if (!showAppShell) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="light" />
+        <LoginScreen onAuthenticated={handleAuthenticated} />
       </View>
     );
   }
@@ -886,6 +1001,7 @@ function AppContent() {
         <SettingsScreen
           stories={stories}
           onBack={handleBackFromSettings}
+          onSignedOut={handleSignedOut}
           onOpenVisualizer={handleOpenVisualizer}
           onOpenGenerator={handleOpenGenerator}
           onDeleteStory={handleDeleteStory}

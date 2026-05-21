@@ -40,6 +40,15 @@ export const PROXY_CONFIG = {
   get modelsAvailable() { return `${this.getProxyUrl()}/models/available`; },
   get modelsScan() { return `${this.getProxyUrl()}/models/scan`; },
   get generatorSettings() { return `${this.getProxyUrl()}/generator-settings`; },
+
+  /** Passport OAuth (proxy only; web uses session cookies on the proxy origin). */
+  get authProviders() { return `${this.getProxyUrl()}/auth/providers`; },
+  get authMe() { return `${this.getProxyUrl()}/auth/me`; },
+  get authLogout() { return `${this.getProxyUrl()}/auth/logout`; },
+  get authGoogle() { return `${this.getProxyUrl()}/auth/google`; },
+  get authDiscord() { return `${this.getProxyUrl()}/auth/discord`; },
+  get authLogin() { return `${this.getProxyUrl()}/auth/login`; },
+  get authRegister() { return `${this.getProxyUrl()}/auth/register`; },
 };
 
 // ========================================

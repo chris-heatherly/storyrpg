@@ -24,6 +24,7 @@ import {
   DisplayPreferencesSection,
   GenerationJobsSection,
   GeneratorLauncherSection,
+  OAuthAccountSection,
   StoryLibrarySection,
   SystemInfoSection,
 } from '../components/settings/SettingsSections';
@@ -50,6 +51,7 @@ interface SettingsScreenProps {
   isRefreshing?: boolean;
   videoGeneratingStoryId?: string | null;
   imageGeneratingStoryId?: string | null;
+  onSignedOut?: () => void;
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
@@ -69,6 +71,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   isRefreshing = false,
   videoGeneratingStoryId = null,
   imageGeneratingStoryId = null,
+  onSignedOut,
 }) => {
   const fontSize = useSettingsStore((state) => state.fontSize);
   const setFontSize = useSettingsStore((state) => state.setFontSize);
@@ -409,6 +412,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         contentContainerStyle={styles.contentPadding}
       >
         <Text style={styles.systemStatus}>OPTIMIZING INTERFACE PARAMETERS</Text>
+
+        <OAuthAccountSection styles={styles} onSignedOut={onSignedOut} />
 
         <DisplayPreferencesSection
           styles={styles}

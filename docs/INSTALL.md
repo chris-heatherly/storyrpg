@@ -79,7 +79,6 @@ npm install
 
 # 4. Create the environment file
 cp .env.example .env
-# (If .env.example doesn't exist, see "Create the .env File" in Section 3)
 
 # 5. Edit .env and add your API keys (at minimum, the Gemini key for images)
 # Open .env in any text editor and fill in:
@@ -158,11 +157,7 @@ This will take 1-3 minutes depending on your internet speed. It downloads all re
 The `.env` file contains your API keys and configuration. Create it in the `storyrpg-prototype` directory:
 
 ```bash
-# If an example file exists:
 cp .env.example .env
-
-# Otherwise, create it manually:
-touch .env
 ```
 
 Open `.env` in any text editor (VS Code, Notepad, nano, vim, etc.) and add the following:
@@ -713,6 +708,38 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 
 # Public URL for webhook callbacks (e.g., ngrok URL for MidAPI)
 # PROXY_PUBLIC_URL=https://your-ngrok-url.ngrok.io
+
+# ===================================================================
+# PROXY OAUTH (Optional — Google / Discord via Passport)
+# ===================================================================
+# Set on the machine running proxy-server.js (not EXPO_PUBLIC_ unless you mirror).
+#
+# GOOGLE_CLIENT_ID=...
+# GOOGLE_CLIENT_SECRET=...
+# DISCORD_CLIENT_ID=...
+# DISCORD_CLIENT_SECRET=...
+#
+# Public origin of the proxy for callback URLs (no trailing slash)
+# AUTH_BASE_URL=http://localhost:3001
+#
+# Optional explicit callback URLs (default: AUTH_BASE_URL + /auth/.../callback)
+# GOOGLE_CALLBACK_URL=http://localhost:3001/auth/google/callback
+# DISCORD_CALLBACK_URL=http://localhost:3001/auth/discord/callback
+#
+# Where the browser returns after successful OAuth (Expo web). Default proxy value
+# includes ?afterAuth=home so the SPA clears the query and stays on the library.
+# AUTH_SUCCESS_REDIRECT=http://localhost:8081/?afterAuth=home
+# AUTH_FAILURE_REDIRECT=http://localhost:8081/?auth=error
+#
+# Session signing (use 16+ random chars in production)
+# SESSION_SECRET=your-long-random-secret
+#
+# Production HTTPS: trust reverse proxy (Cloud Run / load balancer)
+# TRUST_PROXY=1
+# NODE_ENV=production
+# SESSION_COOKIE_SECURE=1
+# If web app and API are on different sites, you may need:
+# SESSION_COOKIE_SAMESITE=none
 
 # ===================================================================
 # LLM CONFIGURATION

@@ -20,6 +20,7 @@ import {
   RotateCcw,
   Sparkles,
   Cpu,
+  LogIn,
 } from 'lucide-react-native';
 import { useGameActions, useGamePlayerState, useGameStoryState } from '../stores/gameStore';
 import { StoryCatalogEntry } from '../types';
@@ -35,6 +36,8 @@ interface HomeScreenProps {
   onStartStory: (storyId: string) => void;
   onContinueStory: () => void;
   onOpenSettings: () => void;
+  /** Web: opens dedicated sign-in screen (proxy OAuth). */
+  onOpenLogin?: () => void;
   onOpenGenerator?: () => void;
   activeGenerationJob?: {
     id: string;
@@ -48,6 +51,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onStartStory,
   onContinueStory,
   onOpenSettings,
+  onOpenLogin,
   onOpenGenerator,
   activeGenerationJob,
   onOpenActiveGeneration,
@@ -143,6 +147,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               </View>
             </TouchableOpacity>
           )}
+          {Platform.OS === 'web' && onOpenLogin ? (
+            <TouchableOpacity
+              style={[styles.headerIconButton, { flexDirection: 'row', gap: 6, paddingHorizontal: 10 }]}
+              onPress={onOpenLogin}
+            >
+              <LogIn size={16} color={TERMINAL.colors.muted} />
+              <Text style={{ color: TERMINAL.colors.muted, fontSize: 10, fontWeight: '800', letterSpacing: 1 }}>
+                SIGN IN
+              </Text>
+            </TouchableOpacity>
+          ) : null}
           {onOpenGenerator && (
             <TouchableOpacity 
               style={styles.headerActionButton}

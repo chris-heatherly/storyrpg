@@ -51,7 +51,7 @@ import { haptics } from '../utils/haptics';
 import { useClickDebounce } from '../utils/useDebounce';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { useImagePromptOverlay } from '../hooks/useImagePromptOverlay';
-import { formatSceneBeatLabelFromImageUrl } from '../utils/imagePromptDebug';
+import { formatSceneBeatLabelFromImageUrl, getImagePanelNumberFromStory } from '../utils/imagePromptDebug';
 import { incrementPersonProperty, setSuperProperties, track } from '../services/analyticsService';
 import {
   cloneRelationshipMap,
@@ -1330,26 +1330,34 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   }, [developerMode, devGoNext, devGoPrev]);
 
   // Dev overlay: compute contextual label and render helpers shared by every beat type
-  const devLabel = (() => {
+  const getDevLabel = (currentImageUrl?: string | null) => {
     if (!developerMode || !currentScene) return null;
     const sn = currentScene.id?.match(/scene-([0-9]+[a-z]?)/i)?.[1];
-    if (episodeRecap) return 'RECAP';
-    if (shouldShowEncounter && sceneEncounter) return sn ? `S${sn}  ENC` : 'ENC';
-    if (showGrowthSummary) return sn ? `S${sn}  GROWTH` : 'GROWTH';
+    const withImagePanel = (baseLabel: string | null) => {
+      const panelNumber = getImagePanelNumberFromStory(currentStory, currentImageUrl);
+      if (!panelNumber) return baseLabel;
+      return baseLabel ? `${baseLabel}  IMG ${panelNumber}` : `IMG ${panelNumber}`;
+    };
+    if (episodeRecap) return withImagePanel('RECAP');
+    if (shouldShowEncounter && sceneEncounter) return withImagePanel(sn ? `S${sn}  ENC` : 'ENC');
+    if (showGrowthSummary) return withImagePanel(sn ? `S${sn}  GROWTH` : 'GROWTH');
     if (activeStorylet && storyletBeatId) {
       const idx = activeStorylet.beats.findIndex(b => b.id === storyletBeatId);
       const sl = idx >= 0 ? `SL·B${idx + 1}` : 'SL';
-      return sn ? `S${sn}  ${sl}` : sl;
+      return withImagePanel(sn ? `S${sn}  ${sl}` : sl);
     }
     const bn = currentBeatId?.match(/beat-([0-9]+)/i)?.[1];
-    return sn && bn ? `S${sn}  B${bn}` : sn ? `S${sn}` : null;
-  })();
+    return withImagePanel(sn && bn ? `S${sn}  B${bn}` : sn ? `S${sn}` : null);
+  };
 
-  const renderDevBadgeOverlay = () => devLabel ? (
-    <View style={[styles.devSceneBeatBadge, { pointerEvents: 'none' as const }]}>
-      <Text style={styles.devSceneBeatText}>{devLabel}</Text>
-    </View>
-  ) : null;
+  const renderDevBadgeOverlay = (currentImageUrl?: string | null) => {
+    const devLabel = getDevLabel(currentImageUrl);
+    return devLabel ? (
+      <View style={[styles.devSceneBeatBadge, { pointerEvents: 'none' as const }]}>
+        <Text style={styles.devSceneBeatText}>{devLabel}</Text>
+      </View>
+    ) : null;
+  };
 
   const renderDevNavOverlay = () => !developerMode ? null : (
     <View style={styles.feedbackToolbar}>
@@ -1503,7 +1511,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
               <ContinueButton copyKey="growth" onPress={dismissGrowthSummary} />
             )}
       </ReadingShell>
-      {renderDevBadgeOverlay()}
+      {renderDevBadgeOverlay(reflectionImageUrl)}
       {renderDevNavOverlay()}
       </View>
     );
@@ -1586,7 +1594,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
               <ContinueButton copyKey="storylet" onPress={handleStoryletContinue} />
             )}
           </ReadingShell>
-          {renderDevBadgeOverlay()}
+          {renderDevBadgeOverlay(storyletImageUrl)}
           {renderDevNavOverlay()}
         </View>
       );
@@ -1859,7 +1867,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         )}
       </ReadingShell>
 
-      {renderDevBadgeOverlay()}
+      {renderDevBadgeOverlay(imageUrl)}
 
       {/* Dev Mode: Toolbar (rendered as overlay so it wins stacking on web) */}
       {developerMode && imageUrl && (

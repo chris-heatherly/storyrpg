@@ -69,7 +69,7 @@ export interface ImageGenerationBatchRequest extends PipelineHookOptions {
 }
 
 const DEFAULT_ANALYSIS_PREFERENCES: StoryAnalysisPreferences = {
-  targetScenesPerEpisode: 8,
+  targetScenesPerEpisode: 6,
   targetChoicesPerEpisode: 4,
   pacing: 'moderate',
 };

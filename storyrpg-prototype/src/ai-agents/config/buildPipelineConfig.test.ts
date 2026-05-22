@@ -97,6 +97,89 @@ describe('buildPipelineConfig', () => {
     expect(config.imageGen?.allowTextOnlyCharacterImages).toBe(false);
   });
 
+  it('clamps scene count to the 3-6 episode range', () => {
+    const highConfig = buildPipelineConfig({
+      llmProvider: 'anthropic',
+      llmModel: 'claude-sonnet-4-20250514',
+      imageLlmProvider: 'gemini',
+      imageLlmModel: '',
+      videoLlmProvider: 'gemini',
+      videoLlmModel: '',
+      apiKey: 'anthropic-key',
+      geminiApiKey: 'shared-gemini-key',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: 'bytedance/seedream-v4.5',
+      midapiToken: '',
+      imageProvider: 'nano-banana',
+      imageStrategy: 'all-beats',
+      panelMode: 'all-beats',
+      artStyle: '',
+      geminiSettings: { model: 'gemini-3.1-flash-image-preview' } as any,
+      midjourneySettings: {} as any,
+      generationSettings: { ...generationSettings, targetSceneCount: 8 },
+      generationMode: 'advisory',
+      narrationSettings: {
+        enabled: false,
+        autoPlay: false,
+        preGenerateAudio: false,
+        voiceId: '',
+        highlightMode: 'word',
+      },
+      videoSettings: {
+        enabled: false,
+        model: 'veo-3.1-generate-preview',
+        durationSeconds: 8,
+        resolution: '720p',
+        aspectRatio: '16:9',
+        strategy: 'selective',
+      },
+    });
+
+    const lowConfig = buildPipelineConfig({
+      llmProvider: 'anthropic',
+      llmModel: 'claude-sonnet-4-20250514',
+      imageLlmProvider: 'gemini',
+      imageLlmModel: '',
+      videoLlmProvider: 'gemini',
+      videoLlmModel: '',
+      apiKey: 'anthropic-key',
+      geminiApiKey: 'shared-gemini-key',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: 'bytedance/seedream-v4.5',
+      midapiToken: '',
+      imageProvider: 'nano-banana',
+      imageStrategy: 'all-beats',
+      panelMode: 'all-beats',
+      artStyle: '',
+      geminiSettings: { model: 'gemini-3.1-flash-image-preview' } as any,
+      midjourneySettings: {} as any,
+      generationSettings: { ...generationSettings, targetSceneCount: 1 },
+      generationMode: 'advisory',
+      narrationSettings: {
+        enabled: false,
+        autoPlay: false,
+        preGenerateAudio: false,
+        voiceId: '',
+        highlightMode: 'word',
+      },
+      videoSettings: {
+        enabled: false,
+        model: 'veo-3.1-generate-preview',
+        durationSeconds: 8,
+        resolution: '720p',
+        aspectRatio: '16:9',
+        strategy: 'selective',
+      },
+    });
+
+    expect(highConfig.generation?.targetSceneCount).toBe(6);
+    expect(highConfig.generation?.maxScenesPerEpisode).toBe(6);
+    expect(lowConfig.generation?.targetSceneCount).toBe(3);
+    expect(lowConfig.generation?.maxScenesPerEpisode).toBe(3);
+  });
+
   it('falls back to the image gemini key for scoped gemini llms', () => {
     const config = buildPipelineConfig({
       llmProvider: 'anthropic',

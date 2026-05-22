@@ -51,6 +51,7 @@ import {
   CRAFT_PRESSURE_GUIDANCE,
   buildGenreAwareJeopardyGuidance,
 } from '../prompts/storytellingPrinciples';
+import { clampSceneCount } from '../../constants/pipeline';
 
 type MutablePlanData = Partial<SeasonPlan> & {
   encounterPlan?: any;
@@ -248,6 +249,10 @@ Use the source analysis as the authority, but learn from reusable structure:
 - Escalate pressure toward the shared Stakes and Goal without assuming every story needs combat.
 - Pressure can be physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure.
 - Make plans go partly wrong often enough that choices require improvisation.
+- Plan each episode around 3-6 major episode turns expressed through buildup, encounter pressure, player choice, consequence, aftermath, and cliffhanger/resolution.
+- Each episode's central conflict should manifest in its encounter. The encounter is where relationships, information, risks, prior choices, player capabilities, and current stakes are tested through play.
+- If the protagonist falls short, fail forward into a natural path for growth, preparation, alliance, recovery, information gathering, training, mentorship, or alternate leverage.
+- Capability growth should respect existing mechanics: skills, attributes, relationships, flags, identity, prior choices, consequences, and encounter outcomes, while keeping all player-facing language fiction-first.
 - After the Climax, resolve quickly: show what was saved or changed, then show future cost, identity change, or legacy.
 - Ensure the Inciting Incident lands in Act 1 and the Climax lands in Act 3.
 - From the Inciting Incident through the Climax, make difficulty rise and make the protagonist's transformation increasingly necessary to achieve the Goal.
@@ -279,7 +284,7 @@ ${arcList}
 - **Arc**: ${analysis.protagonist.arc}
 
 ## User Preferences
-- Scenes per episode: ${preferences?.targetScenesPerEpisode || 6}
+- Scenes per episode: ${clampSceneCount(preferences?.targetScenesPerEpisode || 6)}
 - Choices per episode: ${preferences?.targetChoicesPerEpisode || 3}
 - Pacing: ${preferences?.pacing || 'moderate'}
 
@@ -289,13 +294,13 @@ ${endingList ? endingList : '- No explicit endings supplied. Create a convergent
 
 ## YOUR TASK - MASTER BLUEPRINT
 
-**Design each episode from the encounter outward.** The encounter is not a scene you add — it IS the episode. The episode's narrative exists to build toward the encounter, make its choices feel earned, and then play out the consequences.
+**Design each episode from the encounter outward.** The encounter is the episode's central conflict / pressure event. The episode's narrative exists to build toward the encounter, test the player's relationships, information, skills, prior choices, and current stakes, then play out the consequences.
 
 ### THE ENCOUNTER-FIRST PLANNING PROCESS
 
 For each episode, answer in this order:
 
-1. **What is the most dramatically intense confrontation possible in this episode?** That is the encounter. You are NOT bound to the source material — invent or heighten any confrontation that fits the themes. A social standoff in a drawing room is as valid as a sword fight.
+1. **What central conflict or pressure event should this episode test through play?** That is the encounter. You are NOT bound to the source material — invent or heighten any confrontation that fits the themes. A social standoff in a drawing room is as valid as a sword fight.
 
 2. **What does the player need to feel and know before reaching that encounter?** Plan buildup scenes that establish: the relationships that will be tested, the information that will become a weapon, and the personal stakes that make each encounter choice feel like a value statement, not just a tactical decision.
 
@@ -308,6 +313,7 @@ You must plan THREE critical things at the SEASON level:
 ### 1. ENCOUNTER PLANNING (Encounter-First)
 For each episode, design the encounter FIRST as the dramatic anchor, then plan how the episode builds toward it.
 - Each encounter must feel like the episode's reason for existing — the culmination of everything that came before
+- Each encounter must manifest the episode's central conflict / pressure event
 - Plan what information/relationships/stakes the pre-encounter scenes must establish so the encounter choices feel loaded
 - Design a DIFFICULTY CURVE across the season (introduction → rising → peak → falling → finale)
 - Vary encounter types — no two consecutive episodes should use the same type
@@ -328,15 +334,17 @@ Track how a single decision ripples through the season.
 - These create the feeling of a living, responsive world
 
 ### 4. CHARACTER GROWTH CURVE
-Plan how the protagonist develops across the season. For each episode, specify:
+Plan how the protagonist develops across the season through story progression and existing game state. For each episode, specify:
 - **focusSkills**: 2-3 skills thematically relevant to this episode's challenges (from: athletics, stealth, perception, persuasion, intimidation, deception, investigation, survival)
-- **developmentScene**: A scene concept where the player CHOOSES what to practice or study. Each option should grow a different skill. Place 1-2 per episode.
+- **developmentScene**: A fiction-first scene concept where the player CHOOSES how to prepare, recover, train, investigate, seek help, or gain alternate leverage. Each option should naturally support a different skill or capability. Place 1-2 per episode.
 - **mentorshipOpportunity**: If an NPC's expected relationship is strong enough by this episode, note the NPC and which attribute they can help develop. Mentorship grows ATTRIBUTES (charm, wit, courage, empathy, resolve, resourcefulness).
 
 Growth should follow the difficulty curve:
 - Early episodes: easy challenges, generous development opportunities
 - Mid episodes: harder challenges that expose skill gaps, mentorship opens up
 - Late episodes: tight challenges that reward investment, mentorship pays off in the climax
+- Failure should never become a dead end or rote grind. If a character falls short, route the consequence into playable story material: debt, suspicion, injury, lost leverage, damaged trust, recovery, preparation, alliance, investigation, training, or a harder alternate approach.
+- Keep growth invisible as mechanics in player-facing prose. Do not expose stats, thresholds, dice, percentages, or "train until ready" language.
 
 ### 5. ENDING TARGETING
 - In \`single\` mode, all major routes must ultimately point back toward ONE ending target.
@@ -1123,7 +1131,7 @@ CRITICAL RULES:
       consequenceChains,
       seasonFlags,
       preferences: {
-        targetScenesPerEpisode: preferences?.targetScenesPerEpisode || 6,
+        targetScenesPerEpisode: clampSceneCount(preferences?.targetScenesPerEpisode || 6),
         targetChoicesPerEpisode: preferences?.targetChoicesPerEpisode || 3,
         pacing: preferences?.pacing || 'moderate',
       },

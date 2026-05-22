@@ -47,6 +47,7 @@ import {
   RelationshipSnapshot,
   NPCInfo,
 } from '../utils/relationshipDynamics';
+import type { StoryVerb } from '../utils/storyVerbs';
 
 // Re-export for consumers that import from this file
 export type { EncounterApproach, NPCDisposition } from '../../types';
@@ -170,6 +171,9 @@ export interface EncounterArchitectInput {
 
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
+
+  // Genre/source-specific verbs that should shape tactical action design.
+  storyVerbs?: StoryVerb[];
 }
 
 // ========================================
@@ -1098,11 +1102,15 @@ The "complicated" tier should produce the most interesting narrative branching. 
 - Grant partial progress (1 goal tick) but also add danger (1 threat tick)
 - Present genuinely different choices than the success/failure branches
 - Create "the price of partial success" moments that force identity-defining decisions
+- Include a structured \`cost\` with \`immediateEffect\`, \`visibleComplication\`, and at least one \`cost.consequences\` item
 
 ### Consequences Should Be Skill-Relevant
 Outcomes should include consequences that match the skill being tested:
-- A successful athletics check: \`{ "type": "score", "name": "athletic_confidence", "change": 2 }\` or similar
+- A successful athletics check: \`{ "type": "changeScore", "score": "athletic_confidence", "change": 2 }\` or similar
 - A failed social check: show the relationship shifting, not just a generic setback
+- Every success/complicated/failure outcome needs at least one durable hook in \`consequences\` or \`cost.consequences\`
+- Use a mix of flags, scores, tags, inventory, and relationships; do not make encounter fallout relationship-only
+- Costs are not just prose. If the story says the player paid a price, encode what future scenes can test or echo
 
 ---
 
@@ -2543,6 +2551,10 @@ RULES:
       ?.map(s => `- ${s.name}: level ${s.level}`)
       .join('\n') || 'Not specified';
 
+    const storyVerbList = (input.storyVerbs || [])
+      .map(storyVerb => `- ${storyVerb.verb}: ${storyVerb.description}`)
+      .join('\n');
+
     const difficultyOdds: Record<string, number> = {
       easy: 55,
       moderate: 65,
@@ -2563,6 +2575,11 @@ ${CRAFT_PRESSURE_GUIDANCE}
 
 ## Genre-Aware Jeopardy
 ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
+
+${storyVerbList ? `## Story Verbs
+Use these genre/source-specific verbs to make encounter choices feel native to the story world. Do not expose them as system labels; turn them into concrete actions, complications, and storylet consequences.
+${storyVerbList}
+` : ''}
 
 ## Story Context
 - **Title**: ${input.storyContext.title}

@@ -7,7 +7,8 @@ export type SceneGraphBranchIssueType =
   | 'invalid_branch_target'
   | 'backward_or_self_branch'
   | 'branch_without_reconvergence'
-  | 'lost_branch_during_assembly';
+  | 'lost_branch_during_assembly'
+  | 'missing_branch_residue';
 
 export interface SceneGraphBranchIssue {
   type: SceneGraphBranchIssueType;
@@ -77,31 +78,32 @@ export class SceneGraphBranchValidator {
       for (const beat of scene.beats || []) {
         for (const choice of beat.choices || []) {
           regularChoiceCount += 1;
-          if (!choice.nextSceneId) continue;
+          const effectiveNextSceneId = choice.nextSceneId || resolveChoicePayoffSceneTarget(scene, choice.nextBeatId);
+          if (!effectiveNextSceneId) continue;
           sceneGraphBranchChoiceCount += 1;
-          branchTargets.add(choice.nextSceneId);
+          branchTargets.add(effectiveNextSceneId);
 
-          const targetIndex = sceneIndex.get(choice.nextSceneId);
+          const targetIndex = sceneIndex.get(effectiveNextSceneId);
           const currentIndex = sceneIndex.get(scene.id);
           if (targetIndex === undefined) {
             issues.push({
               type: 'invalid_branch_target',
               severity: 'error',
-              message: `Choice ${choice.id} routes to missing scene ${choice.nextSceneId}.`,
+              message: `Choice ${choice.id} routes to missing scene ${effectiveNextSceneId}.`,
               sceneId: scene.id,
               beatId: beat.id,
               choiceId: choice.id,
-              targetSceneId: choice.nextSceneId,
+              targetSceneId: effectiveNextSceneId,
             });
           } else if (currentIndex !== undefined && targetIndex <= currentIndex) {
             issues.push({
               type: 'backward_or_self_branch',
               severity: 'error',
-              message: `Choice ${choice.id} routes backward or to its own scene (${choice.nextSceneId}).`,
+              message: `Choice ${choice.id} routes backward or to its own scene (${effectiveNextSceneId}).`,
               sceneId: scene.id,
               beatId: beat.id,
               choiceId: choice.id,
-              targetSceneId: choice.nextSceneId,
+              targetSceneId: effectiveNextSceneId,
             });
           }
         }
@@ -169,6 +171,20 @@ export class SceneGraphBranchValidator {
       }
     }
 
+    for (const scene of episode.scenes) {
+      const distinctIncomingScenes = countDistinctIncomingSourceScenes(episode.scenes, scene.id);
+      if (distinctIncomingScenes <= 1 && !scene.isConvergencePoint) continue;
+      if (!(scene.isBottleneck || scene.isConvergencePoint || distinctIncomingScenes > 1)) continue;
+      if (!sceneAcknowledgesBranchResidue(scene)) {
+        issues.push({
+          type: 'missing_branch_residue',
+          severity: 'error',
+          message: `Reconverged branch target ${scene.id} has no conditional text, callback hook, or onShow residue to acknowledge the branch path.`,
+          targetSceneId: scene.id,
+        });
+      }
+    }
+
     const metrics: SceneGraphBranchMetrics = {
       episodeId: episode.id,
       episodeNumber: episode.number,
@@ -196,13 +212,30 @@ export class SceneGraphBranchValidator {
   }
 }
 
+function sceneAcknowledgesBranchResidue(scene: Scene): boolean {
+  return (scene.beats || []).some((beat) =>
+    (beat.textVariants?.length ?? 0) > 0
+      || (beat.callbackHookIds?.length ?? 0) > 0
+      || (beat.onShow?.length ?? 0) > 0
+      || (beat.choices || []).some((choice) =>
+        Boolean(
+          choice.reminderPlan
+            || choice.memorableMoment
+            || choice.tintFlag
+            || (choice.residueHints?.length ?? 0) > 0
+            || (choice.witnessReactions?.length ?? 0) > 0
+        )
+      )
+  );
+}
+
 function countIncomingEdges(scenes: Scene[], targetId: string): number {
   let count = 0;
   for (const scene of scenes) {
     if (scene.leadsTo?.includes(targetId)) count += 1;
     for (const beat of scene.beats || []) {
       for (const choice of beat.choices || []) {
-        if (choice.nextSceneId === targetId) count += 1;
+        if ((choice.nextSceneId || resolveChoicePayoffSceneTarget(scene, choice.nextBeatId)) === targetId) count += 1;
       }
     }
     if (scene.encounter) {
@@ -212,4 +245,32 @@ function countIncomingEdges(scenes: Scene[], targetId: string): number {
     }
   }
   return count;
+}
+
+function countDistinctIncomingSourceScenes(scenes: Scene[], targetId: string): number {
+  const sourceSceneIds = new Set<string>();
+  for (const scene of scenes) {
+    if (scene.id === targetId) continue;
+    if (scene.leadsTo?.includes(targetId)) sourceSceneIds.add(scene.id);
+    for (const beat of scene.beats || []) {
+      for (const choice of beat.choices || []) {
+        if ((choice.nextSceneId || resolveChoicePayoffSceneTarget(scene, choice.nextBeatId)) === targetId) {
+          sourceSceneIds.add(scene.id);
+        }
+      }
+      if (beat.nextSceneId === targetId) sourceSceneIds.add(scene.id);
+    }
+    if (scene.encounter) {
+      for (const outcome of Object.values(scene.encounter.outcomes || {})) {
+        if (outcome?.nextSceneId === targetId) sourceSceneIds.add(scene.id);
+      }
+    }
+  }
+  return sourceSceneIds.size;
+}
+
+function resolveChoicePayoffSceneTarget(scene: Scene, nextBeatId?: string): string | undefined {
+  if (!nextBeatId) return undefined;
+  const nextBeat = (scene.beats || []).find((beat) => beat.id === nextBeatId);
+  return nextBeat?.nextSceneId;
 }

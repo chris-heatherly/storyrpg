@@ -179,6 +179,11 @@ export interface SceneVisualSequencePlan {
   powerBlocking: string;
   turningPoint: string;
   endState: string;
+  anchorZones?: string[];
+  boundaryOrThreshold?: string;
+  physicalCarrier?: string;
+  rhythmIntent?: string;
+  avoid?: string[];
 }
 
 // A beat is a unit of content within a scene

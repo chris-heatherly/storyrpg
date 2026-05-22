@@ -67,6 +67,12 @@ function characterAliases(character: any): string[] {
     ...(Array.isArray(character.nicknames) ? character.nicknames : []),
   ].map(normalize).filter(Boolean);
 
+  const idParts = normalize(character.id).split(/[-_\s]+/).filter(Boolean);
+  if (idParts[0] === 'char' && idParts[1]) {
+    aliases.push(`char-${idParts[1]}`);
+    aliases.push(idParts[1]);
+  }
+
   for (const source of [
     character.name,
     character.displayName,

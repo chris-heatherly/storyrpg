@@ -40,6 +40,10 @@ export type ChoiceSystemFacet =
   | 'stat'
   | 'identity'
   | 'delayed'
+  | 'affordance'
+  | 'witness'
+  | 'failure-residue'
+  | 'story-verb'
   | 'branching';
 
 export interface ChoiceSystemFilterState {
@@ -65,7 +69,7 @@ export interface ChoiceSystemConditionSummary {
 }
 
 export interface ChoiceSystemEffectSummary {
-  kind: 'relationship' | 'attribute' | 'skill' | 'flag' | 'score' | 'tag' | 'item' | 'identity' | 'delayed' | 'memory' | 'residue' | 'unknown';
+  kind: 'relationship' | 'attribute' | 'skill' | 'flag' | 'score' | 'tag' | 'item' | 'identity' | 'delayed' | 'memory' | 'residue' | 'witness' | 'failure-residue' | 'story-verb' | 'affordance' | 'unknown';
   authorLabel: string;
   playerLabel: string;
   npcId?: string;
@@ -96,6 +100,10 @@ export interface ChoiceSystemChoiceSummary {
   check?: ChoiceSystemCheckSummary;
   hasDelayedCallback: boolean;
   hasLockedGate: boolean;
+  storyVerb?: string;
+  affordanceSource?: NonNullable<Choice['affordanceSource']>;
+  witnessReactionCount: number;
+  failureResidueKind?: NonNullable<Choice['failureResidue']>['kind'];
   relationshipNpcIds: string[];
   facets: ChoiceSystemFacet[];
   authorSummary: string;

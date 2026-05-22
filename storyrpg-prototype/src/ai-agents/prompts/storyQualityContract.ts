@@ -34,6 +34,15 @@ export const STORY_QUALITY_CALLBACKS = `
 - Prior-episode callbacks must only reference events the player could have experienced on that path.
 `;
 
+export const STORY_QUALITY_MECHANICAL_REACTIVITY = `
+## Mechanical Storytelling Reactivity
+- A meaningful choice should change what the world permits, what an NPC believes, how future choices read, or what failure creates.
+- Prefer micro-reactivity over extra branches: callbacks, residue, scene tints, witness comments, altered prose, relationship tone, locked/unlocked options, and visual staging.
+- Hidden state should surface as affordance: prior mercy, trust, items, tags, skills, promises, lies, and callback hooks should open, color, or close options.
+- Failure should create playable story material: debt, suspicion, injury, lost leverage, exposure, obligation, damaged trust, or changed position.
+- Use genre-specific story verbs so choices feel native to the world, not generic.
+`;
+
 export const STORY_QUALITY_PIXAR_CRAFT = `
 ## Pixar-Style Craft Rubric
 - Give the protagonist a clear desire under escalating pressure.
@@ -64,6 +73,7 @@ export function buildStoryQualityContractSection(parts: Array<
   | 'choiceAgency'
   | 'branching'
   | 'callbacks'
+  | 'mechanicalReactivity'
   | 'pixarCraft'
   | 'pacing'
   | 'visual'
@@ -73,6 +83,7 @@ export function buildStoryQualityContractSection(parts: Array<
     choiceAgency: STORY_QUALITY_CHOICE_AGENCY,
     branching: STORY_QUALITY_BRANCHING,
     callbacks: STORY_QUALITY_CALLBACKS,
+    mechanicalReactivity: STORY_QUALITY_MECHANICAL_REACTIVITY,
     pixarCraft: STORY_QUALITY_PIXAR_CRAFT,
     pacing: STORY_QUALITY_PACING,
     visual: VISUAL_QUALITY_CONTRACT,

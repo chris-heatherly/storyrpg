@@ -79,7 +79,11 @@ describe('SceneGraphBranchValidator', () => {
       ]),
       scene('scene-2a', ['scene-3']),
       scene('scene-2b', ['scene-3']),
-      { ...scene('scene-3'), isBottleneck: true },
+      {
+        ...scene('scene-3'),
+        isBottleneck: true,
+        beats: [{ id: 'scene-3-beat', text: 'scene-3 text', textVariants: [{ condition: { type: 'flag', flag: 'branch_a' } as any, text: 'The route still colors the room.' }] }],
+      },
     ]);
     const bp = blueprint([
       { id: 'scene-1', leadsTo: ['scene-2a', 'scene-2b'], branches: true, type: 'dilemma' },
@@ -93,6 +97,49 @@ describe('SceneGraphBranchValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.metrics.sceneGraphBranchChoiceCount).toBe(2);
     expect(result.metrics.regularChoiceCount).toBe(2);
+  });
+
+  it('counts branch choices routed through generated payoff beats', () => {
+    const ep = episode([
+      {
+        ...scene('scene-1', ['scene-2a', 'scene-2b']),
+        beats: [{
+          id: 'scene-1-beat',
+          text: 'scene-1 text',
+          choices: [
+            { id: 'choice-a', text: 'choice-a', nextBeatId: 'scene-1-payoff-a', consequences: [] },
+            { id: 'choice-b', text: 'choice-b', nextBeatId: 'scene-1-payoff-b', consequences: [] },
+          ],
+        }, {
+          id: 'scene-1-payoff-a',
+          text: 'payoff a',
+          nextSceneId: 'scene-2a',
+        }, {
+          id: 'scene-1-payoff-b',
+          text: 'payoff b',
+          nextSceneId: 'scene-2b',
+        }],
+      },
+      scene('scene-2a', ['scene-3']),
+      scene('scene-2b', ['scene-3']),
+      {
+        ...scene('scene-3'),
+        isBottleneck: true,
+        beats: [{ id: 'scene-3-beat', text: 'scene-3 text', callbackHookIds: ['branch-choice'] }],
+      },
+    ]);
+    const bp = blueprint([
+      { id: 'scene-1', leadsTo: ['scene-2a', 'scene-2b'], branches: true, type: 'dilemma' },
+      { id: 'scene-2a', leadsTo: ['scene-3'] },
+      { id: 'scene-2b', leadsTo: ['scene-3'] },
+      { id: 'scene-3', leadsTo: [] },
+    ]);
+
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, bp);
+
+    expect(result.valid).toBe(true);
+    expect(result.metrics.sceneGraphBranchChoiceCount).toBe(2);
+    expect(result.metrics.reconvergingBranchTargetCount).toBe(2);
   });
 
   it('fails when choices exist but none route to scenes', () => {
@@ -133,5 +180,28 @@ describe('SceneGraphBranchValidator', () => {
     expect(result.valid).toBe(false);
     expect(result.issues.some(issue => issue.type === 'backward_or_self_branch')).toBe(true);
     expect(result.issues.some(issue => issue.type === 'invalid_branch_target')).toBe(true);
+  });
+
+  it('fails reconverged branches that do not leave bottleneck residue', () => {
+    const ep = episode([
+      scene('scene-1', ['scene-2a', 'scene-2b'], [
+        { id: 'choice-a', nextSceneId: 'scene-2a' },
+        { id: 'choice-b', nextSceneId: 'scene-2b' },
+      ]),
+      scene('scene-2a', ['scene-3']),
+      scene('scene-2b', ['scene-3']),
+      { ...scene('scene-3'), isBottleneck: true },
+    ]);
+    const bp = blueprint([
+      { id: 'scene-1', leadsTo: ['scene-2a', 'scene-2b'], branches: true, type: 'dilemma' },
+      { id: 'scene-2a', leadsTo: ['scene-3'] },
+      { id: 'scene-2b', leadsTo: ['scene-3'] },
+      { id: 'scene-3', leadsTo: [] },
+    ]);
+
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, bp);
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some(issue => issue.type === 'missing_branch_residue')).toBe(true);
   });
 });

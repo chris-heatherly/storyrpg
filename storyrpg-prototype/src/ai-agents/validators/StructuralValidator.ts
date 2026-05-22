@@ -381,6 +381,20 @@ export class StructuralValidator {
             if (outcome.nextSituation?.choices) {
               validateEncounterChoices(outcome.nextSituation.choices, `${path}/${choice.id}/${tier}`);
             }
+            const outcomeConsequences = outcome.consequences ?? [];
+            const costConsequences = outcome.cost?.consequences ?? [];
+            if (outcomeConsequences.length === 0 && costConsequences.length === 0) {
+              issues.push(this.createIssue('warning', 'missing_required_field',
+                { ...loc, choiceId: choice.id },
+                `Encounter outcome ${path}/${choice.id}/${tier} has no durable consequence hook`,
+                'consequences', 'outcome.consequences or cost.consequences'));
+            }
+            if (outcome.cost && costConsequences.length === 0) {
+              issues.push(this.createIssue('warning', 'missing_required_field',
+                { ...loc, choiceId: choice.id },
+                `Encounter outcome ${path}/${choice.id}/${tier} has a cost without mechanical consequences`,
+                'cost.consequences', 'at least one durable consequence'));
+            }
             if (outcome.encounterOutcome === 'partialVictory') {
               if (!outcome.cost?.visibleComplication || !outcome.cost?.immediateEffect) {
                 issues.push(this.createIssue('error', 'missing_required_field',

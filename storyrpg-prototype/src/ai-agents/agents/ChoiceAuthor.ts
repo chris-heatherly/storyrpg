@@ -13,6 +13,7 @@ import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import {
   Choice,
+  ChoiceAffordanceSource,
   ChoiceConsequenceTier,
   ChoiceFeedbackCue,
   ChoiceImpactFactor,
@@ -24,6 +25,7 @@ import {
   FiveFactorImpact,
   ReminderPlan,
 } from '../../types';
+import type { StoryVerb } from '../utils/storyVerbs';
 import {
   SourceMaterialAnalysis,
   StoryAnchors,
@@ -177,6 +179,9 @@ export interface ChoiceAuthorInput {
     impactFactors?: ChoiceImpactFactor[];
     consequenceTier?: ChoiceConsequenceTier;
   }>;
+
+  // Genre/source-specific verbs that make choices feel native to the story.
+  storyVerbs?: StoryVerb[];
 }
 
 // Output types
@@ -299,6 +304,13 @@ Branching (routing to different scenes via nextSceneId) is a PROPERTY of a choic
 - **Reminder Planning as Story Memory**: reminderPlan and residueHints should point to visible story changes: colder distance, evidence now in someone else's hands, a secret harder to deny, altered access, changed reputation, or a later callback.
 - **Reminder Planning**: Every meaningful choice should include an immediate echo and a short-term reminder plan.
 - **Risk Framing**: Use fiction-first feedback cues such as "steady", "desperate", "you have leverage", or "you're out of your depth" instead of exposing numbers.
+
+## Mechanical Storytelling Reactivity
+- A meaningful choice should change what the world permits, what an NPC believes, how future choices read, or what failure creates.
+- Prefer micro-reactivity over extra branches: callbacks, residue, scene tints, witness comments, altered prose, relationship tone, locked/unlocked options, and visual staging.
+- Hidden state should surface as affordance: prior mercy, trust, items, tags, skills, promises, lies, and callback hooks should open, color, or close options.
+- Failure should create playable story material: debt, suspicion, injury, lost leverage, exposure, obligation, damaged trust, or changed position.
+- Use storyVerb metadata so choices feel native to the world, not generic.
 
 ## Condition Usage
 
@@ -600,6 +612,24 @@ Before finalizing:
         choice.consequenceDomain = blueprintDomain || this.defaultDomainForChoiceType(choiceSet.choiceType);
       }
 
+      if (choice.conditions && !choice.affordanceSource) {
+        const inferredSource = this.inferAffordanceSource(choice.conditions);
+        if (inferredSource) {
+          choice.affordanceSource = inferredSource;
+        }
+      }
+
+      if (choice.witnessReactions && !Array.isArray(choice.witnessReactions)) {
+        choice.witnessReactions = [choice.witnessReactions as unknown as NonNullable<GeneratedChoice['witnessReactions']>[number]];
+      }
+
+      if (!choice.storyVerb && input.storyVerbs?.length && choiceSet.choiceType !== 'expression') {
+        const matchedVerb = this.inferStoryVerb(choice, input.storyVerbs);
+        if (matchedVerb) {
+          choice.storyVerb = matchedVerb;
+        }
+      }
+
       if (!choice.reminderPlan) {
         choice.reminderPlan = blueprintReminder || {
           immediate: 'The moment lands immediately.',
@@ -675,6 +705,61 @@ Before finalizing:
     }
   }
 
+  private inferAffordanceSource(condition: ConditionExpression): ChoiceAffordanceSource | undefined {
+    switch (condition.type) {
+      case 'identity':
+        return 'identity';
+      case 'relationship':
+        return 'relationship';
+      case 'tag':
+        return 'tag';
+      case 'item':
+        return 'item';
+      case 'skill':
+      case 'attribute':
+        return 'skill';
+      case 'flag':
+      case 'score':
+        return 'flag';
+      case 'and':
+      case 'or': {
+        for (const child of condition.conditions) {
+          const inferred = this.inferAffordanceSource(child);
+          if (inferred) return inferred;
+        }
+        return undefined;
+      }
+      case 'not':
+        return this.inferAffordanceSource(condition.condition);
+      default:
+        return undefined;
+    }
+  }
+
+  private inferStoryVerb(choice: GeneratedChoice, storyVerbs: StoryVerb[]): string | undefined {
+    const text = [
+      choice.text,
+      choice.stakes?.want,
+      choice.stakes?.cost,
+      choice.stakes?.identity,
+      choice.reactionText,
+      choice.outcomeTexts?.success,
+      choice.outcomeTexts?.partial,
+      choice.outcomeTexts?.failure,
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    const directMatch = storyVerbs.find(storyVerb => {
+      const escaped = storyVerb.verb.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+    });
+    if (directMatch) return directMatch.verb;
+
+    const byDomain = storyVerbs.find(storyVerb =>
+      choice.consequenceDomain && storyVerb.consequenceDomains?.includes(choice.consequenceDomain)
+    );
+    return byDomain?.verb;
+  }
+
   private normalizeChoiceIntent(choice: GeneratedChoice, choiceType: ChoiceType): ChoiceIntent {
     if (choiceType === 'expression') return 'flavor';
     if (choice.choiceIntent === 'flavor' || choice.choiceIntent === 'branching' || choice.choiceIntent === 'blind' || choice.choiceIntent === 'dilemma') {
@@ -735,6 +820,14 @@ Before finalizing:
 
     const nextSceneList = input.possibleNextScenes
       .map(scene => `- ${scene.id}: "${scene.name}" - ${scene.description}`)
+      .join('\n');
+
+    const storyVerbList = (input.storyVerbs || [])
+      .map(storyVerb => {
+        const sources = storyVerb.typicalSources?.length ? ` sources: ${storyVerb.typicalSources.join(', ')}` : '';
+        const domains = storyVerb.consequenceDomains?.length ? ` domains: ${storyVerb.consequenceDomains.join(', ')}` : '';
+        return `- ${storyVerb.verb}: ${storyVerb.description}${sources || domains ? ` (${[sources.trim(), domains.trim()].filter(Boolean).join('; ')})` : ''}`;
+      })
       .join('\n');
 
     const flagList = input.availableFlags
@@ -842,6 +935,11 @@ ${npcList || 'None'}
 
 ## Available Next Scenes
 ${nextSceneList}
+
+${storyVerbList ? `## Story Verbs
+Use these genre/source-specific action verbs as metadata when they fit. They should shape choice design, but the player-facing choice text should still read naturally.
+${storyVerbList}
+` : ''}
 
 ## Available State for Consequences
 **Flags**:
@@ -959,6 +1057,8 @@ Think about what the situation DEMANDS:
       },
       "consequences": [],
       "nextSceneId": "scene-id-if-branching-or-omit",
+      "storyVerb": "pressure",
+      "affordanceSource": "skill",
       "statCheck": { "attribute": "charm", "difficulty": 55 },
       "consequenceDomain": "relationship",
       "reminderPlan": {
@@ -977,6 +1077,18 @@ Think about what the situation DEMANDS:
         "failure": "Vivid 1-3 sentence description of failure or backfire."
       },
       "reactionText": "1-2 sentence world reaction (omit if nextSceneId is set).",
+      "witnessReactions": [
+        {
+          "npcId": "npc-id",
+          "stance": "approves | disapproves | fears | admires | questions | remembers",
+          "reactionText": "Fiction-first note about how this NPC interprets the choice.",
+          "residueHint": "How this witness reaction should echo later."
+        }
+      ],
+      "failureResidue": {
+        "kind": "debt | suspicion | injury | lost_leverage | exposure | obligation | damaged_trust | position_shift",
+        "description": "What playable story material failure creates."
+      },
       "tintFlag": "tint:bold",
       "moralContract": {
         "valueA": "protect the vulnerable",
@@ -1029,7 +1141,11 @@ CRITICAL REQUIREMENTS:
 12. reminderPlan and residueHints should describe visible fiction-first turns, not abstract state deltas
 13. Expression/flavor choices must use choiceIntent "flavor", consequenceTier "sceneTint", and must NOT branch
 14. Meaningful choices must include at least one impact factor from outcome, process, information, relationship, identity
-15. Return ONLY valid JSON, no markdown, no extra text
+15. When provided Story Verbs fit the moment, set storyVerb to one of them
+16. Choices gated by conditions, prior flags, items, identity, relationships, tags, skills, or callback hooks should include affordanceSource
+17. Add witnessReactions when named NPCs observe a moral, relational, deceptive, violent, or loyalty-testing choice
+18. Stat-check failure should create playable fiction; use failureResidue when the failure changes debt, suspicion, injury, leverage, exposure, obligation, trust, or position
+19. Return ONLY valid JSON, no markdown, no extra text
 `;
   }
 

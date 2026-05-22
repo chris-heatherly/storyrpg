@@ -23,6 +23,7 @@ function buildTsNodeSpawnArgs(entryScriptPath, payloadPath) {
 
 function spawnTsNodeWorker({ appRootDir, entryScriptPath, payloadPath, env = {}, stdio = ['ignore', 'pipe', 'pipe'] }) {
   const { command, args } = buildTsNodeSpawnArgs(entryScriptPath, payloadPath);
+  const workerMaxOldSpaceSize = Number(process.env.STORYRPG_WORKER_MAX_OLD_SPACE_SIZE_MB) || 4096;
   return spawn(command, args, {
     cwd: appRootDir,
     env: {
@@ -30,7 +31,7 @@ function spawnTsNodeWorker({ appRootDir, entryScriptPath, payloadPath, env = {},
       ...env,
       FORCE_COLOR: '0',
       TS_NODE_PREFER_TS_EXTS: 'true',
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=${workerMaxOldSpaceSize}`.trim(),
     },
     stdio,
   });

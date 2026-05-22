@@ -84,6 +84,45 @@ export interface ChoiceResidueHint {
   callbackHookId?: string;
 }
 
+export type ChoiceAffordanceSource =
+  | 'identity'
+  | 'relationship'
+  | 'tag'
+  | 'item'
+  | 'skill'
+  | 'flag'
+  | 'callback';
+
+export type WitnessReactionStance =
+  | 'approves'
+  | 'disapproves'
+  | 'fears'
+  | 'admires'
+  | 'questions'
+  | 'remembers';
+
+export interface WitnessReaction {
+  npcId: string;
+  stance: WitnessReactionStance;
+  reactionText: string;
+  residueHint?: string;
+}
+
+export type FailureResidueKind =
+  | 'debt'
+  | 'suspicion'
+  | 'injury'
+  | 'lost_leverage'
+  | 'exposure'
+  | 'obligation'
+  | 'damaged_trust'
+  | 'position_shift';
+
+export interface FailureResidue {
+  kind: FailureResidueKind;
+  description: string;
+}
+
 // A single choice option
 export interface Choice {
   id: string;
@@ -115,10 +154,14 @@ export interface Choice {
   };
 
   consequenceDomain?: ConsequenceDomain;
+  storyVerb?: string;
+  affordanceSource?: ChoiceAffordanceSource;
   reminderPlan?: ReminderPlan;
   feedbackCue?: ChoiceFeedbackCue;
   moralContract?: MoralContract;
   residueHints?: ChoiceResidueHint[];
+  witnessReactions?: WitnessReaction[];
+  failureResidue?: FailureResidue;
   visualResidueHint?: string;
 
   consequences?: Consequence[];

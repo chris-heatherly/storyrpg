@@ -114,7 +114,9 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
     const result = (architect as any).buildSeasonPlanDirectivesSection(input);
     expect(result).toContain('hard');
     expect(result).toContain('DEVELOPMENT SCENES');
-    expect(result).toContain('FAILURE-RECOVERY BRANCH');
+    expect(result).toContain('fiction-first fail-forward path');
+    expect(result).toContain('skills, attributes');
+    expect(result).toContain('Do not frame this as grinding');
   });
 
   it('includes authored treatment guidance as concrete choice and path directives', () => {
@@ -189,6 +191,205 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
       }],
       suggestedScores: [{ name: 'trust', description: 'Caravan trust' }],
     });
+  });
+});
+
+describe('StoryArchitect treatment fidelity validation', () => {
+  it('surfaces treatment drift as structural retry feedback before SceneWriter', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const input = makeInput({
+      seasonPlanDirectives: {
+        treatmentGuidance: {
+          majorChoicePressures: ['Accept Mika’s key card and Stela’s rose quartz, or keep both new friends at arm’s length.'],
+          alternativePaths: ['Accepting the quartz lets Stela ward the apartment; refusing it leaves the apartment vulnerable.'],
+          consequenceSeeds: ['The rose quartz, Mika’s key card, black roses, and Stela’s dream about herbs.'],
+          encounterAnchors: ['Rooftop bar light; Cismigiu park dark; shadow attack staged like a meet-cute gone wrong.'],
+          authoredCliffhanger: 'Stela texts that she had a horrible dream and is coming over with herbs.',
+        },
+        plannedEncounters: [{
+          id: 'treatment-enc-1-1',
+          type: 'dramatic',
+          description: 'Rooftop bar light; Cismigiu park dark; shadow attack staged like a meet-cute gone wrong.',
+          difficulty: 'moderate',
+          npcsInvolved: ['Kylie', 'Victor'],
+          stakes: 'The city hunts back.',
+          relevantSkills: ['resolve'],
+          isBranchPoint: true,
+        }],
+      },
+    });
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Dating After Dusk',
+      synopsis: 'Kylie meets friends on a rooftop and Victor saves her.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      themes: [],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1', 'scene-3'],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+      scenes: [
+        {
+          id: 'scene-1',
+          name: 'Rooftop',
+          description: 'Kylie meets Mika and Stela.',
+          location: 'roof',
+          mood: 'bright',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: [],
+          narrativeFunction: 'Introductions.',
+          keyBeats: ['Victor watches.'],
+          leadsTo: ['scene-2'],
+          choicePoint: {
+            type: 'dilemma',
+            stakes: { want: 'Go home', cost: 'Risk safety', identity: 'Independence' },
+            description: 'Accept Mika’s driver or walk home alone.',
+            optionHints: ['Take the driver.', 'Walk alone.'],
+            consequenceDomain: 'identity',
+            reminderPlan: { immediate: 'She chooses a route.', shortTerm: 'The city watches.' },
+          },
+        },
+        {
+          id: 'scene-2',
+          name: 'Attack',
+          description: 'Three men attack Kylie until Victor arrives.',
+          location: 'park',
+          mood: 'danger',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: [],
+          narrativeFunction: 'Victor rescue.',
+          keyBeats: ['Victor reveals inhuman eyes.'],
+          leadsTo: ['scene-3'],
+          isEncounter: true,
+          encounterType: 'combat',
+          encounterDescription: 'Three men attack Kylie.',
+          encounterStakes: 'Survival.',
+          encounterRequiredNpcIds: ['Victor'],
+          encounterRelevantSkills: ['resolve'],
+          encounterBeatPlan: ['Attack', 'Rescue', 'Aftermath'],
+          encounterDifficulty: 'moderate',
+          encounterBuildup: 'Walking home alone leaves Kylie vulnerable.',
+        },
+        {
+          id: 'scene-3',
+          name: 'Blog Post',
+          description: 'Kylie writes about Mr. Midnight.',
+          location: 'apartment',
+          mood: 'eerie',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: [],
+          narrativeFunction: 'Victor hook.',
+          keyBeats: ['Victor’s eyes haunt her.'],
+          leadsTo: [],
+          choicePoint: {
+            type: 'expression',
+            stakes: { want: 'Name the mystery', cost: 'Invite attention', identity: 'Public voice' },
+            description: 'Choose the blog tone.',
+            optionHints: ['Witty.', 'Dark.'],
+            consequenceDomain: 'identity',
+            reminderPlan: { immediate: 'The post changes tone.', shortTerm: 'Readers react.' },
+          },
+        },
+      ],
+    };
+
+    const issues = (architect as any).collectStructuralIssues(blueprint, input);
+
+    expect(issues.join('\n')).toContain('[TreatmentFidelity]');
+    expect(issues.join('\n')).toContain('major choice pressure');
+  });
+});
+
+describe('StoryArchitect scene-graph branch repair', () => {
+  it('adds a small reconvergent branch when the model only made linear choices', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Dating After Dusk',
+      synopsis: 'Kylie starts over.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      themes: [],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+      scenes: [
+        {
+          id: 'scene-1',
+          name: 'Apartment',
+          description: 'Kylie chooses how much help to accept.',
+          location: 'apartment',
+          mood: 'warm',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: [],
+          narrativeFunction: 'Opening agency.',
+          keyBeats: [],
+          leadsTo: ['scene-2'],
+          choicePoint: {
+            type: 'dilemma',
+            stakes: { want: 'Stay independent', cost: 'Refuse help', identity: 'Trust after heartbreak' },
+            description: 'Accept help or keep distance.',
+            optionHints: ['Accept help.', 'Keep distance.'],
+            consequenceDomain: 'relationship',
+            reminderPlan: { immediate: 'Friends react.', shortTerm: 'The next scene carries the tone.' },
+          },
+        },
+        {
+          id: 'scene-2',
+          name: 'Bookshop',
+          description: 'Stela offers quartz.',
+          location: 'bookshop',
+          mood: 'curious',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: [],
+          narrativeFunction: 'Setup.',
+          keyBeats: [],
+          leadsTo: ['scene-3'],
+        },
+        {
+          id: 'scene-3',
+          name: 'Rooftop',
+          description: 'Kylie meets Victor.',
+          location: 'rooftop',
+          mood: 'glittering',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: [],
+          narrativeFunction: 'Escalation.',
+          keyBeats: [],
+          leadsTo: [],
+        },
+      ],
+    };
+
+    (architect as any).repairSceneGraphBranchCoverage(blueprint);
+
+    expect(blueprint.scenes[0].purpose).toBe('branch');
+    expect(blueprint.scenes[0].choicePoint.branches).toBe(true);
+    expect(blueprint.scenes[0].choicePoint.type).toBe('dilemma');
+    expect(new Set(blueprint.scenes[0].leadsTo).size).toBe(2);
+    expect(blueprint.scenes[0].leadsTo).toEqual(['scene-2', 'scene-3']);
   });
 });
 

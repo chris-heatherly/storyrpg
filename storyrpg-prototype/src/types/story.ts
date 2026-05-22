@@ -81,6 +81,7 @@ export interface Story {
     portrait?: string;
     pronouns?: string;
     initialRelationship?: Partial<Relationship>;
+    relationshipDimensions?: RelationshipDimension[];
     /**
      * First-class NPC tier (Phase 1.3). Authored by CharacterDesigner and
      * persisted here so the runtime, validators, and UI can read it without

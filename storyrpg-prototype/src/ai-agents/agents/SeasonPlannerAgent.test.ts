@@ -110,5 +110,6 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     expect(plan.episodes[0].endingRoutes.map((route: any) => route.endingId)).toEqual(
       expect.arrayContaining(plan.resolvedEndings.map((ending: any) => ending.id)),
     );
+    expect(plan.preferences.targetScenesPerEpisode).toBe(6);
   });
 });

@@ -1727,7 +1727,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 sourceText,
                 title,
                 prompt,
-                preferences: { targetScenesPerEpisode: 8, targetChoicesPerEpisode: 4, pacing: 'moderate' },
+                preferences: { targetScenesPerEpisode: 6, targetChoicesPerEpisode: 4, pacing: 'moderate' },
               },
             },
             idempotencyKey: `analysis:${title}:${sourceText.length}:${prompt || ''}`,
@@ -1775,7 +1775,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         sourceText,
         title,
         prompt,
-        preferences: { targetScenesPerEpisode: 8, targetChoicesPerEpisode: 4, pacing: 'moderate' },
+        preferences: { targetScenesPerEpisode: 6, targetChoicesPerEpisode: 4, pacing: 'moderate' },
         onPipelineCreated: (pipeline) => {
           pipelineRef.current = pipeline;
           attachPipelineJobListeners(pipeline);

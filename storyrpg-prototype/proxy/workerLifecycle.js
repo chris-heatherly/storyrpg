@@ -17,7 +17,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { sanitizeJobState } = require('./sanitizeJobState');
+const { publicCheckpoint, publicJobState, sanitizeJobState } = require('./sanitizeJobState');
 const { spawnTsNodeWorker } = require('./tsNodeSpawn');
 
 const WORKER_STALE_RUNNING_MS = 3 * 60 * 1000;
@@ -26,6 +26,7 @@ const WORKER_MAX_IMAGE_JOBS = 200;
 const WORKER_MAX_VIDEO_JOBS = 200;
 const WORKER_MAX_IMAGE_MANIFEST = 200;
 const WORKER_MAX_CHECKPOINT_ARTIFACTS = 100;
+const MAX_SYNC_REGISTRY_SCAN_BYTES = 50 * 1024 * 1024;
 const WORKER_COMPLETED_PRUNE_MS = 2 * 60 * 60 * 1000;
 const WORKER_RESULT_TTL_MS = 10 * 60 * 1000;
 const JOB_STALE_RUNNING_MS = 3 * 60 * 60 * 1000;
@@ -350,6 +351,7 @@ function createWorkerLifecycle({
     const storyFiles = Math.max(0, generatedFiles - referenceFiles);
 
     let totalSlots;
+    let resumeScan;
     try {
       const manifestPath = path.join(resolvedOutputDir, 'image-manifest.json');
       if (fs.existsSync(manifestPath)) {
@@ -358,7 +360,7 @@ function createWorkerLifecycle({
       }
       const resumeScanPath = path.join(resolvedOutputDir, 'image-resume-scan.json');
       if (fs.existsSync(resumeScanPath)) {
-        const resumeScan = JSON.parse(fs.readFileSync(resumeScanPath, 'utf8'));
+        resumeScan = JSON.parse(fs.readFileSync(resumeScanPath, 'utf8'));
         if (typeof resumeScan?.totalSlots === 'number') {
           totalSlots = typeof totalSlots === 'number'
             ? Math.max(totalSlots, resumeScan.totalSlots)
@@ -369,20 +371,27 @@ function createWorkerLifecycle({
       // Image stats should never make the jobs endpoint unavailable.
     }
 
-    const resolvedSlotIds = new Set();
+    let resolvedSlots = typeof resumeScan?.resolvedSlotsAfter === 'number'
+      ? resumeScan.resolvedSlotsAfter
+      : undefined;
     try {
       const registryPath = path.join(resolvedOutputDir, 'asset-registry.jsonl');
       if (fs.existsSync(registryPath)) {
-        for (const line of fs.readFileSync(registryPath, 'utf8').split(/\r?\n/)) {
-          if (!line.trim()) continue;
-          try {
-            const record = JSON.parse(line);
-            if (record?.status === 'succeeded' && record?.slot?.slotId && (record.latestUrl || record.latestPath || record.result?.url || record.result?.imageUrl)) {
-              resolvedSlotIds.add(record.slot.slotId);
+        const registryStats = fs.statSync(registryPath);
+        if (registryStats.size <= MAX_SYNC_REGISTRY_SCAN_BYTES) {
+          const resolvedSlotIds = new Set();
+          for (const line of fs.readFileSync(registryPath, 'utf8').split(/\r?\n/)) {
+            if (!line.trim()) continue;
+            try {
+              const record = JSON.parse(line);
+              if (record?.status === 'succeeded' && record?.slot?.slotId && (record.latestUrl || record.latestPath || record.result?.url || record.result?.imageUrl)) {
+                resolvedSlotIds.add(record.slot.slotId);
+              }
+            } catch {
+              // Ignore malformed historical registry rows.
             }
-          } catch {
-            // Ignore malformed historical registry rows.
           }
+          resolvedSlots = resolvedSlotIds.size;
         }
       }
     } catch {
@@ -393,9 +402,11 @@ function createWorkerLifecycle({
       generatedFiles,
       referenceFiles,
       storyFiles,
-      resolvedSlots: resolvedSlotIds.size,
+      resolvedSlots,
       totalSlots,
-      missingSlots: typeof totalSlots === 'number' ? Math.max(0, totalSlots - resolvedSlotIds.size) : undefined,
+      missingSlots: typeof totalSlots === 'number' && typeof resolvedSlots === 'number'
+        ? Math.max(0, totalSlots - resolvedSlots)
+        : undefined,
     };
   }
 
@@ -457,7 +468,7 @@ function createWorkerLifecycle({
       strategy = 'save';
       failedUnit = 'final_story_package';
       resumeFromUnit = 'final_story_package';
-    } else if (/image|encounter_images|images_ep/i.test(message) || /image/i.test(String(failure.failurePhase || ''))) {
+    } else if (job?.mode === 'image-generation' || /image|encounter_images|images_ep/i.test(message) || /image/i.test(String(failure.failurePhase || ''))) {
       strategy = 'images';
       failedUnit = String(failure.failurePhase || 'image_generation');
       resumeFromUnit = 'missing_or_failed_image_slots';
@@ -500,6 +511,37 @@ function createWorkerLifecycle({
       resumePatchableInputs: Array.isArray(evt.resumePatchableInputs) ? evt.resumePatchableInputs : ['settings'],
       context: evt.context,
       timestamp: evt.timestamp || new Date().toISOString(),
+    }, 400);
+  }
+
+  function buildOrphanFailureContext(job) {
+    const checkpoint = loadCheckpoints().find((c) => c.jobId === job.id);
+    const lastEvent = checkpoint?.lastEvent;
+    const lastMessage = typeof lastEvent?.message === 'string' ? lastEvent.message : '';
+    const requiredSlotFailures = Array.isArray(lastEvent?.data?.requiredSlotFailures)
+      ? lastEvent.data.requiredSlotFailures
+      : undefined;
+    const hasImageCompletenessSignal = /Storyboard v2 incomplete|required image slot/i.test(lastMessage)
+      || (requiredSlotFailures && requiredSlotFailures.length > 0);
+    const message = hasImageCompletenessSignal
+      ? `Worker process disappeared after image completeness failure: ${lastMessage || `${requiredSlotFailures.length} required slot(s) missing`}`
+      : 'Worker process exited unexpectedly (orphaned running job)';
+    return stripLargeValues({
+      message,
+      failurePhase: lastEvent?.phase || job.currentPhase || 'generation',
+      failureStepId: hasImageCompletenessSignal ? 'storyboard_v2_required_slots' : (lastEvent?.phase || job.currentPhase || 'generation'),
+      failureKind: hasImageCompletenessSignal ? 'image_completeness_orphaned_worker' : 'orphaned_worker',
+      resumeFromStepId: hasImageCompletenessSignal ? 'missing_or_failed_image_slots' : (lastEvent?.phase || job.currentPhase || 'generation'),
+      resumePatchableInputs: ['settings'],
+      context: {
+        jobId: job.id,
+        pid: job.pid,
+        orphaned: true,
+        lastEvent,
+        requiredSlotFailures,
+        outputDirectory: getOutputDirectoryFromJob(job, checkpoint),
+      },
+      timestamp: new Date().toISOString(),
     }, 400);
   }
 
@@ -546,7 +588,7 @@ function createWorkerLifecycle({
     const updated = jobs.find((j) => j.id === jobId);
     const clients = workerStreamClients.get(jobId);
     if (updated && clients && clients.size > 0) {
-      const frame = `event: status\ndata: ${JSON.stringify(updated)}\n\n`;
+      const frame = `event: status\ndata: ${JSON.stringify(publicJobState(updated))}\n\n`;
       for (const client of clients) {
         try {
           client.write(frame);
@@ -670,18 +712,22 @@ function createWorkerLifecycle({
         const tracked = activeWorkers.has(job.id);
         const pidAlive = isProcessAlive(job.pid);
         if (!tracked && !pidAlive) {
+          const failureContext = job.failureContext || buildOrphanFailureContext(job);
           changed = true;
           const failed = {
             ...job,
             status: 'failed',
-            error: job.error || 'Worker process exited unexpectedly (orphaned running job)',
+            error: job.error || failureContext.message || 'Worker process exited unexpectedly (orphaned running job)',
+            failureContext,
             updatedAt: new Date().toISOString(),
             deadLetter: true,
           };
+          updateCheckpoint(job.id, { failureContext });
           appendDeadLetter({
             jobId: job.id,
             reason: 'orphaned_process',
             pid: job.pid,
+            failureKind: failureContext.failureKind,
             at: failed.updatedAt,
           });
           return failed;
@@ -998,38 +1044,36 @@ function createWorkerLifecycle({
         return;
       }
 
-      if (code === 0 && result) {
-        if (result.success === false) {
-          const failureContext = buildFailureContextFromEvent({
-            message: result.error || 'Worker returned unsuccessful result',
-            failurePhase: result.failurePhase || 'generation',
-            failureStepId: result.failureStepId,
-            failureKind: result.failureKind || 'pipeline',
-            failureArtifactKey: result.failureArtifactKey,
-            resumeFromStepId: result.resumeFromStepId,
-            resumePatchableInputs: result.resumePatchableInputs,
-            context: result.context,
-          }, workerJob);
-          const failed = upsertWorkerJob(workerJob.id, {
-            status: 'failed',
-            progress: 100,
-            finishedAt: new Date().toISOString(),
-            error: failureContext.message,
-            failureContext,
-          });
-          updateCheckpoint(workerJob.id, { failureContext });
-          syncGenerationMirrorFromWorker(failed);
-        } else {
-          const completed = upsertWorkerJob(workerJob.id, {
-            status: 'completed',
-            progress: 100,
-            finishedAt: new Date().toISOString(),
-            resultSummary: { success: true },
-          });
-          workerResultCache.set(workerJob.id, { result, storedAt: Date.now() });
-          markArtifactCommitted(workerJob.id, 'job:result', { resultPath });
-          syncGenerationMirrorFromWorker(completed);
-        }
+      if (result?.success === false) {
+        const failureContext = buildFailureContextFromEvent({
+          message: result.error || 'Worker returned unsuccessful result',
+          failurePhase: result.failurePhase || 'generation',
+          failureStepId: result.failureStepId,
+          failureKind: result.failureKind || 'pipeline',
+          failureArtifactKey: result.failureArtifactKey,
+          resumeFromStepId: result.resumeFromStepId,
+          resumePatchableInputs: result.resumePatchableInputs,
+          context: result.context,
+        }, workerJob);
+        const failed = upsertWorkerJob(workerJob.id, {
+          status: 'failed',
+          progress: 100,
+          finishedAt: new Date().toISOString(),
+          error: failureContext.message,
+          failureContext,
+        });
+        updateCheckpoint(workerJob.id, { failureContext });
+        syncGenerationMirrorFromWorker(failed);
+      } else if (code === 0 && result) {
+        const completed = upsertWorkerJob(workerJob.id, {
+          status: 'completed',
+          progress: 100,
+          finishedAt: new Date().toISOString(),
+          resultSummary: { success: true },
+        });
+        workerResultCache.set(workerJob.id, { result, storedAt: Date.now() });
+        markArtifactCommitted(workerJob.id, 'job:result', { resultPath });
+        syncGenerationMirrorFromWorker(completed);
       } else {
         const currentJob = loadWorkerJobs().find((j) => j.id === workerJob.id);
         const failureContext = currentJob?.failureContext || buildFailureContextFromEvent({
@@ -1063,6 +1107,62 @@ function createWorkerLifecycle({
         // best-effort cleanup
       }
       scheduleQueuedWorkers();
+    });
+  }
+
+  function markActiveWorkersInterrupted(reason, signal) {
+    const now = new Date().toISOString();
+    for (const [jobId, active] of activeWorkers.entries()) {
+      const job = loadWorkerJobs().find((j) => j.id === jobId) || { id: jobId };
+      const failureContext = stripLargeValues({
+        message: `Proxy interrupted worker job (${reason}) before the child reported completion.`,
+        failurePhase: job.currentPhase || 'generation',
+        failureStepId: job.currentPhase || 'generation',
+        failureKind: 'proxy_interrupted_worker',
+        resumeFromStepId: job.currentPhase || 'generation',
+        resumePatchableInputs: ['settings'],
+        context: {
+          jobId,
+          pid: active?.proc?.pid || job.pid,
+          signal,
+          outputDirectory: getOutputDirectoryFromJob(job, loadCheckpoints().find((c) => c.jobId === jobId)),
+        },
+        timestamp: now,
+      }, 400);
+      const failed = upsertWorkerJob(jobId, {
+        status: 'failed',
+        error: failureContext.message,
+        failureContext,
+        deadLetter: true,
+        finishedAt: now,
+      });
+      updateCheckpoint(jobId, { failureContext });
+      appendDeadLetter({
+        jobId,
+        reason,
+        signal,
+        pid: active?.proc?.pid || job.pid,
+        at: now,
+      });
+      syncGenerationMirrorFromWorker(failed);
+      try { active?.proc?.kill(signal || 'SIGTERM'); } catch {
+        // Worker may already be gone.
+      }
+    }
+  }
+
+  if (!global.__storyrpgWorkerLifecycleShutdownHandlersInstalled) {
+    global.__storyrpgWorkerLifecycleShutdownHandlersInstalled = true;
+    process.once('SIGTERM', () => {
+      markActiveWorkersInterrupted('proxy_sigterm', 'SIGTERM');
+      process.exit(143);
+    });
+    process.once('SIGINT', () => {
+      markActiveWorkersInterrupted('proxy_sigint', 'SIGINT');
+      process.exit(130);
+    });
+    process.once('beforeExit', () => {
+      markActiveWorkersInterrupted('proxy_before_exit', 'SIGTERM');
     });
   }
 
@@ -1139,15 +1239,19 @@ function createWorkerLifecycle({
           const tracked = activeWorkers.has(existing.id);
           const pidAlive = isProcessAlive(existing.pid);
           if (existing.status === 'running' && !tracked && !pidAlive) {
+            const failureContext = existing.failureContext || buildOrphanFailureContext(existing);
             const failed = upsertWorkerJob(existing.id, {
               status: 'failed',
-              error: existing.error || 'Worker process exited unexpectedly (orphaned running job)',
+              error: existing.error || failureContext.message || 'Worker process exited unexpectedly (orphaned running job)',
+              failureContext,
               deadLetter: true,
             });
+            updateCheckpoint(existing.id, { failureContext });
             appendDeadLetter({
               jobId: existing.id,
               reason: 'orphaned_process',
               pid: existing.pid,
+              failureKind: failureContext.failureKind,
               at: new Date().toISOString(),
             });
             syncGenerationMirrorFromWorker(failed);
@@ -1229,7 +1333,7 @@ function createWorkerLifecycle({
       const checkpoints = loadCheckpoints();
       const checkpointByJobId = new Map(checkpoints.map((checkpoint) => [checkpoint.jobId, hydrateCheckpointOutputs(checkpoint)]));
       const statsCache = new Map();
-      res.json(normalized.map((job) => enrichWorkerJobWithOutputState(job, checkpointByJobId.get(job.id), statsCache)));
+      res.json(normalized.map((job) => publicJobState(enrichWorkerJobWithOutputState(job, checkpointByJobId.get(job.id), statsCache))));
     });
 
     app.get('/worker-jobs/:jobId', (req, res) => {
@@ -1247,11 +1351,11 @@ function createWorkerLifecycle({
         if (Date.now() - cached.storedAt > WORKER_RESULT_TTL_MS) {
           workerResultCache.delete(job.id);
         } else {
-          return res.json({ ...enrichedJob, checkpoint: hydratedCheckpoint, result: cached.result });
+          return res.json(publicJobState({ ...enrichedJob, checkpoint: hydratedCheckpoint, result: cached.result }));
         }
       }
 
-      res.json({ ...enrichedJob, checkpoint: hydratedCheckpoint });
+      res.json(publicJobState({ ...enrichedJob, checkpoint: hydratedCheckpoint }));
     });
 
     app.get('/worker-jobs/:jobId/failure-context', (req, res) => {
@@ -1266,7 +1370,7 @@ function createWorkerLifecycle({
         jobId: job.id,
         status: job.status,
         failureContext: job.failureContext || checkpoint?.failureContext || null,
-        checkpoint,
+        checkpoint: publicCheckpoint(checkpoint),
       });
     });
 
@@ -1298,7 +1402,7 @@ function createWorkerLifecycle({
       res.json({
         success: true,
         failureContext: mergedCheckpoint?.failureContext || null,
-        checkpoint: mergedCheckpoint,
+        checkpoint: publicCheckpoint(mergedCheckpoint),
       });
     });
 
@@ -1322,7 +1426,7 @@ function createWorkerLifecycle({
       clients.add(res);
       workerStreamClients.set(jobId, clients);
 
-      res.write(`event: snapshot\ndata: ${JSON.stringify(job)}\n\n`);
+      res.write(`event: snapshot\ndata: ${JSON.stringify(publicJobState(job))}\n\n`);
 
       req.on('close', () => {
         clearInterval(heartbeat);

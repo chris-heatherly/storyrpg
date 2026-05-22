@@ -33,17 +33,7 @@ import {
   describeDistribution,
   checkSevenPointCoverage,
 } from '../utils/sevenPointDistribution';
-
-/**
- * Render the default beat-to-episode distribution as a bulleted summary
- * for inlining into LLM prompts. We deliberately expose this as a
- * module-local helper so the prompt template can stay a plain tagged
- * template literal.
- */
-function describeSuggestedDistribution(totalEpisodes: number): string {
-  const entries = distributeSevenPoints(totalEpisodes);
-  return describeDistribution(entries);
-}
+import { clampSceneCount } from '../../constants/pipeline';
 import {
   buildAnalysisFromEndingSeeds,
   normalizeEndingTargets,
@@ -55,6 +45,17 @@ import {
   CHOICE_DENSITY_REQUIREMENTS,
 } from '../prompts/storytellingPrinciples';
 import { SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE } from '../prompts/examples/storyCraftExamples';
+
+/**
+ * Render the default beat-to-episode distribution as a bulleted summary
+ * for inlining into LLM prompts. We deliberately expose this as a
+ * module-local helper so the prompt template can stay a plain tagged
+ * template literal.
+ */
+function describeSuggestedDistribution(totalEpisodes: number): string {
+  const entries = distributeSevenPoints(totalEpisodes);
+  return describeDistribution(entries);
+}
 
 // Input for the analyzer
 export interface SourceMaterialInput {
@@ -199,7 +200,7 @@ interface EpisodeBreakdownResponse {
 }
 
 export class SourceMaterialAnalyzer extends BaseAgent {
-  private defaultScenesPerEpisode = 8; // Increased for more substantial episodes with shorter beats
+  private defaultScenesPerEpisode = 6;
   private defaultChoicesPerEpisode = 4; // Increased to ensure choices in at least half of scenes
 
   constructor(config: AgentConfig) {
@@ -278,7 +279,7 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
   async execute(input: SourceMaterialInput): Promise<AgentResponse<SourceMaterialAnalysis>> {
     console.log(`[SourceMaterialAnalyzer] Starting analysis of source material...`);
 
-    const targetScenes = input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode;
+    const targetScenes = clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode);
     const targetChoices = input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode;
     const pacing = input.preferences?.pacing || 'moderate';
 
@@ -676,7 +677,7 @@ Return ONLY valid JSON.
         mainCharacters: ep.mainCharacters,
         supportingCharacters: [],
         locations: ep.locations,
-        estimatedSceneCount: input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode,
+        estimatedSceneCount: clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode),
         estimatedChoiceCount: input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode,
         structuralRole,
         narrativeFunction: ep.narrativeArc,

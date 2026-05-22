@@ -675,6 +675,87 @@ export class StoryArchitect extends BaseAgent {
     }
   }
 
+  private repairSceneGraphBranchCoverage(blueprint: EpisodeBlueprint): void {
+    if (!this.sceneGraphBranching.required || this.sceneGraphBranching.allowLinearBottleneckEpisodes) return;
+    const scenes = blueprint.scenes || [];
+    if (scenes.length < 3) return;
+
+    const validBranchCount = scenes.filter(scene =>
+      scene.choicePoint?.branches &&
+      scene.choicePoint.type !== 'expression' &&
+      new Set(scene.leadsTo || []).size >= 2 &&
+      !scene.isEncounter
+    ).length;
+    if (validBranchCount >= this.sceneGraphBranching.minPerEpisode) return;
+
+    const sceneIndex = new Map(scenes.map((scene, index) => [scene.id, index]));
+    const candidate = scenes.find((scene, index) =>
+      index < scenes.length - 2 &&
+      !scene.isEncounter &&
+      scene.choicePoint &&
+      scene.choicePoint.type !== 'expression'
+    ) || scenes.find((scene, index) =>
+      index < scenes.length - 2 &&
+      !scene.isEncounter &&
+      scene.choicePoint
+    ) || scenes.find((scene, index) =>
+      index < scenes.length - 2 &&
+      !scene.isEncounter
+    );
+    if (!candidate) return;
+
+    const candidateIndex = sceneIndex.get(candidate.id) ?? 0;
+    const futureSceneIds = scenes
+      .slice(candidateIndex + 1)
+      .map((scene) => scene.id)
+      .filter((id, index, arr) => arr.indexOf(id) === index)
+      .slice(0, 2);
+    if (futureSceneIds.length < 2) return;
+
+    candidate.purpose = 'branch';
+    candidate.leadsTo = futureSceneIds;
+    if (!candidate.choicePoint || candidate.choicePoint.type === 'expression') {
+      candidate.choicePoint = {
+        type: 'dilemma',
+        branches: true,
+        stakes: {
+          want: candidate.choicePoint?.stakes?.want || `Choose how to handle ${candidate.name}`,
+          cost: candidate.choicePoint?.stakes?.cost || 'One path skips a chance for safety, trust, or information.',
+          identity: candidate.choicePoint?.stakes?.identity || 'This choice defines the protagonist under pressure.',
+        },
+        description: candidate.choicePoint?.description || `Choose the route through ${candidate.name}.`,
+        optionHints: [],
+        consequenceDomain: candidate.choicePoint?.consequenceDomain || 'identity',
+        reminderPlan: candidate.choicePoint?.reminderPlan || {
+          immediate: 'The selected route changes the next scene.',
+          shortTerm: 'Later narration remembers which path the player chose.',
+        },
+        expectedResidue: candidate.choicePoint?.expectedResidue || [
+          `The route chosen in ${candidate.name} changes what context the player carries forward.`,
+        ],
+      };
+    }
+
+    candidate.choicePoint.type = candidate.choicePoint.type === 'expression' ? 'dilemma' : candidate.choicePoint.type;
+    candidate.choicePoint.branches = true;
+    candidate.choicePoint.optionHints = futureSceneIds.map((targetId) => {
+      const target = scenes.find((scene) => scene.id === targetId);
+      return target ? `Move toward ${target.name}` : `Move toward ${targetId}`;
+    });
+    candidate.choicePoint.consequenceDomain = candidate.choicePoint.consequenceDomain || 'identity';
+    candidate.choicePoint.reminderPlan = candidate.choicePoint.reminderPlan || {
+      immediate: 'The selected route changes the next scene.',
+      shortTerm: 'Later narration remembers which path the player chose.',
+    };
+    candidate.choicePoint.expectedResidue = candidate.choicePoint.expectedResidue?.length
+      ? candidate.choicePoint.expectedResidue
+      : [`The route chosen in ${candidate.name} changes what context the player carries forward.`];
+
+    console.warn(
+      `[StoryArchitect] Repaired scene-graph branching by turning "${candidate.id}" into a branch scene with leadsTo: ${futureSceneIds.join(', ')}`
+    );
+  }
+
   private validatePlannedEncounterCoverage(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const plannedEncounters = input.seasonPlanDirectives?.plannedEncounters || [];
     if (plannedEncounters.length === 0) return;
@@ -888,8 +969,9 @@ Remember: The encounter is the heart. Design outward from it.
           ? `\nSTRUCTURAL ISSUES FROM PREVIOUS ATTEMPT:\n${this.lastStructuralFeedback.map(f => `- ${f}`).join('\n')}\n`
           : '';
 
-        messages[0].content += `\n\n⚠️ PREVIOUS ATTEMPT FAILED — FIX ALL ISSUES BELOW:${structuralFeedback}
+      messages[0].content += `\n\n⚠️ PREVIOUS ATTEMPT FAILED — FIX ALL ISSUES BELOW:${structuralFeedback}
 REQUIREMENTS:
+- The scenes array MUST contain 3-${input.targetSceneCount} scenes
 - The first scene MUST have a choicePoint
 - At least ${Math.ceil(input.targetSceneCount * 0.5)} out of up to ${input.targetSceneCount} scenes must have choicePoint
 - Include choicePoint with type, stakes (want/cost/identity), and description for each choice scene
@@ -1142,6 +1224,7 @@ REQUIREMENTS:
 
       this.repairChoiceDensity(blueprint, input);
       this.repairPlannedEncounterCoverage(blueprint, input);
+      this.repairSceneGraphBranchCoverage(blueprint);
 
       // Log choice point info BEFORE validation
       const scenesWithChoices = blueprint.scenes?.filter(s => s.choicePoint) || [];
@@ -1290,17 +1373,20 @@ ${input.memoryContext ? `
 ${input.memoryContext}
 ` : ''}
 ## Requirements
-- Maximum scene count (cap): Up to ${input.targetSceneCount} scenes—generate fewer if the story doesn't need more
+- Scene count: exactly within the hard range of 3-${input.targetSceneCount} scenes
+- Episode turns: plan 3-6 major episode turns through the scene graph, keyBeats, encounterBuildup, choicePoints, sequenceIntent, and cliffhanger planning. Do not add a separate chapter-beat schema.
 - Major choice points: ${input.majorChoiceCount} significant decisions
 - Use branch-and-bottleneck structure
 - Every major choice needs WANT, COST, and IDENTITY stakes
+- **Encounter as central conflict**: The episode's central conflict MUST manifest in an encounter scene. Buildup scenes make that encounter feel earned; aftermath scenes show what the encounter changed.
 - **Intensity guidance in keyBeats**: For each scene, indicate which keyBeats are the dominant peak(s) (prefix with "PEAK:") and suggest where rest/breathing beats should fall (prefix with "REST:"). The SceneWriter uses this to shape the intensity arc. Example: ["REST: the quiet village at dawn", "PEAK: confrontation erupts at the market", "the aftermath settles"]
 - **Pressure, not mandatory combat**: Every scene should create story pressure, but the pressure must match the genre and moment. Use physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure as appropriate.
 - **Decisive beats**: keyBeats should include specific actions, surprising complications, character development, visible consequences, and forward pressure.
 - **Turn ladder, not topic list**: Frame each scene as an active situation. keyBeats should bend or flip something: trust shifts, evidence changes hands, a secret becomes harder to deny, leverage is gained/lost, distance/closeness changes, danger/reputation/resources change, identity is expressed, or knowledge becomes actionable.
 - **Sequence intent, not random panels**: Every multi-beat scene should include \`sequenceIntent\` that names the objective, visible activity, obstacle, startState, turningPoint, endState, visualThread, and optional mechanicThread. This field is optional for old content compatibility, but REQUIRED-BY-PROCESS for new generated scenes with multiple beats or storyboard panels.
 - **Visible activity, not just topic**: Scene descriptions and keyBeats should name the physical carrier of the scene: object transfer, pursuit, concealment, search, ritual, repair, argument blocking, distance change, environmental pressure, or another visible action pattern. Avoid static "they discuss X" scenes unless the visible business makes the power shift readable.
-- **Fiction-first mechanics**: When a key turn should matter later, route it through existing fields only: choice stakes/consequenceDomain, encounterSetupContext, encounterBuildup, flags/relationships implied by choicePoint stakes, or callback residue. Do not invent a new mechanics layer.
+- **Fiction-first mechanics**: When a key turn should matter later, route it through existing fields only: choice stakes/consequenceDomain, encounterSetupContext, encounterBuildup, flags/relationships implied by choicePoint stakes, stat checks, skill/attribute/relationship conditions, or callback residue. Do not invent a new mechanics layer.
+- **Capability growth is story plus mechanics**: If the protagonist falls short, fail forward into preparation, training, mentorship, recovery, alliance, investigation, or alternate leverage. Future encounters should respect improved skills, attributes, relationships, flags, identity, prior choices, and encounter outcomes without exposing stats or grind language.
 - **Rest scenes still turn**: REST beats may be quiet, but they should show settling, contrast, recovery, relationship recalibration, or the cost of the prior pressure.
 - **Plans go wrong**: When characters follow a plan, include a plausible complication that forces improvisation unless the scene is deliberately a rest beat.
 - **No arbitrary escalation treadmill**: Escalate the episode's overall pressure, but do not make every conversation an argument or every beat more dangerous than everything before it.
@@ -1430,7 +1516,7 @@ ${this.buildCliffhangerPlanSection(input)}
 }
 
 CRITICAL REQUIREMENTS:
-1. The "scenes" array must contain 3-${input.targetSceneCount} scenes (cap—use fewer if story doesn't need more)
+1. The "scenes" array must contain 3-${input.targetSceneCount} scenes
 2. Each scene MUST have: id, name, description, location, mood, purpose, npcsPresent, narrativeFunction, keyBeats, leadsTo
 2a. Each newly generated multi-beat scene SHOULD include sequenceIntent with a visible activity, visualThread, turningPoint, and endState. Missing sequenceIntent is tolerated for compatibility/fallbacks, but lowers storyboard QA quality.
 3. purpose MUST be one of: "bottleneck", "branch", "transition"
@@ -1445,6 +1531,7 @@ CHOICE PAYOFF REQUIREMENTS:
 
 ENCOUNTER REQUIREMENTS:
 - At least ${this.getMinEncounters(input.targetSceneCount)} scene(s) MUST be an encounter (isEncounter: true)
+- The encounter MUST manifest the episode's central conflict / pressure event. It is where the episode's relationships, information, risks, prior choices, player capabilities, and current stakes are tested through play.
 - Encounter scenes MUST have: isEncounter, plannedEncounterId (when pre-planned encounters exist), encounterType, encounterDescription, encounterStakes, encounterRequiredNpcIds, encounterRelevantSkills, encounterBeatPlan, encounterDifficulty, encounterBuildup
 - encounterType MUST be one of: "combat", "chase", "stealth", "social", "romantic", "dramatic", "puzzle", "exploration", "investigation", "negotiation", "survival", "heist", "mixed"
 - encounterStyle MUST reflect the dramatic mode of the encounter even when the structural type is broad
@@ -1714,10 +1801,13 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       section += '\n';
       section += 'Include 1-2 DEVELOPMENT SCENES (purpose: transition, choicePoint.type: strategic,\n';
       section += 'choicePoint.consequenceDomain: resource) with competenceArc filled to link growth\n';
-      section += 'to upcoming challenges. Place development scenes BEFORE hard checks.\n\n';
-      section += 'For every hard check (difficulty > 50), plan a FAILURE-RECOVERY BRANCH:\n';
-      section += 'failure -> recovery/growth scene -> softer re-approach or alternative -> reconverge.\n';
-      section += 'Failure is never a dead end. It is a detour through growth.\n\n';
+      section += 'to upcoming challenges. Place development scenes BEFORE hard checks when the story calls for preparation.\n\n';
+      section += 'Capability comes from story progression AND existing mechanics: skills, attributes,\n';
+      section += 'relationships, flags, identity, prior choices, consequences, and encounter outcomes.\n';
+      section += 'If a player falls short, plan a fiction-first fail-forward path: preparation,\n';
+      section += 'training, mentorship, recovery, alliance, investigation, alternate leverage,\n';
+      section += 'or a harder re-approach that reconverges. Do not frame this as grinding,\n';
+      section += 'stat math, or a mechanical chore in player-facing prose.\n\n';
       if (gc.mentorshipOpportunity) {
         section += 'Include a MENTORSHIP SCENE where the NPC offers training gated by relationship.\n';
         section += 'Always provide a non-gated alternative so the scene works for all players.\n\n';
@@ -1787,6 +1877,10 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     }
 
     // Choice density pre-check (non-throwing)
+    if (blueprint.scenes.length > input.targetSceneCount) {
+      issues.push(`Blueprint has ${blueprint.scenes.length} scenes; maximum is ${input.targetSceneCount}`);
+    }
+
     const scenesWithChoices = blueprint.scenes.filter(s => s.choicePoint);
     const density = scenesWithChoices.length / blueprint.scenes.length;
     if (density < 0.4) {
@@ -1819,6 +1913,9 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     // Check scene count
     if (blueprint.scenes.length < 3) {
       throw new Error('Blueprint must have at least 3 scenes');
+    }
+    if (blueprint.scenes.length > input.targetSceneCount) {
+      throw new Error(`Blueprint must have no more than ${input.targetSceneCount} scenes`);
     }
 
     // Check starting scene exists

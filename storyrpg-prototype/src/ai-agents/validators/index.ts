@@ -26,6 +26,18 @@ export { StakesTriangleValidator } from './StakesTriangleValidator';
 export { FiveFactorValidator } from './FiveFactorValidator';
 export { ChoiceImpactValidator } from './ChoiceImpactValidator';
 export type { ChoiceImpactInput, ChoiceImpactMetrics, ChoiceImpactResult } from './ChoiceImpactValidator';
+export { MechanicalStorytellingValidator } from './MechanicalStorytellingValidator';
+export type {
+  MechanicalStorytellingInput,
+  MechanicalStorytellingMetrics,
+  MechanicalStorytellingResult,
+} from './MechanicalStorytellingValidator';
+export { TreatmentFidelityValidator } from './TreatmentFidelityValidator';
+export type {
+  TreatmentFidelityValidationInput,
+  TreatmentFidelityValidationResult,
+  TreatmentFinalStoryValidationInput,
+} from './TreatmentFidelityValidator';
 export { MechanicsLeakageValidator } from './MechanicsLeakageValidator';
 export type {
   MechanicsLeakageInput,
@@ -92,6 +104,11 @@ export {
 } from './IncrementalValidators';
 export { PovClarityValidator, hasPlayerReference } from './PovClarityValidator';
 export { SceneCraftValidator } from './SceneCraftValidator';
+export { auditSequencePlanSpecificity } from './sequencePlanSpecificityAudit';
+export type {
+  SequencePlanSpecificityIssue,
+  SequencePlanSpecificityResult,
+} from './sequencePlanSpecificityAudit';
 export type {
   IncrementalValidationConfig,
   SceneValidationResult,

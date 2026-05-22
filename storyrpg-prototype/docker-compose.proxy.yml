@@ -10,5 +10,6 @@ services:
       - .env
     environment:
       - PORT=3001
+      - STORYRPG_WORKER_MAX_OLD_SPACE_SIZE_MB=4096
     volumes:
       - .:/app

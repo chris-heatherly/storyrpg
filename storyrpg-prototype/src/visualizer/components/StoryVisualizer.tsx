@@ -80,13 +80,13 @@ export const StoryVisualizer: React.FC<StoryVisualizerProps> = ({ story, onBack,
   // when a different graph is loaded, not when the viewport changes.
   useEffect(() => {
     if (graph.nodes.length === 0 || initializedGraphKeyRef.current === graphKey) return;
-    const firstBeat = findOpeningBeatNode(graph.nodes) ?? graph.nodes[0];
+    const firstBeat = findStoryOpeningBeatNode(story, graph.nodes) ?? findOpeningBeatNode(graph.nodes) ?? graph.nodes[0];
     focusedNodeIdRef.current = firstBeat.id;
     initializedGraphKeyRef.current = graphKey;
     lastViewportRef.current = { width: viewportWidth, height: canvasHeight };
     setViewState(focusNodeInViewport(firstBeat, viewportWidth, canvasHeight, 1.16, 0));
     setIsLoading(false);
-  }, [canvasHeight, graph, graphKey, viewportWidth]);
+  }, [canvasHeight, graph, graphKey, story, viewportWidth]);
 
   // Resizing the viewport should add or remove space around the focused beat
   // while keeping that beat centered and preserving the current zoom.
@@ -97,19 +97,21 @@ export const StoryVisualizer: React.FC<StoryVisualizerProps> = ({ story, onBack,
 
     const focusedNode = findNodeById(graph.nodes, focusedNodeIdRef.current)
       ?? selectedNode
+      ?? findStoryOpeningBeatNode(story, graph.nodes)
       ?? findOpeningBeatNode(graph.nodes)
       ?? graph.nodes[0];
 
     lastViewportRef.current = { width: viewportWidth, height: canvasHeight };
     setViewState((current) => focusNodeInViewport(focusedNode, viewportWidth, canvasHeight, current.scale, 0));
-  }, [canvasHeight, graph.nodes, isLoading, selectedNode, viewportWidth]);
+  }, [canvasHeight, graph.nodes, isLoading, selectedNode, story, viewportWidth]);
 
   const getZoomFocusNode = useCallback((): GraphNodeType | undefined => {
     return selectedNode
       ?? findNodeById(graph.nodes, focusedNodeIdRef.current)
+      ?? findStoryOpeningBeatNode(story, graph.nodes)
       ?? findOpeningBeatNode(graph.nodes)
       ?? graph.nodes[0];
-  }, [graph.nodes, selectedNode]);
+  }, [graph.nodes, selectedNode, story]);
 
   const zoomAroundFocusNode = useCallback((scaleMultiplier: number) => {
     setViewState((current) => {
@@ -272,6 +274,29 @@ function findOpeningBeatNode(nodes: GraphNodeType[]): GraphNodeType | undefined 
       if (sceneCompare !== 0) return sceneCompare;
       return (a.beatNumber ?? Number.MAX_SAFE_INTEGER) - (b.beatNumber ?? Number.MAX_SAFE_INTEGER);
     })[0];
+}
+
+function findStoryOpeningBeatNode(story: Story, nodes: GraphNodeType[]): GraphNodeType | undefined {
+  const firstEpisode = [...(story.episodes ?? [])].sort((a, b) => {
+    const numberCompare = (a.number ?? Number.MAX_SAFE_INTEGER) - (b.number ?? Number.MAX_SAFE_INTEGER);
+    if (numberCompare !== 0) return numberCompare;
+    return (story.episodes ?? []).indexOf(a) - (story.episodes ?? []).indexOf(b);
+  })[0];
+  if (!firstEpisode) return undefined;
+
+  const startScene = firstEpisode.scenes.find((scene) => scene.id === firstEpisode.startingSceneId)
+    ?? firstEpisode.scenes[0];
+  if (!startScene) return undefined;
+
+  const startBeatId = startScene.startingBeatId ?? startScene.beats?.[0]?.id;
+  if (!startBeatId) return undefined;
+
+  return nodes.find((node) => (
+    node.type === 'beat' &&
+    node.episodeId === firstEpisode.id &&
+    node.sceneId === startScene.id &&
+    (node.data as { id?: string })?.id === startBeatId
+  ));
 }
 
 function findNodeById(nodes: GraphNodeType[], nodeId: string | null): GraphNodeType | undefined {

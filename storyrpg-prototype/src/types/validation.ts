@@ -24,6 +24,7 @@ export type ValidationCategory =
   | 'stakes_triangle'
   | 'five_factor'
   | 'choice_impact'
+  | 'mechanical_storytelling'
   | 'choice_density'
   | 'choice_distribution'
   | 'consequence_budget'
@@ -38,7 +39,9 @@ export type ValidationCategory =
   | 'twist_quality'
   | 'arc_delta'
   | 'divergence'
-  | 'branch_topology';
+  | 'branch_topology'
+  | 'treatment_fidelity'
+  | 'image_completeness';
 
 // ========================================
 // VALIDATION ISSUES
@@ -192,6 +195,14 @@ export interface ValidationMetrics {
   mechanicsLeakage?: {
     textsChecked: number;
     leaksFound: number;
+  };
+  mechanicalStorytelling?: {
+    meaningfulChoices: number;
+    choicesWithStoryVerb: number;
+    choicesWithAffordanceSource: number;
+    choicesWithWitnessReactions: number;
+    statChecksWithPlayableFailure: number;
+    invalidWitnessReferences: number;
   };
 }
 

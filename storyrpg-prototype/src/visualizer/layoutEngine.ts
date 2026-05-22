@@ -35,14 +35,10 @@ export function layoutGraph(
   let maxWidth = 0;
 
   for (const [episodeId, nodeIds] of graph.episodeGroups) {
-    // Get unique scenes in this episode
-    const scenesInEpisode = new Set<string>();
-    for (const nodeId of nodeIds) {
-      const node = graph.nodes.find((n) => n.id === nodeId);
-      if (node?.sceneId) {
-        scenesInEpisode.add(node.sceneId);
-      }
-    }
+    const episodeNodeIds = new Set(nodeIds);
+    const scenesInEpisode = Array.from(graph.sceneGroups.entries())
+      .filter(([, sceneNodeIds]) => sceneNodeIds.some((nodeId) => episodeNodeIds.has(nodeId)))
+      .map(([sceneGraphKey]) => sceneGraphKey);
 
     for (const sceneId of scenesInEpisode) {
       const layout = sceneLayouts.get(sceneId);

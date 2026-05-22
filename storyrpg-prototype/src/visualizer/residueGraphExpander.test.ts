@@ -346,6 +346,63 @@ function makeScopedChoiceTargetStory(): Story {
   } as any;
 }
 
+function makeDuplicateSceneIdStory(): Story {
+  return {
+    id: 'story-duplicate-scenes',
+    metadata: { id: 'story-duplicate-scenes', title: 'Test', genre: 'fantasy' } as any,
+    title: 'Test',
+    genre: 'fantasy',
+    synopsis: '',
+    npcs: [],
+    episodes: [
+      {
+        id: 'ep-1',
+        number: 1,
+        title: 'Episode 1',
+        synopsis: '',
+        startingSceneId: 'scene-1',
+        scenes: [
+          {
+            id: 'scene-1',
+            title: 'Episode 1 Opening',
+            startingBeatId: 'beat-1',
+            beats: [
+              { id: 'beat-1', text: 'Episode one starts here.', nextSceneId: 'scene-2' },
+            ],
+          } as any,
+          {
+            id: 'scene-2',
+            title: 'Episode 1 Followup',
+            startingBeatId: 'beat-1',
+            beats: [{ id: 'beat-1', text: 'Episode one followup.' }],
+          } as any,
+        ],
+      } as any,
+      {
+        id: 'ep-2',
+        number: 2,
+        title: 'Episode 2',
+        synopsis: '',
+        startingSceneId: 'scene-1',
+        scenes: [
+          {
+            id: 'scene-1',
+            title: 'Episode 2 Opening',
+            startingBeatId: 'beat-1',
+            beats: [{ id: 'beat-1', text: 'Episode two starts here.' }],
+          } as any,
+          {
+            id: 'scene-2',
+            title: 'Episode 2 Followup',
+            startingBeatId: 'beat-1',
+            beats: [{ id: 'beat-1', text: 'Episode two followup.' }],
+          } as any,
+        ],
+      } as any,
+    ],
+  } as any;
+}
+
 describe('residueGraphExpander', () => {
   it('creates tint source and tint payoff nodes and links matching flags', () => {
     const graph = expand(makeResidueStory());
@@ -566,6 +623,22 @@ describe('residueGraphExpander', () => {
       expect.objectContaining({ source: crossSceneSource?.id, target: crossSceneTarget?.id }),
       expect.objectContaining({ source: localSource?.id, target: localTarget?.id }),
     ]));
+  });
+
+  it('keeps duplicate scene ids isolated by episode during graph layout', () => {
+    const graph = layoutGraph(expand(makeDuplicateSceneIdStory()));
+    const ep1Opening = graph.nodes.find((node) => node.episodeId === 'ep-1' && node.sceneId === 'scene-1' && (node.data as any).id === 'beat-1');
+    const ep2Opening = graph.nodes.find((node) => node.episodeId === 'ep-2' && node.sceneId === 'scene-1' && (node.data as any).id === 'beat-1');
+    const ep1Followup = graph.nodes.find((node) => node.episodeId === 'ep-1' && node.sceneId === 'scene-2' && (node.data as any).id === 'beat-1');
+    const ep2Followup = graph.nodes.find((node) => node.episodeId === 'ep-2' && node.sceneId === 'scene-2' && (node.data as any).id === 'beat-1');
+    const transition = graph.edges.find((edge) => edge.source === ep1Opening?.id && edge.type === 'scene-transition');
+
+    expect(graph.sceneGroups.has('ep-1::scene-1')).toBe(true);
+    expect(graph.sceneGroups.has('ep-2::scene-1')).toBe(true);
+    expect(ep1Opening?.y).toBeGreaterThan(0);
+    expect(ep2Opening?.y).toBeGreaterThan(ep1Opening?.y ?? 0);
+    expect(transition?.target).toBe(ep1Followup?.id);
+    expect(transition?.target).not.toBe(ep2Followup?.id);
   });
 
   it('clusters encounter choice chips under their source situation', () => {

@@ -448,7 +448,7 @@ const PERFORMANCE_FIELDS: SettingFieldConfig[] = [
 ];
 
 const STORY_STRUCTURE_FIELDS: SettingFieldConfig[] = [
-  { type: 'number', key: 'targetSceneCount', label: 'Scenes per Episode', description: 'Cap scenes per episode; the engine may use fewer.', min: 3, max: 12 },
+  { type: 'number', key: 'targetSceneCount', label: 'Scenes per Episode', description: 'Hard range: each episode should contain 3-6 scenes.', min: 3, max: 6 },
   { type: 'number', key: 'majorChoiceCount', label: 'Major Choice Points', description: 'How many big decisions an episode should contain.', min: 1, max: 6 },
   { type: 'number', key: 'minBeatsPerScene', label: 'Min Beats per Scene', description: 'Minimum beats required for each scene.', min: 1, max: 6 },
   { type: 'number', key: 'maxBeatsPerScene', label: 'Max Beats per Scene', description: 'Upper cap before the engine merges excess beats.', min: 6, max: 20 },

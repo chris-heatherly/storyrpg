@@ -55,6 +55,10 @@ import {
   ProcessedBeat,
   ProcessedChoice,
 } from '../engine/storyEngine';
+import {
+  buildEncounterConsequencePayload,
+  type EncounterOutcomeTier,
+} from '../engine/encounterConsequences';
 
 /**
  * Returns the effective stat bonus from a choice's statBonus field
@@ -114,7 +118,7 @@ import { useClickDebounce } from '../utils/useDebounce';
 import { processTemplate } from '../engine/templateProcessor';
 import { FileText, X } from 'lucide-react-native';
 import { useImagePromptOverlay } from '../hooks/useImagePromptOverlay';
-import { formatSceneBeatLabelFromImageUrl } from '../utils/imagePromptDebug';
+import { formatSceneBeatLabelFromImageUrl, getImagePanelNumberFromStory } from '../utils/imagePromptDebug';
 import { ReadingShell } from './ReadingShell';
 import { ContinueButton } from './ContinueButton';
 import { CONTINUE_COPY, EYEBROWS } from '../theme/copy';
@@ -462,6 +466,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     addEncounterScore,
     advanceEncounterBeat,
     applyConsequences,
+    queueDelayedConsequence,
     endEncounter,
     setEncounterApproach,
     recordOutcome,
@@ -489,6 +494,38 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     if (!url) return undefined;
     return getFeedbackForImage(url)?.regeneratedImageUrl || url;
   }, [getFeedbackForImage]);
+
+  const applyResolvedEncounterOutcome = useCallback((
+    choiceId: string,
+    tier: EncounterOutcomeTier,
+    outcome?: EncounterChoiceOutcome,
+  ): AppliedConsequence[] => {
+    const payload = buildEncounterConsequencePayload({
+      encounterId: encounter.id,
+      choiceId,
+      tier,
+      outcome,
+    });
+
+    for (const delayed of payload.delayedConsequences) {
+      queueDelayedConsequence({
+        id: `enc-dc-${encounter.id}-${choiceId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        consequence: delayed.consequence,
+        description: delayed.description,
+        delay: delayed.delay,
+        triggerCondition: delayed.triggerCondition,
+        sourceSceneId: encounter.id,
+        sourceChoiceId: choiceId,
+        scenesElapsed: 0,
+        episodesElapsed: 0,
+        fired: false,
+      });
+    }
+
+    return payload.consequences.length > 0
+      ? applyConsequences(payload.consequences as any)
+      : [];
+  }, [applyConsequences, encounter.id, queueDelayedConsequence]);
 
   const getSceneBeatLabelFromImageUrl = useCallback((url?: string): string | null => {
     return formatSceneBeatLabelFromImageUrl(url, encounter?.id);
@@ -877,11 +914,8 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       addEncounterScore(scoreChange);
       syncEncounterStateSystems(tier, goalTicks, threatTicks, choice.approach);
       
-      // Apply consequences and capture feedback for badges
-      let applied: AppliedConsequence[] = [];
-      if (outcome.consequences && outcome.consequences.length > 0) {
-        applied = applyConsequences(outcome.consequences as any);
-      }
+      // Apply outcome, cost, memory flags, and delayed aftermath.
+      const applied = applyResolvedEncounterOutcome(choice.id, tier, outcome);
       const playerFacing = applied.filter(a => a.type !== 'flag');
       setConsequenceFeedback(playerFacing);
       allEncounterFeedbackRef.current = [...allEncounterFeedbackRef.current, ...playerFacing];
@@ -981,7 +1015,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     } else {
       proceedWithOutcome();
     }
-  }, [screenState, player, currentStory, encounterState, addGoalProgress, addThreatProgress, addEncounterScore, applyConsequences, syncEncounterStateSystems]);
+  }, [screenState, player, currentStory, encounterState, addGoalProgress, addThreatProgress, addEncounterScore, applyResolvedEncounterOutcome, syncEncounterStateSystems]);
   
   // Debounced tree choice handler
   const handleTreeChoice = useClickDebounce(handleTreeChoicePress, 500);
@@ -1052,13 +1086,18 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     addEncounterScore(scoreChange);
     syncEncounterStateSystems(outcome, goalTicks, threatTicks, choice.approach);
 
+    const outcomeData = 'outcomes' in choice ? choice.outcomes?.[outcome] : undefined;
+    const applied = applyResolvedEncounterOutcome(choice.id, outcome, outcomeData);
+    const playerFacing = applied.filter(a => a.type !== 'flag');
+    allEncounterFeedbackRef.current = [...allEncounterFeedbackRef.current, ...playerFacing];
+
     // Check if beat has outcome images
     const outcomeImages = beat.outcomeSequences?.[outcome] || beat.outcomeSequences?.success || [];
     
     // Try to get narrative text from choice outcomes (EncounterChoice type)
     let narrativeText = '';
-    if ('outcomes' in choice && choice.outcomes && choice.outcomes[outcome]) {
-      narrativeText = choice.outcomes[outcome].narrativeText || '';
+    if (outcomeData) {
+      narrativeText = outcomeData.narrativeText || '';
     }
     
     // Fallback to generic text if no narrative provided
@@ -1092,7 +1131,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     });
     
     setOutcomeText(narrativeText);
-  }, [screenState, currentPhase, processedBeat, player, encounter, addGoalProgress, addThreatProgress, addEncounterScore]);
+  }, [screenState, currentPhase, processedBeat, player, encounter, addGoalProgress, addThreatProgress, addEncounterScore, applyResolvedEncounterOutcome]);
   
   const handleChoicePressBase = useCallback((choiceId: string) => {
     if (screenState.type !== 'phase' || !currentPhase || !processedBeat || selectedChoiceId) return;
@@ -1283,8 +1322,13 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
 
   const handleEncounterEnd = (outcome: EncounterOutcome) => {
     const outcomeData = encounter.outcomes[outcome];
-    if (outcomeData?.consequences) {
-      const endApplied = applyConsequences(outcomeData.consequences);
+    const endConsequences = [
+      { type: 'setFlag', flag: `encounter.${encounter.id}.outcome.${outcome}`, value: true },
+      ...(outcomeData?.consequences ?? []),
+      ...((outcomeData as any)?.cost?.consequences ?? []),
+    ];
+    if (endConsequences.length > 0) {
+      const endApplied = applyConsequences(endConsequences as any);
       allEncounterFeedbackRef.current = [...allEncounterFeedbackRef.current, ...endApplied.filter(a => a.type !== 'flag')];
     }
 
@@ -1376,11 +1420,16 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     
     const scoreChange = outcome === 'success' ? 3 : outcome === 'complicated' ? 1 : -1;
     addEncounterScore(scoreChange);
+
+    const outcomeData = 'outcomes' in choice ? choice.outcomes?.[outcome] : undefined;
+    const applied = applyResolvedEncounterOutcome(choice.id, outcome, outcomeData);
+    const playerFacing = applied.filter(a => a.type !== 'flag');
+    allEncounterFeedbackRef.current = [...allEncounterFeedbackRef.current, ...playerFacing];
     
     // Try to get narrative text from choice outcomes
     let narrativeText = '';
-    if ('outcomes' in choice && choice.outcomes && choice.outcomes[outcome]) {
-      narrativeText = choice.outcomes[outcome].narrativeText || '';
+    if (outcomeData) {
+      narrativeText = outcomeData.narrativeText || '';
     }
     
     // Fallback to generic text if no narrative provided
@@ -1522,11 +1571,16 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     />
   );
 
-  const renderEncounterDevBadge = (label: string) => (developerMode && encounterSceneLabel) ? (
-    <View style={[styles.devBadge, { pointerEvents: 'none' as const }]}>
-      <Text style={styles.devBadgeText}>{label}</Text>
-    </View>
-  ) : null;
+  const renderEncounterDevBadge = (label: string, image?: string | null) => {
+    if (!developerMode || !label) return null;
+    const panelNumber = getImagePanelNumberFromStory(currentStory, image);
+    const devLabel = panelNumber ? `${label} • IMG ${panelNumber}` : label;
+    return (
+      <View style={[styles.devBadge, { pointerEvents: 'none' as const }]}>
+        <Text style={styles.devBadgeText}>{devLabel}</Text>
+      </View>
+    );
+  };
 
   // ========================================
   // RENDER: TREE-BASED ENCOUNTER (Action/Reaction Flow)
@@ -1595,7 +1649,12 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           approximateThreat: true,
         })}
         imageExtras={renderEncounterDevPromptButton(displayImage)}
-        overlays={renderEncounterDevPromptPanel()}
+        overlays={
+          <>
+            {renderEncounterDevPromptPanel()}
+            {renderEncounterDevBadge(getSceneBeatLabelFromImageUrl(displayImage) ?? encounterSceneLabel, displayImage)}
+          </>
+        }
       >
         {/* Action Result (if coming from a choice) */}
             {hasOutcome && situation.previousOutcome && (
@@ -1726,6 +1785,13 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           </>
         }
         chromeTop={renderEncounterClockChrome()}
+        imageExtras={renderEncounterDevPromptButton(resolvedOutcomeImage)}
+        overlays={
+          <>
+            {renderEncounterDevPromptPanel()}
+            {renderEncounterDevBadge(getSceneBeatLabelFromImageUrl(resolvedOutcomeImage) ?? encounterSceneLabel, resolvedOutcomeImage)}
+          </>
+        }
       >
         <View style={styles.textPanel}>
           <OutcomeHeader tier={tier} context="encounter" animValue={outcomeLabelAnim} />
@@ -1805,7 +1871,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         overlays={
           <>
             {renderEncounterDevPromptPanel()}
-            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • ${outcome.toUpperCase()}`)}
+            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • ${outcome.toUpperCase()}`, terminalImage)}
           </>
         }
       >
@@ -2034,7 +2100,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         overlays={
           <>
             {renderEncounterDevPromptPanel()}
-            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • ${outcomeLabel}`)}
+            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • ${outcomeLabel}`, finalImage)}
           </>
         }
       >
@@ -2185,6 +2251,13 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       imageOpacity={imageOpacity}
       scrollViewRef={scrollViewRef as any}
       chromeTop={legacyChromeTop}
+      imageExtras={renderEncounterDevPromptButton(currentImage)}
+      overlays={
+        <>
+          {renderEncounterDevPromptPanel()}
+          {renderEncounterDevBadge(getSceneBeatLabelFromImageUrl(currentImage) ?? encounterSceneLabel, currentImage)}
+        </>
+      }
       onImageError={(e) => {
         console.warn(`[EncounterView] Image failed to load: ${currentImage}`, e?.nativeEvent);
         if (processedBeat && currentImage === processedBeat.image) {

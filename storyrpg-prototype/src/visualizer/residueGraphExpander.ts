@@ -45,6 +45,7 @@ export function expandStoryGraphResidue(story: Story, graph: StoryGraph): StoryG
   const edges = graph.edges.map((edge) => ({ ...edge }));
   const episodeGroups = cloneGroupMap(graph.episodeGroups);
   const sceneGroups = cloneGroupMap(graph.sceneGroups);
+  const sceneGroupByEpisodeScene = buildSceneGroupByEpisodeScene(nodes, sceneGroups);
   const indexes = buildIndexes(nodes, sceneGroups, edges);
   const tintSources = new Map<string, TintSource[]>();
   const callbackSources = new Map<string, CallbackSource[]>();
@@ -52,14 +53,16 @@ export function expandStoryGraphResidue(story: Story, graph: StoryGraph): StoryG
 
   const addNode = (node: GraphNode) => {
     nodes.push(node);
-    if (node.sceneId) appendGroup(sceneGroups, node.sceneId, node.id);
+    if (node.episodeId && node.sceneId) {
+      appendGroup(sceneGroups, getEpisodeSceneKey(node.episodeId, node.sceneId, sceneGroupByEpisodeScene), node.id);
+    }
     if (node.episodeId) appendGroup(episodeGroups, node.episodeId, node.id);
   };
 
   for (const episode of story.episodes ?? []) {
     for (const scene of episode.scenes ?? []) {
       for (const beat of scene.beats ?? []) {
-        const beatNode = indexes.nodeBySceneBeat.get(key(scene.id, beat.id));
+        const beatNode = indexes.nodeBySceneBeat.get(key(episode.id, scene.id, beat.id));
         if (!beatNode) continue;
 
         addTintPayoffNodes(beat, beatNode, episode.id, scene.id, addNode, edges, tintSources);
@@ -149,7 +152,7 @@ function addTintSourceNodes(
 ) {
   for (const flag of collectChoiceTintFlags(choice)) {
     const node = createSyntheticNode({
-      id: `tint-${sceneId}-${sourceNode.data.id}-${choice.id}-${sanitize(flag)}`,
+      id: `tint-${episodeId}-${sceneId}-${sourceNode.data.id}-${choice.id}-${sanitize(flag)}`,
       type: 'tint',
       kind: 'tint',
       label: flag.replace(/^tint:/, ''),
@@ -188,7 +191,7 @@ function addTintPayoffNodes(
     const flags = collectTintFlagsFromCondition(variant.condition);
     for (const flag of flags) {
       const node = createSyntheticNode({
-        id: `tint-payoff-${sceneId}-${beat.id}-${index}-${sanitize(flag)}`,
+        id: `tint-payoff-${episodeId}-${sceneId}-${beat.id}-${index}-${sanitize(flag)}`,
         type: 'tint-payoff',
         kind: 'tint-payoff',
         label: flag.replace(/^tint:/, ''),
@@ -225,10 +228,10 @@ function addBranchletNode(
 ) {
   if (!isBranchletChoice(choice)) return;
   const target = choice.nextBeatId
-    ? indexes.nodeBySceneBeat.get(key(sceneId, choice.nextBeatId))
+    ? indexes.nodeBySceneBeat.get(key(episodeId, sceneId, choice.nextBeatId))
     : undefined;
   const node = createSyntheticNode({
-    id: `branchlet-${sceneId}-${sourceNode.data.id}-${choice.id}`,
+    id: `branchlet-${episodeId}-${sceneId}-${sourceNode.data.id}-${choice.id}`,
     type: 'branchlet',
     kind: 'branchlet',
     label: choice.consequenceTier ?? 'branchlet',
@@ -273,7 +276,7 @@ function addCallbackSourceNode(
   const moment = choice.memorableMoment;
   if (!moment?.id) return;
   const node = createSyntheticNode({
-    id: `callback-source-${sceneId}-${sourceNode.data.id}-${choice.id}-${sanitize(moment.id)}`,
+    id: `callback-source-${episodeId}-${sceneId}-${sourceNode.data.id}-${choice.id}-${sanitize(moment.id)}`,
     type: 'callback-source',
     kind: 'callback-source',
     label: moment.id,
@@ -314,7 +317,7 @@ function addCallbackPayoffNodes(
   }
   for (const hookId of hookRefs) {
     const node = createSyntheticNode({
-      id: `callback-payoff-${sceneId}-${beat.id}-${sanitize(hookId)}`,
+      id: `callback-payoff-${episodeId}-${sceneId}-${beat.id}-${sanitize(hookId)}`,
       type: 'callback-payoff',
       kind: 'callback-payoff',
       label: hookId,
@@ -348,12 +351,12 @@ function addStoryletNodes(
 ) {
   const encounter = scene.encounter;
   if (!encounter?.storylets) return;
-  const fallbackSourceNode = findEncounterSourceNode(scene.id, indexes);
+  const fallbackSourceNode = findEncounterSourceNode(episodeId, scene.id, indexes);
 
   for (const outcome of STORYLET_OUTCOMES) {
     const storylet = encounter.storylets[outcome];
     if (!storylet?.beats?.length) continue;
-    const outcomeSources = findEncounterOutcomeSourceNodes(scene.id, outcome, indexes);
+    const outcomeSources = findEncounterOutcomeSourceNodes(episodeId, scene.id, outcome, indexes);
     const sourceNodeIds = outcomeSources.length > 0
       ? outcomeSources.map((node) => node.id)
       : fallbackSourceNode?.id
@@ -378,7 +381,7 @@ function addStoryletBeatNodes(
     const image = typeof beat.image === 'string' ? beat.image : undefined;
     const beatText = normalizeVisualizerText(beat.text);
     const node = createSyntheticNode({
-      id: `storylet-beat-${scene.id}-${outcome}-${storylet.id}-${beat.id}`,
+      id: `storylet-beat-${episodeId}-${scene.id}-${outcome}-${storylet.id}-${beat.id}`,
       type: 'storylet-beat',
       kind: 'storylet-beat',
       label: `Beat ${index + 1}`,
@@ -434,7 +437,7 @@ function addStoryletBeatNodes(
     }
 
     const nextSceneId = storylet.nextSceneId ?? scene.encounter?.outcomes?.[outcome]?.nextSceneId;
-    const nextSceneNode = nextSceneId ? indexes.firstNodeByScene.get(nextSceneId) : undefined;
+    const nextSceneNode = nextSceneId ? indexes.firstNodeByScene.get(keyScene(episodeId, nextSceneId)) : undefined;
     if (nextSceneNode && nextSceneId) {
       edges.push(createSyntheticEdge(source.id, nextSceneNode.id, 'storylet', {
         kind: 'storylet-route',
@@ -611,29 +614,30 @@ function buildIndexes(nodes: GraphNode[], sceneGroups: Map<string, string[]>, ed
   const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
   for (const node of nodes) {
     const dataId = (node.data as { id?: string })?.id;
-    if (node.sceneId && dataId) nodeBySceneBeat.set(key(node.sceneId, dataId), node);
+    if (node.episodeId && node.sceneId && dataId) nodeBySceneBeat.set(key(node.episodeId, node.sceneId, dataId), node);
   }
   for (const edge of edges) {
     if (edge.synthetic?.kind !== 'encounter-outcome' || !edge.synthetic.outcome) continue;
     const source = nodeById.get(edge.source);
-    if (source?.sceneId) {
-      appendOutcomeNode(encounterOutcomeBySceneOutcome, `${source.sceneId}:${edge.synthetic.outcome}`, source);
+    if (source?.episodeId && source.sceneId) {
+      appendOutcomeNode(encounterOutcomeBySceneOutcome, `${keyScene(source.episodeId, source.sceneId)}:${edge.synthetic.outcome}`, source);
     }
   }
-  for (const [sceneId, nodeIds] of sceneGroups) {
+  for (const [sceneKey, nodeIds] of sceneGroups) {
     const first = nodeIds.map((nodeId) => nodeById.get(nodeId)).find(Boolean);
-    if (first) firstNodeByScene.set(sceneId, first);
+    if (first?.episodeId && first.sceneId) firstNodeByScene.set(keyScene(first.episodeId, first.sceneId), first);
+    if (first) firstNodeByScene.set(sceneKey, first);
   }
   return { nodeBySceneBeat, firstNodeByScene, encounterOutcomeBySceneOutcome };
 }
 
-function findEncounterSourceNode(sceneId: string, indexes: GraphIndexes): GraphNode | undefined {
-  const phaseNodes = Array.from(indexes.nodeBySceneBeat.values()).filter((node) => node.sceneId === sceneId && node.type === 'phase');
-  return phaseNodes[phaseNodes.length - 1] ?? indexes.firstNodeByScene.get(sceneId);
+function findEncounterSourceNode(episodeId: string, sceneId: string, indexes: GraphIndexes): GraphNode | undefined {
+  const phaseNodes = Array.from(indexes.nodeBySceneBeat.values()).filter((node) => node.episodeId === episodeId && node.sceneId === sceneId && node.type === 'phase');
+  return phaseNodes[phaseNodes.length - 1] ?? indexes.firstNodeByScene.get(keyScene(episodeId, sceneId));
 }
 
-function findEncounterOutcomeSourceNodes(sceneId: string, outcome: string, indexes: GraphIndexes): GraphNode[] {
-  return indexes.encounterOutcomeBySceneOutcome.get(`${sceneId}:${outcome}`) ?? [];
+function findEncounterOutcomeSourceNodes(episodeId: string, sceneId: string, outcome: string, indexes: GraphIndexes): GraphNode[] {
+  return indexes.encounterOutcomeBySceneOutcome.get(`${keyScene(episodeId, sceneId)}:${outcome}`) ?? [];
 }
 
 function cloneGroupMap(groups: Map<string, string[]>): Map<string, string[]> {
@@ -670,8 +674,29 @@ function appendOutcomeNode(map: Map<string, GraphNode[]>, key: string, node: Gra
   map.set(key, existing);
 }
 
-function key(sceneId: string, beatId: string): string {
-  return `${sceneId}:${beatId}`;
+function buildSceneGroupByEpisodeScene(nodes: GraphNode[], sceneGroups: Map<string, string[]>): Map<string, string> {
+  const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
+  const sceneGroupByEpisodeScene = new Map<string, string>();
+  for (const [sceneGroupKey, nodeIds] of sceneGroups) {
+    const first = nodeIds.map((nodeId) => nodeById.get(nodeId)).find((node) => node?.episodeId && node.sceneId);
+    if (first?.episodeId && first.sceneId) {
+      sceneGroupByEpisodeScene.set(keyScene(first.episodeId, first.sceneId), sceneGroupKey);
+    }
+  }
+  return sceneGroupByEpisodeScene;
+}
+
+function getEpisodeSceneKey(episodeId: string, sceneId: string, sceneGroupByEpisodeScene: Map<string, string>): string {
+  const lookupKey = keyScene(episodeId, sceneId);
+  return sceneGroupByEpisodeScene.get(lookupKey) ?? lookupKey;
+}
+
+function keyScene(episodeId: string, sceneId: string): string {
+  return `${episodeId}::${sceneId}`;
+}
+
+function key(episodeId: string, sceneId: string, beatId: string): string {
+  return `${keyScene(episodeId, sceneId)}:${beatId}`;
 }
 
 function sanitize(value: string): string {

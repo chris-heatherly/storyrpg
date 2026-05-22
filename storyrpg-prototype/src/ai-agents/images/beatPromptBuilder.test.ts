@@ -161,7 +161,7 @@ describe('buildBeatImagePrompt', () => {
     expect(prompt.prompt).toContain('Sera right side near the stairs');
   });
 
-  it('includes locked cinematic coverage and relationship blocking', () => {
+  it('includes coverage intent and relationship blocking without over-locking ordinary dialogue', () => {
     const prompt = buildBeatImagePrompt(
       {
         beatId: 'beat-coverage',
@@ -193,10 +193,11 @@ describe('buildBeatImagePrompt', () => {
       },
     );
 
-    expect(prompt.prompt).toContain('Coverage plan: ots-speaker staging, MCU shot, eye-level');
-    expect(prompt.prompt).toContain('Relationship blocking: Over-the-shoulder dialogue coverage');
-    expect(prompt.prompt).toContain('Coverage reason: dialogue coverage run 1');
-    expect(prompt.prompt).toContain('Visual continuity: fresh composition by default');
+    expect(prompt.prompt).toContain('Director brief:');
+    expect(prompt.prompt).toContain('purpose=dialogue coverage run 1');
+    expect(prompt.prompt).toContain('relationship/control=Over-the-shoulder dialogue coverage');
+    expect(prompt.prompt).toContain('coverage intent=ots-speaker, MCU, eye-level, primary');
+    expect(prompt.prompt).toContain('coverage freedom=choose expressive composition');
   });
 
   it('honors explicit locked micro-progression continuity', () => {

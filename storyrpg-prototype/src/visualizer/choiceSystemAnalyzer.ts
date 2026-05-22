@@ -125,6 +125,7 @@ export function summarizeChoice(choice: Choice): ChoiceSystemChoiceSummary {
     (choice.residueHints?.length ?? 0) > 0;
   const hasLockedGate = conditions.length > 0;
   const choiceType = choice.choiceType ?? 'standard';
+  const witnessReactionCount = choice.witnessReactions?.length ?? 0;
 
   return {
     id: choice.id,
@@ -136,6 +137,10 @@ export function summarizeChoice(choice: Choice): ChoiceSystemChoiceSummary {
     check,
     hasDelayedCallback,
     hasLockedGate,
+    storyVerb: choice.storyVerb,
+    affordanceSource: choice.affordanceSource,
+    witnessReactionCount,
+    failureResidueKind: choice.failureResidue?.kind,
     relationshipNpcIds,
     facets,
     authorSummary: buildAuthorChoiceSummary(choice, route, conditions, effects, check),
@@ -314,6 +319,39 @@ function summarizeEffects(choice: Choice): ChoiceSystemEffectSummary[] {
     });
   }
 
+  if (choice.storyVerb) {
+    effects.push({
+      kind: 'story-verb',
+      authorLabel: `story verb: ${humanizeId(choice.storyVerb)}`,
+      playerLabel: 'This choice uses a story-specific kind of action.',
+    });
+  }
+
+  if (choice.affordanceSource) {
+    effects.push({
+      kind: 'affordance',
+      authorLabel: `affordance: ${humanizeId(choice.affordanceSource)}`,
+      playerLabel: 'This option is shaped by prior story state.',
+    });
+  }
+
+  for (const reaction of choice.witnessReactions ?? []) {
+    effects.push({
+      kind: 'witness',
+      authorLabel: `${humanizeId(reaction.npcId)} ${humanizeId(reaction.stance)}: ${reaction.reactionText}`,
+      playerLabel: `${humanizeId(reaction.npcId)} notices what this choice says about you.`,
+      npcId: reaction.npcId,
+    });
+  }
+
+  if (choice.failureResidue) {
+    effects.push({
+      kind: 'failure-residue',
+      authorLabel: `failure ${humanizeId(choice.failureResidue.kind)}: ${choice.failureResidue.description}`,
+      playerLabel: 'Failure here creates story material that can continue forward.',
+    });
+  }
+
   if (choice.tintFlag || choice.impactFactors?.includes('identity')) {
     effects.push({
       kind: 'identity',
@@ -451,6 +489,10 @@ function collectFacets(
   if (conditions.some((item) => item.kind === 'attribute' || item.kind === 'skill') || effects.some((item) => item.kind === 'attribute' || item.kind === 'skill') || check) facets.add('stat');
   if (conditions.some((item) => item.kind === 'identity') || effects.some((item) => item.kind === 'identity')) facets.add('identity');
   if (effects.some((item) => item.kind === 'delayed' || item.kind === 'memory' || item.kind === 'residue')) facets.add('delayed');
+  if (choice.affordanceSource || effects.some((item) => item.kind === 'affordance')) facets.add('affordance');
+  if (choice.storyVerb || effects.some((item) => item.kind === 'story-verb')) facets.add('story-verb');
+  if ((choice.witnessReactions?.length ?? 0) > 0 || effects.some((item) => item.kind === 'witness')) facets.add('witness');
+  if (choice.failureResidue || effects.some((item) => item.kind === 'failure-residue')) facets.add('failure-residue');
   return Array.from(facets);
 }
 

@@ -20,6 +20,7 @@ import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 import { 
   SCENE_DEFAULTS, 
+  clampSceneCount,
   TIMING_DEFAULTS, 
   CHARACTER_DEFAULTS,
   DEFAULT_SKILLS,
@@ -88,6 +89,7 @@ import type { GeneratedImage } from '../images/imageTypes';
 import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/VideoDirectorAgent';
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
+import { deriveStoryVerbs } from '../utils/storyVerbs';
 import { buildFashionPrimaryClothing, buildFashionStyleSummary } from '../images/characterFashionStyle';
 import { resolvePlayerTemplatesInObject } from '../utils/playerTemplateResolver';
 import { applyPromptContract, sanitizeStyleContaminationText } from '../images/imagePromptContracts';
@@ -160,7 +162,7 @@ import { EncounterProviderPolicy } from '../encounters/encounterProviderPolicy';
 import { AssetRegistry } from '../images/assetRegistry';
 import { CallbackLedger } from './callbackLedger';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
-import { StoryboardV2Pipeline } from '../images/storyboard-v2/StoryboardV2Pipeline';
+import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
 import { validateRegistryCoverage } from '../images/coverageValidator';
 import { walkStoryAssets, formatAssetWalkReport } from '../validators/storyAssetWalker';
 import { findUnsupportedQuotedRecallIssues } from '../validators/quoteRecallValidator';
@@ -225,6 +227,7 @@ import {
   StructuralValidator,
   ChoiceDistributionValidator,
   SceneGraphBranchValidator,
+  TreatmentFidelityValidator,
   type SceneGraphBranchValidationResult,
   runNarrativeDiagnostics,
 } from '../validators';
@@ -232,6 +235,7 @@ import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
+  ValidationIssue,
   ValidationError,
 } from '../../types/validation';
 import {
@@ -269,30 +273,11 @@ import {
   getLocationInfoForScene,
 } from './planningHelpers';
 import { mergeSeasonEpisodes } from './seasonStoryMerge';
+import { assembleChoiceForStory, normalizeConsequences } from './choiceAssembly';
 
 // Re-export types for consumers
 export type { OutputManifest } from '../utils/pipelineOutputWriter';
 export type { PipelineEvent } from './events';
-
-/**
- * Normalize a Consequence object to fix common LLM field-name deviations.
- * E.g. { type: 'changeScore', target: 'x', change: 5 } -> score: 'x'
- */
-function normalizeConsequence(c: Consequence): Consequence {
-  const raw = c as Record<string, unknown>;
-  if ((c.type === 'changeScore' || c.type === 'setScore') && !('score' in c) && typeof raw.target === 'string') {
-    return { ...(c as Record<string, unknown>), score: raw.target as string } as Consequence;
-  }
-  if (c.type === 'setFlag' && !('flag' in c) && typeof raw.name === 'string') {
-    return { ...(c as Record<string, unknown>), flag: raw.name as string } as Consequence;
-  }
-  return c;
-}
-
-function normalizeConsequences(consequences: Consequence[] | undefined): Consequence[] | undefined {
-  if (!consequences || !Array.isArray(consequences)) return consequences;
-  return consequences.map(normalizeConsequence);
-}
 
 /**
  * Custom error class for pipeline errors with enhanced context
@@ -1081,6 +1066,7 @@ export class FullStoryPipeline {
         optionCount: Math.max(sceneBlueprint.choicePoint?.optionHints?.length || 0, Math.min(3, sceneBlueprint.leadsTo.length)),
         sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
         memoryContext: this.cachedPipelineMemory || undefined,
+        storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
         branchContext: {
           role: 'linear',
           isBranchPoint: true,
@@ -1626,6 +1612,7 @@ export class FullStoryPipeline {
       storyletImages: Map<string, Map<string, Map<string, string>>>;
       storyletFailures?: string[];
     };
+    diagnostics?: StoryboardV2Result['diagnostics'];
   }> {
     const storyboard = new StoryboardV2Pipeline({
       config: this.config,
@@ -1641,12 +1628,31 @@ export class FullStoryPipeline {
       characterBible,
       encounters,
     });
+    const imageCompleteness = result.diagnostics?.imageCompleteness;
+    const requiredSlotFailures = result.diagnostics?.requiredSlotFailures || [];
+    if (imageCompleteness && !imageCompleteness.complete) {
+      throw new PipelineError(
+        `Storyboard v2 image generation incomplete: ${imageCompleteness.missingRequiredSlotCount} required image slot(s) were not bound.`,
+        'images',
+        {
+          context: {
+            failureKind: 'image_completeness',
+            stepId: 'storyboard_v2_required_slots',
+            resumeFromStepId: 'missing_or_failed_image_slots',
+            outputDirectory,
+            imageCompleteness,
+            requiredSlotFailures,
+          },
+        }
+      );
+    }
     return {
       imageResults: {
         beatImages: result.beatImages,
         sceneImages: result.sceneImages,
       },
       encounterImageResults: result.encounterImageResults,
+      diagnostics: result.diagnostics,
     };
   }
 
@@ -2349,6 +2355,31 @@ export class FullStoryPipeline {
     await saveEarlyDiagnostic(outputDirectory, 'image-manifest.json', this.buildImageManifestFromStory(story));
   }
 
+  private enforceFinalTreatmentFidelity(params: {
+    story: Story;
+    analysis?: SourceMaterialAnalysis;
+    expectedEpisodeCount?: number;
+    sourceText?: string;
+  }): void {
+    const result = new TreatmentFidelityValidator().validateFinalStory(params);
+    if (result.valid) return;
+
+    const issues: ValidationIssue[] = result.issues.map((message) => ({
+      category: 'treatment_fidelity',
+      level: 'error',
+      message,
+      location: {},
+      suggestion: 'Preserve the treatment anchor in the generated story, or regenerate the affected episode before saving final output.',
+    }));
+    this.emit({
+      type: 'error',
+      phase: 'treatment_fidelity',
+      message: `Final story treatment fidelity failed with ${issues.length} error(s).`,
+      data: issues,
+    });
+    throw new ValidationError('Final story treatment fidelity failed', issues);
+  }
+
   private async finalizeImageRunFromRegistry(
     outputDirectory: string,
     story: Story,
@@ -2374,10 +2405,12 @@ export class FullStoryPipeline {
     if (terminalReason === 'cancelled' && finalStory.imagesStatus === 'pending') {
       finalStory.imagesStatus = 'partial';
     }
+    const visualContractPersistence = this.auditStoryVisualContractPersistence(finalStory);
 
     await saveEarlyDiagnostic(outputDirectory, '08-final-story.json', finalStory);
     await saveEarlyDiagnostic(outputDirectory, '08-registry-state.json', this.assetRegistry.toSnapshot());
     await saveEarlyDiagnostic(outputDirectory, 'image-integrity-report.json', imageIntegrity);
+    await saveEarlyDiagnostic(outputDirectory, 'visual-contract-persistence-report.json', visualContractPersistence);
     await this.saveDraftImageManifest(outputDirectory, finalStory);
 
     await savePipelineOutputs(outputDirectory, {
@@ -2530,6 +2563,112 @@ export class FullStoryPipeline {
     };
   }
 
+  private applySceneVisualContractsToStoryScenes(storyScenes: Scene[] | undefined, sceneContents: SceneContent[]): {
+    sceneCount: number;
+    scenePlansPersisted: number;
+    beatCount: number;
+    beatCoveragePlansPersisted: number;
+    missingSceneIds: string[];
+  } {
+    const report = {
+      sceneCount: storyScenes?.length || 0,
+      scenePlansPersisted: 0,
+      beatCount: 0,
+      beatCoveragePlansPersisted: 0,
+      missingSceneIds: [] as string[],
+    };
+    const contentBySceneId = new Map((sceneContents || []).map((content) => [content.sceneId, content]));
+
+    for (const scene of storyScenes || []) {
+      const content = contentBySceneId.get(scene.id);
+      if (!content) {
+        report.missingSceneIds.push(scene.id);
+        continue;
+      }
+      if (content.sceneVisualSequencePlan) {
+        scene.sceneVisualSequencePlan = content.sceneVisualSequencePlan;
+        report.scenePlansPersisted += 1;
+      }
+      if (content.sequenceIntent) {
+        scene.sequenceIntent = {
+          ...(scene.sequenceIntent || {}),
+          ...content.sequenceIntent,
+        };
+      }
+
+      const contentBeatById = new Map((content.beats || []).map((beat) => [beat.id, beat]));
+      for (const beat of scene.beats || []) {
+        report.beatCount += 1;
+        const contentBeat = contentBeatById.get(beat.id);
+        if (!contentBeat) continue;
+        if (contentBeat.sequenceIntent) {
+          beat.sequenceIntent = {
+            ...(beat.sequenceIntent || {}),
+            ...contentBeat.sequenceIntent,
+          };
+        }
+        if (contentBeat.dramaticIntent) {
+          beat.dramaticIntent = {
+            ...(beat.dramaticIntent || {}),
+            ...contentBeat.dramaticIntent,
+          };
+        }
+        if (contentBeat.coveragePlan) {
+          beat.coveragePlan = contentBeat.coveragePlan;
+          report.beatCoveragePlansPersisted += 1;
+        }
+      }
+    }
+
+    return report;
+  }
+
+  private auditStoryVisualContractPersistence(story: Story): {
+    passed: boolean;
+    sceneCount: number;
+    scenesWithSequencePlan: number;
+    nonEstablishingBeatCount: number;
+    nonEstablishingBeatsWithCoveragePlan: number;
+    missingScenePlanIds: string[];
+    missingCoverageBeatIds: string[];
+  } {
+    const report = {
+      passed: true,
+      sceneCount: 0,
+      scenesWithSequencePlan: 0,
+      nonEstablishingBeatCount: 0,
+      nonEstablishingBeatsWithCoveragePlan: 0,
+      missingScenePlanIds: [] as string[],
+      missingCoverageBeatIds: [] as string[],
+    };
+
+    for (const episode of story.episodes || []) {
+      for (const scene of episode.scenes || []) {
+        report.sceneCount += 1;
+        if (scene.sceneVisualSequencePlan) {
+          report.scenesWithSequencePlan += 1;
+        } else if ((scene.beats || []).length > 1) {
+          report.missingScenePlanIds.push(scene.id);
+        }
+
+        for (const beat of scene.beats || []) {
+          const isEstablishingBeat = beat.shotType === 'establishing'
+            || beat.coveragePlan?.stagingPattern === 'environment';
+          if (isEstablishingBeat) continue;
+          report.nonEstablishingBeatCount += 1;
+          if (beat.coveragePlan) {
+            report.nonEstablishingBeatsWithCoveragePlan += 1;
+          } else {
+            report.missingCoverageBeatIds.push(`${scene.id}::${beat.id}`);
+          }
+        }
+      }
+    }
+
+    report.passed = report.missingScenePlanIds.length === 0 && report.missingCoverageBeatIds.length === 0;
+    return report;
+  }
+
   async generateImagesForDraft(
     outputDirectory: string,
     resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> }
@@ -2663,6 +2802,15 @@ export class FullStoryPipeline {
 	            );
 	            imageResults = storyboardResult.imageResults;
 	            encounterImageResults = storyboardResult.encounterImageResults;
+	            const persistence = this.applySceneVisualContractsToStoryScenes(episode.scenes, sceneContents);
+	            await saveEarlyDiagnostic(normalizedOutputDir, `episode-${episode.number}-visual-contract-persistence.json`, {
+	              pipelineMode: 'storyboard-v2',
+	              episodeNumber: episode.number,
+	              persistence,
+	              sequenceDiagnostics: storyboardResult.diagnostics?.sequenceDiagnostics,
+	              specificityAudits: storyboardResult.diagnostics?.specificityAudits,
+	              characterNormalizationDiagnostics: storyboardResult.diagnostics?.characterNormalizationDiagnostics,
+	            });
 	          } else {
 	            imageResults = await this.imageWorkerQueue.run(() =>
 	              this.measurePhase(
@@ -2704,6 +2852,23 @@ export class FullStoryPipeline {
       );
       if (coverUrl) finalStory.coverImage = coverUrl;
       finalStory.outputDir = normalizedOutputDir;
+      const visualContractPersistence = this.auditStoryVisualContractPersistence(finalStory);
+      await saveEarlyDiagnostic(normalizedOutputDir, 'visual-contract-persistence-report.json', visualContractPersistence);
+      if (this.useStoryboardV2ImagePipeline() && !visualContractPersistence.passed) {
+        throw new PipelineError(
+          `Storyboard v2 visual contract persistence failed: ${visualContractPersistence.missingScenePlanIds.length} scene plan(s) and ${visualContractPersistence.missingCoverageBeatIds.length} beat coverage plan(s) missing from final story.`,
+          'images',
+          {
+            context: {
+              failureKind: 'visual_contract_persistence',
+              stepId: 'storyboard_v2_contract_persistence',
+              resumeFromStepId: 'image_generation',
+              outputDirectory: normalizedOutputDir,
+              visualContractPersistence,
+            },
+          }
+        );
+      }
       const imageIntegrity = await this.repairBoundImageReferences(finalStory, normalizedOutputDir);
       const finalImageManifest = this.buildImageManifestFromStory(finalStory);
       finalStory.imagesStatus = imageIntegrity.unresolved.length > 0
@@ -2769,6 +2934,9 @@ export class FullStoryPipeline {
         });
       });
       if (error instanceof JobCancelledError) {
+        throw error;
+      }
+      if (error instanceof PipelineError) {
         throw error;
       }
       throw new PipelineError(`Image-only generation failed: ${msg}`, 'images', {
@@ -3542,6 +3710,7 @@ export class FullStoryPipeline {
                 optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
                 sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
                 memoryContext: this.cachedPipelineMemory || undefined,
+                storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
               }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${cs.beatId} quick-val-repair)`);
 
               if (repairResult.success && repairResult.data) {
@@ -3599,6 +3768,7 @@ export class FullStoryPipeline {
                   optionCount: targetScene.choicePoint?.optionHints?.length || 3,
                   sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
                   memoryContext: this.cachedPipelineMemory || undefined,
+                  storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
                 }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${lastBeat.id} density-repair)`);
 
                 if (densityRepairResult.success && densityRepairResult.data) {
@@ -3940,6 +4110,7 @@ export class FullStoryPipeline {
                 optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
                 sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
                 memoryContext: this.cachedPipelineMemory || undefined,
+                storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
               }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${weakCs.beatId} qa-repair-${qaRepairPass + 1})`);
 
               if (repairChoiceResult.success && repairChoiceResult.data) {
@@ -5202,7 +5373,13 @@ export class FullStoryPipeline {
       worldContext: worldBible.worldRules.join('. ') + ' ' + worldBible.tensions.join('. '),
       currentLocation: brief.episode.startingLocation,
       previousEpisodeSummary: brief.episode.previousSummary,
-      targetSceneCount: brief.multiEpisode?.preferences?.targetScenesPerEpisode || this.config.generation?.maxScenesPerEpisode || this.config.generation?.targetSceneCount || brief.options?.targetSceneCount || 6,
+      targetSceneCount: clampSceneCount(
+        brief.multiEpisode?.preferences?.targetScenesPerEpisode ||
+        this.config.generation?.maxScenesPerEpisode ||
+        this.config.generation?.targetSceneCount ||
+        brief.options?.targetSceneCount ||
+        6,
+      ),
       majorChoiceCount: brief.multiEpisode?.preferences?.targetChoicesPerEpisode || this.config.generation?.majorChoiceCount || brief.options?.majorChoiceCount || 2,
       pacing: brief.multiEpisode?.preferences?.pacing,
       seasonPlanDirectives,
@@ -6049,6 +6226,7 @@ export class FullStoryPipeline {
               optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
               sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
               memoryContext: this.cachedPipelineMemory || undefined,
+              storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
               growthTemplates: (() => {
                 // Attach the episode-level growth template to the FIRST
                 // strategic choice point (the development scene anchor).
@@ -6153,6 +6331,7 @@ export class FullStoryPipeline {
                       optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
                       sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
                       memoryContext: this.cachedPipelineMemory || undefined,
+                      storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
                     }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} regen)`);
 
                     if (revisedChoiceResult.success && revisedChoiceResult.data) {
@@ -6704,6 +6883,7 @@ export class FullStoryPipeline {
           defeatNextSceneId,
           priorStateContext,
           memoryContext: this.cachedPipelineMemory || undefined,
+          storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
           seasonAnchors: brief.seasonPlan?.anchors,
           seasonSevenPoint: brief.seasonPlan?.sevenPoint,
           episodeStructuralRole: brief.seasonPlan?.episodes.find(
@@ -7481,25 +7661,7 @@ export class FullStoryPipeline {
                 }
               }
 
-              return {
-                id: gc.id,
-                text: gc.text,
-                choiceType: gc.choiceType,
-                conditions: gc.conditions,
-                showWhenLocked: gc.showWhenLocked,
-                lockedText: gc.lockedText,
-                statCheck: gc.statCheck,
-                consequences: normalizeConsequences(gc.consequences),
-                delayedConsequences: gc.delayedConsequences,
-                nextSceneId,
-                nextBeatId: gc.nextBeatId,
-                outcomeTexts: gc.outcomeTexts,
-                reactionText: gc.reactionText,
-                tintFlag: gc.tintFlag,
-                consequenceDomain: gc.consequenceDomain,
-                reminderPlan: gc.reminderPlan,
-                feedbackCue: gc.feedbackCue,
-              };
+              return assembleChoiceForStory(gc, nextSceneId);
             });
           }
         }
@@ -7635,7 +7797,8 @@ export class FullStoryPipeline {
       role: c.role,
       pronouns: c.pronouns,
       portrait,
-      initialRelationship: c.initialStats,
+      initialRelationship: this.ensureRelationshipStats(c.initialStats, tier),
+      relationshipDimensions: this.relationshipDimensionsForNpc(c.initialStats, tier),
       tier,
       want: c.want,
       fear: c.fear,
@@ -7643,6 +7806,39 @@ export class FullStoryPipeline {
       voiceProfile: voiceSlice,
       secrets,
       arc,
+    };
+  }
+
+  private relationshipDimensionsForNpc(
+    initialStats: CharacterBible['characters'][number]['initialStats'] | undefined,
+    tier?: 'core' | 'supporting' | 'background',
+  ): RelationshipDimension[] {
+    const dimensions = new Set<RelationshipDimension>();
+    if (initialStats) {
+      if (initialStats.trust !== undefined) dimensions.add('trust');
+      if (initialStats.affection !== undefined) dimensions.add('affection');
+      if (initialStats.respect !== undefined) dimensions.add('respect');
+      if (initialStats.fear !== undefined) dimensions.add('fear');
+    }
+    if (tier === 'core') {
+      dimensions.add('trust');
+      dimensions.add('affection');
+      dimensions.add('respect');
+      dimensions.add('fear');
+    }
+    return Array.from(dimensions);
+  }
+
+  private ensureRelationshipStats(
+    initialStats: CharacterBible['characters'][number]['initialStats'] | undefined,
+    tier?: 'core' | 'supporting' | 'background',
+  ) {
+    if (tier !== 'core') return initialStats;
+    return {
+      trust: initialStats?.trust ?? 0,
+      affection: initialStats?.affection ?? 0,
+      respect: initialStats?.respect ?? 0,
+      fear: initialStats?.fear ?? 0,
     };
   }
 
@@ -7655,6 +7851,7 @@ export class FullStoryPipeline {
     // Prepare scenes for validation
     const scenes = sceneContents.map(sc => ({
       id: sc.sceneId,
+      charactersInvolved: sc.charactersInvolved || [],
       beats: sc.beats.map(b => ({
         id: b.id,
         text: b.text,
@@ -7684,14 +7881,7 @@ export class FullStoryPipeline {
           else if (c.role === 'neutral') tier = 'supporting';
         }
 
-        // Determine relationship dimensions from initial stats
-        const dimensions: RelationshipDimension[] = [];
-        if (c.initialStats) {
-          if (c.initialStats.trust !== undefined) dimensions.push('trust');
-          if (c.initialStats.affection !== undefined) dimensions.push('affection');
-          if (c.initialStats.respect !== undefined) dimensions.push('respect');
-          if (c.initialStats.fear !== undefined) dimensions.push('fear');
-        }
+        const dimensions = this.relationshipDimensionsForNpc(c.initialStats, tier);
 
         return {
           id: c.id,
@@ -7719,6 +7909,18 @@ export class FullStoryPipeline {
         outcomeTexts: choice.outcomeTexts,
         lockedText: choice.lockedText,
         reactionText: choice.reactionText,
+        sceneId: cs.sceneId,
+        statCheck: choice.statCheck,
+        conditions: choice.conditions,
+        showWhenLocked: choice.showWhenLocked,
+        tintFlag: choice.tintFlag,
+        delayedConsequences: choice.delayedConsequences,
+        residueHints: choice.residueHints,
+        memorableMoment: choice.memorableMoment,
+        storyVerb: choice.storyVerb,
+        affordanceSource: choice.affordanceSource,
+        witnessReactions: choice.witnessReactions,
+        failureResidue: choice.failureResidue,
       }))
     );
 
@@ -8348,6 +8550,13 @@ export class FullStoryPipeline {
       } else if (this.config.imageGen?.enabled) {
         story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
       }
+
+      this.enforceFinalTreatmentFidelity({
+        story,
+        analysis: filteredAnalysis,
+        expectedEpisodeCount: episodesToGenerate.length,
+        sourceText: baseBrief.rawDocument,
+      });
 
       this.addCheckpoint('Final Story', story, false);
       await this.saveResumeUnit(
@@ -17917,6 +18126,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         beats: content.beats.map(gb => ({
           id: gb.id,
           text: gb.text,
+          textVariants: gb.textVariants,
           speaker: gb.speaker,
           speakerMood: gb.speakerMood,
           nextBeatId: gb.nextBeatId,
@@ -17934,16 +18144,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           coveragePlan: (gb as any).coveragePlan,
           dramaticIntent: (gb as any).dramaticIntent,
           sequenceIntent: (gb as any).sequenceIntent,
-          choices: gb.isChoicePoint ? choiceMap.get(`${sb.id}::${gb.id}`)?.choices.map(c => ({
-            id: c.id,
-            text: c.text,
-            nextSceneId: c.nextSceneId,
-            nextBeatId: c.nextBeatId,
-            consequences: normalizeConsequences(c.consequences),
-            consequenceDomain: c.consequenceDomain,
-            reminderPlan: c.reminderPlan,
-            feedbackCue: c.feedbackCue,
-          })) : undefined
+          choices: gb.isChoicePoint ? choiceMap.get(`${sb.id}::${gb.id}`)?.choices.map(c => assembleChoiceForStory(c)) : undefined
         })),
         encounter,
         sequenceIntent: (content as any).sequenceIntent || (sb as any).sequenceIntent,
@@ -18556,6 +18757,15 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         voiceNotes: profile?.voiceProfile?.writingGuidance,
         physicalDescription: profile?.physicalDescription,
       };
+    });
+  }
+
+  private deriveStoryVerbsForBrief(brief: FullCreativeBrief, worldBible?: WorldBible) {
+    return deriveStoryVerbs({
+      genre: brief.story.genre,
+      tone: brief.story.tone,
+      sourceSummary: brief.story.synopsis,
+      worldContext: worldBible ? this.buildCompactWorldContext(worldBible) : undefined,
     });
   }
 

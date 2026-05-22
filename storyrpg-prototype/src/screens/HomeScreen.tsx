@@ -8,7 +8,7 @@ import {
   SafeAreaView,
   Platform,
   Image,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import {
   Play,
@@ -29,8 +29,6 @@ import { APP_FOOTER_LINE_1, APP_FOOTER_LINE_2 } from '../config/version';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ConfirmDialog } from '../components/ui';
 import { track } from '../services/analyticsService';
-
-const { width } = Dimensions.get('window');
 
 interface HomeScreenProps {
   stories: StoryCatalogEntry[];
@@ -54,6 +52,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   activeGenerationJob,
   onOpenActiveGeneration,
 }) => {
+  const { width } = useWindowDimensions();
   const { player } = useGamePlayerState();
   const { currentStory } = useGameStoryState();
   const { resetGame } = useGameActions();
@@ -62,6 +61,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [confirmWipe, setConfirmWipe] = useState(false);
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const compactHeader = width < 390;
+  const storyPosterWidth = (width - 56) / 2;
   const activeGenerationProgress = Math.max(0, Math.min(100, Math.round(activeGenerationJob?.progress || 0)));
 
   // Placeholder image for when cover images fail to load
@@ -192,7 +192,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           {stories.map((story, index) => (
             <TouchableOpacity
               key={story.id}
-              style={styles.storyCard}
+              style={[styles.storyCard, { width: storyPosterWidth }]}
               onPress={() => handleStorySelect(story)}
               activeOpacity={0.8}
             >
@@ -232,7 +232,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           ))}
 
           {/* Locked Slots */}
-          <View style={styles.lockedCard}>
+          <View style={[styles.lockedCard, { width: storyPosterWidth }]}>
             <BookOpen size={24} color={TERMINAL.colors.bgHighlight} />
             <Text style={styles.lockedText}>LOCKED CHRONICLE</Text>
             <Text style={styles.lockedSubtext}>EXPANSION PENDING</Text>
@@ -449,8 +449,7 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   storyCard: {
-    width: (width - 56) / 2,
-    height: 312,
+    aspectRatio: 2 / 3,
     borderRadius: 24,
     overflow: 'hidden',
     backgroundColor: '#1e2229',
@@ -532,8 +531,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   lockedCard: {
-    width: (width - 56) / 2,
-    height: 312,
+    aspectRatio: 2 / 3,
     borderRadius: 24,
     borderWidth: 2,
     borderStyle: 'dashed',

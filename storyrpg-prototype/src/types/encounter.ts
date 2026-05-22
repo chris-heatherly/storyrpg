@@ -156,6 +156,12 @@ export interface EncounterChoiceOutcome {
   narrativeText: string;
   outcomeImage?: string;
   consequences?: Consequence[];
+  delayedConsequences?: Array<{
+    consequence: Consequence;
+    description: string;
+    delay?: { type: 'scenes' | 'episodes'; count: number };
+    triggerCondition?: ConditionExpression;
+  }>;
 
   nextSituation?: {
     setupText: string;

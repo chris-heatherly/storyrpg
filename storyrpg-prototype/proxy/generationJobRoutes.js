@@ -17,7 +17,9 @@ const path = require('path');
 
 const { atomicWriteJsonSync } = require('./atomicIo');
 const manifestModule = require('./storyManifest');
-const { sanitizeJobState } = require('./sanitizeJobState');
+const { publicJobState, sanitizeJobState } = require('./sanitizeJobState');
+
+const MAX_SYNC_REGISTRY_SCAN_BYTES = 50 * 1024 * 1024;
 
 function getJobOutputDir(job) {
   return job?.outputDir
@@ -77,25 +79,30 @@ function computeImageStatsForOutputDir(outputDirAbs) {
     ? Math.max(manifestSlots, scanSlots)
     : manifestSlots ?? scanSlots;
 
-  let resolvedSlots = 0;
+  let resolvedSlots = typeof resumeScan?.resolvedSlotsAfter === 'number'
+    ? resumeScan.resolvedSlotsAfter
+    : undefined;
   const registryPath = path.join(outputDirAbs, 'asset-registry.jsonl');
   if (fs.existsSync(registryPath)) {
     try {
-      const lines = fs.readFileSync(registryPath, 'utf8').split(/\r?\n/).filter(Boolean);
-      const resolvedSlotIds = new Set();
-      for (const line of lines) {
-        try {
-          const record = JSON.parse(line);
-          if (record?.status === 'succeeded' && (record.latestUrl || record.latestPath) && record.slot?.slotId) {
-            resolvedSlotIds.add(record.slot.slotId);
+      const registryStats = fs.statSync(registryPath);
+      if (registryStats.size <= MAX_SYNC_REGISTRY_SCAN_BYTES) {
+        const lines = fs.readFileSync(registryPath, 'utf8').split(/\r?\n/).filter(Boolean);
+        const resolvedSlotIds = new Set();
+        for (const line of lines) {
+          try {
+            const record = JSON.parse(line);
+            if (record?.status === 'succeeded' && (record.latestUrl || record.latestPath) && record.slot?.slotId) {
+              resolvedSlotIds.add(record.slot.slotId);
+            }
+          } catch {
+            // Ignore malformed historical registry lines.
           }
-        } catch {
-          // Ignore malformed historical registry lines.
         }
+        resolvedSlots = resolvedSlotIds.size;
       }
-      resolvedSlots = resolvedSlotIds.size;
     } catch {
-      resolvedSlots = 0;
+      // Image stats should never make generation job routes unavailable.
     }
   }
 
@@ -105,7 +112,9 @@ function computeImageStatsForOutputDir(outputDirAbs) {
     storyFiles: fileStats.storyFiles,
     resolvedSlots,
     totalSlots,
-    missingSlots: typeof totalSlots === 'number' ? Math.max(0, totalSlots - resolvedSlots) : undefined,
+    missingSlots: typeof totalSlots === 'number' && typeof resolvedSlots === 'number'
+      ? Math.max(0, totalSlots - resolvedSlots)
+      : undefined,
   };
 }
 
@@ -501,14 +510,14 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     const jobs = loadJobs();
     const { normalized, changed } = normalizeStaleRunningJobs(jobs);
     if (changed) saveJobs(normalized);
-    res.json(enrichJobsWithImageStats(normalized, { rootDir, storiesDir }));
+    res.json(enrichJobsWithImageStats(normalized, { rootDir, storiesDir }).map(publicJobState));
   });
 
   app.get('/generation-jobs/all', (req, res) => {
     const jobs = loadJobs();
     const { normalized, changed } = normalizeStaleRunningJobs(jobs);
     if (changed) saveJobs(normalized);
-    res.json(enrichJobsWithImageStats(normalized, { rootDir, storiesDir }));
+    res.json(enrichJobsWithImageStats(normalized, { rootDir, storiesDir }).map(publicJobState));
   });
 
   app.post('/generation-jobs/refresh', (req, res) => {
@@ -585,7 +594,7 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     if (changed) saveJobs(normalized);
     const job = normalized.find((j) => j.id === jobId);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    res.json(job);
+    res.json(publicJobState(job));
   });
 
   app.patch('/generation-jobs/:jobId', (req, res) => {

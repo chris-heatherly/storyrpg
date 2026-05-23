@@ -178,6 +178,7 @@ function hasReactiveSurface(choice: Choice): boolean {
       || choice.conditions
       || choice.affordanceSource
       || choice.memorableMoment
+      || (choice.statCheck?.modifiers && choice.statCheck.modifiers.length > 0)
       || (choice.residueHints && choice.residueHints.length > 0)
       || (choice.witnessReactions && choice.witnessReactions.length > 0)
       || (choice.consequences && choice.consequences.length > 0)
@@ -218,6 +219,7 @@ function conditionAffordanceType(condition: NonNullable<Choice['conditions']>): 
 function hasPlayableFailure(choice: Choice): boolean {
   if (choice.failureResidue?.description?.trim()) return true;
   if (choice.nextSceneId || choice.memorableMoment) return true;
+  if ((choice.statCheck?.modifiers?.length ?? 0) > 0) return true;
   if ((choice.consequences?.length ?? 0) > 0 || (choice.delayedConsequences?.length ?? 0) > 0) return true;
   if ((choice.residueHints || []).some((hint) => PLAYABLE_FAILURE_RESIDUE_KINDS.has(hint.kind))) return true;
 

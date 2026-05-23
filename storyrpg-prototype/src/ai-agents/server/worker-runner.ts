@@ -289,6 +289,7 @@ async function runImageGeneration(payload: WorkerPayload) {
     config: payload.config,
     externalJobId: payload.externalJobId,
     outputDirectory: payload.imageGenerationInput.outputDirectory,
+    targetEpisodeNumber: payload.imageGenerationInput.targetEpisodeNumber,
     resumeCheckpoint: payload.resumeCheckpoint,
     onEvent: (event) => {
       emit('pipeline_event', {

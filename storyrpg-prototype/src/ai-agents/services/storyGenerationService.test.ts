@@ -169,10 +169,22 @@ describe('storyGenerationService', () => {
       outputDirectory: '/tmp/story/',
     });
 
-	    expect(generateImagesForDraft).toHaveBeenCalledWith('/tmp/story/', undefined);
-	    expect(pipelineInstances[0].config.imageGen.enabled).toBe(true);
-	    expect(pipelineInstances[0].config.imageGen.strategy).toBe('all-beats');
-	    expect(pipelineInstances[0].config.generation.assetGenerationMode).toBe('image-only');
-    expect(response.result).toEqual({ success: true, outputDirectory: '/tmp/story/' });
-  });
-});
+		    expect(generateImagesForDraft).toHaveBeenCalledWith('/tmp/story/', undefined, { targetEpisodeNumber: undefined });
+		    expect(pipelineInstances[0].config.imageGen.enabled).toBe(true);
+		    expect(pipelineInstances[0].config.imageGen.strategy).toBe('all-beats');
+		    expect(pipelineInstances[0].config.generation.assetGenerationMode).toBe('image-only');
+	    expect(response.result).toEqual({ success: true, outputDirectory: '/tmp/story/' });
+	  });
+
+	  it('passes target episode to image-only generation', async () => {
+	    generateImagesForDraft.mockResolvedValue({ success: true, outputDirectory: '/tmp/story/' });
+
+	    await runImageGenerationBatch({
+	      config: {},
+	      outputDirectory: '/tmp/story/',
+	      targetEpisodeNumber: 2,
+	    });
+
+	    expect(generateImagesForDraft).toHaveBeenCalledWith('/tmp/story/', undefined, { targetEpisodeNumber: 2 });
+	  });
+	});

@@ -57,6 +57,28 @@ function describeSuggestedDistribution(totalEpisodes: number): string {
   return describeDistribution(entries);
 }
 
+function buildTreatmentInputNotice(sourceText: string): string {
+  const treatment = extractTreatmentFromMarkdown(sourceText || '');
+  if (!treatment.isTreatment) return '';
+  const episodeCount = Object.keys(treatment.episodes).length;
+  const endingCount = treatment.endings.length;
+  return `
+## StoryRPG Treatment Input Detected
+
+The supplied document is a user-authored StoryRPG treatment, not generic prose source material. Treat its episode outline, structural roles, encounter guidance, branch guidance, and endings as authored planning constraints.
+
+- Preserve the treatment's episode count/order/titles unless an explicit user instruction overrides them.
+- Preserve episode turns as planning intent for scenes/keyBeats; do not create a new runtime episode-turn schema.
+- Preserve encounter anchors and make each encounter manifest the episode's central conflict through play.
+- Preserve aftermath/consequence, ending pressure, and finale resolution/aftermath guidance.
+- Preserve authored branches and exactly authored endings when present.
+- Infer missing characters, locations, anchors, and style only where the treatment leaves gaps.
+- Use the canonical StoryRPG scene range: 3-6 scenes per episode.
+
+Detected treatment metadata: ${treatment.metadata.formatVersion}, ${treatment.metadata.confidence} confidence, ${episodeCount} episode(s), ${endingCount} ending(s).
+`;
+}
+
 // Input for the analyzer
 export interface SourceMaterialInput {
   // The source text to analyze
@@ -223,7 +245,7 @@ If the user provides the name of a book, movie, or other story IP (e.g., "The Gr
 ## Interactive Fiction Constraints
 
 Each episode should:
-- Have 5-8 scenes (bottleneck + branch zones)
+- Have 3-6 scenes (bottleneck + branch zones)
 - Include 2-4 meaningful player choices
 - Cover a complete narrative arc (setup → conflict → resolution)
 - Take approximately 15-30 minutes to play
@@ -282,6 +304,17 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
     const targetScenes = clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode);
     const targetChoices = input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode;
     const pacing = input.preferences?.pacing || 'moderate';
+    const extractedTreatment = extractTreatmentFromMarkdown(input.sourceText || '');
+    if (extractedTreatment.isTreatment) {
+      console.log(
+        `[SourceMaterialAnalyzer] Detected StoryRPG treatment (${extractedTreatment.metadata.formatVersion}, ` +
+        `${extractedTreatment.metadata.confidence} confidence, ${Object.keys(extractedTreatment.episodes).length} episodes, ` +
+        `${extractedTreatment.endings.length} endings)`
+      );
+      for (const warning of extractedTreatment.metadata.warnings) {
+        console.warn(`[SourceMaterialAnalyzer] Treatment warning: ${warning}`);
+      }
+    }
 
     try {
       // Step 1: Analyze overall story structure
@@ -363,6 +396,8 @@ Explicit prose instruction: "${explicitWritingStyleInstruction}"`
 ${truncatedText ? `**Source Material**:
 ${truncatedText}` : '*(No source material provided, use the User Instructions/Prompt as the only source)*'}
 
+${buildTreatmentInputNotice(sourceText)}
+
 Analyze this text and respond with JSON:
 
 {
@@ -435,7 +470,7 @@ Analyze this text and respond with JSON:
     "sentenceRhythm": "<typical sentence length, cadence, variation>",
     "diction": "<word choice: plain/literary/period/slang/technical/etc.>",
     "dialogueStyle": "<dialogue texture and subtext rules>",
-    "povAndDistance": "<point of view and closeness to protagonist interiority>",
+    "povAndDistance": "<point of view and how emotion is externalized through action, dialogue, silence, body language, facial expression, object handling, proximity, avoidance, and choice behavior>",
     "imageryAndSensoryFocus": "<dominant sensory palette and image logic>",
     "pacing": "<how prose should move during action, quiet moments, reveals>",
     "doList": ["<specific prose move to use>", "<specific prose move to use>"],
@@ -582,6 +617,8 @@ MUST land on at least one episode across the season and must appear in canonical
 ${truncatedText ? `**Source Material Reference**:
 ${truncatedText}` : ''}
 
+${buildTreatmentInputNotice(sourceText)}
+
 Create ${estimatedEpisodes} episode outlines. Respond with JSON:
 
 {
@@ -627,7 +664,6 @@ Return ONLY valid JSON.
     structure: StoryStructureAnalysis,
     breakdown: EpisodeBreakdownResponse
   ): SourceMaterialAnalysis {
-    const totalEpisodes = breakdown.totalEpisodes;
     const sourceText = input.sourceText || '';
     const treatment = extractTreatmentFromMarkdown(sourceText);
     if (looksLikeTreatmentMarkdown(sourceText) && Object.keys(treatment.episodes).length === 0) {
@@ -636,6 +672,47 @@ Return ONLY valid JSON.
         'Check the treatment template headings before generating a generic adaptation.'
       );
     }
+    const treatmentEpisodeNumbers = Object.keys(treatment.episodes)
+      .map(Number)
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    const totalEpisodes = treatment.isTreatment && treatmentEpisodeNumbers.length > 0
+      ? treatmentEpisodeNumbers.length
+      : breakdown.totalEpisodes;
+    const breakdownByEpisode = new Map(breakdown.episodes.map((ep) => [ep.episodeNumber, ep]));
+    const effectiveBreakdownEpisodes = treatment.isTreatment && treatmentEpisodeNumbers.length > 0
+      ? treatmentEpisodeNumbers.map((episodeNumber) => {
+          const existing = breakdownByEpisode.get(episodeNumber);
+          const guidance = treatment.episodes[episodeNumber];
+          if (existing) {
+            return {
+              ...existing,
+              title: guidance.authoredTitle || existing.title,
+              structuralRole: guidance.normalizedStructuralRoles?.length
+                ? guidance.normalizedStructuralRoles
+                : existing.structuralRole,
+            };
+          }
+          return {
+            episodeNumber,
+            title: guidance.authoredTitle || `Episode ${episodeNumber}`,
+            synopsis: guidance.episodePromise || guidance.encounterCentralConflict || `Treatment episode ${episodeNumber}`,
+            sourceChapters: `Treatment episode ${episodeNumber}`,
+            plotPoints: [
+              ...(guidance.episodeTurns || []),
+              ...(guidance.encounterAnchors || []),
+            ].filter(Boolean),
+            mainCharacters: [structure.protagonist.name],
+            locations: [],
+            narrativeArc: {
+              setup: guidance.encounterBuildup || guidance.episodePromise || 'Treatment setup',
+              conflict: guidance.encounterCentralConflict || guidance.encounterAnchors?.[0] || 'Treatment conflict',
+              resolution: guidance.resolutionAftermath || guidance.endingPressure || guidance.authoredCliffhanger || 'Treatment resolution',
+            },
+            structuralRole: guidance.normalizedStructuralRoles?.length ? guidance.normalizedStructuralRoles : undefined,
+          };
+        })
+      : breakdown.episodes;
 
     // Default structuralRole distribution — used as a fallback when the LLM
     // did not tag an episode with its own structuralRole array, and as the
@@ -647,12 +724,12 @@ Return ONLY valid JSON.
     };
 
     // Convert episode breakdown to full outlines
-    const episodeOutlines: EpisodeOutline[] = breakdown.episodes.map((ep, idx) => {
+    const episodeOutlines: EpisodeOutline[] = effectiveBreakdownEpisodes.map((ep, idx) => {
       // Find plot points for this episode
       const episodePlotPoints: PlotPoint[] = ep.plotPoints.map((pp, ppIdx) => ({
         id: `ep${ep.episodeNumber}-pp${ppIdx + 1}`,
         description: pp,
-        type: this.inferPlotPointType(pp, ep.episodeNumber, breakdown.totalEpisodes),
+        type: this.inferPlotPointType(pp, ep.episodeNumber, totalEpisodes),
         importance: 'major' as const,
         targetEpisode: ep.episodeNumber,
         charactersInvolved: ep.mainCharacters,
@@ -669,7 +746,7 @@ Return ONLY valid JSON.
 
       return {
         episodeNumber: ep.episodeNumber,
-        title: ep.title,
+        title: treatment.episodes[ep.episodeNumber]?.authoredTitle || ep.title,
         synopsis: ep.synopsis,
         sourceChapters: [ep.sourceChapters],
         sourceSummary: ep.synopsis,
@@ -691,7 +768,10 @@ Return ONLY valid JSON.
     const coverageIssues = checkSevenPointCoverage(episodeOutlines);
     if (coverageIssues.length > 0) {
       for (const outline of episodeOutlines) {
-        outline.structuralRole = defaultRoleFor(outline.episodeNumber);
+        const fallbackRoles = defaultRoleFor(outline.episodeNumber);
+        outline.structuralRole = treatment.isTreatment
+          ? [...new Set([...(outline.structuralRole || []), ...fallbackRoles])]
+          : fallbackRoles;
       }
     }
 
@@ -711,7 +791,7 @@ Return ONLY valid JSON.
       name: arc.name,
       description: arc.description,
       startChapter: arc.chapters,
-      estimatedEpisodeRange: this.estimateArcEpisodeRange(arc, breakdown.totalEpisodes, idx, structure.storyArcs.length),
+        estimatedEpisodeRange: this.estimateArcEpisodeRange(arc, totalEpisodes, idx, structure.storyArcs.length),
     }));
 
     // Build major characters list with first appearances
@@ -721,7 +801,7 @@ Return ONLY valid JSON.
       role: this.normalizeRole(char.role),
       description: char.description,
       importance: this.normalizeImportance(char.importance),
-      firstAppearance: this.findFirstAppearance(char.name, breakdown.episodes),
+      firstAppearance: this.findFirstAppearance(char.name, effectiveBreakdownEpisodes),
       fashionStyle: normalizeCharacterFashionStyle(char.fashionStyle),
     }));
 
@@ -731,7 +811,7 @@ Return ONLY valid JSON.
       name: loc.name,
       description: loc.description,
       importance: this.normalizeLocationImportance(loc.importance),
-      firstAppearance: this.findLocationFirstAppearance(loc.name, breakdown.episodes),
+      firstAppearance: this.findLocationFirstAppearance(loc.name, effectiveBreakdownEpisodes),
     }));
 
     // Calculate confidence score based on analysis quality
@@ -780,6 +860,8 @@ Return ONLY valid JSON.
     return {
       sourceTitle: input.title || 'Untitled',
       sourceAuthor: input.author,
+      sourceFormat: treatment.isTreatment ? 'story_treatment' : ((input.sourceText || '').trim() ? 'source_material' : 'prompt'),
+      treatmentMetadata: treatment.isTreatment ? treatment.metadata : undefined,
       totalWordCount: (input.sourceText || '').trim().length > 0 ? input.sourceText!.split(/\s+/).length : 0,
 
       genre: structure.genre,
@@ -811,7 +893,7 @@ Return ONLY valid JSON.
       generatedEndings: endingFields.generatedEndings,
       resolvedEndings: treatmentEndings.length === 3 ? treatmentEndings : endingFields.resolvedEndings,
       episodeBreakdown: episodeOutlines,
-      totalEstimatedEpisodes: breakdown.totalEpisodes,
+      totalEstimatedEpisodes: totalEpisodes,
       treatmentBranches: treatment.branches.length > 0 ? treatment.branches : undefined,
 
       protagonist: {
@@ -826,7 +908,7 @@ Return ONLY valid JSON.
 
       analysisTimestamp: new Date(),
       confidenceScore,
-      warnings,
+      warnings: treatment.metadata.warnings.length > 0 ? [...warnings, ...treatment.metadata.warnings] : warnings,
       directLanguageFragments: normalizeDirectLanguageFragments(structure.directLanguageFragments),
       adaptationGuidance: normalizeAdaptationGuidance(structure.adaptationGuidance),
     };
@@ -1230,7 +1312,7 @@ export function normalizeWritingStyleGuide(
     dialogueStyle: String(guide?.dialogueStyle || fallback.dialogueStyle || '').trim()
       || 'Keep dialogue concise, character-specific, and rich with subtext.',
     povAndDistance: String(guide?.povAndDistance || '').trim()
-      || 'Stay close enough to the protagonist for immediacy without over-defining the player character.',
+      || 'Keep player-facing emotion externalized through action, dialogue, silence, body language, facial expression, object handling, proximity, avoidance, and choice behavior.',
     imageryAndSensoryFocus: String(guide?.imageryAndSensoryFocus || '').trim()
       || 'Favor specific sensory details that reveal mood, stakes, and setting.',
     pacing: String(guide?.pacing || '').trim()

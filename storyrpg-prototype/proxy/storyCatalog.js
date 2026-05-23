@@ -82,6 +82,48 @@ function createStoryCatalog(storiesDir, port) {
     return { hasSeasonReferences, hasEpisodeArt };
   }
 
+  function getEpisodeMediaSummary(episode) {
+    let hasEpisodeArt = Boolean(episode?.coverImage);
+    let hasVideo = false;
+    for (const scene of Array.isArray(episode?.scenes) ? episode.scenes : []) {
+      if (scene?.backgroundImage || scene?.image || scene?.imageUrl || scene?.imagePath) {
+        hasEpisodeArt = true;
+      }
+      for (const beat of Array.isArray(scene?.beats) ? scene.beats : []) {
+        if (beat?.image || beat?.imageUrl || beat?.imagePath || (Array.isArray(beat?.panelImages) && beat.panelImages.length > 0)) {
+          hasEpisodeArt = true;
+        }
+        if (beat?.video || beat?.videoUrl || beat?.videoPath) {
+          hasVideo = true;
+        }
+      }
+      const encounter = scene?.encounter;
+      if (encounter) {
+        const phases = Array.isArray(encounter.phases) ? encounter.phases : [];
+        for (const phase of phases) {
+          for (const beat of Array.isArray(phase?.beats) ? phase.beats : []) {
+            if (beat?.situationImage || beat?.image) hasEpisodeArt = true;
+          }
+        }
+        for (const choice of Array.isArray(encounter.choices) ? encounter.choices : []) {
+          for (const tier of ['success', 'complicated', 'failure']) {
+            const outcome = choice?.outcomes?.[tier];
+            if (outcome?.outcomeImage || outcome?.nextSituation?.situationImage) hasEpisodeArt = true;
+          }
+        }
+        for (const storylet of Object.values(encounter.storylets || {})) {
+          for (const beat of Array.isArray(storylet?.beats) ? storylet.beats : []) {
+            if (beat?.image || beat?.imageUrl || beat?.imagePath) hasEpisodeArt = true;
+          }
+        }
+      }
+    }
+    return {
+      imageArtifacts: { hasEpisodeArt },
+      videoArtifacts: { hasVideo },
+    };
+  }
+
   function stripGeneratedStoryTimestamp(dirName) {
     return dirName.replace(/_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$/, '');
   }
@@ -444,6 +486,7 @@ function createStoryCatalog(storiesDir, port) {
             title: episode.title,
             synopsis: episode.synopsis,
             coverImage: codec.normalizeAssetUrlForRequest(episode.coverImage || '', req, port),
+            ...getEpisodeMediaSummary(episode),
           }))
         : [],
       imageArtifacts: getImageArtifactSummaryForSlug(dirName),

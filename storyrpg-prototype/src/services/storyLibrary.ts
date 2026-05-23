@@ -4,7 +4,7 @@ import { BLOB_CONFIG, PROXY_CONFIG, isVercelDeployment } from '../config/endpoin
 import { Story, StoryCatalogEntry } from '../types';
 import { toUrl, type AssetRuntime } from '../assets/assetResolver';
 import { isAssetRef } from '../assets/assetRef';
-import { decodeStory, StoryValidationError } from '../ai-agents/codec/storyCodec';
+import { decodeStory, StoryValidationError } from '../story-codec/storyCodec';
 
 const GENERATED_STORIES_KEY = '@storyrpg_generated_stories';
 

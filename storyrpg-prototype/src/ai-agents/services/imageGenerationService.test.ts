@@ -46,6 +46,57 @@ describe('ImageGenerationService.classifyError', () => {
   });
 });
 
+describe('ImageGenerationService local image persistence', () => {
+  it('materializes data URL image results into the configured output directory', async () => {
+    const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'image-gen-local-persist-'));
+    try {
+      const service = new ImageGenerationService({
+        enabled: true,
+        provider: 'placeholder',
+        outputDirectory,
+      } as any);
+      const imageData = Buffer.from('fake-png-bytes').toString('base64');
+
+      const result = await (service as any).ensureGeneratedImageStoredLocally(
+        {
+          prompt: { prompt: 'Render the scene.' },
+          imageUrl: `data:image/png;base64,${imageData}`,
+          mimeType: 'image/png',
+        },
+        'scene-beat-one',
+      );
+
+      expect(result.imagePath).toBe(path.join(outputDirectory, 'scene-beat-one.png'));
+      expect(fs.existsSync(result.imagePath)).toBe(true);
+      expect(fs.readFileSync(result.imagePath).toString('base64')).toBe(imageData);
+      expect(result.imageData).toBe(imageData);
+    } finally {
+      fs.rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects image results that point at missing local files', async () => {
+    const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'image-gen-missing-local-'));
+    try {
+      const service = new ImageGenerationService({
+        enabled: true,
+        provider: 'placeholder',
+        outputDirectory,
+      } as any);
+
+      await expect((service as any).ensureGeneratedImageStoredLocally(
+        {
+          prompt: { prompt: 'Render the scene.' },
+          imagePath: path.join(outputDirectory, 'missing.png'),
+        },
+        'missing',
+      )).rejects.toThrow(/missing local file/);
+    } finally {
+      fs.rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('ImageGenerationService OpenAI safety rewrite', () => {
   it('rewrites commonly blocked graphic terms while preserving the scene request', () => {
     const service = new ImageGenerationService({

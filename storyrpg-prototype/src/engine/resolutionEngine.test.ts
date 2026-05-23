@@ -4,9 +4,11 @@ import {
   computeOverlap,
   normalizeStatCheck,
   resolveStatCheck,
+  calculateOutcomeChances,
   calculateSuccessChance,
   computeEncounterWeights,
   applyUseBasedGrowth,
+  buildUseBasedGrowthConsequences,
   ResolutionTracker,
   computeSkillCeiling,
 } from './resolutionEngine';
@@ -249,6 +251,14 @@ describe('ResolutionTracker', () => {
 // -----------------------------------------------------------------------
 
 describe('applyUseBasedGrowth', () => {
+  it('builds skill consequences proportional to weights and tier', () => {
+    const consequences = buildUseBasedGrowthConsequences({ persuasion: 0.7, perception: 0.3 }, 'success');
+    expect(consequences).toEqual([
+      { type: 'skill', skill: 'persuasion', change: 1 },
+      { type: 'skill', skill: 'perception', change: 1 },
+    ]);
+  });
+
   it('grows skills proportional to weights and tier', () => {
     const player = createPlayer();
     applyUseBasedGrowth(player, { persuasion: 0.7, perception: 0.3 }, 'success');
@@ -407,6 +417,47 @@ describe('calculateSuccessChance', () => {
     const chance = calculateSuccessChance(player, { attribute: 'charm', difficulty: 50 });
     expect(chance).toBeGreaterThan(0);
     expect(chance).toBeLessThanOrEqual(100);
+  });
+});
+
+// -----------------------------------------------------------------------
+// calculateOutcomeChances
+// -----------------------------------------------------------------------
+
+describe('calculateOutcomeChances', () => {
+  it('higher effective skill improves success and lowers failure', () => {
+    const low = createPlayer({ skills: { persuasion: 20 } });
+    const high = createPlayer({
+      attributes: { charm: 90, wit: 70, courage: 50, empathy: 80, resolve: 50, resourcefulness: 50 },
+      skills: { persuasion: 80 },
+    });
+    const check = { skillWeights: { persuasion: 1.0 }, difficulty: 60 };
+
+    const lowChances = calculateOutcomeChances(low, check);
+    const highChances = calculateOutcomeChances(high, check);
+
+    expect(highChances.success).toBeGreaterThanOrEqual(lowChances.success);
+    expect(highChances.failure).toBeLessThanOrEqual(lowChances.failure);
+  });
+
+  it('higher difficulty worsens expected outcome quality', () => {
+    const player = createPlayer({ skills: { survival: 55 } });
+    const easy = calculateOutcomeChances(player, { skillWeights: { survival: 1.0 }, difficulty: 40 });
+    const hard = calculateOutcomeChances(player, { skillWeights: { survival: 1.0 }, difficulty: 75 });
+
+    expect(easy.success).toBeGreaterThanOrEqual(hard.success);
+    expect(easy.failure).toBeLessThanOrEqual(hard.failure);
+  });
+
+  it('prepared modifiers improve outcome chances without exposing player-facing math', () => {
+    const player = createPlayer({ skills: { investigation: 50 } });
+    const check = { skillWeights: { investigation: 1.0 }, difficulty: 65 };
+
+    const baseline = calculateOutcomeChances(player, check);
+    const prepared = calculateOutcomeChances(player, check, { modifierTotal: 15 });
+
+    expect(prepared.success).toBeGreaterThan(baseline.success);
+    expect(prepared.failure).toBeLessThan(baseline.failure);
   });
 });
 

@@ -26,6 +26,17 @@ export interface LoginScreenProps {
   onAuthenticated: (user: AuthUser) => void;
 }
 
+const DEV_BYPASS_USER: AuthUser = {
+  provider: 'dev',
+  id: 'dev-bypass-user',
+  email: 'dev@storyrpg.local',
+  displayName: 'Dev User',
+  picture: null,
+  role: 'admin',
+};
+
+const SHOW_DEV_BYPASS = __DEV__;
+
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onAuthenticated }) => {
   const [providers, setProviders] = useState<AuthProviders | null>(null);
   const [loading, setLoading] = useState(true);
@@ -92,6 +103,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onAuthenticated }) => 
     }
   };
 
+  const handleDevBypass = () => {
+    setError(null);
+    onAuthenticated(DEV_BYPASS_USER);
+  };
+
   const hasOAuth = Boolean(providers?.google || providers?.discord);
   const showLocal = providers?.local !== false;
   const canRegister = providers?.registration !== false;
@@ -129,6 +145,18 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onAuthenticated }) => 
 
           {!loading ? (
             <>
+              {SHOW_DEV_BYPASS ? (
+                <View style={[styles.card, styles.devBypassCard]}>
+                  <Text style={styles.cardTitle}>DEVELOPMENT</Text>
+                  <Text style={[styles.muted, { marginBottom: 12 }]}>
+                    Skip authentication for local development. This does not create a server session.
+                  </Text>
+                  <TouchableOpacity style={styles.devBypassButton} onPress={handleDevBypass}>
+                    <Text style={styles.devBypassButtonText}>CONTINUE WITHOUT SIGNING IN</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+
               {showLocal ? (
                 <View style={styles.card}>
                   <Text style={styles.cardTitle}>{mode === 'signin' ? 'EMAIL' : 'CREATE ACCOUNT'}</Text>
@@ -287,6 +315,11 @@ const styles = StyleSheet.create({
   cardSpaced: {
     marginTop: 16,
   },
+  devBypassCard: {
+    marginBottom: 16,
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+  },
   cardTitle: {
     fontSize: 11,
     fontWeight: '900',
@@ -343,6 +376,20 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 1,
+  },
+  devBypassButton: {
+    backgroundColor: 'rgba(245, 158, 11, 0.22)',
+    borderColor: 'rgba(245, 158, 11, 0.5)',
+    borderWidth: 1,
+    paddingVertical: 14,
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  devBypassButtonText: {
+    color: TERMINAL.colors.amber,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1.5,
   },
   linkButton: {
     alignItems: 'center',

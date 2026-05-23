@@ -48,6 +48,16 @@ export interface TextVariant {
   callbackHookId?: string;
 }
 
+export interface SkillInsight {
+  id: string;
+  skillWeights: Record<string, number>;
+  threshold: number;
+  text: string;
+  priority?: number;
+  condition?: ConditionExpression;
+  setsFlag?: string;
+}
+
 export interface VisualContinuityHint {
   shotType?: string;
   cameraAngle?: string;
@@ -194,6 +204,7 @@ export interface Beat {
 
   textVariants?: TextVariant[];
   callbackHookIds?: string[];
+  skillInsights?: SkillInsight[];
 
   conditions?: ConditionExpression;
 

@@ -3,28 +3,21 @@ import {
   View,
   Text,
   StyleSheet,
-  TouchableOpacity,
   ScrollView,
   SafeAreaView,
   Alert,
   Platform,
 } from 'react-native';
-import {
-  ChevronRight,
-} from 'lucide-react-native';
-import { StoryCatalogEntry } from '../types';
+import { MediaSetupTarget, StoryCatalogEntry } from '../types';
 import { TERMINAL } from '../theme';
 import { PROXY_CONFIG } from '../config/endpoints';
-import { useSettingsStore, FontSize } from '../stores/settingsStore';
 import { useGenerationJobStore, GenerationJob } from '../stores/generationJobStore';
 import { getVisibleGenerationJobs } from '../types/generationJob';
 import { useImageJobStore } from '../stores/imageJobStore';
 import {
-  DeveloperToolsSection,
-  DisplayPreferencesSection,
+  GeneratorCredentialsSection,
   GenerationJobsSection,
   GeneratorLauncherSection,
-  OAuthAccountSection,
   StoryLibrarySection,
   SystemInfoSection,
 } from '../components/settings/SettingsSections';
@@ -41,8 +34,8 @@ interface SettingsScreenProps {
   onOpenGenerator: (jobId?: string) => void; // Optional jobId to resume viewing
   onDeleteStory?: (storyId: string) => void;
   onRenameStory?: (storyId: string, newTitle: string) => void;
-  onGenerateVideos?: (storyId: string) => void;
-  onGenerateImages?: (storyId: string) => void;
+  onGenerateVideos?: (target: MediaSetupTarget) => void;
+  onGenerateImages?: (target: MediaSetupTarget) => void;
   onContinueSeasonPlan?: (planId: string) => void;
   seasonContinuations?: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>;
   generatedStoryIds?: string[]; // IDs of stories that can be deleted
@@ -51,12 +44,10 @@ interface SettingsScreenProps {
   isRefreshing?: boolean;
   videoGeneratingStoryId?: string | null;
   imageGeneratingStoryId?: string | null;
-  onSignedOut?: () => void;
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   stories,
-  onBack,
   onOpenVisualizer,
   onOpenGenerator,
   onDeleteStory,
@@ -71,27 +62,20 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   isRefreshing = false,
   videoGeneratingStoryId = null,
   imageGeneratingStoryId = null,
-  onSignedOut,
 }) => {
-  const fontSize = useSettingsStore((state) => state.fontSize);
-  const setFontSize = useSettingsStore((state) => state.setFontSize);
-  const developerMode = useSettingsStore((state) => state.developerMode);
-  const setDeveloperMode = useSettingsStore((state) => state.setDeveloperMode);
-  const preferVideo = useSettingsStore((state) => state.preferVideo);
-  const setPreferVideo = useSettingsStore((state) => state.setPreferVideo);
-  const fonts = useSettingsStore((state) => state.getFontSizes());
   const clearImageJobs = useImageJobStore((state) => state.clearJobs);
   const [confirmDeleteStory, setConfirmDeleteStory] = useState<StoryCatalogEntry | null>(null);
   const [renamingStory, setRenamingStory] = useState<StoryCatalogEntry | null>(null);
   const [newStoryTitle, setNewStoryTitle] = useState('');
   const [confirmCancelJob, setConfirmCancelJob] = useState<GenerationJob | null>(null);
   const [artifactOverrides, setArtifactOverrides] = useState<Record<string, Partial<NonNullable<StoryCatalogEntry['imageArtifacts']>>>>({});
+  const [episodeArtifactOverrides, setEpisodeArtifactOverrides] = useState<Record<string, Partial<NonNullable<StoryCatalogEntry['episodes'][number]['imageArtifacts']>>>>({});
   const [deletingArtifactKeys, setDeletingArtifactKeys] = useState<Set<string>>(new Set());
 
-  const getArtifactOverrideKeys = (
-    story: StoryCatalogEntry,
-    scope: 'season' | 'episode',
-  ) => {
+	  const getArtifactOverrideKeys = (
+	    story: StoryCatalogEntry,
+	    scope: 'season' | 'episode',
+	  ) => {
     const normalize = (value?: string | null) => value?.trim().toLowerCase().replace(/\/+$/, '');
     const outputLeaf = story.outputDir?.split('/').filter(Boolean).pop();
     const rawKeys = scope === 'season'
@@ -112,7 +96,17 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         .map(normalize)
         .filter((key): key is string => Boolean(key))
         .map((key) => `${scope}:${key}`),
-    ));
+	    ));
+	  };
+
+  const getEpisodeArtifactOverrideKey = (story: StoryCatalogEntry, target: MediaSetupTarget) => {
+    const normalize = (value?: string | null) => value?.trim().toLowerCase().replace(/\/+$/, '');
+    return [
+      normalize(story.outputDir),
+      normalize(story.id),
+      target.episodeNumber,
+      normalize(target.episodeId),
+    ].filter(Boolean).join(':');
   };
 
   const displayStories = useMemo(() => stories.map((story) => {
@@ -121,15 +115,35 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         ...acc,
         ...(artifactOverrides[key] || {}),
       }), {});
-    if (Object.keys(override).length === 0) return story;
+    const episodes = story.episodes.map((episode) => {
+      const episodeKey = getEpisodeArtifactOverrideKey(story, {
+        kind: 'images',
+        storyId: story.id,
+        outputDir: story.outputDir || '',
+        episodeId: episode.id,
+        episodeNumber: episode.number,
+        episodeTitle: episode.title,
+      });
+      const episodeOverride = episodeArtifactOverrides[episodeKey];
+      if (!episodeOverride) return episode;
+      return {
+        ...episode,
+        imageArtifacts: {
+          ...(episode.imageArtifacts || {}),
+          ...episodeOverride,
+        },
+      };
+    });
+    if (Object.keys(override).length === 0 && episodes.every((episode, index) => episode === story.episodes[index])) return story;
     return {
       ...story,
       imageArtifacts: {
         ...(story.imageArtifacts || {}),
         ...override,
       },
+      episodes,
     };
-  }), [artifactOverrides, stories]);
+  }), [artifactOverrides, episodeArtifactOverrides, stories]);
 
   // Generation job tracking
   const { jobs, isLoaded: jobsLoaded, loadJobs, cancelJob, removeProject, clearCompletedJobs } = useGenerationJobStore();
@@ -210,8 +224,25 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     }));
   };
 
-  const setArtifactDeletionPending = (story: StoryCatalogEntry, scope: 'season' | 'episode', pending: boolean) => {
-    const keys = getArtifactOverrideKeys(story, scope);
+  const patchEpisodeArtifactState = (
+    story: StoryCatalogEntry,
+    target: MediaSetupTarget,
+    patch: Partial<NonNullable<StoryCatalogEntry['episodes'][number]['imageArtifacts']>>,
+  ) => {
+    const key = getEpisodeArtifactOverrideKey(story, target);
+    setEpisodeArtifactOverrides((prev) => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] || {}),
+        ...patch,
+      },
+    }));
+  };
+
+  const setArtifactDeletionPending = (story: StoryCatalogEntry, scope: 'season' | 'episode', pending: boolean, target?: MediaSetupTarget) => {
+    const keys = target
+      ? [getEpisodeArtifactOverrideKey(story, target)]
+      : getArtifactOverrideKeys(story, scope);
     setDeletingArtifactKeys((prev) => {
       const next = new Set(prev);
       for (const key of keys) {
@@ -222,8 +253,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     });
   };
 
-  const isArtifactDeletionPending = (story: StoryCatalogEntry, scope: 'season' | 'episode') =>
-    getArtifactOverrideKeys(story, scope).some((key) => deletingArtifactKeys.has(key));
+  const isArtifactDeletionPending = (story: StoryCatalogEntry, scope: 'season' | 'episode', target?: MediaSetupTarget) =>
+    (target ? [getEpisodeArtifactOverrideKey(story, target)] : getArtifactOverrideKeys(story, scope))
+      .some((key) => deletingArtifactKeys.has(key));
 
   const confirmDestructiveAction = (
     title: string,
@@ -321,22 +353,26 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     );
   };
 
-  const handleDeleteEpisodeArt = (story: StoryCatalogEntry) => {
+  const handleDeleteEpisodeArt = (story: StoryCatalogEntry, target: MediaSetupTarget) => {
     const deleteArt = async () => {
       if (!story.outputDir) return;
-      setArtifactDeletionPending(story, 'episode', true);
+      setArtifactDeletionPending(story, 'episode', true, target);
       try {
         const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/story-image-artifacts/episode-art`, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ outputDir: story.outputDir }),
+          body: JSON.stringify({
+            outputDir: story.outputDir,
+            targetEpisodeNumber: target.episodeNumber,
+            targetEpisodeId: target.episodeId,
+          }),
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok || result?.success === false) {
           throw new Error(result?.error || 'Failed to delete episode art.');
         }
         clearImageJobs();
-        patchStoryArtifactState(story, { hasEpisodeArt: false }, 'episode');
+        patchEpisodeArtifactState(story, target, { hasEpisodeArt: false });
         if (onStoryArtifactsChanged) {
           await onStoryArtifactsChanged(story);
         } else {
@@ -345,13 +381,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       } catch (error) {
         Alert.alert('Delete Failed', error instanceof Error ? error.message : 'Failed to delete episode art.');
       } finally {
-        setArtifactDeletionPending(story, 'episode', false);
+        setArtifactDeletionPending(story, 'episode', false, target);
       }
     };
 
     confirmDestructiveAction(
       'Delete Episode Art?',
-      'This removes reader-facing cover, scene, and beat art for this story. Season-level character/style references stay in place.',
+      `This removes reader-facing cover, scene, and beat art for episode ${target.episodeNumber}. Season-level character/style references and other episodes stay in place.`,
       'Delete Art',
       () => { void deleteArt(); },
     );
@@ -381,28 +417,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     setConfirmDeleteStory(null);
   };
 
-  const fontSizeOptions: { key: FontSize; label: string }[] = [
-    { key: 'small', label: 'SMALL' },
-    { key: 'medium', label: 'MEDIUM' },
-    { key: 'large', label: 'LARGE' },
-  ];
-
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.headerIconButton}
-          onPress={onBack}
-        >
-          <ChevronRight
-            size={20}
-            color={TERMINAL.colors.muted}
-            style={{ transform: [{ rotate: '180deg' }] }}
-          />
-          <Text style={styles.headerButtonText}>BACK</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>SYSTEM CONFIG</Text>
+        <View style={styles.headerSide} />
+        <Text style={styles.headerTitle}>STORYRPG GENERATOR</Text>
         <View style={{ width: 60 }} />
       </View>
 
@@ -411,30 +431,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.contentPadding}
       >
-        <Text style={styles.systemStatus}>OPTIMIZING INTERFACE PARAMETERS</Text>
-
-        <OAuthAccountSection styles={styles} onSignedOut={onSignedOut} />
-
-        <DisplayPreferencesSection
-          styles={styles}
-          fontSize={fontSize}
-          fonts={fonts}
-          fontSizeOptions={fontSizeOptions}
-          preferVideo={preferVideo}
-          onSetFontSize={setFontSize}
-          onTogglePreferVideo={() => setPreferVideo(!preferVideo)}
-        />
-
-        <DeveloperToolsSection
-          styles={styles}
-          developerMode={developerMode}
-          onToggleDeveloperMode={() => setDeveloperMode(!developerMode)}
-        />
-
         <GeneratorLauncherSection
           styles={styles}
           onOpenGenerator={() => onOpenGenerator()}
         />
+
+        <GeneratorCredentialsSection styles={styles} />
 
         <GenerationJobsSection
           styles={styles}
@@ -470,7 +472,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           videoGeneratingStoryId={videoGeneratingStoryId}
           imageGeneratingStoryId={imageGeneratingStoryId}
           isDeletingSeasonReferences={(story) => isArtifactDeletionPending(story, 'season')}
-          isDeletingEpisodeArt={(story) => isArtifactDeletionPending(story, 'episode')}
+          isDeletingEpisodeArt={(story, target) => isArtifactDeletionPending(story, 'episode', target)}
         />
 
         <SystemInfoSection styles={styles} />
@@ -527,17 +529,8 @@ const styles = StyleSheet.create({
     color: 'white',
     letterSpacing: 2,
   },
-  headerIconButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    padding: 8,
-  },
-  headerButtonText: {
-    fontSize: 10,
-    fontWeight: '900',
-    color: TERMINAL.colors.muted,
-    letterSpacing: 1,
+  headerSide: {
+    width: 60,
   },
   content: {
     flex: 1,
@@ -545,14 +538,6 @@ const styles = StyleSheet.create({
   contentPadding: {
     padding: 20,
     paddingBottom: 40,
-  },
-  systemStatus: {
-    fontSize: 9,
-    fontWeight: '900',
-    color: TERMINAL.colors.muted,
-    letterSpacing: 2,
-    marginBottom: 30,
-    textAlign: 'center',
   },
   section: {
     marginBottom: 32,
@@ -584,6 +569,39 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.05)',
     marginLeft: 28,
+  },
+  credentialGrid: {
+    gap: 14,
+  },
+  credentialRow: {
+    gap: 8,
+  },
+  configLabel: {
+    fontSize: 9,
+    fontWeight: '900',
+    color: TERMINAL.colors.muted,
+    letterSpacing: 1,
+  },
+  configHint: {
+    fontSize: 10,
+    color: TERMINAL.colors.muted,
+    fontWeight: '600',
+    lineHeight: 16,
+  },
+  inputWrapper: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  input: {
+    color: 'white',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   previewBox: {
     backgroundColor: '#0f1115',
@@ -722,15 +740,22 @@ const styles = StyleSheet.create({
   },
   storyManageItem: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
     padding: 16,
+    paddingRight: 600,
+    minHeight: 104,
+    position: 'relative',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.03)',
+  },
+  storyManageItemCompact: {
+    paddingRight: 512,
   },
   storyManageItemNarrow: {
     alignItems: 'stretch',
     flexWrap: 'wrap',
+    paddingRight: 16,
   },
   storyEpisodeNumber: {
     width: 42,
@@ -778,6 +803,9 @@ const styles = StyleSheet.create({
     color: TERMINAL.colors.muted,
     fontWeight: '700',
   },
+  storyManageMetaNoWrap: {
+    flexShrink: 0,
+  },
   metaDot: {
     width: 3,
     height: 3,
@@ -797,8 +825,17 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     gap: 8,
     alignItems: 'flex-end',
-    justifyContent: 'center',
+    alignSelf: 'flex-start',
+    justifyContent: 'flex-start',
     flexShrink: 0,
+  },
+  storyManageActionsPinned: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+  },
+  storyManageActionsInline: {
+    marginLeft: 'auto',
   },
   storyManageActionsNarrow: {
     width: '100%',
@@ -810,6 +847,10 @@ const styles = StyleSheet.create({
     gap: 8,
     justifyContent: 'flex-end',
   },
+  storyActionRowGrid: {
+    width: 496,
+    justifyContent: 'flex-start',
+  },
   storyActionButton: {
     paddingVertical: 8,
     paddingHorizontal: 10,
@@ -819,6 +860,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     minWidth: 88,
+  },
+  storyActionButtonGrid: {
+    width: 160,
   },
   storyActionButtonDisabled: {
     backgroundColor: 'rgba(148, 163, 184, 0.07)',

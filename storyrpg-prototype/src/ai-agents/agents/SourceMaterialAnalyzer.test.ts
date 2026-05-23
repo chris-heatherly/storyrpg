@@ -78,6 +78,7 @@ describe('SourceMaterialAnalyzer schema abstraction helpers', () => {
 
 describe('SourceMaterialAnalyzer treatment extraction', () => {
   const treatment = readFileSync(join(__dirname, '../fixtures/bite-me-treatment.md'), 'utf8');
+  const refreshedTreatment = readFileSync(join(__dirname, '../fixtures/refreshed-treatment.md'), 'utf8');
 
   it('extracts treatment episode guidance and exactly three endings', () => {
     const extracted = extractTreatmentFromMarkdown(treatment);
@@ -113,6 +114,39 @@ describe('SourceMaterialAnalyzer treatment extraction', () => {
       ]),
     );
     expect(extracted.endings[0]?.targetConditions.join(' ')).toContain('Victor-aligned');
+  });
+
+  it('extracts refreshed treatment fields with flexible headings and episode title formats', () => {
+    const extracted = extractTreatmentFromMarkdown(refreshedTreatment);
+
+    expect(extracted.isTreatment).toBe(true);
+    expect(extracted.metadata.formatVersion).toBe('storyrpg-treatment-v2');
+    expect(extracted.metadata.confidence).toBe('high');
+    expect(Object.keys(extracted.episodes)).toHaveLength(2);
+    expect(extracted.episodes[1]?.authoredTitle).toBe('The Lantern Job');
+    expect(extracted.episodes[1]?.actLabel).toBe('Act 1');
+    expect(extracted.episodes[1]?.normalizedStructuralRoles).toEqual(['hook', 'plotTurn1']);
+    expect(extracted.episodes[1]?.episodeTurns).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Mara arrives'),
+        expect.stringContaining('lantern speaks'),
+      ]),
+    );
+    expect(extracted.episodes[1]?.encounterCentralConflict).toContain('miracle worth protecting');
+    expect(extracted.episodes[1]?.encounterAftermath).toContain('salt burns');
+    expect(extracted.episodes[1]?.endingPressure).toContain('shadow points inland');
+    expect(extracted.episodes[1]?.capabilityGrowthGuidance?.join(' ')).toContain('costlier clue');
+    expect(extracted.episodes[2]?.authoredTitle).toBe('Breakwater Oath');
+    expect(extracted.episodes[2]?.normalizedStructuralRoles).toEqual(['pinch1']);
+    expect(extracted.branches[0]?.name).toContain('The Ledger Confession');
+    expect(extracted.endings).toHaveLength(3);
+    expect(extracted.endings.map((ending) => ending.name)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('The Keeper'),
+        expect.stringContaining('The Open Door'),
+        expect.stringContaining('The Burned Harbor'),
+      ]),
+    );
   });
 
   it('detects malformed treatment-like input and blocks silent generic fallback', () => {
@@ -231,6 +265,68 @@ describe('SourceMaterialAnalyzer treatment extraction', () => {
     expect(analysis.treatmentBranches.map((branch: any) => branch.name)).toEqual(
       expect.arrayContaining([expect.stringContaining('The Blog War')]),
     );
+  });
+
+  it('marks refreshed treatments as authored treatment input and preserves treatment episode count, titles, and guidance', () => {
+    const analyzer = new SourceMaterialAnalyzer({
+      provider: 'anthropic',
+      model: 'test',
+      apiKey: 'test',
+      maxTokens: 1000,
+      temperature: 0,
+    });
+
+    const structure: any = {
+      genre: 'supernatural mystery',
+      tone: 'salt-stung dread',
+      themes: ['grief', 'truth'],
+      setting: { timePeriod: 'present', location: 'harbor town', worldDetails: 'A lighthouse that answers grief' },
+      protagonist: { name: 'Mara', description: 'A new lighthouse keeper.', arc: 'Learns truth must release grief.' },
+      majorCharacters: [],
+      keyLocations: [],
+      directLanguageFragments: { dialogue: [], prose: [], terminology: [] },
+      storyArcs: [{ name: 'The Light', description: 'Mara learns what the lighthouse imprisons.', chapters: 'all' }],
+      majorPlotPoints: [
+        { description: 'The lantern answers with her sister voice.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
+        { description: 'Mara opens the storm door.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+      ],
+      estimatedScope: { complexity: 'moderate', estimatedEpisodes: 1, reasoning: 'LLM undercounted' },
+      endingAnalysis: { detectedMode: 'single', reasoning: 'fallback', explicitEndings: [] },
+    };
+    const breakdown: any = {
+      episodes: [{
+        episodeNumber: 1,
+        title: 'Wrong LLM Title',
+        synopsis: 'Mara arrives.',
+        sourceChapters: '1',
+        plotPoints: ['Mara arrives'],
+        mainCharacters: ['Mara'],
+        locations: ['Lighthouse'],
+        narrativeArc: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        structuralRole: ['rising'],
+      }],
+      totalEpisodes: 1,
+      breakdownNotes: 'undercounted',
+    };
+
+    const analysis = (analyzer as any).assembleAnalysis(
+      { title: 'Harbor Light', sourceText: refreshedTreatment },
+      structure,
+      breakdown,
+    );
+
+    expect(analysis.sourceFormat).toBe('story_treatment');
+    expect(analysis.treatmentMetadata.detected).toBe(true);
+    expect(analysis.treatmentMetadata.formatVersion).toBe('storyrpg-treatment-v2');
+    expect(analysis.totalEstimatedEpisodes).toBe(2);
+    expect(analysis.episodeBreakdown.map((episode: any) => episode.title)).toEqual([
+      'The Lantern Job',
+      'Breakwater Oath',
+    ]);
+    expect(analysis.episodeBreakdown[0].structuralRole).toEqual(expect.arrayContaining(['hook', 'plotTurn1']));
+    expect(analysis.episodeBreakdown[1].structuralRole).toEqual(expect.arrayContaining(['pinch1']));
+    expect(analysis.episodeBreakdown[0].treatmentGuidance.encounterCentralConflict).toContain('miracle worth protecting');
+    expect(analysis.resolvedEndings).toHaveLength(3);
   });
 });
 

@@ -152,6 +152,12 @@ export interface StoryCatalogEpisode {
   title: string;
   synopsis: string;
   coverImage: string;
+  imageArtifacts?: {
+    hasEpisodeArt?: boolean;
+  };
+  videoArtifacts?: {
+    hasVideo?: boolean;
+  };
 }
 
 export interface StoryCatalogEntry {
@@ -173,6 +179,15 @@ export interface StoryCatalogEntry {
   fullStoryUrl?: string;
   episodeCount: number;
   episodes: StoryCatalogEpisode[];
+}
+
+export interface MediaSetupTarget {
+  kind: 'images' | 'video';
+  storyId: string;
+  outputDir: string;
+  episodeId: string;
+  episodeNumber: number;
+  episodeTitle: string;
 }
 
 // ========================================

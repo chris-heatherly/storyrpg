@@ -63,6 +63,44 @@ function hasCloseMatch(needle: string | undefined, haystack: string, minScore = 
   return tokenOverlapScore(needle, haystack) >= minScore;
 }
 
+function stripMarkdownBullet(value: string): string {
+  return value.replace(/^\s*[-*]\s+/, '').trim();
+}
+
+function extractChoicePressureParts(pressure: string): string[] {
+  const cleaned = stripMarkdownBullet(pressure);
+  const parts: string[] = [];
+  const beforeLabels = cleaned.split(/\s+[—–-]\s+(?=WANT:|COST:|IDENTITY:)/i)[0]?.trim();
+  if (beforeLabels) parts.push(beforeLabels);
+
+  for (const label of ['WANT', 'COST', 'IDENTITY']) {
+    const match = cleaned.match(new RegExp(`${label}:\\s*([^;]+)`, 'i'));
+    if (match?.[1]?.trim()) parts.push(match[1].trim());
+  }
+
+  return parts
+    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .filter((part) => tokens(part).length > 0);
+}
+
+function choicePressureMatches(pressure: string, choicesHaystack: string): boolean {
+  if (hasCloseMatch(pressure, choicesHaystack, 0.65)) return true;
+
+  const parts = extractChoicePressureParts(pressure);
+  if (parts.length === 0) return false;
+  if (parts.length === 1) return false;
+
+  const matchedParts = parts.filter((part) => hasCloseMatch(part, choicesHaystack, 0.28));
+  const requiredMatches = parts.length >= 3 ? 2 : parts.length;
+  if (matchedParts.length >= requiredMatches) return true;
+
+  // Fallback for long labeled authored choice bullets: a generated choice may
+  // capture the named people, objects, or values without repeating the full
+  // sentence. Keep unlabeled bullets stricter so adjacent but different
+  // choices ("Mika's driver" vs. "Mika's key card") do not pass.
+  return parts.length >= 3 && tokenOverlapScore(pressure, choicesHaystack) >= 0.3;
+}
+
 function sceneText(scene: SceneBlueprint): string {
   const choice = scene.choicePoint;
   return [
@@ -268,6 +306,20 @@ export class TreatmentFidelityValidator {
         if (!guidance) continue;
         const episode = story.episodes.find((candidate) => candidate.number === episodeGuidance.episodeNumber);
         const episodeText = episode ? storyText({ ...story, episodes: [episode] }) : allStoryText;
+        if (guidance.authoredTitle && episode?.title && !hasCloseMatch(guidance.authoredTitle, episode.title, 0.5)) {
+          issues.push(`[TreatmentFidelity] Episode ${episodeGuidance.episodeNumber} title drifted from authored treatment title: "${guidance.authoredTitle}".`);
+        }
+        for (const turn of guidance.episodeTurns || []) {
+          if (!hasCloseMatch(turn, episodeText, 0.26)) {
+            issues.push(`[TreatmentFidelity] Episode ${episodeGuidance.episodeNumber} is missing authored episode turn: "${turn}".`);
+          }
+        }
+        if (guidance.encounterCentralConflict && !hasCloseMatch(guidance.encounterCentralConflict, episodeText, 0.28)) {
+          issues.push(`[TreatmentFidelity] Episode ${episodeGuidance.episodeNumber} does not manifest the authored encounter central conflict: "${guidance.encounterCentralConflict}".`);
+        }
+        if (guidance.encounterAftermath && !hasCloseMatch(guidance.encounterAftermath, episodeText, 0.28)) {
+          issues.push(`[TreatmentFidelity] Episode ${episodeGuidance.episodeNumber} is missing authored encounter aftermath/consequence: "${guidance.encounterAftermath}".`);
+        }
         for (const pressure of guidance.majorChoicePressures || []) {
           if (!hasCloseMatch(pressure, episodeText, 0.3)) {
             issues.push(`[TreatmentFidelity] Episode ${episodeGuidance.episodeNumber} is missing authored major choice pressure: "${pressure}".`);
@@ -280,6 +332,18 @@ export class TreatmentFidelityValidator {
         }
         if (guidance.authoredCliffhanger && !hasCloseMatch(guidance.authoredCliffhanger, episodeText, 0.35)) {
           issues.push(`[TreatmentFidelity] Episode ${episodeGuidance.episodeNumber} is missing authored cliffhanger: "${guidance.authoredCliffhanger}".`);
+        }
+        if (guidance.resolutionAftermath && episodeGuidance.episodeNumber >= (input.analysis?.totalEstimatedEpisodes || 0)
+          && !hasCloseMatch(guidance.resolutionAftermath, episodeText, 0.3)) {
+          issues.push(`[TreatmentFidelity] Finale episode is missing authored resolution/aftermath: "${guidance.resolutionAftermath}".`);
+        }
+      }
+      if (input.analysis.sourceFormat === 'story_treatment' && (input.analysis.resolvedEndings || []).length > 0) {
+        for (const ending of input.analysis.resolvedEndings || []) {
+          const endingText = `${ending.name} ${ending.summary} ${ending.themePayoff}`;
+          if (!hasCloseMatch(endingText, allStoryText, 0.2)) {
+            issues.push(`[TreatmentFidelity] Final story may have drifted from treatment ending target: "${ending.name}".`);
+          }
         }
       }
     }
@@ -304,22 +368,51 @@ export class TreatmentFidelityValidator {
 
     const allBlueprintText = blueprintText(input.blueprint);
 
-    if (guidance.authoredCliffhanger) {
+    if (guidance.endingPressure || guidance.authoredCliffhanger) {
+      const endingPressure = guidance.endingPressure || guidance.authoredCliffhanger;
       const cliffhangerHaystack = [
         finalSceneText(input.blueprint),
         input.blueprint.arc?.resolution,
       ].filter(Boolean).join(' ');
-      if (!hasCloseMatch(guidance.authoredCliffhanger, cliffhangerHaystack, 0.4)) {
+      if (!hasCloseMatch(endingPressure, cliffhangerHaystack, 0.4)) {
         issues.push(
-          `[TreatmentFidelity] Blueprint does not preserve the authored cliffhanger: "${guidance.authoredCliffhanger}". ` +
+          `[TreatmentFidelity] Blueprint does not preserve the authored ending pressure: "${endingPressure}". ` +
           'Make the final scene narrativeFunction/keyBeats explicitly land this hook.'
         );
       }
     }
 
+    if ((guidance.episodeTurns || []).length > 0) {
+      const missingTurns = guidance.episodeTurns!.filter((turn) => !hasCloseMatch(turn, allBlueprintText, 0.28));
+      if (missingTurns.length > 0) {
+        issues.push(
+          `[TreatmentFidelity] Blueprint does not preserve authored episode turn(s): ${missingTurns.join(' | ')}. ` +
+          'Express treatment turns through scene purpose, keyBeats, sequenceIntent, encounter buildup, choices, or aftermath.'
+        );
+      }
+    }
+
+    if (guidance.encounterCentralConflict && !hasCloseMatch(guidance.encounterCentralConflict, allBlueprintText, 0.3)) {
+      issues.push(
+        `[TreatmentFidelity] Blueprint does not make the encounter manifest the authored central conflict: "${guidance.encounterCentralConflict}".`
+      );
+    }
+
+    if (guidance.encounterAftermath && !hasCloseMatch(guidance.encounterAftermath, allBlueprintText, 0.3)) {
+      issues.push(
+        `[TreatmentFidelity] Blueprint does not preserve authored encounter aftermath/consequence: "${guidance.encounterAftermath}".`
+      );
+    }
+
+    if (guidance.resolutionAftermath && !hasCloseMatch(guidance.resolutionAftermath, allBlueprintText, 0.3)) {
+      issues.push(
+        `[TreatmentFidelity] Blueprint does not preserve authored finale resolution/aftermath: "${guidance.resolutionAftermath}".`
+      );
+    }
+
     if ((guidance.majorChoicePressures || []).length > 0) {
       const choices = choiceText(input.blueprint);
-      const matchedChoice = guidance.majorChoicePressures!.some((pressure) => hasCloseMatch(pressure, choices, 0.5));
+      const matchedChoice = guidance.majorChoicePressures!.some((pressure) => choicePressureMatches(pressure, choices));
       if (!matchedChoice) {
         issues.push(
           `[TreatmentFidelity] Blueprint does not turn any authored major choice pressure into a real choicePoint. ` +
@@ -342,6 +435,16 @@ export class TreatmentFidelityValidator {
           `Include a planned encounter for one of: ${guidance.encounterAnchors!.join(' | ')}`
         );
       }
+    }
+
+    const plannedConflict = plannedTreatmentEncounters
+      .map((encounter) => `${encounter.centralConflict || ''} ${encounter.aftermathConsequence || ''}`)
+      .join(' ');
+    if (guidance.encounterCentralConflict && plannedTreatmentEncounters.length > 0
+      && !hasCloseMatch(guidance.encounterCentralConflict, plannedConflict || allBlueprintText, 0.28)) {
+      issues.push(
+        `[TreatmentFidelity] Treatment-derived planned encounter is missing central conflict context: "${guidance.encounterCentralConflict}".`
+      );
     }
 
     const authoredResidue = [

@@ -64,6 +64,7 @@ export interface StoryGenerationResponse {
 export interface ImageGenerationBatchRequest extends PipelineHookOptions {
   config?: PipelineConfig;
   outputDirectory: string;
+  targetEpisodeNumber?: number;
   resumeCheckpoint?: ResumeCheckpoint;
   externalJobId?: string;
 }
@@ -186,7 +187,9 @@ export async function runImageGenerationBatch(request: ImageGenerationBatchReque
   }
   wirePipeline(pipeline, request);
 
-  const result = await pipeline.generateImagesForDraft(request.outputDirectory, request.resumeCheckpoint);
+  const result = await pipeline.generateImagesForDraft(request.outputDirectory, request.resumeCheckpoint, {
+    targetEpisodeNumber: request.targetEpisodeNumber,
+  });
 
   return {
     pipeline,

@@ -31,6 +31,7 @@ export type WorkerPayload = {
   };
   imageGenerationInput?: {
     outputDirectory: string;
+    targetEpisodeNumber?: number;
   };
 };
 
@@ -106,6 +107,16 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
     }
     if (typeof value.imageGenerationInput.outputDirectory !== 'string' || value.imageGenerationInput.outputDirectory.length === 0) {
       throw new Error('imageGenerationInput.outputDirectory is required for image-generation mode.');
+    }
+    if (
+      value.imageGenerationInput.targetEpisodeNumber != null
+      && (
+        typeof value.imageGenerationInput.targetEpisodeNumber !== 'number'
+        || !Number.isFinite(value.imageGenerationInput.targetEpisodeNumber)
+        || value.imageGenerationInput.targetEpisodeNumber < 1
+      )
+    ) {
+      throw new Error('imageGenerationInput.targetEpisodeNumber must be a positive number.');
     }
   }
 }

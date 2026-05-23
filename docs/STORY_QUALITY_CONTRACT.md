@@ -20,9 +20,27 @@ story and image-quality rules, not the old orchestration model.
 - **Delayed memory:** important choices should echo later through conditional
   text, NPC recognition, altered descriptions, relationship tone, visual state,
   or later choice wording.
+- **Skill surfaces:** hidden skills must matter through fiction-first surfaces:
+  passive insights, prepared advantages, choice affordances, outcome texture,
+  and branch residue. Hard checks should usually have at least two surfaces.
 - **Pixar-style craft:** clear desire, escalating pressure, earned surprise,
   setup/payoff, causality, character change under pressure, and emotional
   payoff. This is a rubric, not a separate agent or rigid formula.
+
+### Skill Surface Contract
+
+- **Passive insight:** beat-level `skillInsights` reveal danger, opportunity,
+  emotional subtext, contradictions, environmental tools, social leverage, or
+  hidden costs when hidden skill coverage meets the threshold.
+- **Prepared advantage:** `statCheck.modifiers` apply hidden deltas from prior
+  flags, relationships, items, clues, promises, injuries, mentorship, or branch
+  residue. The optional `hint` must be prose, not mechanics.
+- **Playable failure:** every stat-check failure should create story material:
+  debt, suspicion, injury, lost leverage, exposure, damaged trust, route
+  pressure, recovery, or a later callback.
+- **Banned player-facing terms:** stat, skill check, DC, threshold, roll,
+  modifier, bonus, success chance, failure chance, percentage, level
+  requirement, and build.
 
 ## Visual Rules
 
@@ -46,6 +64,10 @@ story and image-quality rules, not the old orchestration model.
 |---|---|
 | Choice impact factors | `ChoiceImpactValidator` |
 | Raw mechanics leakage | `MechanicsLeakageValidator` |
+| Stat-check balance | `StatCheckBalanceValidator` |
+| Skill surfaces | `SkillSurfaceValidator` |
+| Skill / attribute coverage | `SkillCoverageValidator` |
+| Branch mechanical residue | `BranchMechanicalDivergenceValidator` |
 | Callback coverage | `CallbackCoverageValidator`, `CallbackOpportunitiesValidator` |
 | Consequence budget | `ConsequenceBudgetValidator` |
 | Branch graph validity | `SceneGraphBranchValidator`, `DivergenceValidator` |

@@ -29,6 +29,8 @@ export function buildSeasonPlanDirectives(
     difficulty: enc.difficulty,
     npcsInvolved: enc.npcsInvolved,
     stakes: enc.stakes,
+    centralConflict: enc.centralConflict,
+    aftermathConsequence: enc.aftermathConsequence,
     relevantSkills: enc.relevantSkills,
     encounterBuildup: enc.encounterBuildup,
     encounterSetupContext: enc.encounterSetupContext,

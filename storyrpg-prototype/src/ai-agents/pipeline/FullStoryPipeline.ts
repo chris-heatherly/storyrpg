@@ -999,11 +999,25 @@ export class FullStoryPipeline {
     });
     if (validation.valid) return false;
 
-    const repairable = validation.issues.some(issue =>
+    const needsChoiceRepair = validation.issues.some(issue =>
       issue.type === 'lost_branch_during_assembly' ||
       issue.type === 'missing_scene_graph_branch'
     );
+    const needsResidueRepair = validation.issues.some(issue =>
+      issue.type === 'missing_branch_residue'
+    );
+    const repairable = needsChoiceRepair || needsResidueRepair;
     if (!repairable) return false;
+
+    const residueRepaired = needsResidueRepair
+      ? this.repairSceneGraphBranchResidue(
+          validation,
+          blueprint,
+          sceneContents,
+          context.phase,
+        )
+      : false;
+    if (!needsChoiceRepair) return residueRepaired;
 
     const branchScenes = blueprint.scenes.filter(scene =>
       scene.choicePoint?.branches &&
@@ -1011,9 +1025,9 @@ export class FullStoryPipeline {
       new Set(scene.leadsTo || []).size >= 2 &&
       !scene.isEncounter
     );
-    if (branchScenes.length === 0) return false;
+    if (branchScenes.length === 0) return residueRepaired;
 
-    let repaired = false;
+    let repaired = residueRepaired;
     for (const sceneBlueprint of branchScenes.slice(0, 2)) {
       const sceneContent = sceneContents.find(scene => scene.sceneId === sceneBlueprint.id);
       if (!sceneContent || sceneContent.beats.length === 0) continue;
@@ -1098,6 +1112,74 @@ export class FullStoryPipeline {
       } else {
         choiceSets.push(repairedChoiceSet);
       }
+      repaired = true;
+    }
+
+    return repaired;
+  }
+
+  private repairSceneGraphBranchResidue(
+    validation: SceneGraphBranchValidationResult,
+    blueprint: EpisodeBlueprint,
+    sceneContents: SceneContent[],
+    phase: string,
+  ): boolean {
+    const targetIds = validation.issues
+      .filter(issue => issue.type === 'missing_branch_residue' && issue.targetSceneId)
+      .map(issue => issue.targetSceneId!)
+      .filter((id, index, all) => all.indexOf(id) === index);
+    if (targetIds.length === 0) return false;
+
+    let repaired = false;
+    for (const targetId of targetIds) {
+      const sceneBlueprint = blueprint.scenes.find(scene => scene.id === targetId);
+      const sceneContent = sceneContents.find(scene => scene.sceneId === targetId);
+      if (!sceneBlueprint || !sceneContent) continue;
+
+      const incomingScenes = blueprint.scenes.filter(scene => scene.leadsTo?.includes(targetId));
+      const branchNames = incomingScenes
+        .map(scene => scene.incomingChoiceContext || scene.name)
+        .filter(Boolean)
+        .slice(0, 3);
+      const acknowledgment = branchNames.length > 0
+        ? `The path here still matters: ${branchNames.join(' / ')} leaves a visible residue in how everyone enters ${sceneBlueprint.name}.`
+        : `The route chosen before this moment still colors how everyone enters ${sceneBlueprint.name}.`;
+
+      if (sceneContent.beats.length === 0) {
+        sceneContent.beats.push({
+          id: `${targetId}-branch-residue`,
+          text: acknowledgment,
+          callbackHookIds: [`branch-reconvergence-${targetId}`],
+          intensityTier: 'supporting',
+        } as GeneratedBeat);
+        sceneContent.startingBeatId = `${targetId}-branch-residue`;
+      }
+
+      const firstBeat = sceneContent.beats[0];
+      const alreadyAcknowledged = [
+        firstBeat.text,
+        ...(firstBeat.textVariants || []).map(variant => variant.text),
+        ...(firstBeat.callbackHookIds || []),
+      ].join(' ').toLowerCase().includes('branch-reconvergence');
+      if (alreadyAcknowledged) continue;
+
+      firstBeat.text = `${firstBeat.text.trim()} ${acknowledgment}`.trim();
+      firstBeat.callbackHookIds = Array.from(new Set([
+        ...(firstBeat.callbackHookIds || []),
+        `branch-reconvergence-${targetId}`,
+      ]));
+      sceneContent.isConvergencePoint = true;
+      sceneContent.continuityNotes = Array.from(new Set([
+        ...(sceneContent.continuityNotes || []),
+        `Branch reconvergence residue repaired for ${targetId}: ${acknowledgment}`,
+      ]));
+
+      this.emit({
+        type: 'regeneration_triggered',
+        phase,
+        message: `Repairing branch reconvergence residue for ${targetId}`,
+        data: { sceneId: targetId, incomingScenes: incomingScenes.map(scene => scene.id), acknowledgment },
+      });
       repaired = true;
     }
 
@@ -2076,6 +2158,7 @@ export class FullStoryPipeline {
     characterBible: CharacterBible,
     encounters: EncounterStructure[],
     brief: FullCreativeBrief,
+    options: { targetEpisodeNumber?: number } = {},
   ): Promise<{
     totalSlots: number;
     resolvedSlotsBefore: number;
@@ -2110,7 +2193,10 @@ export class FullStoryPipeline {
 
     const slots: ImageSlot[] = [];
     const completedEncounterBaseIdentifiersByScene: Record<string, string[]> = {};
-    for (const episode of story.episodes || []) {
+    const targetEpisodes = (story.episodes || []).filter((episode) => (
+      options.targetEpisodeNumber == null || episode.number === options.targetEpisodeNumber
+    ));
+    for (const episode of targetEpisodes) {
       for (const scene of episode.scenes || []) {
         const scopedSceneId = `episode-${episode.number}-${scene.id}`;
         const sceneContent = {
@@ -2455,7 +2541,22 @@ export class FullStoryPipeline {
     const path = await import('path');
     const outputRoot = path.resolve(outputDirectory);
     const projectRoot = process.cwd();
-    const imageValueKeys = new Set(['image', 'imageUrl', 'imagePath', 'backgroundImage', 'coverImage']);
+    const imageValueKeys = new Set([
+      'image',
+      'imageUrl',
+      'imagePath',
+      'backgroundImage',
+      'coverImage',
+      'situationImage',
+      'outcomeImage',
+      'portrait',
+      'portraitImage',
+    ]);
+    const isImageReferenceField = (key: string, value: string): boolean => {
+      if (imageValueKeys.has(key)) return true;
+      if (/prompt|description|caption|style|negative/i.test(key)) return false;
+      return /image/i.test(key) && /\.(png|jpe?g|webp)(?:[?#].*)?$/i.test(value);
+    };
 
     const toFilePath = (value: string): string | undefined => {
       if (!value || value.startsWith('data:')) return undefined;
@@ -2522,7 +2623,7 @@ export class FullStoryPipeline {
       }
       for (const [key, value] of Object.entries(node)) {
         const childPath = breadcrumb ? `${breadcrumb}.${key}` : key;
-        if (typeof value === 'string' && imageValueKeys.has(key)) {
+        if (typeof value === 'string' && isImageReferenceField(key, value)) {
           const filePath = toFilePath(value);
           if (!filePath || !filePath.startsWith(outputRoot)) continue;
           report.checked += 1;
@@ -2671,7 +2772,8 @@ export class FullStoryPipeline {
 
   async generateImagesForDraft(
     outputDirectory: string,
-    resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> }
+    resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> },
+    options: { targetEpisodeNumber?: number } = {},
   ): Promise<FullPipelineResult> {
     this.events = [];
     this.checkpoints = [];
@@ -2718,6 +2820,7 @@ export class FullStoryPipeline {
 	      characterBible,
 	      savedEncounters,
 	      brief,
+	      options,
 	    );
 	    this.emit({
 	      type: 'debug',
@@ -2743,6 +2846,14 @@ export class FullStoryPipeline {
 	        });
 	        for (const episode of story.episodes || []) {
 	          await this.checkCancellation();
+	          if (options.targetEpisodeNumber != null && episode.number !== options.targetEpisodeNumber) {
+	            this.emit({
+	              type: 'debug',
+	              phase: 'images',
+	              message: `Image-only run skipping episode ${episode.number}; target is episode ${options.targetEpisodeNumber}.`,
+	            });
+	            continue;
+	          }
 	          const missingForEpisode = imageResumeScan.missingSlotIds.some((slotId) => slotId.includes(`episode-${episode.number}-`));
 	          if (!missingForEpisode) {
 	            this.emit({
@@ -2845,7 +2956,9 @@ export class FullStoryPipeline {
 	        }
 	      }
 
-      const coverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible, normalizedOutputDir);
+      const coverUrl = options.targetEpisodeNumber == null
+        ? await this.generateStoryCoverArt(brief, characterBible, worldBible, normalizedOutputDir)
+        : undefined;
       let finalStory = this.resolveGeneratedStoryPlayerTemplates(
         assembleStoryAssetsFromRegistry(story, this.assetRegistry),
         brief,
@@ -3649,6 +3762,9 @@ export class FullStoryPipeline {
             'pov_clarity',
             'voice_fidelity',
             'branch_topology',
+            'stat_check_balance',
+            'skill_surface',
+            'branch_mechanical_divergence',
           ]);
           const repairableIssues = quickValidation.blockingIssues.filter(
             i => repairableCategories.has(i.category)
@@ -3664,7 +3780,7 @@ export class FullStoryPipeline {
 
             // --- Repair stakes_triangle and five_factor issues (existing choices) ---
             const choiceIssues = repairableIssues.filter(
-              i => i.category === 'stakes_triangle' || i.category === 'five_factor'
+              i => i.category === 'stakes_triangle' || i.category === 'five_factor' || i.category === 'stat_check_balance'
             );
 
             for (const issue of choiceIssues) {
@@ -3779,7 +3895,7 @@ export class FullStoryPipeline {
 
             // --- Repair pov_clarity / voice_fidelity issues (scoped SceneWriter rewrite) ---
             const sceneRewriteIssues = repairableIssues.filter(
-              i => i.category === 'voice_fidelity' || i.category === 'pov_clarity'
+              i => i.category === 'voice_fidelity' || i.category === 'pov_clarity' || i.category === 'skill_surface'
             );
             for (const issue of sceneRewriteIssues) {
               const sceneId = issue.location?.sceneId;
@@ -3806,8 +3922,10 @@ export class FullStoryPipeline {
                     title: brief.story.title,
                     genre: brief.story.genre,
                     tone: brief.story.tone,
-                    userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL ${issue.category === 'pov_clarity' ? 'POV CLARITY' : 'VOICE FIDELITY'} FIX:\n${issue.message}\n${issue.suggestion || ''}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${existingSceneJson}\n\n${issue.category === 'pov_clarity'
+                    userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL ${issue.category === 'pov_clarity' ? 'POV CLARITY' : issue.category === 'skill_surface' ? 'SKILL SURFACE' : 'VOICE FIDELITY'} FIX:\n${issue.message}\n${issue.suggestion || ''}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${existingSceneJson}\n\n${issue.category === 'pov_clarity'
                       ? 'Rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, the protagonist name, or a concrete pronoun before focusing on NPCs, setting, or exposition. Do not emit template variables.'
+                      : issue.category === 'skill_surface'
+                        ? 'Add or repair fiction-first skill surfaces. Prefer beat-level skillInsights that reveal usable story information, and preserve all existing beat IDs, navigation, choices, visual contract fields, thread IDs, and callback IDs. Do not expose stats, skill checks, thresholds, modifiers, bonuses, rolls, or percentages.'
                       : 'Re-author this scene\'s beats with stricter voice adherence; match each character\'s vocabulary, formality, sentence length, and avoided-words list.'}`,
                     worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
                   },
@@ -18127,6 +18245,8 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           id: gb.id,
           text: gb.text,
           textVariants: gb.textVariants,
+          callbackHookIds: gb.callbackHookIds,
+          onShow: gb.onShow,
           speaker: gb.speaker,
           speakerMood: gb.speakerMood,
           nextBeatId: gb.nextBeatId,
@@ -18722,14 +18842,16 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
    * Bind generated video URLs to beats in the assembled story.
    * Uses the same composite key pattern as images (sceneId::beatId).
    */
-  private bindGeneratedVideoToStory(story: Story, videoResults: Map<string, string>): number {
+  private bindGeneratedVideoToStory(story: Story, videoResults: Map<string, string>, options: { targetEpisodeNumber?: number } = {}): number {
     if (!videoResults || videoResults.size === 0) return 0;
 
     let mapped = 0;
     for (const episode of story.episodes || []) {
+      if (options.targetEpisodeNumber != null && episode.number !== options.targetEpisodeNumber) continue;
       for (const scene of episode.scenes || []) {
         for (const beat of scene.beats || []) {
-          const videoUrl = videoResults.get(`${scene.id}::${beat.id}`);
+          const scopedKey = `episode-${episode.number}-${scene.id}::${beat.id}`;
+          const videoUrl = videoResults.get(scopedKey) || videoResults.get(`${scene.id}::${beat.id}`);
           if (videoUrl) {
             beat.video = videoUrl;
             mapped++;
@@ -19252,7 +19374,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
    * Reconstructs the data structures the video pipeline needs from the story JSON
    * and the original generation artifacts (brief, world bible) on disk.
    */
-  async runVideoOnly(story: Story): Promise<{ videosGenerated: number; story: Story }> {
+  async runVideoOnly(story: Story, options: { targetEpisodeNumber?: number } = {}): Promise<{ videosGenerated: number; story: Story }> {
     const outputDir = story.outputDir;
     if (!outputDir) throw new Error('Story has no outputDir — cannot locate generation artifacts');
 
@@ -19278,13 +19400,20 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     const sceneImages = new Map<string, string>();
     const sceneContents: SceneContent[] = [];
 
-    for (const episode of story.episodes || []) {
+    const targetEpisodes = (story.episodes || []).filter((episode) => (
+      options.targetEpisodeNumber == null || episode.number === options.targetEpisodeNumber
+    ));
+    if (options.targetEpisodeNumber != null && targetEpisodes.length === 0) {
+      throw new Error(`Episode ${options.targetEpisodeNumber} was not found in story — cannot generate video`);
+    }
+
+    for (const episode of targetEpisodes) {
       for (const scene of episode.scenes || []) {
         if (scene.encounter) continue;
 
         const beats: GeneratedBeat[] = (scene.beats || []).map(beat => {
           if (beat.image) {
-            beatImages.set(`${scene.id}::${beat.id}`, beat.image);
+            beatImages.set(`episode-${episode.number}-${scene.id}::${beat.id}`, beat.image);
           }
           return {
             id: beat.id,
@@ -19325,13 +19454,15 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     }
 
     if (beatImages.size === 0) {
-      throw new Error('No beat images found in story — video generation requires existing images');
+      throw new Error(options.targetEpisodeNumber != null
+        ? `No beat images found for episode ${options.targetEpisodeNumber} — video generation requires existing images`
+        : 'No beat images found in story — video generation requires existing images');
     }
 
     this.emit({
       type: 'agent_start',
       phase: 'video_generation',
-      message: `Found ${beatImages.size} beat images across ${sceneContents.length} scenes. Starting video generation...`,
+      message: `Found ${beatImages.size} beat images across ${sceneContents.length} scenes${options.targetEpisodeNumber != null ? ` for episode ${options.targetEpisodeNumber}` : ''}. Starting video generation...`,
     });
 
     const videosDir = `${outputDir}videos/`;
@@ -19340,12 +19471,22 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     const videoRunResult = await this.runVideoGeneration(
       sceneContents,
       { beatImages, sceneImages },
-      brief,
+      {
+        ...brief,
+        episode: options.targetEpisodeNumber != null && targetEpisodes[0]
+          ? {
+              ...(brief.episode || {}),
+              number: targetEpisodes[0].number,
+              title: targetEpisodes[0].title,
+              synopsis: targetEpisodes[0].synopsis,
+            }
+          : brief.episode,
+      },
       worldBible
     );
     const videoResults = videoRunResult.videoResults;
 
-    const videosGenerated = this.bindGeneratedVideoToStory(story, videoResults);
+    const videosGenerated = this.bindGeneratedVideoToStory(story, videoResults, options);
     await saveVideoDiagnosticsLog(outputDir, videoRunResult.diagnostics);
 
     this.emit({
@@ -19366,7 +19507,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       }),
     });
 
-    console.log(`[Pipeline] Video-only run complete: ${videosGenerated} videos for "${story.title}"`);
+    console.log(`[Pipeline] Video-only run complete: ${videosGenerated} videos for "${story.title}"${options.targetEpisodeNumber != null ? ` episode ${options.targetEpisodeNumber}` : ''}`);
     return { videosGenerated, story };
   }
 }

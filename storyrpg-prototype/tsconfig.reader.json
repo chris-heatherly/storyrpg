@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-native",
+    "baseUrl": ".",
+    "paths": {
+      "@storyrpg/app-entry": ["apps/reader/ReaderApp.tsx"]
+    }
+  },
+  "include": [
+    "index.ts",
+    "apps/reader/**/*.tsx",
+    "src/screens/reader/**/*.tsx"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/ai-agents/**/*",
+    "src/screens/GeneratorScreen.tsx",
+    "src/screens/generator/**/*",
+    "src/stores/generationJobStore.ts",
+    "src/stores/imageJobStore.ts",
+    "src/stores/videoJobStore.ts",
+    "src/stores/seasonPlanStore.ts",
+    "src/hooks/useGeneratorRunner.ts"
+  ]
+}

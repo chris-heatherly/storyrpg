@@ -9,11 +9,17 @@ import {
   Consequence,
   EncounterBeat,
   EncounterChoice,
+  SkillInsight,
+  StatCheckModifier,
 } from '../types';
 import { evaluateCondition } from './conditionEvaluator';
-import { resolveStatCheck, ResolutionTracker, normalizeStatCheck, applyUseBasedGrowth } from './resolutionEngine';
+import { resolveStatCheck, ResolutionTracker, normalizeStatCheck, buildUseBasedGrowthConsequences, computeOverlap } from './resolutionEngine';
 import { processText, processTemplate } from './templateProcessor';
 import { mediaRefAsString } from '../assets/assetRef';
+import {
+  getSkillKeyFromChoice,
+  resolveChoiceSkillDisplay,
+} from '../utils/choiceSkillDisplay';
 
 // Session-scoped fairness tracker for resolution streaks
 const _resolutionTracker = new ResolutionTracker();
@@ -52,6 +58,7 @@ export function isEncounterBeat(beat: Beat | EncounterBeat): beat is EncounterBe
 export interface ProcessedBeat {
   id: string;
   text: string;
+  skillInsights?: string[];
   speaker?: string;
   speakerMood?: string;
   image?: string;
@@ -80,7 +87,10 @@ export interface ProcessedChoice {
     attribute?: string;
     skill?: string;
   };
+  primarySkillKey?: string;
   primarySkillLabel?: string;
+  effectiveSkillValue?: number;
+  skillBonusValue?: number;
   hasAdvantage?: boolean;
   advantageText?: string;
   echoSummary?: string;
@@ -102,11 +112,6 @@ export interface ChoiceResult {
   nextBeatId?: string;
 }
 
-function formatSkillLabel(raw?: string): string | undefined {
-  if (!raw) return undefined;
-  return raw.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
-}
-
 function buildLockedReason(choice: Choice, player: PlayerState, story: Story): string {
   if (choice.lockedText) {
     return processTemplate(choice.lockedText, player, story);
@@ -118,6 +123,43 @@ function buildLockedReason(choice: Choice, player: PlayerState, story: Story): s
   }
 
   return 'This option is not available.';
+}
+
+function evaluateStatCheckModifiers(
+  modifiers: StatCheckModifier[] | undefined,
+  player: PlayerState
+): { total: number; active: StatCheckModifier[] } {
+  const active: StatCheckModifier[] = [];
+  let total = 0;
+
+  for (const modifier of modifiers ?? []) {
+    if (!modifier.condition || !evaluateCondition(modifier.condition, player)) continue;
+    const delta = Number(modifier.delta);
+    if (!Number.isFinite(delta)) continue;
+    active.push(modifier);
+    total += Math.max(-25, Math.min(25, delta));
+  }
+
+  return { total, active };
+}
+
+function processSkillInsights(
+  insights: SkillInsight[] | undefined,
+  player: PlayerState,
+  story: Story
+): string[] {
+  if (!insights?.length) return [];
+
+  return insights
+    .map((insight, index) => ({ insight, index }))
+    .filter(({ insight }) => {
+      if (!insight.text?.trim()) return false;
+      if (insight.condition && !evaluateCondition(insight.condition, player)) return false;
+      return computeOverlap(player, insight.skillWeights ?? {}) >= insight.threshold;
+    })
+    .sort((a, b) => (b.insight.priority ?? 0) - (a.insight.priority ?? 0) || a.index - b.index)
+    .slice(0, 2)
+    .map(({ insight }) => processTemplate(insight.text, player, story));
 }
 
 /**
@@ -195,6 +237,9 @@ export function processBeat(
   const speaker = !isEncounter && (beat as Beat).speaker
     ? processTemplate((beat as Beat).speaker!, player, story)
     : undefined;
+  const skillInsights = !isEncounter
+    ? processSkillInsights((beat as Beat).skillInsights, player, story)
+    : [];
 
   // Filter and process choices
   // EncounterBeat has EncounterChoice[], Beat has Choice[]
@@ -220,6 +265,7 @@ export function processBeat(
   return {
     id: beat.id,
     text,
+    skillInsights,
     speaker,
     speakerMood: !isEncounter ? (beat as Beat).speakerMood : undefined,
     image: image || undefined,
@@ -253,6 +299,11 @@ function processEncounterChoices(
       continue;
     }
 
+    const skillDisplay = resolveChoiceSkillDisplay({
+      skillKey: choice.primarySkill,
+      player,
+    });
+
     processed.push({
       id: choice.id,
       text: processTemplate(choice.text, player, story),
@@ -264,7 +315,10 @@ function processEncounterChoices(
       statCheckInfo: choice.primarySkill
         ? { skill: choice.primarySkill }
         : undefined,
-      primarySkillLabel: formatSkillLabel(choice.primarySkill),
+      primarySkillKey: skillDisplay.skillKey,
+      primarySkillLabel: skillDisplay.skillLabel,
+      effectiveSkillValue: skillDisplay.effectiveSkillValue,
+      skillBonusValue: skillDisplay.skillBonusValue,
       hasAdvantage: !!(choice.statBonus && choice.statBonus.flavorText),
       advantageText: choice.statBonus?.flavorText,
       echoSummary: choice.feedbackCue?.echoSummary ?? choice.reminderPlan?.immediate,
@@ -296,6 +350,15 @@ function processChoices(
       continue;
     }
 
+    const skillDisplay = resolveChoiceSkillDisplay({
+      skillKey: getSkillKeyFromChoice(choice),
+      player,
+    });
+    const activeModifiers = evaluateStatCheckModifiers(choice.statCheck?.modifiers, player).active
+      .filter((modifier) => modifier.hint?.trim())
+      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+    const advantageText = activeModifiers[0]?.hint;
+
     processed.push({
       id: choice.id,
       text: processTemplate(choice.text, player, story),
@@ -307,10 +370,15 @@ function processChoices(
       statCheckInfo: choice.statCheck
         ? {
             attribute: choice.statCheck.attribute,
-            skill: choice.statCheck.skill,
+            skill: choice.statCheck.skill ?? skillDisplay.skillKey,
           }
         : undefined,
-      primarySkillLabel: formatSkillLabel(choice.statCheck?.skill || choice.statCheck?.attribute),
+      primarySkillKey: skillDisplay.skillKey,
+      primarySkillLabel: skillDisplay.skillLabel,
+      effectiveSkillValue: skillDisplay.effectiveSkillValue,
+      skillBonusValue: skillDisplay.skillBonusValue,
+      hasAdvantage: !!advantageText,
+      advantageText,
       echoSummary: choice.feedbackCue?.echoSummary ?? choice.reminderPlan?.immediate,
       progressSummary: choice.feedbackCue?.progressSummary ?? choice.reminderPlan?.shortTerm,
       checkClass: choice.feedbackCue?.checkClass ?? (choice.statCheck?.retryableAfterChange ? 'retryable' : undefined),
@@ -340,13 +408,17 @@ export function executeChoice(
 
   // Perform stat check if required
   if (choice.statCheck) {
-    resolution = resolveStatCheck(player, choice.statCheck, _resolutionTracker);
+    const modifierResult = evaluateStatCheckModifiers(choice.statCheck.modifiers, player);
+    resolution = resolveStatCheck(player, choice.statCheck, _resolutionTracker, {
+      modifierTotal: modifierResult.total,
+    });
 
     const tier = resolution.tier;
 
-    // Use-based skill growth: bump skills proportional to challenge weights
+    // Use-based skill growth is emitted as normal consequences so playback can
+    // surface the change in fiction-first feedback.
     const normalized = normalizeStatCheck(choice.statCheck);
-    applyUseBasedGrowth(player, normalized.skillWeights, tier);
+    consequences.push(...buildUseBasedGrowthConsequences(normalized.skillWeights, tier));
 
     // Inject outcome-tier flags so the payoff beat's textVariants can select
     // the right outcome text at render time. Flags are mutually exclusive.

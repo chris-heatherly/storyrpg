@@ -160,6 +160,23 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
     expect(result).toContain('visualThread');
   });
 
+  it('includes scene-splitting guidance without adding a new schema layer', () => {
+    const input = makeInput();
+    const result = (architect as any).buildPrompt(input);
+
+    expect(result).toContain('## Scene Splitting');
+    expect(result).toContain('meaningful change in location, time, character dynamics, objective, obstacle, or dramatic tension');
+    expect(result).toContain('Do not create a new scene for tiny tonal shifts');
+    expect(result).toContain('keyBeats that describe major turns, not topics');
+    expect(result).toContain('handoff into the next scene or encounter');
+    expect(result).toContain('## Scene Content Purpose');
+    expect(result).toContain('Every scene must have a purpose the player can feel');
+    expect(result).toContain('## Scene Arc');
+    expect(result).toContain('Each scene should build toward its keyMoment');
+    expect(result).toContain('## Conflict And Action Planning');
+    expect(result).toContain('damage may be emotional, social, relational');
+  });
+
   it('unwraps DynamoDB-style typed JSON wrappers before blueprint normalization', () => {
     const architect = new StoryArchitect(config);
     const unwrapped = (architect as any).unwrapDynamoTypedJson({

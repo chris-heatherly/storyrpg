@@ -1,6 +1,6 @@
 {
-  "buildCommand": "npx expo export --platform web",
-  "outputDirectory": "dist",
+  "buildCommand": "npm run reader:export:with-content",
+  "outputDirectory": "dist-reader",
   "installCommand": "npm install",
   "framework": null,
   "rewrites": [

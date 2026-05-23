@@ -107,6 +107,8 @@ export interface StoryArchitectInput {
       difficulty: string;
       npcsInvolved: string[];
       stakes: string;
+      centralConflict?: string;
+      aftermathConsequence?: string;
       relevantSkills: string[];
       encounterBuildup?: string;
       encounterSetupContext?: string[];
@@ -936,7 +938,7 @@ Branching is a PROPERTY of any non-expression choice.
 
 ## Scene Count Guidelines
 
-- 5-8 scenes is ideal
+- 3-6 scenes is required
 - The encounter is typically scene 3-5 (two-thirds of the way through)
 - 2-3 scenes before the encounter: setup and escalation
 - 1-2 scenes after: consequence and resolution
@@ -1391,6 +1393,45 @@ ${input.memoryContext}
 - **Plans go wrong**: When characters follow a plan, include a plausible complication that forces improvisation unless the scene is deliberately a rest beat.
 - **No arbitrary escalation treadmill**: Escalate the episode's overall pressure, but do not make every conversation an argument or every beat more dangerous than everything before it.
 
+## Scene Splitting
+
+Split episode turns into separate scenes when there is a meaningful change in location, time, character dynamics, objective, obstacle, or dramatic tension.
+
+Do not create a new scene for tiny tonal shifts. Fold small shifts into beats. A new scene should represent a real change in situation, not just a new topic.
+
+Each scene should have a concise mood label and keyBeats that describe major turns, not topics.
+Use keyBeats to show the scene's purpose, pressure, visible action, and handoff into the next scene or encounter.
+
+## Scene Content Purpose
+
+Every scene must have a purpose the player can feel: emotional pressure, action pressure, character development, relationship movement, information gain, consequence, or meaningful aftermath.
+
+Scene descriptions, keyBeats, choice stakes, encounter buildup, and handoffs should all reinforce that purpose.
+
+Do not plan scenes as topic containers. Plan scenes as situations where something changes.
+
+## Scene Arc
+
+Each scene should build toward its keyMoment.
+
+The beat sequence may include rest, contrast, reversal, dread, or aftermath, but the scene should not feel flat. The final beat should land a pointed resolution, consequence, reveal, emotional shift, choice, or handoff.
+
+Non-finale episode endings should open authored forward pressure into the next episode. Finale/resolution endings should resolve the main conflict and show aftermath rather than forcing a fake cliffhanger.
+
+## Conflict And Action Planning
+
+If a scene includes conflict, fighting, weapons, pursuit, survival, or physical action, plan concrete jeopardy and consequence.
+
+For fights or weapon use, keyBeats should include:
+- specific maneuvers
+- destructive impact
+- wounds or visible damage
+- tactical reversals
+- environmental use
+- what winning or losing costs
+
+For non-physical conflict, damage may be emotional, social, relational, resource, reputation, information, or identity damage.
+
 ${CRAFT_PRESSURE_GUIDANCE}
 
 ## Genre-Aware Jeopardy Policy
@@ -1692,11 +1733,29 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       if (guidance.toneRegister) {
         section += `- Tone register: ${guidance.toneRegister}\n`;
       }
+      if (guidance.actLabel) {
+        section += `- Act: ${guidance.actLabel}\n`;
+      }
+      if (guidance.rawStructuralRole) {
+        section += `- Structural role: ${guidance.rawStructuralRole}\n`;
+      }
+      if (guidance.episodeTurns?.length) {
+        section += 'Episode turns that should shape scene purposes, keyBeats, sequenceIntent, encounter buildup, choices, and aftermath. Do not create a new schema layer; express these through existing blueprint fields:\n';
+        for (const turn of guidance.episodeTurns) {
+          section += `- ${turn}\n`;
+        }
+      }
       if (guidance.encounterAnchors?.length) {
         section += `- Encounter anchors: ${guidance.encounterAnchors.join(' | ')}\n`;
       }
+      if (guidance.encounterCentralConflict) {
+        section += `- Encounter central conflict: ${guidance.encounterCentralConflict}\n`;
+      }
       if (guidance.encounterBuildup) {
         section += `- Encounter buildup: ${guidance.encounterBuildup}\n`;
+      }
+      if (guidance.encounterAftermath) {
+        section += `- Encounter aftermath/consequence: ${guidance.encounterAftermath}\n`;
       }
       if (guidance.majorChoicePressures?.length) {
         section += 'Major authored choice pressures that MUST become real choicePoint scenes when treatment-driven:\n';
@@ -1716,9 +1775,19 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
           section += `- ${seed}\n`;
         }
       }
-      if (guidance.authoredCliffhanger) {
-        section += `- Authored cliffhanger (MUST be supported by the final scene narrativeFunction/keyBeats): ${guidance.authoredCliffhanger}\n`;
+      if (guidance.endingPressure || guidance.authoredCliffhanger) {
+        section += `- Authored ending pressure (MUST be supported by the final scene narrativeFunction/keyBeats unless this is a finale): ${guidance.endingPressure || guidance.authoredCliffhanger}\n`;
       }
+      if (guidance.resolutionAftermath) {
+        section += `- Finale resolution/aftermath: ${guidance.resolutionAftermath}\n`;
+      }
+      if (guidance.capabilityGrowthGuidance?.length) {
+        section += 'Capability/growth/fail-forward guidance to express through existing skills, attributes, relationships, flags, consequences, and encounter outcomes:\n';
+        for (const growth of guidance.capabilityGrowthGuidance) {
+          section += `- ${growth}\n`;
+        }
+      }
+      section += '\nMechanical intent: for important scenes, plan which skills are tested, where passive insights can reveal usable fiction, which prior flags/items/relationships become prepared advantages, what failure recovery route exists, and what branch residue survives reconvergence. Express these through existing scene blueprint fields, choice setup context, encounterSetupContext, consequence seeds, and keyBeats; do not invent a separate runtime schema.\n';
       section += '\nCRITICAL: At least one authored major choice pressure must appear as a concrete scene choicePoint unless the episode is structurally impossible without breaking the treatment. Alternative paths must leave visible residue after reconvergence. If you change scene order for pacing, keep the authored setup/choice/consequence/cliffhanger chain legible.\n\n';
     }
 
@@ -1728,6 +1797,12 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       for (const enc of directives.plannedEncounters) {
         section += `- **${enc.id}** (${enc.type}, ${enc.difficulty}): ${enc.description}\n`;
         section += `  Stakes: ${enc.stakes}\n`;
+        if (enc.centralConflict) {
+          section += `  Central conflict to manifest through play: ${enc.centralConflict}\n`;
+        }
+        if (enc.aftermathConsequence) {
+          section += `  Aftermath/consequence to pay off after the encounter: ${enc.aftermathConsequence}\n`;
+        }
         if (enc.npcsInvolved.length > 0) {
           section += `  NPCs: ${enc.npcsInvolved.join(', ')}\n`;
         }

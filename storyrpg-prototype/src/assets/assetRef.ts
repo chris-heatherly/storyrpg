@@ -1,6 +1,6 @@
 /**
  * Re-export of the AssetRef type + schema that lives in
- * `src/ai-agents/codec/assetIndex.ts` so consumers can import the
+ * `src/story-codec/assetIndex.ts` so consumers can import the
  * primitive from a media-neutral location (`src/assets/*`).
  */
 
@@ -9,16 +9,16 @@ export {
   AssetRefSchema,
   AssetIndexSchema,
   isAssetRef,
-} from '../ai-agents/codec/assetIndex';
+} from '../story-codec/assetIndex';
 export type {
   AssetKind,
   AssetRef,
   AssetIndex,
   MediaRefInput,
-} from '../ai-agents/codec/assetIndex';
+} from '../story-codec/assetIndex';
 
-import { isAssetRef } from '../ai-agents/codec/assetIndex';
-import type { AssetRef } from '../ai-agents/codec/assetIndex';
+import { isAssetRef } from '../story-codec/assetIndex';
+import type { AssetRef } from '../story-codec/assetIndex';
 
 /**
  * A `MediaRef` may be either a legacy string URL/path or an

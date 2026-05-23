@@ -62,6 +62,29 @@ and visual QA/regeneration live in `docs/IMAGE_PIPELINE_RUNTIME.md`.
 `EpisodePipeline.ts` is not part of the active prompt path; all active calls flow
 through `FullStoryPipeline.ts`.
 
+## Fiction-First Skill Surface Prompting
+
+The active prompts should make hidden skills matter through story-facing
+surfaces, not visible math.
+
+- `SeasonPlannerAgent` plans `focusSkills`, development/preparation scenes,
+  mentorship, and expected prepared advantages for later payoffs.
+- `StoryArchitect` marks where skills are tested, where passive insights can
+  reveal usable fiction, which prior state becomes leverage, and what branch
+  residue survives reconvergence.
+- `SceneWriter` may author beat-level `skillInsights` with thresholds 45
+  (easy), 55 (meaningful), 65 (strong build), or 75 (rare expert).
+- `ChoiceAuthor` authors `statCheck.skillWeights`, difficulty bands, prepared
+  `statCheck.modifiers`, failure residue, and outcome texture.
+- `EncounterArchitect` keeps existing `statBonus` support as the encounter-side
+  prepared advantage adapter.
+
+Difficulty bands are easy `35-45`, moderate `45-60`, hard `60-70`, and
+extreme `71-80`. Checks above `60` need at least one support; checks above
+`70` need at least two supports. Banned player-facing terms include skill
+check, threshold, modifier, bonus, success chance, failure chance, percentage,
+level requirement, and build.
+
 ## Prompt Assembly Logic
 
 ## Encounter Prompting
@@ -360,7 +383,7 @@ If the user provides the name of a book, movie, or other story IP (e.g., "The Gr
 ## Interactive Fiction Constraints
 
 Each episode should:
-- Have 5-8 scenes (bottleneck + branch zones)
+- Have 3-6 scenes (bottleneck + branch zones)
 - Include 2-4 meaningful player choices
 - Cover a complete narrative arc (setup → conflict → resolution)
 - Take approximately 15-30 minutes to play
@@ -393,6 +416,18 @@ When breaking down source material:
 3. Third Pass: Chunk into episode-sized narrative units
 4. Final Pass: Verify each episode has proper stakes and structure
 ```
+
+### Story Treatment Ingestion
+
+StoryRPG Markdown treatments are a first-class source format. The analyzer detects treatment markers such as `StoryRPG Structure Model`, `3-Act / 7-Point Season Spine`, `Episode Outline`, `Episode turns`, `How the encounter manifests the central conflict`, `Capability, Growth, And Fail-Forward`, and `Episode Endings`.
+
+When a treatment is detected:
+
+- deterministic extraction preserves authored episode count, order, titles, structural roles, episode turns, encounter anchors, central conflict, aftermath/consequence, ending pressure, branches, and endings
+- the LLM fills gaps in characters, locations, anchors, and style guidance, but should not overwrite explicit treatment structure
+- episode turns remain planning guidance expressed through existing fields such as `keyBeats`, `sequenceIntent`, `encounterBuildup`, `choicePoint`, consequences, callbacks, and cliffhanger plans
+- no new runtime `episodeTurns`, `sceneBeats`, or treatment-specific playback schema is introduced
+- analysis metadata records `sourceFormat: "story_treatment"` plus treatment confidence, version, and parsing warnings
 
 ### User prompt 0A: structure extraction
 

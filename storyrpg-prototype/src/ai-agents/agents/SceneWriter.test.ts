@@ -253,10 +253,53 @@ describe('SceneWriter structural guards', () => {
     const prompt = (writer as any).getAgentSpecificPrompt();
     expect(prompt).toContain('scene takeaways');
     expect(prompt).toContain('Do not use film/camera direction terms in player-facing prose');
-    expect(prompt).toMatch(/restrained\s+interiority/);
+    expect(prompt).not.toMatch(/restrained\s+interiority/);
+    expect(prompt).not.toContain('internal monologue');
     expect(prompt).toContain('Example: StoryRPG SceneWriter Beat Scale');
     expect(prompt).toContain('Prefer turns over topics');
     expect(prompt).toContain('leverage, trust, evidence');
+    expect(prompt).toContain('Vivid means vivid story intent');
+    expect(prompt).toContain('The scene keyMoment should be the beat where those takeaways become felt, proven, revealed, or changed');
+    expect(prompt).toContain('Do not contradict season anchors, source-material fidelity, established character state, player choices, flags, callbacks, or encounter setup context');
+    expect(prompt).toContain('Do not add art-direction language that fights the active ArtStyleProfile, negative prompt, provider settings, or style-bible anchors');
+    expect(prompt).toContain('Visual metadata should describe what must be understood, not impose a conflicting style');
+    expect(prompt).toContain('Do not directly describe characters\' thoughts and feelings');
+    expect(prompt).toContain('externalize inner life');
+    expect(prompt).toContain('## Fight, Weapon, And Physical Action Scenes');
+    expect(prompt).toContain('specific strikes, maneuvers');
+    expect(prompt).toContain('destructive effects');
+    expect(prompt).toContain('wounds, or damage');
+    expect(prompt).toContain('## Conflict Damage');
+    expect(prompt).toContain('## Prose And Dialogue Craft');
+    expect(prompt).toContain('Use sensory detail selectively and purposefully');
+    expect(prompt).toContain('Do not force all five senses into every beat');
+    expect(prompt).toContain('Respect the active source style, genre, tone, user instructions, and style guide');
+    expect(prompt).toContain('Use precise, concrete, genre-appropriate language');
+    expect(prompt).toContain('not ornate prose or conflicting art direction');
+    expect(prompt).toContain('Make description dynamic');
+    expect(prompt).toContain('spare, natural, character-specific, pressure-aware, and subtextual');
+    expect(prompt).toContain('Vary sentence rhythm with scene pressure');
+    expect(prompt).toContain('Avoid repetition');
+  });
+
+  it('includes scene-specific target guidance for takeaways, clarity, and style-safe visual metadata', () => {
+    const writer = createWriter();
+    const prompt = (writer as any).buildPrompt(preEncounterInput);
+
+    expect(prompt).toContain('The scene keyMoment should be the beat where sceneTakeaways become felt, proven, revealed, or changed');
+    expect(prompt).toContain('Each non-rest beat should show a concrete shift in action, intent, leverage, mood, relationship dynamic, tactical position, information, or consequence');
+    expect(prompt).toContain('fill them naturally with local detail');
+    expect(prompt).toContain('Vivid means vivid story intent');
+    expect(prompt).toContain('unless they come from the active style contract');
+    expect(prompt).toContain('The final beat of each scene should land a pointed resolution or consequence');
+    expect(prompt).toContain('Never write a static meeting where characters only discuss information');
+    expect(prompt).toContain('In action scenes, the hero or allies should be wounded, damaged, depleted, exposed, or narrowly escape a specific harm');
+    expect(prompt).toContain('Every meaningful conflict should damage someone or something');
+    expect(prompt).toContain('Use selective sensory detail to establish place, mood, danger, intimacy, texture, or consequence');
+    expect(prompt).toContain('Respect active source style, genre, tone, user instructions, and style guide');
+    expect(prompt).toContain('Make description carry pressure, movement, mood, threat, desire, or consequence');
+    expect(prompt).toContain('Reveal inner life through action, speech, silence, bodily response, facial expression, object handling, proximity, risk, and choice behavior');
+    expect(prompt).toContain('Avoid repeated plot events, dialogue, scene shapes, and descriptive phrasing unless intentional callback/payoff');
   });
 
   it('expands underspecified choice scenes into a stable three-beat structure', () => {

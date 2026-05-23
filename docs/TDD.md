@@ -558,6 +558,24 @@ The fiction-first resolution system. When a choice has a stat check:
    - Roll > target + 10 → **Failure** (missed significantly)
 5. **Narrative text:** Each tier has genre-appropriate narrative descriptions (per attribute). These are generic fallbacks; authored outcome texts from the choice take priority.
 
+The current balance model uses a narrative-generous `calculateOutcomeChances`
+helper. It computes hidden `advantageScore = effective skill coverage + active
+prepared modifiers - difficulty`, then resolves weighted success,
+complicated, and failure bands. Higher relevant skill must never worsen
+expected outcomes, and higher difficulty must never improve them.
+
+Prepared advantages live on `Choice.statCheck.modifiers`. Each modifier has a
+condition, hidden delta, internal reason, and optional fiction-first hint.
+Passive insights live on `Beat.skillInsights` and are evaluated during
+`processBeat`; eligible insights are returned on `ProcessedBeat.skillInsights`
+and rendered as prose alongside the beat text.
+
+Dev-only balance inspection is available through:
+
+```bash
+npm run analyze:stat-balance -- --story generated-stories/<id>/story.json
+```
+
 #### Encounter Weight Calculation
 
 For encounter choices, the resolution uses a weighted probability system:

@@ -210,14 +210,24 @@ export interface StoryEndingTarget {
 }
 
 export interface TreatmentEpisodeGuidance {
+  authoredTitle?: string;
+  actLabel?: string;
+  rawStructuralRole?: string;
+  normalizedStructuralRoles?: StructuralRole[];
   episodePromise?: string;
+  episodeTurns?: string[];
   toneRegister?: string;
   encounterAnchors?: string[];
+  encounterCentralConflict?: string;
   encounterBuildup?: string;
+  encounterAftermath?: string;
   majorChoicePressures?: string[];
   alternativePaths?: string[];
   consequenceSeeds?: string[];
+  endingPressure?: string;
   authoredCliffhanger?: string;
+  resolutionAftermath?: string;
+  capabilityGrowthGuidance?: string[];
 }
 
 export interface TreatmentBranchGuidance {
@@ -266,6 +276,10 @@ export interface PlannedEncounter {
   npcsInvolved: string[];
   // What's at stake narratively
   stakes: string;
+  // Authored treatment pressure this encounter should manifest through play
+  centralConflict?: string;
+  // What the episode should show after this encounter resolves
+  aftermathConsequence?: string;
   // Skills/approaches that should be relevant
   relevantSkills: string[];
   // What earlier scenes must establish so the encounter lands
@@ -415,6 +429,13 @@ export interface SourceMaterialAnalysis {
   // Metadata
   sourceTitle: string;
   sourceAuthor?: string;
+  sourceFormat?: 'source_material' | 'story_treatment' | 'prompt';
+  treatmentMetadata?: {
+    detected: boolean;
+    confidence: 'low' | 'medium' | 'high';
+    formatVersion: 'legacy' | 'storyrpg-treatment-v2';
+    warnings: string[];
+  };
   totalWordCount?: number;
   totalChapters?: number;
 

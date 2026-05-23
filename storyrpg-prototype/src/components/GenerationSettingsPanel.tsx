@@ -450,10 +450,10 @@ const PERFORMANCE_FIELDS: SettingFieldConfig[] = [
 const STORY_STRUCTURE_FIELDS: SettingFieldConfig[] = [
   { type: 'number', key: 'targetSceneCount', label: 'Scenes per Episode', description: 'Hard range: each episode should contain 3-6 scenes.', min: 3, max: 6 },
   { type: 'number', key: 'majorChoiceCount', label: 'Major Choice Points', description: 'How many big decisions an episode should contain.', min: 1, max: 6 },
-  { type: 'number', key: 'minBeatsPerScene', label: 'Min Beats per Scene', description: 'Minimum beats required for each scene.', min: 1, max: 6 },
-  { type: 'number', key: 'maxBeatsPerScene', label: 'Max Beats per Scene', description: 'Upper cap before the engine merges excess beats.', min: 6, max: 20 },
-  { type: 'number', key: 'standardBeatCount', label: 'Standard Scene Beats', description: 'Cap for standard scenes.', min: 4, max: 15 },
-  { type: 'number', key: 'bottleneckBeatCount', label: 'Bottleneck Scene Beats', description: 'Cap for key bottleneck scenes.', min: 4, max: 15 },
+  { type: 'number', key: 'minBeatsPerScene', label: 'Min Beats per Scene', description: 'Default lower bound for generated scene beats. 3 is recommended.', min: 1, max: 6 },
+  { type: 'number', key: 'maxBeatsPerScene', label: 'Max Beats per Scene', description: 'Default upper bound for generated scene beats. 8 is recommended; increase only for unusually dense scenes.', min: 4, max: 12 },
+  { type: 'number', key: 'standardBeatCount', label: 'Standard Scene Beats', description: 'Target cap for standard prose scenes.', min: 3, max: 10 },
+  { type: 'number', key: 'bottleneckBeatCount', label: 'Bottleneck Scene Beats', description: 'Target cap for key bottleneck scenes; use higher values sparingly.', min: 4, max: 12 },
   { type: 'number', key: 'encounterBeatCount', label: 'Encounter Beats', description: 'Target beats for encounter scenes.', min: 2, max: 8 },
 ];
 

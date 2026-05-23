@@ -38,6 +38,11 @@ const LEAK_PATTERNS: Array<{ pattern: RegExp; label: string; suggestion: string 
     suggestion: 'Replace checks and thresholds with fictional affordances, pressure, or limits.',
   },
   {
+    pattern: /\b(?:skill\s*check|level requirement|build|modifier|bonus|success chance|failure chance)\b/i,
+    label: 'player-facing optimization language',
+    suggestion: 'Describe capability through what the character notices, risks, or can lean on in the fiction.',
+  },
+  {
     pattern: /(?:\b(?:XP|hp|health|trust|affection|respect|fear|reputation|score|points?|stat|skill)\s*)?(?:\+|\-)\s?\d+\s*(?:XP|hp|health|trust|affection|respect|fear|reputation|score|points?|stat|skill)?\b/i,
     label: 'numeric stat delta',
     suggestion: 'Show the visible relationship, identity, or resource shift without numeric deltas.',

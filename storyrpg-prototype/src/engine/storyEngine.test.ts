@@ -96,6 +96,47 @@ describe('storyEngine.getNextScene', () => {
 });
 
 describe('storyEngine.processBeat encounter gating', () => {
+  it('returns passive skill insights when hidden coverage meets threshold', () => {
+    const player = createPlayer();
+    player.attributes.wit = 80;
+    player.skills.investigation = 70;
+
+    const story: Story = {
+      id: 'story-1',
+      title: 'Story',
+      synopsis: 'Test',
+      genre: 'Mystery',
+      coverImage: '',
+      initialState: { attributes: player.attributes, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [],
+    };
+
+    const beat = {
+      id: 'beat-1',
+      text: 'The office is dark.',
+      skillInsights: [
+        {
+          id: 'scrape-marks',
+          skillWeights: { investigation: 1 },
+          threshold: 55,
+          text: 'The scrape marks beneath the desk point toward the window.',
+          priority: 1,
+        },
+        {
+          id: 'locked-safe',
+          skillWeights: { survival: 1 },
+          threshold: 90,
+          text: 'This should stay hidden.',
+        },
+      ],
+      choices: [],
+    };
+
+    const processed = processBeat(beat as any, player, story);
+    expect(processed.skillInsights).toEqual(['The scrape marks beneath the desk point toward the window.']);
+  });
+
   it('shows relationship-gated encounter choices as locked when configured to showWhenLocked', () => {
     const player = createPlayer();
     player.relationships.mara = {
@@ -212,7 +253,7 @@ describe('storyEngine.executeChoice', () => {
     expect(typeof result.resolution!.target).toBe('number');
   });
 
-  it('applies use-based growth after stat check', () => {
+  it('emits use-based growth as skill consequences after stat check', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.1);
     const player = createPlayer();
     expect(player.skills.persuasion ?? 0).toBe(0);
@@ -220,8 +261,40 @@ describe('storyEngine.executeChoice', () => {
     const choice = makeChoice({
       statCheck: { skillWeights: { persuasion: 1.0 }, difficulty: 50 },
     });
-    executeChoice(choice, player);
-    expect(player.skills.persuasion).toBeGreaterThan(0);
+    const result = executeChoice(choice, player);
+    expect(player.skills.persuasion ?? 0).toBe(0);
+    expect(result.consequences).toContainEqual({ type: 'skill', skill: 'persuasion', change: 2 });
+  });
+
+  it('applies prepared stat-check modifiers only when their conditions pass', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.35);
+    const player = createPlayer();
+    player.flags.kept_promise = true;
+
+    const baseline = executeChoice(makeChoice({
+      statCheck: { skillWeights: { persuasion: 1.0 }, difficulty: 65 },
+    }), createPlayer()).resolution!;
+
+    getResolutionTracker().reset();
+    vi.spyOn(Math, 'random').mockReturnValue(0.35);
+    const prepared = executeChoice(makeChoice({
+      statCheck: {
+        skillWeights: { persuasion: 1.0 },
+        difficulty: 65,
+        modifiers: [
+          {
+            id: 'kept-promise',
+            condition: { type: 'flag', flag: 'kept_promise', value: true },
+            delta: 25,
+            reason: 'Promise creates leverage.',
+            hint: 'The promise still gives you a way in.',
+          },
+        ],
+      },
+    }), player).resolution!;
+
+    expect(prepared.tier).toBe('success');
+    expect(baseline.tier).not.toBe('success');
   });
 
   it('injects outcome tier flags as consequences', () => {

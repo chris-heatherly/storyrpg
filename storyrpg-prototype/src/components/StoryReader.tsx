@@ -14,7 +14,7 @@ import {
   TextInput,
   ActivityIndicator,
 } from 'react-native';
-import { ArrowLeft, ArrowRight, User, ThumbsUp, ThumbsDown, RefreshCw, X, MessageSquare, FileText } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, User, ThumbsUp, ThumbsDown, X, MessageSquare, FileText } from 'lucide-react-native';
 import {
   useGameActions,
   useGamePlayerState,
@@ -52,6 +52,7 @@ import { useClickDebounce } from '../utils/useDebounce';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { useImagePromptOverlay } from '../hooks/useImagePromptOverlay';
 import { formatSceneBeatLabelFromImageUrl, getImagePanelNumberFromStory } from '../utils/imagePromptDebug';
+import { buildChoiceRecognitionLine, getFictionFirstChangeFeedback } from '../utils/choiceChangeFeedback';
 import { incrementPersonProperty, setSuperProperties, track } from '../services/analyticsService';
 import {
   cloneRelationshipMap,
@@ -99,6 +100,76 @@ const REFLECTION_PROSE: Record<string, string[]> = {
 function getReflectionText(outcome: string): string {
   const pool = REFLECTION_PROSE[outcome] || REFLECTION_PROSE.victory;
   return pool[Math.floor(Math.random() * pool.length)];
+}
+
+type OutcomeToneTier = 'success' | 'complicated' | 'failure';
+
+const AFTERMATH_MECHANICAL_COPY_RE = /has succeeded|has failed|gets what (?:you|they|she|he) fought for|cost lands|price lands|objective (?:is )?achieved|immediate danger has passed|world shifts in response|there will be consequences|celebrate success|show cost|show that/i;
+
+function normalizeSentence(text?: string | null): string | undefined {
+  const normalized = text?.replace(/\s+/g, ' ').trim();
+  if (!normalized || AFTERMATH_MECHANICAL_COPY_RE.test(normalized)) return undefined;
+  return /[.!?]$/.test(normalized) ? normalized : `${normalized}.`;
+}
+
+function firstUsableStoryletBeat(storylet: GeneratedStorylet, currentBeatId?: string): string | undefined {
+  return storylet.beats
+    .filter((beat) => beat.id !== currentBeatId)
+    .map((beat) => normalizeSentence(beat.text))
+    .find(Boolean);
+}
+
+function outcomeTierForStorylet(outcome: EncounterOutcome): OutcomeToneTier {
+  if (outcome === 'victory') return 'success';
+  if (outcome === 'defeat') return 'failure';
+  return 'complicated';
+}
+
+function storyletOutcomeColor(outcome: EncounterOutcome): string {
+  if (outcome === 'victory') return TERMINAL.colors.success;
+  if (outcome === 'defeat') return TERMINAL.colors.error;
+  if (outcome === 'partialVictory') return TERMINAL.colors.amber;
+  return TERMINAL.colors.primary;
+}
+
+function fictionFirstCostText(cost?: EncounterCost | null): string | undefined {
+  if (!cost) return undefined;
+  return normalizeSentence(cost.visibleComplication)
+    || normalizeSentence(cost.immediateEffect)
+    || normalizeSentence(cost.lingeringEffect);
+}
+
+function buildStoryletOutcomeFallback(
+  outcome: EncounterOutcome,
+  protagonistName: string
+): { summary: string; progress: string; narrative: string } {
+  switch (outcome) {
+    case 'victory':
+      return {
+        summary: 'You carried the moment without losing yourself.',
+        progress: 'The pressure eases, and the night opens forward.',
+        narrative: `${protagonistName} lets the quiet after the encounter settle around her. The danger has loosened its grip, and confidence arrives without needing to announce itself.`,
+      };
+    case 'partialVictory':
+      return {
+        summary: 'You got through, but not cleanly.',
+        progress: 'Relief arrives with a shadow attached.',
+        narrative: `${protagonistName} gets through the moment, but the relief has edges. Something has been won, and something else will have to be carried from here.`,
+      };
+    case 'defeat':
+      return {
+        summary: 'The night takes more ground than you meant to give.',
+        progress: 'The lesson lands hard, but it lands.',
+        narrative: `${protagonistName} feels the miss before anyone names it. The night keeps moving, but now she has to carry the lesson with her.`,
+      };
+    case 'escape':
+    default:
+      return {
+        summary: 'You got clear, but the fear follows.',
+        progress: 'Distance helps, but it does not erase what happened.',
+        narrative: `${protagonistName} makes it out of the worst of it, breath still ragged. Safety is real, but it has not yet become peace.`,
+      };
+  }
 }
 
 function countEpisodeBeats(episode?: { scenes?: Array<{ beats?: unknown[] }> } | null): number {
@@ -150,7 +221,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const fonts = useSettingsStore((state) => state.getFontSizes());
   
   // Image feedback store
-  const { addFeedback, getFeedbackForImage, updateFeedback, loadFeedback, isLoaded: feedbackLoaded } = useImageFeedbackStore();
+  const { addFeedback, getFeedbackForImage, loadFeedback, isLoaded: feedbackLoaded } = useImageFeedbackStore();
 
   const [processedBeat, setProcessedBeat] = useState<ProcessedBeat | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
@@ -170,6 +241,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const [recentChoiceEcho, setRecentChoiceEcho] = useState<{
     summary: string;
     progress?: string;
+    recognitionText?: string;
     feedback: AppliedConsequence[];
     targetSceneId?: string;
     targetBeatId?: string;
@@ -231,7 +303,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [feedbackNotes, setFeedbackNotes] = useState('');
   const [selectedReasons, setSelectedReasons] = useState<FeedbackReason[]>([]);
-  const [isRegenerating, setIsRegenerating] = useState(false);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [expandedCategory, setExpandedCategory] = useState<string | null>('basic');
 
@@ -1005,8 +1076,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     };
 
     const showFeedback = (applied: AppliedConsequence[]) => {
-      const visible = applied.filter(a => a.type !== 'flag');
+      const visible = getFictionFirstChangeFeedback(applied);
       const echoTarget = resolveEchoTarget(result.nextBeatId, result.nextSceneId);
+      const recognitionText = buildChoiceRecognitionLine(visible);
       setEpisodeChoiceRecap((prev) => [
         ...prev,
         {
@@ -1035,6 +1107,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       setRecentChoiceEcho({
         summary: choice.feedbackCue?.echoSummary || choice.reminderPlan?.immediate || 'The moment leaves a mark.',
         progress: choice.feedbackCue?.progressSummary || choice.reminderPlan?.shortTerm,
+        recognitionText,
         feedback: visible.slice(0, 3),
         targetSceneId: echoTarget?.sceneId,
         targetBeatId: echoTarget?.beatId,
@@ -1043,7 +1116,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     };
 
     const badgeViewingDelay = (applied: AppliedConsequence[]): number => {
-      const visibleCount = Math.min(applied.filter(a => a.type !== 'flag').length, 5);
+      const visibleCount = Math.min(getFictionFirstChangeFeedback(applied).length, 5);
       if (visibleCount === 0) return 0;
       // stagger-in (80ms/badge) + animate-in (300ms) + reading time (1200ms)
       return (visibleCount * 80) + TIMING.normal + 1200;
@@ -1140,7 +1213,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       const isEncounterEntry = !!targetScene?.encounter;
       transitionTo(
         () => loadScene(nextSceneId, undefined, nextBeatId),
-        isEncounterEntry ? 'dramatic' : 'slide'
+        isEncounterEntry ? 'dramatic' : 'crossfade'
       );
     } else if (nextBeatId) {
       transitionTo(() => setBeat(nextBeatId), 'crossfade');
@@ -1154,24 +1227,12 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     }
   };
 
-  type TransitionStyle = 'crossfade' | 'slide' | 'dramatic';
+  type TransitionStyle = 'crossfade' | 'dramatic';
 
   const transitionTo = (callback: () => void, style: TransitionStyle = 'crossfade') => {
     const useNative = Platform.OS !== 'web';
 
-    if (style === 'slide') {
-      Animated.parallel([
-        Animated.timing(fadeAnim, { toValue: 0, duration: TIMING.normal, useNativeDriver: useNative }),
-        Animated.timing(slideAnim, { toValue: -30, duration: TIMING.normal, useNativeDriver: useNative }),
-      ]).start(() => {
-        callback();
-        slideAnim.setValue(30);
-        Animated.parallel([
-          Animated.timing(fadeAnim, { toValue: 1, duration: TIMING.slow, useNativeDriver: useNative }),
-          Animated.timing(slideAnim, { toValue: 0, duration: TIMING.slow, useNativeDriver: useNative }),
-        ]).start();
-      });
-    } else if (style === 'dramatic') {
+    if (style === 'dramatic') {
       Animated.timing(fadeAnim, {
         toValue: 0, duration: TIMING.dramatic, useNativeDriver: useNative,
       }).start(() => {
@@ -1339,7 +1400,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       return baseLabel ? `${baseLabel}  IMG ${panelNumber}` : `IMG ${panelNumber}`;
     };
     if (episodeRecap) return withImagePanel('RECAP');
-    if (shouldShowEncounter && sceneEncounter) return withImagePanel(sn ? `S${sn}  ENC` : 'ENC');
+    if (shouldShowEncounter && sceneEncounter) return null;
     if (showGrowthSummary) return withImagePanel(sn ? `S${sn}  GROWTH` : 'GROWTH');
     if (activeStorylet && storyletBeatId) {
       const idx = activeStorylet.beats.findIndex(b => b.id === storyletBeatId);
@@ -1482,6 +1543,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   // Post-encounter reflection -- rendered as a normal beat
   if (showGrowthSummary) {
     const reflectionImageUrl = lastKnownImageRef.current;
+    const growthCostText = fictionFirstCostText(growthCost)
+      || 'The win leaves something unsettled that follows you forward.';
+    const growthLingeringText = normalizeSentence(growthCost?.lingeringEffect);
     return (
       <View style={{ flex: 1 }}>
       <ReadingShell imageUrl={reflectionImageUrl} fadeAnim={fadeAnim} imageOpacity={imageOpacity}>
@@ -1493,12 +1557,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
               />
               {growthCost && (
                 <View style={styles.costPanel}>
-                  <Text style={styles.costPanelLabel}>THE PRICE OF SUCCESS</Text>
-                  <Text style={styles.costPanelTitle}>{growthCost.visibleComplication}</Text>
-                  <Text style={styles.costPanelMeta}>{`${growthCost.severity.toUpperCase()} ${growthCost.domain.toUpperCase()} COST`}</Text>
-                  <Text style={styles.costPanelBody}>{growthCost.immediateEffect}</Text>
-                  {!!growthCost.lingeringEffect && (
-                    <Text style={styles.costPanelLingering}>{growthCost.lingeringEffect}</Text>
+                  <Text style={styles.costPanelTitle}>{growthCostText}</Text>
+                  {!!growthLingeringText && growthLingeringText !== growthCostText && (
+                    <Text style={styles.costPanelBody}>{growthLingeringText}</Text>
                   )}
                 </View>
               )}
@@ -1529,16 +1590,28 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
     if (currentStoryletBeat) {
       console.log(`[StoryReader] Rendering storylet beat: id="${currentStoryletBeat.id}", text="${(currentStoryletBeat.text || '').substring(0, 60)}...", hasImage=${!!currentStoryletBeat.image}, isTerminal=${!!currentStoryletBeat.isTerminal}, hasChoices=${!!(currentStoryletBeat.choices?.length)}`);
-      // Tone badge appearance
-      const toneStyles: Record<string, { labelColor: string; labelText: string; borderColor: string }> = {
-        triumphant:  { labelColor: TERMINAL.colors.success,  borderColor: withAlpha(TERMINAL.colors.success, 0.4),  labelText: 'VICTORY'      },
-        bittersweet: { labelColor: TERMINAL.colors.amber,    borderColor: withAlpha(TERMINAL.colors.amber, 0.4),    labelText: 'AFTERMATH'    },
-        tense:       { labelColor: TERMINAL.colors.error,    borderColor: withAlpha(TERMINAL.colors.error, 0.4),    labelText: 'CONSEQUENCES' },
-        desperate:   { labelColor: '#dc2626',                borderColor: 'rgba(220,38,38,0.4)',                     labelText: 'DESPERATE'    },
-        relieved:    { labelColor: TERMINAL.colors.primary,  borderColor: withAlpha(TERMINAL.colors.primary, 0.4),  labelText: 'ESCAPE'       },
-        somber:      { labelColor: '#6b7280',                borderColor: 'rgba(107,114,128,0.4)',                   labelText: 'DEFEAT'       },
-      };
-      const toneStyle = toneStyles[activeStorylet.tone] || toneStyles.bittersweet;
+      const storyletOutcome = activeStorylet.triggerOutcome;
+      const outcomeColor = storyletOutcomeColor(storyletOutcome);
+      const outcomeCost = currentStoryletBeat.cost
+        || activeStorylet.cost
+        || (storyletOutcome === 'partialVictory' ? sceneEncounter?.outcomes?.partialVictory?.cost : undefined);
+      const fallback = buildStoryletOutcomeFallback(storyletOutcome, player.characterName || 'You');
+      const stakesText = storyletOutcome === 'victory'
+        ? normalizeSentence(sceneEncounter?.stakes?.victory)
+        : storyletOutcome === 'defeat'
+          ? normalizeSentence(sceneEncounter?.stakes?.defeat)
+          : undefined;
+      const usableBeatText = normalizeSentence(currentStoryletBeat.text);
+      const nextUsableBeatText = firstUsableStoryletBeat(activeStorylet, currentStoryletBeat.id);
+      const costText = fictionFirstCostText(outcomeCost);
+      const outcomeSummary = storyletOutcome === 'partialVictory'
+        ? fallback.summary
+        : stakesText || fallback.summary;
+      const outcomeProgress = storyletOutcome === 'partialVictory'
+        ? costText || nextUsableBeatText || fallback.progress
+        : nextUsableBeatText || costText || fallback.progress;
+      const narrativeText = usableBeatText || fallback.narrative;
+      const outcomeTier = outcomeTierForStorylet(storyletOutcome);
 
       // Fall back to current scene's background image when the beat has no dedicated image
       const sceneBgStr = mediaRefAsString(currentScene?.backgroundImage);
@@ -1556,15 +1629,23 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
             imageOpacity={imageOpacity}
             placeholderWatermark
           >
-            <View style={styles.textPanel}>
-              <View style={[styles.storyletToneBadge, { borderColor: toneStyle.borderColor }]}>
-                <Text style={[styles.storyletToneLabel, { color: toneStyle.labelColor }]}>
-                  {toneStyle.labelText}
-                </Text>
-              </View>
+            <View
+              style={[
+                styles.storyletOutcomeEchoPanel,
+                {
+                  borderColor: withAlpha(outcomeColor, 0.35),
+                  backgroundColor: withAlpha(outcomeColor, 0.08),
+                },
+              ]}
+              testID={`storylet-outcome-${outcomeTier}`}
+            >
+              <Text style={styles.echoSummaryText}>{outcomeSummary}</Text>
+              <Text style={styles.echoProgressText}>{outcomeProgress}</Text>
+            </View>
 
+            <View style={styles.textPanel}>
               <NarrativeText
-                text={processTemplate(currentStoryletBeat.text, player, currentStory)}
+                text={processTemplate(narrativeText, player, currentStory)}
                 speaker={currentStoryletBeat.speaker}
                 speakerMood={currentStoryletBeat.speakerMood}
                 animate={isStoryletAnimating}
@@ -1674,10 +1755,10 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     );
   };
 
-  const submitNegativeFeedback = async (shouldRegenerate: boolean = false) => {
+  const submitNegativeFeedback = async () => {
     if (!imageUrl || !currentStory) return;
     
-    const feedback = await addFeedback({
+    await addFeedback({
       storyId: currentStory.id,
       episodeId: currentEpisode?.id,
       sceneId: currentScene?.id,
@@ -1689,46 +1770,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     });
     
     setShowFeedbackModal(false);
-    
-    if (shouldRegenerate) {
-      setIsRegenerating(true);
-      try {
-        // Call the regenerate endpoint
-        const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/regenerate-image`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            imageUrl,
-            storyId: currentStory.id,
-            sceneId: currentScene?.id,
-            beatId: currentBeatId,
-            feedback: {
-              reasons: selectedReasons,
-              notes: feedbackNotes.trim(),
-            },
-          }),
-        });
-        
-        if (response.ok) {
-          const result = await response.json();
-          if (result.newImageUrl) {
-            // Update feedback with regenerated image URL
-            await updateFeedback(feedback.id, {
-              regenerated: true,
-              regeneratedImageUrl: result.newImageUrl,
-            });
-            // Force refresh the beat to show new image
-            // This will trigger a re-render with the new image
-            setImageErrorId(null);
-          }
-        }
-      } catch (error) {
-        console.error('[StoryReader] Failed to regenerate image:', error);
-      } finally {
-        setIsRegenerating(false);
-      }
-    }
-    
     setFeedbackSubmitted(true);
     setTimeout(() => setFeedbackSubmitted(false), 2000);
   };
@@ -1782,6 +1823,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const beatChromeBottom = butterflyFeedback.length > 0 ? (
     <ButterflyBanner items={butterflyFeedback} onDismiss={clearButterflyFeedback} />
   ) : null;
+  const activeChoiceRecognitionText =
+    recentChoiceEcho?.targetSceneId === currentScene?.id &&
+    recentChoiceEcho?.targetBeatId === currentBeatId
+      ? recentChoiceEcho.recognitionText
+      : undefined;
 
   return (
     <View style={{ flex: 1 }}>
@@ -1811,26 +1857,16 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           />
         )}
 
-        {recentChoiceEcho &&
-          recentChoiceEcho.targetSceneId === currentScene?.id &&
-          recentChoiceEcho.targetBeatId === currentBeatId && (
-          <View style={styles.echoPanel}>
-            <Text style={styles.echoSummaryText}>{recentChoiceEcho.summary}</Text>
-            {recentChoiceEcho.progress && (
-              <Text style={styles.echoProgressText}>{recentChoiceEcho.progress}</Text>
-            )}
-            {recentChoiceEcho.feedback.length > 0 && (
-              <ConsequenceBadgeList consequences={recentChoiceEcho.feedback} staggerDelay={60} />
-            )}
-          </View>
-        )}
-
         <View style={styles.textPanel}>
           {choiceOutcomeHeader && (
             <OutcomeHeader tier={choiceOutcomeHeader.tier} context="story" text={choiceOutcomeHeader.text} />
           )}
           <NarrativeText
-            text={processedBeat.text}
+            text={[
+              activeChoiceRecognitionText,
+              processedBeat.text,
+              ...(processedBeat.skillInsights ?? []),
+            ].filter(Boolean).join('\n\n')}
             speaker={processedBeat.speaker}
             speakerMood={processedBeat.speakerMood}
             animate={!devSkipAnimationsOnce}
@@ -1872,12 +1908,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       {/* Dev Mode: Toolbar (rendered as overlay so it wins stacking on web) */}
       {developerMode && imageUrl && (
           <View style={styles.feedbackToolbar}>
-            {isRegenerating ? (
-              <View style={styles.regeneratingIndicator}>
-                <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
-                <Text style={styles.regeneratingText}>REGENERATING...</Text>
-              </View>
-            ) : feedbackSubmitted ? (
+            {feedbackSubmitted ? (
               <View style={styles.feedbackSubmittedIndicator}>
                 <Text style={styles.feedbackSubmittedText}>FEEDBACK SAVED</Text>
               </View>
@@ -1974,26 +2005,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
                 >
                   <ThumbsDown size={18} color={currentImageFeedback?.rating === 'negative' ? '#fff' : TERMINAL.colors.error} />
                 </Pressable>
-                
-                {currentImageFeedback?.rating === 'negative' && (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.feedbackButton,
-                      styles.regenerateButton,
-                      pressed && { opacity: 0.7 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Regenerate image"
-                    onPress={() => submitNegativeFeedback(true)}
-                    {...(Platform.OS === 'web'
-                      ? ({
-                          onClick: () => submitNegativeFeedback(true),
-                        } as any)
-                      : {})}
-                  >
-                    <RefreshCw size={18} color={TERMINAL.colors.cyan} />
-                  </Pressable>
-                )}
               </>
             )}
           </View>
@@ -2122,17 +2133,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
             <View style={styles.feedbackModalActions}>
               <TouchableOpacity
                 style={styles.feedbackSubmitButton}
-                onPress={() => submitNegativeFeedback(false)}
+                onPress={() => submitNegativeFeedback()}
               >
                 <Text style={styles.feedbackSubmitButtonText}>SAVE FEEDBACK</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                style={styles.feedbackRegenerateButton}
-                onPress={() => submitNegativeFeedback(true)}
-              >
-                <RefreshCw size={16} color={TERMINAL.colors.cyan} />
-                <Text style={styles.feedbackRegenerateButtonText}>SAVE & REGENERATE</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -2227,6 +2230,13 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 4,
   },
+  storyletOutcomeEchoPanel: {
+    borderWidth: 1,
+    borderRadius: RADIUS.choice,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 12,
+  },
   choicesList: {
     gap: 12,
   },
@@ -2236,17 +2246,8 @@ const styles = StyleSheet.create({
     borderColor: withAlpha(TERMINAL.colors.amber, 0.35),
     backgroundColor: withAlpha(TERMINAL.colors.amber, 0.08),
   },
-  costPanelLabel: { ...sharedStyles.sectionEyebrow, color: TERMINAL.colors.amber, marginBottom: 6 },
   costPanelTitle: { ...sharedStyles.sectionCardTitle, marginBottom: 6 },
-  costPanelMeta: {
-    color: TERMINAL.colors.textLight,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1,
-    marginBottom: 8,
-  },
   costPanelBody: sharedStyles.sectionCardBody,
-  costPanelLingering: { ...sharedStyles.sectionCardMeta, marginTop: 8 },
   recapEyebrow: { ...sharedStyles.sectionEyebrow, color: TERMINAL.colors.primary },
   recapTitle: sharedStyles.sectionTitle,
   recapSection: sharedStyles.sectionGroup,
@@ -2600,21 +2601,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: TERMINAL.colors.cyan,
     letterSpacing: 1,
-  },
-  // Storylet styles (GDD 6.7 - aftermath sequences)
-  // Tone badge that sits inside the textPanel above the narrative text
-  storyletToneBadge: {
-    alignSelf: 'flex-start',
-    borderWidth: 1,
-    borderRadius: 6,
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    marginBottom: 12,
-  },
-  storyletToneLabel: {
-    fontSize: 9,
-    fontWeight: '900',
-    letterSpacing: 2,
   },
   storyletContinueButton: {
     ...sharedStyles.continueButton,

@@ -2,7 +2,11 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    "jsx": "react-native"
+    "jsx": "react-native",
+    "baseUrl": ".",
+    "paths": {
+      "@storyrpg/app-entry": ["apps/reader/ReaderApp.tsx"]
+    }
   },
   "include": [
     "App.tsx",

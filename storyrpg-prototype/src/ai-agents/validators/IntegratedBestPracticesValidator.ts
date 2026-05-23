@@ -25,6 +25,10 @@ import { CliffhangerValidator } from './CliffhangerValidator';
 import { ChoiceImpactValidator } from './ChoiceImpactValidator';
 import { MechanicalStorytellingValidator } from './MechanicalStorytellingValidator';
 import { MechanicsLeakageValidator } from './MechanicsLeakageValidator';
+import { StatCheckBalanceValidator } from './StatCheckBalanceValidator';
+import { SkillSurfaceValidator } from './SkillSurfaceValidator';
+import { SkillCoverageValidator } from './SkillCoverageValidator';
+import { BranchMechanicalDivergenceValidator } from './BranchMechanicalDivergenceValidator';
 import { NPCTier, RelationshipDimension, Consequence, ReminderPlan, SeasonBible, Episode, EpisodePlan } from '../../types';
 import type {
   ChoiceAffordanceSource,
@@ -177,6 +181,10 @@ export class IntegratedBestPracticesValidator {
   private choiceImpactValidator: ChoiceImpactValidator;
   private mechanicalStorytellingValidator: MechanicalStorytellingValidator;
   private mechanicsLeakageValidator: MechanicsLeakageValidator;
+  private statCheckBalanceValidator: StatCheckBalanceValidator;
+  private skillSurfaceValidator: SkillSurfaceValidator;
+  private skillCoverageValidator: SkillCoverageValidator;
+  private branchMechanicalDivergenceValidator: BranchMechanicalDivergenceValidator;
 
   constructor(agentConfig: AgentConfig, config?: Partial<ValidationConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -204,6 +212,10 @@ export class IntegratedBestPracticesValidator {
     this.choiceImpactValidator = new ChoiceImpactValidator();
     this.mechanicalStorytellingValidator = new MechanicalStorytellingValidator();
     this.mechanicsLeakageValidator = new MechanicsLeakageValidator();
+    this.statCheckBalanceValidator = new StatCheckBalanceValidator();
+    this.skillSurfaceValidator = new SkillSurfaceValidator();
+    this.skillCoverageValidator = new SkillCoverageValidator();
+    this.branchMechanicalDivergenceValidator = new BranchMechanicalDivergenceValidator();
   }
 
   /**
@@ -254,6 +266,16 @@ export class IntegratedBestPracticesValidator {
       });
       for (const issue of mechanicalResult.issues) {
         const mapped = toValidationIssue('mechanical_storytelling', issue);
+        if (mapped.level === 'error') {
+          blockingIssues.push(mapped);
+        } else if (mapped.level === 'warning') {
+          warningCount++;
+        }
+      }
+
+      const balanceResult = this.statCheckBalanceValidator.validate({ choices: input.choices as any });
+      for (const issue of balanceResult.issues) {
+        const mapped = toValidationIssue('stat_check_balance', issue);
         if (mapped.level === 'error') {
           blockingIssues.push(mapped);
         } else if (mapped.level === 'warning') {
@@ -477,7 +499,23 @@ export class IntegratedBestPracticesValidator {
         statChecksWithPlayableFailure: mechanicalResult.metrics.statChecksWithPlayableFailure,
         invalidWitnessReferences: mechanicalResult.metrics.invalidWitnessReferences,
       };
+
+      const balanceResult = this.statCheckBalanceValidator.validate({ choices: input.choices as any });
+      allIssues.push(...balanceResult.issues.map((issue) => toValidationIssue('stat_check_balance', issue)));
+      metrics.statCheckBalance = balanceResult.metrics;
+
+      const coverageResult = this.skillCoverageValidator.validate({ choices: input.choices as any });
+      allIssues.push(...coverageResult.issues.map((issue) => toValidationIssue('skill_coverage', issue)));
+      metrics.skillCoverage = coverageResult.metrics;
     }
+
+    const skillSurfaceResult = this.skillSurfaceValidator.validate({ scenes: input.scenes as any, choices: input.choices as any });
+    allIssues.push(...skillSurfaceResult.issues.map((issue) => toValidationIssue('skill_surface', issue)));
+    metrics.skillSurface = skillSurfaceResult.metrics;
+
+    const branchMechanicalResult = this.branchMechanicalDivergenceValidator.validate({ scenes: input.scenes as any });
+    allIssues.push(...branchMechanicalResult.issues.map((issue) => toValidationIssue('branch_mechanical_divergence', issue)));
+    metrics.branchMechanicalDivergence = branchMechanicalResult.metrics;
 
     // 1.6 Mechanics Leakage Validation
     const leakageResult = this.mechanicsLeakageValidator.validate({
@@ -814,6 +852,10 @@ export class IntegratedBestPracticesValidator {
       pixarPrinciples: this.pixarValidator,
       cliffhanger: this.cliffhangerValidator,
       mechanicalStorytelling: this.mechanicalStorytellingValidator,
+      statCheckBalance: this.statCheckBalanceValidator,
+      skillSurface: this.skillSurfaceValidator,
+      skillCoverage: this.skillCoverageValidator,
+      branchMechanicalDivergence: this.branchMechanicalDivergenceValidator,
     };
   }
 }
@@ -905,6 +947,12 @@ function collectPlayerFacingTexts(input: ValidationInput): Array<{
           beatId: beat.id,
         });
       }
+      for (const [index, insight] of ((beat as any).skillInsights || []).entries()) {
+        add(`${scene.id}:${beat.id}:skillInsight:${index}`, insight.text, 'skillInsight', {
+          sceneId: scene.id,
+          beatId: beat.id,
+        });
+      }
     }
   }
 
@@ -933,6 +981,12 @@ function collectPlayerFacingTexts(input: ValidationInput): Array<{
       sceneId: choice.sceneId,
       choiceId: choice.id,
     });
+    for (const [index, modifier] of (((choice.statCheck as any)?.modifiers || []) as Array<{ hint?: string }>).entries()) {
+      add(`${choice.id}:modifier:${index}`, modifier.hint, 'preparedAdvantageHint', {
+        sceneId: choice.sceneId,
+        choiceId: choice.id,
+      });
+    }
   }
 
   return texts;

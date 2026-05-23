@@ -13,11 +13,11 @@ export const SCENE_DEFAULTS = {
   majorChoiceCount: 3,
   minBeatsPerScene: 3,
   /** Cap on beats per scene—engine may generate fewer */
-  maxBeatsPerScene: 12,
+  maxBeatsPerScene: 8,
   /** Cap for standard scenes—engine may use fewer beats */
   standardBeatCount: 8,
   /** Cap for bottleneck scenes—engine may use fewer beats */
-  bottleneckBeatCount: 10,
+  bottleneckBeatCount: 8,
   encounterBeatCount: 3,
 };
 

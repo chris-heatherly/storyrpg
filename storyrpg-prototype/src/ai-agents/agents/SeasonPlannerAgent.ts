@@ -253,6 +253,8 @@ Use the source analysis as the authority, but learn from reusable structure:
 - Each episode's central conflict should manifest in its encounter. The encounter is where relationships, information, risks, prior choices, player capabilities, and current stakes are tested through play.
 - If the protagonist falls short, fail forward into a natural path for growth, preparation, alliance, recovery, information gathering, training, mentorship, or alternate leverage.
 - Capability growth should respect existing mechanics: skills, attributes, relationships, flags, identity, prior choices, consequences, and encounter outcomes, while keeping all player-facing language fiction-first.
+- Plan skill surfaces, not just hidden rolls: passive insights (what the protagonist notices), prepared advantages (prior flags/items/relationships that reduce risk), choice affordances, outcome texture, and branch residue.
+- Each episode should identify 2-3 focusSkills, 1-2 growth/preparation opportunities, and at least one expectedPreparedAdvantage that can pay off later as a statCheck modifier or alternate route.
 - After the Climax, resolve quickly: show what was saved or changed, then show future cost, identity change, or legacy.
 - Ensure the Inciting Incident lands in Act 1 and the Climax lands in Act 3.
 - From the Inciting Incident through the Climax, make difficulty rise and make the protagonist's transformation increasingly necessary to achieve the Goal.
@@ -669,15 +671,28 @@ CRITICAL RULES:
         merged.episodeEncounters![epKey] = anchors.map((anchor, index) => ({
           id: `treatment-enc-${ep.episodeNumber}-${index + 1}`,
           type: this.inferEncounterType(anchor, analysis.genre),
-          description: anchor,
+          description: guidance.encounterCentralConflict
+            ? `${anchor} Central conflict: ${guidance.encounterCentralConflict}`
+            : anchor,
           difficulty: this.inferEncounterDifficulty(ep.episodeNumber, analysis.totalEstimatedEpisodes),
           npcsInvolved: ep.mainCharacters,
-          stakes: guidance.episodePromise || ep.narrativeFunction.conflict,
+          stakes: guidance.encounterCentralConflict || guidance.episodePromise || ep.narrativeFunction.conflict,
+          centralConflict: guidance.encounterCentralConflict,
+          aftermathConsequence: guidance.encounterAftermath,
           relevantSkills: this.inferRelevantSkills(anchor),
           encounterBuildup: guidance.encounterBuildup,
-          encounterSetupContext: (guidance.consequenceSeeds || []).slice(0, 4).map((seed, seedIndex) =>
-            `flag:treatment_seed_ep${ep.episodeNumber}_${seedIndex + 1} — ${seed}`
-          ),
+          encounterSetupContext: [
+            ...(guidance.episodeTurns || []).slice(0, 4).map((turn, turnIndex) =>
+              `turn:treatment_turn_ep${ep.episodeNumber}_${turnIndex + 1} — ${turn}`
+            ),
+            ...(guidance.consequenceSeeds || []).slice(0, 4).map((seed, seedIndex) =>
+              `flag:treatment_seed_ep${ep.episodeNumber}_${seedIndex + 1} — ${seed}`
+            ),
+            ...(guidance.capabilityGrowthGuidance || []).slice(0, 2).map((growth, growthIndex) =>
+              `growth:treatment_growth_ep${ep.episodeNumber}_${growthIndex + 1} — ${growth}`
+            ),
+            ...(guidance.encounterAftermath ? [`aftermath:treatment_ep${ep.episodeNumber} — ${guidance.encounterAftermath}`] : []),
+          ],
           isBranchPoint: (guidance.alternativePaths || []).length > 0,
           branchOutcomes: (guidance.alternativePaths || []).length > 0 ? {
             victory: guidance.alternativePaths![0] || `The player earns a better version of ${ep.title}.`,
@@ -687,13 +702,22 @@ CRITICAL RULES:
         }));
       }
 
-      if (guidance.authoredCliffhanger && ep.episodeNumber < analysis.totalEstimatedEpisodes) {
+      const endingPressure = guidance.endingPressure || guidance.authoredCliffhanger;
+      if (endingPressure && ep.episodeNumber < analysis.totalEstimatedEpisodes) {
         merged.episodeCliffhangers![epKey] = {
-          hook: guidance.authoredCliffhanger,
-          setup: guidance.consequenceSeeds?.join(' | ') || guidance.encounterBuildup || ep.narrativeFunction.conflict,
+          hook: endingPressure,
+          setup: guidance.encounterAftermath || guidance.consequenceSeeds?.join(' | ') || guidance.encounterBuildup || ep.narrativeFunction.conflict,
           resolvedEpisodeTension: ep.narrativeFunction.resolution,
-          newOpenQuestion: guidance.authoredCliffhanger,
-          nextEpisodePressure: guidance.authoredCliffhanger,
+          newOpenQuestion: endingPressure,
+          nextEpisodePressure: endingPressure,
+        };
+      } else if (guidance.resolutionAftermath && ep.episodeNumber >= analysis.totalEstimatedEpisodes) {
+        merged.episodeCliffhangers![epKey] = {
+          hook: guidance.resolutionAftermath,
+          setup: guidance.encounterAftermath || ep.narrativeFunction.conflict,
+          resolvedEpisodeTension: guidance.resolutionAftermath,
+          newOpenQuestion: guidance.resolutionAftermath,
+          nextEpisodePressure: guidance.resolutionAftermath,
         };
       }
 
@@ -829,6 +853,8 @@ CRITICAL RULES:
           difficulty: enc.difficulty || 'moderate',
           npcsInvolved: enc.npcsInvolved || [],
           stakes: enc.stakes || '',
+          centralConflict: enc.centralConflict || undefined,
+          aftermathConsequence: enc.aftermathConsequence || undefined,
           relevantSkills: enc.relevantSkills || [],
           encounterBuildup: enc.encounterBuildup || '',
           encounterSetupContext: Array.isArray(enc.encounterSetupContext) ? enc.encounterSetupContext : undefined,

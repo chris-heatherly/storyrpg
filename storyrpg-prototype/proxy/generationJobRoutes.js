@@ -228,14 +228,72 @@ function scrubStorySeasonReferences(story) {
   delete story.styleAnchors;
 }
 
-function scrubStoryEpisodeArt(story) {
+function artifactMatchesEpisode(value, targetEpisodeNumber) {
+  if (targetEpisodeNumber == null) return true;
+  const text = String(value || '');
+  if (!text) return false;
+  const escaped = String(targetEpisodeNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`episode-${escaped}(?:\\b|[-_/])`, 'i').test(text);
+}
+
+function recordMatchesEpisode(record, targetEpisodeNumber) {
+  if (targetEpisodeNumber == null) return true;
+  if (!record || typeof record !== 'object') return false;
+  const slot = record.slot || {};
+  return [
+    record.id,
+    record.slotId,
+    record.baseIdentifier,
+    record.latestPath,
+    record.latestUrl,
+    slot.slotId,
+    slot.scopedSceneId,
+    slot.baseIdentifier,
+    slot.storyFieldPath,
+  ].some((value) => artifactMatchesEpisode(value, targetEpisodeNumber));
+}
+
+function scrubBeatMedia(beat) {
+  if (!beat || typeof beat !== 'object') return;
+  delete beat.image;
+  delete beat.images;
+  delete beat.imageUrl;
+  delete beat.imagePath;
+  delete beat.imagePrompt;
+  delete beat.panelImages;
+  delete beat.video;
+  delete beat.videoUrl;
+  delete beat.videoPath;
+}
+
+function scrubEncounterMedia(encounter) {
+  if (!encounter || typeof encounter !== 'object') return;
+  delete encounter.image;
+  delete encounter.images;
+  delete encounter.imageUrl;
+  delete encounter.imagePath;
+  const phases = Array.isArray(encounter.phases) ? encounter.phases : [];
+  for (const phase of phases) {
+    for (const beat of phase?.beats || []) scrubBeatMedia(beat);
+  }
+  for (const beat of encounter.beats || []) scrubBeatMedia(beat);
+  const storylets = encounter.storylets && typeof encounter.storylets === 'object' ? encounter.storylets : {};
+  for (const storylet of Object.values(storylets)) {
+    for (const beat of storylet?.beats || []) scrubBeatMedia(beat);
+  }
+}
+
+function scrubStoryEpisodeArt(story, targetEpisodeNumber) {
   if (!story || typeof story !== 'object') return;
   story.imagesStatus = 'pending';
-  delete story.coverImage;
+  if (targetEpisodeNumber == null) {
+    delete story.coverImage;
+  }
 
   const episodes = Array.isArray(story.episodes) ? story.episodes : [];
   for (const episode of episodes) {
     if (!episode || typeof episode !== 'object') continue;
+    if (targetEpisodeNumber != null && episode.number !== targetEpisodeNumber) continue;
     if (Object.prototype.hasOwnProperty.call(episode, 'coverImage')) {
       episode.coverImage = '';
     }
@@ -245,15 +303,17 @@ function scrubStoryEpisodeArt(story) {
       if (Object.prototype.hasOwnProperty.call(scene, 'backgroundImage')) {
         scene.backgroundImage = '';
       }
+      delete scene.image;
+      delete scene.imageUrl;
+      delete scene.imagePath;
+      delete scene.video;
+      delete scene.videoUrl;
+      delete scene.videoPath;
       const beats = Array.isArray(scene.beats) ? scene.beats : [];
       for (const beat of beats) {
-        if (!beat || typeof beat !== 'object') continue;
-        delete beat.image;
-        delete beat.images;
-        delete beat.imageUrl;
-        delete beat.imagePath;
-        delete beat.imagePrompt;
+        scrubBeatMedia(beat);
       }
+      scrubEncounterMedia(scene.encounter);
     }
   }
 }
@@ -349,38 +409,95 @@ function deleteSeasonReferenceArtifactsForOutputDir(outputDirAbs) {
   return { deleted, rewritten };
 }
 
-function deleteEpisodeArtArtifactsForOutputDir(outputDirAbs) {
+function filterJsonlFileByEpisode(filePath, targetEpisodeNumber) {
+  if (targetEpisodeNumber == null || !fs.existsSync(filePath)) return false;
+  const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
+  const kept = [];
+  let changed = false;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const record = JSON.parse(line);
+      if (recordMatchesEpisode(record, targetEpisodeNumber)) {
+        changed = true;
+        continue;
+      }
+    } catch {
+      // Keep malformed legacy lines.
+    }
+    kept.push(line);
+  }
+  if (changed) fs.writeFileSync(filePath, kept.join('\n') + (kept.length > 0 ? '\n' : ''));
+  return changed;
+}
+
+function filterJsonFileByEpisode(filePath, targetEpisodeNumber) {
+  if (targetEpisodeNumber == null || !fs.existsSync(filePath)) return false;
+  const raw = readJsonIfExists(filePath);
+  if (!raw || typeof raw !== 'object') return false;
+  let changed = false;
+  if (Array.isArray(raw.slots)) {
+    const before = raw.slots.length;
+    raw.slots = raw.slots.filter((slot) => !recordMatchesEpisode({ slot }, targetEpisodeNumber));
+    changed = changed || raw.slots.length !== before;
+  }
+  if (Array.isArray(raw.records)) {
+    const before = raw.records.length;
+    raw.records = raw.records.filter((record) => !recordMatchesEpisode(record, targetEpisodeNumber));
+    changed = changed || raw.records.length !== before;
+  }
+  if (raw.records && typeof raw.records === 'object' && !Array.isArray(raw.records)) {
+    for (const [key, record] of Object.entries(raw.records)) {
+      if (artifactMatchesEpisode(key, targetEpisodeNumber) || recordMatchesEpisode(record, targetEpisodeNumber)) {
+        delete raw.records[key];
+        changed = true;
+      }
+    }
+  }
+  if (changed) atomicWriteJsonSync(filePath, raw, { pretty: true });
+  return changed;
+}
+
+function deleteEpisodeArtArtifactsForOutputDir(outputDirAbs, targetEpisodeNumber) {
   const deleted = [];
+  const rewritten = [];
   const remove = (target) => {
     if (!fs.existsSync(target)) return;
     fs.rmSync(target, { recursive: true, force: true });
     deleted.push(path.relative(outputDirAbs, target) || path.basename(target));
   };
 
-  const removableExact = new Set([
-    'asset-registry.jsonl',
-    'image-manifest.json',
-    '08-registry-state.json',
-  ]);
+  const removableExact = targetEpisodeNumber == null
+    ? new Set([
+        'asset-registry.jsonl',
+        'image-manifest.json',
+        '08-registry-state.json',
+      ])
+    : new Set();
   for (const entry of fs.readdirSync(outputDirAbs, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
-    if (removableExact.has(entry.name) || /^08a-beat-resume-.*\.json$/.test(entry.name)) {
+    const matchesTarget = artifactMatchesEpisode(entry.name, targetEpisodeNumber);
+    if (removableExact.has(entry.name) || (/^08a-beat-resume-.*\.json$/.test(entry.name) && matchesTarget)) {
       remove(path.join(outputDirAbs, entry.name));
     }
   }
+
+  if (filterJsonlFileByEpisode(path.join(outputDirAbs, 'asset-registry.jsonl'), targetEpisodeNumber)) rewritten.push('asset-registry.jsonl');
+  if (filterJsonFileByEpisode(path.join(outputDirAbs, 'image-manifest.json'), targetEpisodeNumber)) rewritten.push('image-manifest.json');
+  if (filterJsonFileByEpisode(path.join(outputDirAbs, '08-registry-state.json'), targetEpisodeNumber)) rewritten.push('08-registry-state.json');
 
   const imagesDir = path.join(outputDirAbs, 'images');
   if (fs.existsSync(imagesDir)) {
     for (const entry of fs.readdirSync(imagesDir, { withFileTypes: true })) {
       const target = path.join(imagesDir, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name !== 'prompts' && entry.name !== 'job-reference-previews') {
+        if (entry.name !== 'prompts' && entry.name !== 'job-reference-previews' && artifactMatchesEpisode(entry.name, targetEpisodeNumber)) {
           remove(target);
         }
         continue;
       }
       if (!entry.isFile()) continue;
-      if (!/^(ref_|style-bible-)/.test(entry.name)) {
+      if (!/^(ref_|style-bible-)/.test(entry.name) && artifactMatchesEpisode(entry.name, targetEpisodeNumber)) {
         remove(target);
       }
     }
@@ -389,14 +506,14 @@ function deleteEpisodeArtArtifactsForOutputDir(outputDirAbs) {
     if (fs.existsSync(promptsDir)) {
       for (const entry of fs.readdirSync(promptsDir, { withFileTypes: true })) {
         if (!entry.isFile()) continue;
-        if (!/^(ref_|style-bible-)/.test(entry.name)) {
+        if (!/^(ref_|style-bible-)/.test(entry.name) && artifactMatchesEpisode(entry.name, targetEpisodeNumber)) {
           remove(path.join(promptsDir, entry.name));
         }
       }
     }
   }
 
-  const rewritten = rewriteStoryPackages(outputDirAbs, scrubStoryEpisodeArt);
+  rewritten.push(...rewriteStoryPackages(outputDirAbs, (story) => scrubStoryEpisodeArt(story, targetEpisodeNumber)));
   return { deleted, rewritten };
 }
 
@@ -578,12 +695,18 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
 
   app.delete('/story-image-artifacts/episode-art', (req, res) => {
     const outputDir = req.body?.outputDir;
+    const targetEpisodeNumber = req.body?.targetEpisodeNumber == null
+      ? undefined
+      : Number(req.body.targetEpisodeNumber);
+    if (targetEpisodeNumber != null && (!Number.isFinite(targetEpisodeNumber) || targetEpisodeNumber < 1)) {
+      return res.status(400).json({ error: 'targetEpisodeNumber must be a positive number' });
+    }
     const outputDirAbs = resolveStoryOutputDir(outputDir, { rootDir, storiesDir });
     if (!outputDirAbs || !fs.existsSync(outputDirAbs)) {
       return res.status(400).json({ error: 'Missing or invalid outputDir' });
     }
 
-    const artifacts = deleteEpisodeArtArtifactsForOutputDir(outputDirAbs);
+    const artifacts = deleteEpisodeArtArtifactsForOutputDir(outputDirAbs, targetEpisodeNumber);
     res.json({ success: true, artifacts });
   });
 

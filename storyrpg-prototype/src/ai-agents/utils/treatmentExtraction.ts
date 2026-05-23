@@ -1,6 +1,7 @@
 import type {
   EndingStateDriverType,
   StoryEndingTarget,
+  StructuralRole,
   TreatmentBranchGuidance,
   TreatmentEpisodeGuidance,
 } from '../../types/sourceAnalysis';
@@ -10,17 +11,31 @@ export interface ExtractedTreatment {
   episodes: Record<number, TreatmentEpisodeGuidance>;
   branches: TreatmentBranchGuidance[];
   endings: StoryEndingTarget[];
+  metadata: {
+    detected: boolean;
+    confidence: 'low' | 'medium' | 'high';
+    formatVersion: 'legacy' | 'storyrpg-treatment-v2';
+    warnings: string[];
+  };
 }
 
-const SECTION_HEADING_RE = /^##\s+\d+\.\s+(.+)$/gm;
-const EPISODE_HEADING_RE = /^###\s+Episode\s+(\d+)\s+[—-]\s+"?([^"\n]+?)"?\s*$/gm;
-const BRANCH_HEADING_RE = /^###\s+Branch\s+[A-Z]\s+[—-]\s+(.+)$/gm;
-const ENDING_HEADING_RE = /^###\s+Ending\s+\d+\s+[—-]\s+"([^"]+)"(?:\s+\(([^)]+)\))?/gm;
+const SECTION_HEADING_RE = /^##\s+(?:\d+\.\s+)?(.+)$/gm;
+const EPISODE_HEADING_RE = /^###\s+(?:(?:Episode|Ep\.?)\s*)?(\d+)(?:\s*[.:\-—–]\s*|\s+)(?:"?([^"\n]+?)"?)\s*$/gim;
+const BRANCH_HEADING_RE = /^###\s+Branch\s+[A-Z0-9]*\s*(?:[—–:-]\s+)?(.+)$/gim;
+const ENDING_HEADING_RE = /^###\s+Ending\s+(?:\d+|[A-Z])\s*(?:[—–:-]\s*)"?([^"\n(]+)"?(?:\s+\(([^)]+)\))?/gim;
 
 const TREATMENT_MARKERS = [
   /branching[-\s]narrative season treatment/i,
+  /storyrpg structure model/i,
+  /3-act\s*\/\s*7-point season spine/i,
   /choose-your-own-adventure/i,
-  /^###\s+Episode\s+\d+/im,
+  /^###\s+(?:Episode\s+)?\d+/im,
+  /\bEpisode Outline\b/i,
+  /\*\*Structural role(?:\s*:\s*anchor, fused anchors, or buffer)?(?:\s*\([^)]*\))?:\*\*/i,
+  /\*\*Episode turns?(?:\s*\([^)]*\))?:\*\*/i,
+  /\*\*How the encounter manifests the central conflict(?:\s*\([^)]*\))?:\*\*/i,
+  /\bCapability,\s*Growth,\s*And\s*Fail-Forward\b/i,
+  /\bEpisode Endings\b/i,
   /\*\*Episode promise(?:\s*\([^)]*\))?:\*\*/i,
   /\*\*Tone register(?:\s*\([^)]*\))?:\*\*/i,
   /\*\*Major choice pressure(?:\s*\([^)]*\))?:\*\*/i,
@@ -31,6 +46,13 @@ const TREATMENT_MARKERS = [
   /^###\s+Ending\s+\d+\s+[—-]/im,
   /^##\s+\d+\.\s+Alternate endings/im,
 ];
+
+const EMPTY_METADATA: ExtractedTreatment['metadata'] = {
+  detected: false,
+  confidence: 'low',
+  formatVersion: 'legacy',
+  warnings: [],
+};
 
 function slugify(value: string): string {
   return value
@@ -52,9 +74,13 @@ function splitByMatches<T>(
   });
 }
 
-function getNumberedSection(markdown: string, startsWith: string): string {
+function getFlexibleSection(markdown: string, labels: string[]): string {
   const matches = [...markdown.matchAll(SECTION_HEADING_RE)];
-  const foundIndex = matches.findIndex((match) => (match[1] || '').trim().toLowerCase().startsWith(startsWith.toLowerCase()));
+  const normalizedLabels = labels.map((label) => label.toLowerCase());
+  const foundIndex = matches.findIndex((match) => {
+    const heading = (match[1] || '').trim().toLowerCase();
+    return normalizedLabels.some((label) => heading.includes(label));
+  });
   if (foundIndex < 0) return '';
   const start = (matches[foundIndex].index || 0) + matches[foundIndex][0].length;
   const end = foundIndex + 1 < matches.length ? matches[foundIndex + 1].index || markdown.length : markdown.length;
@@ -71,6 +97,12 @@ function getAllBulletValues(body: string, labelPrefix: string): string[] {
   const escaped = labelPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`^-\\s+\\*\\*${escaped}[^:]*:\\*\\*\\s*(.+)$`, 'gim');
   return [...body.matchAll(re)].map((match) => match[1]?.trim()).filter(Boolean) as string[];
+}
+
+function getBulletValueWithLabelPrefix(body: string, labelPrefix: string): string | undefined {
+  const escaped = labelPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = body.match(new RegExp(`^(?:-\\s+)?\\*\\*${escaped}[^*]*:\\*\\*\\s*(.+)$`, 'im'));
+  return match?.[1]?.trim();
 }
 
 function getIndentedBulletList(body: string, label: string): string[] {
@@ -93,7 +125,29 @@ function getIndentedBulletList(body: string, label: string): string[] {
 function getInlineOrIndentedList(body: string, label: string): string[] {
   const inline = getBulletValue(body, label);
   const list = getIndentedBulletList(body, label);
-  return [...(inline ? [inline] : []), ...list];
+  const splitInline = inline
+    ? inline.split(/\s*(?:\n|;|\s+\|\s+)\s*/).map((part) => part.trim()).filter(Boolean)
+    : [];
+  return [...splitInline, ...list];
+}
+
+export function normalizeTreatmentStructuralRoles(raw: string | undefined): StructuralRole[] {
+  if (!raw) return [];
+  const lower = raw.toLowerCase();
+  const roles: StructuralRole[] = [];
+  const add = (role: StructuralRole) => {
+    if (!roles.includes(role)) roles.push(role);
+  };
+  if (/\bhook\b/.test(lower)) add('hook');
+  if (/plot\s*turn\s*1|plotturn1|inciting|commitment/.test(lower)) add('plotTurn1');
+  if (/pinch\s*1|first\s+pinch/.test(lower)) add('pinch1');
+  if (/midpoint|mirror|reversal/.test(lower)) add('midpoint');
+  if (/pinch\s*2|second\s+pinch|crisis/.test(lower)) add('pinch2');
+  if (/climax|final confrontation/.test(lower)) add('climax');
+  if (/resolution|aftermath|legacy/.test(lower)) add('resolution');
+  if (/falling|final-pressure|final pressure|processing|recovery/.test(lower)) add('falling');
+  if (/rising|buffer|setup|escalat/.test(lower) && roles.length === 0) add('rising');
+  return roles;
 }
 
 function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeGuidance> {
@@ -101,22 +155,45 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
 
   for (const guidance of splitByMatches(section, EPISODE_HEADING_RE, (match, body) => {
     const episodeNumber = Number(match[1]);
+    const authoredTitle = (match[2] || '').trim().replace(/^["“”]+|["“”]+$/g, '');
+    const rawStructuralRole = getBulletValue(body, 'Structural role')
+      || getBulletValueWithLabelPrefix(body, 'Structural role')
+      || getAllBulletValues(body, 'Structural role')[0];
     const encounterAnchors = [
       ...getAllBulletValues(body, 'Encounter anchor'),
       ...getInlineOrIndentedList(body, 'Encounter anchors'),
     ];
+    const endingPressure = getBulletValue(body, 'Ending pressure')
+      || getBulletValue(body, 'Cliffhanger')
+      || getBulletValue(body, 'Cliffhanger / closing image');
 
     return {
       episodeNumber,
       guidance: {
+        authoredTitle: authoredTitle || undefined,
+        actLabel: getBulletValue(body, 'Act'),
+        rawStructuralRole,
+        normalizedStructuralRoles: normalizeTreatmentStructuralRoles(rawStructuralRole),
         episodePromise: getBulletValue(body, 'Episode promise'),
+        episodeTurns: getInlineOrIndentedList(body, 'Episode turns'),
         toneRegister: getBulletValue(body, 'Tone register'),
         encounterAnchors,
+        encounterCentralConflict: getBulletValue(body, 'How the encounter manifests the central conflict')
+          || getBulletValue(body, 'Encounter central conflict')
+          || getBulletValue(body, 'Central conflict'),
         encounterBuildup: getBulletValue(body, 'Encounter buildup'),
+        encounterAftermath: getBulletValue(body, 'Aftermath / consequence')
+          || getBulletValue(body, 'Encounter aftermath')
+          || getBulletValue(body, 'Aftermath'),
         majorChoicePressures: getInlineOrIndentedList(body, 'Major choice pressure'),
         alternativePaths: getInlineOrIndentedList(body, 'Alternative paths'),
         consequenceSeeds: getInlineOrIndentedList(body, 'Consequence seeds'),
-        authoredCliffhanger: getBulletValue(body, 'Cliffhanger') || getBulletValue(body, 'Cliffhanger / closing image'),
+        endingPressure,
+        authoredCliffhanger: endingPressure,
+        resolutionAftermath: getBulletValue(body, 'Resolution / aftermath')
+          || getBulletValue(body, 'Resolution aftermath'),
+        capabilityGrowthGuidance: getInlineOrIndentedList(body, 'Capability, Growth, And Fail-Forward')
+          .concat(getInlineOrIndentedList(body, 'Capability growth')),
       } satisfies TreatmentEpisodeGuidance,
     };
   })) {
@@ -193,22 +270,41 @@ function parseEndings(section: string): StoryEndingTarget[] {
 }
 
 export function extractTreatmentFromMarkdown(markdown: string): ExtractedTreatment {
-  const episodeSection = getNumberedSection(markdown, 'episode outline');
-  const branchSection = getNumberedSection(markdown, 'cross-episode branches');
-  const endingSection = getNumberedSection(markdown, 'alternate endings');
-  const isTreatment = looksLikeTreatmentMarkdown(markdown)
-    && Boolean(episodeSection)
-    && Boolean(endingSection);
+  const episodeSection = getFlexibleSection(markdown, ['episode outline']);
+  const branchSection = getFlexibleSection(markdown, ['cross-episode branches', 'branch', 'consequence chains']);
+  const endingSection = getFlexibleSection(markdown, ['alternate endings', 'episode endings', 'endings']);
+  const looksLikeTreatment = looksLikeTreatmentMarkdown(markdown);
+  const episodes = episodeSection ? parseEpisodeGuidance(episodeSection) : {};
+  const endings = endingSection ? parseEndings(endingSection) : [];
+  const warnings: string[] = [];
+  if (looksLikeTreatment && Object.keys(episodes).length === 0) warnings.push('No episode guidance could be parsed from the treatment.');
+  if (looksLikeTreatment && endings.length === 0) warnings.push('No ending targets could be parsed from the treatment.');
+  const markerCount = TREATMENT_MARKERS.reduce((count, marker) => count + (marker.test(markdown) ? 1 : 0), 0);
+  const formatVersion = /storyrpg structure model|episode turns?|central conflict|episode endings/i.test(markdown)
+    ? 'storyrpg-treatment-v2'
+    : 'legacy';
+  const confidence: ExtractedTreatment['metadata']['confidence'] = markerCount >= 6 && Object.keys(episodes).length > 0
+    ? 'high'
+    : markerCount >= 3
+      ? 'medium'
+      : 'low';
+  const isTreatment = looksLikeTreatment && Boolean(episodeSection) && Object.keys(episodes).length > 0;
 
   if (!isTreatment) {
-    return { isTreatment: false, episodes: {}, branches: [], endings: [] };
+    return { isTreatment: false, episodes: {}, branches: [], endings: [], metadata: { ...EMPTY_METADATA, detected: looksLikeTreatment, warnings } };
   }
 
   return {
     isTreatment: true,
-    episodes: parseEpisodeGuidance(episodeSection),
+    episodes,
     branches: parseBranches(branchSection),
-    endings: parseEndings(endingSection),
+    endings,
+    metadata: {
+      detected: true,
+      confidence,
+      formatVersion,
+      warnings,
+    },
   };
 }
 

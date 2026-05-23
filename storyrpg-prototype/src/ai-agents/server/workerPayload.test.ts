@@ -24,6 +24,7 @@ describe('assertValidWorkerPayload', () => {
       resultPath: '/tmp/result.json',
       imageGenerationInput: {
         outputDirectory: '/tmp/generated-story/',
+        targetEpisodeNumber: 2,
       },
     };
 

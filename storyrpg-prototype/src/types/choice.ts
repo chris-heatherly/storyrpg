@@ -123,6 +123,14 @@ export interface FailureResidue {
   description: string;
 }
 
+export interface StatCheckModifier {
+  id: string;
+  condition: ConditionExpression;
+  delta: number;
+  reason: string;
+  hint?: string;
+}
+
 // A single choice option
 export interface Choice {
   id: string;
@@ -146,6 +154,7 @@ export interface Choice {
   statCheck?: {
     skillWeights?: Record<string, number>;
     difficulty: number;
+    modifiers?: StatCheckModifier[];
 
     // Legacy fields — converted to skillWeights at resolution time
     attribute?: keyof PlayerAttributes;

@@ -38,7 +38,7 @@ export const ConsequenceToast: React.FC<ConsequenceToastProps> = ({
 
   return (
     <Animated.View style={[styles.container, { opacity }]}>
-      <ConsequenceBadgeList consequences={visible} staggerDelay={80} />
+      <ConsequenceBadgeList consequences={visible} staggerDelay={80} layout="inline" />
     </Animated.View>
   );
 };

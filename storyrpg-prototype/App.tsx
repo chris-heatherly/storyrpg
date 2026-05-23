@@ -24,7 +24,7 @@ import {
   pipelineClient,
   type PipelineHandle,
 } from './src/ai-agents/pipeline/PipelineClient';
-import { encodeStory } from './src/ai-agents/codec/storyCodec';
+import { encodeStory } from './src/story-codec/storyCodec';
 import { loadConfig } from './src/ai-agents/config';
 import type { PipelineConfig } from './src/ai-agents/config';
 import { useVideoJobStore } from './src/stores/videoJobStore';

@@ -1035,7 +1035,23 @@ Think about what the situation DEMANDS:
 
 - **expression**: NO \`statCheck\`. Never.
 - **relationship**: Add \`statCheck\` with skillWeights relevant to the social dynamic.
-- **strategic** / **dilemma**: Add \`statCheck\` with skillWeights + difficulty 40–80.
+- **strategic** / **dilemma**: Add \`statCheck\` with skillWeights + difficulty 35–80.
+- Difficulty bands: easy 35-45, moderate 45-60, hard 60-70, extreme 71-80.
+- Any difficulty above 60 must have at least one support: prepared modifier, useful item/clue, relationship leverage, alternate route, or playable failure residue.
+- Any difficulty above 70 must have at least two supports.
+- Prepared advantage belongs in \`statCheck.modifiers\`. It is hidden math from prior state, but \`hint\` must be fiction-first prose.
+- Never expose stats, rolls, thresholds, bonuses, modifiers, percentages, or skill-check language to the player.
+
+Modifier example:
+  "modifiers": [
+    {
+      "id": "kept_the_chapel_promise",
+      "condition": { "type": "flag", "flag": "kept_chapel_promise", "value": true },
+      "delta": 15,
+      "reason": "The NPC remembers the promise and is easier to reach.",
+      "hint": "The promise she made in the chapel still gives you a way in."
+    }
+  ]
 
 ## Required JSON Structure
 
@@ -1059,7 +1075,11 @@ Think about what the situation DEMANDS:
       "nextSceneId": "scene-id-if-branching-or-omit",
       "storyVerb": "pressure",
       "affordanceSource": "skill",
-      "statCheck": { "attribute": "charm", "difficulty": 55 },
+      "statCheck": {
+        "skillWeights": { "persuasion": 0.7, "perception": 0.3 },
+        "difficulty": 55,
+        "modifiers": []
+      },
       "consequenceDomain": "relationship",
       "reminderPlan": {
         "immediate": "The ally stiffens at what you said.",
@@ -1145,7 +1165,8 @@ CRITICAL REQUIREMENTS:
 16. Choices gated by conditions, prior flags, items, identity, relationships, tags, skills, or callback hooks should include affordanceSource
 17. Add witnessReactions when named NPCs observe a moral, relational, deceptive, violent, or loyalty-testing choice
 18. Stat-check failure should create playable fiction; use failureResidue when the failure changes debt, suspicion, injury, leverage, exposure, obligation, trust, or position
-19. Return ONLY valid JSON, no markdown, no extra text
+19. Every important stat check should have at least two skill surfaces: prepared advantage, outcome texture, failure residue, branch residue, or prior passive insight setup
+20. Return ONLY valid JSON, no markdown, no extra text
 `;
   }
 

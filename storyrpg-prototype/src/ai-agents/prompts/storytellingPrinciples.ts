@@ -363,7 +363,7 @@ export const NARRATIVE_INTENSITY_RULES = `
 A scene is a musical phrase. It needs dominant notes, supporting notes, and rests.
 Every scene must vary its beat intensity — a scene where every beat hits at the same level is a failure.
 
-**DOMINANT beats** (1-2 per scene): Peak drama. Maximum sensory detail, highest emotional pitch, most vivid physical action.
+**DOMINANT beats** (1-2 per scene): Peak drama. Strong selective sensory detail, highest emotional pressure, most vivid physical action.
 Write for the reader to feel the impact in their body. These are climax moments, key story beats, confrontations, betrayals, triumphs.
 
 **SUPPORTING beats** (majority): Advance the plot. Active prose, forward momentum, clear actions and reactions.
@@ -384,8 +384,8 @@ export const CRAFT_PRESSURE_GUIDANCE = `
 ## Genre-Aware Craft Pressure (StoryRPG Guardrailed)
 
 Use these rules to make scenes sharper, not narrower. If any craft rule conflicts
-with fiction-first interactivity, genre flexibility, T-rated sensitivity, rest
-beats, selective interiority, or serialized cliffhanger planning, StoryRPG's
+with fiction-first interactivity, genre flexibility, rest beats, externalized
+emotion, or serialized cliffhanger planning, StoryRPG's
 existing principles win.
 
 - Treat scene takeaways as load-bearing: every scene should make the player
@@ -404,15 +404,17 @@ existing principles win.
 - Keep dialogue concise, pointed, and subtextual. Conversations need friction,
   pressure, competing agendas, avoidance, teasing, or vulnerability; they do not
   always need overt argument.
-- Prefer action and brief dialogue to express emotion, while allowing restrained
-  interiority when it deepens player connection without over-defining identity.
+- Prefer action, bodily response, silence, object handling, facial expression,
+  and brief dialogue to express emotion. Do not directly explain thoughts or
+  feelings.
 - End scenes with pointed forward pressure: a choice, consequence, reveal,
   cliffhanger, aftermath turn, or newly sharpened question.
 - Match jeopardy to genre. Action-heavy genres should include physical danger or
   direct conflict; other genres should use serious social, emotional, moral,
   investigative, environmental, resource, romantic, or identity jeopardy.
-- Do not require graphic wounds, gore, or explicit injury detail. Existing
-  target-rating and sensitivity behavior remain authoritative.
+- In fight, weapon, pursuit, survival, or major physical-action scenes, make
+  danger concrete through serious jeopardy, destructive impact, wounds or
+  visible damage, bodily reactions, and consequences.
 `;
 
 const ACTION_HEAVY_GENRES = [

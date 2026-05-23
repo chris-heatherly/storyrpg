@@ -275,4 +275,103 @@ describe('TreatmentFidelityValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.issues).toEqual([]);
   });
+
+  it('accepts paraphrased treatment choice pressure when WANT/COST/IDENTITY are represented in the choicePoint', () => {
+    const pressureGuidance = {
+      majorChoicePressures: [
+        '- When the ambush hits, does Aethavyr protect Lord Brightwell (the figurehead) or Lysandra (the unexpected combatant)? — WANT: do your duty. COST: leave one of them exposed. IDENTITY: who counts as worth protecting first?',
+      ],
+    };
+    const blueprint = baseBlueprint({
+      scenes: [{
+        id: 'scene-1',
+        name: 'Ambush at the Gate',
+        description: 'The escort is hit from both sides.',
+        location: 'road',
+        mood: 'urgent',
+        purpose: 'branch',
+        dramaticQuestion: '',
+        wantVsNeed: '',
+        conflictEngine: '',
+        npcsPresent: ['Lord Brightwell', 'Lysandra'],
+        narrativeFunction: 'Force Aethavyr to choose who receives protection first.',
+        keyBeats: ['Lord Brightwell stumbles under the first volley.', 'Lysandra draws steel and is nearly cut off.'],
+        leadsTo: [],
+        choicePoint: {
+          type: 'dilemma',
+          branches: true,
+          stakes: {
+            want: 'Fulfill the oath and protect Lord Brightwell.',
+            cost: 'Whichever person Aethavyr does not cover is left exposed.',
+            identity: 'Aethavyr decides whether official duty or earned courage counts first.',
+          },
+          description: 'Choose whether to shield Lord Brightwell as the figurehead or break formation to save Lysandra in the ambush.',
+          optionHints: ['Hold the line around Brightwell.', 'Dive toward Lysandra before the second strike lands.'],
+          consequenceDomain: 'identity',
+        },
+      }],
+    });
+
+    const result = new TreatmentFidelityValidator().validate({
+      blueprint,
+      treatmentGuidance: pressureGuidance,
+    });
+
+    expect(result.issues.join('\n')).not.toContain('major choice pressure');
+  });
+
+  it('warns when refreshed treatment turns, central conflict, and aftermath are not represented', () => {
+    const refreshedGuidance = {
+      episodePromise: 'Mara takes the lighthouse job.',
+      episodeTurns: [
+        'Mara arrives at the emptied lighthouse with her sister scarf.',
+        'The lantern speaks in her sister voice.',
+      ],
+      encounterAnchors: ['The first night watch traps Mara between the harbor and the lantern voice.'],
+      encounterCentralConflict: 'Mara must decide whether the voice is a miracle worth protecting or a trap wearing her grief.',
+      encounterAftermath: 'The tide steals Jonas key.',
+      endingPressure: 'At dawn, the lighthouse shadow points inland.',
+      majorChoicePressures: ['Tell the town what happened, or hide the voice.'],
+    };
+    const blueprint = baseBlueprint({
+      title: 'The Lantern Job',
+      synopsis: 'Mara starts work.',
+      scenes: [{
+        id: 'scene-1',
+        name: 'Arrival',
+        description: 'Mara cleans the keeper room.',
+        location: 'lighthouse',
+        mood: 'eerie',
+        purpose: 'bottleneck',
+        dramaticQuestion: '',
+        wantVsNeed: '',
+        conflictEngine: '',
+        npcsPresent: [],
+        narrativeFunction: 'Mara starts work.',
+        keyBeats: ['Mara unlocks a door.'],
+        leadsTo: [],
+      }],
+    });
+
+    const result = new TreatmentFidelityValidator().validate({
+      blueprint,
+      treatmentGuidance: refreshedGuidance,
+      plannedEncounters: [{
+        id: 'treatment-enc-1-1',
+        type: 'dramatic',
+        description: refreshedGuidance.encounterAnchors[0],
+        difficulty: 'easy',
+        npcsInvolved: ['Mara'],
+        stakes: 'The voice tests Mara grief.',
+        relevantSkills: ['resolve'],
+        isBranchPoint: false,
+      }],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.join('\n')).toContain('episode turn');
+    expect(result.issues.join('\n')).toContain('central conflict');
+    expect(result.issues.join('\n')).toContain('aftermath/consequence');
+    expect(result.issues.join('\n')).toContain('ending pressure');
+  });
 });

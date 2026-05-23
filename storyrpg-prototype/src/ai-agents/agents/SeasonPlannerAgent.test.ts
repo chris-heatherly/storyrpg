@@ -112,4 +112,53 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     );
     expect(plan.preferences.targetScenesPerEpisode).toBe(6);
   });
+
+  it('carries refreshed treatment episode turns, central conflict, and aftermath into planned encounters', () => {
+    const planner = makePlanner();
+    const treatment = readFileSync(join(__dirname, '../fixtures/refreshed-treatment.md'), 'utf8');
+    const extracted = extractTreatmentFromMarkdown(treatment);
+    const analysis = {
+      ...makeAnalysis(),
+      sourceTitle: 'Harbor Light',
+      totalEstimatedEpisodes: 2,
+      resolvedEndings: extracted.endings,
+      treatmentBranches: extracted.branches,
+      episodeBreakdown: [1, 2].map((episodeNumber) => ({
+        episodeNumber,
+        title: extracted.episodes[episodeNumber].authoredTitle,
+        synopsis: extracted.episodes[episodeNumber].episodePromise,
+        sourceChapters: [`${episodeNumber}`],
+        sourceSummary: extracted.episodes[episodeNumber].episodePromise,
+        plotPoints: [],
+        mainCharacters: ['Mara'],
+        supportingCharacters: [],
+        locations: ['Lighthouse'],
+        estimatedSceneCount: 6,
+        estimatedChoiceCount: 4,
+        structuralRole: extracted.episodes[episodeNumber].normalizedStructuralRoles,
+        narrativeFunction: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        treatmentGuidance: extracted.episodes[episodeNumber],
+      })),
+    } as any;
+
+    const merged = (planner as any).mergeTreatmentGuidanceIntoPlanData(analysis, {});
+    const plan = (planner as any).buildSeasonPlan(analysis, merged, {
+      targetScenesPerEpisode: 6,
+      targetChoicesPerEpisode: 4,
+      pacing: 'moderate',
+    });
+
+    const encounter = plan.episodes[0].plannedEncounters[0];
+    expect(encounter.description).toContain('Central conflict');
+    expect(encounter.centralConflict).toContain('miracle worth protecting');
+    expect(encounter.aftermathConsequence).toContain('salt burns');
+    expect(encounter.encounterSetupContext).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('turn:treatment_turn_ep1_1'),
+        expect.stringContaining('growth:treatment_growth_ep1_1'),
+        expect.stringContaining('aftermath:treatment_ep1'),
+      ]),
+    );
+    expect(plan.episodes[0].cliffhangerPlan.hook).toContain('shadow points inland');
+  });
 });

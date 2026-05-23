@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { buildPipelineConfig } from './buildPipelineConfig';
 import { buildVerbatimProfile } from '../images/artStyleProfile';
+import { SCENE_DEFAULTS } from '../../constants/pipeline';
 
 const generationSettings = {
   generateImages: true,
@@ -45,6 +48,30 @@ const generationSettings = {
 } as any;
 
 describe('buildPipelineConfig', () => {
+  it('defaults normal scene generation to the recommended 3-8 beat range', () => {
+    expect(SCENE_DEFAULTS.minBeatsPerScene).toBe(3);
+    expect(SCENE_DEFAULTS.maxBeatsPerScene).toBe(8);
+    expect(SCENE_DEFAULTS.standardBeatCount).toBe(8);
+    expect(SCENE_DEFAULTS.bottleneckBeatCount).toBe(8);
+  });
+
+  it('keeps Generator settings controls adjustable while recommending 3-8 beats per scene', () => {
+    const source = readFileSync(
+      resolve(__dirname, '../../components/GenerationSettingsPanel.tsx'),
+      'utf8',
+    );
+
+    expect(source).toContain("key: 'minBeatsPerScene'");
+    expect(source).toContain('Default lower bound for generated scene beats. 3 is recommended.');
+    expect(source).toContain("key: 'maxBeatsPerScene'");
+    expect(source).toContain('Default upper bound for generated scene beats. 8 is recommended; increase only for unusually dense scenes.');
+    expect(source).toContain("key: 'standardBeatCount'");
+    expect(source).toContain('Target cap for standard prose scenes.');
+    expect(source).toContain("key: 'bottleneckBeatCount'");
+    expect(source).toContain('Target cap for key bottleneck scenes; use higher values sparingly.');
+    expect(source).toContain("key: 'maxBeatsPerScene', label: 'Max Beats per Scene', description: 'Default upper bound for generated scene beats. 8 is recommended; increase only for unusually dense scenes.', min: 4, max: 12");
+  });
+
   it('allows image and video planner llms to differ from the story llm', () => {
     const config = buildPipelineConfig({
       llmProvider: 'anthropic',

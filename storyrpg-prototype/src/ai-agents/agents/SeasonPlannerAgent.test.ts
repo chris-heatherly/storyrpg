@@ -41,6 +41,23 @@ function makeAnalysis() {
     },
     storyArcs: [{ id: 'arc-1', name: 'Dusk', description: 'Kylie learns the city.', estimatedEpisodeRange: { start: 1, end: 8 } }],
     protagonist: { id: 'char-kylie', name: 'Kylie', description: 'A blogger.' },
+    characterArchitecture: {
+      protagonist: {
+        lie: 'Kylie believes attention is the same thing as safety.',
+        originPressure: 'Her old life rewarded performance more than honesty.',
+        truth: 'She has to choose selfhood over being consumed by someone else gaze.',
+        want: 'Build a dazzling new life in Bucharest.',
+        need: 'Keep her voice and selfhood even when glamour offers protection.',
+        arcMode: 'ambiguous',
+        climaxChoice: {
+          choiceQuestion: 'Will Kylie choose her own voice or let Victor define her?',
+          integrateTruthOption: 'Choose her own voice and boundaries.',
+          recommitLieOption: 'Trade selfhood for glamorous protection.',
+          activeChoiceMechanism: 'The player chooses what Kylie risks at the Hunter Moon ball.',
+        },
+      },
+      supportingCharacters: [],
+    },
     majorCharacters: [],
     keyLocations: [],
     resolvedEndingMode: 'multiple',
@@ -110,6 +127,14 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     expect(plan.episodes[0].endingRoutes.map((route: any) => route.endingId)).toEqual(
       expect.arrayContaining(plan.resolvedEndings.map((ending: any) => ending.id)),
     );
+    expect(plan.arcs[0].arcQuestion).toContain('Kylie');
+    expect(plan.arcs[0].midpointRecontextualization.questionAfter).toContain('understand');
+    expect(plan.arcs[0].lateArcCrisis.irreversibleCost).toBeTruthy();
+    expect(plan.arcs[0].episodeTurnouts).toHaveLength(8);
+    expect(plan.arcs[0].episodeTurnouts[4].turnType).toBe('recontextualization');
+    expect(plan.seasonPromiseArchitecture!.seasonDramaticQuestion).toContain('Kylie');
+    expect(plan.seasonPromiseArchitecture!.centralPressure.pressuresLieBy).toContain('attention');
+    expect(plan.seasonPromiseArchitecture!.seasonPromise.playerExperiencePromise).toContain('player');
     expect(plan.preferences.targetScenesPerEpisode).toBe(6);
   });
 

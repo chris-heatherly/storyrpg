@@ -519,6 +519,68 @@ export function getNextEpisode(
 }
 
 /**
+ * Check whether an episode is part of the player's active route.
+ *
+ * Standard stories keep the old behavior. Scene-length branch episodes are
+ * hidden unless their route-gating unlock conditions currently pass.
+ */
+export function isEpisodeOnActiveRoute(
+  episode: Episode,
+  player: PlayerState
+): boolean {
+  if (episode.episodeStructureMode !== 'sceneEpisodes' && !episode.routeMeta) {
+    return true;
+  }
+
+  if (episode.routeMeta?.kind !== 'branch') {
+    return true;
+  }
+
+  if (episode.routeMeta.hideWhenInactive === false) {
+    return true;
+  }
+
+  return isEpisodeUnlocked(episode, player);
+}
+
+/**
+ * Return the episodes visible/playable for the player's current route.
+ */
+export function getPlayableEpisodes(
+  story: Story,
+  player: PlayerState
+): Episode[] {
+  const hasRouteMetadata = story.episodes.some(
+    episode => episode.episodeStructureMode === 'sceneEpisodes' || episode.routeMeta
+  );
+
+  if (!hasRouteMetadata) {
+    return story.episodes;
+  }
+
+  return story.episodes.filter(episode => isEpisodeOnActiveRoute(episode, player));
+}
+
+/**
+ * Get the next episode in active playback order, skipping inactive route siblings.
+ */
+export function getNextPlayableEpisode(
+  story: Story,
+  currentEpisodeId: string,
+  player: PlayerState
+): Episode | undefined {
+  const playableEpisodes = getPlayableEpisodes(story, player);
+  const currentIndex = playableEpisodes.findIndex((e) => e.id === currentEpisodeId);
+  if (currentIndex === -1 || currentIndex >= playableEpisodes.length - 1) {
+    return undefined;
+  }
+
+  return playableEpisodes
+    .slice(currentIndex + 1)
+    .find(episode => isEpisodeUnlocked(episode, player));
+}
+
+/**
  * Check if an episode is unlocked for the player.
  */
 export function isEpisodeUnlocked(

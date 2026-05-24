@@ -13,6 +13,20 @@ function normalizeFeedbackSentence(text?: string | null): string | undefined {
   return /[.!?]$/.test(normalized) ? normalized : `${normalized}.`;
 }
 
+function trimTerminalPunctuation(text: string): string {
+  return text.replace(/[.!?]\s*$/, '');
+}
+
+function lowercaseFirst(text: string): string {
+  return text.charAt(0).toLowerCase() + text.slice(1);
+}
+
+function isNeutralRelationshipFeedback(item: AppliedConsequence): boolean {
+  if (item.type !== 'relationship') return false;
+  const hint = item.narrativeHint || item.label;
+  return /\b(neither|uncertain|indifferent|not at all afraid|cautious around)\b/i.test(hint);
+}
+
 export function getFictionFirstChangeFeedback(applied: AppliedConsequence[]): AppliedConsequence[] {
   return applied.filter((item) => CHOICE_CHANGE_FEEDBACK_TYPES.has(item.type));
 }
@@ -35,7 +49,7 @@ function identityRecognitionLine(item: AppliedConsequence): string | undefined {
 }
 
 export function buildChoiceRecognitionLine(feedback: AppliedConsequence[]): string | undefined {
-  const relationship = feedback.find((item) => item.type === 'relationship');
+  const relationship = feedback.find((item) => item.type === 'relationship' && !isNeutralRelationshipFeedback(item));
   if (relationship) return normalizeFeedbackSentence(relationship.narrativeHint);
 
   const identity = feedback.find((item) => item.type === 'identity');
@@ -48,4 +62,44 @@ export function buildChoiceRecognitionLine(feedback: AppliedConsequence[]): stri
   if (skill) return normalizeFeedbackSentence(skill.narrativeHint);
 
   return undefined;
+}
+
+function fictionFirstLineForItem(item: AppliedConsequence): string | undefined {
+  if (item.type === 'identity') return identityRecognitionLine(item);
+  return normalizeFeedbackSentence(item.narrativeHint || item.label);
+}
+
+function asSecondaryClause(sentence: string): string {
+  const clause = trimTerminalPunctuation(sentence).trim();
+  const practicedMatch = /^You feel more practiced in (.+)$/i.exec(clause);
+  if (practicedMatch) {
+    return `you become more practiced in ${practicedMatch[1]}`;
+  }
+  return lowercaseFirst(clause);
+}
+
+export function buildChoiceConsequenceSentence(applied: AppliedConsequence[]): string | undefined {
+  const visible = getFictionFirstChangeFeedback(applied);
+  const meaningful = visible.filter((item) => !isNeutralRelationshipFeedback(item));
+
+  if (meaningful.length === 0) return undefined;
+
+  const ordered = [
+    ...meaningful.filter((item) => item.type === 'relationship'),
+    ...meaningful.filter((item) => item.type === 'skill'),
+    ...meaningful.filter((item) => item.type === 'attribute'),
+    ...meaningful.filter((item) => item.type === 'identity'),
+  ];
+
+  const primary = ordered[0] ? fictionFirstLineForItem(ordered[0]) : undefined;
+  if (!primary) return undefined;
+
+  const secondary = ordered
+    .slice(1)
+    .map(fictionFirstLineForItem)
+    .find(Boolean);
+
+  if (!secondary) return normalizeFeedbackSentence(primary);
+
+  return normalizeFeedbackSentence(`${trimTerminalPunctuation(primary)} as ${asSecondaryClause(secondary)}`);
 }

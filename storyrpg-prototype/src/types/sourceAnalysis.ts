@@ -178,6 +178,52 @@ export interface CharacterArc {
   }>;
 }
 
+export type CharacterArcMode = 'positive' | 'tragic' | 'ambiguous';
+
+export interface ProtagonistCharacterArchitecture {
+  /**
+   * Agent-facing false/protective belief. This should never be shown to the
+   * player as a label; scenes express it through behavior and choices.
+   */
+  lie: string;
+  /**
+   * The formative pressure that made the Lie useful. May be trauma, success,
+   * social conditioning, deprivation, betrayal, vow, humiliation, fear, or
+   * survival adaptation; it does not have to be a trauma-wound template.
+   */
+  originPressure: string;
+  /** What the protagonist must recognize, or refuse in a tragic arc. */
+  truth: string;
+  /** Conscious goal. */
+  want: string;
+  /** Dramatic necessity underneath the conscious goal. */
+  need: string;
+  arcMode: CharacterArcMode;
+  climaxChoice: {
+    choiceQuestion: string;
+    integrateTruthOption: string;
+    recommitLieOption: string;
+    activeChoiceMechanism: string;
+  };
+}
+
+export interface SupportingCharacterMicroArc {
+  characterId: string;
+  characterName: string;
+  microLie: string;
+  originPressure?: string;
+  truthOrCounterPressure: string;
+  screenTimeTier: 'major' | 'supporting' | 'minor';
+  pressureRole: 'mirror' | 'foil' | 'temptation' | 'warning' | 'ally' | 'antagonist';
+  protagonistVisibleSignals: string[];
+  plannedResolution?: string;
+}
+
+export interface CharacterArchitecture {
+  protagonist: ProtagonistCharacterArchitecture;
+  supportingCharacters: SupportingCharacterMicroArc[];
+}
+
 export type EndingMode = 'single' | 'multiple';
 
 export type EndingSourceConfidence = 'explicit' | 'inferred' | 'generated';
@@ -359,6 +405,9 @@ export interface ConsequenceChain {
 // ========================================
 
 export interface EpisodeOutline {
+  episodeStructureMode?: import('./story').EpisodeStructureMode;
+  routeMeta?: import('./story').EpisodeRouteMeta;
+
   episodeNumber: number;
   title: string;
   synopsis: string;
@@ -515,6 +564,13 @@ export interface SourceMaterialAnalysis {
     firstAppearance: number; // Episode number
     fashionStyle?: CharacterFashionStyle;
   }>;
+
+  /**
+   * Agent-facing character architecture for Lie / origin pressure / Truth /
+   * Want vs Need. Planning metadata only; never rendered as player-facing
+   * mechanics or labels.
+   */
+  characterArchitecture?: CharacterArchitecture;
 
   // Key locations identified
   keyLocations: Array<{

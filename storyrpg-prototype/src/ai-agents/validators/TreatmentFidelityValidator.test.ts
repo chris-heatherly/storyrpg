@@ -105,6 +105,80 @@ describe('TreatmentFidelityValidator', () => {
     expect(result.issues.join('\n')).toContain('130,000');
   });
 
+  it('does not require treatment ending targets while generating a partial season slice', () => {
+    const story = {
+      id: 'endsong',
+      title: 'Endsong',
+      genre: 'Romantasy',
+      synopsis: 'Aethavyr and Lysandra begin a dangerous journey.',
+      coverImage: '',
+      initialState: { attributes: {} as any, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [
+        {
+          id: 'episode-1',
+          number: 1,
+          title: 'Dawn in Silvermist Valley',
+          synopsis: 'The escort is ambushed.',
+          coverImage: '',
+          startingSceneId: 'scene-1',
+          scenes: [{ id: 'scene-1', name: 'Ambush', startingBeatId: 'beat-1', beats: [{ id: 'beat-1', text: 'Aethavyr protects Lysandra in the pass.' }] }],
+        },
+        {
+          id: 'episode-2',
+          number: 2,
+          title: 'The Hidden Chamber',
+          synopsis: 'The ruins reveal an older truth.',
+          coverImage: '',
+          startingSceneId: 'scene-1',
+          scenes: [{ id: 'scene-1', name: 'Ruins', startingBeatId: 'beat-1', beats: [{ id: 'beat-1', text: 'Ancient murals show humans and Lyri el standing together.' }] }],
+        },
+      ],
+    } satisfies Story;
+
+    const result = new TreatmentFidelityValidator().validateFinalStory({
+      story,
+      expectedEpisodeCount: 2,
+      sourceEpisodeCount: 8,
+      isCompleteSeason: false,
+      analysis: {
+        sourceFormat: 'story_treatment',
+        totalEstimatedEpisodes: 2,
+        majorCharacters: [],
+        keyLocations: [],
+        adaptationGuidance: { elementsToPreserve: [] },
+        episodeBreakdown: [{
+          episodeNumber: 2,
+          title: 'The Hidden Chamber',
+          summary: '',
+          mainCharacters: [],
+          supportingCharacters: [],
+          locations: [],
+          keyEvents: [],
+          emotionalArc: '',
+          playerChoices: [],
+          structuralRole: ['plotTurn1'],
+          treatmentGuidance: {
+            resolutionAftermath: 'The final EndSong is resolved in the Temple of Eternal Twilight.',
+          },
+        }],
+        resolvedEndings: [{
+          id: 'ending-twilight',
+          name: 'The Twilight Accord',
+          summary: 'Aethavyr and Lysandra unite light and shadow at the end of the season.',
+          emotionalRegister: 'radiant',
+          themePayoff: 'Synthesis over purity.',
+          stateDrivers: [],
+          targetConditions: [],
+          sourceConfidence: 'explicit',
+        }],
+      } as any,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toEqual([]);
+  });
+
   it('fails the Bite Me drift pattern before SceneWriter can spend it into prose', () => {
     const blueprint = baseBlueprint({
       synopsis: 'Kylie meets new friends at a rooftop bar, walks home alone, is attacked by three men, and sees Victor reveal inhuman eyes.',

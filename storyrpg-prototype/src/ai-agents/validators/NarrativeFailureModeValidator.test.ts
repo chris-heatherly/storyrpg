@@ -1,0 +1,91 @@
+import { describe, expect, it } from 'vitest';
+import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
+import type { SceneContent } from '../agents/SceneWriter';
+
+describe('NarrativeFailureModeValidator', () => {
+  it('flags external rescue at the ending as convenient coincidence', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      sceneContents: [
+        scene('s1', ['Mara reaches the tower with no way through the locked gate.']),
+        scene('s2', ['The guards arrive just in time and solve the siege while Mara watches from the stairs.']),
+      ],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.code === 'convenient_coincidence')).toBe(true);
+  });
+
+  it('accepts a protagonist-caused ending even when help is present', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      sceneContents: [
+        scene('s1', ['Mara studies the smuggler map and earns the crew chief\'s trust.']),
+        scene('s2', ['Mara uses the map she earned, chooses to reveal the route, and the allies arrive because of her plan.']),
+      ],
+    });
+
+    expect(result.issues.some((issue) => issue.code === 'convenient_coincidence')).toBe(false);
+  });
+
+  it('flags repeated obvious clue phrasing as a telegraphed twist', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      sceneContents: [
+        scene('s1', ['Something is off about the captain, though no one says why.']),
+        scene('s2', ['Something is off in the way the captain hides the ledger.']),
+        scene('s3', ['Something is off again when the captain asks about the vault.']),
+      ],
+    });
+
+    expect(result.issues.some((issue) => issue.code === 'telegraphed_twist')).toBe(true);
+  });
+
+  it('accepts subtle twist setup with varied alternate interpretations', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      sceneContents: [
+        scene('s1', ['The captain forgets a toast, which could be grief or calculation.']),
+        scene('s2', ['A ledger page is missing after the storm scatters half the archive.']),
+        scene('s3', ['The vault guard salutes the captain a beat too late.']),
+      ],
+    });
+
+    expect(result.issues.some((issue) => issue.code === 'telegraphed_twist')).toBe(false);
+  });
+
+  it('maps information-ledger mystery overflow to mystery box collapse', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      baseIssues: [{
+        severity: 'error',
+        message: 'Season has 4 mystery/box-question entries; hard cap is 3.',
+        location: 'season.informationLedger',
+        source: 'information_ledger',
+      }],
+    });
+
+    expect(result.issues[0]?.code).toBe('mystery_box_collapse');
+  });
+
+  it('maps theme-pressure failures to theme drift', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      baseIssues: [{
+        severity: 'error',
+        message: 'Episode does not press on the theme question through protagonist-visible choice.',
+        location: 'episode.themePressure',
+        source: 'theme_pressure',
+      }],
+    });
+
+    expect(result.issues[0]?.code).toBe('theme_drift');
+  });
+});
+
+function scene(sceneId: string, texts: string[]): SceneContent {
+  return {
+    sceneId,
+    sceneName: sceneId,
+    beats: texts.map((text, index) => ({ id: `${sceneId}-b${index + 1}`, text })),
+    startingBeatId: `${sceneId}-b1`,
+    moodProgression: [],
+    charactersInvolved: [],
+    keyMoments: [],
+    continuityNotes: [],
+  };
+}

@@ -172,8 +172,11 @@ function registerImageFeedbackRoutes(app, { rootDir, storiesDir, feedbackFile, c
             const parsed = JSON.parse(fs.readFileSync(primary.abs, 'utf8'));
             const decoded = codec.safeDecodeStory(parsed);
             if (!decoded.ok || decoded.pkg.storyId !== storyId) continue;
-            const promptsDir = path.join(outputDir, 'prompts');
-            if (fs.existsSync(promptsDir)) {
+            const promptsDir = [
+              path.join(outputDir, 'images', 'prompts'),
+              path.join(outputDir, 'prompts'),
+            ].find((candidate) => fs.existsSync(candidate));
+            if (promptsDir) {
               const promptFiles = fs.readdirSync(promptsDir);
               for (const pf of promptFiles) {
                 const pfLower = pf.toLowerCase();

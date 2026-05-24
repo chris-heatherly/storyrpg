@@ -31,6 +31,40 @@ describe('assertValidWorkerPayload', () => {
     expect(() => assertValidWorkerPayload(payload)).not.toThrow();
   });
 
+  it('accepts spot image-generation target slots', () => {
+    const payload = {
+      mode: 'image-generation',
+      config: {},
+      resultPath: '/tmp/result.json',
+      imageGenerationInput: {
+        outputDirectory: 'generated-stories/story-1',
+        mode: 'spot',
+        targetSlots: [{ episodeNumber: 1, sceneId: 'scene-3', beatId: 'beat-1' }],
+        skipEncounterImages: true,
+        skipCover: true,
+        skipCharacterRefs: true,
+        skipVisualContractValidation: true,
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).not.toThrow();
+  });
+
+  it('rejects malformed spot image-generation target slots', () => {
+    const payload = {
+      mode: 'image-generation',
+      config: {},
+      resultPath: '/tmp/result.json',
+      imageGenerationInput: {
+        outputDirectory: 'generated-stories/story-1',
+        mode: 'spot',
+        targetSlots: [{ episodeNumber: 0, sceneId: '', beatId: 'beat-1' }],
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).toThrow(/targetSlots entries/i);
+  });
+
   it('rejects a malformed analysis payload', () => {
     const payload = {
       mode: 'analysis',

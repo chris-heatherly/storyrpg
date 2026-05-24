@@ -52,8 +52,6 @@ function pushNameParts(aliases: string[], value: string): void {
   aliases.push(name);
   const parts = name.split(/\s+/).filter(Boolean);
   if (parts[0]) aliases.push(parts[0]);
-  if (parts.length > 1 && parts[parts.length - 1]) aliases.push(parts[parts.length - 1]);
-  if (parts.length > 1) aliases.push(parts.slice(-2).join(' '));
 }
 
 function characterAliases(character: any): string[] {

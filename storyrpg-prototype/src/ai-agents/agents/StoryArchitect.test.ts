@@ -691,9 +691,151 @@ describe('StoryArchitect opening agency requirements', () => {
     } as any);
     const blueprint = makeOpeningChoiceBlueprint();
     blueprint.episodeId = 'episode-2';
+    blueprint.dramaticAudit = {
+      episodeQuestion: 'Will Alex step into the city trouble?',
+      episodeQuestionSetup: 'The station opening poses whether Alex can stay safe by remaining uninvolved.',
+      episodeQuestionAnswer: 'The confrontation answers that public involvement changes Alex reputation and future access.',
+      themeQuestion: 'What do you owe strangers when safety depends on staying uninvolved?',
+      themePressure: 'The episode tests whether safety is worth refusing help.',
+      themeAngle: 'Safety is tested as public detachment when a stranger needs help.',
+      themeChoicePressure: 'The player chooses whether Alex protects themself, helps the stranger, or pays reputation cost to become involved.',
+      openingPromise: {
+        hook: 'Alex enters a city already watching newcomers.',
+        episodePromise: 'A stranger will force Alex to choose safety or public involvement.',
+        activePressure: 'City witnesses are already measuring whether Alex can be trusted.',
+        optionalStakes: 'Alex future access and reputation are at risk.',
+      },
+      episodePressureLanes: {
+        aPlot: {
+          externalPressure: 'Alex must navigate the city trouble without losing future access.',
+          climaxIntersection: 'The confrontation tests whether Alex public standing survives the stranger choice.',
+        },
+        bPlot: {
+          mode: 'scene',
+          relationshipOrIdentityPressure: 'The stranger and city witnesses force Alex to define whether safety means detachment.',
+          offscreenNpcMotivation: 'The stranger has already risked asking for help because no local witness will act.',
+          protagonistVisibleSignals: [
+            'The stranger blocks Alex path.',
+            'The city witnesses wait to see whether Alex helps.',
+          ],
+          scenesOrEpisodes: ['scene-2', 'scene-3'],
+          climaxIntersection: 'The stranger choice shapes who will stand with Alex during the confrontation.',
+        },
+        cPlot: {
+          function: 'future_seed',
+          seed: 'The city keeps informal accounts of who helps newcomers.',
+          visiblePlant: 'A witness marks Alex response before vanishing into the crowd.',
+          payoffPlan: 'The witness account can return as future access or suspicion.',
+          targetPayoff: 'later_episode',
+        },
+      },
+      episodeEndStateDelta: 'Alex leaves with altered public reputation, changed city access, and clearer identity pressure.',
+      nextEpisodePressure: 'The witness account can reopen city access or suspicion in the next episode.',
+      personalStake: 'Alex reputation and future access in the city are at risk.',
+      stakesLayers: {
+        material: 'Alex future access in the city can close.',
+        relational: 'The stranger and city witnesses decide whether Alex can be trusted.',
+        identity: 'Alex becomes either detached or publicly involved.',
+      },
+      majorTurns: [
+        {
+          id: 'turn-1',
+          description: 'Alex arrives and notices the city watching.',
+          turnType: 'revelation',
+          driver: 'protagonist',
+          protagonistInfluence: 'Alex chooses how visibly to enter the station.',
+          closesQuestion: 'Alex cannot enter anonymously.',
+          opensQuestion: 'The city will judge what Alex does next.',
+          memorableImageOrLine: 'Every face at the station turns before Alex speaks.',
+        },
+        {
+          id: 'turn-2',
+          description: 'Alex decides whether to help the stranger.',
+          turnType: 'choice',
+          driver: 'player_choice',
+          protagonistInfluence: 'The player response creates the branch pressure.',
+          closesQuestion: 'Alex safety is no longer passive.',
+          opensQuestion: 'The response will decide who stands with Alex later.',
+          memorableImageOrLine: 'The stranger reaches out while the city watches.',
+        },
+        {
+          id: 'turn-3',
+          description: 'The confrontation tests Alex public standing.',
+          turnType: 'payoff',
+          driver: 'protagonist',
+          protagonistInfluence: 'Alex earlier choice shapes who will stand with them.',
+          closesQuestion: 'Alex public standing is tested by the earlier choice.',
+          opensQuestion: 'The city will remember what Alex became.',
+          memorableImageOrLine: 'The crowd parts differently depending on what Alex risked.',
+        },
+      ],
+      informationPlan: [
+        {
+          item: 'The city watches newcomers.',
+          knownBy: ['player', 'protagonist'],
+          revealTiming: 'Opening arrival.',
+          payoff: 'The pressure returns in the confrontation.',
+        },
+      ],
+    };
+    blueprint.scenes.forEach((scene: any, index: number) => {
+      scene.dramaticStructure = {
+        question: scene.dramaticQuestion || `Scene ${index + 1} question`,
+        turn: scene.keyBeats?.[0] || 'The scene turns.',
+        pressurePeak: scene.keyBeats?.[1] || scene.keyBeats?.[0] || 'The cost becomes visible.',
+        changedState: `${scene.name} leaves Alex with changed leverage.`,
+      };
+      scene.personalStake = 'Alex reputation and future access in the city are at risk.';
+      scene.themePressure = 'The scene turns safety into a choice with reputation cost and identity pressure.';
+      scene.stakesLayers = {
+        material: 'Alex future access in the city can change.',
+        relational: 'The city witnesses decide whether Alex can be trusted.',
+        identity: 'Alex public identity is being formed.',
+      };
+      scene.transitionOut = (scene.leadsTo || []).map((toSceneId: string) => ({
+        toSceneId,
+        connector: 'therefore',
+        causalLink: `${toSceneId} follows from ${scene.id} because Alex has changed leverage.`,
+        pressureChange: 'The pressure becomes harder to ignore.',
+      }));
+      scene.residue = [{
+        type: 'reputation',
+        description: `${scene.name} changes how the city reads Alex.`,
+      }];
+      if (scene.choicePoint) {
+        scene.choicePoint.stakesLayers = {
+          relational: 'The stranger and city witnesses read Alex response.',
+          identity: 'Alex chooses whether to become involved.',
+        };
+        scene.choicePoint.themeAnswer = 'Alex answers the safety question by choosing detachment, help, or public involvement.';
+      }
+    });
+    blueprint.scenes[0].keyBeats = [
+      'Alex chooses to enter the station visibly despite the city watching.',
+      'PEAK: Alex commits to crossing the threshold and accepts the reputation cost.',
+    ];
+    blueprint.scenes[0].dramaticStructure.pressurePeak = 'Alex commits to crossing the threshold and accepts the reputation cost.';
     blueprint.scenes[1].leadsTo = ['scene-3', 'scene-4'];
+    blueprint.scenes[1].transitionOut = blueprint.scenes[1].leadsTo.map((toSceneId: string) => ({
+      toSceneId,
+      connector: toSceneId === 'scene-4' ? 'but' : 'therefore',
+      causalLink: `${toSceneId} follows from Alex response to the stranger.`,
+      pressureChange: 'The choice changes Alex public leverage.',
+    }));
+    blueprint.scenes[1].keyBeats = [
+      'The stranger asks for help and risks Alex anonymity.',
+      'PEAK: Alex choice shifts public leverage and city trust.',
+    ];
+    blueprint.scenes[1].dramaticStructure.turn = 'The stranger asks for help and risks Alex anonymity.';
+    blueprint.scenes[1].dramaticStructure.pressurePeak = 'Alex choice shifts public leverage and city trust.';
     blueprint.scenes[1].choicePoint.branches = true;
     blueprint.scenes[2].leadsTo = ['scene-4'];
+    blueprint.scenes[2].transitionOut = [{
+      toSceneId: 'scene-4',
+      connector: 'therefore',
+      causalLink: 'The confrontation forces Alex to carry the aftermath.',
+      pressureChange: 'Public risk becomes personal consequence.',
+    }];
     blueprint.scenes.push({
       ...blueprint.scenes[1],
       id: 'scene-4',
@@ -701,7 +843,23 @@ describe('StoryArchitect opening agency requirements', () => {
       description: 'Alex chooses how to carry the aftermath.',
       location: 'street',
       purpose: 'transition',
+      themePressure: 'The aftermath makes Alex carry the identity cost of choosing involvement.',
+      keyBeats: [
+        'The aftermath narrows Alex options in the city.',
+        'PEAK: Alex must carry the reputation cost into the next episode.',
+      ],
+      dramaticStructure: {
+        question: 'How will Alex carry the aftermath?',
+        turn: 'The city response narrows Alex options.',
+        pressurePeak: 'Alex must carry the reputation cost into the next episode.',
+        changedState: 'Alex leaves with a clearer public identity.',
+      },
       leadsTo: [],
+      transitionOut: [],
+      residue: [{
+        type: 'identity',
+        description: 'Alex leaves with a clearer public identity.',
+      }],
     });
 
     expect(() => (architect as any).validateBlueprint(blueprint, makeInput({ episodeNumber: 2 }))).not.toThrow();

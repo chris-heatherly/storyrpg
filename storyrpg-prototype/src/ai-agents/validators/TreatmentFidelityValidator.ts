@@ -19,6 +19,8 @@ export interface TreatmentFinalStoryValidationInput {
   story: Story;
   analysis?: SourceMaterialAnalysis;
   expectedEpisodeCount?: number;
+  sourceEpisodeCount?: number;
+  isCompleteSeason?: boolean;
   sourceText?: string;
 }
 
@@ -277,6 +279,9 @@ export class TreatmentFidelityValidator {
     const allStoryText = storyText(story);
     const generatedEpisodeNumbers = new Set((story.episodes || []).map((episode) => episode.number));
     const maxGeneratedEpisode = Math.max(0, ...generatedEpisodeNumbers);
+    const sourceEpisodeCount = input.sourceEpisodeCount || input.analysis?.totalEstimatedEpisodes || input.expectedEpisodeCount;
+    const isCompleteSeason = input.isCompleteSeason
+      ?? (sourceEpisodeCount !== undefined && (story.episodes || []).length >= sourceEpisodeCount);
 
     if (input.expectedEpisodeCount !== undefined && story.episodes.length !== input.expectedEpisodeCount) {
       issues.push(
@@ -286,12 +291,12 @@ export class TreatmentFidelityValidator {
 
     if (input.analysis) {
       for (const character of input.analysis.majorCharacters || []) {
-        if (character.firstAppearance <= maxGeneratedEpisode || input.expectedEpisodeCount === input.analysis.totalEstimatedEpisodes) {
+        if (character.firstAppearance <= maxGeneratedEpisode || isCompleteSeason) {
           pushMissingExactAnchor(issues, 'character', character.name, allStoryText);
         }
       }
       for (const location of input.analysis.keyLocations || []) {
-        if (location.importance === 'major' && (location.firstAppearance <= maxGeneratedEpisode || input.expectedEpisodeCount === input.analysis.totalEstimatedEpisodes)) {
+        if (location.importance === 'major' && (location.firstAppearance <= maxGeneratedEpisode || isCompleteSeason)) {
           pushMissingExactAnchor(issues, 'major location', location.name, allStoryText);
         }
       }
@@ -333,12 +338,12 @@ export class TreatmentFidelityValidator {
         if (guidance.authoredCliffhanger && !hasCloseMatch(guidance.authoredCliffhanger, episodeText, 0.35)) {
           issues.push(`[TreatmentFidelity] Episode ${episodeGuidance.episodeNumber} is missing authored cliffhanger: "${guidance.authoredCliffhanger}".`);
         }
-        if (guidance.resolutionAftermath && episodeGuidance.episodeNumber >= (input.analysis?.totalEstimatedEpisodes || 0)
+        if (guidance.resolutionAftermath && isCompleteSeason && episodeGuidance.episodeNumber >= (sourceEpisodeCount || 0)
           && !hasCloseMatch(guidance.resolutionAftermath, episodeText, 0.3)) {
           issues.push(`[TreatmentFidelity] Finale episode is missing authored resolution/aftermath: "${guidance.resolutionAftermath}".`);
         }
       }
-      if (input.analysis.sourceFormat === 'story_treatment' && (input.analysis.resolvedEndings || []).length > 0) {
+      if (isCompleteSeason && input.analysis.sourceFormat === 'story_treatment' && (input.analysis.resolvedEndings || []).length > 0) {
         for (const ending of input.analysis.resolvedEndings || []) {
           const endingText = `${ending.name} ${ending.summary} ${ending.themePayoff}`;
           if (!hasCloseMatch(endingText, allStoryText, 0.2)) {

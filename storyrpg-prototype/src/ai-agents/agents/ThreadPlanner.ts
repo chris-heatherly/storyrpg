@@ -83,6 +83,14 @@ Threads come in four kinds:
    blueprint's scene + beat ids in \`plants\` and \`payoffs\`.
 4. Keep it tight: 3–7 threads per episode is plenty. Do not generate more
    than one major thread per scene.
+5. Information has ownership. Major clues, secrets, threats, and open
+   questions should declare their tension mode through tags such as
+   "mystery", "dramatic-irony", "secret", "threat", "relationship-secret",
+   "theme-question", or "payoff-required". The player must know enough to
+   roleplay intent before major choices.
+6. Payoffs are path-aware. A branch-specific payoff must be planted on that
+   branch or in a shared bottleneck before the branch. Do not pay off
+   information the player could not have encountered on that reachable path.
 
 **REQUIRED JSON STRUCTURE**
 \`\`\`json

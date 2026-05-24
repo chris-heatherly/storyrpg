@@ -216,6 +216,48 @@ function normalizePipelineOutputDir(cfg, { storiesDir, runtimeRoot, appRoot }) {
   cfg.outputDir = path.resolve(base, raw);
 }
 
+function normalizeImageGenerationOutputDirectory(outputDirectory, { storiesDir, appRoot }) {
+  if (!outputDirectory || typeof outputDirectory !== 'string') return outputDirectory;
+  const storiesRoot = path.resolve(storiesDir);
+  const appRootAbs = path.resolve(appRoot);
+  const raw = outputDirectory.trim();
+  const asGeneratedRelative = (absPath) => {
+    const resolved = path.resolve(absPath);
+    if (resolved === storiesRoot) return 'generated-stories';
+    if (resolved.startsWith(`${storiesRoot}${path.sep}`)) {
+      return path.relative(appRootAbs, resolved) || 'generated-stories';
+    }
+    return null;
+  };
+
+  if (path.isAbsolute(raw)) {
+    const resolved = path.resolve(raw);
+    const relativeUnderApp = resolved === appRootAbs || resolved.startsWith(`${appRootAbs}${path.sep}`)
+      ? asGeneratedRelative(resolved)
+      : null;
+    if (relativeUnderApp) return relativeUnderApp;
+
+    if (!fs.existsSync(resolved)) {
+      const basename = path.basename(resolved);
+      const recovered = path.join(storiesRoot, basename);
+      if (basename && fs.existsSync(recovered)) {
+        return path.relative(appRootAbs, recovered);
+      }
+    }
+
+    const relativeUnderStories = asGeneratedRelative(resolved);
+    if (relativeUnderStories) return relativeUnderStories;
+    throw new Error(`imageGenerationInput.outputDirectory path is outside worker filesystem generated-story root: ${raw}`);
+  }
+
+  const normalized = raw.replace(/^\/+/, '').replace(/^\.\//, '');
+  if (normalized === 'generated' || normalized === 'generated-stories') return 'generated-stories';
+  const resolved = path.resolve(appRootAbs, normalized);
+  const relativeUnderStories = asGeneratedRelative(resolved);
+  if (relativeUnderStories) return relativeUnderStories;
+  throw new Error(`imageGenerationInput.outputDirectory path is outside worker filesystem generated-story root: ${raw}`);
+}
+
 function createWorkerLifecycle({
   rootDir,
   storiesDir: storiesDirInput,
@@ -1272,6 +1314,16 @@ function createWorkerLifecycle({
           ...(hydratedPayload.imageGenerationInput || {}),
           outputDirectory: priorOutputDir,
         };
+      }
+      if (mode === 'image-generation' && hydratedPayload.imageGenerationInput?.outputDirectory) {
+        try {
+          hydratedPayload.imageGenerationInput.outputDirectory = normalizeImageGenerationOutputDirectory(
+            hydratedPayload.imageGenerationInput.outputDirectory,
+            { storiesDir, appRoot },
+          );
+        } catch (error) {
+          return res.status(400).json({ error: error.message });
+        }
       }
       const requestSnapshot = buildWorkerRequestSnapshot(mode, hydratedPayload, storyTitle);
       const resumeOutputs = priorOutputDir

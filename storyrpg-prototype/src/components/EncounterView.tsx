@@ -117,6 +117,7 @@ import { processTemplate } from '../engine/templateProcessor';
 import { FileText, X } from 'lucide-react-native';
 import { useImagePromptOverlay } from '../hooks/useImagePromptOverlay';
 import { formatSceneBeatLabelFromImageUrl, getImagePanelNumberFromStory } from '../utils/imagePromptDebug';
+import { resolvePromptUrlFromImageUrl } from '../utils/imagePromptPaths';
 import { ReadingShell } from './ReadingShell';
 import { ContinueButton } from './ContinueButton';
 import { CONTINUE_COPY } from '../theme/copy';
@@ -625,9 +626,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         const beatId = ('beatId' in screenState ? screenState.beatId : undefined) || 'beat-1';
         return `${baseUrl}/${dir}/images/prompts/encounter-${encounterSceneId}-${beatId}-setup.json`;
       }
-      return imageUrl
-        .replace(/\/images\//, '/images/prompts/')
-        .replace(/\.(png|jpg|jpeg|webp)$/i, '.json');
+      return resolvePromptUrlFromImageUrl(imageUrl);
     },
   });
   const [processedBeat, setProcessedBeat] = useState<ProcessedBeat | null>(null);

@@ -77,6 +77,79 @@ describe('planningHelpers', () => {
             ],
           },
         ],
+        characterArchitecture: {
+          protagonist: {
+            lie: 'Trust makes me weak.',
+            originPressure: 'A trusted ally once sold the protagonist out.',
+            truth: 'Trust can become chosen leverage.',
+            want: 'Keep both friends.',
+            need: 'Choose a relationship honestly before the lie chooses for them.',
+            arcMode: 'ambiguous',
+            climaxChoice: {
+              choiceQuestion: 'Will the protagonist trust openly or manipulate both friends?',
+              integrateTruthOption: 'Trust one friend with the whole truth.',
+              recommitLieOption: 'Hide the truth from both friends.',
+              activeChoiceMechanism: 'The player chooses which friend receives the truth.',
+            },
+          },
+          supportingCharacters: [],
+        },
+        seasonPromiseArchitecture: {
+          seasonDramaticQuestion: 'Can the protagonist trust without losing leverage?',
+          centralPressure: {
+            type: 'relationship',
+            description: 'Two friends apply incompatible pressure.',
+            pressuresLieBy: 'Trust keeps becoming the leverage the protagonist needs.',
+          },
+          seasonPromise: {
+            premisePromise: 'Friendship choices become dangerous leverage.',
+            playerExperiencePromise: 'The player chooses who to trust and what costs to carry.',
+            emotionalPromise: 'Every bond feels useful and unsafe.',
+            variationPlan: ['Episode 2 turns trust into a public reveal.'],
+          },
+          seasonCompleteness: {
+            resolvedQuestion: 'The protagonist chooses a trust pattern.',
+            resolvedStakes: 'The friendship triangle changes.',
+            characterStateChange: 'The protagonist can no longer treat trust as weakness.',
+          },
+        },
+        informationLedger: [
+          {
+            id: 'info-trust-debt',
+            label: 'Trust debt',
+            description: 'The player knows a friend is hiding a debt.',
+            audienceKnowledgeState: 'selective',
+            tensionMode: 'suspense',
+            knownBy: ['player', 'ally'],
+            withheldFrom: ['protagonist'],
+            introducedEpisode: 1,
+            plannedRevealEpisode: 2,
+            plannedPayoffEpisode: 2,
+            setupTouchEpisodes: [1, 2],
+            payoffPlan: 'The debt changes the trust choice.',
+            isBoxQuestion: false,
+            closesQuestionIds: ['q-trust-debt'],
+            opensQuestionIds: [],
+          },
+        ],
+        arcs: [
+          {
+            id: 'arc-1',
+            name: 'Trust Arc',
+            episodeRange: { start: 1, end: 3 },
+            arcQuestion: 'Can trust survive pressure?',
+            identityPressureFacet: 'The protagonist equates trust with weakness.',
+            episodeTurnouts: [
+              {
+                episodeNumber: 2,
+                turnType: 'revelation',
+                description: 'The ally reveals a hidden debt.',
+                leavesProtagonistWith: 'Knowledge that changes the next choice.',
+                whyThisCannotMoveLater: 'The later confrontation depends on this reveal.',
+              },
+            ],
+          },
+        ],
         episodes: [
           {
             episodeNumber: 2,
@@ -114,6 +187,11 @@ describe('planningHelpers', () => {
     expect(directives?.consequenceEffects?.[0]?.severity).toBe('high');
     expect(directives?.treatmentGuidance?.episodePromise).toContain('keep both friends');
     expect(directives?.treatmentGuidance?.majorChoicePressures?.[0]).toContain('trust');
+    expect(directives?.arcPressure?.arcName).toBe('Trust Arc');
+    expect(directives?.arcPressure?.episodeTurnout?.turnType).toBe('revelation');
+    expect(directives?.characterArchitecture?.protagonist.lie).toContain('Trust');
+    expect(directives?.seasonPromiseArchitecture?.seasonDramaticQuestion).toContain('trust');
+    expect(directives?.informationLedgerEntries?.[0]?.id).toBe('info-trust-debt');
   });
 
   it('includes growthContext when seasonPlan has growthCurve entry for episode', () => {

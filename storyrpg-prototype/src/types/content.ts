@@ -4,7 +4,7 @@
 
 import type { ConditionExpression } from './conditions';
 import type { Consequence } from './consequences';
-import type { Choice } from './choice';
+import type { Choice, ChoiceRouteContext } from './choice';
 import type { AssetRef } from '../assets/assetRef';
 
 /**
@@ -223,6 +223,9 @@ export interface Beat {
   nextSceneId?: string;
 
   onShow?: Consequence[];
+
+  isChoiceBridge?: boolean;
+  routeContext?: ChoiceRouteContext;
 
   outcomeSequences?: {
     success?: string[];

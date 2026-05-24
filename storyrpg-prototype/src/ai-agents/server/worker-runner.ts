@@ -290,6 +290,12 @@ async function runImageGeneration(payload: WorkerPayload) {
     externalJobId: payload.externalJobId,
     outputDirectory: payload.imageGenerationInput.outputDirectory,
     targetEpisodeNumber: payload.imageGenerationInput.targetEpisodeNumber,
+    mode: payload.imageGenerationInput.mode,
+    targetSlots: payload.imageGenerationInput.targetSlots,
+    skipEncounterImages: payload.imageGenerationInput.skipEncounterImages,
+    skipCover: payload.imageGenerationInput.skipCover,
+    skipCharacterRefs: payload.imageGenerationInput.skipCharacterRefs,
+    skipVisualContractValidation: payload.imageGenerationInput.skipVisualContractValidation,
     resumeCheckpoint: payload.resumeCheckpoint,
     onEvent: (event) => {
       emit('pipeline_event', {

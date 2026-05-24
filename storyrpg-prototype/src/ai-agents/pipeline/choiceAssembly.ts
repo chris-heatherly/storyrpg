@@ -61,6 +61,7 @@ export function assembleChoiceForStory(
     visualResidueHint: choice.visualResidueHint,
     consequences: normalizeConsequences(choice.consequences),
     delayedConsequences: normalizeDelayedConsequences(choice.delayedConsequences),
+    routeContext: choice.routeContext,
     nextSceneId,
     nextBeatId: choice.nextBeatId,
     outcomeTexts: choice.outcomeTexts,

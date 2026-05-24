@@ -20,6 +20,10 @@ export type WorkerPayload = {
     preferences?: {
       targetScenesPerEpisode?: number;
       targetChoicesPerEpisode?: number;
+      episodeStructureMode?: 'standard' | 'sceneEpisodes';
+      sceneEpisodeEncounterCadence?: number;
+      sceneEpisodeBranchMinEpisodes?: number;
+      sceneEpisodeBranchMaxEpisodes?: number;
       pacing?: 'tight' | 'moderate' | 'expansive';
       endingMode?: EndingMode;
     };
@@ -32,6 +36,12 @@ export type WorkerPayload = {
   imageGenerationInput?: {
     outputDirectory: string;
     targetEpisodeNumber?: number;
+    mode?: 'full' | 'spot';
+    targetSlots?: Array<{ episodeNumber: number; sceneId: string; beatId: string }>;
+    skipEncounterImages?: boolean;
+    skipCover?: boolean;
+    skipCharacterRefs?: boolean;
+    skipVisualContractValidation?: boolean;
   };
 };
 
@@ -63,6 +73,19 @@ function isResumeCheckpoint(value: unknown): value is ResumeCheckpointPayload | 
   return (
     (value.steps == null || isRecord(value.steps))
     && (value.outputs == null || isRecord(value.outputs))
+  );
+}
+
+function isValidTargetSlot(value: unknown): value is { episodeNumber: number; sceneId: string; beatId: string } {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.episodeNumber === 'number'
+    && Number.isFinite(value.episodeNumber)
+    && value.episodeNumber >= 1
+    && typeof value.sceneId === 'string'
+    && value.sceneId.length > 0
+    && typeof value.beatId === 'string'
+    && value.beatId.length > 0
   );
 }
 
@@ -117,6 +140,24 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
       )
     ) {
       throw new Error('imageGenerationInput.targetEpisodeNumber must be a positive number.');
+    }
+    if (
+      value.imageGenerationInput.mode != null
+      && value.imageGenerationInput.mode !== 'full'
+      && value.imageGenerationInput.mode !== 'spot'
+    ) {
+      throw new Error('imageGenerationInput.mode must be "full" or "spot".');
+    }
+    if (value.imageGenerationInput.targetSlots != null) {
+      if (!Array.isArray(value.imageGenerationInput.targetSlots)) {
+        throw new Error('imageGenerationInput.targetSlots must be an array.');
+      }
+      if (value.imageGenerationInput.targetSlots.length === 0) {
+        throw new Error('imageGenerationInput.targetSlots must include at least one target slot.');
+      }
+      if (!value.imageGenerationInput.targetSlots.every(isValidTargetSlot)) {
+        throw new Error('imageGenerationInput.targetSlots entries must include positive episodeNumber, sceneId, and beatId.');
+      }
     }
   }
 }

@@ -25,6 +25,8 @@ import {
   WritingStyleGuide,
   DirectLanguageFragmentGroups,
   CharacterFashionStyle,
+  CharacterArchitecture,
+  CharacterArcMode,
   StructuralRole,
   SEVEN_POINT_BEATS,
 } from '../../types/sourceAnalysis';
@@ -95,6 +97,7 @@ export interface SourceMaterialInput {
   preferences?: {
     // Target episode length (scenes per episode)
     targetScenesPerEpisode?: number; // Default: 6
+    episodeStructureMode?: 'standard' | 'sceneEpisodes';
     // Target choices per episode
     targetChoicesPerEpisode?: number; // Default: 3
     // Pacing preference
@@ -127,6 +130,10 @@ interface StoryStructureAnalysis {
     importance: string;
     fashionStyle?: Partial<CharacterFashionStyle>;
   }>;
+  characterArchitecture?: {
+    protagonist?: Partial<CharacterArchitecture['protagonist']>;
+    supportingCharacters?: Array<Partial<CharacterArchitecture['supportingCharacters'][number]>>;
+  };
   keyLocations: Array<{
     name: string;
     description: string;
@@ -349,6 +356,10 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
         episodeBreakdown
       );
 
+      if (input.preferences?.episodeStructureMode === 'sceneEpisodes') {
+        this.normalizeAnalysisForSceneEpisodes(analysis);
+      }
+
       return {
         success: true,
         data: analysis,
@@ -359,6 +370,63 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
       return {
         success: false,
         error: errorMsg,
+      };
+    }
+  }
+
+  private normalizeAnalysisForSceneEpisodes(analysis: SourceMaterialAnalysis): void {
+    const originalEpisodes = analysis.episodeBreakdown || [];
+    const expanded: EpisodeOutline[] = [];
+
+    for (const episode of originalEpisodes) {
+      const splitCount = Math.max(1, Math.min(episode.estimatedSceneCount || 1, 12));
+      for (let i = 0; i < splitCount; i++) {
+        const episodeNumber = expanded.length + 1;
+        const partLabel = splitCount > 1 ? ` Scene ${i + 1}` : '';
+        expanded.push({
+          ...episode,
+          episodeStructureMode: 'sceneEpisodes',
+          routeMeta: {
+            kind: 'master',
+            spineIndex: episodeNumber,
+            displayLabel: `${episodeNumber}`,
+            isMilestoneEncounter: false,
+          },
+          episodeNumber,
+          title: `${episode.title}${partLabel}`,
+          synopsis: splitCount > 1
+            ? `${episode.synopsis} Focus this scene-length episode on dramatic turn ${i + 1} of ${splitCount}.`
+            : episode.synopsis,
+          sourceSummary: splitCount > 1
+            ? `${episode.sourceSummary || episode.synopsis} Scene-length slice ${i + 1} of ${splitCount}.`
+            : episode.sourceSummary,
+          plotPoints: i === 0 ? episode.plotPoints : [],
+          estimatedSceneCount: 1,
+          estimatedChoiceCount: Math.max(1, Math.min(episode.estimatedChoiceCount || 1, 2)),
+          plannedEncounters: undefined,
+          outgoingBranches: undefined,
+          incomingBranches: undefined,
+          setsFlags: undefined,
+          checksFlags: undefined,
+        });
+      }
+    }
+
+    analysis.episodeBreakdown = expanded;
+    analysis.totalEstimatedEpisodes = expanded.length;
+
+    const defaultDistribution = distributeSevenPoints(expanded.length);
+    for (const outline of expanded) {
+      const fallback = defaultDistribution.find(entry => entry.episodeNumber === outline.episodeNumber);
+      outline.structuralRole = fallback ? [...fallback.structuralRole] : ['rising'];
+    }
+
+    for (const arc of analysis.storyArcs) {
+      const startRatio = Math.max(0, (arc.estimatedEpisodeRange.start - 1) / Math.max(1, originalEpisodes.length));
+      const endRatio = Math.max(startRatio, arc.estimatedEpisodeRange.end / Math.max(1, originalEpisodes.length));
+      arc.estimatedEpisodeRange = {
+        start: Math.max(1, Math.floor(startRatio * expanded.length) + 1),
+        end: Math.max(1, Math.ceil(endRatio * expanded.length)),
       };
     }
   }
@@ -400,6 +468,11 @@ ${buildTreatmentInputNotice(sourceText)}
 
 Analyze this text and respond with JSON:
 
+Theme guidance: if the source only provides nouns like "family", "power", or
+"grief", convert the lead theme into a playable question in the themes array
+(for example, "What do you owe family when loyalty costs your selfhood?").
+Keep any additional supporting themes concise.
+
 {
   "genre": "<primary genre>",
   "tone": "<overall tone: dark, light, dramatic, comedic, etc.>",
@@ -422,6 +495,34 @@ Analyze this text and respond with JSON:
       "accessories": ["<worn or carried accessories>"],
       "sourceEvidence": ["<short source/prompt evidence for this fashion read>"]
     }
+  },
+  "characterArchitecture": {
+    "protagonist": {
+      "lie": "<false/protective belief about self or world; agent-facing only>",
+      "originPressure": "<formative event, pressure, loss, humiliation, betrayal, deprivation, success, vow, social condition, or survival adaptation that made the Lie useful>",
+      "truth": "<what the protagonist must recognize to grow, or refuse in a tragic arc>",
+      "want": "<conscious goal the protagonist pursues>",
+      "need": "<deeper dramatic necessity that differs from the Want>",
+      "arcMode": "<positive/tragic/ambiguous>",
+      "climaxChoice": {
+        "choiceQuestion": "<active climax choice phrased as a question>",
+        "integrateTruthOption": "<what choosing the Truth looks like in action>",
+        "recommitLieOption": "<what recommitting to the Lie looks like in action>",
+        "activeChoiceMechanism": "<how the protagonist/player actively makes this choice through sacrifice, refusal, revelation, relationship leverage, risk, or commitment>"
+      }
+    },
+    "supportingCharacters": [
+      {
+        "characterName": "<major/core supporting character name, not every NPC>",
+        "microLie": "<scaled false/protective belief>",
+        "originPressure": "<optional origin pressure>",
+        "truthOrCounterPressure": "<truth, counter-belief, or pressure this character embodies>",
+        "screenTimeTier": "<major/supporting/minor>",
+        "pressureRole": "<mirror/foil/temptation/warning/ally/antagonist>",
+        "protagonistVisibleSignals": ["<behavior, choice, secret, contradiction, or relationship signal visible to protagonist>"],
+        "plannedResolution": "<optional resolution or open pressure>"
+      }
+    ]
   },
   "majorCharacters": [
     DO NOT include the protagonist here — they are already listed above.
@@ -804,6 +905,19 @@ Return ONLY valid JSON.
       firstAppearance: this.findFirstAppearance(char.name, effectiveBreakdownEpisodes),
       fashionStyle: normalizeCharacterFashionStyle(char.fashionStyle),
     }));
+    const protagonistId = `char-${slugify(structure.protagonist.name)}`;
+    const characterArchitecture = this.normalizeCharacterArchitecture(
+      structure.characterArchitecture,
+      {
+        protagonistId,
+        protagonistName: structure.protagonist.name,
+        protagonistDescription: structure.protagonist.description,
+        protagonistArc: structure.protagonist.arc,
+        anchors,
+        themes: structure.themes,
+        majorCharacters,
+      },
+    );
 
     // Build locations list
     const keyLocations = structure.keyLocations.map((loc, idx) => ({
@@ -897,13 +1011,14 @@ Return ONLY valid JSON.
       treatmentBranches: treatment.branches.length > 0 ? treatment.branches : undefined,
 
       protagonist: {
-        id: `char-${slugify(structure.protagonist.name)}`,
+        id: protagonistId,
         name: structure.protagonist.name,
         description: structure.protagonist.description,
         arc: structure.protagonist.arc,
         fashionStyle: normalizeCharacterFashionStyle(structure.protagonist.fashionStyle),
       },
       majorCharacters,
+      characterArchitecture,
       keyLocations,
 
       analysisTimestamp: new Date(),
@@ -915,6 +1030,153 @@ Return ONLY valid JSON.
   }
 
   // Helper methods
+  private normalizeCharacterArchitecture(
+    raw: StoryStructureAnalysis['characterArchitecture'],
+    context: {
+      protagonistId: string;
+      protagonistName: string;
+      protagonistDescription: string;
+      protagonistArc: string;
+      anchors: StoryAnchors;
+      themes: string[];
+      majorCharacters: Array<{
+        id: string;
+        name: string;
+        role: 'antagonist' | 'ally' | 'mentor' | 'love_interest' | 'rival' | 'neutral';
+        description: string;
+        importance: 'core' | 'supporting' | 'background';
+        firstAppearance: number;
+        fashionStyle?: CharacterFashionStyle;
+      }>;
+    },
+  ): CharacterArchitecture {
+    const protagonist = raw?.protagonist || {};
+    const arcMode = this.normalizeCharacterArcMode(protagonist.arcMode);
+    const themeQuestion = context.themes.find((theme) => theme.includes('?')) || context.themes[0] || 'the season question';
+    const lie = this.cleanArchitectureText(
+      protagonist.lie,
+      `${context.protagonistName} believes survival depends on the identity that the story must challenge.`,
+    );
+    const truth = this.cleanArchitectureText(
+      protagonist.truth,
+      context.protagonistArc || `${context.protagonistName} must choose a truer way to protect what matters.`,
+    );
+    const want = this.cleanArchitectureText(
+      protagonist.want,
+      context.anchors.goal || `Pursue the visible season goal.`,
+    );
+    const need = this.cleanArchitectureText(
+      protagonist.need,
+      truth,
+    );
+
+    const rawSupporting = Array.isArray(raw?.supportingCharacters) ? raw!.supportingCharacters! : [];
+    const supportingCharacters = context.majorCharacters
+      .filter((char) => char.importance !== 'background')
+      .slice(0, 6)
+      .map((char) => {
+        const match = rawSupporting.find((candidate) =>
+          candidate.characterId === char.id ||
+          candidate.characterName?.toLowerCase() === char.name.toLowerCase()
+        );
+        return {
+          characterId: char.id,
+          characterName: char.name,
+          microLie: this.cleanArchitectureText(
+            match?.microLie,
+            `${char.name} protects themselves through a belief that complicates ${context.protagonistName}'s choices.`,
+          ),
+          originPressure: this.cleanArchitectureText(match?.originPressure, ''),
+          truthOrCounterPressure: this.cleanArchitectureText(
+            match?.truthOrCounterPressure,
+            `${char.name} mirrors, tempts, warns, or pressures the protagonist around ${themeQuestion}.`,
+          ),
+          screenTimeTier: this.normalizeScreenTimeTier(match?.screenTimeTier, char.importance),
+          pressureRole: this.normalizePressureRole(match?.pressureRole, char.role),
+          protagonistVisibleSignals: Array.isArray(match?.protagonistVisibleSignals) && match!.protagonistVisibleSignals!.length > 0
+            ? match!.protagonistVisibleSignals!.filter((signal): signal is string => typeof signal === 'string' && signal.trim().length > 0)
+            : [`${char.name}'s choices visibly challenge ${context.protagonistName}'s assumptions.`],
+          plannedResolution: this.cleanArchitectureText(match?.plannedResolution, ''),
+        };
+      });
+
+    return {
+      protagonist: {
+        lie,
+        originPressure: this.cleanArchitectureText(
+          protagonist.originPressure,
+          `${context.protagonistName}'s past experience made the Lie feel like protection rather than a flaw.`,
+        ),
+        truth,
+        want,
+        need: need === want
+          ? `${truth} in a way that costs or complicates ${want}`
+          : need,
+        arcMode,
+        climaxChoice: {
+          choiceQuestion: this.cleanArchitectureText(
+            protagonist.climaxChoice?.choiceQuestion,
+            `Will ${context.protagonistName} act from the Truth or retreat into the Lie when ${context.anchors.climax || 'the climax'} arrives?`,
+          ),
+          integrateTruthOption: this.cleanArchitectureText(
+            protagonist.climaxChoice?.integrateTruthOption,
+            `Act on the Truth: ${truth}`,
+          ),
+          recommitLieOption: this.cleanArchitectureText(
+            protagonist.climaxChoice?.recommitLieOption,
+            `Recommit to the Lie: ${lie}`,
+          ),
+          activeChoiceMechanism: this.cleanArchitectureText(
+            protagonist.climaxChoice?.activeChoiceMechanism,
+            'The player/protagonist chooses through sacrifice, refusal, revelation, relationship leverage, risk, or identity commitment.',
+          ),
+        },
+      },
+      supportingCharacters,
+    };
+  }
+
+  private cleanArchitectureText(value: unknown, fallback: string): string {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback;
+  }
+
+  private normalizeCharacterArcMode(value: unknown): CharacterArcMode {
+    return value === 'tragic' || value === 'ambiguous' || value === 'positive'
+      ? value
+      : 'ambiguous';
+  }
+
+  private normalizeScreenTimeTier(
+    value: unknown,
+    importance: 'core' | 'supporting' | 'background',
+  ): 'major' | 'supporting' | 'minor' {
+    if (value === 'major' || value === 'supporting' || value === 'minor') return value;
+    if (importance === 'core') return 'major';
+    if (importance === 'supporting') return 'supporting';
+    return 'minor';
+  }
+
+  private normalizePressureRole(
+    value: unknown,
+    role: 'antagonist' | 'ally' | 'mentor' | 'love_interest' | 'rival' | 'neutral',
+  ): CharacterArchitecture['supportingCharacters'][number]['pressureRole'] {
+    if (
+      value === 'mirror' ||
+      value === 'foil' ||
+      value === 'temptation' ||
+      value === 'warning' ||
+      value === 'ally' ||
+      value === 'antagonist'
+    ) {
+      return value;
+    }
+    if (role === 'antagonist' || role === 'rival') return 'antagonist';
+    if (role === 'mentor') return 'warning';
+    if (role === 'love_interest') return 'mirror';
+    if (role === 'ally') return 'ally';
+    return 'foil';
+  }
+
   private inferPlotPointType(
     description: string,
     episodeNum: number,

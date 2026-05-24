@@ -1,11 +1,37 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentConfig, PipelineConfig } from '../config';
 
 const analyzeSourceMaterial = vi.fn();
 const generate = vi.fn();
 const generateMultipleEpisodes = vi.fn();
 const generateImagesForDraft = vi.fn();
+const generateTargetedBeatImagesForDraft = vi.fn();
 const seasonPlannerExecute = vi.fn();
 const pipelineInstances: MockPipeline[] = [];
+
+function mockAgentConfig(): AgentConfig {
+  return {
+    provider: 'anthropic',
+    model: 'test-model',
+    apiKey: '',
+    maxTokens: 1000,
+    temperature: 0,
+  };
+}
+
+function mockPipelineConfig(overrides: Partial<PipelineConfig> = {}): PipelineConfig {
+  return {
+    agents: {
+      storyArchitect: mockAgentConfig(),
+      sceneWriter: mockAgentConfig(),
+      choiceAuthor: mockAgentConfig(),
+    },
+    validation: {} as PipelineConfig['validation'],
+    debug: false,
+    outputDir: '/tmp/story',
+    ...overrides,
+  };
+}
 
 class MockPipeline {
   public config: any;
@@ -49,6 +75,10 @@ class MockPipeline {
   async generateImagesForDraft(...args: any[]) {
     return generateImagesForDraft(...args);
   }
+
+  async generateTargetedBeatImagesForDraft(...args: any[]) {
+    return generateTargetedBeatImagesForDraft(...args);
+  }
 }
 
 vi.mock('../pipeline/FullStoryPipeline', () => ({
@@ -69,6 +99,7 @@ describe('storyGenerationService', () => {
     generate.mockReset();
     generateMultipleEpisodes.mockReset();
     generateImagesForDraft.mockReset();
+    generateTargetedBeatImagesForDraft.mockReset();
     seasonPlannerExecute.mockReset();
     pipelineInstances.length = 0;
   });
@@ -176,15 +207,34 @@ describe('storyGenerationService', () => {
 	    expect(response.result).toEqual({ success: true, outputDirectory: '/tmp/story/' });
 	  });
 
-	  it('passes target episode to image-only generation', async () => {
-	    generateImagesForDraft.mockResolvedValue({ success: true, outputDirectory: '/tmp/story/' });
+		  it('passes target episode to image-only generation', async () => {
+		    generateImagesForDraft.mockResolvedValue({ success: true, outputDirectory: '/tmp/story/' });
 
-	    await runImageGenerationBatch({
-	      config: {},
-	      outputDirectory: '/tmp/story/',
-	      targetEpisodeNumber: 2,
-	    });
+		    await runImageGenerationBatch({
+		      config: mockPipelineConfig(),
+		      outputDirectory: '/tmp/story/',
+		      targetEpisodeNumber: 2,
+		    });
 
 	    expect(generateImagesForDraft).toHaveBeenCalledWith('/tmp/story/', undefined, { targetEpisodeNumber: 2 });
 	  });
+
+  it('routes target slots to spot image backfill with spot-safe defaults', async () => {
+    generateTargetedBeatImagesForDraft.mockResolvedValue({ success: true, outputDirectory: '/tmp/story/' });
+    const targetSlots = [{ episodeNumber: 1, sceneId: 'scene-3', beatId: 'beat-1' }];
+
+    await runImageGenerationBatch({
+      config: mockPipelineConfig(),
+      outputDirectory: '/tmp/story/',
+      targetSlots,
+    });
+
+    expect(generateImagesForDraft).not.toHaveBeenCalled();
+    expect(generateTargetedBeatImagesForDraft).toHaveBeenCalledWith('/tmp/story/', targetSlots, {
+      skipEncounterImages: true,
+      skipCover: true,
+      skipCharacterRefs: true,
+      skipVisualContractValidation: true,
+    });
+  });
 	});

@@ -73,10 +73,27 @@ function blueprint(scenes: Array<{ id: string; leadsTo: string[]; branches?: boo
 describe('SceneGraphBranchValidator', () => {
   it('passes a real scene-graph branch that targets distinct future scenes', () => {
     const ep = episode([
-      scene('scene-1', ['scene-2a', 'scene-2b'], [
-        { id: 'choice-a', nextSceneId: 'scene-2a' },
-        { id: 'choice-b', nextSceneId: 'scene-2b' },
-      ]),
+      {
+        ...scene('scene-1', ['scene-2a', 'scene-2b']),
+        beats: [{
+          id: 'scene-1-beat',
+          text: 'scene-1 text',
+          choices: [
+            { id: 'choice-a', text: 'choice-a', nextBeatId: 'scene-1-choice-a-bridge', consequences: [] },
+            { id: 'choice-b', text: 'choice-b', nextBeatId: 'scene-1-choice-b-bridge', consequences: [] },
+          ],
+        }, {
+          id: 'scene-1-choice-a-bridge',
+          text: 'choice-a bridge',
+          nextSceneId: 'scene-2a',
+          isChoiceBridge: true,
+        }, {
+          id: 'scene-1-choice-b-bridge',
+          text: 'choice-b bridge',
+          nextSceneId: 'scene-2b',
+          isChoiceBridge: true,
+        }],
+      },
       scene('scene-2a', ['scene-3']),
       scene('scene-2b', ['scene-3']),
       {
@@ -114,10 +131,12 @@ describe('SceneGraphBranchValidator', () => {
           id: 'scene-1-payoff-a',
           text: 'payoff a',
           nextSceneId: 'scene-2a',
+          isChoiceBridge: true,
         }, {
           id: 'scene-1-payoff-b',
           text: 'payoff b',
           nextSceneId: 'scene-2b',
+          isChoiceBridge: true,
         }],
       },
       scene('scene-2a', ['scene-3']),
@@ -203,5 +222,87 @@ describe('SceneGraphBranchValidator', () => {
 
     expect(result.valid).toBe(false);
     expect(result.issues.some(issue => issue.type === 'missing_branch_residue')).toBe(true);
+  });
+
+  it('fails direct scene-changing choices that skip a bridge beat', () => {
+    const ep = episode([
+      scene('scene-1', ['scene-2'], [{ id: 'choice-a', nextSceneId: 'scene-2' }]),
+      scene('scene-2'),
+    ]);
+    const bp = blueprint([
+      { id: 'scene-1', leadsTo: ['scene-2'], branches: true, type: 'strategic' },
+      { id: 'scene-2', leadsTo: [] },
+    ]);
+
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, bp);
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some(issue => issue.type === 'missing_choice_bridge')).toBe(true);
+  });
+
+  it('warns when an important NPC is staged visually before the beat prose introduces them', () => {
+    const ep = episode([
+      {
+        ...scene('scene-1'),
+        beats: [{
+          id: 'scene-1-beat',
+          text: 'You hesitate at the velvet rope while the doorman judges your dress.',
+          coveragePlan: {
+            stagingPattern: 'two-shot',
+            shotDistance: 'MS',
+            cameraAngle: 'eye-level',
+            cameraSide: 'front',
+            focalCharacterIds: ['Kylie'],
+            requiredVisibleCharacterIds: ['Kylie', 'Victor'],
+            optionalVisibleCharacterIds: [],
+            offscreenCharacterIds: [],
+            relationshipBlocking: 'threshold pressure',
+            coverageReason: 'arrival',
+          },
+        }],
+      },
+    ]);
+
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, undefined, {
+      requireSceneGraphBranching: false,
+      importantNpcIds: ['Victor'],
+    });
+
+    expect(result.issues.some(issue => issue.type === 'premature_npc_visual')).toBe(true);
+  });
+
+  it('warns when prompt or visual-cast metadata includes an important NPC before introduction', () => {
+    const ep = episode([
+      {
+        ...scene('scene-1'),
+        beats: [{
+          id: 'scene-1-beat',
+          text: 'You hesitate at the velvet rope while the anonymous doorman judges your dress.',
+          visualCast: {
+            sceneCharacterIds: ['Kylie', 'Victor'],
+            activeCharacterIds: ['Kylie'],
+            foregroundCharacterIds: ['Kylie'],
+            backgroundCharacterIds: [],
+            offscreenCharacterIds: ['Victor'],
+            addressedCharacterIds: [],
+            listenerCharacterIds: [],
+            observerCharacterIds: [],
+            payoffRelevantCharacterIds: [],
+            castReason: 'bad metadata',
+          },
+          imagePrompt: {
+            characters: ['Victor'],
+            referenceCharIds: ['Victor'],
+          },
+        } as any],
+      },
+    ]);
+
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, undefined, {
+      requireSceneGraphBranching: false,
+      importantNpcIds: ['Victor'],
+    });
+
+    expect(result.issues.some(issue => issue.type === 'premature_npc_visual')).toBe(true);
   });
 });

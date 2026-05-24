@@ -286,9 +286,12 @@ export interface GeneratedBeat {
   speaker?: string;
   speakerMood?: string;
   nextBeatId?: string;
+  nextSceneId?: string;
   onShow?: Consequence[];
   // Note: choices are added by Choice Author agent
   isChoicePoint?: boolean; // Mark where Choice Author should add choices
+  isChoiceBridge?: boolean;
+  routeContext?: Beat['routeContext'];
   // Timing metadata for choice density validation
   timing?: TimingMetadata;
   // Visual contract authored alongside prose to prevent downstream drift
@@ -405,6 +408,7 @@ You are a master prose writer who brings scene blueprints to life with concrete,
 - Each character must sound distinct.
 - Dialogue should reveal personality.
 - Use subtext - what's NOT said matters.
+- Prefer the gap between what characters say and what they mean; allow direct speech for vows, confessions, tactics, comedy, ritual, or catharsis when pressure earns it.
 - **Direct Source Language**: If source material fragments are provided, PRIORITIZE using that exact language for key moments and dialogue.
 
 ### Pacing
@@ -414,10 +418,14 @@ You are a master prose writer who brings scene blueprints to life with concrete,
 
 ### Scene Craft
 - Every scene needs a purpose players can feel: plot pressure, relationship movement, theme pressure, information gain, or meaningful aftermath.
+- If the blueprint supplies themePressure, express it through action, cost, choice, subtext, relationship pressure, information, or identity movement. Never have dialogue state the theme question directly.
 - Every scene must have a purpose in emotional, action, or character-related content that advances the story.
+- Start as late as possible and leave as soon as the turn, decision, consequence, or handoff lands.
+- In multi-character scenes, make leverage, trust, vulnerability, intimacy, distance, information, status, threat, debt, or public/private advantage shift at least once.
 - Descriptions, action, dialogue, visual metadata, choices, and final beat should reinforce that purpose and help deliver the sceneTakeaways and keyMoment.
 - Identify the scene's key moment and build the beat sequence toward it.
 - Scene beats should build toward the scene keyMoment. Intensity does not need to rise mechanically every beat, but tension, gravitas, danger, intimacy, consequence, or dramatic clarity should accumulate across the scene.
+- Build a stakes ladder across the beats: each beat should raise risk, reveal cost, narrow options, shift leverage, or deepen consequence until the dominant/peak beat carries the maximum stakes. Rest beats can raise dread, clarity, regret, tenderness, or emotional cost instead of volume.
 - Use rest beats only when they create contrast, aftermath, dread, tenderness, or sharper payoff.
 - Prefer turns over topics. A beat should visibly change leverage, trust, evidence, proximity, identity, risk, resources, or knowledge; do not let scenes become chains of explanation.
 - Include scene takeaways: what the player should learn, feel, or understand by the end.
@@ -757,6 +765,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       dramaticQuestion: input.sceneBlueprint.dramaticQuestion,
       wantVsNeed: input.sceneBlueprint.wantVsNeed,
       conflictEngine: input.sceneBlueprint.conflictEngine,
+      themePressure: input.sceneBlueprint.themePressure,
       keyBeats: input.sceneBlueprint.keyBeats,
       choicePoint: input.sceneBlueprint.choicePoint,
       leadsTo: input.sceneBlueprint.leadsTo,
@@ -1286,10 +1295,12 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 - **Mood**: ${input.sceneBlueprint.mood}
 - **Purpose**: ${input.sceneBlueprint.purpose}
 - **Narrative Function**: ${input.sceneBlueprint.narrativeFunction}
+${input.sceneBlueprint.themePressure ? `- **Theme Pressure**: ${input.sceneBlueprint.themePressure}` : ''}
 
 ### Scene Craft Targets
 - Define 1-4 sceneTakeaways in the output: what the player learns, feels, or understands.
 - Every scene must have a purpose in emotional, action, or character-related content that advances the story; descriptions, action, dialogue, visual metadata, choices, and final beat should reinforce that purpose.
+- If themePressure is supplied, express it through action, cost, choice, subtext, relationship pressure, information, or identity movement. Never have dialogue state the theme question directly.
 - Scene takeaways are load-bearing: they name what the player learns, feels, or understands about story, character, relationship, theme, information, or player-state pressure.
 - If this scene begins after a time/place shift, include transitionIn with a short natural phrase.
 - The scene keyMoment should be the beat where sceneTakeaways become felt, proven, revealed, or changed.
@@ -1300,12 +1311,15 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 - Use precise, concrete language; avoid ornate prose and generic description.
 - Make description carry pressure, movement, mood, threat, desire, or consequence.
 - Keep dialogue spare, natural, character-specific, pressure-aware, and subtextual.
+- Prefer subtext over explanation: characters may argue values, conceal motives, dodge, confess, threaten, or plead, but should rarely summarize exactly what the scene means.
+- Cut into the scene near the active pressure and leave on the punch: once the turn, decision, consequence, or handoff lands, do not keep explaining it.
 - Vary sentence rhythm with emotional intensity while respecting mobile beat caps.
 - Reveal inner life through action, speech, silence, bodily response, facial expression, object handling, proximity, risk, and choice behavior.
 - Build toward the scene keyMoment and end with resolution plus forward pressure.
 - Avoid repeated plot events, dialogue, scene shapes, and descriptive phrasing unless intentional callback/payoff.
 - Maintain consistent tone unless the scene event intentionally turns the tone.
 - Scene beats should build toward the scene keyMoment. Intensity does not need to rise mechanically every beat, but tension, gravitas, danger, intimacy, consequence, or dramatic clarity should accumulate across the scene.
+- Build a stakes ladder across the beats: each beat should raise risk, reveal cost, narrow options, shift leverage, or deepen consequence until the dominant/peak beat carries the maximum stakes. Rest beats can raise dread, clarity, regret, tenderness, or emotional cost instead of volume.
 - Use rest beats only when they create contrast, aftermath, dread, tenderness, or sharper payoff.
 - The final beat of each scene should land a pointed resolution or consequence, then create forward pressure into the next beat, choice, scene, encounter, or episode.
 - Forward pressure may be a cliffhanger, reveal, unresolved cost, emotional rupture, new danger, changed relationship, choice consequence, or handoff.
@@ -1355,6 +1369,11 @@ ${input.sceneBlueprint.choicePoint ? `
   - Want: ${input.sceneBlueprint.choicePoint.stakes.want}
   - Cost: ${input.sceneBlueprint.choicePoint.stakes.cost}
   - Identity: ${input.sceneBlueprint.choicePoint.stakes.identity}
+${input.sceneBlueprint.choicePoint.stakesLayers ? `- **Stakes Layers**:
+  - Material: ${input.sceneBlueprint.choicePoint.stakesLayers.material || 'None'}
+  - Relational: ${input.sceneBlueprint.choicePoint.stakesLayers.relational || 'None'}
+  - Identity: ${input.sceneBlueprint.choicePoint.stakesLayers.identity || 'None'}
+  - Existential: ${input.sceneBlueprint.choicePoint.stakesLayers.existential || 'None'}` : ''}
 ` : ''}
 
 ## Characters
@@ -1472,15 +1491,18 @@ ${input.nextSceneContext.encounterBeatPlan?.length ? `- Upcoming encounter beat 
 ${input.incomingChoiceContext ? `
 ## CHOICE PAYOFF (CRITICAL — the player CHOSE this)
 This scene is entered because the player chose: "${input.incomingChoiceContext}"
-The FIRST beat MUST visually and textually pay off this choice. Do not delay, hedge, or skip the payoff.
-- The first beat must show what you or the protagonist did or immediately experiences because of that choice.
-- The first beat's text must show the immediate consequence of the choice — the SPECIFIC physical action the player chose.
+Use one or more opening beats as needed to pay off this choice. Do not delay, hedge, skip, or teleport past the payoff.
+- The opening sequence must show what you or the protagonist did or immediately experiences because of that choice.
+- If the scene starts after a time/place shift, include the decision, departure/movement, and arrival before the next major interaction.
+- The next planned story action must wait until the route into it is understandable.
+- The opening text must show the immediate consequence of the choice — the SPECIFIC physical action or decision the player chose.
 - The first beat's visual contract MUST directly depict the choice's consequence:
   - "visualMoment": Describe the EXACT action from the choice playing out (e.g., if they chose to spin in circles, show spinning in circles — not a generic pose)
   - "primaryAction": The verb-led physical action that matches the choice (e.g., "spins wildly with arms outstretched" not "stands on the moors")
   - "mustShowDetail": A specific visual element from the choice that the image MUST include
 - If the player chose to kiss someone, show the kiss. If they chose to dance, show them dancing. If they chose to fight, show the fight. If they chose to laugh wildly and spin, show wild laughter and spinning.
 - Do NOT generalize the choice into a mood or atmosphere shot. The image must show the SPECIFIC ACTION the player selected.
+- Do NOT show or name a major NPC as familiar until the story has introduced them on the active path.
 ` : ''}
 
 Create the scene content following the SceneContent schema. Include:

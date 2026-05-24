@@ -571,7 +571,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               break;
             case 'relationship':
               const dimension = normalizeRelationshipDimension(
-                (consequence as any).dimension ?? (consequence as any).relationshipType ?? (consequence as any).aspect
+                (consequence as any).dimension
+                  ?? (consequence as any).relationship
+                  ?? (consequence as any).relationshipType
+                  ?? (consequence as any).aspect
               );
               if (!dimension) {
                 console.warn('[GameStore] relationship delayed consequence missing valid dimension:', consequence);
@@ -710,7 +713,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
           case 'relationship': {
             const dimension = normalizeRelationshipDimension(
-              (consequence as any).dimension ?? (consequence as any).relationshipType ?? (consequence as any).aspect
+              (consequence as any).dimension
+                ?? (consequence as any).relationship
+                ?? (consequence as any).relationshipType
+                ?? (consequence as any).aspect
             );
             if (!dimension) {
               console.warn('[GameStore] relationship consequence missing valid dimension:', consequence);

@@ -34,6 +34,13 @@ export type ChoiceConsequenceTier =
   | 'branchlet'
   | 'structuralBranch';
 
+export interface StakesLayers {
+  material?: string;
+  relational?: string;
+  identity?: string;
+  existential?: string;
+}
+
 // Resolution result for skill/stat checks
 export type ResolutionTier = 'success' | 'complicated' | 'failure';
 
@@ -123,6 +130,17 @@ export interface FailureResidue {
   description: string;
 }
 
+export interface ChoiceRouteContext {
+  sourceSceneId: string;
+  sourceBeatId: string;
+  sourceChoiceId: string;
+  choiceSummary: string;
+  originalTargetSceneId?: string;
+  originalTargetBeatId?: string;
+  transitionIntent?: string;
+  bridgePurpose?: string;
+}
+
 export interface StatCheckModifier {
   id: string;
   condition: ConditionExpression;
@@ -145,6 +163,7 @@ export interface Choice {
     cost: string;
     identity: string;
   };
+  stakesLayers?: StakesLayers;
 
   conditions?: ConditionExpression;
 
@@ -181,6 +200,8 @@ export interface Choice {
     delay?: { type: 'scenes' | 'episodes'; count: number };
     triggerCondition?: ConditionExpression;
   }>;
+
+  routeContext?: ChoiceRouteContext;
 
   nextSceneId?: string;
 

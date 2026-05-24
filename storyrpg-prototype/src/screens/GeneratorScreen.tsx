@@ -866,6 +866,18 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     resuming: false,
     error: null,
   });
+
+  const buildAnalysisPreferences = () => ({
+    targetScenesPerEpisode: generationSettings.episodeStructureMode === 'sceneEpisodes'
+      ? generationSettings.sceneEpisodeMaxScenes
+      : 6,
+    targetChoicesPerEpisode: 4,
+    episodeStructureMode: generationSettings.episodeStructureMode,
+    sceneEpisodeEncounterCadence: generationSettings.sceneEpisodeEncounterCadence,
+    sceneEpisodeBranchMinEpisodes: generationSettings.sceneEpisodeBranchMinEpisodes,
+    sceneEpisodeBranchMaxEpisodes: generationSettings.sceneEpisodeBranchMaxEpisodes,
+    pacing: 'moderate' as const,
+  });
   const isRecoverableHistoryJob = (job?: GenerationJob) => job?.status === 'failed' || job?.status === 'cancelled';
 
   // Resume viewing a job if resumeJobId is provided
@@ -1755,7 +1767,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                 sourceText,
                 title,
                 prompt,
-                preferences: { targetScenesPerEpisode: 6, targetChoicesPerEpisode: 4, pacing: 'moderate' },
+                preferences: buildAnalysisPreferences(),
               },
             },
             idempotencyKey: `analysis:${title}:${sourceText.length}:${prompt || ''}`,
@@ -1803,7 +1815,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         sourceText,
         title,
         prompt,
-        preferences: { targetScenesPerEpisode: 6, targetChoicesPerEpisode: 4, pacing: 'moderate' },
+        preferences: buildAnalysisPreferences(),
         onPipelineCreated: (pipeline) => {
           pipelineRef.current = pipeline;
           attachPipelineJobListeners(pipeline);

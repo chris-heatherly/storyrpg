@@ -44,7 +44,9 @@ export function buildSeasonPlanDirectives(
       const branch = plan.crossEpisodeBranches.find((candidate) => candidate.id === branchId);
       if (!branch) continue;
       for (const path of branch.paths) {
-        const affectedEp = path.affectedEpisodes.find((candidate) => candidate.episodeNumber === epNum);
+        const affectedEp = seasonEp.routeMeta?.kind === 'branch'
+          ? path.affectedEpisodes[Math.max(0, (seasonEp.routeMeta.branchStep || 1) - 1)]
+          : path.affectedEpisodes.find((candidate) => candidate.episodeNumber === epNum);
         if (!affectedEp) continue;
         incomingBranchEffects.push({
           branchName: branch.name,
@@ -85,6 +87,28 @@ export function buildSeasonPlanDirectives(
     } | null | undefined,
   } : undefined;
 
+  const activeArc = plan.arcs?.find((arc) =>
+    epNum >= arc.episodeRange.start && epNum <= arc.episodeRange.end
+  );
+  const arcPressure = activeArc ? {
+    arcId: activeArc.id,
+    arcName: activeArc.name,
+    arcQuestion: activeArc.arcQuestion,
+    seasonQuestionRelation: activeArc.seasonQuestionRelation,
+    identityPressureFacet: activeArc.identityPressureFacet,
+    midpointRecontextualization: activeArc.midpointRecontextualization,
+    lateArcCrisis: activeArc.lateArcCrisis,
+    finaleAnswer: activeArc.finaleAnswer,
+    handoffPressure: activeArc.handoffPressure,
+    episodeTurnout: activeArc.episodeTurnouts?.find((turnout) => turnout.episodeNumber === epNum),
+  } : undefined;
+  const informationLedgerEntries = (plan.informationLedger || []).filter((entry) =>
+    entry.introducedEpisode === epNum ||
+    entry.plannedRevealEpisode === epNum ||
+    entry.plannedPayoffEpisode === epNum ||
+    entry.setupTouchEpisodes?.includes(epNum)
+  );
+
   return {
     endingMode: plan.endingMode,
     resolvedEndings: plan.resolvedEndings,
@@ -97,6 +121,10 @@ export function buildSeasonPlanDirectives(
     endingRoutes: seasonEp.endingRoutes?.length ? seasonEp.endingRoutes : undefined,
     treatmentGuidance: seasonEp.treatmentGuidance,
     growthContext,
+    arcPressure,
+    characterArchitecture: plan.characterArchitecture,
+    seasonPromiseArchitecture: plan.seasonPromiseArchitecture,
+    informationLedgerEntries: informationLedgerEntries.length > 0 ? informationLedgerEntries : undefined,
   };
 }
 

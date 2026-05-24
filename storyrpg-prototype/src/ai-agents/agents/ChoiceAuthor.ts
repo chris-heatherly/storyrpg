@@ -24,6 +24,7 @@ import {
   ConditionExpression,
   FiveFactorImpact,
   ReminderPlan,
+  StakesLayers,
 } from '../../types';
 import type { StoryVerb } from '../utils/storyVerbs';
 import {
@@ -208,6 +209,7 @@ export interface ChoiceSet {
 
   // Overall stakes for this decision point
   overallStakes: StakesAnnotation;
+  overallStakesLayers?: StakesLayers;
 
   // Design notes
   designNotes: string;
@@ -460,6 +462,7 @@ Before finalizing:
       cost: 'face consequences',
       identity: 'reveal their character'
     };
+    const blueprintStakesLayers = input.sceneBlueprint.choicePoint?.stakesLayers || input.sceneBlueprint.stakesLayers;
     const blueprintDomain = input.sceneBlueprint.choicePoint?.consequenceDomain;
     const blueprintReminder = input.sceneBlueprint.choicePoint?.reminderPlan;
     const blueprintCompetenceArc = input.sceneBlueprint.choicePoint?.competenceArc;
@@ -474,6 +477,9 @@ Before finalizing:
     }
     if (!choiceSet.designNotes) {
       choiceSet.designNotes = '';
+    }
+    if (!choiceSet.overallStakesLayers && blueprintStakesLayers) {
+      choiceSet.overallStakesLayers = blueprintStakesLayers;
     }
 
     // Ensure choices is an array
@@ -507,6 +513,7 @@ Before finalizing:
             cost: blueprintStakes.cost,
             identity: blueprintStakes.identity,
           },
+          stakesLayers: blueprintStakesLayers,
         };
         
         choiceSet.choices.push(generatedChoice);
@@ -550,6 +557,16 @@ Before finalizing:
         if (!choice.outcomeTexts.failure) choice.outcomeTexts.failure = choice.text;
       }
 
+      const setsRouteFlag = choice.consequences?.some(
+        consequence => consequence.type === 'setFlag' && consequence.flag.startsWith('route_') && consequence.value !== false
+      );
+      if (setsRouteFlag && choice.nextSceneId) {
+        console.warn(
+          `[ChoiceAuthor] Choice "${choice.id}" sets a cross-episode route flag and also had nextSceneId "${choice.nextSceneId}" — removing nextSceneId.`
+        );
+        delete choice.nextSceneId;
+      }
+
       // Auto-generate a tintFlag if the choice doesn't branch and none was provided
       if (!choice.nextSceneId && !choice.tintFlag) {
         const tintsByType: Record<string, string> = {
@@ -587,6 +604,9 @@ Before finalizing:
         cost: choice.stakes?.cost || choice.stakesAnnotation?.cost || blueprintStakes.cost,
         identity: choice.stakes?.identity || choice.stakesAnnotation?.identity || blueprintStakes.identity,
       };
+      if (!choice.stakesLayers && blueprintStakesLayers) {
+        choice.stakesLayers = blueprintStakesLayers;
+      }
 
       if (choice.consequences && !Array.isArray(choice.consequences)) {
         choice.consequences = [choice.consequences as unknown as Consequence];
@@ -666,6 +686,37 @@ Before finalizing:
       if (choice.statCheck?.difficulty && blueprintCompetenceArc?.growthPath && choiceSet.choiceType !== 'expression') {
         choice.statCheck.retryableAfterChange ??= true;
       }
+    }
+
+    const routeFlags = input.availableFlags.filter(flag => flag.name.startsWith('route_'));
+    const shouldAssignRouteFlags = routeFlags.length >= 2 || Boolean(input.sceneBlueprint.choicePoint?.branches);
+    const hasRouteFlagConsequence = choiceSet.choices.some(choice =>
+      choice.consequences?.some(
+        consequence => consequence.type === 'setFlag' && consequence.flag.startsWith('route_') && consequence.value !== false
+      )
+    );
+    if (shouldAssignRouteFlags && routeFlags.length > 0 && !hasRouteFlagConsequence) {
+      choiceSet.choices.forEach((choice, index) => {
+        const routeFlag = routeFlags[index % routeFlags.length];
+        choice.consequences = [
+          ...(choice.consequences || []),
+          { type: 'setFlag', flag: routeFlag.name, value: true },
+        ];
+        choice.reminderPlan = {
+          ...(choice.reminderPlan || {
+            immediate: 'The route choice lands immediately.',
+            shortTerm: 'The next episode should follow the selected route.',
+          }),
+          later: choice.reminderPlan?.later || `Route residue should acknowledge ${routeFlag.name}.`,
+        };
+        choice.feedbackCue = {
+          ...(choice.feedbackCue || {}),
+          echoSummary: choice.feedbackCue?.echoSummary || choice.reminderPlan.immediate,
+          progressSummary: choice.feedbackCue?.progressSummary || choice.reminderPlan.shortTerm,
+        };
+        delete choice.nextSceneId;
+      });
+      console.warn(`[ChoiceAuthor] Added cross-episode route flag consequences to ${choiceSet.choices.length} choice(s).`);
     }
 
     // Ensure overallStakes exists with values from blueprint as fallback
@@ -833,6 +884,7 @@ Before finalizing:
     const flagList = input.availableFlags
       .map(f => `- ${f.name}: ${f.description}`)
       .join('\n');
+    const routeFlags = input.availableFlags.filter(f => f.name.startsWith('route_'));
 
     const scoreList = input.availableScores
       .map(s => `- ${s.name}: ${s.description}`)
@@ -905,6 +957,11 @@ ${buildChoiceAuthorCallbackSection((input.unresolvedCallbacks || []).map(h => ({
   - Want: ${choicePoint.stakes.want}
   - Cost: ${choicePoint.stakes.cost}
   - Identity: ${choicePoint.stakes.identity}
+${choicePoint.stakesLayers ? `- **Stakes Layers**:
+  - Material: ${choicePoint.stakesLayers.material || 'None'}
+  - Relational: ${choicePoint.stakesLayers.relational || 'None'}
+  - Identity: ${choicePoint.stakesLayers.identity || 'None'}
+  - Existential: ${choicePoint.stakesLayers.existential || 'None'}` : ''}
 - **Option Hints**: ${choicePoint.optionHints.join(', ')}
 ${choicePoint.consequenceDomain ? `- **Consequence Domain**: ${choicePoint.consequenceDomain}` : ''}
 ${choicePoint.reminderPlan ? `- **Reminder Plan**:\n  - Immediate: ${choicePoint.reminderPlan.immediate}\n  - Short-term: ${choicePoint.reminderPlan.shortTerm}${choicePoint.reminderPlan.later ? `\n  - Later: ${choicePoint.reminderPlan.later}` : ''}` : ''}
@@ -944,6 +1001,13 @@ ${storyVerbList}
 ## Available State for Consequences
 **Flags**:
 ${flagList || 'None defined'}
+${routeFlags.length > 0 ? `
+## Cross-Episode Route Branching
+These flags are route gates for scene-length branch episodes: ${routeFlags.map(f => f.name).join(', ')}
+- When this choice is the branch origin, each route-changing option should set exactly one of these flags with a \`setFlag\` consequence.
+- Do not use \`nextSceneId\` for the main route branch when route flags are available; future episodes unlock from the chosen flag.
+- Include reminder/residue copy so the reconvergence episode can acknowledge what the player chose.
+` : ''}
 
 **Scores**:
 ${scoreList || 'None defined'}
@@ -978,6 +1042,7 @@ ${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with 
 - Link choices to next scenes where appropriate
 - Use conditions if any options should be locked
 - Use the choicePoint consequence/reminder guidance when provided
+- When a choice changes scenes, make the choice text and reminder/feedback copy explain why that route follows. The pipeline will insert one or more bridge beats before the target scene; do not rely on the target opener to do all transition work.
 
 ## Outcome Texts (REQUIRED for every choice)
 
@@ -1071,6 +1136,12 @@ Modifier example:
         "cost": "what they risk",
         "identity": "what this reveals"
       },
+      "stakesLayers": {
+        "material": "what concrete resource, safety, access, object, or position can change",
+        "relational": "who trusts, depends on, rejects, or is hurt by whom",
+        "identity": "who the protagonist becomes by choosing this",
+        "existential": "what future, freedom, home, survival, or irreversible fate is threatened"
+      },
       "consequences": [],
       "nextSceneId": "scene-id-if-branching-or-omit",
       "storyVerb": "pressure",
@@ -1143,6 +1214,12 @@ Modifier example:
     "cost": "${choicePoint.stakes.cost}",
     "identity": "${choicePoint.stakes.identity}"
   },
+  "overallStakesLayers": {
+    "material": "${choicePoint.stakesLayers?.material || ''}",
+    "relational": "${choicePoint.stakesLayers?.relational || ''}",
+    "identity": "${choicePoint.stakesLayers?.identity || ''}",
+    "existential": "${choicePoint.stakesLayers?.existential || ''}"
+  },
   "designNotes": "Your reasoning"
 }
 
@@ -1150,7 +1227,7 @@ CRITICAL REQUIREMENTS:
 1. Create exactly ${input.optionCount} unique, meaningful choices
 2. The "overallStakes" field is REQUIRED with want, cost, and identity filled in
 3. Each choice needs stakesAnnotation with want, cost, and identity
-4. Each choice needs choiceIntent, impactFactors, consequenceTier, and stakes
+4. Each choice needs choiceIntent, impactFactors, consequenceTier, stakes, and stakesLayers when the blueprint supplies stakesLayers
 5. ${choicePoint.branches ? 'This is a BRANCHING choice point — set nextSceneId on each choice to one of the available next scenes' : 'Only include nextSceneId if this choice should route to a different scene (expression choices must NOT have nextSceneId)'}
 6. Every choice MUST have outcomeTexts (success, partial, failure) — original prose, not the choice text
 7. Non-branching choices MUST have reactionText and tintFlag

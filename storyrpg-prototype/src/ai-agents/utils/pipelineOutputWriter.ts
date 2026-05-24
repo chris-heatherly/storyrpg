@@ -96,6 +96,239 @@ function atomicWriteNodeSync(absPath: string, content: string | Buffer): { sha25
   return { sha256: crypto.createHash('sha256').update(buffer).digest('hex'), bytes: buffer.length };
 }
 
+type BoundImagePromptRecord = {
+  image: string;
+  identifier: string;
+  expectedPromptPath: string;
+  fieldPaths: string[];
+  contexts: Array<Record<string, unknown>>;
+};
+
+function boundImagePromptIdentifier(image: unknown): string | null {
+  if (typeof image !== 'string') return null;
+  const clean = image.trim().split(/[?#]/)[0];
+  if (!clean || !/\.(png|jpe?g|webp)$/i.test(clean)) return null;
+  if (!/(^|\/)generated-stories\/[^/]+\/images\//i.test(clean) && !/(^|\/)images\//i.test(clean)) return null;
+  if (/(^|\/)images\/prompts\//i.test(clean)) return null;
+  const match = clean.match(/(?:^|\/)images\/(?:.*\/)?([^/]+)\.(png|jpe?g|webp)$/i);
+  return match?.[1] || null;
+}
+
+function addBoundImagePromptRecord(
+  records: Map<string, BoundImagePromptRecord>,
+  outputDir: string,
+  image: unknown,
+  fieldPath: string,
+  context: Record<string, unknown>,
+): void {
+  if (typeof image !== 'string') return;
+  const identifier = boundImagePromptIdentifier(image);
+  if (!identifier) return;
+  const expectedPromptPath = `${outputDir}images/prompts/${identifier}.json`;
+  const existing = records.get(expectedPromptPath);
+  if (existing) {
+    if (!existing.fieldPaths.includes(fieldPath)) existing.fieldPaths.push(fieldPath);
+    existing.contexts.push(context);
+    return;
+  }
+  records.set(expectedPromptPath, {
+    image,
+    identifier,
+    expectedPromptPath,
+    fieldPaths: [fieldPath],
+    contexts: [context],
+  });
+}
+
+function collectBoundImagePromptRecords(story: Story, outputDir: string): BoundImagePromptRecord[] {
+  const records = new Map<string, BoundImagePromptRecord>();
+  addBoundImagePromptRecord(records, outputDir, story.coverImage, 'coverImage', {
+    storyId: story.id,
+    storyTitle: story.title,
+    type: 'story-cover',
+  });
+
+  for (const [episodeIndex, episode] of (story.episodes || []).entries()) {
+    const episodeNumber = episode.number ?? episodeIndex + 1;
+    addBoundImagePromptRecord(records, outputDir, episode.coverImage, `episodes[${episodeIndex}].coverImage`, {
+      storyId: story.id,
+      storyTitle: story.title,
+      episodeNumber,
+      episodeId: episode.id,
+      episodeTitle: episode.title,
+      type: 'episode-cover',
+    });
+
+    for (const [sceneIndex, scene] of (episode.scenes || []).entries()) {
+      const sceneContext = {
+        storyId: story.id,
+        storyTitle: story.title,
+        episodeNumber,
+        episodeId: episode.id,
+        episodeTitle: episode.title,
+        sceneId: scene.id,
+        sceneName: scene.name,
+      };
+      addBoundImagePromptRecord(
+        records,
+        outputDir,
+        scene.backgroundImage,
+        `episodes[${episodeIndex}].scenes[${sceneIndex}].backgroundImage`,
+        { ...sceneContext, type: 'scene-background' },
+      );
+
+      for (const [beatIndex, beat] of (scene.beats || []).entries()) {
+        const beatContext = {
+          ...sceneContext,
+          type: 'story-beat',
+          beatId: beat.id,
+          beatIndex,
+          beatText: beat.text,
+          speaker: (beat as any).speaker,
+        };
+        addBoundImagePromptRecord(
+          records,
+          outputDir,
+          beat.image,
+          `episodes[${episodeIndex}].scenes[${sceneIndex}].beats[${beatIndex}].image`,
+          beatContext,
+        );
+        if (Array.isArray((beat as any).panelImages)) {
+          for (const [panelIndex, panelImage] of (beat as any).panelImages.entries()) {
+            addBoundImagePromptRecord(
+              records,
+              outputDir,
+              panelImage,
+              `episodes[${episodeIndex}].scenes[${sceneIndex}].beats[${beatIndex}].panelImages[${panelIndex}]`,
+              { ...beatContext, type: 'story-beat-panel', panelIndex },
+            );
+          }
+        }
+      }
+
+      const visit = (value: unknown, fieldPath: string): void => {
+        if (!value || typeof value !== 'object') return;
+        if (Array.isArray(value)) {
+          value.forEach((item, index) => visit(item, `${fieldPath}[${index}]`));
+          return;
+        }
+        const obj = value as Record<string, unknown>;
+        for (const [key, child] of Object.entries(obj)) {
+          const childPath = `${fieldPath}.${key}`;
+          if (typeof child === 'string' && /(image|cover|portrait)$/i.test(key)) {
+            addBoundImagePromptRecord(records, outputDir, child, childPath, {
+              ...sceneContext,
+              type: 'nested-image',
+              id: obj.id,
+              beatId: obj.beatId,
+              text: obj.text,
+              fieldKey: key,
+            });
+          } else {
+            visit(child, childPath);
+          }
+        }
+      };
+      visit((scene as any).encounter, `episodes[${episodeIndex}].scenes[${sceneIndex}].encounter`);
+      visit((scene as any).storylets, `episodes[${episodeIndex}].scenes[${sceneIndex}].storylets`);
+    }
+  }
+
+  return Array.from(records.values());
+}
+
+function buildRecoveredPromptArtifact(record: BoundImagePromptRecord, story: Story, generator?: Record<string, unknown>) {
+  const primaryContext = record.contexts[0] || {};
+  const prompt = [
+    'RECOVERED PROMPT ARTIFACT: the exact original prompt JSON for this bound image was missing when the final story package was written.',
+    'This file was created by the image prompt binding guard so dev tooling can inspect the local image provenance instead of failing silently.',
+    '',
+    `Story: ${story.title || story.id || 'Untitled story'}`,
+    primaryContext.episodeNumber ? `Episode: ${primaryContext.episodeNumber}${primaryContext.episodeTitle ? ` - ${primaryContext.episodeTitle}` : ''}` : undefined,
+    primaryContext.sceneId ? `Scene: ${primaryContext.sceneId}${primaryContext.sceneName ? ` - ${primaryContext.sceneName}` : ''}` : undefined,
+    primaryContext.beatId ? `Beat: ${primaryContext.beatId}` : undefined,
+    primaryContext.speaker ? `Speaker: ${primaryContext.speaker}` : undefined,
+    primaryContext.beatText || primaryContext.text ? '' : undefined,
+    primaryContext.beatText || primaryContext.text ? 'Story text:' : undefined,
+    (primaryContext.beatText || primaryContext.text) as string | undefined,
+    '',
+    generator?.artStyle || generator?.canonicalArtStyle || story.artStyleProfile
+      ? `Style/source metadata: ${JSON.stringify(generator?.artStyle || generator?.canonicalArtStyle || story.artStyleProfile)}`
+      : undefined,
+  ].filter(Boolean).join('\n');
+
+  return {
+    identifier: record.identifier,
+    metadata: {
+      type: 'recovered-bound-image-prompt',
+      storyId: story.id,
+      image: record.image,
+      source: 'writeFinalStoryPackage prompt binding guard',
+      exactOriginalPromptMissing: true,
+      fieldPaths: record.fieldPaths,
+      contexts: record.contexts,
+      recoveredAt: new Date().toISOString(),
+    },
+    prompt,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function ensureBoundImagePromptArtifactsNode(
+  outputDir: string,
+  story: Story,
+  generator?: Record<string, unknown>,
+): { checked: number; alreadyPresent: number; recovered: number; records: Array<Record<string, unknown>> } {
+  const fs = nodeRequire<typeof import('fs')>('fs');
+  const path = nodeRequire<typeof import('path')>('path');
+  const normalizedOutputDir = outputDir.endsWith('/') ? outputDir : `${outputDir}/`;
+  const promptDir = `${normalizedOutputDir}images/prompts`;
+  fs.mkdirSync(promptDir, { recursive: true });
+
+  const records = collectBoundImagePromptRecords(story, normalizedOutputDir);
+  let alreadyPresent = 0;
+  let recovered = 0;
+  const reportRecords: Array<Record<string, unknown>> = [];
+
+  for (const record of records) {
+    if (fs.existsSync(record.expectedPromptPath)) {
+      alreadyPresent += 1;
+      reportRecords.push({
+        status: 'present',
+        image: record.image,
+        promptPath: path.relative(normalizedOutputDir, record.expectedPromptPath),
+        fieldPaths: record.fieldPaths,
+      });
+      continue;
+    }
+
+    const artifact = buildRecoveredPromptArtifact(record, story, generator);
+    atomicWriteNodeSync(record.expectedPromptPath, JSON.stringify(artifact, null, 2));
+    recovered += 1;
+    reportRecords.push({
+      status: 'recovered',
+      image: record.image,
+      promptPath: path.relative(normalizedOutputDir, record.expectedPromptPath),
+      fieldPaths: record.fieldPaths,
+    });
+  }
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    storyId: story.id,
+    checked: records.length,
+    alreadyPresent,
+    recovered,
+    records: reportRecords,
+  };
+  atomicWriteNodeSync(
+    `${normalizedOutputDir}image-prompt-binding-report.json`,
+    JSON.stringify(report, null, 2),
+  );
+
+  return { checked: records.length, alreadyPresent, recovered, records: reportRecords };
+}
+
 export interface AgentWorkingFile {
   agentName: string;
   timestamp: string;
@@ -560,6 +793,7 @@ export async function writeFinalStoryPackage(
   let bytes = storyJson.length;
 
   if (hasNodeFs()) {
+    ensureBoundImagePromptArtifactsNode(outputDir, storyForPackage, options?.generator);
     const result = atomicWriteNodeSync(storyJsonPath, storyJson);
     sha256 = result.sha256;
     bytes = result.bytes;

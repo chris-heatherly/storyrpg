@@ -6,9 +6,11 @@ export type SceneGraphBranchIssueType =
   | 'missing_blueprint_branch'
   | 'invalid_branch_target'
   | 'backward_or_self_branch'
+  | 'missing_choice_bridge'
   | 'branch_without_reconvergence'
   | 'lost_branch_during_assembly'
-  | 'missing_branch_residue';
+  | 'missing_branch_residue'
+  | 'premature_npc_visual';
 
 export interface SceneGraphBranchIssue {
   type: SceneGraphBranchIssueType;
@@ -37,8 +39,10 @@ export interface SceneGraphBranchMetrics {
 
 export interface SceneGraphBranchValidationOptions {
   requireSceneGraphBranching?: boolean;
+  requireChoiceBridge?: boolean;
   minSceneGraphBranchesPerEpisode?: number;
   allowLinearBottleneckEpisodes?: boolean;
+  importantNpcIds?: string[];
 }
 
 export interface SceneGraphBranchValidationResult {
@@ -56,7 +60,9 @@ export class SceneGraphBranchValidator {
   ): SceneGraphBranchValidationResult {
     const minBranches = options.minSceneGraphBranchesPerEpisode ?? 1;
     const requireBranching = options.requireSceneGraphBranching !== false;
+    const requireChoiceBridge = options.requireChoiceBridge !== false;
     const allowLinearBottleneck = options.allowLinearBottleneckEpisodes === true;
+    const importantNpcIds = new Set((options.importantNpcIds || []).map(normalizeId));
     const issues: SceneGraphBranchIssue[] = [];
     const sceneIndex = new Map<string, number>();
     const scenesById = new Map<string, Scene>();
@@ -73,6 +79,7 @@ export class SceneGraphBranchValidator {
     let storyletCount = 0;
     let reconvergingBranchTargetCount = 0;
     const branchTargets = new Set<string>();
+    const introducedImportantNpcIds = new Set<string>();
 
     for (const scene of episode.scenes) {
       for (const beat of scene.beats || []) {
@@ -82,6 +89,23 @@ export class SceneGraphBranchValidator {
           if (!effectiveNextSceneId) continue;
           sceneGraphBranchChoiceCount += 1;
           branchTargets.add(effectiveNextSceneId);
+
+          if (requireChoiceBridge) {
+            const bridgeBeat = choice.nextBeatId
+              ? (scene.beats || []).find(candidate => candidate.id === choice.nextBeatId)
+              : undefined;
+            if (choice.nextSceneId || !bridgeBeat?.isChoiceBridge) {
+              issues.push({
+                type: 'missing_choice_bridge',
+                severity: 'error',
+                message: `Choice ${choice.id} routes to ${effectiveNextSceneId} without a choice bridge beat.`,
+                sceneId: scene.id,
+                beatId: beat.id,
+                choiceId: choice.id,
+                targetSceneId: effectiveNextSceneId,
+              });
+            }
+          }
 
           const targetIndex = sceneIndex.get(effectiveNextSceneId);
           const currentIndex = sceneIndex.get(scene.id);
@@ -120,6 +144,26 @@ export class SceneGraphBranchValidator {
           if (outcome?.nextSceneId) encounterOutcomeBranchCount += 1;
         }
         storyletCount += Object.values(scene.encounter.storylets || {}).filter(Boolean).length;
+      }
+
+      if (importantNpcIds.size > 0) {
+        for (const beat of scene.beats || []) {
+          const mentionedNpcIds = mentionedImportantNpcIds(beat, importantNpcIds);
+          for (const npcId of visualMetadataImportantNpcIds(beat, importantNpcIds)) {
+            if (!introducedImportantNpcIds.has(npcId) && !mentionedNpcIds.includes(npcId)) {
+              issues.push({
+                type: 'premature_npc_visual',
+                severity: 'warning',
+                message: `Beat ${beat.id} stages ${npcId} in visual metadata before the active path introduces them.`,
+                sceneId: scene.id,
+                beatId: beat.id,
+              });
+            }
+          }
+          for (const npcId of mentionedNpcIds) {
+            introducedImportantNpcIds.add(npcId);
+          }
+        }
       }
     }
 
@@ -273,4 +317,44 @@ function resolveChoicePayoffSceneTarget(scene: Scene, nextBeatId?: string): stri
   if (!nextBeatId) return undefined;
   const nextBeat = (scene.beats || []).find((beat) => beat.id === nextBeatId);
   return nextBeat?.nextSceneId;
+}
+
+function normalizeId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function visualMetadataImportantNpcIds(beat: Scene['beats'][number], importantNpcIds: Set<string>): string[] {
+  const imagePrompt = (beat as unknown as { imagePrompt?: Record<string, unknown> }).imagePrompt;
+  const promptCharacters = Array.isArray(imagePrompt?.characters) ? imagePrompt.characters as string[] : [];
+  const promptReferenceIds = Array.isArray(imagePrompt?.referenceCharIds) ? imagePrompt.referenceCharIds as string[] : [];
+  const visible = [
+    ...(beat.visualCast?.sceneCharacterIds || []),
+    ...(beat.coveragePlan?.requiredVisibleCharacterIds || []),
+    ...(beat.coveragePlan?.optionalVisibleCharacterIds || []),
+    ...(beat.coveragePlan?.focalCharacterIds || []),
+    ...(beat.coveragePlan?.offscreenCharacterIds || []),
+    ...(beat.visualCast?.activeCharacterIds || []),
+    ...(beat.visualCast?.foregroundCharacterIds || []),
+    ...(beat.visualCast?.backgroundCharacterIds || []),
+    ...(beat.visualCast?.offscreenCharacterIds || []),
+    ...promptCharacters,
+    ...promptReferenceIds,
+  ];
+  return [...new Set(visible.map(normalizeId).filter(id => importantNpcIds.has(id)))];
+}
+
+function mentionedImportantNpcIds(beat: Scene['beats'][number], importantNpcIds: Set<string>): string[] {
+  const fields = [
+    beat.text,
+    (beat as { visualMoment?: string }).visualMoment,
+    (beat as { primaryAction?: string }).primaryAction,
+    (beat as { emotionalRead?: string }).emotionalRead,
+    (beat as { mustShowDetail?: string }).mustShowDetail,
+  ];
+  return [...importantNpcIds].filter(npcId => fields.some(field => mentionsNpc(field, npcId)));
+}
+
+function mentionsNpc(text: string | undefined, npcId: string): boolean {
+  if (!text) return false;
+  return normalizeId(text).includes(npcId);
 }

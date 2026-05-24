@@ -28,6 +28,7 @@ import {
   executeChoice,
   findBeat,
   findChoice,
+  getPlayableEpisodes,
   getNextScene,
   ProcessedBeat,
 } from '../engine/storyEngine';
@@ -36,13 +37,11 @@ import { NarrativeText } from './NarrativeText';
 import { ChoiceButton } from './ChoiceButton';
 import { EncounterView } from './EncounterView';
 import { TERMINAL, RADIUS, TIMING, SPACING, sharedStyles, withAlpha } from '../theme';
-import { EncounterCost, GeneratedStorylet, Scene, StoryletBeat, AppliedConsequence, EncounterOutcome, Relationship, Consequence } from '../types';
+import { EncounterCost, GeneratedStorylet, Scene, StoryletBeat, AppliedConsequence, EncounterOutcome, Relationship, Consequence, Choice } from '../types';
 import type { PlayerState } from '../types';
 import { mediaRefAsString } from '../assets/assetRef';
-import { ConsequenceToast } from './ConsequenceToast';
 import { ConsequenceBadgeList } from './ConsequenceBadgeList';
 import { ButterflyBanner } from './ButterflyBanner';
-import { OutcomeHeader } from './OutcomeHeader';
 import { StatCheckOverlay } from './StatCheckOverlay';
 import { ReadingShell } from './ReadingShell';
 import { ContinueButton } from './ContinueButton';
@@ -52,7 +51,8 @@ import { useClickDebounce } from '../utils/useDebounce';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { useImagePromptOverlay } from '../hooks/useImagePromptOverlay';
 import { formatSceneBeatLabelFromImageUrl, getImagePanelNumberFromStory } from '../utils/imagePromptDebug';
-import { buildChoiceRecognitionLine, getFictionFirstChangeFeedback } from '../utils/choiceChangeFeedback';
+import { resolvePromptUrlFromImageUrl } from '../utils/imagePromptPaths';
+import { buildChoiceConsequenceSentence, getFictionFirstChangeFeedback } from '../utils/choiceChangeFeedback';
 import { incrementPersonProperty, setSuperProperties, track } from '../services/analyticsService';
 import {
   cloneRelationshipMap,
@@ -102,8 +102,6 @@ function getReflectionText(outcome: string): string {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-type OutcomeToneTier = 'success' | 'complicated' | 'failure';
-
 const AFTERMATH_MECHANICAL_COPY_RE = /has succeeded|has failed|gets what (?:you|they|she|he) fought for|cost lands|price lands|objective (?:is )?achieved|immediate danger has passed|world shifts in response|there will be consequences|celebrate success|show cost|show that/i;
 
 function normalizeSentence(text?: string | null): string | undefined {
@@ -112,24 +110,18 @@ function normalizeSentence(text?: string | null): string | undefined {
   return /[.!?]$/.test(normalized) ? normalized : `${normalized}.`;
 }
 
-function firstUsableStoryletBeat(storylet: GeneratedStorylet, currentBeatId?: string): string | undefined {
-  return storylet.beats
-    .filter((beat) => beat.id !== currentBeatId)
-    .map((beat) => normalizeSentence(beat.text))
-    .find(Boolean);
-}
+function resolveStatCheckSkillLabel(choice: Choice): string {
+  const explicit = choice.statCheck?.skill || choice.statCheck?.attribute;
+  if (explicit?.trim()) return explicit;
 
-function outcomeTierForStorylet(outcome: EncounterOutcome): OutcomeToneTier {
-  if (outcome === 'victory') return 'success';
-  if (outcome === 'defeat') return 'failure';
-  return 'complicated';
-}
+  const skillWeights = choice.statCheck?.skillWeights;
+  if (!skillWeights) return '';
 
-function storyletOutcomeColor(outcome: EncounterOutcome): string {
-  if (outcome === 'victory') return TERMINAL.colors.success;
-  if (outcome === 'defeat') return TERMINAL.colors.error;
-  if (outcome === 'partialVictory') return TERMINAL.colors.amber;
-  return TERMINAL.colors.primary;
+  const strongest = Object.entries(skillWeights)
+    .filter(([, weight]) => Number.isFinite(weight))
+    .sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  return strongest || '';
 }
 
 function fictionFirstCostText(cost?: EncounterCost | null): string | undefined {
@@ -195,6 +187,49 @@ interface StoryReaderProps {
   onStoryComplete?: () => void;
 }
 
+type ChoiceOutcomeTier = 'success' | 'complicated' | 'failure';
+
+function choiceOutcomeColor(tier?: ChoiceOutcomeTier): string {
+  if (tier === 'success') return TERMINAL.colors.success;
+  if (tier === 'complicated') return TERMINAL.colors.amber;
+  if (tier === 'failure') return TERMINAL.colors.error;
+  return TERMINAL.colors.primary;
+}
+
+function lowercaseFirst(text: string): string {
+  return text.charAt(0).toLowerCase() + text.slice(1);
+}
+
+function sentenceFromChoiceText(choiceText?: string): string | undefined {
+  const cleaned = choiceText?.replace(/\s+/g, ' ').trim().replace(/[.!?]$/, '');
+  if (!cleaned) return undefined;
+  const dont = /^don't\s+(.+)$/i.exec(cleaned)?.[1];
+  if (dont) return `You chose not to ${lowercaseFirst(dont)}.`;
+  const action = /^(?:choose to|try to|attempt to|decide to)\s+(.+)$/i.exec(cleaned)?.[1] || cleaned;
+  return `You chose to ${lowercaseFirst(action)}.`;
+}
+
+function fallbackChoiceProgress(choice: Choice): string | undefined {
+  switch (choice.consequenceDomain) {
+    case 'relationship':
+      return 'A relationship shifts.';
+    case 'reputation':
+      return 'Your reputation shifts.';
+    case 'danger':
+      return 'The danger around you changes.';
+    case 'information':
+      return 'Your understanding changes.';
+    case 'identity':
+      return 'Your identity shifts.';
+    case 'leverage':
+      return 'Your leverage changes.';
+    case 'resource':
+      return 'Your resources change.';
+    default:
+      return undefined;
+  }
+}
+
 export const StoryReader: React.FC<StoryReaderProps> = ({
   onEpisodeComplete,
   onStoryComplete,
@@ -226,25 +261,18 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const [processedBeat, setProcessedBeat] = useState<ProcessedBeat | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
   const [showChoices, setShowChoices] = useState(false);
+  const [isChoiceResolutionInFlight, setIsChoiceResolutionInFlight] = useState(false);
   const [selectedChoiceId, setSelectedChoiceId] = useState<string | null>(null);
-  const [choiceFeedback, setChoiceFeedback] = useState<{
-    consequences: AppliedConsequence[];
-    targetSceneId?: string;
-    targetBeatId?: string;
-    hasBeenShown?: boolean;
-  } | null>(null);
+  const [pendingChoiceId, setPendingChoiceId] = useState<string | null>(null);
   const [statCheckSkill, setStatCheckSkill] = useState<string | null>(null);
   const [statCheckTier, setStatCheckTier] = useState<'success' | 'complicated' | 'failure' | null>(null);
   const proceedAfterStatCheckRef = useRef<(() => void) | null>(null);
-  const [resolutionText, setResolutionText] = useState<string | null>(null);
-  const [choiceOutcomeHeader, setChoiceOutcomeHeader] = useState<{ text: string; tier: 'success' | 'complicated' | 'failure' } | null>(null);
   const [recentChoiceEcho, setRecentChoiceEcho] = useState<{
     summary: string;
     progress?: string;
-    recognitionText?: string;
-    feedback: AppliedConsequence[];
     targetSceneId?: string;
     targetBeatId?: string;
+    tier?: ChoiceOutcomeTier;
     hasBeenShown?: boolean;
   } | null>(null);
   const [showingEncounter, setShowingEncounter] = useState(false);
@@ -312,6 +340,8 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const devHistoryRef = useRef<Array<{ sceneId: string; beatId: string }>>([]);
   const lastTrackedSceneRef = useRef<string | null>(null);
   const choiceShownRef = useRef<Set<string>>(new Set());
+  const activeBeatKeyRef = useRef<string | null>(null);
+  const choiceResolutionInFlightRef = useRef(false);
   const encounterStartedRef = useRef<Set<string>>(new Set());
 
   const getSceneBeatLabelFromImageUrl = useCallback((url?: string): string | null => {
@@ -384,9 +414,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         const dir = outputDir.replace(/^\/app\//, '').replace(/\/$/, '');
         return `${baseUrl}/${dir}/images/prompts/beat-${sceneId}-${beatId}.json`;
       }
-      return imageUrl
-        .replace(/\/images\//, '/images/prompts/')
-        .replace(/\.(png|jpg|jpeg|webp)$/i, '.json');
+      return resolvePromptUrlFromImageUrl(imageUrl);
     },
   });
 
@@ -535,8 +563,18 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     const totalEpisodeBeats = countEpisodeBeats(currentEpisode);
     const completedEpisodeIds = new Set(player.completedEpisodes);
     completedEpisodeIds.add(currentEpisode.id);
+    const completionPlayer = {
+      ...player,
+      completedEpisodes: [...completedEpisodeIds],
+    };
+    const playableEpisodeCount = currentStory
+      ? getPlayableEpisodes(currentStory, completionPlayer).length
+      : 0;
     const storyPercent = currentStory
-      ? percentComplete(completedEpisodeIds.size, currentStory.episodes.length)
+      ? percentComplete(
+          getPlayableEpisodes(currentStory, completionPlayer).filter(episode => completedEpisodeIds.has(episode.id)).length,
+          playableEpisodeCount
+        )
       : undefined;
 
     track('episode completed', {
@@ -556,12 +594,16 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       last_episode_id: currentEpisode.id,
     });
 
-    if (currentStory && completedEpisodeIds.size >= currentStory.episodes.length) {
+    if (
+      currentStory &&
+      playableEpisodeCount > 0 &&
+      getPlayableEpisodes(currentStory, completionPlayer).every(episode => completedEpisodeIds.has(episode.id))
+    ) {
       incrementPersonProperty('stories_completed_count');
       track('story completed', {
         story_id: currentStory.id,
         story_genre: currentStory.genre,
-        episode_count: currentStory.episodes.length,
+        episode_count: playableEpisodeCount,
         beats_seen_count: new Set(visitLog.map((visit) => visit.beatId)).size,
         choices_made_count: visitLog.filter((visit) => visit.choiceId).length,
         scenes_seen_count: new Set(visitLog.map((visit) => visit.sceneId)).size,
@@ -786,6 +828,15 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     const beat = findBeat(currentScene, currentBeatId);
     if (!beat) return;
 
+    const beatKey = `${currentScene.id}:${currentBeatId}`;
+    if (activeBeatKeyRef.current !== beatKey) {
+      activeBeatKeyRef.current = beatKey;
+      choiceResolutionInFlightRef.current = false;
+      setIsChoiceResolutionInFlight(false);
+      setPendingChoiceId(null);
+      proceedAfterStatCheckRef.current = null;
+    }
+
     if (beat.onShow && beat.onShow.length > 0) {
       applyConsequences(beat.onShow);
     }
@@ -844,7 +895,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     setProcessedBeat(processed);
     setIsAnimating(true);
     setShowChoices(false);
-    setResolutionText(null);
     setImageErrorId(null); // Reset error on new beat
 
     // Track beat in dev navigation history for reliable back-button
@@ -937,7 +987,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   const handleAnimationComplete = () => {
     setIsAnimating(false);
-    if (processedBeat?.hasChoices) {
+    if (processedBeat?.hasChoices && !choiceResolutionInFlightRef.current) {
       setShowChoices(true);
     }
   };
@@ -976,30 +1026,42 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     }
   }, [recentChoiceEcho, currentScene, currentBeatId]);
 
-  const choiceFeedbackRef = useRef(choiceFeedback);
-  choiceFeedbackRef.current = choiceFeedback;
-  useEffect(() => {
-    if (choiceFeedbackRef.current) {
-      setChoiceFeedback(null);
-    }
-  }, [currentBeatId]);
-
   // Execute the choice after the selection ceremony finishes
   const executeChoiceAfterCeremony = useCallback((choiceId: string) => {
-    if (!currentScene || !currentBeatId || !processedBeat) return;
+    setPendingChoiceId(null);
+
+    const abortChoiceResolution = () => {
+      choiceResolutionInFlightRef.current = false;
+      setIsChoiceResolutionInFlight(false);
+      setSelectedChoiceId(null);
+    };
+
+    if (!currentScene || !currentBeatId || !processedBeat) {
+      abortChoiceResolution();
+      return;
+    }
 
     const beat = findBeat(currentScene, currentBeatId);
-    if (!beat) return;
+    if (!beat) {
+      abortChoiceResolution();
+      return;
+    }
 
     const choice = findChoice(beat, choiceId);
-    if (!choice) return;
+    if (!choice) {
+      abortChoiceResolution();
+      return;
+    }
 
     const result = executeChoice(choice, player);
 
     if (!result.success) {
-      setSelectedChoiceId(null);
+      abortChoiceResolution();
       return;
     }
+
+    choiceResolutionInFlightRef.current = true;
+    setIsChoiceResolutionInFlight(true);
 
     track('choice selected', {
       story_id: currentStory?.id,
@@ -1075,15 +1137,17 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       return null;
     };
 
-    const showFeedback = (applied: AppliedConsequence[]) => {
+    const recordChoiceFeedback = (applied: AppliedConsequence[]) => {
       const visible = getFictionFirstChangeFeedback(applied);
       const echoTarget = resolveEchoTarget(result.nextBeatId, result.nextSceneId);
-      const recognitionText = buildChoiceRecognitionLine(visible);
+      const consequenceSentence = buildChoiceConsequenceSentence(applied);
+      const processedChoiceText = processTemplate(choice.text, player, currentStory);
+      const progressText = consequenceSentence || fallbackChoiceProgress(choice);
       setEpisodeChoiceRecap((prev) => [
         ...prev,
         {
           id: `${currentScene.id}:${currentBeatId}:${choice.id}:${prev.length}`,
-          chosenText: processTemplate(choice.text, player, currentStory),
+          chosenText: processedChoiceText,
           summary: choice.feedbackCue?.echoSummary || choice.reminderPlan?.immediate || 'The choice changed the shape of the story.',
           otherPaths: (beat.choices || [])
             .filter((candidate) => candidate.id !== choice.id)
@@ -1096,72 +1160,24 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           consequences: visible.slice(0, 3),
         },
       ]);
-      if (visible.length > 0) {
-        setChoiceFeedback({
-          consequences: visible,
-          targetSceneId: echoTarget?.sceneId,
-          targetBeatId: echoTarget?.beatId,
-          hasBeenShown: false,
-        });
-      }
       setRecentChoiceEcho({
-        summary: choice.feedbackCue?.echoSummary || choice.reminderPlan?.immediate || 'The moment leaves a mark.',
-        progress: choice.feedbackCue?.progressSummary || choice.reminderPlan?.shortTerm,
-        recognitionText,
-        feedback: visible.slice(0, 3),
+        summary:
+          sentenceFromChoiceText(processedChoiceText) ||
+          'You made a choice.',
+        progress: progressText,
         targetSceneId: echoTarget?.sceneId,
         targetBeatId: echoTarget?.beatId,
+        tier: result.resolution?.tier as ChoiceOutcomeTier | undefined,
         hasBeenShown: false,
       });
     };
 
-    const badgeViewingDelay = (applied: AppliedConsequence[]): number => {
-      const visibleCount = Math.min(getFictionFirstChangeFeedback(applied).length, 5);
-      if (visibleCount === 0) return 0;
-      // stagger-in (80ms/badge) + animate-in (300ms) + reading time (1200ms)
-      return (visibleCount * 80) + TIMING.normal + 1200;
-    };
-
-    const navigateWithBadgeDelay = (applied: AppliedConsequence[]) => {
-      const delay = badgeViewingDelay(applied);
-      if (delay > 0) {
-        setTimeout(() => {
-          navigateAfterChoice(result.nextBeatId, result.nextSceneId, choiceId);
-        }, delay);
-      } else {
-        navigateAfterChoice(result.nextBeatId, result.nextSceneId, choiceId);
-      }
-    };
-
-    const CHOICE_OUTCOME_HEADERS = {
-      success: 'Well Played',
-      complicated: 'Not Without Cost',
-      failure: 'A Costly Misstep',
-    } as const;
-
     const proceedAfterStatCheck = () => {
-      if (result.resolution) {
-        const tier = result.resolution.tier as 'success' | 'complicated' | 'failure';
-        setChoiceOutcomeHeader({ text: CHOICE_OUTCOME_HEADERS[tier], tier });
-      }
-
-      if (result.resolution && choice.outcomeTexts) {
-        const applied = applyConsequences(result.consequences);
-        showFeedback(applied);
-        navigateWithBadgeDelay(applied);
-      } else if (result.resolution) {
-        setResolutionText(result.resolution.narrativeText);
-        setTimeout(() => {
-          const applied = applyConsequences(result.consequences);
-          showFeedback(applied);
-          setResolutionText(null);
-          navigateWithBadgeDelay(applied);
-        }, 2000);
-      } else {
-        const applied = applyConsequences(result.consequences);
-        showFeedback(applied);
-        navigateWithBadgeDelay(applied);
-      }
+      const applied = applyConsequences(result.consequences);
+      recordChoiceFeedback(applied);
+      choiceResolutionInFlightRef.current = false;
+      setIsChoiceResolutionInFlight(false);
+      navigateAfterChoice(result.nextBeatId, result.nextSceneId, choiceId);
     };
 
     setShowChoices(false);
@@ -1169,12 +1185,16 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
     // Stat check tension moment: skill flash -> color pulse -> proceed
     if (result.resolution && choice.statCheck) {
-      const skillLabel = choice.statCheck.skill || choice.statCheck.attribute || '';
+      const skillLabel = resolveStatCheckSkillLabel(choice);
       const tier = result.resolution.tier as 'success' | 'complicated' | 'failure';
 
-      proceedAfterStatCheckRef.current = proceedAfterStatCheck;
-      setStatCheckSkill(skillLabel.replace(/_/g, ' ').toUpperCase());
-      setStatCheckTier(tier);
+      if (skillLabel) {
+        proceedAfterStatCheckRef.current = proceedAfterStatCheck;
+        setStatCheckSkill(skillLabel.replace(/_/g, ' ').toUpperCase());
+        setStatCheckTier(tier);
+      } else {
+        proceedAfterStatCheck();
+      }
     } else {
       proceedAfterStatCheck();
     }
@@ -1182,19 +1202,30 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   // Base choice handler -- triggers selection ceremony, then executes after delay
   const handleChoicePressBase = useCallback((choiceId: string) => {
-    if (!currentScene || !currentBeatId || !processedBeat || selectedChoiceId) return;
+    if (!currentScene || !currentBeatId || !processedBeat || selectedChoiceId || choiceResolutionInFlightRef.current) return;
     haptics.selection();
-    setChoiceOutcomeHeader(null);
+    choiceResolutionInFlightRef.current = true;
+    setIsChoiceResolutionInFlight(true);
     setRecentChoiceEcho(null);
+    setShowChoices(false);
     setSelectedChoiceId(choiceId);
-    setTimeout(() => executeChoiceAfterCeremony(choiceId), TIMING.slow);
-  }, [currentScene, currentBeatId, processedBeat, selectedChoiceId, executeChoiceAfterCeremony]);
+    setPendingChoiceId(choiceId);
+  }, [currentScene, currentBeatId, processedBeat, selectedChoiceId]);
   
   // Debounced choice handler - prevents double-clicks
   const handleChoicePress = useClickDebounce(handleChoicePressBase, 500);
 
+  useEffect(() => {
+    if (!pendingChoiceId) return;
+
+    const timer = setTimeout(() => {
+      executeChoiceAfterCeremony(pendingChoiceId);
+    }, TIMING.slow);
+
+    return () => clearTimeout(timer);
+  }, [pendingChoiceId, executeChoiceAfterCeremony]);
+
   const navigateAfterChoice = (nextBeatId?: string, nextSceneId?: string, choiceId?: string) => {
-    setChoiceFeedback(null);
     if (nextSceneId) {
       if (currentEpisode) {
         const targetScene = currentEpisode.scenes.find(s => s.id === nextSceneId);
@@ -1267,7 +1298,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   // Base continue handler (wrapped with debounce below)
   const handleContinueBase = useCallback(() => {
     if (!processedBeat) return;
-    setChoiceOutcomeHeader(null);
 
     // Capture values to avoid non-null assertions
     const nextBeatId = processedBeat.nextBeatId;
@@ -1544,28 +1574,21 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   if (showGrowthSummary) {
     const reflectionImageUrl = lastKnownImageRef.current;
     const growthCostText = fictionFirstCostText(growthCost)
-      || 'The win leaves something unsettled that follows you forward.';
+      || undefined;
     const growthLingeringText = normalizeSentence(growthCost?.lingeringEffect);
+    const growthNarrativeText = [
+      growthCostText || growthReflectionText,
+      growthLingeringText && growthLingeringText !== growthCostText ? growthLingeringText : undefined,
+    ].filter(Boolean).join('\n\n');
     return (
       <View style={{ flex: 1 }}>
       <ReadingShell imageUrl={reflectionImageUrl} fadeAnim={fadeAnim} imageOpacity={imageOpacity}>
             <View style={styles.textPanel}>
               <NarrativeText
-                text={growthReflectionText}
+                text={growthNarrativeText}
                 animate={true}
                 onAnimationComplete={handleGrowthReflectionAnimComplete}
               />
-              {growthCost && (
-                <View style={styles.costPanel}>
-                  <Text style={styles.costPanelTitle}>{growthCostText}</Text>
-                  {!!growthLingeringText && growthLingeringText !== growthCostText && (
-                    <Text style={styles.costPanelBody}>{growthLingeringText}</Text>
-                  )}
-                </View>
-              )}
-              {growthBadgesVisible && (
-                <ConsequenceBadgeList consequences={growthFeedback} />
-              )}
             </View>
 
             {growthBadgesVisible && (
@@ -1591,27 +1614,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     if (currentStoryletBeat) {
       console.log(`[StoryReader] Rendering storylet beat: id="${currentStoryletBeat.id}", text="${(currentStoryletBeat.text || '').substring(0, 60)}...", hasImage=${!!currentStoryletBeat.image}, isTerminal=${!!currentStoryletBeat.isTerminal}, hasChoices=${!!(currentStoryletBeat.choices?.length)}`);
       const storyletOutcome = activeStorylet.triggerOutcome;
-      const outcomeColor = storyletOutcomeColor(storyletOutcome);
-      const outcomeCost = currentStoryletBeat.cost
-        || activeStorylet.cost
-        || (storyletOutcome === 'partialVictory' ? sceneEncounter?.outcomes?.partialVictory?.cost : undefined);
       const fallback = buildStoryletOutcomeFallback(storyletOutcome, player.characterName || 'You');
-      const stakesText = storyletOutcome === 'victory'
-        ? normalizeSentence(sceneEncounter?.stakes?.victory)
-        : storyletOutcome === 'defeat'
-          ? normalizeSentence(sceneEncounter?.stakes?.defeat)
-          : undefined;
       const usableBeatText = normalizeSentence(currentStoryletBeat.text);
-      const nextUsableBeatText = firstUsableStoryletBeat(activeStorylet, currentStoryletBeat.id);
-      const costText = fictionFirstCostText(outcomeCost);
-      const outcomeSummary = storyletOutcome === 'partialVictory'
-        ? fallback.summary
-        : stakesText || fallback.summary;
-      const outcomeProgress = storyletOutcome === 'partialVictory'
-        ? costText || nextUsableBeatText || fallback.progress
-        : nextUsableBeatText || costText || fallback.progress;
       const narrativeText = usableBeatText || fallback.narrative;
-      const outcomeTier = outcomeTierForStorylet(storyletOutcome);
 
       // Fall back to current scene's background image when the beat has no dedicated image
       const sceneBgStr = mediaRefAsString(currentScene?.backgroundImage);
@@ -1629,20 +1634,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
             imageOpacity={imageOpacity}
             placeholderWatermark
           >
-            <View
-              style={[
-                styles.storyletOutcomeEchoPanel,
-                {
-                  borderColor: withAlpha(outcomeColor, 0.35),
-                  backgroundColor: withAlpha(outcomeColor, 0.08),
-                },
-              ]}
-              testID={`storylet-outcome-${outcomeTier}`}
-            >
-              <Text style={styles.echoSummaryText}>{outcomeSummary}</Text>
-              <Text style={styles.echoProgressText}>{outcomeProgress}</Text>
-            </View>
-
             <View style={styles.textPanel}>
               <NarrativeText
                 text={processTemplate(narrativeText, player, currentStory)}
@@ -1823,10 +1814,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const beatChromeBottom = butterflyFeedback.length > 0 ? (
     <ButterflyBanner items={butterflyFeedback} onDismiss={clearButterflyFeedback} />
   ) : null;
-  const activeChoiceRecognitionText =
+
+  const activeChoiceEcho =
     recentChoiceEcho?.targetSceneId === currentScene?.id &&
     recentChoiceEcho?.targetBeatId === currentBeatId
-      ? recentChoiceEcho.recognitionText
+      ? recentChoiceEcho
       : undefined;
 
   return (
@@ -1850,20 +1842,27 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           }
         }}
       >
-        {choiceFeedback && (
-          <ConsequenceToast
-            consequences={choiceFeedback.consequences}
-            onDismiss={() => setChoiceFeedback(null)}
-          />
+        {activeChoiceEcho && (
+          <View
+            style={[
+              styles.storyletOutcomeEchoPanel,
+              {
+                borderColor: withAlpha(choiceOutcomeColor(activeChoiceEcho.tier), 0.35),
+                backgroundColor: withAlpha(choiceOutcomeColor(activeChoiceEcho.tier), 0.08),
+              },
+            ]}
+            testID={`choice-consequence-${activeChoiceEcho.tier || 'change'}`}
+          >
+            <Text style={styles.echoSummaryText}>{activeChoiceEcho.summary}</Text>
+            {!!activeChoiceEcho.progress && (
+              <Text style={styles.echoProgressText}>{activeChoiceEcho.progress}</Text>
+            )}
+          </View>
         )}
 
         <View style={styles.textPanel}>
-          {choiceOutcomeHeader && (
-            <OutcomeHeader tier={choiceOutcomeHeader.tier} context="story" text={choiceOutcomeHeader.text} />
-          )}
           <NarrativeText
             text={[
-              activeChoiceRecognitionText,
               processedBeat.text,
               ...(processedBeat.skillInsights ?? []),
             ].filter(Boolean).join('\n\n')}
@@ -1874,16 +1873,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           />
         </View>
 
-        {resolutionText && (
-          <View style={styles.resolutionPanel}>
-            {choiceOutcomeHeader && (
-              <OutcomeHeader tier={choiceOutcomeHeader.tier} context="story" text={choiceOutcomeHeader.text} />
-            )}
-            <Text style={styles.resolutionText}>{resolutionText}</Text>
-          </View>
-        )}
-
-        {showChoices && processedBeat.hasChoices && (
+        {showChoices && processedBeat.hasChoices && !isChoiceResolutionInFlight && (
           <View style={styles.choicesList}>
             {processedBeat.choices.map((choice, index) => (
               <ChoiceButton
@@ -1898,7 +1888,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           </View>
         )}
 
-        {!isAnimating && !processedBeat.hasChoices && !resolutionText && (
+        {!isAnimating && !processedBeat.hasChoices && (
           <ContinueButton copyKey="default" onPress={handleContinue} />
         )}
       </ReadingShell>
@@ -2206,8 +2196,6 @@ const styles = StyleSheet.create({
   contentScrollView: sharedStyles.contentScrollView,
   contentContainer: sharedStyles.contentContainer,
   textPanel: sharedStyles.textPanel,
-  resolutionPanel: sharedStyles.resolutionPanel,
-  resolutionText: sharedStyles.resolutionText,
   echoPanel: {
     backgroundColor: 'rgba(10, 10, 12, 0.72)',
     borderWidth: 1,
@@ -2240,14 +2228,6 @@ const styles = StyleSheet.create({
   choicesList: {
     gap: 12,
   },
-  costPanel: {
-    ...sharedStyles.sectionCard,
-    marginTop: 16,
-    borderColor: withAlpha(TERMINAL.colors.amber, 0.35),
-    backgroundColor: withAlpha(TERMINAL.colors.amber, 0.08),
-  },
-  costPanelTitle: { ...sharedStyles.sectionCardTitle, marginBottom: 6 },
-  costPanelBody: sharedStyles.sectionCardBody,
   recapEyebrow: { ...sharedStyles.sectionEyebrow, color: TERMINAL.colors.primary },
   recapTitle: sharedStyles.sectionTitle,
   recapSection: sharedStyles.sectionGroup,

@@ -10,6 +10,7 @@ import { TwistQualityValidator } from './TwistQualityValidator';
 import { ArcDeltaValidator } from './ArcDeltaValidator';
 import { DivergenceValidator } from './DivergenceValidator';
 import { CallbackCoverageValidator } from './CallbackCoverageValidator';
+import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
 
 export type NarrativeDiagnosticStatus = 'passed' | 'warning' | 'failed' | 'skipped';
 
@@ -18,10 +19,12 @@ export interface NarrativeDiagnosticIssue {
   message: string;
   location?: string | object;
   suggestion?: string;
+  code?: string;
+  source?: string;
 }
 
 export interface NarrativeDiagnosticCheck {
-  name: 'setup_payoff' | 'twist_quality' | 'arc_delta' | 'divergence' | 'callback_coverage';
+  name: 'setup_payoff' | 'twist_quality' | 'arc_delta' | 'divergence' | 'callback_coverage' | 'failure_modes';
   status: NarrativeDiagnosticStatus;
   score?: number;
   advisory: boolean;
@@ -51,6 +54,13 @@ export interface NarrativeDiagnosticsInput {
   startIdentity?: Partial<IdentityProfile>;
   endIdentity?: Partial<IdentityProfile>;
   relationshipDeltas?: Record<string, { trust?: number; respect?: number; bond?: number }>;
+  baseIssues?: Array<{
+    severity: 'error' | 'warning' | 'info';
+    message: string;
+    location?: string;
+    suggestion?: string;
+    source?: string;
+  }>;
 }
 
 export function runNarrativeDiagnostics(input: NarrativeDiagnosticsInput): NarrativeDiagnosticsReport {
@@ -119,6 +129,19 @@ export function runNarrativeDiagnostics(input: NarrativeDiagnosticsInput): Narra
     checks.push(skipped('callback_coverage', 'No serialized CallbackLedger was available.'));
   }
 
+  const mappedIssues = collectMappableIssues(checks, input.baseIssues ?? []);
+  if (sceneContents.length > 0 || mappedIssues.length > 0) {
+    checks.push(fromBaseResult(
+      'failure_modes',
+      new NarrativeFailureModeValidator().validate({
+        sceneContents,
+        baseIssues: mappedIssues,
+      }),
+    ));
+  } else {
+    checks.push(skipped('failure_modes', 'No scene contents or prior validation issues were available.'));
+  }
+
   const active = checks.filter((check) => check.status !== 'skipped');
   const overallStatus = active.some((check) => check.status === 'failed')
     ? 'failed'
@@ -185,12 +208,14 @@ function fromReportResult(
   };
 }
 
-function fromBaseIssue(issue: BaseValidationIssue): NarrativeDiagnosticIssue {
+function fromBaseIssue(issue: BaseValidationIssue & { code?: string; source?: string }): NarrativeDiagnosticIssue {
   return {
     severity: issue.severity,
     message: issue.message,
     location: issue.location,
     suggestion: issue.suggestion,
+    code: issue.code,
+    source: issue.source,
   };
 }
 
@@ -201,6 +226,22 @@ function fromReportIssue(issue: ReportValidationIssue): NarrativeDiagnosticIssue
     location: issue.location,
     suggestion: issue.suggestion,
   };
+}
+
+function collectMappableIssues(
+  checks: NarrativeDiagnosticCheck[],
+  explicitIssues: NonNullable<NarrativeDiagnosticsInput['baseIssues']>,
+): NonNullable<NarrativeDiagnosticsInput['baseIssues']> {
+  return [
+    ...explicitIssues,
+    ...checks.flatMap((check) => check.issues.map((issue) => ({
+      severity: issue.severity === 'suggestion' ? 'info' as const : issue.severity,
+      message: issue.message,
+      location: typeof issue.location === 'string' ? issue.location : undefined,
+      suggestion: issue.suggestion,
+      source: check.name,
+    }))),
+  ];
 }
 
 function deriveObservedThreadLedger(sceneContents: SceneContent[]): ThreadLedger | undefined {

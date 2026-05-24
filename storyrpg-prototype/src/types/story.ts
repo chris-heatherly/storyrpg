@@ -15,6 +15,21 @@ import type { Beat, MediaRef, NarrativeSequenceIntent, SceneVisualSequencePlan }
 import type { Encounter, EncounterType } from './encounter';
 import type { ResolutionTier } from './choice';
 
+export type EpisodeStructureMode = 'standard' | 'sceneEpisodes';
+
+export interface EpisodeRouteMeta {
+  kind: 'master' | 'branch';
+  spineIndex: number;
+  branchGroupId?: string;
+  branchPathId?: string;
+  branchStep?: number;
+  branchLength?: 1 | 2;
+  rejoinsAtSpineIndex?: number;
+  displayLabel?: string;
+  isMilestoneEncounter?: boolean;
+  hideWhenInactive?: boolean;
+}
+
 export interface Scene {
   id: string;
   name: string;
@@ -47,6 +62,9 @@ export interface Episode {
   title: string;
   synopsis: string;
   coverImage: MediaRef;
+
+  episodeStructureMode?: EpisodeStructureMode;
+  routeMeta?: EpisodeRouteMeta;
 
   scenes: Scene[];
   startingSceneId: string;

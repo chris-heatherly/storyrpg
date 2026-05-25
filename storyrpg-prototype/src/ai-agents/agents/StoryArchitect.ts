@@ -2299,20 +2299,71 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       if (guidance.episodePromise) {
         section += `- Episode promise: ${guidance.episodePromise}\n`;
       }
+      if (guidance.dramaticQuestion) {
+        section += `- Dramatic question: ${guidance.dramaticQuestion}\n`;
+      }
+      if (guidance.coldOpenFunction) {
+        section += `- Cold open / hook function: ${guidance.coldOpenFunction}\n`;
+      }
+      if (guidance.openingImage) {
+        section += `- Opening image: ${guidance.openingImage}\n`;
+      }
       if (guidance.toneRegister) {
         section += `- Tone register: ${guidance.toneRegister}\n`;
       }
       if (guidance.actLabel) {
         section += `- Act: ${guidance.actLabel}\n`;
       }
+      if (guidance.arcLabel) {
+        section += `- Arc: ${guidance.arcLabel}\n`;
+      }
       if (guidance.rawStructuralRole) {
         section += `- Structural role: ${guidance.rawStructuralRole}\n`;
+      }
+      if (guidance.synopsis) {
+        section += `- Authored synopsis: ${guidance.synopsis}\n`;
+      }
+      if (guidance.openingSituation) {
+        section += `- Opening situation: ${guidance.openingSituation}\n`;
       }
       if (guidance.episodeTurns?.length) {
         section += 'Episode turns that should shape scene purposes, keyBeats, sequenceIntent, encounter buildup, choices, and aftermath. Do not create a new schema layer; express these through existing blueprint fields:\n';
         for (const turn of guidance.episodeTurns) {
           section += `- ${turn}\n`;
         }
+      }
+      if (guidance.entryGoal || guidance.obstacle || guidance.forcedChoice || guidance.exitShift) {
+        section += 'Scene/sceneEpisode contract that must be expressed through generated scenes:\n';
+        if (guidance.entryGoal) section += `- Entry goal: ${guidance.entryGoal}\n`;
+        if (guidance.obstacle) section += `- Obstacle: ${guidance.obstacle}\n`;
+        if (guidance.forcedChoice) section += `- Forced choice: ${guidance.forcedChoice}\n`;
+        if (guidance.exitShift) section += `- Exit shift: ${guidance.exitShift}\n`;
+      }
+      if (guidance.powerShift || guidance.subtextGap) {
+        section += 'Authored scene craft pressure:\n';
+        if (guidance.powerShift) section += `- Power shift: ${guidance.powerShift}\n`;
+        if (guidance.subtextGap) section += `- Subtext gap: ${guidance.subtextGap}\n`;
+      }
+      if (guidance.aPressure || guidance.bPressure || guidance.cSeed) {
+        section += 'Authored A/B/C pressure lanes:\n';
+        if (guidance.aPressure) section += `- A pressure: ${guidance.aPressure}\n`;
+        if (guidance.bPressure) section += `- B pressure: ${guidance.bPressure}\n`;
+        if (guidance.cSeed) section += `- C seed: ${guidance.cSeed}\n`;
+      }
+      if (guidance.stakesLayers?.length) {
+        section += 'Authored stakes layers to stack visibly in the major scene/encounter:\n';
+        for (const layer of guidance.stakesLayers) {
+          section += `- ${layer}\n`;
+        }
+      }
+      if (guidance.themePressure) {
+        section += `- Theme pressure: ${guidance.themePressure}\n`;
+      }
+      if (guidance.liePressure) {
+        section += `- Lie pressure: ${guidance.liePressure}\n`;
+      }
+      if (guidance.informationMovement) {
+        section += `- Information movement: ${guidance.informationMovement}\n`;
       }
       if (guidance.encounterAnchors?.length) {
         section += `- Encounter anchors: ${guidance.encounterAnchors.join(' | ')}\n`;
@@ -2344,8 +2395,20 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
           section += `- ${seed}\n`;
         }
       }
-      if (guidance.endingPressure || guidance.authoredCliffhanger) {
-        section += `- Authored ending pressure (MUST be supported by the final scene narrativeFunction/keyBeats unless this is a finale): ${guidance.endingPressure || guidance.authoredCliffhanger}\n`;
+      if (guidance.consequenceResidue) {
+        section += `- Consequence residue: ${guidance.consequenceResidue}\n`;
+      }
+      if (guidance.visualAnchor) {
+        section += `- Visual anchor: ${guidance.visualAnchor}\n`;
+      }
+      if (guidance.endStateChange) {
+        section += `- End-state change / removability proof: ${guidance.endStateChange}\n`;
+      }
+      if (guidance.nextEpisodeCausality) {
+        section += `- Why the next unit exists because of this one: ${guidance.nextEpisodeCausality}\n`;
+      }
+      if (guidance.endingPressure || guidance.authoredCliffhanger || guidance.endingTurnout) {
+        section += `- Authored ending pressure (MUST be supported by the final scene narrativeFunction/keyBeats unless this is a finale): ${guidance.endingPressure || guidance.authoredCliffhanger || guidance.endingTurnout}\n`;
       }
       if (guidance.resolutionAftermath) {
         section += `- Finale resolution/aftermath: ${guidance.resolutionAftermath}\n`;

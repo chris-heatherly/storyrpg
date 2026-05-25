@@ -580,7 +580,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     .sort((a, b) => a.episodeNumber - b.episodeNumber)[0] || null;
 
   const fonts = useGeneratorSettingsStore((state) => state.getFontSizes());
-  const developerMode = useGeneratorSettingsStore((state) => state.developerMode);
 
   const presetStyleOptions = useMemo(() => ART_STYLE_PRESETS.slice(0, 9), []);
   const selectedPresetId = useMemo(() => {
@@ -2770,9 +2769,16 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       : imageProvider === 'stable-diffusion'
         ? 'Stable Diffusion'
         : 'Atlas Cloud';
+  const narrativeStructureLabel = generationSettings.episodeStructureMode === 'sceneEpisodes'
+    ? 'scene-length episodes'
+    : 'standard episodes';
+  const narrativeSceneLabel = generationSettings.episodeStructureMode === 'sceneEpisodes'
+    ? `${generationSettings.sceneEpisodeMaxScenes} scene`
+    : `${generationSettings.targetSceneCount} scenes`;
   const storySummaryLines = [
     `Source: ${hasSourceInput ? 'ready' : 'missing'}${customStoryTitle.trim() ? ` • title "${customStoryTitle.trim()}"` : ''}`,
     `Writing: ${llmProvider.toUpperCase()} • ${llmModel}`,
+    `Narrative: ${narrativeStructureLabel} • ${narrativeSceneLabel}`,
     `Run media: images ${runGenerateImages ? 'on' : 'off'} • video ${runGenerateVideo ? 'on' : 'off'}`,
   ];
   const imageSummaryLines = [
@@ -3118,28 +3124,42 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                   ) : null}
                 </View>
 
-	                {/*
-	                  Advanced story settings now open in the AdvancedSettingsSheet
-                  instead of expanding inline inside the Story bucket. This
-                  removes one level of nested disclosure — the previous flow
-                  forced the user through Story bucket -> inline disclosure ->
-                  six more collapsible sections to reach advanced controls.
-                */}
-                {developerMode && (
-                  <View style={styles.configItem}>
-                    <TouchableOpacity
-                      style={styles.inlineDisclosure}
-                      onPress={() => setShowAdvancedSettings(true)}
-                      accessibilityRole="button"
-                      accessibilityLabel="Open advanced story settings"
-                    >
-                      <Settings size={16} color={TERMINAL.colors.primary} style={{ marginRight: 8 }} />
-                      <Text style={styles.configLabel}>DEVELOPER GENERATION SETTINGS</Text>
-                      <Text style={styles.advancedSettingsHint}>OPEN</Text>
-                      <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 8 }} />
-                    </TouchableOpacity>
-                  </View>
-                )}
+                <View style={styles.configItem}>
+                  <Text style={styles.configLabel}>NARRATIVE SETTINGS</Text>
+                  <TouchableOpacity
+                    style={styles.toggleActionRow}
+                    onPress={() => updateGenerationSetting(
+                      'episodeStructureMode',
+                      generationSettings.episodeStructureMode === 'sceneEpisodes' ? 'standard' : 'sceneEpisodes',
+                    )}
+                    accessibilityRole="switch"
+                    accessibilityState={{ checked: generationSettings.episodeStructureMode === 'sceneEpisodes' }}
+                    accessibilityLabel="Toggle scene-length episodes"
+                  >
+                    <View style={styles.toggleActionTextBlock}>
+                      <Text style={styles.configLabel}>SCENE-LENGTH EPISODES</Text>
+                      <Text style={styles.toggleActionHint}>
+                        {generationSettings.episodeStructureMode === 'sceneEpisodes'
+                          ? 'One dramatic scene per episode, with route branches across episodes.'
+                          : 'Use standard multi-scene episodes for each generated chapter.'}
+                      </Text>
+                    </View>
+                    <View style={[styles.booleanToggle, generationSettings.episodeStructureMode === 'sceneEpisodes' && styles.booleanToggleActive]}>
+                      <View style={[styles.booleanToggleKnob, generationSettings.episodeStructureMode === 'sceneEpisodes' && styles.booleanToggleKnobActive]} />
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.inlineDisclosure}
+                    onPress={() => setShowAdvancedSettings(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open narrative generation settings"
+                  >
+                    <Settings size={16} color={TERMINAL.colors.primary} style={{ marginRight: 8 }} />
+                    <Text style={styles.configLabel}>STRUCTURE, PACING, CHOICES, VALIDATION</Text>
+                    <Text style={styles.advancedSettingsHint}>OPEN</Text>
+                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 8 }} />
+                  </TouchableOpacity>
+                </View>
               </ConfigBucketCard>
               ) : null}
 
@@ -5115,6 +5135,7 @@ const styles = StyleSheet.create({
   providerModelDescription: { color: TERMINAL.colors.muted, fontSize: 10, marginTop: 2, fontWeight: '600' },
   providerModelCheck: { color: TERMINAL.colors.primary, fontSize: 14, fontWeight: '900' },
   toggleActionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
+  toggleActionTextBlock: { flex: 1, paddingRight: 12 },
   toggleActionHint: { color: TERMINAL.colors.muted, fontSize: 10, marginTop: 2, fontWeight: '600' },
   booleanToggle: { width: 44, height: 24, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', padding: 2 },
   booleanToggleActive: { backgroundColor: TERMINAL.colors.cyan },

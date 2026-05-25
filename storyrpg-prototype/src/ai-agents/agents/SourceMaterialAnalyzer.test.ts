@@ -149,6 +149,200 @@ describe('SourceMaterialAnalyzer treatment extraction', () => {
     );
   });
 
+  it('extracts regular-episode treatment fields from the updated prompt shape', () => {
+    const regularTreatment = `
+# Harbor Debt Treatment
+
+## 2. Season Promise And Dramatic Engine
+
+The season asks whether Mara can expose the harbor syndicate without becoming another keeper of secrets.
+
+## 5. Stakes Architecture
+
+- Material: Mara can lose her license and the ledger.
+- Relational: Jonas may stop trusting her.
+- Identity: Mara may become the kind of fixer she despises.
+
+## 6. Information Ledger
+
+- ID: info-ledger
+- Audience/player knowledge state: selective
+- Introduced episode: 1
+- Setup touch episodes: 1, 2
+- Planned reveal or payoff episode: 4
+
+## 8. Arc Plan
+
+Arc 1 asks whether the ledger is evidence or bait.
+
+## 9. Episode Outline
+
+### Episode 1: The Ledger Opens
+
+- **Act:** Act 1
+- **Arc:** The Harbor Debt
+- **Structural role:** Hook + Plot Turn 1
+- **Episode dramatic question:** Will Mara take the ledger case when it threatens Jonas?
+- **Cold open function:** Hook + promise + material stakes.
+- **A pressure lane:** Mara follows the missing ledger.
+- **B pressure lane:** Jonas asks her to protect his brother.
+- **C seed:** A red wax seal appears on the pier.
+- **Episode turns:**
+  - Mara finds the ledger in a fish crate.
+  - Jonas lies about recognizing the seal.
+- **Synopsis:** Mara takes a case that points back to someone she loves.
+- **Opening situation:** The harbor auction turns hostile.
+- **Encounter anchor:** The auction confrontation over the ledger.
+- **How the encounter manifests the central conflict:** Mara must decide whether truth is worth burning Jonas.
+- **Stakes layers present in the major scene/encounter:** Material: the ledger; Relational: Jonas's trust; Identity: Mara's honesty.
+- **Theme angle:** What does truth cost when silence protects someone?
+- **Lie pressure:** Mara believes safety comes from controlling every secret.
+- **Encounter buildup:** Jonas warns her not to bid.
+- **Major choice pressure:** Expose Jonas's lie or keep the ledger hidden.
+- **Alternative paths:** Exposure earns public leverage but damages Jonas; secrecy preserves intimacy but loses time.
+- **Information movement:** Plant the seal and touch the missing brother question.
+- **Consequence seeds:** The red seal; Jonas's broken trust.
+- **Ending turnout:** The ledger page names Mara's father.
+- **End-state change:** Mara cannot investigate from the outside anymore.
+
+## 11. Cross-Episode Branches And Consequence Chains
+
+### Branch A - Jonas's Trust
+
+If Mara exposes Jonas in Episode 1, Episode 2 begins with guarded access. If she protects him, Episode 2 begins with private help and public suspicion.
+
+## 14. Alternate Endings
+
+### Ending 1 - "The Witness"
+- **Summary:** Mara exposes the syndicate and leaves the harbor.
+- **Emotional register:** Bittersweet release.
+- **Theme payoff:** Truth frees her only when she stops owning it alone.
+- **State drivers:** Identity choice pattern; relationship with Jonas.
+- **Target conditions:** Choose exposure with compassion.
+
+### Ending 2 - "The Fixer"
+- **Summary:** Mara controls the ledger and becomes the new broker.
+- **Emotional register:** Corrupted victory.
+- **Theme payoff:** Control preserves safety but kills trust.
+- **State drivers:** Choice pattern around secrecy.
+- **Target conditions:** Hide evidence repeatedly.
+
+### Ending 3 - "The Debt Paid"
+- **Summary:** Mara sacrifices her license to save Jonas and publish the names.
+- **Emotional register:** Redemptive cost.
+- **Theme payoff:** Love can pay truth's price without owning the outcome.
+- **State drivers:** Relationship; resource loss.
+- **Target conditions:** Protect Jonas while refusing the syndicate.
+`;
+
+    const extracted = extractTreatmentFromMarkdown(regularTreatment);
+
+    expect(extracted.isTreatment).toBe(true);
+    expect(extracted.seasonGuidance?.episodeStructureMode).toBe('standard');
+    expect(extracted.seasonGuidance?.informationLedger).toContain('info-ledger');
+    expect(extracted.seasonGuidance?.arcPlan).toContain('ledger is evidence or bait');
+    expect(extracted.episodes[1]?.dramaticQuestion).toContain('Will Mara take');
+    expect(extracted.episodes[1]?.arcLabel).toBe('The Harbor Debt');
+    expect(extracted.episodes[1]?.aPressure).toContain('missing ledger');
+    expect(extracted.episodes[1]?.bPressure).toContain('Jonas');
+    expect(extracted.episodes[1]?.cSeed).toContain('red wax');
+    expect(extracted.episodes[1]?.stakesLayers?.join(' ')).toContain('Identity');
+    expect(extracted.episodes[1]?.themePressure).toContain('truth cost');
+    expect(extracted.episodes[1]?.liePressure).toContain('controlling every secret');
+    expect(extracted.episodes[1]?.informationMovement).toContain('Plant the seal');
+    expect(extracted.episodes[1]?.endingTurnout).toContain('Mara');
+    expect(extracted.episodes[1]?.endStateChange).toContain('outside');
+    expect(extracted.endings).toHaveLength(3);
+  });
+
+  it('extracts sceneEpisode treatment fields and marks the treatment as sceneEpisodes', () => {
+    const sceneEpisodeTreatment = `
+# Harbor Debt SceneEpisode Treatment
+
+## 1. Story Premise
+
+This is the SCENEEPISODE version.
+
+## 6. Information Ledger
+
+- ID: info-seal
+- Introduced sceneEpisode: 1
+- Setup touch sceneEpisodes: 2, 4
+- Planned reveal or payoff sceneEpisode: 7
+
+## 9. SceneEpisode Outline
+
+### SceneEpisode 1: The Auction Bell
+
+- **Act:** Act 1
+- **Arc:** The Harbor Debt
+- **Structural role:** Hook
+- **SceneEpisode dramatic question:** Will Mara make herself visible to save the ledger?
+- **Opening image / hook function:** The auction bell rings with no one touching it.
+- **Entry goal:** Buy the fish crate quietly.
+- **Obstacle:** The syndicate bids with Jonas's family ring.
+- Forced choice: Publicly challenge the bid or let the crate disappear.
+- **Exit shift:** Mara leaves exposed as a bidder and implicated as a daughter.
+- **Stakes layers present:** Material: ledger access; Relational: Jonas's trust; Identity: whether Mara hides or stands visible.
+- **Theme pressure:** What does truth demand in public?
+- **Lie pressure:** Mara believes invisibility keeps people safe.
+- **A pressure:** Secure the ledger.
+- **B pressure:** Preserve Jonas's trust.
+- **C seed:** The red wax seal.
+- **Information movement:** Plant the seal and open the brother question.
+- **Meaningful choice pressure:** Challenge the bid or use Jonas's secret.
+- **Alternative path or branchlet:** Challenge creates public suspicion; secrecy creates private debt.
+- **Consequence residue:** The auctioneer now knows Mara's father's name.
+- **Visual anchor:** A red seal stuck to a wet ledger page.
+- **Why the next sceneEpisode exists because of this one:** The named father forces Mara to visit the closed registry.
+
+## 10. Cross-SceneEpisode Branches And Consequence Chains
+
+### Branch A - Public Bid
+
+The public challenge changes sceneEpisode 3's access and reconverges at the registry.
+
+## 13. Alternate Endings
+
+### Ending 1 - "The Witness"
+- **Summary:** Mara publishes the names.
+- **Emotional register:** Bittersweet.
+- **Theme payoff:** Truth shared is less poisonous.
+- **State drivers:** Identity.
+- **Target conditions:** Choose public truth.
+
+### Ending 2 - "The Fixer"
+- **Summary:** Mara controls the names.
+- **Emotional register:** Corrupted.
+- **Theme payoff:** Control repeats the wound.
+- **State drivers:** Choice pattern.
+- **Target conditions:** Hide evidence.
+
+### Ending 3 - "The Debt Paid"
+- **Summary:** Mara loses the license but saves Jonas.
+- **Emotional register:** Redemptive.
+- **Theme payoff:** Love accepts cost.
+- **State drivers:** Relationship.
+- **Target conditions:** Protect Jonas and expose the syndicate.
+`;
+
+    const extracted = extractTreatmentFromMarkdown(sceneEpisodeTreatment);
+
+    expect(extracted.isTreatment).toBe(true);
+    expect(extracted.seasonGuidance?.episodeStructureMode).toBe('sceneEpisodes');
+    expect(extracted.seasonGuidance?.informationLedger).toContain('info-seal');
+    expect(extracted.episodes[1]?.dramaticQuestion).toContain('make herself visible');
+    expect(extracted.episodes[1]?.entryGoal).toContain('fish crate');
+    expect(extracted.episodes[1]?.obstacle).toContain('family ring');
+    expect(extracted.episodes[1]?.forcedChoice).toContain('challenge');
+    expect(extracted.episodes[1]?.exitShift).toContain('exposed');
+    expect(extracted.episodes[1]?.consequenceResidue).toContain('father');
+    expect(extracted.episodes[1]?.nextEpisodeCausality).toContain('closed registry');
+    expect(extracted.episodes[1]?.visualAnchor).toContain('red seal');
+    expect(extracted.branches[0]?.name).toContain('Public Bid');
+    expect(extracted.endings).toHaveLength(3);
+  });
+
   it('detects malformed treatment-like input and blocks silent generic fallback', () => {
     const malformedTreatment = `
 # Bite Me Story Treatment

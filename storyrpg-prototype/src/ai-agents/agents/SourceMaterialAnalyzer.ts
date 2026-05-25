@@ -27,6 +27,7 @@ import {
   CharacterFashionStyle,
   CharacterArchitecture,
   CharacterArcMode,
+  TreatmentSeasonGuidance,
   StructuralRole,
   SEVEN_POINT_BEATS,
 } from '../../types/sourceAnalysis';
@@ -64,20 +65,25 @@ function buildTreatmentInputNotice(sourceText: string): string {
   if (!treatment.isTreatment) return '';
   const episodeCount = Object.keys(treatment.episodes).length;
   const endingCount = treatment.endings.length;
+  const treatmentMode = treatment.seasonGuidance?.episodeStructureMode || 'standard';
+  const parsedSections = treatment.seasonGuidance?.rawSectionSummary?.join(', ') || 'episode guidance';
   return `
 ## StoryRPG Treatment Input Detected
 
 The supplied document is a user-authored StoryRPG treatment, not generic prose source material. Treat its episode outline, structural roles, encounter guidance, branch guidance, and endings as authored planning constraints.
 
 - Preserve the treatment's episode count/order/titles unless an explicit user instruction overrides them.
+- Treatment structure mode: ${treatmentMode === 'sceneEpisodes' ? 'sceneEpisodes. Each parsed unit is already a one-scene runtime episode; do not split it again.' : 'regular episodes.'}
 - Preserve episode turns as planning intent for scenes/keyBeats; do not create a new runtime episode-turn schema.
+- Preserve sceneEpisode fields when present: entry goal, obstacle, forced choice, exit shift, consequence residue, information movement, visual anchor, and why the next sceneEpisode exists.
+- Preserve season-level treatment sections when present: season promise, character architecture, stakes architecture, information ledger, arc plan, branch/consequence chains, fail-forward, endings, and failure-mode audit.
 - Preserve encounter anchors and make each encounter manifest the episode's central conflict through play.
 - Preserve aftermath/consequence, ending pressure, and finale resolution/aftermath guidance.
 - Preserve authored branches and exactly authored endings when present.
 - Infer missing characters, locations, anchors, and style only where the treatment leaves gaps.
-- Use the canonical StoryRPG scene range: 3-6 scenes per episode.
+- Use the canonical StoryRPG scene range: ${treatmentMode === 'sceneEpisodes' ? '1 scene per sceneEpisode.' : '3-6 scenes per episode.'}
 
-Detected treatment metadata: ${treatment.metadata.formatVersion}, ${treatment.metadata.confidence} confidence, ${episodeCount} episode(s), ${endingCount} ending(s).
+Detected treatment metadata: ${treatment.metadata.formatVersion}, ${treatment.metadata.confidence} confidence, ${episodeCount} parsed unit(s), ${endingCount} ending(s), parsed sections: ${parsedSections}.
 `;
 }
 
@@ -200,6 +206,12 @@ interface StoryStructureAnalysis {
       targetConditions?: string[];
     }>;
   };
+}
+
+function summarizeTreatmentSeasonGuidance(guidance?: TreatmentSeasonGuidance): string {
+  if (!guidance) return '';
+  const sections = guidance.rawSectionSummary?.join(', ') || 'season treatment sections';
+  return `Treatment season guidance detected (${guidance.episodeStructureMode}): ${sections}`;
 }
 
 interface EpisodeBreakdownResponse {
@@ -356,8 +368,11 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
         episodeBreakdown
       );
 
-      if (input.preferences?.episodeStructureMode === 'sceneEpisodes') {
+      const treatmentAlreadySceneEpisodes = analysis.treatmentSeasonGuidance?.episodeStructureMode === 'sceneEpisodes';
+      if (input.preferences?.episodeStructureMode === 'sceneEpisodes' && !treatmentAlreadySceneEpisodes) {
         this.normalizeAnalysisForSceneEpisodes(analysis);
+      } else if (treatmentAlreadySceneEpisodes) {
+        this.markTreatmentSceneEpisodes(analysis);
       }
 
       return {
@@ -428,6 +443,20 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
         start: Math.max(1, Math.floor(startRatio * expanded.length) + 1),
         end: Math.max(1, Math.ceil(endRatio * expanded.length)),
       };
+    }
+  }
+
+  private markTreatmentSceneEpisodes(analysis: SourceMaterialAnalysis): void {
+    for (const outline of analysis.episodeBreakdown) {
+      outline.episodeStructureMode = 'sceneEpisodes';
+      outline.routeMeta = {
+        kind: 'master',
+        spineIndex: outline.episodeNumber,
+        displayLabel: `${outline.episodeNumber}`,
+        isMilestoneEncounter: false,
+      };
+      outline.estimatedSceneCount = 1;
+      outline.estimatedChoiceCount = Math.max(1, Math.min(outline.estimatedChoiceCount || 1, 2));
     }
   }
 
@@ -767,6 +796,7 @@ Return ONLY valid JSON.
   ): SourceMaterialAnalysis {
     const sourceText = input.sourceText || '';
     const treatment = extractTreatmentFromMarkdown(sourceText);
+    const treatmentSeasonGuidance = treatment.seasonGuidance;
     if (looksLikeTreatmentMarkdown(sourceText) && Object.keys(treatment.episodes).length === 0) {
       throw new Error(
         'Treatment extraction failed: source looks like a StoryRPG treatment, but no episode guidance could be parsed. ' +
@@ -855,8 +885,13 @@ Return ONLY valid JSON.
         mainCharacters: ep.mainCharacters,
         supportingCharacters: [],
         locations: ep.locations,
-        estimatedSceneCount: clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode),
-        estimatedChoiceCount: input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode,
+        estimatedSceneCount: treatmentSeasonGuidance?.episodeStructureMode === 'sceneEpisodes'
+          ? 1
+          : clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode),
+        estimatedChoiceCount: treatmentSeasonGuidance?.episodeStructureMode === 'sceneEpisodes'
+          ? Math.max(1, Math.min(input.preferences?.targetChoicesPerEpisode || 1, 2))
+          : input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode,
+        episodeStructureMode: treatmentSeasonGuidance?.episodeStructureMode,
         structuralRole,
         narrativeFunction: ep.narrativeArc,
         treatmentGuidance: treatment.episodes[ep.episodeNumber],
@@ -1009,6 +1044,7 @@ Return ONLY valid JSON.
       episodeBreakdown: episodeOutlines,
       totalEstimatedEpisodes: totalEpisodes,
       treatmentBranches: treatment.branches.length > 0 ? treatment.branches : undefined,
+      treatmentSeasonGuidance,
 
       protagonist: {
         id: protagonistId,
@@ -1023,7 +1059,11 @@ Return ONLY valid JSON.
 
       analysisTimestamp: new Date(),
       confidenceScore,
-      warnings: treatment.metadata.warnings.length > 0 ? [...warnings, ...treatment.metadata.warnings] : warnings,
+      warnings: [
+        ...warnings,
+        ...treatment.metadata.warnings,
+        ...(treatmentSeasonGuidance ? [summarizeTreatmentSeasonGuidance(treatmentSeasonGuidance)] : []),
+      ],
       directLanguageFragments: normalizeDirectLanguageFragments(structure.directLanguageFragments),
       adaptationGuidance: normalizeAdaptationGuidance(structure.adaptationGuidance),
     };

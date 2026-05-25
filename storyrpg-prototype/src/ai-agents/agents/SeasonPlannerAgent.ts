@@ -238,6 +238,20 @@ Your plans must define:
     const distributionHint = describeDistribution(distributeSevenPoints(analysis.totalEstimatedEpisodes));
 
     const isSceneEpisodes = preferences?.episodeStructureMode === 'sceneEpisodes';
+    const treatmentMode = analysis.treatmentSeasonGuidance?.episodeStructureMode;
+    const effectiveSceneEpisodes = isSceneEpisodes || treatmentMode === 'sceneEpisodes';
+    const treatmentSeasonBlock = analysis.treatmentSeasonGuidance ? `
+## Authored Treatment Season Guidance
+The source document is a StoryRPG treatment. Preserve these authored sections as planning constraints; do not treat them as optional flavor.
+- Treatment mode: ${analysis.treatmentSeasonGuidance.episodeStructureMode}
+- Parsed sections: ${analysis.treatmentSeasonGuidance.rawSectionSummary?.join(', ') || 'season guidance'}
+${analysis.treatmentSeasonGuidance.seasonPromiseAndDramaticEngine ? `\n### Season Promise / Dramatic Engine\n${analysis.treatmentSeasonGuidance.seasonPromiseAndDramaticEngine}` : ''}
+${analysis.treatmentSeasonGuidance.stakesArchitecture ? `\n### Stakes Architecture\n${analysis.treatmentSeasonGuidance.stakesArchitecture}` : ''}
+${analysis.treatmentSeasonGuidance.informationLedger ? `\n### Information Ledger\n${analysis.treatmentSeasonGuidance.informationLedger}` : ''}
+${analysis.treatmentSeasonGuidance.arcPlan ? `\n### Arc Plan\n${analysis.treatmentSeasonGuidance.arcPlan}` : ''}
+${analysis.treatmentSeasonGuidance.branchAndConsequenceChains ? `\n### Branch / Consequence Chains\n${analysis.treatmentSeasonGuidance.branchAndConsequenceChains}` : ''}
+${analysis.treatmentSeasonGuidance.failureModeAudit ? `\n### Failure Mode Audit\n${analysis.treatmentSeasonGuidance.failureModeAudit}` : ''}
+` : '';
     return `
 Create a comprehensive MASTER SEASON PLAN for this interactive fiction series.
 This plan is the BLUEPRINT that guides ALL episode generation - encounters, branches, and consequences.
@@ -279,7 +293,7 @@ Use the source analysis as the authority, but learn from reusable structure:
 - Define each arc as a 3-8 episode pressure movement inside the season, not a competing act schema. The season 7-point spine is authoritative; arc architecture explains how a smaller question escalates, recontextualizes, hits a late crisis, resolves, and hands off pressure.
 - Episode endings inside an arc are arc turn-outs, not literal TV acts. Each must escalate, reverse, reveal, cost, force a choice, recontextualize, crisis-hit, finale-answer, or hand off pressure. Do not end an arc episode with a flat transition.
 - Each arc needs: arcQuestion, seasonQuestionRelation, identityPressureFacet, midpointRecontextualization, lateArcCrisis, finaleAnswer, episodeTurnouts, and handoffPressure when the arc does not end the season. The midpoint must change the question being asked, not merely intensify danger. The late crisis should be apparent failure, irreversible cost, or collapse of the current plan, not mandatory genre-inappropriate despair.
-- In sceneEpisodes mode, an arc is a chain of scene-length runtime episodes. Do not force each sceneEpisode to carry a whole arc by itself; distribute arc setup, recontextualization, crisis, finale, and handoff across the sceneEpisode chain.
+- In sceneEpisodes mode, an arc is a chain of scene-length runtime episodes. Do not force each sceneEpisode to carry a whole arc by itself; distribute arc setup, recontextualization, crisis, finale, and handoff across the sceneEpisode chain. If the source treatment is already a sceneEpisode treatment, each listed sceneEpisode is already one runtime episode and must not be split again.
 - Define Season Promise Architecture without adding fixed TV episode positions. Include one seasonDramaticQuestion, one centralPressure that can be a person/institution/mystery/environment/relationship/internal force/situation, a seasonPromise that names premise/player/emotional promises, and seasonCompleteness that explains how this season satisfies as a complete story while leaving earned future pressure.
 - Episode 1 should establish the premise, player role, protagonist pressure, dramatic engine, and promise of play. Episode 2 may clarify the repeatable engine when season length allows, but do NOT force a rigid re-pilot. Do NOT force penultimate climax or fixed tent-pole episode numbers; the season 7-point distribution remains authoritative.
 - Build an Information Ledger for major questions, threats, secrets, reveals, and payoffs. Use suspense/dramatic irony by default when the player can know the threat without breaking POV. Mystery is capped at 3 box questions per season. For major payoffs, plants should be 3-4 standard episodes ahead or 5-8 sceneEpisodes ahead unless the season is shorter than the runway.
@@ -298,7 +312,7 @@ ${analysis.schemaAbstraction ? `## Reusable Pattern Abstraction
 - Mode: ${analysis.schemaAbstraction.adaptationMode}
 - Pattern: ${analysis.schemaAbstraction.reusablePatternSummary}
 - Guidance: ${analysis.schemaAbstraction.generalizationGuidance.join('; ')}
-` : ''}${SEASON_PLANNER_CRAFT_EXAMPLE}
+` : ''}${treatmentSeasonBlock}${SEASON_PLANNER_CRAFT_EXAMPLE}
 
 ## Episode Breakdown
 ${episodeSummaries}
@@ -322,11 +336,11 @@ ${analysis.characterArchitecture ? `- Lie: ${analysis.characterArchitecture.prot
 ` : ''}
 
 ## User Preferences
-- Episode structure mode: ${isSceneEpisodes ? 'sceneEpisodes (one runtime episode = one dramatic scene)' : 'standard'}
-- Scenes per episode: ${isSceneEpisodes ? 1 : clampSceneCount(preferences?.targetScenesPerEpisode || 6)}
+- Episode structure mode: ${effectiveSceneEpisodes ? 'sceneEpisodes (one runtime episode = one dramatic scene)' : 'standard'}
+- Scenes per episode: ${effectiveSceneEpisodes ? 1 : clampSceneCount(preferences?.targetScenesPerEpisode || 6)}
 - Choices per episode: ${preferences?.targetChoicesPerEpisode || 3}
 - Pacing: ${preferences?.pacing || 'moderate'}
-${isSceneEpisodes ? `- Scene-length episode rules: exactly 1 scene per runtime episode; normal episodes need 6-10 beats, target 8; every episode ends with a cliffhanger or forward-pressure hook; milestone encounters happen every ${preferences?.sceneEpisodeEncounterCadence || 6} master-spine episodes; branch paths last ${preferences?.sceneEpisodeBranchMinEpisodes || 1}-${preferences?.sceneEpisodeBranchMaxEpisodes || 2} episodes before reconverging.
+${effectiveSceneEpisodes ? `- Scene-length episode rules: exactly 1 scene per runtime episode; normal episodes need 6-10 beats, target 8; every episode ends with a cliffhanger or forward-pressure hook; milestone encounters happen every ${preferences?.sceneEpisodeEncounterCadence || 6} master-spine episodes; branch paths last ${preferences?.sceneEpisodeBranchMinEpisodes || 1}-${preferences?.sceneEpisodeBranchMaxEpisodes || 2} episodes before reconverging.
 ` : ''}
 
 ## Ending Targets
@@ -779,28 +793,49 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       const guidance = ep.treatmentGuidance;
       if (!guidance) continue;
       const epKey = String(ep.episodeNumber);
-      const anchors = guidance.encounterAnchors || [];
+      const anchors = (guidance.encounterAnchors && guidance.encounterAnchors.length > 0)
+        ? guidance.encounterAnchors
+        : [
+            guidance.forcedChoice,
+            guidance.obstacle,
+            guidance.dramaticQuestion,
+            guidance.entryGoal,
+          ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).slice(0, 1);
       if (anchors.length > 0) {
         merged.episodeEncounters![epKey] = anchors.map((anchor, index) => ({
           id: `treatment-enc-${ep.episodeNumber}-${index + 1}`,
           type: this.inferEncounterType(anchor, analysis.genre),
           description: guidance.encounterCentralConflict
             ? `${anchor} Central conflict: ${guidance.encounterCentralConflict}`
+            : guidance.forcedChoice
+              ? `${anchor} Forced choice: ${guidance.forcedChoice}`
             : anchor,
           difficulty: this.inferEncounterDifficulty(ep.episodeNumber, analysis.totalEstimatedEpisodes),
           npcsInvolved: ep.mainCharacters,
-          stakes: guidance.encounterCentralConflict || guidance.episodePromise || ep.narrativeFunction.conflict,
-          centralConflict: guidance.encounterCentralConflict,
-          aftermathConsequence: guidance.encounterAftermath,
+          stakes: guidance.stakesLayers?.join(' | ') || guidance.encounterCentralConflict || guidance.episodePromise || ep.narrativeFunction.conflict,
+          centralConflict: guidance.encounterCentralConflict || guidance.dramaticQuestion || guidance.obstacle,
+          aftermathConsequence: guidance.encounterAftermath || guidance.exitShift || guidance.consequenceResidue,
           relevantSkills: this.inferRelevantSkills(anchor),
-          encounterBuildup: guidance.encounterBuildup,
+          encounterBuildup: guidance.encounterBuildup || guidance.entryGoal || guidance.openingSituation,
           encounterSetupContext: [
+            ...(guidance.dramaticQuestion ? [`question:treatment_ep${ep.episodeNumber} — ${guidance.dramaticQuestion}`] : []),
+            ...(guidance.entryGoal ? [`entry_goal:treatment_ep${ep.episodeNumber} — ${guidance.entryGoal}`] : []),
+            ...(guidance.obstacle ? [`obstacle:treatment_ep${ep.episodeNumber} — ${guidance.obstacle}`] : []),
+            ...(guidance.forcedChoice ? [`forced_choice:treatment_ep${ep.episodeNumber} — ${guidance.forcedChoice}`] : []),
+            ...(guidance.exitShift ? [`exit_shift:treatment_ep${ep.episodeNumber} — ${guidance.exitShift}`] : []),
+            ...(guidance.themePressure ? [`theme:treatment_ep${ep.episodeNumber} — ${guidance.themePressure}`] : []),
+            ...(guidance.liePressure ? [`lie_pressure:treatment_ep${ep.episodeNumber} — ${guidance.liePressure}`] : []),
+            ...(guidance.informationMovement ? [`information:treatment_ep${ep.episodeNumber} — ${guidance.informationMovement}`] : []),
+            ...(guidance.stakesLayers || []).slice(0, 4).map((layer, layerIndex) =>
+              `stakes:treatment_stakes_ep${ep.episodeNumber}_${layerIndex + 1} — ${layer}`
+            ),
             ...(guidance.episodeTurns || []).slice(0, 4).map((turn, turnIndex) =>
               `turn:treatment_turn_ep${ep.episodeNumber}_${turnIndex + 1} — ${turn}`
             ),
             ...(guidance.consequenceSeeds || []).slice(0, 4).map((seed, seedIndex) =>
               `flag:treatment_seed_ep${ep.episodeNumber}_${seedIndex + 1} — ${seed}`
             ),
+            ...(guidance.consequenceResidue ? [`residue:treatment_ep${ep.episodeNumber} — ${guidance.consequenceResidue}`] : []),
             ...(guidance.capabilityGrowthGuidance || []).slice(0, 2).map((growth, growthIndex) =>
               `growth:treatment_growth_ep${ep.episodeNumber}_${growthIndex + 1} — ${growth}`
             ),
@@ -815,12 +850,16 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
         }));
       }
 
-      const endingPressure = guidance.endingPressure || guidance.authoredCliffhanger;
+      const endingPressure = guidance.endingPressure
+        || guidance.authoredCliffhanger
+        || guidance.endingTurnout
+        || guidance.nextEpisodeCausality
+        || guidance.consequenceResidue;
       if (endingPressure && ep.episodeNumber < analysis.totalEstimatedEpisodes) {
         merged.episodeCliffhangers![epKey] = {
           hook: endingPressure,
-          setup: guidance.encounterAftermath || guidance.consequenceSeeds?.join(' | ') || guidance.encounterBuildup || ep.narrativeFunction.conflict,
-          resolvedEpisodeTension: ep.narrativeFunction.resolution,
+          setup: guidance.encounterAftermath || guidance.exitShift || guidance.consequenceSeeds?.join(' | ') || guidance.encounterBuildup || ep.narrativeFunction.conflict,
+          resolvedEpisodeTension: guidance.exitShift || ep.narrativeFunction.resolution,
           newOpenQuestion: endingPressure,
           nextEpisodePressure: endingPressure,
         };
@@ -1088,7 +1127,8 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     if (isSceneEpisodes) {
       for (const ep of analysis.episodeBreakdown) {
         const isMilestone = ep.episodeNumber % encounterCadence === 0;
-        if (!isMilestone) {
+        const hasAuthoredTreatmentEncounter = Boolean(ep.treatmentGuidance && episodeEncountersMap[ep.episodeNumber]?.length);
+        if (!isMilestone && !hasAuthoredTreatmentEncounter) {
           episodeEncountersMap[ep.episodeNumber] = [];
           continue;
         }

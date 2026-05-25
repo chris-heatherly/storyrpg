@@ -258,22 +258,62 @@ export interface StoryEndingTarget {
 export interface TreatmentEpisodeGuidance {
   authoredTitle?: string;
   actLabel?: string;
+  arcLabel?: string;
   rawStructuralRole?: string;
   normalizedStructuralRoles?: StructuralRole[];
+  dramaticQuestion?: string;
   episodePromise?: string;
+  coldOpenFunction?: string;
+  openingImage?: string;
   episodeTurns?: string[];
+  synopsis?: string;
+  openingSituation?: string;
   toneRegister?: string;
   encounterAnchors?: string[];
   encounterCentralConflict?: string;
   encounterBuildup?: string;
   encounterAftermath?: string;
+  stakesLayers?: string[];
+  themePressure?: string;
+  liePressure?: string;
+  aPressure?: string;
+  bPressure?: string;
+  cSeed?: string;
+  entryGoal?: string;
+  obstacle?: string;
+  forcedChoice?: string;
+  exitShift?: string;
+  powerShift?: string;
+  subtextGap?: string;
+  informationMovement?: string;
   majorChoicePressures?: string[];
   alternativePaths?: string[];
   consequenceSeeds?: string[];
+  consequenceResidue?: string;
+  visualAnchor?: string;
+  endingTurnout?: string;
   endingPressure?: string;
   authoredCliffhanger?: string;
+  nextEpisodeCausality?: string;
+  endStateChange?: string;
   resolutionAftermath?: string;
   capabilityGrowthGuidance?: string[];
+}
+
+export interface TreatmentSeasonGuidance {
+  episodeStructureMode: import('./story').EpisodeStructureMode;
+  seasonPromiseAndDramaticEngine?: string;
+  characterArchitecture?: string;
+  stakesArchitecture?: string;
+  informationLedger?: string;
+  seasonSpine?: string;
+  arcPlan?: string;
+  scenePlanningNotes?: string;
+  branchAndConsequenceChains?: string;
+  failForward?: string;
+  endings?: string;
+  failureModeAudit?: string;
+  rawSectionSummary?: string[];
 }
 
 export interface TreatmentBranchGuidance {
@@ -546,6 +586,14 @@ export interface SourceMaterialAnalysis {
    * Authored season-level branch chains extracted from a treatment document.
    */
   treatmentBranches?: TreatmentBranchGuidance[];
+
+  /**
+   * Authored season-level treatment sections extracted from StoryRPG
+   * treatment documents. These are planning constraints for SourceMaterial,
+   * SeasonPlanner, and StoryArchitect prompts; runtime story data still flows
+   * through the canonical episode/scene/beat/choice schema.
+   */
+  treatmentSeasonGuidance?: TreatmentSeasonGuidance;
 
   // Character analysis
   protagonist: {

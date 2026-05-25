@@ -186,4 +186,76 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     );
     expect(plan.episodes[0].cliffhangerPlan.hook).toContain('shadow points inland');
   });
+
+  it('carries sceneEpisode treatment contracts into encounters and cliffhangers without encounter anchors', () => {
+    const planner = makePlanner();
+    const analysis = {
+      ...makeAnalysis(),
+      sourceTitle: 'Harbor Debt',
+      totalEstimatedEpisodes: 1,
+      treatmentSeasonGuidance: {
+        episodeStructureMode: 'sceneEpisodes',
+        informationLedger: 'info-seal',
+        rawSectionSummary: ['informationLedger'],
+      },
+      resolvedEndings: makeAnalysis().resolvedEndings,
+      treatmentBranches: [],
+      episodeBreakdown: [{
+        episodeNumber: 1,
+        title: 'The Auction Bell',
+        synopsis: 'Mara exposes herself at the auction.',
+        sourceChapters: ['1'],
+        sourceSummary: 'Mara exposes herself at the auction.',
+        plotPoints: [],
+        mainCharacters: ['Mara'],
+        supportingCharacters: [],
+        locations: ['Harbor'],
+        estimatedSceneCount: 1,
+        estimatedChoiceCount: 2,
+        episodeStructureMode: 'sceneEpisodes',
+        structuralRole: ['hook'],
+        narrativeFunction: { setup: 'auction', conflict: 'bid', resolution: 'registry' },
+        treatmentGuidance: {
+          authoredTitle: 'The Auction Bell',
+          dramaticQuestion: 'Will Mara make herself visible to save the ledger?',
+          entryGoal: 'Buy the fish crate quietly.',
+          obstacle: 'The syndicate bids with Jonas family ring.',
+          forcedChoice: 'Publicly challenge the bid or let the crate disappear.',
+          exitShift: 'Mara leaves exposed as a bidder.',
+          stakesLayers: ['Material: ledger access', 'Relational: Jonas trust', 'Identity: visibility'],
+          themePressure: 'What does truth demand in public?',
+          liePressure: 'Mara believes invisibility keeps people safe.',
+          informationMovement: 'Plant the seal and open the brother question.',
+          consequenceResidue: 'The auctioneer now knows Mara father name.',
+          nextEpisodeCausality: 'The named father forces Mara to visit the closed registry.',
+          majorChoicePressures: ['Challenge the bid or use Jonas secret.'],
+          alternativePaths: ['Challenge creates public suspicion; secrecy creates private debt.'],
+        },
+      }],
+    } as any;
+
+    const merged = (planner as any).mergeTreatmentGuidanceIntoPlanData(analysis, {});
+    const plan = (planner as any).buildSeasonPlan(analysis, merged, {
+      episodeStructureMode: 'sceneEpisodes',
+      targetScenesPerEpisode: 1,
+      targetChoicesPerEpisode: 2,
+      pacing: 'tight',
+    });
+
+    const encounter = plan.episodes[0].plannedEncounters[0];
+    expect(plan.episodes[0].episodeStructureMode).toBe('sceneEpisodes');
+    expect(encounter.description).toContain('Forced choice');
+    expect(encounter.centralConflict).toContain('make herself visible');
+    expect(encounter.stakes).toContain('Material: ledger access');
+    expect(encounter.aftermathConsequence).toContain('Mara leaves exposed');
+    expect(encounter.encounterSetupContext).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('entry_goal:treatment_ep1'),
+        expect.stringContaining('forced_choice:treatment_ep1'),
+        expect.stringContaining('information:treatment_ep1'),
+        expect.stringContaining('residue:treatment_ep1'),
+      ]),
+    );
+    expect(plan.episodes[0].plannedEncounters[0].isBranchPoint).toBe(true);
+  });
 });

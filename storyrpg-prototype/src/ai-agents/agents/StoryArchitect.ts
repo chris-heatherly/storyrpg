@@ -950,6 +950,58 @@ export class StoryArchitect extends BaseAgent {
     );
   }
 
+  private collectAuthoredResidue(guidance: TreatmentEpisodeGuidance | undefined): string[] {
+    if (!guidance) return [];
+
+    return Array.from(new Set([
+      ...(guidance.alternativePaths || []),
+      ...(guidance.consequenceSeeds || []),
+      guidance.consequenceResidue,
+    ].map((value) => value?.trim()).filter(Boolean) as string[]));
+  }
+
+  private repairTreatmentResidue(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    const authoredResidue = this.collectAuthoredResidue(guidance);
+    if (authoredResidue.length === 0) return;
+
+    blueprint.narrativePromises = Array.isArray(blueprint.narrativePromises)
+      ? blueprint.narrativePromises
+      : [];
+
+    const setupScene = blueprint.startingSceneId || blueprint.scenes?.[0]?.id || `episode-${input.episodeNumber}`;
+    for (const residue of authoredResidue) {
+      const alreadyPromised = blueprint.narrativePromises.some((promise) =>
+        promise.description?.includes(residue)
+      );
+      if (!alreadyPromised) {
+        blueprint.narrativePromises.push({
+          description: `Treatment residue to carry forward: ${residue}`,
+          setupScene,
+          importance: 'moderate',
+        });
+      }
+    }
+
+    const choiceScene = blueprint.scenes?.find((scene) => scene.choicePoint);
+    if (!choiceScene?.choicePoint) return;
+
+    choiceScene.choicePoint.expectedResidue = Array.from(new Set([
+      ...(choiceScene.choicePoint.expectedResidue || []),
+      ...authoredResidue,
+    ]));
+
+    choiceScene.choicePoint.reminderPlan = {
+      immediate: choiceScene.choicePoint.reminderPlan?.immediate
+        || `Show immediate residue from the authored path: ${authoredResidue[0]}`,
+      shortTerm: choiceScene.choicePoint.reminderPlan?.shortTerm
+        || `Keep this authored residue visible after reconvergence: ${authoredResidue[0]}`,
+      ...(choiceScene.choicePoint.reminderPlan?.later
+        ? { later: choiceScene.choicePoint.reminderPlan.later }
+        : { later: `Future scenes should remember: ${authoredResidue[0]}` }),
+    };
+  }
+
   private validatePlannedEncounterCoverage(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const plannedEncounters = input.seasonPlanDirectives?.plannedEncounters || [];
     if (plannedEncounters.length === 0) return;
@@ -1472,6 +1524,7 @@ REQUIREMENTS:
       this.repairChoiceDensity(blueprint, input);
       this.repairPlannedEncounterCoverage(blueprint, input);
       this.repairSceneGraphBranchCoverage(blueprint);
+      this.repairTreatmentResidue(blueprint, input);
 
       // Log choice point info BEFORE validation
       const scenesWithChoices = blueprint.scenes?.filter(s => s.choicePoint) || [];

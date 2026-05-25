@@ -2,8 +2,9 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { loadConfig } from '../config';
-import { ImageGenerationService } from '../services/imageGenerationService';
+import { ImageGenerationService, type ReferenceImage } from '../services/imageGenerationService';
 import type { ImagePrompt } from '../images/imageTypes';
+import type { ImageProvider } from '../config';
 
 type RegenerationPayload = {
   resultPath: string;
@@ -16,6 +17,11 @@ type RegenerationPayload = {
     reasons?: string[];
     rating?: 'positive' | 'negative';
   };
+};
+
+type SavedReferenceMeta = Partial<ReferenceImage> & {
+  uri?: string;
+  localPath?: string;
 };
 
 /**
@@ -59,18 +65,6 @@ const FEEDBACK_REASON_PROMPT: Record<string, { directive: string; negative?: str
   texture_mood_mismatch: { directive: 'Choose a surface texture treatment consistent with the scene mood.' },
 };
 
-function toLocalPath(imageUrl: string): string | null {
-  if (!imageUrl) return null;
-  if (imageUrl.startsWith('generated-stories/')) {
-    return path.resolve(process.cwd(), imageUrl);
-  }
-  const generatedIdx = imageUrl.indexOf('/generated-stories/');
-  if (generatedIdx >= 0) {
-    return path.resolve(process.cwd(), imageUrl.slice(generatedIdx + 1));
-  }
-  return null;
-}
-
 function applyFeedbackToPrompt(
   prompt: ImagePrompt,
   feedback?: RegenerationPayload['feedback'],
@@ -113,7 +107,12 @@ function applyFeedbackToPrompt(
   };
 }
 
-async function readPromptPayload(promptPath?: string): Promise<{ prompt: ImagePrompt; metadata?: Record<string, unknown>; identifier?: string }> {
+async function readPromptPayload(promptPath?: string): Promise<{
+  prompt: ImagePrompt;
+  metadata?: Record<string, unknown>;
+  identifier?: string;
+  references?: SavedReferenceMeta[];
+}> {
   if (!promptPath) throw new Error('Missing promptPath for image regeneration');
   const raw = await fs.readFile(promptPath, 'utf8');
   const parsed = JSON.parse(raw);
@@ -125,23 +124,142 @@ async function readPromptPayload(promptPath?: string): Promise<{ prompt: ImagePr
     prompt,
     metadata: parsed?.metadata,
     identifier: parsed?.identifier,
+    references: Array.isArray(parsed?.references)
+      ? parsed.references
+      : Array.isArray(parsed?.metadata?.referenceThumbnails)
+        ? parsed.metadata.referenceThumbnails
+        : undefined,
   };
 }
 
-async function readImageAsBase64(imageUrl: string): Promise<{ data: string; mimeType: string } | null> {
-  const localPath = toLocalPath(imageUrl);
-  if (!localPath) return null;
-  const file = await fs.readFile(localPath);
-  const ext = path.extname(localPath).toLowerCase();
-  const mimeType = ext === '.jpg' || ext === '.jpeg'
-    ? 'image/jpeg'
-    : ext === '.webp'
-      ? 'image/webp'
-      : 'image/png';
+function normalizeProvider(provider: unknown): ImageProvider | undefined {
+  const value = String(provider || '').trim();
+  if (!value) return undefined;
+  if (value === 'openai') return 'dall-e';
+  if (value === 'gemini') return 'nano-banana';
+  if (['nano-banana', 'atlas-cloud', 'midapi', 'useapi', 'dall-e', 'stable-diffusion', 'placeholder'].includes(value)) {
+    return value as ImageProvider;
+  }
+  return undefined;
+}
+
+function resolveOriginalProviderModel(
+  metadata: Record<string, unknown>,
+  fallback: ReturnType<typeof loadConfig>,
+): { provider: ImageProvider | undefined; model: string | undefined; usedFallback: boolean } {
+  const provider = normalizeProvider(metadata.effectiveProvider)
+    || normalizeProvider(metadata.requestedProvider)
+    || normalizeProvider(fallback.imageGen?.provider);
+  const model = String(metadata.effectiveModel || metadata.requestedModel || '').trim()
+    || (provider === 'dall-e'
+      ? fallback.imageGen?.openaiImageModel
+      : provider === 'nano-banana'
+        ? fallback.imageGen?.model
+        : provider === 'atlas-cloud'
+          ? fallback.imageGen?.atlasCloudModel
+          : provider === 'stable-diffusion'
+            ? fallback.imageGen?.stableDiffusion?.defaultModel
+            : undefined);
   return {
-    data: file.toString('base64'),
-    mimeType,
+    provider,
+    model: model || undefined,
+    usedFallback: !metadata.effectiveProvider && !metadata.requestedProvider,
   };
+}
+
+function mimeTypeForPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  return 'image/png';
+}
+
+function toReferenceLocalPath(value: string | undefined, promptPath: string): string | null {
+  if (!value) return null;
+  if (value.startsWith('data:')) return null;
+  if (path.isAbsolute(value)) return value;
+  const generatedIdx = value.indexOf('/generated-stories/');
+  if (generatedIdx >= 0) return path.resolve(process.cwd(), value.slice(generatedIdx + 1));
+  if (value.startsWith('generated-stories/')) return path.resolve(process.cwd(), value);
+  return path.resolve(path.dirname(promptPath), value);
+}
+
+function safeReferenceKey(ref: SavedReferenceMeta, fallbackIndex: number): string {
+  const dedupeKey = `${ref.characterName || ref.role || 'reference'}:${ref.viewType || 'ref'}`;
+  return dedupeKey.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || String(fallbackIndex);
+}
+
+async function readReferenceFile(
+  filePath: string | null,
+  ref: SavedReferenceMeta,
+): Promise<ReferenceImage | null> {
+  if (!filePath) return null;
+  try {
+    const data = await fs.readFile(filePath);
+    return {
+      data: data.toString('base64'),
+      mimeType: ref.mimeType || mimeTypeForPath(filePath),
+      role: ref.role || 'reference',
+      governs: ref.governs,
+      prohibited: ref.prohibited,
+      characterId: ref.characterId,
+      characterName: ref.characterName,
+      viewType: ref.viewType,
+      visualAnchors: ref.visualAnchors,
+      purpose: ref.purpose,
+      url: ref.url,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function restoreReferenceImages(
+  promptPath: string | undefined,
+  identifier: string,
+  promptPayload: Awaited<ReturnType<typeof readPromptPayload>>,
+): Promise<ReferenceImage[] | undefined> {
+  if (!promptPath) return undefined;
+  const metadata = (promptPayload.metadata || {}) as Record<string, any>;
+  const rawRefs: SavedReferenceMeta[] = [
+    ...(Array.isArray(promptPayload.references) ? promptPayload.references : []),
+    ...(Array.isArray(metadata.effectiveReferences) ? metadata.effectiveReferences : []),
+    ...(Array.isArray(metadata.inputReferences) ? metadata.inputReferences : []),
+    ...(Array.isArray(metadata.referenceThumbnails) ? metadata.referenceThumbnails : []),
+  ];
+  if (rawRefs.length === 0) return undefined;
+
+  const outputDir = path.resolve(path.dirname(promptPath), '..');
+  const previewsDir = path.join(outputDir, 'job-reference-previews');
+  let previewFiles: string[] = [];
+  try {
+    previewFiles = await fs.readdir(previewsDir);
+  } catch {
+    previewFiles = [];
+  }
+
+  const restored: ReferenceImage[] = [];
+  const seen = new Set<string>();
+  for (const ref of rawRefs) {
+    const key = `${ref.role || ''}:${ref.characterId || ''}:${ref.characterName || ''}:${ref.viewType || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    let localPath = toReferenceLocalPath(ref.localPath || ref.uri || ref.url, promptPath);
+    if (!localPath) {
+      const safeKey = safeReferenceKey(ref, restored.length);
+      const match = previewFiles.find((file) => (
+        file.startsWith(`${identifier}-${safeKey}.`) ||
+        file.startsWith(`${identifier}-${safeKey}-`)
+      ));
+      if (match) localPath = path.join(previewsDir, match);
+    }
+
+    const loaded = await readReferenceFile(localPath, ref);
+    if (loaded) restored.push(loaded);
+  }
+
+  return restored.length > 0 ? restored : undefined;
 }
 
 async function main() {
@@ -151,16 +269,27 @@ async function main() {
   const payload = JSON.parse(payloadRaw) as RegenerationPayload;
 
   const promptPayload = await readPromptPayload(payload.promptPath);
-  const baseImage = await readImageAsBase64(payload.imageUrl);
   const originalMetadata = (payload.metadata || promptPayload.metadata || {}) as Record<string, unknown>;
   const originalIdentifier = payload.identifier || promptPayload.identifier || 'image';
   const outputDir = payload.promptPath ? path.resolve(path.dirname(payload.promptPath), '..') : path.resolve(process.cwd(), 'generated-stories');
 
   const config = loadConfig();
+  const imageGenConfig = config.imageGen || {};
+  const original = resolveOriginalProviderModel(originalMetadata, config);
+  if (original.usedFallback) {
+    console.warn(`[RegenerateImage] Prompt metadata did not include original provider/model for ${originalIdentifier}; using current config fallback.`);
+  }
   config.outputDir = outputDir;
   config.imageGen = {
-    ...config.imageGen,
+    ...imageGenConfig,
     enabled: true,
+    provider: original.provider || imageGenConfig.provider,
+    model: original.provider === 'nano-banana' && original.model ? original.model : imageGenConfig.model,
+    openaiImageModel: original.provider === 'dall-e' && original.model ? original.model : imageGenConfig.openaiImageModel,
+    atlasCloudModel: original.provider === 'atlas-cloud' && original.model ? original.model : imageGenConfig.atlasCloudModel,
+    stableDiffusion: original.provider === 'stable-diffusion' && original.model
+      ? { ...imageGenConfig.stableDiffusion, defaultModel: original.model }
+      : imageGenConfig.stableDiffusion,
   };
 
   const imageService = new ImageGenerationService({
@@ -180,19 +309,20 @@ async function main() {
 
   const modifiedPrompt = applyFeedbackToPrompt(promptPayload.prompt, payload.feedback);
   const newIdentifier = `${originalIdentifier}-rerender-${Date.now()}`;
+  const restoredReferences = await restoreReferenceImages(payload.promptPath, originalIdentifier, promptPayload);
 
-  const result = (
-    config.imageGen.provider === 'nano-banana' && baseImage
-      ? await imageService.editImage(baseImage, modifiedPrompt, newIdentifier)
-      : await imageService.generateImage(
-          modifiedPrompt,
-          newIdentifier,
-          {
-            ...(originalMetadata as any),
-            type: ((originalMetadata?.type as string) || 'scene') as any,
-            regeneration: Number((originalMetadata as any)?.regeneration || 0) + 1,
-          },
-        )
+  const result = await imageService.generateImage(
+    modifiedPrompt,
+    newIdentifier,
+    {
+      ...(originalMetadata as any),
+      type: ((originalMetadata?.type as string) || 'scene') as any,
+      regeneration: Number((originalMetadata as any)?.regeneration || 0) + 1,
+      regenerationSourceIdentifier: originalIdentifier,
+      regenerationProvider: config.imageGen.provider,
+      regenerationModel: original.model,
+    },
+    restoredReferences,
   );
 
   await fs.writeFile(payload.resultPath, JSON.stringify({
@@ -200,6 +330,9 @@ async function main() {
     newImageUrl: result.imageUrl,
     imagePath: result.imagePath,
     identifier: newIdentifier,
+    provider: config.imageGen.provider,
+    model: original.model,
+    restoredReferenceCount: restoredReferences?.length || 0,
   }), 'utf8');
 }
 

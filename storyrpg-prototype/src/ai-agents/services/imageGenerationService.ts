@@ -268,6 +268,7 @@ export interface CharacterAppearanceDescription {
 export interface ReferenceThumbnail {
   id: string;
   uri: string;
+  localPath?: string;
   characterName?: string;
   viewType?: string;
   role: string;
@@ -2349,6 +2350,7 @@ export class ImageGenerationService {
       thumbnails.push({
         id: `${identifier}-${thumbnails.length}`,
         uri,
+        localPath: filePath,
         characterName: ref.characterName,
         viewType: ref.viewType,
         role: ref.role,
@@ -2968,6 +2970,7 @@ export class ImageGenerationService {
       hasReferenceSheetStyleAnchor: this.hasReferenceSheetStyleAnchor(),
       styleAnchorSource: (metadata as any)?.styleAnchorSource || (this.hasSeasonStyleReference() ? 'season-style-reference' : undefined),
       referenceAudit,
+      referenceThumbnails,
       inputReferences: (providerInputRefs || []).map((ref) => ({
         role: ref.role,
         characterId: ref.characterId,

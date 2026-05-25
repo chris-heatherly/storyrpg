@@ -1,5 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { View, StyleSheet, Text, useWindowDimensions } from 'react-native';
+import {
+  ActivityIndicator,
+  Modal,
+  TextInput,
+  TouchableOpacity,
+  View,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+} from 'react-native';
 import { Story } from '../../types';
 import {
   ChoiceSystemFilterState,
@@ -12,6 +21,8 @@ import {
   VisualizerMode,
 } from '../types';
 import { TERMINAL } from '../../theme';
+import { PROXY_CONFIG } from '../../config/endpoints';
+import { useImageFeedbackStore } from '../../stores/imageFeedbackStore';
 import { transformStoryToGraph } from '../storyGraphTransformer';
 import { layoutGraph, fitGraphToViewport, zoomToNode } from '../layoutEngine';
 import {
@@ -31,10 +42,12 @@ interface StoryVisualizerProps {
   story: Story;
   onBack: () => void;
   onSwitchToColumns?: () => void;
+  onStoryUpdated?: (story: Story) => void;
 }
 
-export const StoryVisualizer: React.FC<StoryVisualizerProps> = ({ story, onBack, onSwitchToColumns }) => {
+export const StoryVisualizer: React.FC<StoryVisualizerProps> = ({ story, onBack, onSwitchToColumns, onStoryUpdated }) => {
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
+  const addImageFeedback = useImageFeedbackStore((state) => state.addFeedback);
   const [viewState, setViewState] = useState<ViewState>({
     scale: 0.5,
     translateX: 50,
@@ -46,6 +59,10 @@ export const StoryVisualizer: React.FC<StoryVisualizerProps> = ({ story, onBack,
   const [mode, setMode] = useState<VisualizerMode>('author');
   const [filters, setFilters] = useState<ChoiceSystemFilterState>(DEFAULT_CHOICE_SYSTEM_FILTERS);
   const [selectedNpcId, setSelectedNpcId] = useState<string | null>(null);
+  const [correctionNode, setCorrectionNode] = useState<GraphNodeType | null>(null);
+  const [correctionText, setCorrectionText] = useState('');
+  const [regenerationError, setRegenerationError] = useState<string | null>(null);
+  const [isRegeneratingImage, setIsRegeneratingImage] = useState(false);
   const canvasHeight = Math.max(320, viewportHeight - 180);
   const focusedNodeIdRef = useRef<string | null>(null);
   const initializedGraphKeyRef = useRef<string | null>(null);
@@ -75,6 +92,14 @@ export const StoryVisualizer: React.FC<StoryVisualizerProps> = ({ story, onBack,
 
   const jumpShortcuts = useMemo(() => buildJumpShortcuts(graph), [graph]);
   const graphKey = `${story.id}:${graph.nodes.length}:${graph.edges.length}`;
+
+  useEffect(() => {
+    if (!selectedNode) return;
+    const refreshed = findNodeById(graph.nodes, selectedNode.id);
+    if (refreshed && refreshed !== selectedNode) {
+      setSelectedNode(refreshed);
+    }
+  }, [graph.nodes, selectedNode]);
 
   // Initial focus on the opening beat at reader-card scale. This runs only
   // when a different graph is loaded, not when the viewport changes.
@@ -153,6 +178,82 @@ export const StoryVisualizer: React.FC<StoryVisualizerProps> = ({ story, onBack,
     setSelectedNode(null);
     setSelectedEdge(null);
   }, []);
+
+  const handleRejectImage = useCallback((node: GraphNodeType) => {
+    setCorrectionNode(node);
+    setCorrectionText('');
+    setRegenerationError(null);
+  }, []);
+
+  const handleCloseCorrection = useCallback(() => {
+    if (isRegeneratingImage) return;
+    setCorrectionNode(null);
+    setCorrectionText('');
+    setRegenerationError(null);
+  }, [isRegeneratingImage]);
+
+  const handleSubmitCorrection = useCallback(async () => {
+    if (!correctionNode || isRegeneratingImage) return;
+    const notes = correctionText.trim();
+    if (!notes) {
+      setRegenerationError('Describe what should be fixed before regenerating.');
+      return;
+    }
+
+    const beatId = (correctionNode.data as { id?: string })?.id;
+    if (!story.id || !correctionNode.image || !beatId || !correctionNode.sceneId || !correctionNode.episodeId) {
+      setRegenerationError('This beat is missing the IDs needed for regeneration.');
+      return;
+    }
+
+    setIsRegeneratingImage(true);
+    setRegenerationError(null);
+    try {
+      const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/regenerate-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageUrl: correctionNode.image,
+          storyId: story.id,
+          episodeId: correctionNode.episodeId,
+          sceneId: correctionNode.sceneId,
+          beatId,
+          feedback: {
+            rating: 'negative',
+            notes,
+            reasons: ['other'],
+          },
+        }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || `Image regeneration failed (${response.status})`);
+      }
+
+      await addImageFeedback({
+        storyId: story.id,
+        episodeId: correctionNode.episodeId,
+        sceneId: correctionNode.sceneId,
+        beatId,
+        imageUrl: correctionNode.image,
+        rating: 'negative',
+        reasons: ['other'],
+        notes,
+        regenerated: true,
+        regeneratedImageUrl: data.newImageUrl,
+      });
+
+      if (data.story) {
+        onStoryUpdated?.(data.story as Story);
+      }
+      setCorrectionNode(null);
+      setCorrectionText('');
+    } catch (err) {
+      setRegenerationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsRegeneratingImage(false);
+    }
+  }, [addImageFeedback, correctionNode, correctionText, isRegeneratingImage, onStoryUpdated, story.id]);
 
   const handleZoomIn = useCallback(() => {
     zoomAroundFocusNode(1.25);
@@ -235,7 +336,62 @@ export const StoryVisualizer: React.FC<StoryVisualizerProps> = ({ story, onBack,
         selectedEdgeId={selectedEdge?.id || null}
         mode={mode}
         selectedNpcId={selectedNpcId}
+        onRejectImage={handleRejectImage}
       />
+
+      <Modal
+        visible={Boolean(correctionNode)}
+        transparent
+        animationType="fade"
+        onRequestClose={handleCloseCorrection}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.correctionModal}>
+            <Text style={styles.modalEyebrow}>IMAGE REGENERATION</Text>
+            <Text style={styles.modalTitle}>What should change?</Text>
+            <Text style={styles.modalSubtitle} numberOfLines={2}>
+              {correctionNode?.sceneTitle || correctionNode?.sceneId || 'Selected beat'} · {correctionNode?.label || 'Image beat'}
+            </Text>
+            <TextInput
+              style={styles.correctionInput}
+              value={correctionText}
+              onChangeText={setCorrectionText}
+              multiline
+              editable={!isRegeneratingImage}
+              placeholder="Describe the visual fix..."
+              placeholderTextColor={TERMINAL.colors.muted}
+              textAlignVertical="top"
+            />
+            {regenerationError && (
+              <Text style={styles.errorText}>{regenerationError}</Text>
+            )}
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.cancelButton]}
+                onPress={handleCloseCorrection}
+                disabled={isRegeneratingImage}
+              >
+                <Text style={styles.cancelButtonText}>CANCEL</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.modalButton,
+                  styles.regenerateButton,
+                  (!correctionText.trim() || isRegeneratingImage) && styles.regenerateButtonDisabled,
+                ]}
+                onPress={handleSubmitCorrection}
+                disabled={!correctionText.trim() || isRegeneratingImage}
+              >
+                {isRegeneratingImage ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.regenerateButtonText}>REGENERATE</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -261,6 +417,95 @@ const styles = StyleSheet.create({
     color: TERMINAL.colors.primary,
     fontSize: 16,
     fontFamily: 'Courier',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  correctionModal: {
+    width: '100%',
+    maxWidth: 520,
+    backgroundColor: '#05070c',
+    borderColor: TERMINAL.colors.primary,
+    borderWidth: 1,
+    padding: 22,
+    gap: 14,
+  },
+  modalEyebrow: {
+    color: TERMINAL.colors.primary,
+    fontFamily: TERMINAL.fonts.mono,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 2,
+  },
+  modalTitle: {
+    color: '#fff',
+    fontFamily: TERMINAL.fonts.mono,
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  modalSubtitle: {
+    color: TERMINAL.colors.muted,
+    fontFamily: TERMINAL.fonts.mono,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  correctionInput: {
+    minHeight: 132,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderColor: 'rgba(255,255,255,0.16)',
+    borderWidth: 1,
+    color: '#fff',
+    fontFamily: TERMINAL.fonts.mono,
+    fontSize: 13,
+    lineHeight: 19,
+    padding: 14,
+  },
+  errorText: {
+    color: '#f87171',
+    fontFamily: TERMINAL.fonts.mono,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+  },
+  modalButton: {
+    minWidth: 124,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  cancelButton: {
+    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  cancelButtonText: {
+    color: TERMINAL.colors.muted,
+    fontFamily: TERMINAL.fonts.mono,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+  },
+  regenerateButton: {
+    borderColor: '#ef4444',
+    backgroundColor: '#b91c1c',
+  },
+  regenerateButtonDisabled: {
+    opacity: 0.52,
+  },
+  regenerateButtonText: {
+    color: '#fff',
+    fontFamily: TERMINAL.fonts.mono,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1.5,
   },
 });
 

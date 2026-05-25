@@ -1,7 +1,7 @@
 import React, { useRef, useCallback, useEffect } from 'react';
 import { View, StyleSheet, Platform, TouchableOpacity, useWindowDimensions } from 'react-native';
 import Svg, { G, Defs, Pattern, Line, Rect } from 'react-native-svg';
-import { ChevronDown, ChevronUp } from 'lucide-react-native';
+import { ChevronDown, ChevronUp, ThumbsDown } from 'lucide-react-native';
 import {
   StoryGraph,
   GraphEdge as GraphEdgeType,
@@ -25,6 +25,7 @@ interface GraphCanvasProps {
   selectedEdgeId: string | null;
   mode: VisualizerMode;
   selectedNpcId: string | null;
+  onRejectImage?: (node: GraphNodeType) => void;
 }
 
 export const GraphCanvas: React.FC<GraphCanvasProps> = ({
@@ -38,6 +39,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   selectedEdgeId,
   mode,
   selectedNpcId,
+  onRejectImage,
 }) => {
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const canvasHeight = Math.max(320, viewportHeight - 180);
@@ -295,6 +297,21 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   });
   const directChoiceEdgeIds = getDirectChoiceEdgeIds(graph.edges, nodeMap, outgoingEdgeGroups);
   const targetLabelStacks = getTargetLabelStacks(graph.edges, nodeMap, mode);
+  const selectedImageBeatNode = selectedNodeId
+    ? graph.nodes.find((node) => node.id === selectedNodeId && node.type === 'beat' && Boolean(node.image))
+    : null;
+  const rejectButtonPosition = selectedImageBeatNode
+    ? {
+      left: Math.max(12, Math.min(
+        viewportWidth - 60,
+        viewState.translateX + (selectedImageBeatNode.x + selectedImageBeatNode.width - 52) * viewState.scale,
+      )),
+      top: Math.max(76, Math.min(
+        canvasHeight - 60,
+        viewState.translateY + (selectedImageBeatNode.y + 12) * viewState.scale,
+      )),
+    }
+    : null;
 
   // Build event handlers based on platform
   const eventHandlers = Platform.OS === 'web' ? {
@@ -412,6 +429,31 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
           );
         })()}
       </Svg>
+      {selectedImageBeatNode && rejectButtonPosition && onRejectImage && (
+        <View
+          style={[styles.rejectImageControl, rejectButtonPosition]}
+          {...(Platform.OS === 'web'
+            ? {
+              onPointerDown: stopCanvasGesture,
+              onPointerMove: stopCanvasGesture,
+              onPointerUp: stopCanvasGesture,
+            }
+            : {
+              onTouchStart: stopCanvasGesture,
+              onTouchMove: stopCanvasGesture,
+              onTouchEnd: stopCanvasGesture,
+            }) as any}
+        >
+          <TouchableOpacity
+            accessibilityLabel="Regenerate selected image"
+            onPress={() => onRejectImage(selectedImageBeatNode)}
+            style={styles.rejectImageButton}
+            activeOpacity={0.78}
+          >
+            <ThumbsDown size={20} color="#fff" strokeWidth={2.4} />
+          </TouchableOpacity>
+        </View>
+      )}
       <View
         style={styles.pageControls}
         pointerEvents="box-none"
@@ -479,6 +521,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'rgba(5, 7, 12, 0.88)',
     borderColor: VISUALIZER_COLORS.nodeBorders.beat,
+    borderWidth: 1,
+  },
+  rejectImageControl: {
+    position: 'absolute',
+    zIndex: 35,
+    elevation: 35,
+  },
+  rejectImageButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(185, 28, 28, 0.92)',
+    borderColor: 'rgba(255,255,255,0.72)',
     borderWidth: 1,
   },
 });

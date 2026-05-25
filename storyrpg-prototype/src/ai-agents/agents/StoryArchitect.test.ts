@@ -212,6 +212,64 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
 });
 
 describe('StoryArchitect treatment fidelity validation', () => {
+  it('repairs authored branchlet and seed residue into blueprint memory fields before validation', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const input = makeInput({
+      seasonPlanDirectives: {
+        treatmentGuidance: {
+          alternativePaths: ['Reading the messages leaves Kylie more bruised in sceneEp 2; blocking leaves her brittle.'],
+          consequenceSeeds: ['The grandmother gold chain and the Dating After Dusk draft.'],
+          consequenceResidue: 'The draft file remains open on the kitchen table.',
+        },
+      },
+    });
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Arrival',
+      synopsis: 'Kylie arrives in Bucharest.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      themes: [],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1'],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+      scenes: [{
+        id: 'scene-1',
+        name: 'Apartment',
+        description: 'Kylie opens the laptop.',
+        location: 'apartment',
+        mood: 'quiet',
+        purpose: 'bottleneck',
+        dramaticQuestion: '',
+        wantVsNeed: '',
+        conflictEngine: '',
+        npcsPresent: [],
+        narrativeFunction: 'Opening agency.',
+        keyBeats: ['Kylie names the draft.'],
+        leadsTo: [],
+        choicePoint: {
+          type: 'expression',
+          stakes: { want: 'Start over', cost: 'Admit the wound', identity: 'Known or invisible' },
+          description: 'Choose how Kylie faces the blank draft.',
+          optionHints: ['Open the laptop.', 'Wait.'],
+          consequenceDomain: 'identity',
+          reminderPlan: { immediate: 'The room changes temperature.', shortTerm: 'The next scene remembers her tone.' },
+        },
+      }],
+    };
+
+    (architect as any).repairTreatmentResidue(blueprint, input);
+    const issues = (architect as any).collectTreatmentFidelityIssues(blueprint, input);
+
+    expect(issues.join('\n')).not.toContain('visible residue');
+    expect(blueprint.narrativePromises.map((promise: any) => promise.description).join('\n')).toContain('Reading the messages');
+    expect(blueprint.scenes[0].choicePoint.expectedResidue).toEqual(expect.arrayContaining([
+      expect.stringContaining('gold chain'),
+    ]));
+  });
+
   it('surfaces treatment drift as structural retry feedback before SceneWriter', () => {
     const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const input = makeInput({

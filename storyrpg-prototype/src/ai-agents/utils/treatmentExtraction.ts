@@ -22,9 +22,11 @@ export interface ExtractedTreatment {
 }
 
 const SECTION_HEADING_RE = /^##\s+(?:\d+\.\s+)?(.+)$/gm;
-const EPISODE_HEADING_RE = /^###\s+(?:(?:Scene\s*)?Episode|SceneEpisode|Ep\.?)?\s*(\d+)(?:\s*[.:\-—–]\s*|\s+)(?:"?([^"\n]+?)"?)\s*$/gim;
-const BRANCH_HEADING_RE = /^###\s+(?:(?:Branch|Consequence Chain)\s+[A-Z0-9]*\s*)?(?:[—–:-]\s+)?(.+)$/gim;
-const ENDING_HEADING_RE = /^###\s+Ending\s+(?:\d+|[A-Z])\s*(?:[—–:-]\s*)"?([^"\n(]+)"?(?:\s+\(([^)]+)\))?/gim;
+const HEADED_EPISODE_RE = /^#{3,5}\s+(?:\*\*)?(?:(?:Scene\s*Episode|SceneEpisode|SceneEp|Episode|Scene|Ep\.?|SE|E)\s*#?\s*)?\d+(?:\s*[.):\-—–]\s*|\s+)/gim;
+const EPISODE_HEADING_RE = /^(?:(?:#{3,5}\s+)(?:\*\*)?(?:(?:Scene\s*Episode|SceneEpisode|SceneEp|Episode|Scene|Ep\.?|SE|E)\s*#?\s*)?(\d+)(?:\s*[.):\-—–]\s*|\s+)(?:"?([^"\n*]+?)"?)(?:\*\*)?\s*|(?:(?:Scene\s*Episode|SceneEpisode|SceneEp|Episode|Scene|Ep\.?|SE|E)\s*#?\s*)?(\d+)(?:\s*[.):\-—–]\s*|\s+)(?:\*\*)?([^*\n]+?)(?:\*\*)?\s*)$/gim;
+const NUMBER_AND_TITLE_RE = /^(?:-\s*)?(?:\*\*)?(Scene\s*Episode|SceneEpisode|SceneEp|Episode)\s+number\s+and\s+title(?:\s*\([^)]*\))?(?:\s*:\*\*|\*\*\s*:|\s*:)\s*(?:\*\*)?(?:(?:Scene\s*Episode|SceneEpisode|SceneEp|Episode|Scene|Ep\.?|SE|E)\s*#?\s*)?(\d+)(?:(?:\s*[.):\-—–]\s*|\s+)([^*\n]+?))?(?:\*\*)?\s*$/gim;
+const BRANCH_HEADING_RE = /^#{3,5}\s+(?:(?:Branch|Consequence Chain)\s+[A-Z0-9]*\s*)?(?:[—–:-]\s+)?(.+)$/gim;
+const ENDING_HEADING_RE = /^#{3,5}\s+Ending\s+(?:\d+|[A-Z])\s*(?:[—–:-]\s*)"?([^"\n(]+)"?(?:\s+\(([^)]+)\))?/gim;
 
 const TREATMENT_MARKERS = [
   /branching[-\s]narrative season treatment/i,
@@ -34,7 +36,7 @@ const TREATMENT_MARKERS = [
   /storyrpg structure model/i,
   /3-act\s*\/\s*7-point season spine/i,
   /choose-your-own-adventure/i,
-  /^###\s+(?:(?:Scene\s*)?Episode\s+)?\d+/im,
+  /^#{3,5}\s+(?:(?:Scene\s*)?Episode\s+|SceneEp\s+|Scene\s+|Ep\.?\s+|SE\s*)?\d+/im,
   /\bEpisode Outline\b/i,
   /\bSceneEpisode Outline\b/i,
   /\*\*Structural role(?:\s*:\s*anchor, fused anchors, or buffer)?(?:\s*\([^)]*\))?:\*\*/i,
@@ -83,6 +85,20 @@ function splitByMatches<T>(
     const end = index + 1 < matches.length ? matches[index + 1].index || text.length : text.length;
     return build(match, text.slice(start, end).trim());
   });
+}
+
+function resettableTest(re: RegExp, value: string): boolean {
+  re.lastIndex = 0;
+  const matched = re.test(value);
+  re.lastIndex = 0;
+  return matched;
+}
+
+function isPromptGuideMarkdown(markdown: string): boolean {
+  return /\bcopy-paste prompt\b/i.test(markdown)
+    || /\buse this prompt guide\b/i.test(markdown)
+    || /\bcreate a treatment with these sections\b/i.test(markdown)
+    || /\brequired treatment sections\b/i.test(markdown);
 }
 
 function getFlexibleSection(markdown: string, labels: string[]): string {
@@ -140,7 +156,7 @@ function getIndentedBulletList(body: string, label: string): string[] {
 
   const start = match.index + match[0].length;
   const rest = body.slice(start);
-  const nextTopLevel = rest.search(/\n-\s+\*\*[^:\n]+:\*\*|\n###\s+/);
+  const nextTopLevel = rest.search(/\n-\s+\*\*[^:\n]+:\*\*|\n#{3,5}\s+/);
   const block = nextTopLevel >= 0 ? rest.slice(0, nextTopLevel) : rest;
 
   return block
@@ -167,6 +183,16 @@ function getFlexibleInlineOrIndentedList(body: string, labels: string[]): string
   return Array.from(new Set(combined.map((item) => item.trim()).filter(Boolean)));
 }
 
+function normalizeEpisodeNumberTitleLines(section: string): string {
+  return section.replace(NUMBER_AND_TITLE_RE, (_match, kind: string, number: string, rawTitle: string | undefined) => {
+    const canonicalKind = /scene/i.test(kind) ? 'SceneEpisode' : 'Episode';
+    const title = (rawTitle || `${canonicalKind} ${number}`)
+      .trim()
+      .replace(/^["“”]+|["“”]+$/g, '');
+    return `### ${canonicalKind} ${number}: ${title}`;
+  });
+}
+
 export function normalizeTreatmentStructuralRoles(raw: string | undefined): StructuralRole[] {
   if (!raw) return [];
   const lower = raw.toLowerCase();
@@ -188,10 +214,11 @@ export function normalizeTreatmentStructuralRoles(raw: string | undefined): Stru
 
 function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeGuidance> {
   const episodes: Record<number, TreatmentEpisodeGuidance> = {};
+  const normalizedSection = normalizeEpisodeNumberTitleLines(section);
 
-  for (const guidance of splitByMatches(section, EPISODE_HEADING_RE, (match, body) => {
-    const episodeNumber = Number(match[1]);
-    const authoredTitle = (match[2] || '').trim().replace(/^["“”]+|["“”]+$/g, '');
+  for (const guidance of splitByMatches(normalizedSection, EPISODE_HEADING_RE, (match, body) => {
+    const episodeNumber = Number(match[1] || match[3]);
+    const authoredTitle = (match[2] || match[4] || '').trim().replace(/^["“”]+|["“”]+$/g, '');
     const rawStructuralRole = getBulletValue(body, 'Structural role')
       || getBulletValueWithLabelPrefix(body, 'Structural role')
       || getAllBulletValues(body, 'Structural role')[0];
@@ -204,6 +231,8 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
     const nextEpisodeCausality = getFlexibleBulletValue(body, [
       'Why the next sceneEpisode exists because of this one',
       'Why the next scene episode exists because of this one',
+      'Why next sceneEp exists',
+      'Why next scene episode exists',
       'Next sceneEpisode pressure',
       'Next episode pressure',
     ]);
@@ -218,8 +247,8 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
       episodeNumber,
       guidance: {
         authoredTitle: authoredTitle || undefined,
-        actLabel: getBulletValue(body, 'Act'),
-        arcLabel: getBulletValue(body, 'Arc'),
+        actLabel: getBulletValue(body, 'Act') || getBulletValue(body, 'Act/Arc')?.split('/')[0]?.trim(),
+        arcLabel: getBulletValue(body, 'Arc') || getBulletValue(body, 'Act/Arc')?.split('/').slice(1).join('/').trim(),
         rawStructuralRole,
         normalizedStructuralRoles: normalizeTreatmentStructuralRoles(rawStructuralRole),
         dramaticQuestion: getFlexibleBulletValue(body, ['Episode dramatic question', 'SceneEpisode dramatic question', 'Dramatic question']),
@@ -251,7 +280,7 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
         powerShift: getFlexibleBulletValue(body, ['Power shift', 'Power dynamic shift']),
         subtextGap: getFlexibleBulletValue(body, ['Subtext gap', 'Subtext']),
         informationMovement: getBulletValue(body, 'Information movement'),
-        majorChoicePressures: getFlexibleInlineOrIndentedList(body, ['Major choice pressure', 'Meaningful choice pressure', 'Choice pressure']),
+        majorChoicePressures: getFlexibleInlineOrIndentedList(body, ['Major choice pressure', 'Meaningful choice pressure', 'Meaningful choices', 'Choice pressure']),
         alternativePaths: getFlexibleInlineOrIndentedList(body, ['Alternative paths', 'Alternative path or branchlet', 'Branchlet']),
         consequenceSeeds: getInlineOrIndentedList(body, 'Consequence seeds'),
         consequenceResidue,
@@ -367,7 +396,22 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
 }
 
 export function extractTreatmentFromMarkdown(markdown: string): ExtractedTreatment {
-  const episodeSection = getFlexibleSection(markdown, ['sceneepisode outline', 'scene episode outline', 'episode outline']);
+  if (isPromptGuideMarkdown(markdown)) {
+    return {
+      isTreatment: false,
+      episodes: {},
+      branches: [],
+      endings: [],
+      seasonGuidance: undefined,
+      metadata: {
+        ...EMPTY_METADATA,
+        detected: false,
+        warnings: ['Input appears to be a treatment prompt guide/template, not a filled story treatment.'],
+      },
+    };
+  }
+  const explicitEpisodeSection = getFlexibleSection(markdown, ['sceneepisode outline', 'scene episode outline', 'episode outline']);
+  const episodeSection = explicitEpisodeSection || (resettableTest(HEADED_EPISODE_RE, markdown) ? markdown : '');
   const branchSection = getFlexibleSection(markdown, ['cross-sceneepisode branches', 'cross-sceneepisode branches and consequence chains', 'cross-episode branches', 'cross-episode branches and consequence chains', 'consequence chains', 'branch']);
   const endingSection = getFlexibleSection(markdown, ['alternate endings', 'episode endings', 'endings']);
   const looksLikeTreatment = looksLikeTreatmentMarkdown(markdown);
@@ -377,6 +421,7 @@ export function extractTreatmentFromMarkdown(markdown: string): ExtractedTreatme
   const warnings: string[] = [];
   if (looksLikeTreatment && Object.keys(episodes).length === 0) warnings.push('No episode guidance could be parsed from the treatment.');
   if (looksLikeTreatment && endings.length === 0) warnings.push('No ending targets could be parsed from the treatment.');
+  const promptGuideWithoutEpisodes = isPromptGuideMarkdown(markdown) && Object.keys(episodes).length === 0;
   const markerCount = TREATMENT_MARKERS.reduce((count, marker) => count + (marker.test(markdown) ? 1 : 0), 0);
   const formatVersion = /storyrpg structure model|episode turns?|sceneepisode|central conflict|episode endings|information ledger/i.test(markdown)
     ? 'storyrpg-treatment-v2'
@@ -389,7 +434,20 @@ export function extractTreatmentFromMarkdown(markdown: string): ExtractedTreatme
   const isTreatment = looksLikeTreatment && Boolean(episodeSection) && Object.keys(episodes).length > 0;
 
   if (!isTreatment) {
-    return { isTreatment: false, episodes: {}, branches: [], endings: [], seasonGuidance, metadata: { ...EMPTY_METADATA, detected: looksLikeTreatment, warnings } };
+    return {
+      isTreatment: false,
+      episodes: {},
+      branches: [],
+      endings: [],
+      seasonGuidance,
+      metadata: {
+        ...EMPTY_METADATA,
+        detected: promptGuideWithoutEpisodes ? false : looksLikeTreatment,
+        warnings: promptGuideWithoutEpisodes
+          ? [...warnings, 'Input appears to be a treatment prompt guide/template, not a filled story treatment.']
+          : warnings,
+      },
+    };
   }
 
   return {
@@ -408,9 +466,10 @@ export function extractTreatmentFromMarkdown(markdown: string): ExtractedTreatme
 }
 
 export function looksLikeTreatmentMarkdown(markdown: string): boolean {
+  if (isPromptGuideMarkdown(markdown)) return false;
   const markerCount = TREATMENT_MARKERS.reduce((count, marker) => count + (marker.test(markdown) ? 1 : 0), 0);
   return markerCount >= 3 || (
     /story treatment/i.test(markdown)
-    && (/^###\s+(?:(?:Scene\s*)?Episode\s+)?\d+/im.test(markdown) || /\*\*(?:Episode|SceneEpisode) promise(?:\s*\([^)]*\))?:\*\*/i.test(markdown))
+    && (resettableTest(EPISODE_HEADING_RE, markdown) || /\*\*(?:Episode|SceneEpisode) promise(?:\s*\([^)]*\))?:\*\*/i.test(markdown))
   );
 }

@@ -609,6 +609,14 @@ function AppContent() {
     closeVisualizerRoute();
   };
 
+  const handleVisualizerStoryUpdated = useCallback((story: Story) => {
+    setVisualizerStory(story);
+    upsertStory(story);
+    if (currentStory?.id === story.id) {
+      updateCurrentStory(story);
+    }
+  }, [currentStory?.id, updateCurrentStory, upsertStory]);
+
   const handleOpenGenerator = (jobId?: string) => {
     track('generator opened', {
       resume_job: Boolean(jobId),
@@ -1072,6 +1080,7 @@ function AppContent() {
         <VisualizerScreen
           story={visualizerStory}
           onBack={handleBackFromVisualizer}
+          onStoryUpdated={handleVisualizerStoryUpdated}
           onJumpToNode={(nodeId) => {
             for (const episode of visualizerStory.episodes) {
               for (const scene of episode.scenes) {

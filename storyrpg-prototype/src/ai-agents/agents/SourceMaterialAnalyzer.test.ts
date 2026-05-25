@@ -343,6 +343,101 @@ The public challenge changes sceneEpisode 3's access and reconverges at the regi
     expect(extracted.endings).toHaveLength(3);
   });
 
+  it('extracts episode guidance from common workshop heading variants', () => {
+    const variantTreatment = `
+# Harbor Debt Treatment
+
+## Episode Outline
+
+#### SceneEp 1 — The Auction Bell
+
+- **Dramatic question:** Will Mara stand up in public?
+- **Act/Arc:** Act 1 / Arc 1.
+- Forced choice: Challenge the bid or let the crate vanish.
+- Exit shift: Mara leaves publicly exposed.
+- Meaningful choices: Challenge publicly; bargain privately.
+- Why next sceneEp exists: The exposed bid sends Mara to the registry.
+
+#### Scene 2 - The Closed Registry
+
+- Entry goal: Get the birth record.
+- Obstacle: Jonas has already pulled the page.
+- Consequence residue: Mara owes the archivist a favor.
+
+## Alternate Endings
+
+### Ending 1 - "The Witness"
+- Summary: Mara publishes the names.
+### Ending 2 - "The Fixer"
+- Summary: Mara controls the names.
+### Ending 3 - "The Debt Paid"
+- Summary: Mara pays the cost.
+`;
+
+    const extracted = extractTreatmentFromMarkdown(variantTreatment);
+
+    expect(extracted.isTreatment).toBe(true);
+    expect(Object.keys(extracted.episodes)).toHaveLength(2);
+    expect(extracted.episodes[1]?.authoredTitle).toBe('The Auction Bell');
+    expect(extracted.episodes[1]?.actLabel).toBe('Act 1');
+    expect(extracted.episodes[1]?.arcLabel).toBe('Arc 1.');
+    expect(extracted.episodes[1]?.dramaticQuestion).toContain('stand up');
+    expect(extracted.episodes[1]?.forcedChoice).toContain('Challenge');
+    expect(extracted.episodes[1]?.majorChoicePressures?.join(' ')).toContain('bargain privately');
+    expect(extracted.episodes[1]?.nextEpisodeCausality).toContain('registry');
+    expect(extracted.episodes[2]?.authoredTitle).toBe('The Closed Registry');
+    expect(extracted.episodes[2]?.entryGoal).toContain('birth record');
+  });
+
+  it('extracts episode guidance when filled treatment uses number-and-title bullets', () => {
+    const bulletTreatment = `
+# Harbor Debt SceneEpisode Treatment
+
+## SceneEpisode Outline
+
+- **SceneEpisode number and title:** 1 - The Auction Bell
+- **SceneEpisode dramatic question:** Will Mara make herself visible?
+- **Entry goal:** Buy the fish crate quietly.
+- **Obstacle:** The syndicate bids with Jonas's ring.
+- **Forced choice:** Challenge the bid or let the crate vanish.
+- **Exit shift:** Mara leaves exposed.
+- **Why the next sceneEpisode exists because of this one:** The named father sends Mara to the registry.
+
+- SceneEpisode number and title: SE2 — The Closed Registry
+- Entry goal: Get the birth record.
+- Obstacle: Jonas has already pulled the page.
+- Consequence residue: Mara owes the archivist a favor.
+
+## Alternate Endings
+
+### Ending 1 - "The Witness"
+- Summary: Mara publishes the names.
+### Ending 2 - "The Fixer"
+- Summary: Mara controls the names.
+### Ending 3 - "The Debt Paid"
+- Summary: Mara pays the cost.
+`;
+
+    const extracted = extractTreatmentFromMarkdown(bulletTreatment);
+
+    expect(extracted.isTreatment).toBe(true);
+    expect(Object.keys(extracted.episodes)).toHaveLength(2);
+    expect(extracted.episodes[1]?.authoredTitle).toBe('The Auction Bell');
+    expect(extracted.episodes[1]?.entryGoal).toContain('fish crate');
+    expect(extracted.episodes[1]?.nextEpisodeCausality).toContain('registry');
+    expect(extracted.episodes[2]?.authoredTitle).toBe('The Closed Registry');
+    expect(extracted.episodes[2]?.consequenceResidue).toContain('favor');
+  });
+
+  it('does not treat the prompt guide itself as a filled treatment', () => {
+    const promptGuide = readFileSync(join(__dirname, '../../../../docs/STORY_TREATMENT_SCENEEPISODE_PROMPT.md'), 'utf8');
+    const extracted = extractTreatmentFromMarkdown(promptGuide);
+
+    expect(extracted.isTreatment).toBe(false);
+    expect(extracted.metadata.detected).toBe(false);
+    expect(extracted.metadata.warnings.join(' ')).toContain('prompt guide');
+  });
+
   it('detects malformed treatment-like input and blocks silent generic fallback', () => {
     const malformedTreatment = `
 # Bite Me Story Treatment

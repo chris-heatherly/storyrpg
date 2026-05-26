@@ -24,6 +24,8 @@ import {
 
 export interface LoginScreenProps {
   onAuthenticated: (user: AuthUser) => void;
+  /** When false (default), dev bypass is never shown — required for the creator app. */
+  allowDevBypass?: boolean;
 }
 
 const DEV_BYPASS_USER: AuthUser = {
@@ -35,9 +37,10 @@ const DEV_BYPASS_USER: AuthUser = {
   role: 'admin',
 };
 
-const SHOW_DEV_BYPASS = __DEV__;
-
-export const LoginScreen: React.FC<LoginScreenProps> = ({ onAuthenticated }) => {
+export const LoginScreen: React.FC<LoginScreenProps> = ({
+  onAuthenticated,
+  allowDevBypass = false,
+}) => {
   const [providers, setProviders] = useState<AuthProviders | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -111,6 +114,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onAuthenticated }) => 
   const hasOAuth = Boolean(providers?.google || providers?.discord);
   const showLocal = providers?.local !== false;
   const canRegister = providers?.registration !== false;
+  const showDevBypass = allowDevBypass && __DEV__;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -145,7 +149,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onAuthenticated }) => 
 
           {!loading ? (
             <>
-              {SHOW_DEV_BYPASS ? (
+              {showDevBypass ? (
                 <View style={[styles.card, styles.devBypassCard]}>
                   <Text style={styles.cardTitle}>DEVELOPMENT</Text>
                   <Text style={[styles.muted, { marginBottom: 12 }]}>

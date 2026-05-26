@@ -8,6 +8,7 @@ import {
   Alert,
   Platform,
 } from 'react-native';
+import type { AuthUser } from '../services/authSession';
 import { MediaSetupTarget, StoryCatalogEntry } from '../types';
 import { TERMINAL } from '../theme';
 import { PROXY_CONFIG } from '../config/endpoints';
@@ -30,6 +31,8 @@ import {
 interface SettingsScreenProps {
   stories: StoryCatalogEntry[];
   onBack: () => void;
+  authUser?: AuthUser | null;
+  onSignOut?: () => void;
   onOpenVisualizer: (storyId: string) => void;
   onOpenGenerator: (jobId?: string) => void; // Optional jobId to resume viewing
   onDeleteStory?: (storyId: string) => void;
@@ -48,6 +51,8 @@ interface SettingsScreenProps {
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   stories,
+  authUser,
+  onSignOut,
   onOpenVisualizer,
   onOpenGenerator,
   onDeleteStory,
@@ -475,7 +480,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           isDeletingEpisodeArt={(story, target) => isArtifactDeletionPending(story, 'episode', target)}
         />
 
-        <SystemInfoSection styles={styles} />
+        <SystemInfoSection
+          styles={styles}
+          accountLabel={authUser?.displayName || authUser?.email}
+          onSignOut={onSignOut}
+        />
 
         <Text style={styles.footerText}>
           STORYRPG SYSTEMS • CORE VER 1.0.0{'\n'}

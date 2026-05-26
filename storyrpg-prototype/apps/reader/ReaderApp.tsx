@@ -10,6 +10,7 @@ import {
 } from '../../src/stores/gameStore';
 import { SettingsProvider, useSettingsStore } from '../../src/stores/settingsStore';
 import { HomeScreen } from '../../src/screens/HomeScreen';
+import { LoginScreen } from '../../src/screens/LoginScreen';
 import { EpisodeSelectScreen } from '../../src/screens/EpisodeSelectScreen';
 import { ReadingScreen } from '../../src/screens/ReadingScreen';
 import { ReaderSettingsScreen } from '../../src/screens/reader/ReaderSettingsScreen';
@@ -18,6 +19,8 @@ import type { PlayerState, Story } from '../../src/types';
 import { TERMINAL } from '../../src/theme';
 import { encodeStory } from '../../src/story-codec/storyCodec';
 import { useStoryLibrary } from '../../src/hooks/useStoryLibrary';
+import { useAuthSession } from '../../src/hooks/useAuthSession';
+import type { AuthUser } from '../../src/services/authSession';
 import {
   captureAttributionFromUrl,
   identifyAnonymousPlayer,
@@ -35,6 +38,19 @@ type ReaderScreen = 'home' | 'episodes' | 'reading' | 'settings';
 function ReaderAppContent() {
   const [currentScreen, setCurrentScreen] = useState<ReaderScreen>('home');
   const [showPauseMenu, setShowPauseMenu] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const {
+    authUser,
+    signedOutLatch,
+    isChecking: isAuthChecking,
+    isSignedIn,
+    handleAuthenticated,
+    handleSignedOut,
+  } = useAuthSession({
+    onSessionRestored: () => {
+      setCurrentScreen('home');
+    },
+  });
   const {
     stories,
     setStories,
@@ -54,6 +70,24 @@ function ReaderAppContent() {
     loadScene,
   } = useGameActions();
   const fonts = useSettingsStore((state) => state.getFontSizes());
+
+  const onAuthenticated = useCallback(
+    (user: AuthUser) => {
+      handleAuthenticated(user);
+      setCurrentScreen('home');
+    },
+    [handleAuthenticated],
+  );
+
+  const onSignOut = useCallback(async () => {
+    setIsSigningOut(true);
+    setShowPauseMenu(false);
+    try {
+      await handleSignedOut();
+    } finally {
+      setIsSigningOut(false);
+    }
+  }, [handleSignedOut]);
 
   useEffect(() => {
     initAnalytics();
@@ -233,13 +267,24 @@ function ReaderAppContent() {
     )));
   };
 
-  if (!storiesLoaded) {
+  if (isSigningOut || (!signedOutLatch && isAuthChecking) || (isSignedIn && !storiesLoaded)) {
     return (
       <View style={[styles.container, styles.centered]}>
         <StatusBar style="light" />
         <Text style={{ color: TERMINAL.colors.primary, fontSize: fonts.medium }}>
           {TERMINAL.symbols.prompt} LOADING...
         </Text>
+      </View>
+    );
+  }
+
+  const showAppShell = !signedOutLatch && authUser != null;
+
+  if (!showAppShell) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="light" />
+        <LoginScreen onAuthenticated={onAuthenticated} allowDevBypass={false} />
       </View>
     );
   }
@@ -260,6 +305,8 @@ function ReaderAppContent() {
       {currentScreen === 'settings' && (
         <ReaderSettingsScreen
           stories={stories}
+          authUser={authUser}
+          onSignOut={() => { void onSignOut(); }}
           onBack={() => setCurrentScreen('home')}
           onDeleteStory={handleDeleteStory}
           onRefreshStories={loadStories}

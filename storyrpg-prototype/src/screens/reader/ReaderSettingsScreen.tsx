@@ -19,6 +19,7 @@ import {
   Trash2,
   Type,
 } from 'lucide-react-native';
+import type { AuthUser } from '../../services/authSession';
 import type { StoryCatalogEntry } from '../../types';
 import { useSettingsStore, type FontSize } from '../../stores/settingsStore';
 import { TERMINAL } from '../../theme';
@@ -29,6 +30,8 @@ import { ConfirmDialog, SegmentedControl, Toggle } from '../../components/ui';
 interface ReaderSettingsScreenProps {
   stories: StoryCatalogEntry[];
   onBack: () => void;
+  authUser?: AuthUser | null;
+  onSignOut?: () => void;
   onDeleteStory?: (storyId: string) => void;
   onRefreshStories?: () => void;
   isRefreshing?: boolean;
@@ -43,6 +46,8 @@ const fontSizeOptions: Array<{ key: FontSize; label: string }> = [
 export const ReaderSettingsScreen: React.FC<ReaderSettingsScreenProps> = ({
   stories,
   onBack,
+  authUser,
+  onSignOut,
   onDeleteStory,
   onRefreshStories,
   isRefreshing = false,
@@ -186,9 +191,20 @@ export const ReaderSettingsScreen: React.FC<ReaderSettingsScreenProps> = ({
           icon={<Info size={18} color={TERMINAL.colors.muted} />}
           title="SYSTEM"
         >
+          {authUser ? (
+            <InfoRow
+              label="SIGNED IN"
+              value={(authUser.displayName || authUser.email || authUser.id).toUpperCase()}
+            />
+          ) : null}
           <InfoRow label="APPLICATION" value="STORYRPG READER" />
           <InfoRow label="VERSION" value={APP_VERSION_LABEL} />
           <InfoRow label="DEPLOYMENT" value="READER + CONTENT" />
+          {onSignOut ? (
+            <TouchableOpacity style={styles.signOutButton} onPress={onSignOut}>
+              <Text style={styles.signOutButtonText}>SIGN OUT</Text>
+            </TouchableOpacity>
+          ) : null}
         </Section>
       </ScrollView>
 
@@ -307,4 +323,17 @@ const styles = StyleSheet.create({
   infoRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 16, paddingVertical: 7 },
   infoLabel: { color: TERMINAL.colors.muted, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
   infoValue: { color: TERMINAL.colors.textBody, fontSize: 11, fontWeight: '800', flexShrink: 1, textAlign: 'right' },
+  signOutButton: {
+    marginTop: 14,
+    paddingVertical: 14,
+    borderRadius: 6,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  signOutButtonText: {
+    color: TERMINAL.colors.muted,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+  },
 });

@@ -46,7 +46,7 @@ export function useEndingModePlanner({
       const result = await seasonPlanner.execute({
         sourceAnalysis: updatedAnalysis,
         preferences: {
-          targetScenesPerEpisode: 8,
+          targetScenesPerEpisode: 6,
           targetChoicesPerEpisode: 4,
           pacing: 'moderate',
           endingMode: updatedAnalysis.resolvedEndingMode,

@@ -15,6 +15,21 @@ import type { Beat, MediaRef, NarrativeSequenceIntent, SceneVisualSequencePlan }
 import type { Encounter, EncounterType } from './encounter';
 import type { ResolutionTier } from './choice';
 
+export type EpisodeStructureMode = 'standard' | 'sceneEpisodes';
+
+export interface EpisodeRouteMeta {
+  kind: 'master' | 'branch';
+  spineIndex: number;
+  branchGroupId?: string;
+  branchPathId?: string;
+  branchStep?: number;
+  branchLength?: 1 | 2;
+  rejoinsAtSpineIndex?: number;
+  displayLabel?: string;
+  isMilestoneEncounter?: boolean;
+  hideWhenInactive?: boolean;
+}
+
 export interface Scene {
   id: string;
   name: string;
@@ -47,6 +62,9 @@ export interface Episode {
   title: string;
   synopsis: string;
   coverImage: MediaRef;
+
+  episodeStructureMode?: EpisodeStructureMode;
+  routeMeta?: EpisodeRouteMeta;
 
   scenes: Scene[];
   startingSceneId: string;
@@ -81,6 +99,7 @@ export interface Story {
     portrait?: string;
     pronouns?: string;
     initialRelationship?: Partial<Relationship>;
+    relationshipDimensions?: RelationshipDimension[];
     /**
      * First-class NPC tier (Phase 1.3). Authored by CharacterDesigner and
      * persisted here so the runtime, validators, and UI can read it without
@@ -151,6 +170,12 @@ export interface StoryCatalogEpisode {
   title: string;
   synopsis: string;
   coverImage: string;
+  imageArtifacts?: {
+    hasEpisodeArt?: boolean;
+  };
+  videoArtifacts?: {
+    hasVideo?: boolean;
+  };
 }
 
 export interface StoryCatalogEntry {
@@ -172,6 +197,15 @@ export interface StoryCatalogEntry {
   fullStoryUrl?: string;
   episodeCount: number;
   episodes: StoryCatalogEpisode[];
+}
+
+export interface MediaSetupTarget {
+  kind: 'images' | 'video';
+  storyId: string;
+  outputDir: string;
+  episodeId: string;
+  episodeNumber: number;
+  episodeTitle: string;
 }
 
 // ========================================

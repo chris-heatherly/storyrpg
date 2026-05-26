@@ -4,7 +4,7 @@
 
 import type { ConditionExpression } from './conditions';
 import type { Consequence } from './consequences';
-import type { Choice } from './choice';
+import type { Choice, ChoiceRouteContext } from './choice';
 import type { AssetRef } from '../assets/assetRef';
 
 /**
@@ -46,6 +46,16 @@ export interface TextVariant {
   // When the variant is rendered at runtime, it represents a "payoff" of the
   // hook; generation-side bookkeeping uses this to mark hooks as acknowledged.
   callbackHookId?: string;
+}
+
+export interface SkillInsight {
+  id: string;
+  skillWeights: Record<string, number>;
+  threshold: number;
+  text: string;
+  priority?: number;
+  condition?: ConditionExpression;
+  setsFlag?: string;
 }
 
 export interface VisualContinuityHint {
@@ -179,6 +189,11 @@ export interface SceneVisualSequencePlan {
   powerBlocking: string;
   turningPoint: string;
   endState: string;
+  anchorZones?: string[];
+  boundaryOrThreshold?: string;
+  physicalCarrier?: string;
+  rhythmIntent?: string;
+  avoid?: string[];
 }
 
 // A beat is a unit of content within a scene
@@ -189,6 +204,7 @@ export interface Beat {
 
   textVariants?: TextVariant[];
   callbackHookIds?: string[];
+  skillInsights?: SkillInsight[];
 
   conditions?: ConditionExpression;
 
@@ -207,6 +223,9 @@ export interface Beat {
   nextSceneId?: string;
 
   onShow?: Consequence[];
+
+  isChoiceBridge?: boolean;
+  routeContext?: ChoiceRouteContext;
 
   outcomeSequences?: {
     success?: string[];

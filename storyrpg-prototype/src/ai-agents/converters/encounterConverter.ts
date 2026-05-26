@@ -161,8 +161,8 @@ function deriveEncounterCost(
     domain,
     severity: inferCostSeverity(fallbackText, seed.consequences || [], seed.cost),
     whoPays: inferCostBearer(fallbackText, domain, seed.cost),
-    immediateEffect: seed.cost?.immediateEffect || seed.complication || seed.outcomeText || 'The objective is achieved, but the cost is immediate.',
-    visibleComplication: seed.cost?.visibleComplication || seed.complication || seed.narrativeFunction || 'The cost of success is visible in the aftermath.',
+    immediateEffect: seed.cost?.immediateEffect || seed.complication || seed.outcomeText || 'The win leaves something unsettled that follows the protagonist forward.',
+    visibleComplication: seed.cost?.visibleComplication || seed.complication || seed.narrativeFunction || 'Relief arrives with a complication still attached.',
     lingeringEffect: seed.cost?.lingeringEffect || seed.narrativeFunction,
     consequences: seed.cost?.consequences || seed.consequences,
   };
@@ -343,6 +343,9 @@ function convertEmbeddedChoice(llmChoice: LLMEmbeddedEncounterChoice): EmbeddedE
     text: llmChoice.text,
     approach: llmChoice.approach,
     primarySkill: llmChoice.primarySkill,
+    consequenceDomain: (llmChoice as any).consequenceDomain,
+    reminderPlan: (llmChoice as any).reminderPlan,
+    feedbackCue: (llmChoice as any).feedbackCue,
     outcomes: {
       success: convertOutcome(llmChoice.outcomes?.success, 'success', { goalTicks: 2, threatTicks: 0, narrativeText: 'Success!' }),
       complicated: convertOutcome(llmChoice.outcomes?.complicated, 'complicated', { goalTicks: 1, threatTicks: 1, narrativeText: 'Partial success...' }),
@@ -399,6 +402,9 @@ export function convertEncounterStructureToEncounter(
       approach: choice.approach,
       primarySkill: choice.primarySkill,
       impliedApproach: choice.impliedApproach,
+      consequenceDomain: (choice as any).consequenceDomain,
+      reminderPlan: (choice as any).reminderPlan,
+      feedbackCue: (choice as any).feedbackCue,
       skillAdvantage: choice.skillAdvantage,
       specialChoiceType: choice.specialChoiceType,
       outcomes: {
@@ -501,24 +507,24 @@ export function convertEncounterStructureToEncounter(
     outcomes: {
       victory: {
         nextSceneId: structure.storylets?.victory?.nextSceneId || nextSceneId,
-        outcomeText: structure.storylets?.victory?.beats?.[0]?.text || 'Victory! You overcame the challenge.',
+        outcomeText: structure.storylets?.victory?.beats?.[0]?.text || 'The pressure eases, and the protagonist carries the moment forward.',
         consequences: victoryConsequences.length > 0 ? victoryConsequences : undefined,
       },
       partialVictory: {
         nextSceneId: structure.storylets?.partialVictory?.nextSceneId || nextSceneId,
-        outcomeText: structure.storylets?.partialVictory?.beats?.[0]?.text || 'You succeeded, but at a cost.',
-        complication: structure.storylets?.partialVictory?.narrativeFunction || 'The situation is more complicated than expected.',
+        outcomeText: structure.storylets?.partialVictory?.beats?.[0]?.text || 'The protagonist gets through, but relief arrives with a complication still attached.',
+        complication: structure.storylets?.partialVictory?.narrativeFunction || 'The aftermath stays complicated in a way the next scene will remember.',
         consequences: partialVictoryConsequences.length > 0 ? partialVictoryConsequences : undefined,
         cost: partialVictoryCost,
       },
       defeat: {
         nextSceneId: structure.storylets?.defeat?.nextSceneId || nextSceneId,
-        outcomeText: structure.storylets?.defeat?.beats?.[0]?.text || 'You were unable to achieve your goal.',
+        outcomeText: structure.storylets?.defeat?.beats?.[0]?.text || 'The moment slips away, leaving the protagonist to carry what it taught them.',
         consequences: defeatConsequences.length > 0 ? defeatConsequences : undefined,
       },
       escape: structure.storylets?.escape ? {
         nextSceneId: structure.storylets.escape.nextSceneId || nextSceneId,
-        outcomeText: structure.storylets.escape.beats?.[0]?.text || 'You managed to escape.',
+        outcomeText: structure.storylets.escape.beats?.[0]?.text || 'The protagonist gets clear, but the fear follows close behind.',
         consequences: escapeConsequences.length > 0 ? escapeConsequences : undefined,
       } : undefined,
     },

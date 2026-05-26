@@ -15,11 +15,34 @@ import { WorkerPayload, assertValidWorkerPayload } from './workerPayload';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { Story } from '../../types';
 
+let activeResultPath: string | undefined;
+
 function emit(type: string, payload: Record<string, unknown> = {}) {
   try {
     console.log(JSON.stringify({ workerEvent: true, type, timestamp: new Date().toISOString(), ...payload }));
   } catch {
     // stdout may be closed if parent already killed us — nothing to do
+  }
+}
+
+async function persistFailureResult(error: unknown) {
+  if (!activeResultPath) return;
+  try {
+    const failure = buildFailurePayload(error);
+    await atomicWriteJson(activeResultPath, {
+      schemaVersion: 3,
+      success: false,
+      error: failure.message,
+      failurePhase: failure.failurePhase,
+      failureStepId: failure.failureStepId,
+      failureKind: failure.failureKind,
+      failureArtifactKey: failure.failureArtifactKey,
+      resumeFromStepId: failure.resumeFromStepId,
+      resumePatchableInputs: failure.resumePatchableInputs,
+      context: failure.context,
+    });
+  } catch {
+    // Best effort only: the proxy still receives worker_error over stdout when possible.
   }
 }
 
@@ -64,20 +87,20 @@ heartbeatInterval.unref();
 process.on('SIGTERM', () => {
   emit('worker_error', { message: 'Worker received SIGTERM — shutting down', signal: 'SIGTERM' });
   clearInterval(heartbeatInterval);
-  process.exit(130);
+  void persistFailureResult(new Error('Worker received SIGTERM — shutting down')).finally(() => process.exit(143));
 });
 
 process.on('SIGINT', () => {
   emit('worker_error', { message: 'Worker received SIGINT — shutting down', signal: 'SIGINT' });
   clearInterval(heartbeatInterval);
-  process.exit(130);
+  void persistFailureResult(new Error('Worker received SIGINT — shutting down')).finally(() => process.exit(130));
 });
 
 process.on('unhandledRejection', (reason: unknown) => {
   const failure = buildFailurePayload(reason);
   emit('worker_error', { ...failure, message: `Unhandled rejection: ${failure.message}` });
   clearInterval(heartbeatInterval);
-  process.exit(1);
+  void persistFailureResult(reason).finally(() => process.exit(1));
 });
 
 async function runAnalysis(payload: WorkerPayload) {
@@ -266,6 +289,13 @@ async function runImageGeneration(payload: WorkerPayload) {
     config: payload.config,
     externalJobId: payload.externalJobId,
     outputDirectory: payload.imageGenerationInput.outputDirectory,
+    targetEpisodeNumber: payload.imageGenerationInput.targetEpisodeNumber,
+    mode: payload.imageGenerationInput.mode,
+    targetSlots: payload.imageGenerationInput.targetSlots,
+    skipEncounterImages: payload.imageGenerationInput.skipEncounterImages,
+    skipCover: payload.imageGenerationInput.skipCover,
+    skipCharacterRefs: payload.imageGenerationInput.skipCharacterRefs,
+    skipVisualContractValidation: payload.imageGenerationInput.skipVisualContractValidation,
     resumeCheckpoint: payload.resumeCheckpoint,
     onEvent: (event) => {
       emit('pipeline_event', {
@@ -316,6 +346,7 @@ async function main() {
   const payloadRaw = await fs.readFile(payloadPath, 'utf8');
   const payload = JSON.parse(payloadRaw) as unknown;
   assertValidWorkerPayload(payload);
+  activeResultPath = payload.resultPath;
 
   emit('worker_start', { mode: payload.mode });
   if (payload.mode === 'analysis') {
@@ -335,5 +366,6 @@ main()
   .catch(async (error) => {
     clearInterval(heartbeatInterval);
     emit('worker_error', buildFailurePayload(error));
+    await persistFailureResult(error);
     process.exit(1);
   });

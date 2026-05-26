@@ -16,6 +16,7 @@ export function transformStoryToGraph(story: Story): StoryGraph {
 
     for (const scene of episode.scenes) {
       const sceneNodeIds: string[] = [];
+      const sceneGraphKey = getSceneGraphKey(episode.id, scene.id);
 
       if (scene.encounter) {
         // Handle encounter scenes
@@ -34,7 +35,7 @@ export function transformStoryToGraph(story: Story): StoryGraph {
         edges.push(...encounterNodes.edges);
 
         // Add edge from previous scene to encounter start
-        addSceneEntryEdge(scene, encounterNodes.startNodeId, edges);
+        addSceneEntryEdge(episode.id, scene, encounterNodes.startNodeId, edges);
 
       } else {
         // Handle regular beat-based scenes
@@ -49,11 +50,11 @@ export function transformStoryToGraph(story: Story): StoryGraph {
 
         // Add scene entry and exit markers for regular scenes
         if (sceneNodes.startNodeId) {
-          addSceneEntryEdge(scene, sceneNodes.startNodeId, edges, sceneNodes.exitNodeId);
+          addSceneEntryEdge(episode.id, scene, sceneNodes.startNodeId, edges, sceneNodes.exitNodeId);
         }
       }
 
-      sceneGroups.set(scene.id, sceneNodeIds);
+      sceneGroups.set(sceneGraphKey, sceneNodeIds);
     }
 
     episodeGroups.set(episode.id, episodeNodeIds);
@@ -63,7 +64,7 @@ export function transformStoryToGraph(story: Story): StoryGraph {
   }
 
   // Resolve cross-scene references
-  resolveSceneReferences(story, edges);
+  resolveSceneReferences(story, nodes, edges);
 
   return {
     nodes,
@@ -116,7 +117,7 @@ function processScene(
       edges.push({
         id: `edge-${sourceNode.id}-to-scene-${beat.nextSceneId}`,
         source: sourceNode.id,
-        target: `scene-entry-${beat.nextSceneId}`,
+        target: createSceneEntryRef(episode.id, beat.nextSceneId),
         type: 'scene-transition',
         conditioned: false,
       });
@@ -126,7 +127,7 @@ function processScene(
       edges.push({
         id: `edge-${sourceNode.id}-to-scene-${scene.leadsTo[0]}`,
         source: sourceNode.id,
-        target: `scene-entry-${scene.leadsTo[0]}`,
+        target: createSceneEntryRef(episode.id, scene.leadsTo[0]),
         type: 'scene-transition',
         conditioned: false,
       });
@@ -140,20 +141,27 @@ function processScene(
           if (targetNode) {
             edges.push({
               id: `edge-${sourceNode.id}-choice-${choice.id}-to-${targetNode.id}`,
-                  source: sourceNode.id,
-                  target: targetNode.id,
-                  type: 'choice',
-                  label: String(choice.text || ''),
-                  conditioned: !!choice.conditions,
-                });
+              source: sourceNode.id,
+              target: targetNode.id,
+              type: 'choice',
+              label: String(choice.text || ''),
+              conditioned: !!choice.conditions,
+            });
+          } else if (choice.nextSceneId) {
+            edges.push({
+              id: `edge-${sourceNode.id}-choice-${choice.id}-to-scene-${choice.nextSceneId}-beat-${choice.nextBeatId}`,
+              source: sourceNode.id,
+              target: createSceneBeatRef(episode.id, choice.nextSceneId, choice.nextBeatId),
+              type: 'choice',
+              label: String(choice.text || ''),
+              conditioned: !!choice.conditions,
+            });
           }
-        }
-
-        if (choice.nextSceneId) {
+        } else if (choice.nextSceneId) {
           edges.push({
             id: `edge-${sourceNode.id}-choice-${choice.id}-to-scene-${choice.nextSceneId}`,
             source: sourceNode.id,
-            target: `scene-entry-${choice.nextSceneId}`,
+            target: createSceneEntryRef(episode.id, choice.nextSceneId),
             type: 'scene-transition',
             label: String(choice.text || ''),
             conditioned: !!choice.conditions,
@@ -253,7 +261,7 @@ function processEncounter(
       edges.push({
         id: `edge-${sourceNode.id}-victory-to-scene-${encounter.outcomes.victory.nextSceneId}`,
         source: sourceNode.id,
-        target: `scene-entry-${encounter.outcomes.victory.nextSceneId}`,
+        target: createSceneEntryRef(episodeId, encounter.outcomes.victory.nextSceneId),
         type: 'outcome',
         label: 'Victory',
         conditioned: false,
@@ -270,7 +278,7 @@ function processEncounter(
       edges.push({
         id: `edge-${sourceNode.id}-defeat-to-scene-${encounter.outcomes.defeat.nextSceneId}`,
         source: sourceNode.id,
-        target: `scene-entry-${encounter.outcomes.defeat.nextSceneId}`,
+        target: createSceneEntryRef(episodeId, encounter.outcomes.defeat.nextSceneId),
         type: 'outcome',
         label: 'Defeat',
         conditioned: false,
@@ -332,7 +340,7 @@ function addEncounterChoicesForSituation(input: {
   choices.forEach((choice: any, choiceIndex: number) => {
     const choiceId = sanitizeId(choice.id || `choice-${choiceIndex}`);
     const choiceNode = createEncounterSyntheticNode({
-      id: `encounter-choice-${sceneId}-${pathPrefix}-${choiceId}`,
+      id: `encounter-choice-${episodeId}-${sceneId}-${pathPrefix}-${choiceId}`,
       type: 'encounter-choice',
       kind: 'encounter-choice',
       label: normalizeVisualizerText(choice.text || `Choice ${choiceIndex + 1}`),
@@ -369,7 +377,7 @@ function addEncounterChoicesForSituation(input: {
         edges.push({
           id: `edge-${choiceNode.id}-${tier}-to-scene-${nextSceneId}`,
           source: choiceNode.id,
-          target: `scene-entry-${nextSceneId}`,
+          target: createSceneEntryRef(episodeId, nextSceneId),
           type: 'outcome',
           label: humanizeOutcomeLabel(resultOutcome),
           conditioned: false,
@@ -386,7 +394,7 @@ function addEncounterChoicesForSituation(input: {
         const outcomeLabel = resultOutcome ? humanizeOutcomeLabel(resultOutcome) : formatOutcomeTier(tier);
         const situationImage = mediaRefAsString(nextSituation.situationImage) || undefined;
         const situationNode = createEncounterSyntheticNode({
-          id: `encounter-situation-${sceneId}-${pathPrefix}-${choiceId}-${tier}`,
+          id: `encounter-situation-${episodeId}-${sceneId}-${pathPrefix}-${choiceId}-${tier}`,
           type: 'encounter-situation',
           kind: 'encounter-situation',
           label: `${formatOutcomeTier(tier)} Follow-Up`,
@@ -649,11 +657,11 @@ function sanitizeId(value: string): string {
   return String(value || '').replace(/[^a-zA-Z0-9_-]+/g, '-');
 }
 
-function addSceneEntryEdge(scene: Scene, targetNodeId: string, edges: GraphEdge[], exitNodeId?: string) {
+function addSceneEntryEdge(episodeId: string, scene: Scene, targetNodeId: string, edges: GraphEdge[], exitNodeId?: string) {
   // Mark the scene entry point for later reference resolution
   edges.push({
-    id: `scene-entry-marker-${scene.id}`,
-    source: `scene-entry-${scene.id}`,
+    id: `scene-entry-marker-${encodeURIComponent(getSceneGraphKey(episodeId, scene.id))}`,
+    source: createSceneEntryRef(episodeId, scene.id),
     target: targetNodeId,
     type: 'next',
     conditioned: !!scene.conditions,
@@ -662,9 +670,9 @@ function addSceneEntryEdge(scene: Scene, targetNodeId: string, edges: GraphEdge[
   // Also mark the exit node if provided
   if (exitNodeId) {
     edges.push({
-      id: `scene-exit-marker-${scene.id}`,
+      id: `scene-exit-marker-${encodeURIComponent(getSceneGraphKey(episodeId, scene.id))}`,
       source: exitNodeId,
-      target: `scene-exit-${scene.id}`,
+      target: createSceneExitRef(episodeId, scene.id),
       type: 'next',
       conditioned: false,
     });
@@ -679,15 +687,15 @@ function addSceneTransitions(episode: Episode, edges: GraphEdge[]) {
 
     // Check if there's already an explicit edge to the next scene
     const hasExplicitEdge = edges.some(
-      (e) => e.target === `scene-entry-${nextScene.id}` && e.source.includes(currentScene.id)
+      (e) => e.target === createSceneEntryRef(episode.id, nextScene.id) && e.source.includes(currentScene.id)
     );
 
     if (!hasExplicitEdge) {
       // Add implicit sequential transition
       edges.push({
         id: `implicit-scene-${episode.id}-${currentScene.id}-to-${nextScene.id}`,
-        source: `scene-exit-${currentScene.id}`,
-        target: `scene-entry-${nextScene.id}`,
+        source: createSceneExitRef(episode.id, currentScene.id),
+        target: createSceneEntryRef(episode.id, nextScene.id),
         type: 'scene-transition',
         conditioned: !!nextScene.conditions,
       });
@@ -695,19 +703,27 @@ function addSceneTransitions(episode: Episode, edges: GraphEdge[]) {
   }
 }
 
-function resolveSceneReferences(story: Story, edges: GraphEdge[]) {
+function resolveSceneReferences(story: Story, nodes: GraphNode[], edges: GraphEdge[]) {
   // Build maps of scene IDs to their entry and exit node IDs
   const sceneEntryMap = new Map<string, string>();
   const sceneExitMap = new Map<string, string>();
+  const sceneBeatMap = new Map<string, string>();
+
+  for (const node of nodes) {
+    const beatId = (node.data as { id?: string })?.id;
+    if (node.type === 'beat' && node.episodeId && node.sceneId && beatId) {
+      sceneBeatMap.set(getSceneBeatKey(node.episodeId, node.sceneId, beatId), node.id);
+    }
+  }
 
   for (const edge of edges) {
     if (edge.id.startsWith('scene-entry-marker-')) {
-      const sceneId = edge.source.replace('scene-entry-', '');
-      sceneEntryMap.set(sceneId, edge.target);
+      const ref = parseSceneEntryRef(edge.source);
+      if (ref.episodeId && ref.sceneId) sceneEntryMap.set(getSceneGraphKey(ref.episodeId, ref.sceneId), edge.target);
     }
     if (edge.id.startsWith('scene-exit-marker-')) {
-      const sceneId = edge.target.replace('scene-exit-', '');
-      sceneExitMap.set(sceneId, edge.source);
+      const ref = parseSceneExitRef(edge.target);
+      if (ref.episodeId && ref.sceneId) sceneExitMap.set(getSceneGraphKey(ref.episodeId, ref.sceneId), edge.source);
     }
   }
 
@@ -715,8 +731,18 @@ function resolveSceneReferences(story: Story, edges: GraphEdge[]) {
   for (const edge of edges) {
     // Resolve scene entry targets
     if (edge.target.startsWith('scene-entry-')) {
-      const sceneId = edge.target.replace('scene-entry-', '');
-      const actualTarget = sceneEntryMap.get(sceneId);
+      const ref = parseSceneEntryRef(edge.target);
+      const actualTarget = ref.episodeId && ref.sceneId
+        ? sceneEntryMap.get(getSceneGraphKey(ref.episodeId, ref.sceneId))
+        : undefined;
+      if (actualTarget) {
+        edge.target = actualTarget;
+      }
+    }
+
+    if (edge.target.startsWith('scene-beat:')) {
+      const { episodeId, sceneId, beatId } = parseSceneBeatRef(edge.target);
+      const actualTarget = episodeId && sceneId && beatId ? sceneBeatMap.get(getSceneBeatKey(episodeId, sceneId, beatId)) : undefined;
       if (actualTarget) {
         edge.target = actualTarget;
       }
@@ -724,8 +750,10 @@ function resolveSceneReferences(story: Story, edges: GraphEdge[]) {
 
     // Resolve scene exit sources
     if (edge.source.startsWith('scene-exit-')) {
-      const sceneId = edge.source.replace('scene-exit-', '');
-      const actualSource = sceneExitMap.get(sceneId);
+      const ref = parseSceneExitRef(edge.source);
+      const actualSource = ref.episodeId && ref.sceneId
+        ? sceneExitMap.get(getSceneGraphKey(ref.episodeId, ref.sceneId))
+        : undefined;
       if (actualSource) {
         edge.source = actualSource;
       }
@@ -745,7 +773,7 @@ function resolveSceneReferences(story: Story, edges: GraphEdge[]) {
 
   // Remove edges with unresolved references (they would have no valid source/target)
   const unresolvedEdges = edges.filter(
-    (e) => e.source.startsWith('scene-exit-') || e.target.startsWith('scene-entry-')
+    (e) => e.source.startsWith('scene-exit-') || e.target.startsWith('scene-entry-') || e.target.startsWith('scene-beat:')
   );
   for (const unresolved of unresolvedEdges) {
     const index = edges.indexOf(unresolved);
@@ -753,6 +781,54 @@ function resolveSceneReferences(story: Story, edges: GraphEdge[]) {
       edges.splice(index, 1);
     }
   }
+}
+
+function getSceneGraphKey(episodeId: string, sceneId: string): string {
+  return `${episodeId}::${sceneId}`;
+}
+
+function getSceneBeatKey(episodeId: string, sceneId: string, beatId: string): string {
+  return `${getSceneGraphKey(episodeId, sceneId)}::${beatId}`;
+}
+
+function createSceneEntryRef(episodeId: string, sceneId: string): string {
+  return `scene-entry-${encodeURIComponent(getSceneGraphKey(episodeId, sceneId))}`;
+}
+
+function parseSceneEntryRef(ref: string): { episodeId?: string; sceneId?: string } {
+  return parseSceneGraphKeyRef(ref, 'scene-entry-');
+}
+
+function createSceneExitRef(episodeId: string, sceneId: string): string {
+  return `scene-exit-${encodeURIComponent(getSceneGraphKey(episodeId, sceneId))}`;
+}
+
+function parseSceneExitRef(ref: string): { episodeId?: string; sceneId?: string } {
+  return parseSceneGraphKeyRef(ref, 'scene-exit-');
+}
+
+function parseSceneGraphKeyRef(ref: string, prefix: string): { episodeId?: string; sceneId?: string } {
+  if (!ref.startsWith(prefix)) return {};
+  const decoded = decodeURIComponent(ref.slice(prefix.length));
+  const [episodeId, sceneId] = decoded.split('::');
+  if (!episodeId || !sceneId) return {};
+
+  return { episodeId, sceneId };
+}
+
+function createSceneBeatRef(episodeId: string, sceneId: string, beatId: string): string {
+  return `scene-beat:${encodeURIComponent(episodeId)}:${encodeURIComponent(sceneId)}:${encodeURIComponent(beatId)}`;
+}
+
+function parseSceneBeatRef(ref: string): { episodeId?: string; sceneId?: string; beatId?: string } {
+  const [, episodeId, sceneId, beatId] = ref.split(':');
+  if (!episodeId || !sceneId || !beatId) return {};
+
+  return {
+    episodeId: decodeURIComponent(episodeId),
+    sceneId: decodeURIComponent(sceneId),
+    beatId: decodeURIComponent(beatId),
+  };
 }
 
 function truncateText(text: unknown, maxLength: number): string {

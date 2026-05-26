@@ -4,7 +4,7 @@ import { BLOB_CONFIG, PROXY_CONFIG, isVercelDeployment } from '../config/endpoin
 import { Story, StoryCatalogEntry } from '../types';
 import { toUrl, type AssetRuntime } from '../assets/assetResolver';
 import { isAssetRef } from '../assets/assetRef';
-import { decodeStory, StoryValidationError } from '../ai-agents/codec/storyCodec';
+import { decodeStory, StoryValidationError } from '../story-codec/storyCodec';
 
 const GENERATED_STORIES_KEY = '@storyrpg_generated_stories';
 
@@ -135,6 +135,34 @@ export function createStoryCatalogEntry(
   };
 }
 
+function createBlobCatalogEntry(entry: BlobManifestEntry): StoryCatalogEntry {
+  return {
+    id: entry.id,
+    title: entry.title,
+    genre: entry.genre,
+    synopsis: entry.synopsis,
+    coverImage: entry.coverImageUrl || '',
+    author: entry.author,
+    tags: entry.tags,
+    fullStoryUrl: entry.blobUrl,
+    episodeCount: entry.episodeCount || 0,
+    episodes: [],
+  };
+}
+
+async function fetchBlobStoryCatalog(): Promise<StoryCatalogEntry[] | null> {
+  if (!BLOB_CONFIG.manifestUrl) return null;
+
+  const response = await fetch(BLOB_CONFIG.manifestUrl, {
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) throw new Error(`Blob catalog fetch failed: ${response.status}`);
+
+  const payload = await response.json() as BlobManifest;
+  if (!Array.isArray(payload.stories)) return [];
+  return payload.stories.map(createBlobCatalogEntry);
+}
+
 export async function fetchDeletedStoryIds(): Promise<Set<string>> {
   if (Platform.OS === 'web') {
     try {
@@ -163,6 +191,16 @@ export async function fetchStoryCatalog(): Promise<{
   fileLoadedStoryIds: Set<string>;
 }> {
   if (Platform.OS === 'web') {
+    if (isVercelDeployment()) {
+      const blobStories = await fetchBlobStoryCatalog();
+      if (blobStories) {
+        return {
+          stories: blobStories,
+          fileLoadedStoryIds: new Set(blobStories.map((story) => story.id)),
+        };
+      }
+    }
+
     const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/list-stories`, {
       headers: { Accept: 'application/json' },
     });

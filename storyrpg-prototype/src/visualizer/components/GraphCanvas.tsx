@@ -1,7 +1,7 @@
 import React, { useRef, useCallback, useEffect } from 'react';
 import { View, StyleSheet, Platform, TouchableOpacity, useWindowDimensions } from 'react-native';
 import Svg, { G, Defs, Pattern, Line, Rect } from 'react-native-svg';
-import { ChevronDown, ChevronUp } from 'lucide-react-native';
+import { ChevronDown, ChevronUp, ThumbsDown } from 'lucide-react-native';
 import {
   StoryGraph,
   GraphEdge as GraphEdgeType,
@@ -20,10 +20,12 @@ interface GraphCanvasProps {
   onViewStateChange: (state: ViewState) => void;
   onNodePress: (node: GraphNodeType) => void;
   onEdgePress: (edge: GraphEdgeType) => void;
+  onCanvasPress?: () => void;
   selectedNodeId: string | null;
   selectedEdgeId: string | null;
   mode: VisualizerMode;
   selectedNpcId: string | null;
+  onRejectImage?: (node: GraphNodeType) => void;
 }
 
 export const GraphCanvas: React.FC<GraphCanvasProps> = ({
@@ -32,10 +34,12 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   onViewStateChange,
   onNodePress,
   onEdgePress,
+  onCanvasPress,
   selectedNodeId,
   selectedEdgeId,
   mode,
   selectedNpcId,
+  onRejectImage,
 }) => {
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const canvasHeight = Math.max(320, viewportHeight - 180);
@@ -47,6 +51,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   const viewStateRef = useRef(viewState);
   const pendingViewStateRef = useRef<ViewState | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const didDragOnLastGestureRef = useRef(false);
 
   // Keep viewStateRef in sync
   useEffect(() => {
@@ -118,6 +123,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
 
     isMouseDownRef.current = true;
     isDraggingRef.current = false;
+    didDragOnLastGestureRef.current = false;
     dragStartPosRef.current = { x: clientX, y: clientY };
     lastMousePosRef.current = { x: clientX, y: clientY };
   }, []);
@@ -162,13 +168,25 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       const node = findNodeAtPosition(clientX, clientY);
       if (node) {
         onNodePress(node);
+      } else {
+        onCanvasPress?.();
       }
+    } else {
+      didDragOnLastGestureRef.current = true;
     }
 
     isMouseDownRef.current = false;
     isDraggingRef.current = false;
     dragStartPosRef.current = { x: 0, y: 0 };
-  }, [findNodeAtPosition, onNodePress]);
+  }, [findNodeAtPosition, onCanvasPress, onNodePress]);
+
+  const handleCanvasPress = useCallback(() => {
+    if (didDragOnLastGestureRef.current) {
+      didDragOnLastGestureRef.current = false;
+      return;
+    }
+    onCanvasPress?.();
+  }, [onCanvasPress]);
 
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
@@ -277,6 +295,23 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     mode,
     highlightedEdgeIds,
   });
+  const directChoiceEdgeIds = getDirectChoiceEdgeIds(graph.edges, nodeMap, outgoingEdgeGroups);
+  const targetLabelStacks = getTargetLabelStacks(graph.edges, nodeMap, mode);
+  const selectedImageBeatNode = selectedNodeId
+    ? graph.nodes.find((node) => node.id === selectedNodeId && node.type === 'beat' && Boolean(node.image))
+    : null;
+  const rejectButtonPosition = selectedImageBeatNode
+    ? {
+      left: Math.max(12, Math.min(
+        viewportWidth - 60,
+        viewState.translateX + (selectedImageBeatNode.x + selectedImageBeatNode.width - 52) * viewState.scale,
+      )),
+      top: Math.max(76, Math.min(
+        canvasHeight - 60,
+        viewState.translateY + (selectedImageBeatNode.y + 12) * viewState.scale,
+      )),
+    }
+    : null;
 
   // Build event handlers based on platform
   const eventHandlers = Platform.OS === 'web' ? {
@@ -334,7 +369,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
         </Defs>
 
         {/* Background Grid */}
-        <Rect width="100%" height="100%" fill="url(#grid)" />
+        <Rect width="100%" height="100%" fill="url(#grid)" onPress={handleCanvasPress} />
 
         <G
           transform={`translate(${viewState.translateX}, ${viewState.translateY}) scale(${viewState.scale})`}
@@ -343,6 +378,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
           {graph.edges.map((edge) => {
             const sourceNode = nodeMap.get(edge.source);
             const targetNode = nodeMap.get(edge.target);
+            const targetLabelStack = targetLabelStacks.get(edge.id);
 
             if (!sourceNode || !targetNode) return null;
             const outgoingSiblings = outgoingEdgeGroups.get(edge.source) ?? [edge.id];
@@ -355,9 +391,12 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                 targetNode={targetNode}
                 sourceSiblingIndex={outgoingSiblings.indexOf(edge.id)}
                 sourceSiblingCount={outgoingSiblings.length}
+                targetLabelIndex={targetLabelStack?.index}
+                targetLabelCount={targetLabelStack?.count}
                 isHighlighted={highlightedEdgeIds.has(edge.id)}
                 isDimmed={hasFocusedSelection && !highlightedEdgeIds.has(edge.id)}
                 hideLabel={hiddenLabelEdgeIds.has(edge.id)}
+                useChoiceLane={isLaneChoiceEdge(edge, directChoiceEdgeIds, outgoingSiblings)}
                 mode={mode}
                 selectedNpcId={selectedNpcId}
                 onPress={onEdgePress}
@@ -390,6 +429,31 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
           );
         })()}
       </Svg>
+      {selectedImageBeatNode && rejectButtonPosition && onRejectImage && (
+        <View
+          style={[styles.rejectImageControl, rejectButtonPosition]}
+          {...(Platform.OS === 'web'
+            ? {
+              onPointerDown: stopCanvasGesture,
+              onPointerMove: stopCanvasGesture,
+              onPointerUp: stopCanvasGesture,
+            }
+            : {
+              onTouchStart: stopCanvasGesture,
+              onTouchMove: stopCanvasGesture,
+              onTouchEnd: stopCanvasGesture,
+            }) as any}
+        >
+          <TouchableOpacity
+            accessibilityLabel="Regenerate selected image"
+            onPress={() => onRejectImage(selectedImageBeatNode)}
+            style={styles.rejectImageButton}
+            activeOpacity={0.78}
+          >
+            <ThumbsDown size={20} color="#fff" strokeWidth={2.4} />
+          </TouchableOpacity>
+        </View>
+      )}
       <View
         style={styles.pageControls}
         pointerEvents="box-none"
@@ -457,6 +521,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'rgba(5, 7, 12, 0.88)',
     borderColor: VISUALIZER_COLORS.nodeBorders.beat,
+    borderWidth: 1,
+  },
+  rejectImageControl: {
+    position: 'absolute',
+    zIndex: 35,
+    elevation: 35,
+  },
+  rejectImageButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(185, 28, 28, 0.92)',
+    borderColor: 'rgba(255,255,255,0.72)',
     borderWidth: 1,
   },
 });
@@ -550,6 +628,107 @@ function aggregateDuplicateEdgeLabels(input: {
   }
 
   return hidden;
+}
+
+function getDirectChoiceEdgeIds(
+  edges: GraphEdgeType[],
+  nodeMap: Map<string, GraphNodeType>,
+  outgoingEdgeGroups: Map<string, string[]>,
+): Set<string> {
+  const edgeById = new Map(edges.map((edge) => [edge.id, edge] as const));
+  const directIds = new Set<string>();
+
+  for (const edgeIds of outgoingEdgeGroups.values()) {
+    const choiceEdges = edgeIds
+      .map((edgeId) => edgeById.get(edgeId))
+      .filter((edge): edge is GraphEdgeType => Boolean(edge?.choiceSystem?.route?.isMeaningfulBranch))
+      .filter((edge) => Boolean(nodeMap.get(edge.source) && nodeMap.get(edge.target)));
+
+    if (choiceEdges.length < 2) continue;
+
+    const directEdge = [...choiceEdges].sort((a, b) => {
+      const sourceA = nodeMap.get(a.source);
+      const targetA = nodeMap.get(a.target);
+      const sourceB = nodeMap.get(b.source);
+      const targetB = nodeMap.get(b.target);
+      const distanceA = sourceA && targetA ? Math.abs(targetA.y - (sourceA.y + sourceA.height)) : Number.MAX_SAFE_INTEGER;
+      const distanceB = sourceB && targetB ? Math.abs(targetB.y - (sourceB.y + sourceB.height)) : Number.MAX_SAFE_INTEGER;
+      return distanceA - distanceB;
+    })[0];
+
+    if (directEdge) directIds.add(directEdge.id);
+  }
+
+  return directIds;
+}
+
+function isLaneChoiceEdge(
+  edge: GraphEdgeType,
+  directChoiceEdgeIds: Set<string>,
+  outgoingSiblings: string[],
+): boolean {
+  return Boolean(
+    edge.choiceSystem?.choiceId &&
+    edge.choiceSystem.route?.isMeaningfulBranch &&
+    outgoingSiblings.length > 1 &&
+    !directChoiceEdgeIds.has(edge.id),
+  );
+}
+
+function getTargetLabelStacks(
+  edges: GraphEdgeType[],
+  nodeMap: Map<string, GraphNodeType>,
+  mode: VisualizerMode,
+): Map<string, { index: number; count: number }> {
+  const groups = new Map<string, GraphEdgeType[]>();
+  for (const edge of edges) {
+    if (!shouldStackTargetLabel(edge)) continue;
+    if (!nodeMap.has(edge.source) || !nodeMap.has(edge.target)) continue;
+    if (!getCanvasEdgeLabel(edge, mode).trim()) continue;
+    const group = groups.get(edge.target) ?? [];
+    group.push(edge);
+    groups.set(edge.target, group);
+  }
+
+  const stacks = new Map<string, { index: number; count: number }>();
+  for (const group of groups.values()) {
+    group.sort((a, b) => {
+      const sourceA = nodeMap.get(a.source);
+      const sourceB = nodeMap.get(b.source);
+      const outcomeDelta = getOutcomeLabelPriority(a) - getOutcomeLabelPriority(b);
+      if (outcomeDelta !== 0) return outcomeDelta;
+      return (sourceA?.x ?? 0) - (sourceB?.x ?? 0);
+    });
+
+    group.forEach((edge, index) => {
+      stacks.set(edge.id, { index, count: group.length });
+    });
+  }
+
+  return stacks;
+}
+
+function shouldStackTargetLabel(edge: GraphEdgeType): boolean {
+  return Boolean(edge.synthetic?.outcome || edge.synthetic?.kind === 'encounter-outcome');
+}
+
+function getOutcomeLabelPriority(edge: GraphEdgeType): number {
+  const outcome = edge.synthetic?.outcome ?? edge.synthetic?.tier;
+  switch (outcome) {
+    case 'victory':
+    case 'success':
+      return 0;
+    case 'partialVictory':
+    case 'complicated':
+      return 1;
+    case 'defeat':
+    case 'failure':
+      return 2;
+    case 'escape':
+      return 3;
+    default:
+      return 4;
+  }
 }
 
 function shouldAggregateLabel(edge: GraphEdgeType): boolean {

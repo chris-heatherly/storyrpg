@@ -2,6 +2,11 @@ const { getDefaultConfig } = require('expo/metro-config');
 const path = require('path');
 
 const config = getDefaultConfig(__dirname);
+const appTarget = process.env.STORYRPG_APP_TARGET || 'reader';
+const appEntry = path.resolve(
+  __dirname,
+  appTarget === 'generator' ? 'apps/generator/GeneratorApp.tsx' : 'apps/reader/ReaderApp.tsx',
+);
 
 // Force using CommonJS exports for web to avoid import.meta issues
 config.resolver.unstable_conditionNames = ['require', 'default'];
@@ -32,6 +37,12 @@ const emptyModule = path.resolve(__dirname, 'src/empty-module.js');
 // Use resolveRequest as a more aggressive redirection for modules inside node_modules
 const originalResolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName === '@storyrpg/app-entry') {
+    return {
+      filePath: appEntry,
+      type: 'sourceFile',
+    };
+  }
   if (moduleName === 'fs' || moduleName === 'node:fs') {
     return {
       filePath: fsPolyfill,

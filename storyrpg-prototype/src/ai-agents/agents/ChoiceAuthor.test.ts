@@ -225,4 +225,85 @@ describe('ChoiceAuthor.normalizeChoiceSet', () => {
     const result = (author as any).normalizeChoiceSet(choiceSet, inputWithArc);
     expect(result.choices[0].feedbackCue?.checkClass).toBe('retryable');
   });
+
+  it('infers affordanceSource from choice conditions', () => {
+    const choiceSet = makeChoiceSet({
+      choiceType: 'strategic',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Use the stolen seal',
+          choiceType: 'strategic',
+          consequences: [],
+          conditions: { type: 'item', itemId: 'stolen-seal', hasItem: true },
+        },
+        { id: 'c2', text: 'Try something else', choiceType: 'strategic', consequences: [] },
+      ],
+    });
+
+    const result = (author as any).normalizeChoiceSet(choiceSet, input);
+    expect(result.choices[0].affordanceSource).toBe('item');
+  });
+
+  it('infers storyVerb from provided story verbs and consequence domain', () => {
+    const inputWithVerbs = makeInput({
+      storyVerbs: [
+        {
+          verb: 'bribe',
+          description: 'Buy cooperation.',
+          typicalSources: ['item'],
+          consequenceDomains: ['resource', 'relationship'],
+        },
+      ],
+    });
+    const choiceSet = makeChoiceSet({
+      choiceType: 'relationship',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Offer a private payment',
+          choiceType: 'relationship',
+          consequences: [],
+          consequenceDomain: 'relationship',
+        },
+        { id: 'c2', text: 'Ask plainly', choiceType: 'relationship', consequences: [] },
+      ],
+    });
+
+    const result = (author as any).normalizeChoiceSet(choiceSet, inputWithVerbs);
+    expect(result.choices[0].storyVerb).toBe('bribe');
+  });
+
+  it('preserves witnessReactions and failureResidue metadata', () => {
+    const choiceSet = makeChoiceSet({
+      choiceType: 'strategic',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Pressure the witness',
+          choiceType: 'strategic',
+          consequences: [],
+          statCheck: { skillWeights: { intimidation: 1.0 }, difficulty: 55 },
+          witnessReactions: [{
+            npcId: 'mara',
+            stance: 'questions',
+            reactionText: 'Mara goes quiet.',
+          }],
+          failureResidue: {
+            kind: 'lost_leverage',
+            description: 'The witness becomes harder to reach.',
+          },
+        },
+        { id: 'c2', text: 'Wait for calm', choiceType: 'strategic', consequences: [] },
+      ],
+    });
+
+    const result = (author as any).normalizeChoiceSet(choiceSet, input);
+    expect(result.choices[0].witnessReactions).toEqual([
+      expect.objectContaining({ npcId: 'mara', stance: 'questions' }),
+    ]);
+    expect(result.choices[0].failureResidue).toEqual(
+      expect.objectContaining({ kind: 'lost_leverage' }),
+    );
+  });
 });

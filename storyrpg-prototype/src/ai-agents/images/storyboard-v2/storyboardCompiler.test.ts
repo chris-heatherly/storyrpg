@@ -258,6 +258,56 @@ describe('compileStoryboardScenePacket', () => {
     expect(packet.diagnostics?.unresolvedCharacterIds).toEqual([]);
   });
 
+  it('does not pass unmentioned scene-cast NPCs or anonymous doormen into prompt characters', () => {
+    const packet = compileStoryboardScenePacket({
+      scopedSceneId: 'episode-1-scene-3',
+      protagonistId: 'char-kylie-marinescu',
+      protagonistName: 'Kylie Marinescu',
+      characterBible: {
+        characters: [
+          {
+            id: 'char-kylie-marinescu',
+            name: 'Kylie Marinescu',
+            physicalDescription: 'blonde woman in tortoiseshell glasses',
+          },
+          {
+            id: 'char-mika-drgan',
+            name: 'Mika Drăgan',
+            physicalDescription: 'platinum bob, cat-eye sunglasses',
+          },
+          {
+            id: 'char-victor-vlcescu',
+            name: 'Victor Vâlcescu',
+            physicalDescription: 'tall aristocratic man in a dark suit',
+          },
+        ],
+      } as any,
+      scene: {
+        sceneId: 'scene-3',
+        sceneName: 'Vâlcescu Club Door',
+        startingBeatId: 'b1',
+        charactersInvolved: ['char-kylie-marinescu', 'char-mika-drgan', 'char-victor-vlcescu'],
+        beats: [
+          {
+            id: 'b1',
+            text: "You stand before Vâlcescu Club's velvet rope while the anonymous doorman looks over your dress.",
+            visibleCharacterIds: ['doorman'],
+          },
+          {
+            id: 'b2',
+            text: 'A woman with a platinum bob appears beside you and studies the door.',
+          },
+        ],
+      } as any,
+    });
+
+    expect(packet.characters.map((character) => character.id)).toEqual(['char-kylie-marinescu']);
+    expect(packet.panels[0].visibleCharacterIds).toEqual(['char-kylie-marinescu']);
+    expect(packet.panels[0].unresolvedCharacterIds).toBeUndefined();
+    expect(packet.panels[0].characterResolutionWarnings).toBeUndefined();
+    expect(packet.panels[1].visibleCharacterIds).toEqual(['char-kylie-marinescu']);
+  });
+
   it('includes encounter setup, outcome, situation, and storylet panels', () => {
     const packet = compileStoryboardScenePacket({
       scopedSceneId: 'episode-1-scene-2',

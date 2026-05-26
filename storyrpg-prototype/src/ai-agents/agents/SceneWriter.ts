@@ -281,12 +281,17 @@ export interface GeneratedBeat {
   text: string;
   content?: string; // Fallback field sometimes used by LLMs
   textVariants?: TextVariant[];
+  callbackHookIds?: string[];
+  skillInsights?: Beat['skillInsights'];
   speaker?: string;
   speakerMood?: string;
   nextBeatId?: string;
+  nextSceneId?: string;
   onShow?: Consequence[];
   // Note: choices are added by Choice Author agent
   isChoicePoint?: boolean; // Mark where Choice Author should add choices
+  isChoiceBridge?: boolean;
+  routeContext?: Beat['routeContext'];
   // Timing metadata for choice density validation
   timing?: TimingMetadata;
   // Visual contract authored alongside prose to prevent downstream drift
@@ -382,7 +387,7 @@ export class SceneWriter extends BaseAgent {
     return `
 ## Your Role: Scene Writer
 
-You are a master prose writer who brings scene blueprints to life with vivid, immersive narrative text. You write the actual words players will read.
+You are a master prose writer who brings scene blueprints to life with concrete, style-safe story intent and concise player-facing prose. You write the actual words players will read.
 
 ## Writing Principles: The Two-Pass Method
 1. **Pass 1: Cinematic Quality**: Focus on drama, subtext, and reversals first. Every scene must advance Plot, Relationship, or Thematic Pressure.
@@ -394,7 +399,7 @@ You are a master prose writer who brings scene blueprints to life with vivid, im
 - Use sensory details to create atmosphere.
 
 ### Immersive Description
-- Engage all five senses.
+- Use sensory detail selectively and purposefully; do not force all five senses into every beat.
 - Ground scenes in specific, concrete details.
 - Vary sentence length for rhythm.
 - **Atmospheric Fidelity**: Use the specific prose style and terminology of the source material if identified.
@@ -403,6 +408,7 @@ You are a master prose writer who brings scene blueprints to life with vivid, im
 - Each character must sound distinct.
 - Dialogue should reveal personality.
 - Use subtext - what's NOT said matters.
+- Prefer the gap between what characters say and what they mean; allow direct speech for vows, confessions, tactics, comedy, ritual, or catharsis when pressure earns it.
 - **Direct Source Language**: If source material fragments are provided, PRIORITIZE using that exact language for key moments and dialogue.
 
 ### Pacing
@@ -412,15 +418,70 @@ You are a master prose writer who brings scene blueprints to life with vivid, im
 
 ### Scene Craft
 - Every scene needs a purpose players can feel: plot pressure, relationship movement, theme pressure, information gain, or meaningful aftermath.
+- If the blueprint supplies themePressure, express it through action, cost, choice, subtext, relationship pressure, information, or identity movement. Never have dialogue state the theme question directly.
+- Every scene must have a purpose in emotional, action, or character-related content that advances the story.
+- Start as late as possible and leave as soon as the turn, decision, consequence, or handoff lands.
+- In multi-character scenes, make leverage, trust, vulnerability, intimacy, distance, information, status, threat, debt, or public/private advantage shift at least once.
+- Descriptions, action, dialogue, visual metadata, choices, and final beat should reinforce that purpose and help deliver the sceneTakeaways and keyMoment.
 - Identify the scene's key moment and build the beat sequence toward it.
+- Scene beats should build toward the scene keyMoment. Intensity does not need to rise mechanically every beat, but tension, gravitas, danger, intimacy, consequence, or dramatic clarity should accumulate across the scene.
+- Build a stakes ladder across the beats: each beat should raise risk, reveal cost, narrow options, shift leverage, or deepen consequence until the dominant/peak beat carries the maximum stakes. Rest beats can raise dread, clarity, regret, tenderness, or emotional cost instead of volume.
+- Use rest beats only when they create contrast, aftermath, dread, tenderness, or sharper payoff.
 - Prefer turns over topics. A beat should visibly change leverage, trust, evidence, proximity, identity, risk, resources, or knowledge; do not let scenes become chains of explanation.
 - Include scene takeaways: what the player should learn, feel, or understand by the end.
+- Scene takeaways are load-bearing: they name what the player learns, feels, or understands about story, character, relationship, theme, information, or player-state pressure.
+- The scene keyMoment should be the beat where those takeaways become felt, proven, revealed, or changed.
+- Each non-rest beat should show a concrete shift in action, intent, leverage, mood, relationship dynamic, tactical position, information, or consequence.
 - Use natural transition phrasing in continuityNotes or transitionIn ("Later that night", "Back at the observatory") when time or place shifts.
-- End the final beat with forward pressure into the next beat, choice, scene, or episode.
+- If the blueprint leaves small connective gaps, fill them naturally with local detail: transition, concrete action, emotional pressure, physical business, clue, consequence, or relationship texture.
+- Do not contradict season anchors, source-material fidelity, established character state, player choices, flags, callbacks, or encounter setup context.
+- The final beat of each scene should land a pointed resolution or consequence, then create forward pressure into the next beat, choice, scene, encounter, or episode.
+- Forward pressure may be a cliffhanger, reveal, unresolved cost, emotional rupture, new danger, changed relationship, choice consequence, or handoff.
+- For non-finale episode endings, heighten next-episode pressure. For finale/resolution endings, resolve the central conflict and show aftermath.
 - When a Seven-Point Cliffhanger Plan is supplied, the final beat must satisfy that plan: close the immediate scene/episode tension enough to feel authored, then open the specified next pressure.
-- Keep dialogue concise, pointed, and subtextual; characters may disagree, tease, avoid, or reveal, but not every conversation needs to become an argument.
-- Use selective interiority when it deepens player connection, but avoid over-defining the player character's identity.
+- When characters are in jeopardy or believe they are in jeopardy, dialogue should become more pointed, urgent, interrupted, selective, or stripped down. As fear, danger, exposure, or time pressure increases, reduce explanation and sharpen what characters say.
+- Never write a static meeting where characters only discuss information. If characters talk, ground the conversation in fitting physical activity, spatial pressure, object handling, preparation, travel, hiding, training, repair, cooking, cleaning, fighting, searching, ritual, medical care, escape, or another action appropriate to the circumstances.
+- The physical activity should make the power shift or emotional pressure visible.
+- Do not directly describe characters' thoughts and feelings. Instead, externalize inner life through brief dialogue, muttered one-line self-speech, silence, interruption, bodily action, object handling, hesitation, distance or closeness, facial expression, choice behavior, callback objects, or what the character does next.
+- If a character is alone, use a brief one-line spoken or muttered line when needed.
+- If a moment carries deep emotional weight, memory, regret, longing, fear, or reminiscence, express it through action or brief understated dialogue. Use less explanation, not more.
+- Keep dialogue spare, quick, and to the point. Dialogue should advance story, reveal character, sharpen pressure, or change the relationship dynamic. Avoid speeches unless the source style, genre, ritual, confession, comedy, or climax truly calls for one.
+- When physical action matters, include specific bodily movement: concrete movement, posture, proximity, hand placement, footwork, balance, collision, recoil, grip, breath, facial expression, or object interaction.
 - Do not use film/camera direction terms in player-facing prose. Visual metadata may still use the required shotType and visualContinuity fields.
+- Vivid means vivid story intent, not ornate prose or generic cinematic styling.
+- For player-facing prose: use concrete, concise action and dialogue that makes the story turn legible.
+- For visual metadata and image-facing fields: provide specific story intent, visible action, relationship dynamics, required details, and subtext cues. Do not add art-direction language that fights the active ArtStyleProfile, negative prompt, provider settings, or style-bible anchors.
+- Visual metadata should describe what must be understood, not impose a conflicting style. Avoid generic style words like cinematic, hyperreal, vivid colors, dramatic lighting, painterly, anime, flat, gritty, glossy, symmetrical, or high contrast unless they come from the active style contract.
+
+## Prose And Dialogue Craft
+- Use sensory detail selectively and purposefully. Sensory description should establish place, mood, danger, intimacy, texture, or consequence. Do not force all five senses into every beat.
+- Respect the active source style, genre, tone, user instructions, and style guide. Keep prose voice, dialogue rhythm, descriptive focus, and tonal register consistent across the scene.
+- Use precise, concrete, genre-appropriate language. "Vivid" means specific story intent, sensory clarity, emotional legibility, and image-safe detail, not ornate prose or conflicting art direction.
+- Make description dynamic. Descriptive details should carry pressure, mood, threat, desire, consequence, movement, or contrast.
+- Keep dialogue spare, natural, character-specific, pressure-aware, and subtextual. Dialogue should reveal character, sharpen pressure, change leverage, or expose relationship dynamics.
+- Vary sentence rhythm with scene pressure. Use shorter, sharper lines under danger, urgency, fear, or conflict. Use slightly longer rhythm for atmosphere, aftermath, tenderness, or dread while respecting mobile beat caps.
+- Reveal motivation, fear, desire, attraction, guilt, suspicion, and grief through action, choice, speech, silence, bodily response, facial expression, object handling, avoidance, proximity, risk, and what the character does next.
+- Show emotion through physical response and facial expression rather than direct explanation.
+- Use environmental elements to enhance mood. The setting should pressure, contrast, reveal, or complicate the scene.
+- Build every scene toward its keyMoment using sceneTakeaways, moodProgression, intensityTier, and final beat pressure.
+- End with resolution plus forward pressure: consequence, emotional shift, reveal, choice, handoff, danger, changed relationship, or unresolved cost. Use true cliffhangers only when appropriate.
+- Avoid repetition. Do not repeat plot events, dialogue, scene shapes, descriptive phrasing, character phrasing, location phrasing, or action language unless the repetition is an intentional callback, refrain, contrast, or payoff.
+- Maintain consistent tone across the scene while allowing intentional tonal turns caused by story events.
+
+## Fight, Weapon, And Physical Action Scenes
+- If a scene includes fighting, weapons, pursuit, survival danger, or major physical action, make the danger concrete and serious.
+- Fight/action beats should include specific strikes, maneuvers, evasions, blocks, grapples, throws, falls, impacts, wounds, or damage.
+- Weapons or powers should produce destructive effects. Use loud or forceful consequences when appropriate: clashes, cracks, explosions, splintering, shattering, tearing, or ringing impact.
+- Use surprising tactical choices or environmental maneuvers; do not let fights become abstract summaries.
+- Show visible harm, depletion, fear, pain, exhaustion, loss of advantage, facial expressions, and bodily reactions when characters are wounded or damaged.
+- Show through action how the winning side succeeds and what the losing side physically loses, suffers, or fails to protect.
+- In action scenes, the hero or allies should be wounded, damaged, depleted, exposed, or narrowly escape a specific harm.
+
+## Conflict Damage
+- Every meaningful conflict should damage someone or something.
+- Damage may be physical injury, emotional hurt, social humiliation, relational rupture, resource loss, reputation damage, information exposure, identity pressure, moral compromise, lost leverage, increased danger, or narrowing options.
+- In fight/action scenes, damage should usually be physical, tactical, environmental, or resource-based, with emotional fallout where appropriate.
+- In non-action scenes, damage can be social, relational, emotional, informational, reputational, or identity-based.
 
 ${CRAFT_PRESSURE_GUIDANCE}
 
@@ -704,6 +765,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       dramaticQuestion: input.sceneBlueprint.dramaticQuestion,
       wantVsNeed: input.sceneBlueprint.wantVsNeed,
       conflictEngine: input.sceneBlueprint.conflictEngine,
+      themePressure: input.sceneBlueprint.themePressure,
       keyBeats: input.sceneBlueprint.keyBeats,
       choicePoint: input.sceneBlueprint.choicePoint,
       leadsTo: input.sceneBlueprint.leadsTo,
@@ -1233,22 +1295,59 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 - **Mood**: ${input.sceneBlueprint.mood}
 - **Purpose**: ${input.sceneBlueprint.purpose}
 - **Narrative Function**: ${input.sceneBlueprint.narrativeFunction}
+${input.sceneBlueprint.themePressure ? `- **Theme Pressure**: ${input.sceneBlueprint.themePressure}` : ''}
 
 ### Scene Craft Targets
 - Define 1-4 sceneTakeaways in the output: what the player learns, feels, or understands.
+- Every scene must have a purpose in emotional, action, or character-related content that advances the story; descriptions, action, dialogue, visual metadata, choices, and final beat should reinforce that purpose.
+- If themePressure is supplied, express it through action, cost, choice, subtext, relationship pressure, information, or identity movement. Never have dialogue state the theme question directly.
+- Scene takeaways are load-bearing: they name what the player learns, feels, or understands about story, character, relationship, theme, information, or player-state pressure.
 - If this scene begins after a time/place shift, include transitionIn with a short natural phrase.
+- The scene keyMoment should be the beat where sceneTakeaways become felt, proven, revealed, or changed.
 - keyMoments should name the emotional or narrative payoff, not just a location or mood.
 - moodProgression should show the scene's tension or emotional movement from start to finish.
-- Give dialogue scenes physical business or situational pressure that fits the moment; avoid static meetings.
-- Each non-rest beat should include a concrete change in action, leverage, information, relationship pressure, or emotional posture.
+- Use selective sensory detail to establish place, mood, danger, intimacy, texture, or consequence.
+- Respect active source style, genre, tone, user instructions, and style guide.
+- Use precise, concrete language; avoid ornate prose and generic description.
+- Make description carry pressure, movement, mood, threat, desire, or consequence.
+- Keep dialogue spare, natural, character-specific, pressure-aware, and subtextual.
+- Prefer subtext over explanation: characters may argue values, conceal motives, dodge, confess, threaten, or plead, but should rarely summarize exactly what the scene means.
+- Cut into the scene near the active pressure and leave on the punch: once the turn, decision, consequence, or handoff lands, do not keep explaining it.
+- Vary sentence rhythm with emotional intensity while respecting mobile beat caps.
+- Reveal inner life through action, speech, silence, bodily response, facial expression, object handling, proximity, risk, and choice behavior.
+- Build toward the scene keyMoment and end with resolution plus forward pressure.
+- Avoid repeated plot events, dialogue, scene shapes, and descriptive phrasing unless intentional callback/payoff.
+- Maintain consistent tone unless the scene event intentionally turns the tone.
+- Scene beats should build toward the scene keyMoment. Intensity does not need to rise mechanically every beat, but tension, gravitas, danger, intimacy, consequence, or dramatic clarity should accumulate across the scene.
+- Build a stakes ladder across the beats: each beat should raise risk, reveal cost, narrow options, shift leverage, or deepen consequence until the dominant/peak beat carries the maximum stakes. Rest beats can raise dread, clarity, regret, tenderness, or emotional cost instead of volume.
+- Use rest beats only when they create contrast, aftermath, dread, tenderness, or sharper payoff.
+- The final beat of each scene should land a pointed resolution or consequence, then create forward pressure into the next beat, choice, scene, encounter, or episode.
+- Forward pressure may be a cliffhanger, reveal, unresolved cost, emotional rupture, new danger, changed relationship, choice consequence, or handoff.
+- For non-finale episode endings, heighten next-episode pressure. For finale/resolution endings, resolve the central conflict and show aftermath.
+- Never write a static meeting where characters only discuss information. Give dialogue scenes fitting physical activity, spatial pressure, object handling, preparation, travel, hiding, training, repair, cooking, cleaning, fighting, searching, ritual, medical care, escape, or another action appropriate to the circumstances.
+- When characters are in jeopardy or believe they are in jeopardy, dialogue should become more pointed, urgent, interrupted, selective, or stripped down.
+- Do not directly describe characters' thoughts and feelings. Externalize inner life through brief dialogue, muttered one-line self-speech, silence, interruption, bodily action, object handling, hesitation, distance or closeness, facial expression, choice behavior, callback objects, or what the character does next.
+- If a moment carries deep emotional weight, memory, regret, longing, fear, or reminiscence, express it through action or brief understated dialogue. Use less explanation, not more.
+- Keep dialogue spare, quick, and to the point unless the source style, genre, ritual, confession, comedy, or climax truly calls for longer speech.
+- When physical action matters, include specific bodily movement: concrete movement, posture, proximity, hand placement, footwork, balance, collision, recoil, grip, breath, facial expression, or object interaction.
+- Each non-rest beat should show a concrete shift in action, intent, leverage, mood, relationship dynamic, tactical position, information, or consequence.
+- If the blueprint leaves small connective gaps, fill them naturally with local detail: transition, concrete action, emotional pressure, physical business, clue, consequence, or relationship texture.
+- Do not contradict season anchors, source-material fidelity, established character state, player choices, flags, callbacks, or encounter setup context.
 - Give the scene a storyboardable sequenceIntent: objective, visible activity, obstacle, startState, turningPoint, endState, visualThread, optional mechanicThread. Treat it as required for new output but backward-compatible for old content.
 - Each non-establishing beat should include sequenceIntent with a beatRole so the storyboard can see setup -> pressure -> escalation -> turn -> consequence/handoff.
 - Each non-establishing beat should include a coveragePlan so the storyboard can see shot scale, angle, staging, visible/offscreen cast, relationship blocking, and continuity. Avoid vague "dialogue coverage"; make the shot prove what changed.
+- Vivid means vivid story intent, not ornate prose or generic cinematic styling. For player-facing prose, use concrete, concise action and dialogue that makes the story turn legible.
+- For visual metadata and image-facing fields, provide specific story intent, visible action, relationship dynamics, required details, and subtext cues. Do not add art-direction language that fights the active ArtStyleProfile, negative prompt, provider settings, or style-bible anchors.
+- Visual metadata should describe what must be understood, not impose a conflicting style. Avoid generic style words like cinematic, hyperreal, vivid colors, dramatic lighting, painterly, anime, flat, gritty, glossy, symmetrical, or high contrast unless they come from the active style contract.
 - Every non-rest, non-establishing beat should answer: "What visibly changed by the end?"
 - Prefer turns over topics: not "they discuss the charm," but "the charm changes hands and Mrs. Constantinou loses the ability to dismiss what she saw."
 - Turn domains to use in prose, dramaticIntent, and existing mechanics hooks: ${FICTION_FIRST_TURN_DOMAINS.join(', ')}.
 - When a turn is mechanically relevant, use existing fields only: onShow, textVariants, callbackHookId, plantsThreadId, paysOffThreadId, plotPointType, dramaticIntent, or choice/encounter setup that will carry the residue.
-- Preserve rests and restrained interiority where they serve the player connection; do not force constant combat, argument, or escalation.
+- If this scene includes fighting, weapons, pursuit, survival danger, or major physical action, make the danger concrete and serious: specific strikes, maneuvers, evasions, blocks, grapples, throws, falls, impacts, wounds, damage, destructive effects, loud forceful consequences, surprising tactical choices, environmental use, facial expressions, and bodily reactions.
+- Do not let fights become abstract summaries. Show through action how the winning side succeeds and what the losing side physically loses, suffers, or fails to protect.
+- In action scenes, the hero or allies should be wounded, damaged, depleted, exposed, or narrowly escape a specific harm.
+- Every meaningful conflict should damage someone or something: physical injury, emotional hurt, social humiliation, relational rupture, resource loss, reputation damage, information exposure, identity pressure, moral compromise, lost leverage, increased danger, or narrowing options.
+- Preserve rests where they serve contrast, aftermath, dread, tenderness, or sharper payoff; do not force constant combat or argument.
 
 ### Genre-Aware Jeopardy
 ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
@@ -1270,6 +1369,11 @@ ${input.sceneBlueprint.choicePoint ? `
   - Want: ${input.sceneBlueprint.choicePoint.stakes.want}
   - Cost: ${input.sceneBlueprint.choicePoint.stakes.cost}
   - Identity: ${input.sceneBlueprint.choicePoint.stakes.identity}
+${input.sceneBlueprint.choicePoint.stakesLayers ? `- **Stakes Layers**:
+  - Material: ${input.sceneBlueprint.choicePoint.stakesLayers.material || 'None'}
+  - Relational: ${input.sceneBlueprint.choicePoint.stakesLayers.relational || 'None'}
+  - Identity: ${input.sceneBlueprint.choicePoint.stakesLayers.identity || 'None'}
+  - Existential: ${input.sceneBlueprint.choicePoint.stakesLayers.existential || 'None'}` : ''}
 ` : ''}
 
 ## Characters
@@ -1367,6 +1471,11 @@ If this scene has no outgoing scene, write the last beat as serialized-TV craft:
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
 - ${input.dialogueHeavy ? 'This is dialogue-heavy - focus on conversation' : 'Balance description with any dialogue'}
 - The first non-empty player-facing beat MUST anchor POV to the player character with "you", "your", the protagonist's actual name, or a concrete pronoun before focusing on NPCs or setting.
+- Add optional skillInsights on beats where hidden capability should change what the character notices.
+- skillInsights are passive fiction-first prose, never labels. They reveal danger, opportunity, emotional subtext, contradictions, environmental tools, social leverage, or hidden costs.
+- skillInsights shape: { "id": "slug", "skillWeights": { "perception": 0.6, "investigation": 0.4 }, "threshold": 55, "text": "Plain prose only.", "priority": 1 }
+- Insight thresholds: 45 easy reveal, 55 meaningful reveal, 65 strong build reveal, 75 rare expert reveal.
+- Never write "skill check", "threshold", "bonus", "modifier", "success chance", percentages, or raw skill/stat names as player-facing labels.
 ${input.previousSceneSummary ? `- Previous scene context: ${input.previousSceneSummary}` : ''}
 ${input.nextSceneContext ? `- Next scene context: ${input.nextSceneContext.name} (${input.nextSceneContext.location}) — ${input.nextSceneContext.encounterDescription || input.nextSceneContext.description}` : ''}
 ${input.sceneBlueprint.choicePoint ? '- Mark the final beat as isChoicePoint: true for the Choice Author to add options' : ''}
@@ -1382,15 +1491,18 @@ ${input.nextSceneContext.encounterBeatPlan?.length ? `- Upcoming encounter beat 
 ${input.incomingChoiceContext ? `
 ## CHOICE PAYOFF (CRITICAL — the player CHOSE this)
 This scene is entered because the player chose: "${input.incomingChoiceContext}"
-The FIRST beat MUST visually and textually pay off this choice. Do not delay, hedge, or skip the payoff.
-- The first beat must show what you or the protagonist did or immediately experiences because of that choice.
-- The first beat's text must show the immediate consequence of the choice — the SPECIFIC physical action the player chose.
+Use one or more opening beats as needed to pay off this choice. Do not delay, hedge, skip, or teleport past the payoff.
+- The opening sequence must show what you or the protagonist did or immediately experiences because of that choice.
+- If the scene starts after a time/place shift, include the decision, departure/movement, and arrival before the next major interaction.
+- The next planned story action must wait until the route into it is understandable.
+- The opening text must show the immediate consequence of the choice — the SPECIFIC physical action or decision the player chose.
 - The first beat's visual contract MUST directly depict the choice's consequence:
   - "visualMoment": Describe the EXACT action from the choice playing out (e.g., if they chose to spin in circles, show spinning in circles — not a generic pose)
   - "primaryAction": The verb-led physical action that matches the choice (e.g., "spins wildly with arms outstretched" not "stands on the moors")
   - "mustShowDetail": A specific visual element from the choice that the image MUST include
 - If the player chose to kiss someone, show the kiss. If they chose to dance, show them dancing. If they chose to fight, show the fight. If they chose to laugh wildly and spin, show wild laughter and spinning.
 - Do NOT generalize the choice into a mood or atmosphere shot. The image must show the SPECIFIC ACTION the player selected.
+- Do NOT show or name a major NPC as familiar until the story has introduced them on the active path.
 ` : ''}
 
 Create the scene content following the SceneContent schema. Include:

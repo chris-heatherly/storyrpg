@@ -20,6 +20,7 @@ import { SeasonBible, IdentityProfile } from '../../types';
 import { EpisodeBlueprint } from './StoryArchitect';
 import { CharacterBible } from './CharacterDesigner';
 import type {
+  CharacterArchitecture,
   StoryAnchors,
   SevenPointStructure,
   StructuralRole,
@@ -92,6 +93,12 @@ export interface CharacterArcTrackerInput {
    * `commitment` or `resolution` milestones.
    */
   episodeStructuralRole?: StructuralRole[];
+
+  /**
+   * Agent-facing Lie / origin pressure / Truth / Want-vs-Need architecture.
+   * Use for target selection; never surface these labels directly to players.
+   */
+  characterArchitecture?: CharacterArchitecture;
 }
 
 export class CharacterArcTracker extends BaseAgent {
@@ -126,6 +133,9 @@ against these targets.
 4. Prefer 2-3 identity targets and 1-3 relationship targets — fewer targets
    hit well beat many targets hit weakly.
 5. Milestones must anchor to blueprint scenes when possible.
+6. Character architecture is pressure, not exposition: targets should make the
+   protagonist act from the Lie, strain toward the Truth, expose the origin
+   pressure, or force a Want-vs-Need choice. Do not tell the player these labels.
 
 **REQUIRED JSON STRUCTURE**
 \`\`\`json
@@ -195,6 +205,7 @@ ${sceneSummary}
 ## Season Arc Plan
 ${JSON.stringify(arcPlan, null, 2)}
 ${startingIdentity}
+${input.characterArchitecture ? `\n## Character Architecture (agent-facing only)\n${JSON.stringify(input.characterArchitecture, null, 2)}\n` : ''}
 Emit CharacterArcTargets per the REQUIRED JSON STRUCTURE above. Return ONLY JSON.`;
   }
 

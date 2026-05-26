@@ -27,6 +27,7 @@ import type {
   GeneratorNarrationSettings,
   GeneratorVideoSettings,
 } from '../../hooks/useGeneratorSettings';
+import { clampSceneCount } from '../../constants/pipeline';
 
 export interface BuildPipelineConfigInput {
   llmProvider: GeneratorLlmProvider;
@@ -156,6 +157,7 @@ export function buildPipelineConfig(
   const normalizedImageProvider = normalizeImageProvider(input.imageProvider);
   const env = typeof process !== 'undefined' ? (process.env as Record<string, string | undefined>) : {};
   const qa = resolveImageQaConfig(env);
+  const targetSceneCount = clampSceneCount(input.generationSettings.targetSceneCount);
   const artStyleProfile =
     extras?.artStyleProfileOverride ??
     resolveArtStylePresetProfile(env) ??
@@ -272,9 +274,21 @@ export function buildPipelineConfig(
       loraTraining: resolveLoraTrainingSettings(env, input.loraTrainingSettings),
     },
     generation: {
+      episodeStructureMode: input.generationSettings.episodeStructureMode,
+      sceneEpisodeMinScenes: input.generationSettings.sceneEpisodeMinScenes,
+      sceneEpisodeMaxScenes: input.generationSettings.sceneEpisodeMaxScenes,
+      sceneEpisodeNormalMinBeats: input.generationSettings.sceneEpisodeNormalMinBeats,
+      sceneEpisodeNormalTargetBeats: input.generationSettings.sceneEpisodeNormalTargetBeats,
+      sceneEpisodeNormalMaxBeats: input.generationSettings.sceneEpisodeNormalMaxBeats,
+      sceneEpisodeEncounterMaxBeats: input.generationSettings.sceneEpisodeEncounterMaxBeats,
+      sceneEpisodeEncounterCadence: input.generationSettings.sceneEpisodeEncounterCadence,
+      sceneEpisodeBranchMinEpisodes: input.generationSettings.sceneEpisodeBranchMinEpisodes,
+      sceneEpisodeBranchMaxEpisodes: input.generationSettings.sceneEpisodeBranchMaxEpisodes,
+      sceneEpisodeSceneGraphBranching: input.generationSettings.sceneEpisodeSceneGraphBranching,
+      sceneEpisodeCrossEpisodeBranching: input.generationSettings.sceneEpisodeCrossEpisodeBranching,
       failurePolicy: input.generationSettings.failFastMode ? 'fail_fast' : 'recover',
-      maxScenesPerEpisode: input.generationSettings.targetSceneCount,
-      targetSceneCount: input.generationSettings.targetSceneCount,
+      maxScenesPerEpisode: targetSceneCount,
+      targetSceneCount,
       majorChoiceCount: input.generationSettings.majorChoiceCount,
       minBeatsPerScene: input.generationSettings.minBeatsPerScene,
       maxBeatsPerScene: input.generationSettings.maxBeatsPerScene,

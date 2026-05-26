@@ -12,9 +12,11 @@ import type { SlotReferencePack } from '../slotTypes';
 import { compileStoryboardScenePacket, type StoryboardPanelSlot, type StoryboardScenePacket } from './storyboardCompiler';
 import type { ImageDefectReport } from '../imageDefectGate';
 import { sanitizeStyleContaminationText } from '../imagePromptContracts';
-import { buildVisualGrammarDirective, formatVisualGrammarDirective, type VisualGrammarDirective } from './visualGrammar';
+import { buildVisualGrammarDirective, type VisualGrammarDirective } from './visualGrammar';
 import { auditSequenceContinuity } from '../../validators/sequenceContinuityAudit';
-import { applySequenceDirectorPlan } from '../../agents/SequenceDirector';
+import { auditSequencePlanSpecificity, type SequencePlanSpecificityResult } from '../../validators/sequencePlanSpecificityAudit';
+import { applySequenceDirectorPlan, type SequenceDirectorDiagnostic } from '../../agents/SequenceDirector';
+import { normalizeBeatCoverageCharacterIds, type CoverageCharacterNormalizationDiagnostic } from './coverageCharacterNormalization';
 
 let nodeFs: typeof import('fs/promises') | undefined;
 let sharp: any;
@@ -161,6 +163,9 @@ export interface StoryboardV2Result {
     failedSlots: Array<{ slotId: string; error: string }>;
     advisoryQaWarnings: Array<{ identifier: string; stage: 'sheet' | 'panel'; issues: string[]; reason?: string }>;
     requiredSlotFailures: StoryboardRequiredSlotFailure[];
+    sequenceDiagnostics: SequenceDirectorDiagnostic[];
+    specificityAudits: Array<{ sceneId: string; sceneName: string; audit: SequencePlanSpecificityResult }>;
+    characterNormalizationDiagnostics: CoverageCharacterNormalizationDiagnostic[];
     imageCompleteness: {
       complete: boolean;
       requiredSlotCount: number;
@@ -401,9 +406,33 @@ export class StoryboardV2Pipeline {
       tone: brief.story.tone,
       protagonistId: brief.protagonist?.id,
     }));
+    const specificityAudits = params.sceneContents.map((scene) => ({
+      sceneId: scene.sceneId,
+      sceneName: scene.sceneName,
+      audit: auditSequencePlanSpecificity(scene.sceneVisualSequencePlan, {
+        requirePhysicalCarrier: this.isQuietOrDialogueScene(scene),
+        legacyTolerant: (scene.beats || []).length < 2,
+      }),
+    }));
+    const blockingSpecificity = specificityAudits.flatMap((entry) => entry.audit.issues
+      .filter((issue) => issue.severity === 'blocking')
+      .map((issue) => `${entry.sceneId}.${issue.field}: ${issue.message}`));
+    if (blockingSpecificity.length > 0) {
+      throw new Error(`Storyboard v2 sequence plan specificity failed: ${blockingSpecificity.join(' ')}`);
+    }
+    const characterNormalizationDiagnostics = params.sceneContents.map((scene) => normalizeBeatCoverageCharacterIds(scene, characterBible, {
+      id: brief.protagonist?.id,
+      name: brief.protagonist?.name,
+    }));
+    const blockingCharacterIds = characterNormalizationDiagnostics.flatMap((diagnostic) => diagnostic.blocking);
+    if (blockingCharacterIds.length > 0) {
+      throw new Error(`Storyboard v2 coverage character normalization failed: ${blockingCharacterIds.join(' ')}`);
+    }
     await this.saveJson('images/storyboard-v2/sequence-director-diagnostics.json', {
       generatedAt: new Date().toISOString(),
       diagnostics: sequenceDiagnostics,
+      specificityAudits,
+      characterNormalizationDiagnostics,
     });
     const sceneContents = params.sceneContents;
     const rawArtStyle = compact(this.config.artStyle, 'expressive illustrated story art');
@@ -466,13 +495,17 @@ export class StoryboardV2Pipeline {
       }
     }
 
-    const requiredSlotFailures = this.collectRequiredSlotFailures({
+    const missingRequiredSlotFailures = this.collectRequiredSlotFailures({
       brief,
       packets,
       beatImages,
       encounterImages,
       storyletImages,
     });
+    const requiredSlotFailures = [
+      ...missingRequiredSlotFailures,
+      ...this.collectFailedRequiredSlotFailures(packets),
+    ];
     if (requiredSlotFailures.length > 0) {
       this.emit('warning', 'images', `Storyboard v2 incomplete: ${requiredSlotFailures.length} required image slot(s) were not bound.`, {
         requiredSlotFailures,
@@ -558,6 +591,44 @@ export class StoryboardV2Pipeline {
       requiredSlotFailures,
       imageCompleteness,
     });
+    await this.saveJson('images/storyboard-v2/visual-planning-report.json', {
+      pipelineMode: 'storyboard-v2',
+      generatedAt: new Date().toISOString(),
+      scenes: packets.map((packet) => ({
+        sceneId: packet.sceneId,
+        scopedSceneId: packet.scopedSceneId,
+        sceneName: packet.sceneName,
+        hasSceneVisualSequencePlan: Boolean(packet.sceneVisualSequencePlan),
+        sceneVisualSequencePlan: packet.sceneVisualSequencePlan,
+        anchorZones: packet.sceneVisualSequencePlan?.anchorZones || [],
+        physicalCarrier: packet.sceneVisualSequencePlan?.physicalCarrier,
+        coveragePlans: packet.panels.map((panel) => ({
+          panelId: panel.id,
+          beatId: panel.beatId,
+          family: panel.family,
+          role: panel.sequenceIntent?.beatRole || panel.storyboardRole,
+          coveragePlan: panel.coveragePlan,
+        })),
+        specificity: specificityAudits.find((entry) => entry.sceneId === packet.sceneId)?.audit,
+        characterNormalization: characterNormalizationDiagnostics.find((entry) => entry.sceneId === packet.sceneId),
+        fallbackCoverageRepairs: packet.diagnostics?.warnings?.filter((warning) => /Repaired .* coveragePlan/i.test(warning)) || [],
+        storyboardCompleteness: {
+          panels: packet.panels.length,
+          sheets: this.sheetManifest.filter((sheet) => sheet.sceneId === packet.sceneId || sheet.scopedSceneId === packet.scopedSceneId).length,
+        },
+        qaWarnings: [
+          ...(packet.diagnostics?.warnings || []),
+          ...this.advisoryQaWarnings.filter((warning) => warning.identifier.includes(packet.scopedSceneId)).map((warning) => warning.issues.join('; ')),
+        ],
+      })),
+      promptConflictChecks: this.promptAudits.map((audit: any) => ({
+        identifier: audit.identifier,
+        passed: audit.passed,
+        errors: audit.errors,
+        sequenceWarnings: audit.sequenceWarnings,
+      })),
+      imageCompleteness,
+    });
 
     return {
       beatImages,
@@ -578,6 +649,9 @@ export class StoryboardV2Pipeline {
         failedSlots: this.failedSlots,
         advisoryQaWarnings: this.advisoryQaWarnings,
         requiredSlotFailures,
+        sequenceDiagnostics,
+        specificityAudits,
+        characterNormalizationDiagnostics,
         imageCompleteness,
       },
     };
@@ -634,6 +708,33 @@ export class StoryboardV2Pipeline {
         }
       }
     }
+    return failures;
+  }
+
+  private collectFailedRequiredSlotFailures(packets: StoryboardScenePacket[]): StoryboardRequiredSlotFailure[] {
+    const failures: StoryboardRequiredSlotFailure[] = [];
+    const failedBySlotId = new Map(this.failedSlots.map((slot) => [slot.slotId, slot.error]));
+    if (failedBySlotId.size === 0) return failures;
+
+    for (const packet of packets) {
+      for (const chunk of this.buildSheetChunks(packet)) {
+        for (const panel of chunk.panels) {
+          const slotId = this.registrySlotId(panel);
+          const error = failedBySlotId.get(slotId);
+          if (!error) continue;
+          failures.push({
+            slotId,
+            family: panel.family,
+            sceneId: panel.sceneId,
+            scopedSceneId: panel.scopedSceneId,
+            beatId: panel.beatId,
+            sheetId: chunk.sheetId,
+            error: `Required storyboard panel failed QA/remediation: ${error}`,
+          });
+        }
+      }
+    }
+
     return failures;
   }
 
@@ -1194,7 +1295,6 @@ export class StoryboardV2Pipeline {
     chunk: StoryboardSheetChunk,
     rawArtStyle: string,
   ): ImagePrompt {
-    const visualGrammar = this.visualGrammarDirectives(chunk.panels, rawArtStyle, packet.mood);
     const panelLines = chunk.panels.map((panel, index) => {
       const visibleCharacters = panel.visibleCharacterIds
         .map((id) => packet.characters.find((character) => character.id === id))
@@ -1203,7 +1303,7 @@ export class StoryboardV2Pipeline {
         .join(' | ');
       return [
         `Panel ${index + 1} (${panel.family}, beat ${panel.beatId}): ${this.sanitizePanelField(panel.narrativeText, rawArtStyle, packet, panel)}`,
-        formatVisualGrammarDirective(visualGrammar[index]),
+        this.directorBriefLine(panel, packet, rawArtStyle),
         this.sanitizedPanelLine('Speaker', panel.speaker, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Primary action', panel.primaryAction, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Visual moment', panel.visualMoment, rawArtStyle, packet, panel),
@@ -1217,15 +1317,6 @@ export class StoryboardV2Pipeline {
         this.sanitizedPanelLine('Sequence role', panel.sequenceIntent?.beatRole, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Sequence turn', panel.sequenceIntent?.turningPoint || packet.sequenceIntent?.turningPoint, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Sequence visual thread', panel.sequenceIntent?.visualThread || packet.sequenceIntent?.visualThread, rawArtStyle, packet, panel),
-        panel.coveragePlan ? this.sanitizedPanelLine('Coverage plan', [
-          `staging=${panel.coveragePlan.stagingPattern}`,
-          `shot=${panel.coveragePlan.shotDistance}`,
-          `angle=${panel.coveragePlan.cameraAngle}`,
-          `side=${panel.coveragePlan.cameraSide}`,
-          `blocking=${panel.coveragePlan.relationshipBlocking}`,
-          `reason=${panel.coveragePlan.coverageReason}`,
-          panel.coveragePlan.visualContinuity?.mode ? `continuity=${panel.coveragePlan.visualContinuity.mode}` : '',
-        ].filter(Boolean).join('; '), rawArtStyle, packet, panel) : '',
         this.sanitizedPanelLine('Encounter storyboard role', panel.storyboardRole, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Encounter storyboard frame', panel.storyboardFrameId, rawArtStyle, packet, panel),
         this.sanitizedPanelLine('Branch context', panel.branchLabel, rawArtStyle, packet, panel),
@@ -1257,16 +1348,21 @@ export class StoryboardV2Pipeline {
       sanitizedLine('Scene sequence visual thread', packet.sequenceIntent?.visualThread, rawArtStyle),
       sanitizedLine('Scene visual geography', packet.sceneVisualSequencePlan?.geography, rawArtStyle),
       sanitizedLine('Scene visual movement line', packet.sceneVisualSequencePlan?.movementLine, rawArtStyle),
-      sanitizedLine('Scene visual shot rhythm', packet.sceneVisualSequencePlan?.shotRhythm?.join(' -> '), rawArtStyle),
+      sanitizedLine('Scene visual rhythm intent', packet.sceneVisualSequencePlan?.rhythmIntent || packet.sceneVisualSequencePlan?.shotRhythm?.join(' -> '), rawArtStyle),
       sanitizedLine('Scene visual power blocking', packet.sceneVisualSequencePlan?.powerBlocking, rawArtStyle),
+      sanitizedLine('Scene anchor zones', packet.sceneVisualSequencePlan?.anchorZones?.join(' | '), rawArtStyle),
+      sanitizedLine('Scene boundary or threshold', packet.sceneVisualSequencePlan?.boundaryOrThreshold, rawArtStyle),
+      sanitizedLine('Scene physical carrier', packet.sceneVisualSequencePlan?.physicalCarrier, rawArtStyle),
+      sanitizedLine('Scene avoid', packet.sceneVisualSequencePlan?.avoid?.join('; '), rawArtStyle),
       sanitizedLine('Branch/path context for this sheet', chunk.branchPath, rawArtStyle),
       'Make the staging expressive and alive: asymmetric poses, active hands, clear body language, and specific story moments rather than static portraits.',
       'SEQUENCE CONTINUITY: this sheet is a visual sequence, not a random contact sheet. Preserve the sequence objective, obstacle, turning point, end state, and visual thread across adjacent panels.',
+      'FREEDOM CLAUSE: choose the most expressive composition for each panel as long as sequence geography, visual thread, visible character requirements, continuity, and beat role remain readable.',
       'SHEET STYLE CONSISTENCY GATE: every panel on this sheet must share the same rendering language, palette logic, line/edge treatment, lighting language, texture density, and finish required by the ART STYLE and episodeStyleLockRef. Do not drift toward a different renderer or compensate by overcorrecting into a new style.',
       chunk.panels.some((panel) => panel.family.startsWith('encounter') || panel.family === 'storylet-aftermath')
         ? 'ENCOUNTER VISUAL DIRECTION: treat this as an escalating sequence from an action scene, heist, tense confrontation, or highly dramatic argument. Show back-and-forth pressure, reversals, movement, tactical changes, emotional intensity, and rising stakes across the panels.'
         : '',
-      'Each panel below includes one VISUAL STORYTELLING DIRECTIVE. Use it only for composition, staging, camera, rhythm, attention, subject scale, and in-style lighting/color emphasis.',
+      'Each panel below includes one director brief. Treat it as story, cast, relationship, and continuity direction, not a paint-by-numbers shot list.',
       'PANEL CONTENT:',
       panelLines.join('\n'),
     ].filter(Boolean).join('\n');
@@ -1367,6 +1463,60 @@ export class StoryboardV2Pipeline {
     });
   }
 
+  private shouldEmitExactCoverage(panel: StoryboardPanelSlot): boolean {
+    const text = [
+      panel.narrativeText,
+      panel.visualMoment,
+      panel.primaryAction,
+      panel.mustShowDetail,
+      panel.sequenceIntent?.turningPoint,
+    ].filter(Boolean).join(' ');
+    return panel.coveragePlan?.stagingPattern === 'insert'
+      || panel.coveragePlan?.visualContinuity?.mode === 'locked_micro_progression'
+      || panel.family.startsWith('encounter')
+      || /\b(reveal|reveals|discover|clue|evidence|key|card|letter|ring|phone|screen|wound|blood|fight|chase|grab|strike|escape|turning point)\b/i.test(text);
+  }
+
+  private directorBriefLine(
+    panel: StoryboardPanelSlot,
+    packet: StoryboardScenePacket,
+    rawArtStyle: string,
+  ): string {
+    const coverage = panel.coveragePlan;
+    const parts = [
+      `role=${panel.sequenceIntent?.beatRole || panel.storyboardRole || panel.family}`,
+      `purpose=${panel.sequenceIntent?.turningPoint || coverage?.coverageReason || panel.visualMoment || panel.primaryAction || panel.label}`,
+      coverage?.relationshipBlocking ? `relationship/control=${coverage.relationshipBlocking}` : '',
+      coverage?.visualContinuity?.mode ? `continuity=${coverage.visualContinuity.mode}${coverage.visualContinuity.reason ? ` (${coverage.visualContinuity.reason})` : ''}` : '',
+      panel.mustShowDetail ? `must-show=${panel.mustShowDetail}` : '',
+      packet.sceneVisualSequencePlan?.physicalCarrier ? `physical carrier=${packet.sceneVisualSequencePlan.physicalCarrier}` : '',
+      packet.sceneVisualSequencePlan?.boundaryOrThreshold ? `threshold=${packet.sceneVisualSequencePlan.boundaryOrThreshold}` : '',
+      this.shouldEmitExactCoverage(panel) && coverage
+        ? `required coverage for this beat=${coverage.stagingPattern}, ${coverage.shotDistance}, ${coverage.cameraAngle}, ${coverage.cameraSide}`
+        : coverage
+          ? `coverage intent=${coverage.stagingPattern}, ${coverage.shotDistance}, ${coverage.cameraAngle}, ${coverage.cameraSide}; coverage freedom=choose expressive composition within scene geography, visible cast, relationship frame, and continuity`
+          : 'coverage freedom=choose expressive composition within scene geography, visible cast, relationship frame, and continuity',
+    ].filter(Boolean).join('; ');
+    return this.sanitizedPanelLine('Director brief', parts, rawArtStyle, packet, panel);
+  }
+
+  private isQuietOrDialogueScene(scene: SceneContent): boolean {
+    const text = [
+      scene.sceneName,
+      scene.sequenceIntent?.activity,
+      scene.sequenceIntent?.visualThread,
+      ...(scene.beats || []).flatMap((beat) => [
+        beat.text,
+        beat.speaker,
+        beat.primaryAction,
+        beat.visualMoment,
+        beat.emotionalRead,
+      ]),
+    ].filter(Boolean).join(' ');
+    return /\b(say|says|ask|asks|answer|answers|whisper|whispers|talk|argue|confess|apologize|remember|realize|think|quiet|silence|process|writes?|typing|draft)\b/i.test(text)
+      && !/\b(chase|fight|attack|sprint|shoot|stab|explode|crash|battle|escape)\b/i.test(text);
+  }
+
   private async derivePanelFromSheet(params: {
     brief: StoryboardV2Brief;
     packet: StoryboardScenePacket;
@@ -1454,7 +1604,7 @@ export class StoryboardV2Pipeline {
       crop.unresolvedCharacterIds = panel.unresolvedCharacterIds;
       crop.characterResolutionWarnings = panel.characterResolutionWarnings;
 
-      const result = this.refineCroppedPanels()
+      let result = this.refineCroppedPanels()
         ? await this.refinePanelCrop({
           brief,
           packet,
@@ -1466,6 +1616,21 @@ export class StoryboardV2Pipeline {
           crop,
         })
         : await this.resizeDraftCropLocally(draftResult, identifier);
+      if (this.refineCroppedPanels() && !result?.imageUrl) {
+        this.emit(
+          'warning',
+          'images',
+          `Storyboard v2 refinement failed for ${panel.id}; binding the local storyboard crop so required beat coverage is not lost.`,
+        );
+        result = await this.resizeDraftCropLocally(draftResult, `${identifier}-local-fallback`);
+        result.metadata = {
+          ...(result.metadata || {}),
+          storyboardV2Fallback: {
+            reason: 'panel_refinement_failed',
+            sourceDraftImagePath: draftImagePath,
+          },
+        } as any;
+      }
       if (!result?.imageUrl) return undefined;
 
       crop.finalImageUrl = result.imageUrl;
@@ -1692,6 +1857,10 @@ export class StoryboardV2Pipeline {
     if (firstLine !== `ART STYLE: ${rawArtStyle}`) errors.push('raw ART STYLE is missing, changed, or not first.');
     if (!promptText.includes(STYLE_HIERARCHY_BLOCK)) errors.push('style hierarchy block is missing.');
     if (!promptText.includes(DUPLICATE_CHARACTER_RULE)) errors.push('duplicate-character rule is missing.');
+    if (/\bVISUAL STORYTELLING DIRECTIVE\b/.test(promptText)) errors.push('legacy visual storytelling directive should not be emitted.');
+    if (/\bCoverage plan:\s*(?:staging=|[^.\n]*(?:shot=|angle=|side=))/i.test(promptText)) {
+      errors.push('prompt emits exact coverage plan camera language instead of the director brief.');
+    }
     if (!refs.some((ref) => ref.role === 'episode-style-lock')) errors.push('episodeStyleLockRef is not attached.');
     if (mode === 'refinement' && !refs.some((ref) => ref.role === 'storyboard-panel-crop')) {
       errors.push('storyboard-panel-crop ref is required for crop refinement.');
@@ -1981,19 +2150,11 @@ export class StoryboardV2Pipeline {
       .map((id) => packet.characters.find((character) => character.id === id))
       .filter(Boolean)
       .map((character) => `${character!.name} (${character!.id}): ${sanitizeStoryboardText(character!.description, rawArtStyle).text}${character!.attire ? `; attire: ${sanitizeStoryboardText(character!.attire, rawArtStyle).text}` : ''}${character!.features?.length ? `; features: ${character!.features.map((feature) => sanitizeStoryboardText(feature, rawArtStyle).text).filter(Boolean).join(', ')}` : ''}`);
-    const panelIndex = Math.max(0, packet.panels.findIndex((candidate) => candidate.id === panel.id));
-    const visualGrammar = this.visualGrammarDirectives(packet.panels, rawArtStyle, packet.mood)[panelIndex] || buildVisualGrammarDirective({
-      panel,
-      rawArtStyle,
-      sceneMood: packet.mood,
-      index: panelIndex,
-      panelCount: packet.panels.length || 1,
-    });
     const prompt = [
       `ART STYLE: ${rawArtStyle}`,
       'The ART STYLE line above is authoritative. Do not reinterpret it, embellish it with another genre style, or let any reference image override it.',
       STYLE_HIERARCHY_BLOCK,
-      formatVisualGrammarDirective(visualGrammar),
+      this.directorBriefLine(panel, packet, rawArtStyle),
       'Generate a single finished storyboard panel as a full-size reader image.',
       'FORMAT: portrait 9:16, 1024x1536 composition.',
       WARDROBE_IDENTITY_POLICY,

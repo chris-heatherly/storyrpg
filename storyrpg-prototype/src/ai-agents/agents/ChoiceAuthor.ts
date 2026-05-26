@@ -13,6 +13,7 @@ import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import {
   Choice,
+  ChoiceAffordanceSource,
   ChoiceConsequenceTier,
   ChoiceFeedbackCue,
   ChoiceImpactFactor,
@@ -23,7 +24,9 @@ import {
   ConditionExpression,
   FiveFactorImpact,
   ReminderPlan,
+  StakesLayers,
 } from '../../types';
+import type { StoryVerb } from '../utils/storyVerbs';
 import {
   SourceMaterialAnalysis,
   StoryAnchors,
@@ -177,6 +180,9 @@ export interface ChoiceAuthorInput {
     impactFactors?: ChoiceImpactFactor[];
     consequenceTier?: ChoiceConsequenceTier;
   }>;
+
+  // Genre/source-specific verbs that make choices feel native to the story.
+  storyVerbs?: StoryVerb[];
 }
 
 // Output types
@@ -203,6 +209,7 @@ export interface ChoiceSet {
 
   // Overall stakes for this decision point
   overallStakes: StakesAnnotation;
+  overallStakesLayers?: StakesLayers;
 
   // Design notes
   designNotes: string;
@@ -299,6 +306,13 @@ Branching (routing to different scenes via nextSceneId) is a PROPERTY of a choic
 - **Reminder Planning as Story Memory**: reminderPlan and residueHints should point to visible story changes: colder distance, evidence now in someone else's hands, a secret harder to deny, altered access, changed reputation, or a later callback.
 - **Reminder Planning**: Every meaningful choice should include an immediate echo and a short-term reminder plan.
 - **Risk Framing**: Use fiction-first feedback cues such as "steady", "desperate", "you have leverage", or "you're out of your depth" instead of exposing numbers.
+
+## Mechanical Storytelling Reactivity
+- A meaningful choice should change what the world permits, what an NPC believes, how future choices read, or what failure creates.
+- Prefer micro-reactivity over extra branches: callbacks, residue, scene tints, witness comments, altered prose, relationship tone, locked/unlocked options, and visual staging.
+- Hidden state should surface as affordance: prior mercy, trust, items, tags, skills, promises, lies, and callback hooks should open, color, or close options.
+- Failure should create playable story material: debt, suspicion, injury, lost leverage, exposure, obligation, damaged trust, or changed position.
+- Use storyVerb metadata so choices feel native to the world, not generic.
 
 ## Condition Usage
 
@@ -448,6 +462,7 @@ Before finalizing:
       cost: 'face consequences',
       identity: 'reveal their character'
     };
+    const blueprintStakesLayers = input.sceneBlueprint.choicePoint?.stakesLayers || input.sceneBlueprint.stakesLayers;
     const blueprintDomain = input.sceneBlueprint.choicePoint?.consequenceDomain;
     const blueprintReminder = input.sceneBlueprint.choicePoint?.reminderPlan;
     const blueprintCompetenceArc = input.sceneBlueprint.choicePoint?.competenceArc;
@@ -462,6 +477,9 @@ Before finalizing:
     }
     if (!choiceSet.designNotes) {
       choiceSet.designNotes = '';
+    }
+    if (!choiceSet.overallStakesLayers && blueprintStakesLayers) {
+      choiceSet.overallStakesLayers = blueprintStakesLayers;
     }
 
     // Ensure choices is an array
@@ -495,6 +513,7 @@ Before finalizing:
             cost: blueprintStakes.cost,
             identity: blueprintStakes.identity,
           },
+          stakesLayers: blueprintStakesLayers,
         };
         
         choiceSet.choices.push(generatedChoice);
@@ -538,6 +557,16 @@ Before finalizing:
         if (!choice.outcomeTexts.failure) choice.outcomeTexts.failure = choice.text;
       }
 
+      const setsRouteFlag = choice.consequences?.some(
+        consequence => consequence.type === 'setFlag' && consequence.flag.startsWith('route_') && consequence.value !== false
+      );
+      if (setsRouteFlag && choice.nextSceneId) {
+        console.warn(
+          `[ChoiceAuthor] Choice "${choice.id}" sets a cross-episode route flag and also had nextSceneId "${choice.nextSceneId}" — removing nextSceneId.`
+        );
+        delete choice.nextSceneId;
+      }
+
       // Auto-generate a tintFlag if the choice doesn't branch and none was provided
       if (!choice.nextSceneId && !choice.tintFlag) {
         const tintsByType: Record<string, string> = {
@@ -575,6 +604,9 @@ Before finalizing:
         cost: choice.stakes?.cost || choice.stakesAnnotation?.cost || blueprintStakes.cost,
         identity: choice.stakes?.identity || choice.stakesAnnotation?.identity || blueprintStakes.identity,
       };
+      if (!choice.stakesLayers && blueprintStakesLayers) {
+        choice.stakesLayers = blueprintStakesLayers;
+      }
 
       if (choice.consequences && !Array.isArray(choice.consequences)) {
         choice.consequences = [choice.consequences as unknown as Consequence];
@@ -598,6 +630,24 @@ Before finalizing:
 
       if (!choice.consequenceDomain) {
         choice.consequenceDomain = blueprintDomain || this.defaultDomainForChoiceType(choiceSet.choiceType);
+      }
+
+      if (choice.conditions && !choice.affordanceSource) {
+        const inferredSource = this.inferAffordanceSource(choice.conditions);
+        if (inferredSource) {
+          choice.affordanceSource = inferredSource;
+        }
+      }
+
+      if (choice.witnessReactions && !Array.isArray(choice.witnessReactions)) {
+        choice.witnessReactions = [choice.witnessReactions as unknown as NonNullable<GeneratedChoice['witnessReactions']>[number]];
+      }
+
+      if (!choice.storyVerb && input.storyVerbs?.length && choiceSet.choiceType !== 'expression') {
+        const matchedVerb = this.inferStoryVerb(choice, input.storyVerbs);
+        if (matchedVerb) {
+          choice.storyVerb = matchedVerb;
+        }
       }
 
       if (!choice.reminderPlan) {
@@ -638,6 +688,37 @@ Before finalizing:
       }
     }
 
+    const routeFlags = input.availableFlags.filter(flag => flag.name.startsWith('route_'));
+    const shouldAssignRouteFlags = routeFlags.length >= 2 || Boolean(input.sceneBlueprint.choicePoint?.branches);
+    const hasRouteFlagConsequence = choiceSet.choices.some(choice =>
+      choice.consequences?.some(
+        consequence => consequence.type === 'setFlag' && consequence.flag.startsWith('route_') && consequence.value !== false
+      )
+    );
+    if (shouldAssignRouteFlags && routeFlags.length > 0 && !hasRouteFlagConsequence) {
+      choiceSet.choices.forEach((choice, index) => {
+        const routeFlag = routeFlags[index % routeFlags.length];
+        choice.consequences = [
+          ...(choice.consequences || []),
+          { type: 'setFlag', flag: routeFlag.name, value: true },
+        ];
+        choice.reminderPlan = {
+          ...(choice.reminderPlan || {
+            immediate: 'The route choice lands immediately.',
+            shortTerm: 'The next episode should follow the selected route.',
+          }),
+          later: choice.reminderPlan?.later || `Route residue should acknowledge ${routeFlag.name}.`,
+        };
+        choice.feedbackCue = {
+          ...(choice.feedbackCue || {}),
+          echoSummary: choice.feedbackCue?.echoSummary || choice.reminderPlan.immediate,
+          progressSummary: choice.feedbackCue?.progressSummary || choice.reminderPlan.shortTerm,
+        };
+        delete choice.nextSceneId;
+      });
+      console.warn(`[ChoiceAuthor] Added cross-episode route flag consequences to ${choiceSet.choices.length} choice(s).`);
+    }
+
     // Ensure overallStakes exists with values from blueprint as fallback
     if (!choiceSet.overallStakes) {
       choiceSet.overallStakes = {
@@ -673,6 +754,61 @@ Before finalizing:
       default:
         return 'information';
     }
+  }
+
+  private inferAffordanceSource(condition: ConditionExpression): ChoiceAffordanceSource | undefined {
+    switch (condition.type) {
+      case 'identity':
+        return 'identity';
+      case 'relationship':
+        return 'relationship';
+      case 'tag':
+        return 'tag';
+      case 'item':
+        return 'item';
+      case 'skill':
+      case 'attribute':
+        return 'skill';
+      case 'flag':
+      case 'score':
+        return 'flag';
+      case 'and':
+      case 'or': {
+        for (const child of condition.conditions) {
+          const inferred = this.inferAffordanceSource(child);
+          if (inferred) return inferred;
+        }
+        return undefined;
+      }
+      case 'not':
+        return this.inferAffordanceSource(condition.condition);
+      default:
+        return undefined;
+    }
+  }
+
+  private inferStoryVerb(choice: GeneratedChoice, storyVerbs: StoryVerb[]): string | undefined {
+    const text = [
+      choice.text,
+      choice.stakes?.want,
+      choice.stakes?.cost,
+      choice.stakes?.identity,
+      choice.reactionText,
+      choice.outcomeTexts?.success,
+      choice.outcomeTexts?.partial,
+      choice.outcomeTexts?.failure,
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    const directMatch = storyVerbs.find(storyVerb => {
+      const escaped = storyVerb.verb.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+    });
+    if (directMatch) return directMatch.verb;
+
+    const byDomain = storyVerbs.find(storyVerb =>
+      choice.consequenceDomain && storyVerb.consequenceDomains?.includes(choice.consequenceDomain)
+    );
+    return byDomain?.verb;
   }
 
   private normalizeChoiceIntent(choice: GeneratedChoice, choiceType: ChoiceType): ChoiceIntent {
@@ -737,9 +873,18 @@ Before finalizing:
       .map(scene => `- ${scene.id}: "${scene.name}" - ${scene.description}`)
       .join('\n');
 
+    const storyVerbList = (input.storyVerbs || [])
+      .map(storyVerb => {
+        const sources = storyVerb.typicalSources?.length ? ` sources: ${storyVerb.typicalSources.join(', ')}` : '';
+        const domains = storyVerb.consequenceDomains?.length ? ` domains: ${storyVerb.consequenceDomains.join(', ')}` : '';
+        return `- ${storyVerb.verb}: ${storyVerb.description}${sources || domains ? ` (${[sources.trim(), domains.trim()].filter(Boolean).join('; ')})` : ''}`;
+      })
+      .join('\n');
+
     const flagList = input.availableFlags
       .map(f => `- ${f.name}: ${f.description}`)
       .join('\n');
+    const routeFlags = input.availableFlags.filter(f => f.name.startsWith('route_'));
 
     const scoreList = input.availableScores
       .map(s => `- ${s.name}: ${s.description}`)
@@ -812,6 +957,11 @@ ${buildChoiceAuthorCallbackSection((input.unresolvedCallbacks || []).map(h => ({
   - Want: ${choicePoint.stakes.want}
   - Cost: ${choicePoint.stakes.cost}
   - Identity: ${choicePoint.stakes.identity}
+${choicePoint.stakesLayers ? `- **Stakes Layers**:
+  - Material: ${choicePoint.stakesLayers.material || 'None'}
+  - Relational: ${choicePoint.stakesLayers.relational || 'None'}
+  - Identity: ${choicePoint.stakesLayers.identity || 'None'}
+  - Existential: ${choicePoint.stakesLayers.existential || 'None'}` : ''}
 - **Option Hints**: ${choicePoint.optionHints.join(', ')}
 ${choicePoint.consequenceDomain ? `- **Consequence Domain**: ${choicePoint.consequenceDomain}` : ''}
 ${choicePoint.reminderPlan ? `- **Reminder Plan**:\n  - Immediate: ${choicePoint.reminderPlan.immediate}\n  - Short-term: ${choicePoint.reminderPlan.shortTerm}${choicePoint.reminderPlan.later ? `\n  - Later: ${choicePoint.reminderPlan.later}` : ''}` : ''}
@@ -843,9 +993,21 @@ ${npcList || 'None'}
 ## Available Next Scenes
 ${nextSceneList}
 
+${storyVerbList ? `## Story Verbs
+Use these genre/source-specific action verbs as metadata when they fit. They should shape choice design, but the player-facing choice text should still read naturally.
+${storyVerbList}
+` : ''}
+
 ## Available State for Consequences
 **Flags**:
 ${flagList || 'None defined'}
+${routeFlags.length > 0 ? `
+## Cross-Episode Route Branching
+These flags are route gates for scene-length branch episodes: ${routeFlags.map(f => f.name).join(', ')}
+- When this choice is the branch origin, each route-changing option should set exactly one of these flags with a \`setFlag\` consequence.
+- Do not use \`nextSceneId\` for the main route branch when route flags are available; future episodes unlock from the chosen flag.
+- Include reminder/residue copy so the reconvergence episode can acknowledge what the player chose.
+` : ''}
 
 **Scores**:
 ${scoreList || 'None defined'}
@@ -880,6 +1042,7 @@ ${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with 
 - Link choices to next scenes where appropriate
 - Use conditions if any options should be locked
 - Use the choicePoint consequence/reminder guidance when provided
+- When a choice changes scenes, make the choice text and reminder/feedback copy explain why that route follows. The pipeline will insert one or more bridge beats before the target scene; do not rely on the target opener to do all transition work.
 
 ## Outcome Texts (REQUIRED for every choice)
 
@@ -937,7 +1100,23 @@ Think about what the situation DEMANDS:
 
 - **expression**: NO \`statCheck\`. Never.
 - **relationship**: Add \`statCheck\` with skillWeights relevant to the social dynamic.
-- **strategic** / **dilemma**: Add \`statCheck\` with skillWeights + difficulty 40–80.
+- **strategic** / **dilemma**: Add \`statCheck\` with skillWeights + difficulty 35–80.
+- Difficulty bands: easy 35-45, moderate 45-60, hard 60-70, extreme 71-80.
+- Any difficulty above 60 must have at least one support: prepared modifier, useful item/clue, relationship leverage, alternate route, or playable failure residue.
+- Any difficulty above 70 must have at least two supports.
+- Prepared advantage belongs in \`statCheck.modifiers\`. It is hidden math from prior state, but \`hint\` must be fiction-first prose.
+- Never expose stats, rolls, thresholds, bonuses, modifiers, percentages, or skill-check language to the player.
+
+Modifier example:
+  "modifiers": [
+    {
+      "id": "kept_the_chapel_promise",
+      "condition": { "type": "flag", "flag": "kept_chapel_promise", "value": true },
+      "delta": 15,
+      "reason": "The NPC remembers the promise and is easier to reach.",
+      "hint": "The promise she made in the chapel still gives you a way in."
+    }
+  ]
 
 ## Required JSON Structure
 
@@ -957,9 +1136,21 @@ Think about what the situation DEMANDS:
         "cost": "what they risk",
         "identity": "what this reveals"
       },
+      "stakesLayers": {
+        "material": "what concrete resource, safety, access, object, or position can change",
+        "relational": "who trusts, depends on, rejects, or is hurt by whom",
+        "identity": "who the protagonist becomes by choosing this",
+        "existential": "what future, freedom, home, survival, or irreversible fate is threatened"
+      },
       "consequences": [],
       "nextSceneId": "scene-id-if-branching-or-omit",
-      "statCheck": { "attribute": "charm", "difficulty": 55 },
+      "storyVerb": "pressure",
+      "affordanceSource": "skill",
+      "statCheck": {
+        "skillWeights": { "persuasion": 0.7, "perception": 0.3 },
+        "difficulty": 55,
+        "modifiers": []
+      },
       "consequenceDomain": "relationship",
       "reminderPlan": {
         "immediate": "The ally stiffens at what you said.",
@@ -977,6 +1168,18 @@ Think about what the situation DEMANDS:
         "failure": "Vivid 1-3 sentence description of failure or backfire."
       },
       "reactionText": "1-2 sentence world reaction (omit if nextSceneId is set).",
+      "witnessReactions": [
+        {
+          "npcId": "npc-id",
+          "stance": "approves | disapproves | fears | admires | questions | remembers",
+          "reactionText": "Fiction-first note about how this NPC interprets the choice.",
+          "residueHint": "How this witness reaction should echo later."
+        }
+      ],
+      "failureResidue": {
+        "kind": "debt | suspicion | injury | lost_leverage | exposure | obligation | damaged_trust | position_shift",
+        "description": "What playable story material failure creates."
+      },
       "tintFlag": "tint:bold",
       "moralContract": {
         "valueA": "protect the vulnerable",
@@ -1011,6 +1214,12 @@ Think about what the situation DEMANDS:
     "cost": "${choicePoint.stakes.cost}",
     "identity": "${choicePoint.stakes.identity}"
   },
+  "overallStakesLayers": {
+    "material": "${choicePoint.stakesLayers?.material || ''}",
+    "relational": "${choicePoint.stakesLayers?.relational || ''}",
+    "identity": "${choicePoint.stakesLayers?.identity || ''}",
+    "existential": "${choicePoint.stakesLayers?.existential || ''}"
+  },
   "designNotes": "Your reasoning"
 }
 
@@ -1018,7 +1227,7 @@ CRITICAL REQUIREMENTS:
 1. Create exactly ${input.optionCount} unique, meaningful choices
 2. The "overallStakes" field is REQUIRED with want, cost, and identity filled in
 3. Each choice needs stakesAnnotation with want, cost, and identity
-4. Each choice needs choiceIntent, impactFactors, consequenceTier, and stakes
+4. Each choice needs choiceIntent, impactFactors, consequenceTier, stakes, and stakesLayers when the blueprint supplies stakesLayers
 5. ${choicePoint.branches ? 'This is a BRANCHING choice point — set nextSceneId on each choice to one of the available next scenes' : 'Only include nextSceneId if this choice should route to a different scene (expression choices must NOT have nextSceneId)'}
 6. Every choice MUST have outcomeTexts (success, partial, failure) — original prose, not the choice text
 7. Non-branching choices MUST have reactionText and tintFlag
@@ -1029,7 +1238,12 @@ CRITICAL REQUIREMENTS:
 12. reminderPlan and residueHints should describe visible fiction-first turns, not abstract state deltas
 13. Expression/flavor choices must use choiceIntent "flavor", consequenceTier "sceneTint", and must NOT branch
 14. Meaningful choices must include at least one impact factor from outcome, process, information, relationship, identity
-15. Return ONLY valid JSON, no markdown, no extra text
+15. When provided Story Verbs fit the moment, set storyVerb to one of them
+16. Choices gated by conditions, prior flags, items, identity, relationships, tags, skills, or callback hooks should include affordanceSource
+17. Add witnessReactions when named NPCs observe a moral, relational, deceptive, violent, or loyalty-testing choice
+18. Stat-check failure should create playable fiction; use failureResidue when the failure changes debt, suspicion, injury, leverage, exposure, obligation, trust, or position
+19. Every important stat check should have at least two skill surfaces: prepared advantage, outcome texture, failure residue, branch residue, or prior passive insight setup
+20. Return ONLY valid JSON, no markdown, no extra text
 `;
   }
 

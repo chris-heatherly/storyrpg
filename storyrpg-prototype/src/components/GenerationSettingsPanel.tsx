@@ -51,6 +51,21 @@ import {
 // ========================================
 
 export interface GenerationSettings {
+  episodeStructureMode: 'standard' | 'sceneEpisodes';
+
+  // Scene-length episode mode
+  sceneEpisodeMinScenes: number;
+  sceneEpisodeMaxScenes: number;
+  sceneEpisodeNormalMinBeats: number;
+  sceneEpisodeNormalTargetBeats: number;
+  sceneEpisodeNormalMaxBeats: number;
+  sceneEpisodeEncounterMaxBeats: number;
+  sceneEpisodeEncounterCadence: number;
+  sceneEpisodeBranchMinEpisodes: number;
+  sceneEpisodeBranchMaxEpisodes: number;
+  sceneEpisodeSceneGraphBranching: boolean;
+  sceneEpisodeCrossEpisodeBranching: boolean;
+
   // Scene structure
   targetSceneCount: number;
   majorChoiceCount: number;
@@ -131,6 +146,21 @@ export interface GenerationSettings {
 }
 
 export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
+  episodeStructureMode: 'standard',
+
+  // Scene-length episode mode
+  sceneEpisodeMinScenes: 1,
+  sceneEpisodeMaxScenes: 1,
+  sceneEpisodeNormalMinBeats: 6,
+  sceneEpisodeNormalTargetBeats: 8,
+  sceneEpisodeNormalMaxBeats: 10,
+  sceneEpisodeEncounterMaxBeats: 15,
+  sceneEpisodeEncounterCadence: 6,
+  sceneEpisodeBranchMinEpisodes: 1,
+  sceneEpisodeBranchMaxEpisodes: 2,
+  sceneEpisodeSceneGraphBranching: false,
+  sceneEpisodeCrossEpisodeBranching: true,
+
   // Scene structure
   targetSceneCount: SCENE_DEFAULTS.targetSceneCount,
   majorChoiceCount: SCENE_DEFAULTS.majorChoiceCount,
@@ -387,6 +417,7 @@ interface SettingsSectionConfig {
   icon: React.ReactNode;
   defaultExpanded?: boolean;
   description?: string;
+  condition?: (settings: GenerationSettings) => boolean;
   fields: SettingFieldConfig[];
   footer?: (settings: GenerationSettings) => React.ReactNode;
 }
@@ -448,13 +479,37 @@ const PERFORMANCE_FIELDS: SettingFieldConfig[] = [
 ];
 
 const STORY_STRUCTURE_FIELDS: SettingFieldConfig[] = [
-  { type: 'number', key: 'targetSceneCount', label: 'Scenes per Episode', description: 'Cap scenes per episode; the engine may use fewer.', min: 3, max: 12 },
+  {
+    type: 'select',
+    key: 'episodeStructureMode',
+    label: 'Episode Structure',
+    description: 'Standard multi-scene episodes or scene-length playable episodes.',
+    options: [
+      { value: 'standard', label: 'Standard Episodes' },
+      { value: 'sceneEpisodes', label: 'Scene-Length Episodes' },
+    ],
+  },
+  { type: 'number', key: 'targetSceneCount', label: 'Scenes per Episode', description: 'Hard range: each episode should contain 3-6 scenes.', min: 3, max: 6 },
   { type: 'number', key: 'majorChoiceCount', label: 'Major Choice Points', description: 'How many big decisions an episode should contain.', min: 1, max: 6 },
-  { type: 'number', key: 'minBeatsPerScene', label: 'Min Beats per Scene', description: 'Minimum beats required for each scene.', min: 1, max: 6 },
-  { type: 'number', key: 'maxBeatsPerScene', label: 'Max Beats per Scene', description: 'Upper cap before the engine merges excess beats.', min: 6, max: 20 },
-  { type: 'number', key: 'standardBeatCount', label: 'Standard Scene Beats', description: 'Cap for standard scenes.', min: 4, max: 15 },
-  { type: 'number', key: 'bottleneckBeatCount', label: 'Bottleneck Scene Beats', description: 'Cap for key bottleneck scenes.', min: 4, max: 15 },
+  { type: 'number', key: 'minBeatsPerScene', label: 'Min Beats per Scene', description: 'Default lower bound for generated scene beats. 3 is recommended.', min: 1, max: 6 },
+  { type: 'number', key: 'maxBeatsPerScene', label: 'Max Beats per Scene', description: 'Default upper bound for generated scene beats. 8 is recommended; increase only for unusually dense scenes.', min: 4, max: 12 },
+  { type: 'number', key: 'standardBeatCount', label: 'Standard Scene Beats', description: 'Target cap for standard prose scenes.', min: 3, max: 10 },
+  { type: 'number', key: 'bottleneckBeatCount', label: 'Bottleneck Scene Beats', description: 'Target cap for key bottleneck scenes; use higher values sparingly.', min: 4, max: 12 },
   { type: 'number', key: 'encounterBeatCount', label: 'Encounter Beats', description: 'Target beats for encounter scenes.', min: 2, max: 8 },
+];
+
+const SCENE_LENGTH_EPISODE_FIELDS: SettingFieldConfig[] = [
+  { type: 'number', key: 'sceneEpisodeMinScenes', label: 'Minimum Scenes', description: 'Scene-length episodes should contain exactly one scene.', min: 1, max: 1 },
+  { type: 'number', key: 'sceneEpisodeMaxScenes', label: 'Maximum Scenes', description: 'Scene-length episodes should contain exactly one scene.', min: 1, max: 1 },
+  { type: 'number', key: 'sceneEpisodeNormalMinBeats', label: 'Normal Min Beats', description: 'Minimum beats for non-encounter scene-length episodes.', min: 1, max: 12 },
+  { type: 'number', key: 'sceneEpisodeNormalTargetBeats', label: 'Normal Target Beats', description: 'Target beats for non-encounter scene-length episodes.', min: 1, max: 15 },
+  { type: 'number', key: 'sceneEpisodeNormalMaxBeats', label: 'Normal Max Beats', description: 'Maximum beats for non-encounter scene-length episodes.', min: 1, max: 20 },
+  { type: 'number', key: 'sceneEpisodeEncounterMaxBeats', label: 'Encounter Max Path Beats', description: 'Maximum effective playable beats through a milestone encounter path.', min: 3, max: 25 },
+  { type: 'number', key: 'sceneEpisodeEncounterCadence', label: 'Encounter Cadence', description: 'Master-spine milestone encounter frequency.', min: 2, max: 12, unit: 'eps' },
+  { type: 'number', key: 'sceneEpisodeBranchMinEpisodes', label: 'Branch Min Episodes', description: 'Minimum route-specific episodes before reconvergence.', min: 1, max: 3 },
+  { type: 'number', key: 'sceneEpisodeBranchMaxEpisodes', label: 'Branch Max Episodes', description: 'Maximum route-specific episodes before reconvergence.', min: 1, max: 4 },
+  { type: 'toggle', key: 'sceneEpisodeSceneGraphBranching', label: 'Per-Episode Scene Branching', description: 'Use old within-episode scene graph branches. Keep off for scene-length mode.' },
+  { type: 'toggle', key: 'sceneEpisodeCrossEpisodeBranching', label: 'Cross-Episode Route Branching', description: 'Use route flags and route-gated episodes for structural branches.' },
 ];
 
 const TEXT_LIMIT_FIELDS: SettingFieldConfig[] = [
@@ -512,6 +567,14 @@ const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
     defaultExpanded: true,
     description: 'Core pacing and episode shape.',
     fields: STORY_STRUCTURE_FIELDS,
+  },
+  {
+    id: 'scene-length',
+    title: 'SCENE-LENGTH EPISODE MODE',
+    icon: <Activity size={16} color={TERMINAL.colors.primary} />,
+    description: 'One dramatic scene per episode, route branches across episodes, and milestone encounters on the master spine.',
+    fields: SCENE_LENGTH_EPISODE_FIELDS,
+    condition: (settings) => settings.episodeStructureMode === 'sceneEpisodes',
   },
   {
     id: 'text',
@@ -653,7 +716,7 @@ export const GenerationSettingsPanel: React.FC<GenerationSettingsPanelProps> = (
   return (
     <View style={styles.container}>
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {SETTINGS_SECTIONS.map((section) => (
+        {SETTINGS_SECTIONS.filter((section) => !section.condition || section.condition(settings)).map((section) => (
           <Section
             key={section.id}
             title={section.title}

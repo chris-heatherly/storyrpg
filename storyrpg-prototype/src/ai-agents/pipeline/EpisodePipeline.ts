@@ -14,6 +14,8 @@ import { SceneWriter, SceneWriterInput, SceneContent, GeneratedBeat } from '../a
 import { ChoiceAuthor, ChoiceAuthorInput, ChoiceSet } from '../agents/ChoiceAuthor';
 import { Episode, Scene, Beat, Choice } from '../../types';
 import { IntegratedBestPracticesValidator, ChoiceDistributionValidator } from '../validators';
+import { deriveStoryVerbs } from '../utils/storyVerbs';
+import { assembleChoiceForStory } from './choiceAssembly';
 import type { ChoiceDistributionTargets } from '../validators';
 import {
   createOutputDirectory,
@@ -597,6 +599,12 @@ export class EpisodePipeline {
               return { id: sceneId, name: target?.name || sceneId, description: target?.description || '' };
             }),
             optionCount: sceneBlueprint.choicePoint.optionHints.length || 3,
+            storyVerbs: deriveStoryVerbs({
+              genre: brief.story.genre,
+              tone: brief.story.tone,
+              sourceSummary: brief.story.synopsis,
+              worldContext: brief.story.worldContext,
+            }),
           };
 
           const choiceResult = await this.choiceAuthor.execute(choiceInput);
@@ -776,18 +784,9 @@ export class EpisodePipeline {
               ? sceneBlueprint.leadsTo[0] 
               : undefined;
 
-            beat.choices = choiceSet.choices.map(gc => ({
-              id: gc.id,
-              text: gc.text,
-              choiceType: gc.choiceType,
-              conditions: gc.conditions,
-              showWhenLocked: gc.showWhenLocked,
-              lockedText: gc.lockedText,
-              statCheck: gc.statCheck,
-              consequences: gc.consequences,
-              nextSceneId: gc.nextSceneId || (gc.nextBeatId ? undefined : defaultNextSceneId),
-              nextBeatId: gc.nextBeatId,
-            }));
+            beat.choices = choiceSet.choices.map(gc =>
+              assembleChoiceForStory(gc, gc.nextSceneId || (gc.nextBeatId ? undefined : defaultNextSceneId))
+            );
 
             beat.nextBeatId = undefined;
             console.log(`[EpisodePipeline] ✓ ATTACHED ${beat.choices.length} choices to beat ${beat.id}`);

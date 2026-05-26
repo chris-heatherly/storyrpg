@@ -363,7 +363,7 @@ export const NARRATIVE_INTENSITY_RULES = `
 A scene is a musical phrase. It needs dominant notes, supporting notes, and rests.
 Every scene must vary its beat intensity — a scene where every beat hits at the same level is a failure.
 
-**DOMINANT beats** (1-2 per scene): Peak drama. Maximum sensory detail, highest emotional pitch, most vivid physical action.
+**DOMINANT beats** (1-2 per scene): Peak drama. Strong selective sensory detail, highest emotional pressure, most vivid physical action.
 Write for the reader to feel the impact in their body. These are climax moments, key story beats, confrontations, betrayals, triumphs.
 
 **SUPPORTING beats** (majority): Advance the plot. Active prose, forward momentum, clear actions and reactions.
@@ -384,8 +384,8 @@ export const CRAFT_PRESSURE_GUIDANCE = `
 ## Genre-Aware Craft Pressure (StoryRPG Guardrailed)
 
 Use these rules to make scenes sharper, not narrower. If any craft rule conflicts
-with fiction-first interactivity, genre flexibility, T-rated sensitivity, rest
-beats, selective interiority, or serialized cliffhanger planning, StoryRPG's
+with fiction-first interactivity, genre flexibility, rest beats, externalized
+emotion, or serialized cliffhanger planning, StoryRPG's
 existing principles win.
 
 - Treat scene takeaways as load-bearing: every scene should make the player
@@ -404,15 +404,140 @@ existing principles win.
 - Keep dialogue concise, pointed, and subtextual. Conversations need friction,
   pressure, competing agendas, avoidance, teasing, or vulnerability; they do not
   always need overt argument.
-- Prefer action and brief dialogue to express emotion, while allowing restrained
-  interiority when it deepens player connection without over-defining identity.
+- Prefer action, bodily response, silence, object handling, facial expression,
+  and brief dialogue to express emotion. Do not directly explain thoughts or
+  feelings.
 - End scenes with pointed forward pressure: a choice, consequence, reveal,
   cliffhanger, aftermath turn, or newly sharpened question.
 - Match jeopardy to genre. Action-heavy genres should include physical danger or
   direct conflict; other genres should use serious social, emotional, moral,
   investigative, environmental, resource, romantic, or identity jeopardy.
-- Do not require graphic wounds, gore, or explicit injury detail. Existing
-  target-rating and sensitivity behavior remain authoritative.
+- In fight, weapon, pursuit, survival, or major physical-action scenes, make
+  danger concrete through serious jeopardy, destructive impact, wounds or
+  visible damage, bodily reactions, and consequences.
+`;
+
+export const CORE_DRAMATIC_STRUCTURE_RULES = `
+## Core Dramatic Structure Rules (Path-Aware Editorial Gates)
+
+Apply these rules to every reachable player path. Player choices may change
+the direction of the story, but no reachable direction may become causal
+filler, passive spectacle, unearned payoff, information confusion, or emotional
+reset. Reconvergence is allowed; causal, emotional, informational, and identity
+residue must survive reconvergence.
+
+1. **No "And Then" Scenes**
+   Every scene transition must be explainable as "therefore" or "but", not
+   merely "and then". The next scene must become necessary through consequence,
+   reversal, discovery, cost, escalation, or choice residue, not simple
+   chronology.
+
+2. **Protagonist-Driven Plot**
+   At least 60% of major plot turns should be caused or meaningfully reshaped
+   by protagonist/player action: choice, failed attempt, preparation,
+   relationship leverage, information use, refusal, sacrifice, mistake, or
+   identity commitment.
+
+3. **Personal Stakes Anchor**
+   Every episode and every major scene must name the concrete personal stake
+   underneath the plot stake: a person, bond, place, promise, identity,
+   reputation, memory, home, future, or irreversible cost.
+   Use stakes layers to name what kind of loss is on the table: material,
+   relational, identity, and/or existential. Stakes layers define the pressure;
+   the Stakes Triangle makes the pressure playable through want, cost, and
+   identity.
+   Major scenes, encounters, dilemmas, climaxes, and sceneEpisodes should stack
+   at least three stakes layers. Do not promote material pressure to
+   existential stakes until the player understands what personal, relational,
+   or identity loss makes the larger threat matter.
+   Within a scene, build a stakes ladder: each beat should raise risk, reveal
+   cost, narrow options, shift leverage, or deepen consequence until the
+   pressure peak carries the maximum stakes. Rest beats can raise dread,
+   clarity, regret, or emotional cost rather than volume.
+
+4. **Dramatic Structure At Every Magnitude**
+   Every scene, sceneEpisode, episode, arc, and season needs its own dramatic
+   shape: question/pressure, turn or recontextualization, pressure peak or
+   highest cost, and resolution or changed state. Lower levels reinforce higher
+   levels.
+   Every scene must also satisfy the Scene Turn Contract: entry intent, active
+   obstacle, forced decision, and exit shift. The decision may be a visible
+   player choice, character commitment, refusal, revelation, sacrifice,
+   tradeoff, or irreversible reaction. Rest and aftermath scenes still need
+   intent, resistance, and changed footing.
+   In multi-character scenes, the power dynamic must shift at least once:
+   leverage, trust, vulnerability, intimacy, distance, status, information,
+   threat, debt, or public/private advantage changes hands. A scene must also
+   pass the removability test: if removing it changes no information,
+   relationship, identity, resource/access, danger, promise, payoff, choice
+   consequence, theme pressure, stakes, route state, or emotional footing,
+   cut or rewrite it. Start scenes as late as possible and leave as soon as
+   the turn, decision, consequence, or handoff lands.
+   Episode structure uses pressure architecture, not rigid TV act counts:
+   one central episode question, an opening promise, meaningful episode turns,
+   protagonist-facing pressure lanes, changed episode end state, and forward
+   momentum. Do not force 4-5 literal acts and do not use Story Circle as a
+   required shape. A-plot is the external episode pressure. B-plot is playable
+   relationship or identity pressure and may be a scene, a sceneEpisode, an
+   underlay inside an A-plot scene, or offscreen pressure surfaced through
+   protagonist-visible signals. C-plot is planted future pressure: a future
+   seed, callback, world-pressure hint, or tonal counterweight with a visible
+   plant and payoff plan. The protagonist remains the viewpoint; do not create
+   non-protagonist POV scenes or omniscient cutaways.
+   Arc structure is a 3-8 episode pressure movement inside the season, not a
+   competing act schema. The season 7-point spine wins if concepts conflict.
+   Each arc needs a distinct arc question related to the season question, an
+   identity pressure facet, a midpoint recontextualization that changes the
+   question being asked, a late arc crisis/apparent failure or irreversible
+   cost, a finale answer, and handoff pressure unless the arc is also the
+   season finale. Episodes inside the arc function as arc turn-outs, not
+   literal acts: each ending must escalate, reverse, reveal, cost, force a
+   choice, recontextualize, hit crisis, answer, or hand off pressure. In
+   sceneEpisodes mode, distribute these arc beats across the sceneEpisode
+   chain; do not force a single sceneEpisode to contain the entire arc.
+   Character architecture makes this personal: the protagonist has an
+   agent-facing Lie/protective belief, origin pressure, Truth, Want, Need, and
+   active climax choice. Use these to shape plot pressure and choice design,
+   but never expose Lie/Wound/Truth labels to the player. Supporting
+   character micro-Lies belong only to core/supporting characters and must
+   surface through protagonist-visible behavior, contradiction, secret,
+   relationship pressure, or choice residue.
+   Season promise architecture defines the season's dramatic question, central
+   pressure, premise/player/emotional promises, and completeness target. Use
+   it to prevent drift, not to impose TV formulas. Do not force re-pilot
+   structure, fixed tent-poles, or penultimate climax when the seven-point
+   spine, source, sceneEpisodes mode, or player agency calls for another
+   shape.
+   Information management uses a season ledger: every key secret, threat,
+   reveal, plant, or payoff declares who knows it, who does not, whether it is
+   suspense/mystery/dramatic irony/surprise/revelation/foreshadowing, and when
+   it pays off. Mystery/box questions are capped at 3 per season. Major plants
+   should pay off after 3-4 standard episodes or 5-8 sceneEpisodes; shorter
+   seasons should still give the largest payoffs as much runway as possible.
+
+5. **Theme As Plot Pressure**
+   The season's theme must be a working question, not a noun. "Family" is not
+   a playable theme; "What do you owe family when loyalty costs your selfhood?"
+   is. Each episode should test the question from a distinct angle through
+   conflict, choice, cost, relationship pressure, information, or identity
+   movement. Major choices should make the theme answerable by protagonist /
+   player action, not by coincidence, prophecy, villain action, or external
+   rescue. Never state the theme question directly through dialogue. Major
+   scenes must press, complicate, set up, or pay off the theme question.
+
+6. **No Unearned Payoffs**
+   Every reveal, reversal, escalation, rescue, betrayal, power shift, and
+   climactic solution needs setup proportional to its importance.
+
+7. **Information Has Ownership**
+   Every major clue, secret, threat, and open question must declare who knows
+   it and when it pays off: player/audience, protagonist, ally, antagonist, or
+   world. The player must know enough to roleplay intent.
+
+8. **No Reset Units**
+   Every scene, sceneEpisode, episode, arc, and season must leave residue:
+   changed information, leverage, relationship, identity, resource, danger,
+   promise, wound, reputation, location access, or future option.
 `;
 
 const ACTION_HEAVY_GENRES = [

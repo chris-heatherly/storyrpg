@@ -55,11 +55,13 @@ export interface SceneCoverageInput {
 
 const SHOT_DISTANCE_PUSH_IN = ['MS', 'MCU', 'CU', 'ECU'] as const;
 const SOLITARY_PATTERNS = new Set<VisualStagingPattern>(['single', 'solo-reaction', 'environment', 'environmental-aftermath']);
-const DIALOGUE_RE = /["“][^"”]{2,}["”]|'\S[^']{2,}'|\b(says?|asks?|replies?|answers?|whispers?|shouts?|murmurs?|calls?|tells?)\b/i;
+const DIALOGUE_RE = /["“][^"”]{2,}["”]|(?:^|[\s([{])'[^']{2,}'(?=$|[\s.,!?;:)\]}])|\b(says?|asks?|replies?|answers?|whispers?|shouts?|murmurs?|calls?|tells?)\b/i;
 const OBSERVER_RE = /\b(watches?|listens?|overhears?|notices?|observes?|witnesses?|sees?|reacts?|glances?|stares?)\b/i;
 const WINDOW_DISTANCE_RE = /\b(window|distance|horizon|outside|balcony|railing|doorway|threshold)\b/i;
 const FEMALE_ALIAS_RE = /\b(the girl|girl|she|her|hers)\b/i;
 const MALE_ALIAS_RE = /\b(the boy|boy|he|him|his)\b/i;
+const FEMALE_NOUN_RE = /\b(the girl|girl|woman|lady|female)\b/i;
+const MALE_NOUN_RE = /\b(the boy|boy|man|gentleman|male)\b/i;
 
 function normalizeIdList(ids: Array<string | undefined>): string[] {
   return Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
@@ -79,10 +81,8 @@ function characterMentioned(character: CoverageCharacter, text: string): boolean
   const name = character.name.trim();
   if (!name) return false;
   if (new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(text)) return true;
-  return name
-    .split(/\s+/)
-    .filter(part => part.length > 2)
-    .some(part => new RegExp(`\\b${escapeRegExp(part)}\\b`, 'i').test(text));
+  const [firstName] = name.split(/\s+/).filter(Boolean);
+  return Boolean(firstName && firstName.length > 2 && new RegExp(`\\b${escapeRegExp(firstName)}\\b`, 'i').test(text));
 }
 
 function characterContext(character: CoverageCharacter, text: string): string {
@@ -105,11 +105,11 @@ function inferAliasCharacterIds(
 ): string[] {
   const remaining = sceneCharacters.filter(c => !explicitIds.has(c.id));
   const aliases: string[] = [];
-  if (FEMALE_ALIAS_RE.test(text)) {
+  if (FEMALE_ALIAS_RE.test(text) && (explicitIds.size === 0 || FEMALE_NOUN_RE.test(text))) {
     const match = [...remaining].reverse().find(c => /\bshe\/her\b/i.test(c.role || '') || /a$|i$|e$/i.test(c.name.split(/\s+/)[0] || ''));
     if (match) aliases.push(match.id);
   }
-  if (MALE_ALIAS_RE.test(text)) {
+  if (MALE_ALIAS_RE.test(text) && (explicitIds.size === 0 || MALE_NOUN_RE.test(text))) {
     const match = remaining.find(c => /\bhe\/him\b/i.test(c.role || '') || !aliases.includes(c.id));
     if (match) aliases.push(match.id);
   }
@@ -213,6 +213,10 @@ export function planSceneCoverage(input: SceneCoverageInput): SceneCoveragePlan 
   const beats: CoveragePlanBeat[] = [];
   const castWarnings: string[] = [];
   const solitaryCompositionWarnings: string[] = [];
+  const introducedCharacterIds = new Set<string>();
+  if (sceneCharacterSet.has(input.protagonistId)) {
+    introducedCharacterIds.add(input.protagonistId);
+  }
   let dialogueRunIndex = 0;
   let solitaryRun = 0;
 
@@ -237,6 +241,7 @@ export function planSceneCoverage(input: SceneCoverageInput): SceneCoveragePlan 
       mentionedIds.add(id);
     }
     if (speaker) mentionedIds.add(speaker.id);
+    const authorizedIds = new Set<string>([...introducedCharacterIds, ...mentionedIds]);
 
     const dialogue = isDialogueBeat(beat);
     dialogueRunIndex = dialogue ? dialogueRunIndex + 1 : 0;
@@ -269,9 +274,9 @@ export function planSceneCoverage(input: SceneCoverageInput): SceneCoveragePlan 
       }
 
       if (dialogue) {
-        const nonSpeaker = sceneCharacterIds.filter(id => id !== speaker?.id);
+        const nonSpeaker = Array.from(authorizedIds).filter(id => id !== speaker?.id);
         const visibleNonSpeaker = nonSpeaker.filter(id => foreground.has(id) || background.has(id));
-        const fallbackListener = visibleNonSpeaker[0] || nonSpeaker[0];
+        const fallbackListener = visibleNonSpeaker[0] || (speaker ? nonSpeaker[0] : undefined);
         if (fallbackListener) {
           foreground.add(fallbackListener);
           listeners.add(fallbackListener);
@@ -294,13 +299,15 @@ export function planSceneCoverage(input: SceneCoverageInput): SceneCoveragePlan 
       background.add(id);
       observers.add(id);
       reasons.push(`${characterById.get(id)?.name || id} kept visible for future payoff`);
+      authorizedIds.add(id);
     }
 
     for (const id of foreground) background.delete(id);
     const foregroundIds = normalizeIdList(Array.from(foreground));
     const backgroundIds = normalizeIdList(Array.from(background));
     const activeIds = normalizeIdList([...foregroundIds, ...backgroundIds]);
-    const offscreenIds = sceneCharacterIds.filter(id => !activeIds.includes(id));
+    const authorizedSceneIds = normalizeIdList([...authorizedIds, ...activeIds]);
+    const offscreenIds = authorizedSceneIds.filter(id => !activeIds.includes(id));
     const pattern = chooseStagingPattern({
       isEstablishing,
       foregroundIds,
@@ -333,7 +340,7 @@ export function planSceneCoverage(input: SceneCoverageInput): SceneCoveragePlan 
     beats.push({
       beatId: beat.id,
       visualCast: {
-        sceneCharacterIds,
+        sceneCharacterIds: authorizedSceneIds,
         activeCharacterIds: activeIds,
         foregroundCharacterIds: foregroundIds,
         backgroundCharacterIds: backgroundIds,
@@ -367,6 +374,9 @@ export function planSceneCoverage(input: SceneCoverageInput): SceneCoveragePlan 
         },
       },
     });
+    for (const id of mentionedIds) {
+      introducedCharacterIds.add(id);
+    }
   }
 
   return {

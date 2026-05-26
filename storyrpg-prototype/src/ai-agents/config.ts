@@ -66,6 +66,21 @@ export interface AgentConfig {
 
 // Generation settings from UI
 export interface GenerationSettingsConfig {
+  episodeStructureMode?: 'standard' | 'sceneEpisodes';
+
+  // Scene-length episode mode
+  sceneEpisodeMinScenes?: number;
+  sceneEpisodeMaxScenes?: number;
+  sceneEpisodeNormalMinBeats?: number;
+  sceneEpisodeNormalTargetBeats?: number;
+  sceneEpisodeNormalMaxBeats?: number;
+  sceneEpisodeEncounterMaxBeats?: number;
+  sceneEpisodeEncounterCadence?: number;
+  sceneEpisodeBranchMinEpisodes?: number;
+  sceneEpisodeBranchMaxEpisodes?: number;
+  sceneEpisodeSceneGraphBranching?: boolean;
+  sceneEpisodeCrossEpisodeBranching?: boolean;
+
   // Scene structure
   /** Max scenes per episode (cap)—engine may generate fewer */
   maxScenesPerEpisode?: number;

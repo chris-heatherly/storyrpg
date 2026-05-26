@@ -63,7 +63,7 @@ interface GameActions {
   initializeStory: (story: Story, characterName: string, pronouns: PlayerState['characterPronouns']) => void;
   updateCurrentStory: (story: Story) => void;
   loadEpisode: (episodeId: string) => void;
-  loadScene: (sceneId: string, episodeOverride?: Episode) => void;
+  loadScene: (sceneId: string, episodeOverride?: Episode, startingBeatIdOverride?: string) => void;
   setBeat: (beatId: string) => void;
   applyConsequences: (consequences: Consequence[]) => AppliedConsequence[];
 
@@ -491,7 +491,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setPlayer(prev => ({ ...prev, currentEpisodeId: episodeId }));
   }, [currentStory]);
 
-  const loadScene = useCallback((sceneId: string, episodeOverride?: Episode) => {
+  const loadScene = useCallback((sceneId: string, episodeOverride?: Episode, startingBeatIdOverride?: string) => {
     const episode = episodeOverride || currentEpisode;
     if (!episode) return;
 
@@ -505,7 +505,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     const firstEncounterBeatId = (scene.encounter as any)?.phases?.[0]?.beats?.[0]?.id;
-    const resolvedStartingBeatId = scene.startingBeatId || scene.beats?.[0]?.id || firstEncounterBeatId || '';
+    const targetBeatExists = startingBeatIdOverride && (
+      scene.beats?.some((beat) => beat.id === startingBeatIdOverride) ||
+      (scene.encounter as any)?.phases?.some((phase: any) => phase.beats?.some((beat: any) => beat.id === startingBeatIdOverride))
+    );
+    const resolvedStartingBeatId = targetBeatExists
+      ? startingBeatIdOverride
+      : scene.startingBeatId || scene.beats?.[0]?.id || firstEncounterBeatId || '';
     setCurrentScene(scene);
     setCurrentBeatId(resolvedStartingBeatId);
 
@@ -564,7 +570,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               updatedPlayer.tags = new Set(updatedPlayer.tags).add(consequence.tag);
               break;
             case 'relationship':
-              const dimension = normalizeRelationshipDimension((consequence as any).dimension);
+              const dimension = normalizeRelationshipDimension(
+                (consequence as any).dimension
+                  ?? (consequence as any).relationship
+                  ?? (consequence as any).relationshipType
+                  ?? (consequence as any).aspect
+              );
               if (!dimension) {
                 console.warn('[GameStore] relationship delayed consequence missing valid dimension:', consequence);
                 break;
@@ -701,7 +712,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
 
           case 'relationship': {
-            const dimension = normalizeRelationshipDimension((consequence as any).dimension);
+            const dimension = normalizeRelationshipDimension(
+              (consequence as any).dimension
+                ?? (consequence as any).relationship
+                ?? (consequence as any).relationshipType
+                ?? (consequence as any).aspect
+            );
             if (!dimension) {
               console.warn('[GameStore] relationship consequence missing valid dimension:', consequence);
               break;

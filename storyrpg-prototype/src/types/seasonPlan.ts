@@ -18,8 +18,11 @@ import {
   StoryAnchors,
   SevenPointStructure,
   StructuralRole,
+  CharacterArchitecture,
 } from './sourceAnalysis';
 import type { CliffhangerType } from './story';
+import type { EpisodeRouteMeta, EpisodeStructureMode } from './story';
+import type { ConditionExpression } from './conditions';
 
 // ========================================
 // SEASON PLAN CORE TYPES
@@ -43,6 +46,10 @@ export interface CliffhangerPlan {
 }
 
 export interface SeasonEpisode extends EpisodeOutline {
+  episodeStructureMode?: EpisodeStructureMode;
+  routeMeta?: EpisodeRouteMeta;
+  unlockConditions?: ConditionExpression;
+
   // Generation status
   status: EpisodeStatus;
   
@@ -82,6 +89,26 @@ export interface SeasonEpisode extends EpisodeOutline {
   cliffhangerPlan?: CliffhangerPlan;
 }
 
+export type ArcEpisodeTurnoutType =
+  | 'setup'
+  | 'escalation'
+  | 'reversal'
+  | 'revelation'
+  | 'cost'
+  | 'choice'
+  | 'recontextualization'
+  | 'crisis'
+  | 'finale'
+  | 'handoff';
+
+export interface ArcEpisodeTurnout {
+  episodeNumber: number;
+  turnType: ArcEpisodeTurnoutType;
+  description: string;
+  leavesProtagonistWith: string;
+  whyThisCannotMoveLater: string;
+}
+
 export interface SeasonArc {
   id: string;
   name: string;
@@ -103,9 +130,105 @@ export interface SeasonArc {
    * per-episode structuralRole assignments that fall inside episodeRange.
    */
   beats?: StructuralRole[];
+  /**
+   * Arc pressure architecture.
+   *
+   * An arc is a 3-8 episode pressure movement inside the season, not a
+   * competing act schema. The season 7-point spine remains authoritative;
+   * these fields explain how the episodes inside this arc turn, reframe,
+   * collapse, resolve, and hand off pressure without resetting.
+   */
+  arcQuestion?: string;
+  seasonQuestionRelation?: string;
+  identityPressureFacet?: string;
+  midpointRecontextualization?: {
+    episodeNumber: number;
+    questionBefore: string;
+    questionAfter: string;
+    description: string;
+  };
+  lateArcCrisis?: {
+    episodeNumber: number;
+    apparentFailure: string;
+    irreversibleCost: string;
+    description: string;
+  };
+  finaleAnswer?: string;
+  handoffPressure?: string;
+  episodeTurnouts?: ArcEpisodeTurnout[];
   // Status based on episode completion
   status: 'not_started' | 'in_progress' | 'completed';
   completionPercentage: number;
+}
+
+export type SeasonCentralPressureType =
+  | 'person'
+  | 'institution'
+  | 'mystery'
+  | 'environment'
+  | 'relationship'
+  | 'internal'
+  | 'situation';
+
+export interface SeasonPromiseArchitecture {
+  /**
+   * One season-level dramatic question that fuses the protagonist pressure
+   * with the season goal/stakes. This complements theme and arc questions;
+   * it does not replace the seven-point spine.
+   */
+  seasonDramaticQuestion: string;
+  centralPressure: {
+    type: SeasonCentralPressureType;
+    description: string;
+    pressuresLieBy: string;
+  };
+  seasonPromise: {
+    premisePromise: string;
+    playerExperiencePromise: string;
+    emotionalPromise: string;
+    variationPlan: string[];
+  };
+  seasonCompleteness: {
+    resolvedQuestion: string;
+    resolvedStakes: string;
+    characterStateChange: string;
+    openFuturePressure?: string;
+  };
+}
+
+export type AudienceKnowledgeState = 'shared' | 'withheld' | 'selective';
+
+export type InformationTensionMode =
+  | 'suspense'
+  | 'mystery'
+  | 'dramatic_irony'
+  | 'surprise'
+  | 'revelation'
+  | 'foreshadowing';
+
+export type InformationKnowledgeHolder =
+  | 'player'
+  | 'protagonist'
+  | 'ally'
+  | 'antagonist'
+  | 'world';
+
+export interface InformationLedgerEntry {
+  id: string;
+  label: string;
+  description: string;
+  audienceKnowledgeState: AudienceKnowledgeState;
+  tensionMode: InformationTensionMode;
+  knownBy: InformationKnowledgeHolder[];
+  withheldFrom?: InformationKnowledgeHolder[];
+  introducedEpisode: number;
+  plannedRevealEpisode?: number;
+  plannedPayoffEpisode?: number;
+  setupTouchEpisodes: number[];
+  payoffPlan: string;
+  isBoxQuestion: boolean;
+  closesQuestionIds?: string[];
+  opensQuestionIds?: string[];
 }
 
 export interface SeasonPlan {
@@ -149,6 +272,19 @@ export interface SeasonPlan {
    */
   sevenPoint: SevenPointStructure;
 
+  /**
+   * Season promise / completeness contract. This captures the useful part of
+   * season-level TV rules without adding fixed episode-position formulas.
+   */
+  seasonPromiseArchitecture?: SeasonPromiseArchitecture;
+
+  /**
+   * Planning-only ledger for major secrets, threats, mysteries, reveals, and
+   * payoff questions. Runtime remains fiction-first; this prevents accidental
+   * early reveals, unsupported surprises, and unresolved question sprawl.
+   */
+  informationLedger?: InformationLedgerEntry[];
+
   // Ending targets the season is steering toward
   endingMode: EndingMode;
   resolvedEndings: StoryEndingTarget[];
@@ -172,6 +308,13 @@ export interface SeasonPlan {
     name: string;
     description: string;
   };
+
+  /**
+   * Agent-facing character architecture that makes plot pressure personal.
+   * Stored on the season plan so downstream agents can align arcs, episodes,
+   * choices, and climax decisions without exposing mechanics to the player.
+   */
+  characterArchitecture?: CharacterArchitecture;
   
   // Character introduction order
   characterIntroductions: Array<{

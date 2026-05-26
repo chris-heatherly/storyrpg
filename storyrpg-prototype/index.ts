@@ -32,6 +32,6 @@ if (typeof global !== 'undefined') {
 
 import { registerRootComponent } from 'expo';
 
-import App from './App';
+import App from '@storyrpg/app-entry';
 
 registerRootComponent(App);

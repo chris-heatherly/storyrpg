@@ -178,6 +178,52 @@ export interface CharacterArc {
   }>;
 }
 
+export type CharacterArcMode = 'positive' | 'tragic' | 'ambiguous';
+
+export interface ProtagonistCharacterArchitecture {
+  /**
+   * Agent-facing false/protective belief. This should never be shown to the
+   * player as a label; scenes express it through behavior and choices.
+   */
+  lie: string;
+  /**
+   * The formative pressure that made the Lie useful. May be trauma, success,
+   * social conditioning, deprivation, betrayal, vow, humiliation, fear, or
+   * survival adaptation; it does not have to be a trauma-wound template.
+   */
+  originPressure: string;
+  /** What the protagonist must recognize, or refuse in a tragic arc. */
+  truth: string;
+  /** Conscious goal. */
+  want: string;
+  /** Dramatic necessity underneath the conscious goal. */
+  need: string;
+  arcMode: CharacterArcMode;
+  climaxChoice: {
+    choiceQuestion: string;
+    integrateTruthOption: string;
+    recommitLieOption: string;
+    activeChoiceMechanism: string;
+  };
+}
+
+export interface SupportingCharacterMicroArc {
+  characterId: string;
+  characterName: string;
+  microLie: string;
+  originPressure?: string;
+  truthOrCounterPressure: string;
+  screenTimeTier: 'major' | 'supporting' | 'minor';
+  pressureRole: 'mirror' | 'foil' | 'temptation' | 'warning' | 'ally' | 'antagonist';
+  protagonistVisibleSignals: string[];
+  plannedResolution?: string;
+}
+
+export interface CharacterArchitecture {
+  protagonist: ProtagonistCharacterArchitecture;
+  supportingCharacters: SupportingCharacterMicroArc[];
+}
+
 export type EndingMode = 'single' | 'multiple';
 
 export type EndingSourceConfidence = 'explicit' | 'inferred' | 'generated';
@@ -207,6 +253,75 @@ export interface StoryEndingTarget {
   stateDrivers: EndingStateDriver[];
   targetConditions: string[];
   sourceConfidence: EndingSourceConfidence;
+}
+
+export interface TreatmentEpisodeGuidance {
+  authoredTitle?: string;
+  actLabel?: string;
+  arcLabel?: string;
+  rawStructuralRole?: string;
+  normalizedStructuralRoles?: StructuralRole[];
+  dramaticQuestion?: string;
+  episodePromise?: string;
+  coldOpenFunction?: string;
+  openingImage?: string;
+  episodeTurns?: string[];
+  synopsis?: string;
+  openingSituation?: string;
+  toneRegister?: string;
+  encounterAnchors?: string[];
+  encounterCentralConflict?: string;
+  encounterBuildup?: string;
+  encounterAftermath?: string;
+  stakesLayers?: string[];
+  themePressure?: string;
+  liePressure?: string;
+  aPressure?: string;
+  bPressure?: string;
+  cSeed?: string;
+  entryGoal?: string;
+  obstacle?: string;
+  forcedChoice?: string;
+  exitShift?: string;
+  powerShift?: string;
+  subtextGap?: string;
+  informationMovement?: string;
+  majorChoicePressures?: string[];
+  alternativePaths?: string[];
+  consequenceSeeds?: string[];
+  consequenceResidue?: string;
+  visualAnchor?: string;
+  endingTurnout?: string;
+  endingPressure?: string;
+  authoredCliffhanger?: string;
+  nextEpisodeCausality?: string;
+  endStateChange?: string;
+  resolutionAftermath?: string;
+  capabilityGrowthGuidance?: string[];
+}
+
+export interface TreatmentSeasonGuidance {
+  episodeStructureMode: import('./story').EpisodeStructureMode;
+  seasonPromiseAndDramaticEngine?: string;
+  characterArchitecture?: string;
+  stakesArchitecture?: string;
+  informationLedger?: string;
+  seasonSpine?: string;
+  arcPlan?: string;
+  scenePlanningNotes?: string;
+  branchAndConsequenceChains?: string;
+  failForward?: string;
+  endings?: string;
+  failureModeAudit?: string;
+  rawSectionSummary?: string[];
+}
+
+export interface TreatmentBranchGuidance {
+  id: string;
+  name: string;
+  summary: string;
+  originEpisode?: number;
+  reconvergenceEpisode?: number;
 }
 
 // ========================================
@@ -247,6 +362,10 @@ export interface PlannedEncounter {
   npcsInvolved: string[];
   // What's at stake narratively
   stakes: string;
+  // Authored treatment pressure this encounter should manifest through play
+  centralConflict?: string;
+  // What the episode should show after this encounter resolves
+  aftermathConsequence?: string;
   // Skills/approaches that should be relevant
   relevantSkills: string[];
   // What earlier scenes must establish so the encounter lands
@@ -326,6 +445,9 @@ export interface ConsequenceChain {
 // ========================================
 
 export interface EpisodeOutline {
+  episodeStructureMode?: import('./story').EpisodeStructureMode;
+  routeMeta?: import('./story').EpisodeRouteMeta;
+
   episodeNumber: number;
   title: string;
   synopsis: string;
@@ -383,12 +505,26 @@ export interface EpisodeOutline {
   setsFlags?: Array<{ flag: string; description: string }>;
   // Flags/state from previous episodes that this episode checks
   checksFlags?: Array<{ flag: string; ifTrue: string; ifFalse: string }>;
+
+  /**
+   * Authored treatment details extracted from StoryRPG treatment documents.
+   * This is planning metadata only; downstream agents use it as high-signal
+   * guidance while preserving the canonical Story/Episode/Scene/Choice schema.
+   */
+  treatmentGuidance?: TreatmentEpisodeGuidance;
 }
 
 export interface SourceMaterialAnalysis {
   // Metadata
   sourceTitle: string;
   sourceAuthor?: string;
+  sourceFormat?: 'source_material' | 'story_treatment' | 'prompt';
+  treatmentMetadata?: {
+    detected: boolean;
+    confidence: 'low' | 'medium' | 'high';
+    formatVersion: 'legacy' | 'storyrpg-treatment-v2';
+    warnings: string[];
+  };
   totalWordCount?: number;
   totalChapters?: number;
 
@@ -446,6 +582,19 @@ export interface SourceMaterialAnalysis {
   episodeBreakdown: EpisodeOutline[];
   totalEstimatedEpisodes: number;
 
+  /**
+   * Authored season-level branch chains extracted from a treatment document.
+   */
+  treatmentBranches?: TreatmentBranchGuidance[];
+
+  /**
+   * Authored season-level treatment sections extracted from StoryRPG
+   * treatment documents. These are planning constraints for SourceMaterial,
+   * SeasonPlanner, and StoryArchitect prompts; runtime story data still flows
+   * through the canonical episode/scene/beat/choice schema.
+   */
+  treatmentSeasonGuidance?: TreatmentSeasonGuidance;
+
   // Character analysis
   protagonist: {
     id: string;
@@ -463,6 +612,13 @@ export interface SourceMaterialAnalysis {
     firstAppearance: number; // Episode number
     fashionStyle?: CharacterFashionStyle;
   }>;
+
+  /**
+   * Agent-facing character architecture for Lie / origin pressure / Truth /
+   * Want vs Need. Planning metadata only; never rendered as player-facing
+   * mechanics or labels.
+   */
+  characterArchitecture?: CharacterArchitecture;
 
   // Key locations identified
   keyLocations: Array<{

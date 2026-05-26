@@ -11,6 +11,18 @@ describe('auditSequenceContinuity', () => {
     expect(issues.some((issue) => issue.category === 'missing_sequence_objective')).toBe(true);
   });
 
+  it('fails random attractive shots that do not share visual storytelling logic', () => {
+    const issues = auditSequenceContinuity([
+      { id: 'p1', narrativeText: 'A beautiful portrait under moody colored light.' },
+      { id: 'p2', narrativeText: 'A dramatic skyline with no connected action.' },
+      { id: 'p3', narrativeText: 'A stylish close-up of a hand near smoke.' },
+    ], { requireCoveragePlan: true, requireShotVariety: true });
+
+    expect(issues.some((issue) => issue.category === 'missing_sequence_objective')).toBe(true);
+    expect(issues.some((issue) => issue.category === 'missing_visual_thread')).toBe(true);
+    expect(issues.some((issue) => issue.category === 'missing_sequence_turn')).toBe(true);
+  });
+
   it('warns when adjacent panels do not preserve a visible thread', () => {
     const issues = auditSequenceContinuity([
       {

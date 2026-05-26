@@ -83,8 +83,11 @@ const GENERIC_BACKGROUND_CHARACTER_LABELS = new Set([
   'commuter',
   'crowd',
   'customer',
+  'doorman',
+  'doorwoman',
   'driver',
   'guest',
+  'guard',
   'host',
   'neighbor',
   'onlooker',
@@ -187,8 +190,7 @@ function detectVisibleCharacters(params: {
       ids.push(resolver.protagonistCanonicalId);
       warnings.push('Used protagonist fallback for player-template/protagonist language.');
     } else if (sceneResolved.canonicalIds.length > 0 && /\b(he|she|they|him|her|them|his|hers|their|face|eyes|hands|voice|argues?|speaks?|asks?|leans?|looks?|stares?)\b/i.test(text)) {
-      ids.push(...sceneResolved.canonicalIds.slice(0, 3));
-      warnings.push('Used scene cast fallback because character language was present but no named character resolved.');
+      warnings.push('Skipped scene cast fallback because character language was present but no named character resolved.');
     }
   }
 
@@ -556,7 +558,6 @@ export function compileStoryboardScenePacket(params: {
   }
 
   const packetCharacterIds = Array.from(new Set([
-    ...sceneCharacterIds,
     ...panels.flatMap((panel) => panel.visibleCharacterIds),
   ]));
 

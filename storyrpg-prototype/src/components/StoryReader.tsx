@@ -14,7 +14,7 @@ import {
   TextInput,
   ActivityIndicator,
 } from 'react-native';
-import { ArrowLeft, ArrowRight, User, ThumbsUp, ThumbsDown, RefreshCw, X, MessageSquare, FileText } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, User, ThumbsUp, ThumbsDown, X, MessageSquare, FileText } from 'lucide-react-native';
 import {
   useGameActions,
   useGamePlayerState,
@@ -28,6 +28,7 @@ import {
   executeChoice,
   findBeat,
   findChoice,
+  getPlayableEpisodes,
   getNextScene,
   ProcessedBeat,
 } from '../engine/storyEngine';
@@ -36,13 +37,11 @@ import { NarrativeText } from './NarrativeText';
 import { ChoiceButton } from './ChoiceButton';
 import { EncounterView } from './EncounterView';
 import { TERMINAL, RADIUS, TIMING, SPACING, sharedStyles, withAlpha } from '../theme';
-import { EncounterCost, GeneratedStorylet, Scene, StoryletBeat, AppliedConsequence, EncounterOutcome, Relationship, Consequence } from '../types';
+import { EncounterCost, GeneratedStorylet, Scene, StoryletBeat, AppliedConsequence, EncounterOutcome, Relationship, Consequence, Choice } from '../types';
 import type { PlayerState } from '../types';
 import { mediaRefAsString } from '../assets/assetRef';
-import { ConsequenceToast } from './ConsequenceToast';
 import { ConsequenceBadgeList } from './ConsequenceBadgeList';
 import { ButterflyBanner } from './ButterflyBanner';
-import { OutcomeHeader } from './OutcomeHeader';
 import { StatCheckOverlay } from './StatCheckOverlay';
 import { ReadingShell } from './ReadingShell';
 import { ContinueButton } from './ContinueButton';
@@ -51,7 +50,9 @@ import { haptics } from '../utils/haptics';
 import { useClickDebounce } from '../utils/useDebounce';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { useImagePromptOverlay } from '../hooks/useImagePromptOverlay';
-import { formatSceneBeatLabelFromImageUrl } from '../utils/imagePromptDebug';
+import { formatSceneBeatLabelFromImageUrl, getImagePanelNumberFromStory } from '../utils/imagePromptDebug';
+import { resolvePromptUrlFromImageUrl } from '../utils/imagePromptPaths';
+import { buildChoiceConsequenceSentence, getFictionFirstChangeFeedback } from '../utils/choiceChangeFeedback';
 import { incrementPersonProperty, setSuperProperties, track } from '../services/analyticsService';
 import {
   cloneRelationshipMap,
@@ -101,6 +102,68 @@ function getReflectionText(outcome: string): string {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+const AFTERMATH_MECHANICAL_COPY_RE = /has succeeded|has failed|gets what (?:you|they|she|he) fought for|cost lands|price lands|objective (?:is )?achieved|immediate danger has passed|world shifts in response|there will be consequences|celebrate success|show cost|show that/i;
+
+function normalizeSentence(text?: string | null): string | undefined {
+  const normalized = text?.replace(/\s+/g, ' ').trim();
+  if (!normalized || AFTERMATH_MECHANICAL_COPY_RE.test(normalized)) return undefined;
+  return /[.!?]$/.test(normalized) ? normalized : `${normalized}.`;
+}
+
+function resolveStatCheckSkillLabel(choice: Choice): string {
+  const explicit = choice.statCheck?.skill || choice.statCheck?.attribute;
+  if (explicit?.trim()) return explicit;
+
+  const skillWeights = choice.statCheck?.skillWeights;
+  if (!skillWeights) return '';
+
+  const strongest = Object.entries(skillWeights)
+    .filter(([, weight]) => Number.isFinite(weight))
+    .sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  return strongest || '';
+}
+
+function fictionFirstCostText(cost?: EncounterCost | null): string | undefined {
+  if (!cost) return undefined;
+  return normalizeSentence(cost.visibleComplication)
+    || normalizeSentence(cost.immediateEffect)
+    || normalizeSentence(cost.lingeringEffect);
+}
+
+function buildStoryletOutcomeFallback(
+  outcome: EncounterOutcome,
+  protagonistName: string
+): { summary: string; progress: string; narrative: string } {
+  switch (outcome) {
+    case 'victory':
+      return {
+        summary: 'You carried the moment without losing yourself.',
+        progress: 'The pressure eases, and the night opens forward.',
+        narrative: `${protagonistName} lets the quiet after the encounter settle around her. The danger has loosened its grip, and confidence arrives without needing to announce itself.`,
+      };
+    case 'partialVictory':
+      return {
+        summary: 'You got through, but not cleanly.',
+        progress: 'Relief arrives with a shadow attached.',
+        narrative: `${protagonistName} gets through the moment, but the relief has edges. Something has been won, and something else will have to be carried from here.`,
+      };
+    case 'defeat':
+      return {
+        summary: 'The night takes more ground than you meant to give.',
+        progress: 'The lesson lands hard, but it lands.',
+        narrative: `${protagonistName} feels the miss before anyone names it. The night keeps moving, but now she has to carry the lesson with her.`,
+      };
+    case 'escape':
+    default:
+      return {
+        summary: 'You got clear, but the fear follows.',
+        progress: 'Distance helps, but it does not erase what happened.',
+        narrative: `${protagonistName} makes it out of the worst of it, breath still ragged. Safety is real, but it has not yet become peace.`,
+      };
+  }
+}
+
 function countEpisodeBeats(episode?: { scenes?: Array<{ beats?: unknown[] }> } | null): number {
   return episode?.scenes?.reduce((sum, scene) => sum + (scene.beats?.length || 0), 0) || 0;
 }
@@ -122,6 +185,49 @@ function applyStoryletFlags(
 interface StoryReaderProps {
   onEpisodeComplete?: () => void;
   onStoryComplete?: () => void;
+}
+
+type ChoiceOutcomeTier = 'success' | 'complicated' | 'failure';
+
+function choiceOutcomeColor(tier?: ChoiceOutcomeTier): string {
+  if (tier === 'success') return TERMINAL.colors.success;
+  if (tier === 'complicated') return TERMINAL.colors.amber;
+  if (tier === 'failure') return TERMINAL.colors.error;
+  return TERMINAL.colors.primary;
+}
+
+function lowercaseFirst(text: string): string {
+  return text.charAt(0).toLowerCase() + text.slice(1);
+}
+
+function sentenceFromChoiceText(choiceText?: string): string | undefined {
+  const cleaned = choiceText?.replace(/\s+/g, ' ').trim().replace(/[.!?]$/, '');
+  if (!cleaned) return undefined;
+  const dont = /^don't\s+(.+)$/i.exec(cleaned)?.[1];
+  if (dont) return `You chose not to ${lowercaseFirst(dont)}.`;
+  const action = /^(?:choose to|try to|attempt to|decide to)\s+(.+)$/i.exec(cleaned)?.[1] || cleaned;
+  return `You chose to ${lowercaseFirst(action)}.`;
+}
+
+function fallbackChoiceProgress(choice: Choice): string | undefined {
+  switch (choice.consequenceDomain) {
+    case 'relationship':
+      return 'A relationship shifts.';
+    case 'reputation':
+      return 'Your reputation shifts.';
+    case 'danger':
+      return 'The danger around you changes.';
+    case 'information':
+      return 'Your understanding changes.';
+    case 'identity':
+      return 'Your identity shifts.';
+    case 'leverage':
+      return 'Your leverage changes.';
+    case 'resource':
+      return 'Your resources change.';
+    default:
+      return undefined;
+  }
 }
 
 export const StoryReader: React.FC<StoryReaderProps> = ({
@@ -150,29 +256,23 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const fonts = useSettingsStore((state) => state.getFontSizes());
   
   // Image feedback store
-  const { addFeedback, getFeedbackForImage, updateFeedback, loadFeedback, isLoaded: feedbackLoaded } = useImageFeedbackStore();
+  const { addFeedback, getFeedbackForImage, loadFeedback, isLoaded: feedbackLoaded } = useImageFeedbackStore();
 
   const [processedBeat, setProcessedBeat] = useState<ProcessedBeat | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
   const [showChoices, setShowChoices] = useState(false);
+  const [isChoiceResolutionInFlight, setIsChoiceResolutionInFlight] = useState(false);
   const [selectedChoiceId, setSelectedChoiceId] = useState<string | null>(null);
-  const [choiceFeedback, setChoiceFeedback] = useState<{
-    consequences: AppliedConsequence[];
-    targetSceneId?: string;
-    targetBeatId?: string;
-    hasBeenShown?: boolean;
-  } | null>(null);
+  const [pendingChoiceId, setPendingChoiceId] = useState<string | null>(null);
   const [statCheckSkill, setStatCheckSkill] = useState<string | null>(null);
   const [statCheckTier, setStatCheckTier] = useState<'success' | 'complicated' | 'failure' | null>(null);
   const proceedAfterStatCheckRef = useRef<(() => void) | null>(null);
-  const [resolutionText, setResolutionText] = useState<string | null>(null);
-  const [choiceOutcomeHeader, setChoiceOutcomeHeader] = useState<{ text: string; tier: 'success' | 'complicated' | 'failure' } | null>(null);
   const [recentChoiceEcho, setRecentChoiceEcho] = useState<{
     summary: string;
     progress?: string;
-    feedback: AppliedConsequence[];
     targetSceneId?: string;
     targetBeatId?: string;
+    tier?: ChoiceOutcomeTier;
     hasBeenShown?: boolean;
   } | null>(null);
   const [showingEncounter, setShowingEncounter] = useState(false);
@@ -231,7 +331,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [feedbackNotes, setFeedbackNotes] = useState('');
   const [selectedReasons, setSelectedReasons] = useState<FeedbackReason[]>([]);
-  const [isRegenerating, setIsRegenerating] = useState(false);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [expandedCategory, setExpandedCategory] = useState<string | null>('basic');
 
@@ -241,6 +340,8 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const devHistoryRef = useRef<Array<{ sceneId: string; beatId: string }>>([]);
   const lastTrackedSceneRef = useRef<string | null>(null);
   const choiceShownRef = useRef<Set<string>>(new Set());
+  const activeBeatKeyRef = useRef<string | null>(null);
+  const choiceResolutionInFlightRef = useRef(false);
   const encounterStartedRef = useRef<Set<string>>(new Set());
 
   const getSceneBeatLabelFromImageUrl = useCallback((url?: string): string | null => {
@@ -313,9 +414,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         const dir = outputDir.replace(/^\/app\//, '').replace(/\/$/, '');
         return `${baseUrl}/${dir}/images/prompts/beat-${sceneId}-${beatId}.json`;
       }
-      return imageUrl
-        .replace(/\/images\//, '/images/prompts/')
-        .replace(/\.(png|jpg|jpeg|webp)$/i, '.json');
+      return resolvePromptUrlFromImageUrl(imageUrl);
     },
   });
 
@@ -464,8 +563,18 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     const totalEpisodeBeats = countEpisodeBeats(currentEpisode);
     const completedEpisodeIds = new Set(player.completedEpisodes);
     completedEpisodeIds.add(currentEpisode.id);
+    const completionPlayer = {
+      ...player,
+      completedEpisodes: [...completedEpisodeIds],
+    };
+    const playableEpisodeCount = currentStory
+      ? getPlayableEpisodes(currentStory, completionPlayer).length
+      : 0;
     const storyPercent = currentStory
-      ? percentComplete(completedEpisodeIds.size, currentStory.episodes.length)
+      ? percentComplete(
+          getPlayableEpisodes(currentStory, completionPlayer).filter(episode => completedEpisodeIds.has(episode.id)).length,
+          playableEpisodeCount
+        )
       : undefined;
 
     track('episode completed', {
@@ -485,12 +594,16 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       last_episode_id: currentEpisode.id,
     });
 
-    if (currentStory && completedEpisodeIds.size >= currentStory.episodes.length) {
+    if (
+      currentStory &&
+      playableEpisodeCount > 0 &&
+      getPlayableEpisodes(currentStory, completionPlayer).every(episode => completedEpisodeIds.has(episode.id))
+    ) {
       incrementPersonProperty('stories_completed_count');
       track('story completed', {
         story_id: currentStory.id,
         story_genre: currentStory.genre,
-        episode_count: currentStory.episodes.length,
+        episode_count: playableEpisodeCount,
         beats_seen_count: new Set(visitLog.map((visit) => visit.beatId)).size,
         choices_made_count: visitLog.filter((visit) => visit.choiceId).length,
         scenes_seen_count: new Set(visitLog.map((visit) => visit.sceneId)).size,
@@ -715,6 +828,15 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     const beat = findBeat(currentScene, currentBeatId);
     if (!beat) return;
 
+    const beatKey = `${currentScene.id}:${currentBeatId}`;
+    if (activeBeatKeyRef.current !== beatKey) {
+      activeBeatKeyRef.current = beatKey;
+      choiceResolutionInFlightRef.current = false;
+      setIsChoiceResolutionInFlight(false);
+      setPendingChoiceId(null);
+      proceedAfterStatCheckRef.current = null;
+    }
+
     if (beat.onShow && beat.onShow.length > 0) {
       applyConsequences(beat.onShow);
     }
@@ -773,7 +895,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     setProcessedBeat(processed);
     setIsAnimating(true);
     setShowChoices(false);
-    setResolutionText(null);
     setImageErrorId(null); // Reset error on new beat
 
     // Track beat in dev navigation history for reliable back-button
@@ -866,7 +987,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   const handleAnimationComplete = () => {
     setIsAnimating(false);
-    if (processedBeat?.hasChoices) {
+    if (processedBeat?.hasChoices && !choiceResolutionInFlightRef.current) {
       setShowChoices(true);
     }
   };
@@ -905,30 +1026,42 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     }
   }, [recentChoiceEcho, currentScene, currentBeatId]);
 
-  const choiceFeedbackRef = useRef(choiceFeedback);
-  choiceFeedbackRef.current = choiceFeedback;
-  useEffect(() => {
-    if (choiceFeedbackRef.current) {
-      setChoiceFeedback(null);
-    }
-  }, [currentBeatId]);
-
   // Execute the choice after the selection ceremony finishes
   const executeChoiceAfterCeremony = useCallback((choiceId: string) => {
-    if (!currentScene || !currentBeatId || !processedBeat) return;
+    setPendingChoiceId(null);
+
+    const abortChoiceResolution = () => {
+      choiceResolutionInFlightRef.current = false;
+      setIsChoiceResolutionInFlight(false);
+      setSelectedChoiceId(null);
+    };
+
+    if (!currentScene || !currentBeatId || !processedBeat) {
+      abortChoiceResolution();
+      return;
+    }
 
     const beat = findBeat(currentScene, currentBeatId);
-    if (!beat) return;
+    if (!beat) {
+      abortChoiceResolution();
+      return;
+    }
 
     const choice = findChoice(beat, choiceId);
-    if (!choice) return;
+    if (!choice) {
+      abortChoiceResolution();
+      return;
+    }
 
     const result = executeChoice(choice, player);
 
     if (!result.success) {
-      setSelectedChoiceId(null);
+      abortChoiceResolution();
       return;
     }
+
+    choiceResolutionInFlightRef.current = true;
+    setIsChoiceResolutionInFlight(true);
 
     track('choice selected', {
       story_id: currentStory?.id,
@@ -1004,14 +1137,17 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       return null;
     };
 
-    const showFeedback = (applied: AppliedConsequence[]) => {
-      const visible = applied.filter(a => a.type !== 'flag');
+    const recordChoiceFeedback = (applied: AppliedConsequence[]) => {
+      const visible = getFictionFirstChangeFeedback(applied);
       const echoTarget = resolveEchoTarget(result.nextBeatId, result.nextSceneId);
+      const consequenceSentence = buildChoiceConsequenceSentence(applied);
+      const processedChoiceText = processTemplate(choice.text, player, currentStory);
+      const progressText = consequenceSentence || fallbackChoiceProgress(choice);
       setEpisodeChoiceRecap((prev) => [
         ...prev,
         {
           id: `${currentScene.id}:${currentBeatId}:${choice.id}:${prev.length}`,
-          chosenText: processTemplate(choice.text, player, currentStory),
+          chosenText: processedChoiceText,
           summary: choice.feedbackCue?.echoSummary || choice.reminderPlan?.immediate || 'The choice changed the shape of the story.',
           otherPaths: (beat.choices || [])
             .filter((candidate) => candidate.id !== choice.id)
@@ -1024,71 +1160,24 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           consequences: visible.slice(0, 3),
         },
       ]);
-      if (visible.length > 0) {
-        setChoiceFeedback({
-          consequences: visible,
-          targetSceneId: echoTarget?.sceneId,
-          targetBeatId: echoTarget?.beatId,
-          hasBeenShown: false,
-        });
-      }
       setRecentChoiceEcho({
-        summary: choice.feedbackCue?.echoSummary || choice.reminderPlan?.immediate || 'The moment leaves a mark.',
-        progress: choice.feedbackCue?.progressSummary || choice.reminderPlan?.shortTerm,
-        feedback: visible.slice(0, 3),
+        summary:
+          sentenceFromChoiceText(processedChoiceText) ||
+          'You made a choice.',
+        progress: progressText,
         targetSceneId: echoTarget?.sceneId,
         targetBeatId: echoTarget?.beatId,
+        tier: result.resolution?.tier as ChoiceOutcomeTier | undefined,
         hasBeenShown: false,
       });
     };
 
-    const badgeViewingDelay = (applied: AppliedConsequence[]): number => {
-      const visibleCount = Math.min(applied.filter(a => a.type !== 'flag').length, 5);
-      if (visibleCount === 0) return 0;
-      // stagger-in (80ms/badge) + animate-in (300ms) + reading time (1200ms)
-      return (visibleCount * 80) + TIMING.normal + 1200;
-    };
-
-    const navigateWithBadgeDelay = (applied: AppliedConsequence[]) => {
-      const delay = badgeViewingDelay(applied);
-      if (delay > 0) {
-        setTimeout(() => {
-          navigateAfterChoice(result.nextBeatId, result.nextSceneId, choiceId);
-        }, delay);
-      } else {
-        navigateAfterChoice(result.nextBeatId, result.nextSceneId, choiceId);
-      }
-    };
-
-    const CHOICE_OUTCOME_HEADERS = {
-      success: 'Well Played',
-      complicated: 'Not Without Cost',
-      failure: 'A Costly Misstep',
-    } as const;
-
     const proceedAfterStatCheck = () => {
-      if (result.resolution) {
-        const tier = result.resolution.tier as 'success' | 'complicated' | 'failure';
-        setChoiceOutcomeHeader({ text: CHOICE_OUTCOME_HEADERS[tier], tier });
-      }
-
-      if (result.resolution && choice.outcomeTexts) {
-        const applied = applyConsequences(result.consequences);
-        showFeedback(applied);
-        navigateWithBadgeDelay(applied);
-      } else if (result.resolution) {
-        setResolutionText(result.resolution.narrativeText);
-        setTimeout(() => {
-          const applied = applyConsequences(result.consequences);
-          showFeedback(applied);
-          setResolutionText(null);
-          navigateWithBadgeDelay(applied);
-        }, 2000);
-      } else {
-        const applied = applyConsequences(result.consequences);
-        showFeedback(applied);
-        navigateWithBadgeDelay(applied);
-      }
+      const applied = applyConsequences(result.consequences);
+      recordChoiceFeedback(applied);
+      choiceResolutionInFlightRef.current = false;
+      setIsChoiceResolutionInFlight(false);
+      navigateAfterChoice(result.nextBeatId, result.nextSceneId, choiceId);
     };
 
     setShowChoices(false);
@@ -1096,12 +1185,16 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
     // Stat check tension moment: skill flash -> color pulse -> proceed
     if (result.resolution && choice.statCheck) {
-      const skillLabel = choice.statCheck.skill || choice.statCheck.attribute || '';
+      const skillLabel = resolveStatCheckSkillLabel(choice);
       const tier = result.resolution.tier as 'success' | 'complicated' | 'failure';
 
-      proceedAfterStatCheckRef.current = proceedAfterStatCheck;
-      setStatCheckSkill(skillLabel.replace(/_/g, ' ').toUpperCase());
-      setStatCheckTier(tier);
+      if (skillLabel) {
+        proceedAfterStatCheckRef.current = proceedAfterStatCheck;
+        setStatCheckSkill(skillLabel.replace(/_/g, ' ').toUpperCase());
+        setStatCheckTier(tier);
+      } else {
+        proceedAfterStatCheck();
+      }
     } else {
       proceedAfterStatCheck();
     }
@@ -1109,22 +1202,31 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   // Base choice handler -- triggers selection ceremony, then executes after delay
   const handleChoicePressBase = useCallback((choiceId: string) => {
-    if (!currentScene || !currentBeatId || !processedBeat || selectedChoiceId) return;
+    if (!currentScene || !currentBeatId || !processedBeat || selectedChoiceId || choiceResolutionInFlightRef.current) return;
     haptics.selection();
-    setChoiceOutcomeHeader(null);
+    choiceResolutionInFlightRef.current = true;
+    setIsChoiceResolutionInFlight(true);
     setRecentChoiceEcho(null);
+    setShowChoices(false);
     setSelectedChoiceId(choiceId);
-    setTimeout(() => executeChoiceAfterCeremony(choiceId), TIMING.slow);
-  }, [currentScene, currentBeatId, processedBeat, selectedChoiceId, executeChoiceAfterCeremony]);
+    setPendingChoiceId(choiceId);
+  }, [currentScene, currentBeatId, processedBeat, selectedChoiceId]);
   
   // Debounced choice handler - prevents double-clicks
   const handleChoicePress = useClickDebounce(handleChoicePressBase, 500);
 
+  useEffect(() => {
+    if (!pendingChoiceId) return;
+
+    const timer = setTimeout(() => {
+      executeChoiceAfterCeremony(pendingChoiceId);
+    }, TIMING.slow);
+
+    return () => clearTimeout(timer);
+  }, [pendingChoiceId, executeChoiceAfterCeremony]);
+
   const navigateAfterChoice = (nextBeatId?: string, nextSceneId?: string, choiceId?: string) => {
-    setChoiceFeedback(null);
-    if (nextBeatId) {
-      transitionTo(() => setBeat(nextBeatId), 'crossfade');
-    } else if (nextSceneId) {
+    if (nextSceneId) {
       if (currentEpisode) {
         const targetScene = currentEpisode.scenes.find(s => s.id === nextSceneId);
         const targetHasBeats = targetScene && targetScene.beats && targetScene.beats.length > 0;
@@ -1141,9 +1243,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       const targetScene = currentEpisode?.scenes.find(s => s.id === nextSceneId);
       const isEncounterEntry = !!targetScene?.encounter;
       transitionTo(
-        () => loadScene(nextSceneId),
-        isEncounterEntry ? 'dramatic' : 'slide'
+        () => loadScene(nextSceneId, undefined, nextBeatId),
+        isEncounterEntry ? 'dramatic' : 'crossfade'
       );
+    } else if (nextBeatId) {
+      transitionTo(() => setBeat(nextBeatId), 'crossfade');
     } else {
       const nextBeatId = processedBeat?.nextBeatId;
       if (nextBeatId) {
@@ -1154,24 +1258,12 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     }
   };
 
-  type TransitionStyle = 'crossfade' | 'slide' | 'dramatic';
+  type TransitionStyle = 'crossfade' | 'dramatic';
 
   const transitionTo = (callback: () => void, style: TransitionStyle = 'crossfade') => {
     const useNative = Platform.OS !== 'web';
 
-    if (style === 'slide') {
-      Animated.parallel([
-        Animated.timing(fadeAnim, { toValue: 0, duration: TIMING.normal, useNativeDriver: useNative }),
-        Animated.timing(slideAnim, { toValue: -30, duration: TIMING.normal, useNativeDriver: useNative }),
-      ]).start(() => {
-        callback();
-        slideAnim.setValue(30);
-        Animated.parallel([
-          Animated.timing(fadeAnim, { toValue: 1, duration: TIMING.slow, useNativeDriver: useNative }),
-          Animated.timing(slideAnim, { toValue: 0, duration: TIMING.slow, useNativeDriver: useNative }),
-        ]).start();
-      });
-    } else if (style === 'dramatic') {
+    if (style === 'dramatic') {
       Animated.timing(fadeAnim, {
         toValue: 0, duration: TIMING.dramatic, useNativeDriver: useNative,
       }).start(() => {
@@ -1206,16 +1298,15 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   // Base continue handler (wrapped with debounce below)
   const handleContinueBase = useCallback(() => {
     if (!processedBeat) return;
-    setChoiceOutcomeHeader(null);
 
     // Capture values to avoid non-null assertions
     const nextBeatId = processedBeat.nextBeatId;
     const nextSceneId = processedBeat.nextSceneId;
     
-    if (nextBeatId) {
+    if (nextSceneId) {
+      transitionTo(() => loadScene(nextSceneId, undefined, nextBeatId));
+    } else if (nextBeatId) {
       transitionTo(() => setBeat(nextBeatId));
-    } else if (nextSceneId) {
-      transitionTo(() => loadScene(nextSceneId));
     } else {
       advanceToNextScene();
     }
@@ -1330,26 +1421,34 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   }, [developerMode, devGoNext, devGoPrev]);
 
   // Dev overlay: compute contextual label and render helpers shared by every beat type
-  const devLabel = (() => {
+  const getDevLabel = (currentImageUrl?: string | null) => {
     if (!developerMode || !currentScene) return null;
     const sn = currentScene.id?.match(/scene-([0-9]+[a-z]?)/i)?.[1];
-    if (episodeRecap) return 'RECAP';
-    if (shouldShowEncounter && sceneEncounter) return sn ? `S${sn}  ENC` : 'ENC';
-    if (showGrowthSummary) return sn ? `S${sn}  GROWTH` : 'GROWTH';
+    const withImagePanel = (baseLabel: string | null) => {
+      const panelNumber = getImagePanelNumberFromStory(currentStory, currentImageUrl);
+      if (!panelNumber) return baseLabel;
+      return baseLabel ? `${baseLabel}  IMG ${panelNumber}` : `IMG ${panelNumber}`;
+    };
+    if (episodeRecap) return withImagePanel('RECAP');
+    if (shouldShowEncounter && sceneEncounter) return null;
+    if (showGrowthSummary) return withImagePanel(sn ? `S${sn}  GROWTH` : 'GROWTH');
     if (activeStorylet && storyletBeatId) {
       const idx = activeStorylet.beats.findIndex(b => b.id === storyletBeatId);
       const sl = idx >= 0 ? `SL·B${idx + 1}` : 'SL';
-      return sn ? `S${sn}  ${sl}` : sl;
+      return withImagePanel(sn ? `S${sn}  ${sl}` : sl);
     }
     const bn = currentBeatId?.match(/beat-([0-9]+)/i)?.[1];
-    return sn && bn ? `S${sn}  B${bn}` : sn ? `S${sn}` : null;
-  })();
+    return withImagePanel(sn && bn ? `S${sn}  B${bn}` : sn ? `S${sn}` : null);
+  };
 
-  const renderDevBadgeOverlay = () => devLabel ? (
-    <View style={[styles.devSceneBeatBadge, { pointerEvents: 'none' as const }]}>
-      <Text style={styles.devSceneBeatText}>{devLabel}</Text>
-    </View>
-  ) : null;
+  const renderDevBadgeOverlay = (currentImageUrl?: string | null) => {
+    const devLabel = getDevLabel(currentImageUrl);
+    return devLabel ? (
+      <View style={[styles.devSceneBeatBadge, { pointerEvents: 'none' as const }]}>
+        <Text style={styles.devSceneBeatText}>{devLabel}</Text>
+      </View>
+    ) : null;
+  };
 
   const renderDevNavOverlay = () => !developerMode ? null : (
     <View style={styles.feedbackToolbar}>
@@ -1474,36 +1573,29 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   // Post-encounter reflection -- rendered as a normal beat
   if (showGrowthSummary) {
     const reflectionImageUrl = lastKnownImageRef.current;
+    const growthCostText = fictionFirstCostText(growthCost)
+      || undefined;
+    const growthLingeringText = normalizeSentence(growthCost?.lingeringEffect);
+    const growthNarrativeText = [
+      growthCostText || growthReflectionText,
+      growthLingeringText && growthLingeringText !== growthCostText ? growthLingeringText : undefined,
+    ].filter(Boolean).join('\n\n');
     return (
       <View style={{ flex: 1 }}>
       <ReadingShell imageUrl={reflectionImageUrl} fadeAnim={fadeAnim} imageOpacity={imageOpacity}>
             <View style={styles.textPanel}>
               <NarrativeText
-                text={growthReflectionText}
+                text={growthNarrativeText}
                 animate={true}
                 onAnimationComplete={handleGrowthReflectionAnimComplete}
               />
-              {growthCost && (
-                <View style={styles.costPanel}>
-                  <Text style={styles.costPanelLabel}>THE PRICE OF SUCCESS</Text>
-                  <Text style={styles.costPanelTitle}>{growthCost.visibleComplication}</Text>
-                  <Text style={styles.costPanelMeta}>{`${growthCost.severity.toUpperCase()} ${growthCost.domain.toUpperCase()} COST`}</Text>
-                  <Text style={styles.costPanelBody}>{growthCost.immediateEffect}</Text>
-                  {!!growthCost.lingeringEffect && (
-                    <Text style={styles.costPanelLingering}>{growthCost.lingeringEffect}</Text>
-                  )}
-                </View>
-              )}
-              {growthBadgesVisible && (
-                <ConsequenceBadgeList consequences={growthFeedback} />
-              )}
             </View>
 
             {growthBadgesVisible && (
               <ContinueButton copyKey="growth" onPress={dismissGrowthSummary} />
             )}
       </ReadingShell>
-      {renderDevBadgeOverlay()}
+      {renderDevBadgeOverlay(reflectionImageUrl)}
       {renderDevNavOverlay()}
       </View>
     );
@@ -1521,16 +1613,10 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
     if (currentStoryletBeat) {
       console.log(`[StoryReader] Rendering storylet beat: id="${currentStoryletBeat.id}", text="${(currentStoryletBeat.text || '').substring(0, 60)}...", hasImage=${!!currentStoryletBeat.image}, isTerminal=${!!currentStoryletBeat.isTerminal}, hasChoices=${!!(currentStoryletBeat.choices?.length)}`);
-      // Tone badge appearance
-      const toneStyles: Record<string, { labelColor: string; labelText: string; borderColor: string }> = {
-        triumphant:  { labelColor: TERMINAL.colors.success,  borderColor: withAlpha(TERMINAL.colors.success, 0.4),  labelText: 'VICTORY'      },
-        bittersweet: { labelColor: TERMINAL.colors.amber,    borderColor: withAlpha(TERMINAL.colors.amber, 0.4),    labelText: 'AFTERMATH'    },
-        tense:       { labelColor: TERMINAL.colors.error,    borderColor: withAlpha(TERMINAL.colors.error, 0.4),    labelText: 'CONSEQUENCES' },
-        desperate:   { labelColor: '#dc2626',                borderColor: 'rgba(220,38,38,0.4)',                     labelText: 'DESPERATE'    },
-        relieved:    { labelColor: TERMINAL.colors.primary,  borderColor: withAlpha(TERMINAL.colors.primary, 0.4),  labelText: 'ESCAPE'       },
-        somber:      { labelColor: '#6b7280',                borderColor: 'rgba(107,114,128,0.4)',                   labelText: 'DEFEAT'       },
-      };
-      const toneStyle = toneStyles[activeStorylet.tone] || toneStyles.bittersweet;
+      const storyletOutcome = activeStorylet.triggerOutcome;
+      const fallback = buildStoryletOutcomeFallback(storyletOutcome, player.characterName || 'You');
+      const usableBeatText = normalizeSentence(currentStoryletBeat.text);
+      const narrativeText = usableBeatText || fallback.narrative;
 
       // Fall back to current scene's background image when the beat has no dedicated image
       const sceneBgStr = mediaRefAsString(currentScene?.backgroundImage);
@@ -1549,14 +1635,8 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
             placeholderWatermark
           >
             <View style={styles.textPanel}>
-              <View style={[styles.storyletToneBadge, { borderColor: toneStyle.borderColor }]}>
-                <Text style={[styles.storyletToneLabel, { color: toneStyle.labelColor }]}>
-                  {toneStyle.labelText}
-                </Text>
-              </View>
-
               <NarrativeText
-                text={processTemplate(currentStoryletBeat.text, player, currentStory)}
+                text={processTemplate(narrativeText, player, currentStory)}
                 speaker={currentStoryletBeat.speaker}
                 speakerMood={currentStoryletBeat.speakerMood}
                 animate={isStoryletAnimating}
@@ -1586,7 +1666,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
               <ContinueButton copyKey="storylet" onPress={handleStoryletContinue} />
             )}
           </ReadingShell>
-          {renderDevBadgeOverlay()}
+          {renderDevBadgeOverlay(storyletImageUrl)}
           {renderDevNavOverlay()}
         </View>
       );
@@ -1666,10 +1746,10 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     );
   };
 
-  const submitNegativeFeedback = async (shouldRegenerate: boolean = false) => {
+  const submitNegativeFeedback = async () => {
     if (!imageUrl || !currentStory) return;
     
-    const feedback = await addFeedback({
+    await addFeedback({
       storyId: currentStory.id,
       episodeId: currentEpisode?.id,
       sceneId: currentScene?.id,
@@ -1681,46 +1761,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     });
     
     setShowFeedbackModal(false);
-    
-    if (shouldRegenerate) {
-      setIsRegenerating(true);
-      try {
-        // Call the regenerate endpoint
-        const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/regenerate-image`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            imageUrl,
-            storyId: currentStory.id,
-            sceneId: currentScene?.id,
-            beatId: currentBeatId,
-            feedback: {
-              reasons: selectedReasons,
-              notes: feedbackNotes.trim(),
-            },
-          }),
-        });
-        
-        if (response.ok) {
-          const result = await response.json();
-          if (result.newImageUrl) {
-            // Update feedback with regenerated image URL
-            await updateFeedback(feedback.id, {
-              regenerated: true,
-              regeneratedImageUrl: result.newImageUrl,
-            });
-            // Force refresh the beat to show new image
-            // This will trigger a re-render with the new image
-            setImageErrorId(null);
-          }
-        }
-      } catch (error) {
-        console.error('[StoryReader] Failed to regenerate image:', error);
-      } finally {
-        setIsRegenerating(false);
-      }
-    }
-    
     setFeedbackSubmitted(true);
     setTimeout(() => setFeedbackSubmitted(false), 2000);
   };
@@ -1775,6 +1815,12 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     <ButterflyBanner items={butterflyFeedback} onDismiss={clearButterflyFeedback} />
   ) : null;
 
+  const activeChoiceEcho =
+    recentChoiceEcho?.targetSceneId === currentScene?.id &&
+    recentChoiceEcho?.targetBeatId === currentBeatId
+      ? recentChoiceEcho
+      : undefined;
+
   return (
     <View style={{ flex: 1 }}>
       <ReadingShell
@@ -1796,33 +1842,30 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           }
         }}
       >
-        {choiceFeedback && (
-          <ConsequenceToast
-            consequences={choiceFeedback.consequences}
-            onDismiss={() => setChoiceFeedback(null)}
-          />
-        )}
-
-        {recentChoiceEcho &&
-          recentChoiceEcho.targetSceneId === currentScene?.id &&
-          recentChoiceEcho.targetBeatId === currentBeatId && (
-          <View style={styles.echoPanel}>
-            <Text style={styles.echoSummaryText}>{recentChoiceEcho.summary}</Text>
-            {recentChoiceEcho.progress && (
-              <Text style={styles.echoProgressText}>{recentChoiceEcho.progress}</Text>
-            )}
-            {recentChoiceEcho.feedback.length > 0 && (
-              <ConsequenceBadgeList consequences={recentChoiceEcho.feedback} staggerDelay={60} />
+        {activeChoiceEcho && (
+          <View
+            style={[
+              styles.storyletOutcomeEchoPanel,
+              {
+                borderColor: withAlpha(choiceOutcomeColor(activeChoiceEcho.tier), 0.35),
+                backgroundColor: withAlpha(choiceOutcomeColor(activeChoiceEcho.tier), 0.08),
+              },
+            ]}
+            testID={`choice-consequence-${activeChoiceEcho.tier || 'change'}`}
+          >
+            <Text style={styles.echoSummaryText}>{activeChoiceEcho.summary}</Text>
+            {!!activeChoiceEcho.progress && (
+              <Text style={styles.echoProgressText}>{activeChoiceEcho.progress}</Text>
             )}
           </View>
         )}
 
         <View style={styles.textPanel}>
-          {choiceOutcomeHeader && (
-            <OutcomeHeader tier={choiceOutcomeHeader.tier} context="story" text={choiceOutcomeHeader.text} />
-          )}
           <NarrativeText
-            text={processedBeat.text}
+            text={[
+              processedBeat.text,
+              ...(processedBeat.skillInsights ?? []),
+            ].filter(Boolean).join('\n\n')}
             speaker={processedBeat.speaker}
             speakerMood={processedBeat.speakerMood}
             animate={!devSkipAnimationsOnce}
@@ -1830,16 +1873,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           />
         </View>
 
-        {resolutionText && (
-          <View style={styles.resolutionPanel}>
-            {choiceOutcomeHeader && (
-              <OutcomeHeader tier={choiceOutcomeHeader.tier} context="story" text={choiceOutcomeHeader.text} />
-            )}
-            <Text style={styles.resolutionText}>{resolutionText}</Text>
-          </View>
-        )}
-
-        {showChoices && processedBeat.hasChoices && (
+        {showChoices && processedBeat.hasChoices && !isChoiceResolutionInFlight && (
           <View style={styles.choicesList}>
             {processedBeat.choices.map((choice, index) => (
               <ChoiceButton
@@ -1854,22 +1888,17 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           </View>
         )}
 
-        {!isAnimating && !processedBeat.hasChoices && !resolutionText && (
+        {!isAnimating && !processedBeat.hasChoices && (
           <ContinueButton copyKey="default" onPress={handleContinue} />
         )}
       </ReadingShell>
 
-      {renderDevBadgeOverlay()}
+      {renderDevBadgeOverlay(imageUrl)}
 
       {/* Dev Mode: Toolbar (rendered as overlay so it wins stacking on web) */}
       {developerMode && imageUrl && (
           <View style={styles.feedbackToolbar}>
-            {isRegenerating ? (
-              <View style={styles.regeneratingIndicator}>
-                <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
-                <Text style={styles.regeneratingText}>REGENERATING...</Text>
-              </View>
-            ) : feedbackSubmitted ? (
+            {feedbackSubmitted ? (
               <View style={styles.feedbackSubmittedIndicator}>
                 <Text style={styles.feedbackSubmittedText}>FEEDBACK SAVED</Text>
               </View>
@@ -1966,26 +1995,6 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
                 >
                   <ThumbsDown size={18} color={currentImageFeedback?.rating === 'negative' ? '#fff' : TERMINAL.colors.error} />
                 </Pressable>
-                
-                {currentImageFeedback?.rating === 'negative' && (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.feedbackButton,
-                      styles.regenerateButton,
-                      pressed && { opacity: 0.7 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Regenerate image"
-                    onPress={() => submitNegativeFeedback(true)}
-                    {...(Platform.OS === 'web'
-                      ? ({
-                          onClick: () => submitNegativeFeedback(true),
-                        } as any)
-                      : {})}
-                  >
-                    <RefreshCw size={18} color={TERMINAL.colors.cyan} />
-                  </Pressable>
-                )}
               </>
             )}
           </View>
@@ -2114,17 +2123,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
             <View style={styles.feedbackModalActions}>
               <TouchableOpacity
                 style={styles.feedbackSubmitButton}
-                onPress={() => submitNegativeFeedback(false)}
+                onPress={() => submitNegativeFeedback()}
               >
                 <Text style={styles.feedbackSubmitButtonText}>SAVE FEEDBACK</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                style={styles.feedbackRegenerateButton}
-                onPress={() => submitNegativeFeedback(true)}
-              >
-                <RefreshCw size={16} color={TERMINAL.colors.cyan} />
-                <Text style={styles.feedbackRegenerateButtonText}>SAVE & REGENERATE</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -2195,8 +2196,6 @@ const styles = StyleSheet.create({
   contentScrollView: sharedStyles.contentScrollView,
   contentContainer: sharedStyles.contentContainer,
   textPanel: sharedStyles.textPanel,
-  resolutionPanel: sharedStyles.resolutionPanel,
-  resolutionText: sharedStyles.resolutionText,
   echoPanel: {
     backgroundColor: 'rgba(10, 10, 12, 0.72)',
     borderWidth: 1,
@@ -2219,26 +2218,16 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 4,
   },
+  storyletOutcomeEchoPanel: {
+    borderWidth: 1,
+    borderRadius: RADIUS.choice,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 12,
+  },
   choicesList: {
     gap: 12,
   },
-  costPanel: {
-    ...sharedStyles.sectionCard,
-    marginTop: 16,
-    borderColor: withAlpha(TERMINAL.colors.amber, 0.35),
-    backgroundColor: withAlpha(TERMINAL.colors.amber, 0.08),
-  },
-  costPanelLabel: { ...sharedStyles.sectionEyebrow, color: TERMINAL.colors.amber, marginBottom: 6 },
-  costPanelTitle: { ...sharedStyles.sectionCardTitle, marginBottom: 6 },
-  costPanelMeta: {
-    color: TERMINAL.colors.textLight,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1,
-    marginBottom: 8,
-  },
-  costPanelBody: sharedStyles.sectionCardBody,
-  costPanelLingering: { ...sharedStyles.sectionCardMeta, marginTop: 8 },
   recapEyebrow: { ...sharedStyles.sectionEyebrow, color: TERMINAL.colors.primary },
   recapTitle: sharedStyles.sectionTitle,
   recapSection: sharedStyles.sectionGroup,
@@ -2592,21 +2581,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: TERMINAL.colors.cyan,
     letterSpacing: 1,
-  },
-  // Storylet styles (GDD 6.7 - aftermath sequences)
-  // Tone badge that sits inside the textPanel above the narrative text
-  storyletToneBadge: {
-    alignSelf: 'flex-start',
-    borderWidth: 1,
-    borderRadius: 6,
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    marginBottom: 12,
-  },
-  storyletToneLabel: {
-    fontSize: 9,
-    fontWeight: '900',
-    letterSpacing: 2,
   },
   storyletContinueButton: {
     ...sharedStyles.continueButton,

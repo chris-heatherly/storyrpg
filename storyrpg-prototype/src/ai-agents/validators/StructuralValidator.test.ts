@@ -132,3 +132,92 @@ describe('StructuralValidator.autoFix', () => {
     expect(JSON.stringify(result.story)).toBe(before);
   });
 });
+
+describe('StructuralValidator encounter consequence checks', () => {
+  it('warns when encounter outcomes and costs have no durable consequence hook', () => {
+    const story = makeStory();
+    (story.episodes[0].scenes[0] as any).encounter = {
+      id: 'enc-1',
+      name: 'Test Encounter',
+      type: 'social',
+      description: 'A tense exchange',
+      goalClock: { id: 'goal', name: 'Goal', description: 'Goal', segments: 4, filled: 0, type: 'goal' },
+      threatClock: { id: 'threat', name: 'Threat', description: 'Threat', segments: 4, filled: 0, type: 'threat' },
+      stakes: { victory: 'Win', defeat: 'Lose' },
+      startingPhaseId: 'phase-1',
+      outcomes: {},
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Phase 1',
+          beats: [
+            {
+              id: 'beat-1',
+              phase: 'setup',
+              name: 'Beat 1',
+              setupText: 'The room goes quiet.',
+              choices: [
+                {
+                  id: 'choice-1',
+                  text: 'Take the risk',
+                  approach: 'bold',
+                  outcomes: {
+                    success: {
+                      tier: 'success',
+                      goalTicks: 2,
+                      threatTicks: 0,
+                      narrativeText: 'It works.',
+                      isTerminal: true,
+                      encounterOutcome: 'victory',
+                    },
+                    complicated: {
+                      tier: 'complicated',
+                      goalTicks: 1,
+                      threatTicks: 1,
+                      narrativeText: 'It works at a price.',
+                      isTerminal: true,
+                      encounterOutcome: 'partialVictory',
+                      cost: {
+                        domain: 'relationship',
+                        severity: 'minor',
+                        whoPays: 'protagonist',
+                        immediateEffect: 'A friend sees the compromise.',
+                        visibleComplication: 'Trust frays.',
+                        consequences: [],
+                      },
+                      visualContract: { visibleCost: 'Trust frays.' },
+                    },
+                    failure: {
+                      tier: 'failure',
+                      goalTicks: 0,
+                      threatTicks: 2,
+                      narrativeText: 'It fails.',
+                      isTerminal: true,
+                      encounterOutcome: 'defeat',
+                      consequences: [
+                        { type: 'setFlag', flag: 'encounter_failure_remembered', value: true },
+                      ],
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const report = new StructuralValidator().validateStory(story);
+
+    expect(report.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          description: expect.stringContaining('has no durable consequence hook'),
+        }),
+        expect.objectContaining({
+          description: expect.stringContaining('has a cost without mechanical consequences'),
+        }),
+      ])
+    );
+  });
+});

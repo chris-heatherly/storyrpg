@@ -2,8 +2,8 @@ import React from 'react';
 import {
   ActivityIndicator,
   GestureResponderEvent,
-  Platform,
   Text,
+  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View,
@@ -13,38 +13,26 @@ import {
   ChevronRight,
   CheckCircle2,
   Clock,
-  Code,
   Cpu,
   Edit2,
   Eye,
   Film,
   Image as ImageIcon,
   Info,
-  LogIn,
+  KeyRound,
   Play,
   RefreshCw,
   StopCircle,
-  ThumbsDown,
-  ThumbsUp,
   Trash2,
-  Type,
   XCircle,
 } from 'lucide-react-native';
-import type { StoryCatalogEntry } from '../../types';
-import type { FontSize } from '../../stores/settingsStore';
+import type { MediaSetupTarget, StoryCatalogEntry } from '../../types';
 import type { GenerationJob, JobStatus } from '../../stores/generationJobStore';
 import { TERMINAL } from '../../theme';
 import { APP_VERSION_LABEL } from '../../config/version';
-import { SegmentedControl, Toggle } from '../ui';
+import { STABLE_DIFFUSION_UI_ENABLED } from '../../config/generatorLlmOptions';
+import { useGeneratorSettings } from '../../hooks/useGeneratorSettings';
 import { PipelineProgress } from '../PipelineProgress';
-import { PROXY_CONFIG } from '../../config/endpoints';
-import {
-  fetchAuthMe,
-  fetchAuthProviders,
-  postAuthLogout,
-  type AuthProviders,
-  type AuthUser,
-} from '../../services/authSession';
 
 type SettingsStyles = Record<string, any>;
 
@@ -72,12 +60,19 @@ function getStoryContinuation(
   return undefined;
 }
 
+function getMediaTargetKey(target: MediaSetupTarget) {
+  return `${target.storyId}:${target.episodeNumber}`;
+}
+
 type StoryEpisodeRow = {
   key: string;
   story: StoryCatalogEntry;
+  episodeId: string;
   episodeNumber: number;
   episodeTitle: string;
   episodeSynopsis?: string;
+  imageArtifacts?: { hasEpisodeArt?: boolean };
+  videoArtifacts?: { hasVideo?: boolean };
 };
 
 type StorySeasonGroup = {
@@ -129,9 +124,12 @@ function buildStorySeasonGroups(
       group.rows.push({
         key: `${story.outputDir || story.id}:${episode.id || episode.number}`,
         story,
+        episodeId: episode.id || `${story.id}-episode-${episode.number || group.rows.length + 1}`,
         episodeNumber: episode.number || group.rows.length + 1,
         episodeTitle: episode.title || story.title || 'Episode',
         episodeSynopsis: episode.synopsis || story.synopsis,
+        imageArtifacts: episode.imageArtifacts,
+        videoArtifacts: episode.videoArtifacts,
       });
     }
 
@@ -171,132 +169,6 @@ function SectionHeader({
   );
 }
 
-interface DisplayPreferencesSectionProps {
-  styles: SettingsStyles;
-  fontSize: FontSize;
-  fonts: { base: number };
-  fontSizeOptions: Array<{ key: FontSize; label: string }>;
-  preferVideo: boolean;
-  onSetFontSize: (size: FontSize) => void;
-  onTogglePreferVideo: () => void;
-}
-
-export function DisplayPreferencesSection({
-  styles,
-  fontSize,
-  fonts,
-  fontSizeOptions,
-  preferVideo,
-  onSetFontSize,
-  onTogglePreferVideo,
-}: DisplayPreferencesSectionProps) {
-  return (
-    <View style={styles.section}>
-      <SectionHeader
-        styles={styles}
-        icon={<Type size={18} color={TERMINAL.colors.primary} />}
-        title="DISPLAY SETTINGS"
-        description="ADJUST TEXT SIZE FOR OPTIMAL CHRONICLE READABILITY"
-      />
-
-      <View style={styles.settingCard}>
-        <SegmentedControl
-          ariaLabel="Font size"
-          options={fontSizeOptions.map((option) => ({ value: option.key, label: option.label }))}
-          value={fontSize}
-          onChange={onSetFontSize}
-          testID="settings-font-size"
-        />
-
-        <View style={[styles.previewBox, { marginTop: 12 }]}>
-          <View style={styles.previewHeader}>
-            <Eye size={14} color={TERMINAL.colors.muted} />
-            <Text style={styles.previewLabel}>LIVE PREVIEW</Text>
-          </View>
-          <Text style={[styles.previewText, { fontSize: fonts.base }]}>
-            The quick brown fox jumps over the lazy dog.
-          </Text>
-          <Text style={styles.previewMeta}>
-            BASE: {fonts.base}px • CURRENT: {fontSize.toUpperCase()}
-          </Text>
-        </View>
-
-        <View style={styles.sectionCardDivider}>
-          <Toggle
-            value={preferVideo}
-            onValueChange={() => onTogglePreferVideo()}
-            label="PREFER VIDEO"
-            helperText={preferVideo
-              ? 'Show animated video clips when available'
-              : 'Show still images even when video exists'}
-            testID="settings-prefer-video"
-          />
-        </View>
-      </View>
-    </View>
-  );
-}
-
-interface DeveloperToolsSectionProps {
-  styles: SettingsStyles;
-  developerMode: boolean;
-  onToggleDeveloperMode: () => void;
-}
-
-export function DeveloperToolsSection({
-  styles,
-  developerMode,
-  onToggleDeveloperMode,
-}: DeveloperToolsSectionProps) {
-  return (
-    <View style={styles.section}>
-      <SectionHeader
-        styles={styles}
-        icon={<Code size={18} color={developerMode ? TERMINAL.colors.cyan : TERMINAL.colors.muted} />}
-        title="DEV MODE"
-        titleColor={developerMode ? TERMINAL.colors.cyan : TERMINAL.colors.muted}
-        description="DIAGNOSTIC AND FEEDBACK TOOLS FOR STORY READER"
-        right={developerMode ? (
-          <View style={styles.devModeBadge}>
-            <Text style={styles.devModeBadgeText}>ACTIVE</Text>
-          </View>
-        ) : null}
-      />
-
-      <View style={styles.settingCard}>
-        <Toggle
-          value={developerMode}
-          onValueChange={() => onToggleDeveloperMode()}
-          label="DEV MODE"
-          helperText="Image prompts, feedback, and regeneration"
-          testID="settings-developer-mode"
-        />
-
-        {developerMode ? (
-          <View style={styles.devModeFeatures}>
-            <View style={styles.featureItem}>
-              <Code size={12} color={TERMINAL.colors.cyan} />
-              <Text style={styles.featureText}>View image generation prompts</Text>
-            </View>
-            <View style={styles.featureItem}>
-              <ThumbsUp size={12} color={TERMINAL.colors.primary} />
-              <Text style={styles.featureText}>Thumbs up to mark good images</Text>
-            </View>
-            <View style={styles.featureItem}>
-              <ThumbsDown size={12} color={TERMINAL.colors.error} />
-              <Text style={styles.featureText}>Thumbs down with feedback reasons</Text>
-            </View>
-            <View style={styles.featureItem}>
-              <RefreshCw size={12} color={TERMINAL.colors.cyan} />
-              <Text style={styles.featureText}>Regenerate rejected images</Text>
-            </View>
-          </View>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
 interface GeneratorLauncherSectionProps {
   styles: SettingsStyles;
   onOpenGenerator: () => void;
@@ -331,6 +203,181 @@ export function GeneratorLauncherSection({
           </Text>
         </View>
       </TouchableOpacity>
+    </View>
+  );
+}
+
+export function GeneratorCredentialsSection({ styles }: { styles: SettingsStyles }) {
+  const [credentialsExpanded, setCredentialsExpanded] = React.useState(false);
+  const {
+    apiKey,
+    openaiApiKey,
+    geminiApiKey,
+    atlasCloudApiKey,
+    midapiToken,
+    elevenLabsApiKey,
+    stableDiffusionSettings,
+    loraTrainingSettings,
+    handleApiKeyChange,
+    handleOpenaiApiKeyChange,
+    handleGeminiApiKeyChange,
+    handleAtlasCloudApiKeyChange,
+    handleMidapiTokenChange,
+    handleElevenLabsApiKeyChange,
+    handleStableDiffusionSettingsChange,
+    handleLoraTrainingSettingsChange,
+  } = useGeneratorSettings();
+
+  const credentialValues = [
+    apiKey,
+    openaiApiKey,
+    geminiApiKey,
+    atlasCloudApiKey,
+    midapiToken,
+    elevenLabsApiKey,
+    ...(STABLE_DIFFUSION_UI_ENABLED
+      ? [stableDiffusionSettings.apiKey, loraTrainingSettings.apiKey]
+      : []),
+  ];
+  const configuredKeyCount = credentialValues.filter((value) => Boolean(value?.trim())).length;
+  const credentialTotal = credentialValues.length;
+
+  return (
+    <View style={styles.section}>
+      <TouchableOpacity
+        style={[
+          styles.settingCard,
+          {
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+            marginBottom: credentialsExpanded ? 10 : 0,
+          },
+        ]}
+        onPress={() => setCredentialsExpanded((expanded) => !expanded)}
+        activeOpacity={0.8}
+        accessibilityRole="button"
+        accessibilityLabel="Toggle generator credentials"
+        accessibilityState={{ expanded: credentialsExpanded }}
+      >
+        <View style={styles.generatorIconBox}>
+          <KeyRound size={18} color="white" />
+        </View>
+        <View style={{ flex: 1, gap: 4 }}>
+          <Text style={[styles.sectionTitle, { color: 'white' }]}>CREDENTIALS</Text>
+          <Text style={styles.configHint}>
+            {configuredKeyCount}/{credentialTotal} configured • stored locally for generator jobs
+          </Text>
+        </View>
+        <ChevronRight
+          size={18}
+          color={TERMINAL.colors.muted}
+          style={{ transform: [{ rotate: credentialsExpanded ? '90deg' : '0deg' }] }}
+        />
+      </TouchableOpacity>
+
+      {credentialsExpanded ? (
+        <View style={styles.settingCard}>
+        <View style={styles.credentialGrid}>
+          <Text style={styles.configHint}>
+            Provider keys are reused by story, image, video, and narration jobs. They stay in local generator storage.
+          </Text>
+
+          <CredentialInput
+            styles={styles}
+            label={`ANTHROPIC API KEY ${apiKey ? '✓' : '*'}`}
+            value={apiKey}
+            onChangeText={handleApiKeyChange}
+            placeholder="sk-ant-..."
+          />
+          <CredentialInput
+            styles={styles}
+            label={`OPENAI API KEY ${openaiApiKey ? '✓' : '*'}`}
+            value={openaiApiKey}
+            onChangeText={handleOpenaiApiKeyChange}
+            placeholder="sk-proj-... used for OpenAI text and images"
+          />
+          <CredentialInput
+            styles={styles}
+            label={`GEMINI API KEY ${geminiApiKey ? '✓' : '*'}`}
+            value={geminiApiKey}
+            onChangeText={handleGeminiApiKeyChange}
+            placeholder="AIzaSy... used for Gemini text, images, and video"
+          />
+          <CredentialInput
+            styles={styles}
+            label={`ATLAS CLOUD API KEY ${atlasCloudApiKey ? '✓' : 'OPTIONAL'}`}
+            value={atlasCloudApiKey}
+            onChangeText={handleAtlasCloudApiKeyChange}
+            placeholder="Used only when Atlas Cloud renders images"
+          />
+          <CredentialInput
+            styles={styles}
+            label={`MIDAPI TOKEN ${midapiToken ? '✓' : 'OPTIONAL'}`}
+            value={midapiToken}
+            onChangeText={handleMidapiTokenChange}
+            placeholder="Used only when MidAPI renders images"
+          />
+          <CredentialInput
+            styles={styles}
+            label={`ELEVENLABS API KEY ${elevenLabsApiKey ? '✓' : 'OPTIONAL'}`}
+            value={elevenLabsApiKey}
+            onChangeText={handleElevenLabsApiKeyChange}
+            placeholder="Used when narration is enabled"
+          />
+
+          {STABLE_DIFFUSION_UI_ENABLED ? (
+            <>
+              <CredentialInput
+                styles={styles}
+                label={`STABLE DIFFUSION API KEY ${stableDiffusionSettings.apiKey ? '✓' : 'OPTIONAL'}`}
+                value={stableDiffusionSettings.apiKey || ''}
+                onChangeText={(apiKeyValue) => handleStableDiffusionSettingsChange({ apiKey: apiKeyValue })}
+                placeholder="Bearer token for secured Stable Diffusion backends"
+              />
+              <CredentialInput
+                styles={styles}
+                label={`LORA TRAINER API KEY ${loraTrainingSettings.apiKey ? '✓' : 'OPTIONAL'}`}
+                value={loraTrainingSettings.apiKey || ''}
+                onChangeText={(apiKeyValue) => handleLoraTrainingSettingsChange({ apiKey: apiKeyValue })}
+                placeholder="Bearer token for the trainer sidecar"
+              />
+            </>
+          ) : null}
+        </View>
+      </View>
+      ) : null}
+    </View>
+  );
+}
+
+function CredentialInput({
+  styles,
+  label,
+  value,
+  onChangeText,
+  placeholder,
+}: {
+  styles: SettingsStyles;
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <View style={styles.credentialRow}>
+      <Text style={styles.configLabel}>{label}</Text>
+      <View style={styles.inputWrapper}>
+        <TextInput
+          style={styles.input}
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          placeholderTextColor={TERMINAL.colors.muted}
+          secureTextEntry
+          autoCapitalize="none"
+        />
+      </View>
     </View>
   );
 }
@@ -610,10 +657,10 @@ interface StoryLibrarySectionProps {
   onOpenVisualizer: (storyId: string) => void;
   onDeleteStory?: (storyId: string) => void;
   onRenameStory?: (storyId: string, newTitle: string) => void;
-  onGenerateVideos?: (storyId: string) => void;
-  onGenerateImages?: (storyId: string) => void;
+  onGenerateVideos?: (target: MediaSetupTarget) => void;
+  onGenerateImages?: (target: MediaSetupTarget) => void;
   onDeleteSeasonImageReferences?: (story: StoryCatalogEntry) => void;
-  onDeleteEpisodeArt?: (story: StoryCatalogEntry) => void;
+  onDeleteEpisodeArt?: (story: StoryCatalogEntry, target: MediaSetupTarget) => void;
   onContinueSeasonPlan?: (planId: string) => void;
   seasonContinuations?: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>;
   onRequestDeleteStory: (story: StoryCatalogEntry) => void;
@@ -623,7 +670,7 @@ interface StoryLibrarySectionProps {
   videoGeneratingStoryId?: string | null;
   imageGeneratingStoryId?: string | null;
   isDeletingSeasonReferences?: (story: StoryCatalogEntry) => boolean;
-  isDeletingEpisodeArt?: (story: StoryCatalogEntry) => boolean;
+  isDeletingEpisodeArt?: (story: StoryCatalogEntry, target: MediaSetupTarget) => boolean;
 }
 
 export function StoryLibrarySection({
@@ -659,7 +706,7 @@ export function StoryLibrarySection({
     icon: React.ReactNode,
     color: string,
     onPress: () => void,
-    options?: { disabled?: boolean; loading?: boolean; danger?: boolean; backgroundColor?: string },
+    options?: { disabled?: boolean; loading?: boolean; danger?: boolean; backgroundColor?: string; grid?: boolean },
   ) => {
     const disabled = options?.disabled === true;
     const actionColor = disabled ? TERMINAL.colors.muted : color;
@@ -668,6 +715,7 @@ export function StoryLibrarySection({
         key={key}
         style={[
           styles.storyActionButton,
+          options?.grid && isCompact && !isNarrow ? styles.storyActionButtonGrid : null,
           options?.danger ? styles.deleteIconButton : null,
           options?.backgroundColor ? { backgroundColor: options.backgroundColor } : null,
           disabled ? styles.storyActionButtonDisabled : null,
@@ -687,17 +735,28 @@ export function StoryLibrarySection({
     );
   };
 
-  const renderActionRows = (actions: React.ReactNode[]) => {
+  const renderActionRows = (actions: React.ReactNode[], pinned = false) => {
     const chunkSize = isCompact ? 3 : actions.length;
     const rows: React.ReactNode[] = [];
     for (let i = 0; i < actions.length; i += chunkSize) {
       rows.push(
-        <View key={`row-${i}`} style={styles.storyActionRow}>
+        <View key={`row-${i}`} style={[
+          styles.storyActionRow,
+          pinned && isCompact && !isNarrow ? styles.storyActionRowGrid : null,
+        ]}>
           {actions.slice(i, i + chunkSize)}
         </View>
       );
     }
-    return <View style={[styles.storyManageActions, isNarrow ? styles.storyManageActionsNarrow : null]}>{rows}</View>;
+    return (
+      <View style={[
+        styles.storyManageActions,
+        !pinned && !isNarrow ? styles.storyManageActionsInline : null,
+        isNarrow ? styles.storyManageActionsNarrow : pinned ? styles.storyManageActionsPinned : null,
+      ]}>
+        {rows}
+      </View>
+    );
   };
 
   return (
@@ -787,7 +846,12 @@ export function StoryLibrarySection({
                         </>
                       ) : null}
                       <View style={styles.metaDot} />
-                      <Text style={styles.storyManageMeta}>{group.rows.length} EPISODE{group.rows.length === 1 ? '' : 'S'}</Text>
+                      <Text
+                        style={[styles.storyManageMeta, styles.storyManageMetaNoWrap]}
+                        numberOfLines={1}
+                      >
+                        {group.rows.length} EPISODE{group.rows.length === 1 ? '' : 'S'}
+                      </Text>
                     </View>
                   </View>
                   {headerActions.length > 0 ? renderActionRows(headerActions) : null}
@@ -795,6 +859,18 @@ export function StoryLibrarySection({
 
                 {group.rows.map((row) => {
                   const story = row.story;
+                  const makeTarget = (kind: MediaSetupTarget['kind']): MediaSetupTarget => ({
+                    kind,
+                    storyId: story.id,
+                    outputDir: story.outputDir || '',
+                    episodeId: row.episodeId,
+                    episodeNumber: row.episodeNumber,
+                    episodeTitle: row.episodeTitle,
+                  });
+                  const imageTarget = makeTarget('images');
+                  const videoTarget = makeTarget('video');
+                  const imageTargetKey = getMediaTargetKey(imageTarget);
+                  const videoTargetKey = getMediaTargetKey(videoTarget);
                   const canGenerateVideo = Boolean(onGenerateVideos && story.outputDir);
                   const canGenerateImages = Boolean(
                     onGenerateImages
@@ -806,8 +882,8 @@ export function StoryLibrarySection({
                     && story.outputDir
                     && story.isBuiltIn !== true
                   );
-                  const episodeArtAvailable = story.imageArtifacts?.hasEpisodeArt === true;
-                  const episodeArtDeleting = Boolean(isDeletingEpisodeArt?.(story));
+                  const episodeArtAvailable = row.imageArtifacts?.hasEpisodeArt === true;
+                  const episodeArtDeleting = Boolean(isDeletingEpisodeArt?.(story, imageTarget));
                   const canRename = Boolean(onRenameStory);
                   const canDelete = Boolean(onDeleteStory);
                   const rowActions: React.ReactNode[] = [];
@@ -817,11 +893,12 @@ export function StoryLibrarySection({
                       'ANIMATE',
                       <Film size={14} color="rgb(168, 85, 247)" />,
                       'rgb(168, 85, 247)',
-                      () => onGenerateVideos?.(story.id),
+                      () => onGenerateVideos?.(videoTarget),
                       {
-                        loading: videoGeneratingStoryId === story.id,
-                        disabled: videoGeneratingStoryId !== null,
-                        backgroundColor: videoGeneratingStoryId === story.id ? 'rgba(245, 158, 11, 0.15)' : 'rgba(168, 85, 247, 0.1)',
+                        loading: videoGeneratingStoryId === videoTargetKey,
+                        disabled: videoGeneratingStoryId !== null || !episodeArtAvailable,
+                        backgroundColor: videoGeneratingStoryId === videoTargetKey ? 'rgba(245, 158, 11, 0.15)' : episodeArtAvailable ? 'rgba(168, 85, 247, 0.1)' : undefined,
+                        grid: true,
                       },
                     ));
                   }
@@ -831,11 +908,12 @@ export function StoryLibrarySection({
                       'IMAGES',
                       <ImageIcon size={14} color={TERMINAL.colors.primary} />,
                       TERMINAL.colors.primary,
-                      () => onGenerateImages?.(story.id),
+                      () => onGenerateImages?.(imageTarget),
                       {
-                        loading: imageGeneratingStoryId === story.id,
+                        loading: imageGeneratingStoryId === imageTargetKey,
                         disabled: imageGeneratingStoryId !== null,
-                        backgroundColor: imageGeneratingStoryId === story.id ? 'rgba(245, 158, 11, 0.15)' : 'rgba(59, 130, 246, 0.12)',
+                        backgroundColor: imageGeneratingStoryId === imageTargetKey ? 'rgba(245, 158, 11, 0.15)' : 'rgba(59, 130, 246, 0.12)',
+                        grid: true,
                       },
                     ));
                   }
@@ -845,11 +923,12 @@ export function StoryLibrarySection({
                       'CLEAR ART',
                       <Trash2 size={14} color={TERMINAL.colors.error} />,
                       TERMINAL.colors.error,
-                      () => onDeleteEpisodeArt?.(story),
+                      () => onDeleteEpisodeArt?.(story, imageTarget),
                       {
                         disabled: !episodeArtAvailable || episodeArtDeleting,
                         loading: episodeArtDeleting,
                         backgroundColor: episodeArtAvailable ? 'rgba(239, 68, 68, 0.1)' : undefined,
+                        grid: true,
                       },
                     ));
                   }
@@ -859,7 +938,7 @@ export function StoryLibrarySection({
                     <RefreshCw size={14} color={TERMINAL.colors.cyan} />,
                     TERMINAL.colors.cyan,
                     () => onOpenVisualizer(story.id),
-                    { backgroundColor: 'rgba(6, 182, 212, 0.1)' },
+                    { backgroundColor: 'rgba(6, 182, 212, 0.1)', grid: true },
                   ));
                   if (canRename) {
                     rowActions.push(renderStoryAction(
@@ -868,6 +947,7 @@ export function StoryLibrarySection({
                       <Edit2 size={14} color={TERMINAL.colors.primary} />,
                       TERMINAL.colors.primary,
                       () => onRequestRenameStory(story),
+                      { grid: true },
                     ));
                   }
                   if (canDelete) {
@@ -877,12 +957,19 @@ export function StoryLibrarySection({
                       <Trash2 size={14} color={TERMINAL.colors.error} />,
                       TERMINAL.colors.error,
                       () => onRequestDeleteStory(story),
-                      { danger: true },
+                      { danger: true, grid: true },
                     ));
                   }
 
                   return (
-                    <View key={row.key} style={[styles.storyManageItem, isNarrow ? styles.storyManageItemNarrow : null]}>
+                    <View
+                      key={row.key}
+                      style={[
+                        styles.storyManageItem,
+                        isCompact && !isNarrow ? styles.storyManageItemCompact : null,
+                        isNarrow ? styles.storyManageItemNarrow : null,
+                      ]}
+                    >
                       <View style={styles.storyEpisodeNumber}>
                         <Text style={styles.storyEpisodeNumberText}>EP</Text>
                         <Text style={styles.storyEpisodeNumberValue}>{row.episodeNumber}</Text>
@@ -899,7 +986,7 @@ export function StoryLibrarySection({
                           ) : null}
                         </View>
                       </View>
-                      {renderActionRows(rowActions)}
+                      {renderActionRows(rowActions, true)}
                     </View>
                   );
                 })}
@@ -908,164 +995,6 @@ export function StoryLibrarySection({
           })}
         </View>
       )}
-    </View>
-  );
-}
-
-interface OAuthAccountSectionProps {
-  styles: SettingsStyles;
-  onSignedOut?: () => void;
-}
-
-export function OAuthAccountSection({ styles, onSignedOut }: OAuthAccountSectionProps) {
-  const [providers, setProviders] = React.useState<AuthProviders | null>(null);
-  const [user, setUser] = React.useState<AuthUser | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-  const [busy, setBusy] = React.useState(false);
-
-  const load = React.useCallback(async () => {
-    if (Platform.OS !== 'web') return;
-    setError(null);
-    setLoading(true);
-    try {
-      const [p, me] = await Promise.all([fetchAuthProviders(), fetchAuthMe()]);
-      setProviders(p);
-      setUser(me.user);
-    } catch (e) {
-      console.warn('[OAuthAccountSection]', e);
-      setError('PROXY UNAVAILABLE OR AUTH NOT CONFIGURED');
-      setProviders(null);
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  React.useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    load();
-  }, [load]);
-
-  React.useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    if (!url.searchParams.has('auth')) return;
-    url.searchParams.delete('auth');
-    const next = `${url.pathname}${url.search}${url.hash}`;
-    window.history.replaceState({}, '', next);
-    load();
-  }, [load]);
-
-  if (Platform.OS !== 'web') {
-    return null;
-  }
-
-  const startGoogle = () => {
-    if (typeof window !== 'undefined') {
-      window.location.assign(PROXY_CONFIG.authGoogle);
-    }
-  };
-
-  const startDiscord = () => {
-    if (typeof window !== 'undefined') {
-      window.location.assign(PROXY_CONFIG.authDiscord);
-    }
-  };
-
-  const handleLogout = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await postAuthLogout();
-      setUser(null);
-      onSignedOut?.();
-    } catch (e) {
-      console.warn('[OAuthAccountSection] logout', e);
-      setError('LOGOUT FAILED');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const hasAnyProvider = providers?.google || providers?.discord || providers?.local;
-
-  return (
-    <View style={styles.section}>
-      <SectionHeader
-        styles={styles}
-        icon={<LogIn size={18} color={TERMINAL.colors.primary} />}
-        title="ACCOUNT (WEB)"
-        description="EMAIL, GOOGLE, OR DISCORD — SESSION ON PROXY (PORT 3001)"
-      />
-
-      <View style={styles.settingCard}>
-        {loading && !error ? (
-          <View style={{ paddingVertical: 12, alignItems: 'center' }}>
-            <ActivityIndicator size="small" color={TERMINAL.colors.muted} />
-            <Text style={[styles.sectionDesc, { marginTop: 8 }]}>CHECKING PROXY SESSION…</Text>
-          </View>
-        ) : null}
-
-        {error ? (
-          <Text style={[styles.sectionDesc, { color: TERMINAL.colors.error, marginBottom: 8 }]}>{error}</Text>
-        ) : null}
-
-        {!loading && user ? (
-          <View style={{ gap: 10 }}>
-            <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>SIGNED IN</Text>
-              <Text style={styles.infoValue} numberOfLines={1}>
-                {user.displayName || user.email || user.id}
-              </Text>
-            </View>
-            <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>PROVIDER</Text>
-              <Text style={styles.infoValue}>{user.provider.toUpperCase()}</Text>
-            </View>
-            {user.email ? (
-              <View style={styles.infoRow}>
-                <Text style={styles.infoLabel}>EMAIL</Text>
-                <Text style={styles.infoValue} numberOfLines={1}>
-                  {user.email}
-                </Text>
-              </View>
-            ) : null}
-            <TouchableOpacity
-              style={[styles.optionButton, { marginTop: 4, alignItems: 'center' }]}
-              onPress={handleLogout}
-              disabled={busy}
-            >
-              {busy ? (
-                <ActivityIndicator size="small" color={TERMINAL.colors.muted} />
-              ) : (
-                <Text style={styles.optionText}>SIGN OUT</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        ) : !loading ? (
-          <View style={{ gap: 10 }}>
-            {!hasAnyProvider && providers !== null ? (
-              <Text style={styles.sectionDesc}>
-                EMAIL SIGN-IN IS ENABLED BY DEFAULT. OPTIONAL: GOOGLE / DISCORD OAUTH ENV VARS ON THE PROXY.
-              </Text>
-            ) : null}
-            {providers?.google ? (
-              <TouchableOpacity style={[styles.optionButton, styles.optionButtonSelected]} onPress={startGoogle}>
-                <Text style={[styles.optionText, styles.optionTextSelected]}>CONTINUE WITH GOOGLE</Text>
-              </TouchableOpacity>
-            ) : null}
-            {providers?.discord ? (
-              <TouchableOpacity style={styles.optionButton} onPress={startDiscord}>
-                <Text style={styles.optionText}>CONTINUE WITH DISCORD</Text>
-              </TouchableOpacity>
-            ) : null}
-            <TouchableOpacity style={styles.optionButton} onPress={load} disabled={busy}>
-              <Text style={styles.optionText}>REFRESH STATUS</Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
-      </View>
     </View>
   );
 }

@@ -28,6 +28,14 @@ import {
   SeasonPlan,
   SeasonEpisode,
   SeasonArc,
+  ArcEpisodeTurnout,
+  ArcEpisodeTurnoutType,
+  SeasonCentralPressureType,
+  SeasonPromiseArchitecture,
+  AudienceKnowledgeState,
+  InformationKnowledgeHolder,
+  InformationLedgerEntry,
+  InformationTensionMode,
   EpisodeRecommendation,
   EpisodeSelectionState,
   CliffhangerPlan,
@@ -41,6 +49,10 @@ import {
   SevenPointCoverageValidator,
   seasonPlanToCoverageInput,
 } from '../validators/SevenPointCoverageValidator';
+import { ArcPressureArchitectureValidator } from '../validators/ArcPressureArchitectureValidator';
+import { CharacterArchitectureValidator } from '../validators/CharacterArchitectureValidator';
+import { SeasonPromiseValidator } from '../validators/SeasonPromiseValidator';
+import { InformationLedgerValidator } from '../validators/InformationLedgerValidator';
 import {
   buildDefaultCliffhangerPlan,
   normalizeCliffhangerPlan,
@@ -51,6 +63,20 @@ import {
   CRAFT_PRESSURE_GUIDANCE,
   buildGenreAwareJeopardyGuidance,
 } from '../prompts/storytellingPrinciples';
+import { clampSceneCount } from '../../constants/pipeline';
+
+type MutablePlanData = Partial<SeasonPlan> & {
+  encounterPlan?: any;
+  crossEpisodeBranches?: any[];
+  consequenceChains?: any[];
+  seasonFlags?: any[];
+  episodeEncounters?: Record<number | string, any[]>;
+  episodeEndingRoutes?: Record<number | string, any[]>;
+  episodeCliffhangers?: Record<number | string, Partial<CliffhangerPlan>>;
+  difficultyCurve?: any[];
+  seasonPromiseArchitecture?: Partial<SeasonPromiseArchitecture>;
+  informationLedger?: any[];
+};
 
 // ========================================
 // INPUT TYPES
@@ -64,6 +90,10 @@ export interface SeasonPlannerInput {
   preferences?: {
     targetScenesPerEpisode?: number;
     targetChoicesPerEpisode?: number;
+    episodeStructureMode?: 'standard' | 'sceneEpisodes';
+    sceneEpisodeEncounterCadence?: number;
+    sceneEpisodeBranchMinEpisodes?: number;
+    sceneEpisodeBranchMaxEpisodes?: number;
     pacing?: 'tight' | 'moderate' | 'expansive';
     endingMode?: EndingMode;
   };
@@ -132,15 +162,7 @@ Your plans must define:
     console.log(`[SeasonPlanner] Creating season plan for: ${sourceAnalysis.sourceTitle}`);
 
     // Always use LLM - we need it for encounter planning and cross-episode branching
-    let planData: Partial<SeasonPlan> & { 
-      encounterPlan?: any; 
-      crossEpisodeBranches?: any[];
-      consequenceChains?: any[];
-      seasonFlags?: any[];
-      episodeEncounters?: Record<number, any[]>;
-      episodeEndingRoutes?: Record<number, any[]>;
-      episodeCliffhangers?: Record<number, Partial<CliffhangerPlan>>;
-    };
+    let planData: MutablePlanData;
 
     try {
       const prompt = this.buildPlanningPrompt(sourceAnalysis, preferences);
@@ -159,6 +181,7 @@ Your plans must define:
       console.warn(`[SeasonPlanner] LLM planning failed, using fallback:`, error);
       planData = this.buildFallbackPlan(sourceAnalysis);
     }
+    planData = this.mergeTreatmentGuidanceIntoPlanData(sourceAnalysis, planData);
 
     // Build the complete season plan
     const seasonPlan = this.buildSeasonPlan(sourceAnalysis, planData, preferences);
@@ -214,6 +237,21 @@ Your plans must define:
       : '(not yet derived — inherit from episode breakdown)';
     const distributionHint = describeDistribution(distributeSevenPoints(analysis.totalEstimatedEpisodes));
 
+    const isSceneEpisodes = preferences?.episodeStructureMode === 'sceneEpisodes';
+    const treatmentMode = analysis.treatmentSeasonGuidance?.episodeStructureMode;
+    const effectiveSceneEpisodes = isSceneEpisodes || treatmentMode === 'sceneEpisodes';
+    const treatmentSeasonBlock = analysis.treatmentSeasonGuidance ? `
+## Authored Treatment Season Guidance
+The source document is a StoryRPG treatment. Preserve these authored sections as planning constraints; do not treat them as optional flavor.
+- Treatment mode: ${analysis.treatmentSeasonGuidance.episodeStructureMode}
+- Parsed sections: ${analysis.treatmentSeasonGuidance.rawSectionSummary?.join(', ') || 'season guidance'}
+${analysis.treatmentSeasonGuidance.seasonPromiseAndDramaticEngine ? `\n### Season Promise / Dramatic Engine\n${analysis.treatmentSeasonGuidance.seasonPromiseAndDramaticEngine}` : ''}
+${analysis.treatmentSeasonGuidance.stakesArchitecture ? `\n### Stakes Architecture\n${analysis.treatmentSeasonGuidance.stakesArchitecture}` : ''}
+${analysis.treatmentSeasonGuidance.informationLedger ? `\n### Information Ledger\n${analysis.treatmentSeasonGuidance.informationLedger}` : ''}
+${analysis.treatmentSeasonGuidance.arcPlan ? `\n### Arc Plan\n${analysis.treatmentSeasonGuidance.arcPlan}` : ''}
+${analysis.treatmentSeasonGuidance.branchAndConsequenceChains ? `\n### Branch / Consequence Chains\n${analysis.treatmentSeasonGuidance.branchAndConsequenceChains}` : ''}
+${analysis.treatmentSeasonGuidance.failureModeAudit ? `\n### Failure Mode Audit\n${analysis.treatmentSeasonGuidance.failureModeAudit}` : ''}
+` : '';
     return `
 Create a comprehensive MASTER SEASON PLAN for this interactive fiction series.
 This plan is the BLUEPRINT that guides ALL episode generation - encounters, branches, and consequences.
@@ -244,6 +282,21 @@ Use the source analysis as the authority, but learn from reusable structure:
 - Escalate pressure toward the shared Stakes and Goal without assuming every story needs combat.
 - Pressure can be physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure.
 - Make plans go partly wrong often enough that choices require improvisation.
+- Plan each episode around 3-6 major episode turns expressed through buildup, encounter pressure, player choice, consequence, aftermath, and cliffhanger/resolution.
+- Each episode's central conflict should manifest in its encounter. The encounter is where relationships, information, risks, prior choices, player capabilities, and current stakes are tested through play.
+- If the protagonist falls short, fail forward into a natural path for growth, preparation, alliance, recovery, information gathering, training, mentorship, or alternate leverage.
+- Capability growth should respect existing mechanics: skills, attributes, relationships, flags, identity, prior choices, consequences, and encounter outcomes, while keeping all player-facing language fiction-first.
+- Plan skill surfaces, not just hidden rolls: passive insights (what the protagonist notices), prepared advantages (prior flags/items/relationships that reduce risk), choice affordances, outcome texture, and branch residue.
+- Each episode should identify 2-3 focusSkills, 1-2 growth/preparation opportunities, and at least one expectedPreparedAdvantage that can pay off later as a statCheck modifier or alternate route.
+- Convert broad source themes into one working theme question for the season. Each episode should test that question from a distinct angle through protagonist/player choice, cost, relationship pressure, information, or identity movement.
+- Plan protagonist-facing pressure lanes when the episode has room: A-plot is the external episode pressure; B-plot is playable relationship/identity pressure that can be a scene, a sceneEpisode, an underlay, or offscreen NPC motivation surfaced through protagonist-visible signals; C-plot is usually a future seed, callback, world-pressure hint, or tonal counterweight with a visible plant and payoff plan. Do not create non-protagonist POV scenes, omniscient cutaways, or filler C-plot scenes.
+- Define each arc as a 3-8 episode pressure movement inside the season, not a competing act schema. The season 7-point spine is authoritative; arc architecture explains how a smaller question escalates, recontextualizes, hits a late crisis, resolves, and hands off pressure.
+- Episode endings inside an arc are arc turn-outs, not literal TV acts. Each must escalate, reverse, reveal, cost, force a choice, recontextualize, crisis-hit, finale-answer, or hand off pressure. Do not end an arc episode with a flat transition.
+- Each arc needs: arcQuestion, seasonQuestionRelation, identityPressureFacet, midpointRecontextualization, lateArcCrisis, finaleAnswer, episodeTurnouts, and handoffPressure when the arc does not end the season. The midpoint must change the question being asked, not merely intensify danger. The late crisis should be apparent failure, irreversible cost, or collapse of the current plan, not mandatory genre-inappropriate despair.
+- In sceneEpisodes mode, an arc is a chain of scene-length runtime episodes. Do not force each sceneEpisode to carry a whole arc by itself; distribute arc setup, recontextualization, crisis, finale, and handoff across the sceneEpisode chain. If the source treatment is already a sceneEpisode treatment, each listed sceneEpisode is already one runtime episode and must not be split again.
+- Define Season Promise Architecture without adding fixed TV episode positions. Include one seasonDramaticQuestion, one centralPressure that can be a person/institution/mystery/environment/relationship/internal force/situation, a seasonPromise that names premise/player/emotional promises, and seasonCompleteness that explains how this season satisfies as a complete story while leaving earned future pressure.
+- Episode 1 should establish the premise, player role, protagonist pressure, dramatic engine, and promise of play. Episode 2 may clarify the repeatable engine when season length allows, but do NOT force a rigid re-pilot. Do NOT force penultimate climax or fixed tent-pole episode numbers; the season 7-point distribution remains authoritative.
+- Build an Information Ledger for major questions, threats, secrets, reveals, and payoffs. Use suspense/dramatic irony by default when the player can know the threat without breaking POV. Mystery is capped at 3 box questions per season. For major payoffs, plants should be 3-4 standard episodes ahead or 5-8 sceneEpisodes ahead unless the season is shorter than the runway.
 - After the Climax, resolve quickly: show what was saved or changed, then show future cost, identity change, or legacy.
 - Ensure the Inciting Incident lands in Act 1 and the Climax lands in Act 3.
 - From the Inciting Incident through the Climax, make difficulty rise and make the protagonist's transformation increasingly necessary to achieve the Goal.
@@ -259,7 +312,7 @@ ${analysis.schemaAbstraction ? `## Reusable Pattern Abstraction
 - Mode: ${analysis.schemaAbstraction.adaptationMode}
 - Pattern: ${analysis.schemaAbstraction.reusablePatternSummary}
 - Guidance: ${analysis.schemaAbstraction.generalizationGuidance.join('; ')}
-` : ''}${SEASON_PLANNER_CRAFT_EXAMPLE}
+` : ''}${treatmentSeasonBlock}${SEASON_PLANNER_CRAFT_EXAMPLE}
 
 ## Episode Breakdown
 ${episodeSummaries}
@@ -273,11 +326,22 @@ ${arcList}
 ## Protagonist
 - **Name**: ${analysis.protagonist.name}
 - **Arc**: ${analysis.protagonist.arc}
+${analysis.characterArchitecture ? `- Lie: ${analysis.characterArchitecture.protagonist.lie}
+- Origin pressure: ${analysis.characterArchitecture.protagonist.originPressure}
+- Truth: ${analysis.characterArchitecture.protagonist.truth}
+- Want: ${analysis.characterArchitecture.protagonist.want}
+- Need: ${analysis.characterArchitecture.protagonist.need}
+- Arc mode: ${analysis.characterArchitecture.protagonist.arcMode}
+- Climax choice: ${analysis.characterArchitecture.protagonist.climaxChoice.choiceQuestion}
+` : ''}
 
 ## User Preferences
-- Scenes per episode: ${preferences?.targetScenesPerEpisode || 6}
+- Episode structure mode: ${effectiveSceneEpisodes ? 'sceneEpisodes (one runtime episode = one dramatic scene)' : 'standard'}
+- Scenes per episode: ${effectiveSceneEpisodes ? 1 : clampSceneCount(preferences?.targetScenesPerEpisode || 6)}
 - Choices per episode: ${preferences?.targetChoicesPerEpisode || 3}
 - Pacing: ${preferences?.pacing || 'moderate'}
+${effectiveSceneEpisodes ? `- Scene-length episode rules: exactly 1 scene per runtime episode; normal episodes need 6-10 beats, target 8; every episode ends with a cliffhanger or forward-pressure hook; milestone encounters happen every ${preferences?.sceneEpisodeEncounterCadence || 6} master-spine episodes; branch paths last ${preferences?.sceneEpisodeBranchMinEpisodes || 1}-${preferences?.sceneEpisodeBranchMaxEpisodes || 2} episodes before reconverging.
+` : ''}
 
 ## Ending Targets
 - Active ending mode: ${activeEndingMode}
@@ -285,13 +349,13 @@ ${endingList ? endingList : '- No explicit endings supplied. Create a convergent
 
 ## YOUR TASK - MASTER BLUEPRINT
 
-**Design each episode from the encounter outward.** The encounter is not a scene you add — it IS the episode. The episode's narrative exists to build toward the encounter, make its choices feel earned, and then play out the consequences.
+**Design each episode from the encounter outward.** The encounter is the episode's central conflict / pressure event. The episode's narrative exists to build toward the encounter, test the player's relationships, information, skills, prior choices, and current stakes, then play out the consequences.
 
 ### THE ENCOUNTER-FIRST PLANNING PROCESS
 
 For each episode, answer in this order:
 
-1. **What is the most dramatically intense confrontation possible in this episode?** That is the encounter. You are NOT bound to the source material — invent or heighten any confrontation that fits the themes. A social standoff in a drawing room is as valid as a sword fight.
+1. **What central conflict or pressure event should this episode test through play?** That is the encounter. You are NOT bound to the source material — invent or heighten any confrontation that fits the themes. A social standoff in a drawing room is as valid as a sword fight.
 
 2. **What does the player need to feel and know before reaching that encounter?** Plan buildup scenes that establish: the relationships that will be tested, the information that will become a weapon, and the personal stakes that make each encounter choice feel like a value statement, not just a tactical decision.
 
@@ -304,6 +368,7 @@ You must plan THREE critical things at the SEASON level:
 ### 1. ENCOUNTER PLANNING (Encounter-First)
 For each episode, design the encounter FIRST as the dramatic anchor, then plan how the episode builds toward it.
 - Each encounter must feel like the episode's reason for existing — the culmination of everything that came before
+- Each encounter must manifest the episode's central conflict / pressure event
 - Plan what information/relationships/stakes the pre-encounter scenes must establish so the encounter choices feel loaded
 - Design a DIFFICULTY CURVE across the season (introduction → rising → peak → falling → finale)
 - Vary encounter types — no two consecutive episodes should use the same type
@@ -324,15 +389,17 @@ Track how a single decision ripples through the season.
 - These create the feeling of a living, responsive world
 
 ### 4. CHARACTER GROWTH CURVE
-Plan how the protagonist develops across the season. For each episode, specify:
+Plan how the protagonist develops across the season through story progression and existing game state. For each episode, specify:
 - **focusSkills**: 2-3 skills thematically relevant to this episode's challenges (from: athletics, stealth, perception, persuasion, intimidation, deception, investigation, survival)
-- **developmentScene**: A scene concept where the player CHOOSES what to practice or study. Each option should grow a different skill. Place 1-2 per episode.
+- **developmentScene**: A fiction-first scene concept where the player CHOOSES how to prepare, recover, train, investigate, seek help, or gain alternate leverage. Each option should naturally support a different skill or capability. Place 1-2 per episode.
 - **mentorshipOpportunity**: If an NPC's expected relationship is strong enough by this episode, note the NPC and which attribute they can help develop. Mentorship grows ATTRIBUTES (charm, wit, courage, empathy, resolve, resourcefulness).
 
 Growth should follow the difficulty curve:
 - Early episodes: easy challenges, generous development opportunities
 - Mid episodes: harder challenges that expose skill gaps, mentorship opens up
 - Late episodes: tight challenges that reward investment, mentorship pays off in the climax
+- Failure should never become a dead end or rote grind. If a character falls short, route the consequence into playable story material: debt, suspicion, injury, lost leverage, damaged trust, recovery, preparation, alliance, investigation, training, or a harder alternate approach.
+- Keep growth invisible as mechanics in player-facing prose. Do not expose stats, thresholds, dice, percentages, or "train until ready" language.
 
 ### 5. ENDING TARGETING
 - In \`single\` mode, all major routes must ultimately point back toward ONE ending target.
@@ -344,11 +411,78 @@ Return this JSON:
 {
   "seasonTitle": "Compelling season title",
   "seasonSynopsis": "2-3 sentence season overview",
+  "seasonPromiseArchitecture": {
+    "seasonDramaticQuestion": "One protagonist-centered season question that fuses goal, stakes, and Lie/Truth pressure",
+    "centralPressure": {
+      "type": "person|institution|mystery|environment|relationship|internal|situation",
+      "description": "The season-long pressure that forces the protagonist's Lie/Truth into crisis",
+      "pressuresLieBy": "How this pressure makes the protagonist false/protective belief harder to sustain"
+    },
+    "seasonPromise": {
+      "premisePromise": "What kind of story/premise the opening promises",
+      "playerExperiencePromise": "What kind of choices, agency, and interactive pressure the player should expect",
+      "emotionalPromise": "What emotional contract the season makes with the audience/player",
+      "variationPlan": [
+        "How later episodes deliver fresh variations on the promise without repeating the pilot"
+      ]
+    },
+    "seasonCompleteness": {
+      "resolvedQuestion": "How the final episode answers or directly resolves the seasonDramaticQuestion enough to satisfy",
+      "resolvedStakes": "What is saved, lost, changed, or paid off this season",
+      "characterStateChange": "How the protagonist is different by the end",
+      "openFuturePressure": "Optional earned future pressure; must not erase season completeness"
+    }
+  },
+  "informationLedger": [
+    {
+      "id": "info-1",
+      "label": "Short label for the question, secret, threat, or plant",
+      "description": "What information is at stake",
+      "audienceKnowledgeState": "shared|withheld|selective",
+      "tensionMode": "suspense|mystery|dramatic_irony|surprise|revelation|foreshadowing",
+      "knownBy": ["player|protagonist|ally|antagonist|world"],
+      "withheldFrom": ["player|protagonist|ally|antagonist|world"],
+      "introducedEpisode": 1,
+      "plannedRevealEpisode": 3,
+      "plannedPayoffEpisode": 5,
+      "setupTouchEpisodes": [1, 2],
+      "payoffPlan": "How this information pays off in choice, reveal, cost, reversal, or consequence",
+      "isBoxQuestion": false,
+      "closesQuestionIds": [],
+      "opensQuestionIds": []
+    }
+  ],
   "arcs": [
     {
       "name": "Arc name",
       "description": "Arc description",
       "episodeRange": { "start": 1, "end": 3 },
+      "arcQuestion": "The specific arc-level dramatic question, narrower than the season question",
+      "seasonQuestionRelation": "How this arc question pressures or narrows the season's theme/goal/stakes question",
+      "identityPressureFacet": "The protagonist false belief, wound, fear, vow, loyalty, ambition, self-image, or value conflict this arc pressures",
+      "midpointRecontextualization": {
+        "episodeNumber": 2,
+        "questionBefore": "What the protagonist/player thought the arc question was asking",
+        "questionAfter": "How the question changes after the midpoint reveal/reversal/discovery",
+        "description": "The event that changes the meaning of the arc"
+      },
+      "lateArcCrisis": {
+        "episodeNumber": 3,
+        "apparentFailure": "How the current plan appears to fail or collapse",
+        "irreversibleCost": "What cannot be restored even if the protagonist recovers",
+        "description": "The crisis beat near the final third of the arc"
+      },
+      "finaleAnswer": "How the arc question is answered without pretending the season is over unless this is the season finale",
+      "handoffPressure": "Required when this arc finale is not the season finale: the new pressure, residue, or question that drives the next arc",
+      "episodeTurnouts": [
+        {
+          "episodeNumber": 1,
+          "turnType": "setup|escalation|reversal|revelation|cost|choice|recontextualization|crisis|finale|handoff",
+          "description": "How this episode ending turns the arc",
+          "leavesProtagonistWith": "The new damage, knowledge, obligation, exposure, compromise, relationship pressure, or choice residue",
+          "whyThisCannotMoveLater": "Why this turnout must happen here and could not be swapped with a later episode"
+        }
+      ],
       "keyMoments": [
         { "episodeNumber": 1, "description": "Key moment", "importance": "critical" }
       ]
@@ -498,7 +632,8 @@ Return this JSON:
 }
 
 CRITICAL RULES:
-- Every episode MUST have at least 1 encounter — and it must be the episode's dramatic anchor
+${isSceneEpisodes ? '- In sceneEpisodes mode, treat each SeasonPlan episode as one scene-length runtime episode, not a chapter. Use route metadata mentally: master spine episodes carry the canonical arc; branch-only episodes are route paths and do not count toward encounter cadence.\n' : ''}
+${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episodes need encounters by default; other scene-length episodes are normal choice/cliffhanger episodes.` : `- Every episode MUST have at least 1 encounter — and it must be the episode's dramatic anchor`}
 - Every encounter MUST have an encounterBuildup field describing what earlier scenes must establish
 - Every encounter SHOULD include encounterSetupContext when earlier relationship/flag setup should visibly pay off inside the encounter
 - Use encounterSetupContext entries in the format: "flag:<name> — <effect>" or "relationship:<npcId>.<dimension> <operator> <threshold> — <effect>"
@@ -520,6 +655,12 @@ CRITICAL RULES:
   - resolution: legacy/next-season pressure, not a fake unresolved main conflict
   - rising/falling: serialized-TV hooks, with lower intensity unless cadence requires a spike
 - Cadence rule: Episode 1, midpoint, pinch2, and at least every 2-3 episodes in longer seasons should use high-intensity shock, emotional_hook, betrayal, reframe, revelation, or loss.
+- Arc pressure rule: each arc should span 3-8 episodes where practical. If source length forces a shorter or longer arc, explain the exception in warnings.
+- Arc turn-out rule: every episode inside an arc must leave the protagonist with new damage, knowledge, obligation, exposure, compromise, relationship pressure, choice residue, or future pressure. If an episode's arc turnout could be swapped with a later episode, the arc is slack and must be tightened.
+- Arc finale rule: if an arc does not end on the season finale episode, its finaleAnswer must resolve the local arc question and its handoffPressure must launch the next arc. Do not give a non-final arc season-level finality.
+- Season promise rule: deliver the premise/player/emotional promises in fresh variations across the season. Breaking the core promise is a planning failure unless the user explicitly asked for a genre-breaking subversion.
+- Season completeness rule: the final episode must answer the seasonDramaticQuestion enough to satisfy and show changed stakes/character state. Future hooks are allowed only as earned residue, not as a fake unresolved main conflict.
+- Information ledger rule: maximum 3 mystery/box-question entries per season. Every box question needs a planned reveal or payoff before introduction. Major payoffs need setup touches planted 3-4 regular episodes ahead or 5-8 sceneEpisodes ahead. The finale should close more major questions than it opens.
 - You are NOT limited to what the source material literally contains — invent more dramatically intense encounters that fit the themes
 - Return ONLY valid JSON
 `;
@@ -632,6 +773,201 @@ CRITICAL RULES:
     };
   }
 
+  private mergeTreatmentGuidanceIntoPlanData(analysis: SourceMaterialAnalysis, planData: MutablePlanData): MutablePlanData {
+    const hasTreatment = analysis.episodeBreakdown.some((ep) => ep.treatmentGuidance)
+      || (analysis.treatmentBranches || []).length > 0;
+    if (!hasTreatment) return planData;
+
+    const merged: MutablePlanData = {
+      ...planData,
+      episodeEncounters: { ...(planData.episodeEncounters || {}) },
+      episodeCliffhangers: { ...(planData.episodeCliffhangers || {}) },
+      episodeEndingRoutes: { ...(planData.episodeEndingRoutes || {}) },
+      crossEpisodeBranches: [...(planData.crossEpisodeBranches || [])],
+      consequenceChains: [...(planData.consequenceChains || [])],
+      seasonFlags: [...(planData.seasonFlags || [])],
+    };
+    const endingIds = (analysis.resolvedEndings || []).map((ending) => ending.id);
+
+    for (const ep of analysis.episodeBreakdown) {
+      const guidance = ep.treatmentGuidance;
+      if (!guidance) continue;
+      const epKey = String(ep.episodeNumber);
+      const anchors = (guidance.encounterAnchors && guidance.encounterAnchors.length > 0)
+        ? guidance.encounterAnchors
+        : [
+            guidance.forcedChoice,
+            guidance.obstacle,
+            guidance.dramaticQuestion,
+            guidance.entryGoal,
+          ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).slice(0, 1);
+      if (anchors.length > 0) {
+        merged.episodeEncounters![epKey] = anchors.map((anchor, index) => ({
+          id: `treatment-enc-${ep.episodeNumber}-${index + 1}`,
+          type: this.inferEncounterType(anchor, analysis.genre),
+          description: guidance.encounterCentralConflict
+            ? `${anchor} Central conflict: ${guidance.encounterCentralConflict}`
+            : guidance.forcedChoice
+              ? `${anchor} Forced choice: ${guidance.forcedChoice}`
+            : anchor,
+          difficulty: this.inferEncounterDifficulty(ep.episodeNumber, analysis.totalEstimatedEpisodes),
+          npcsInvolved: ep.mainCharacters,
+          stakes: guidance.stakesLayers?.join(' | ') || guidance.encounterCentralConflict || guidance.episodePromise || ep.narrativeFunction.conflict,
+          centralConflict: guidance.encounterCentralConflict || guidance.dramaticQuestion || guidance.obstacle,
+          aftermathConsequence: guidance.encounterAftermath || guidance.exitShift || guidance.consequenceResidue,
+          relevantSkills: this.inferRelevantSkills(anchor),
+          encounterBuildup: guidance.encounterBuildup || guidance.entryGoal || guidance.openingSituation,
+          encounterSetupContext: [
+            ...(guidance.dramaticQuestion ? [`question:treatment_ep${ep.episodeNumber} — ${guidance.dramaticQuestion}`] : []),
+            ...(guidance.entryGoal ? [`entry_goal:treatment_ep${ep.episodeNumber} — ${guidance.entryGoal}`] : []),
+            ...(guidance.obstacle ? [`obstacle:treatment_ep${ep.episodeNumber} — ${guidance.obstacle}`] : []),
+            ...(guidance.forcedChoice ? [`forced_choice:treatment_ep${ep.episodeNumber} — ${guidance.forcedChoice}`] : []),
+            ...(guidance.exitShift ? [`exit_shift:treatment_ep${ep.episodeNumber} — ${guidance.exitShift}`] : []),
+            ...(guidance.themePressure ? [`theme:treatment_ep${ep.episodeNumber} — ${guidance.themePressure}`] : []),
+            ...(guidance.liePressure ? [`lie_pressure:treatment_ep${ep.episodeNumber} — ${guidance.liePressure}`] : []),
+            ...(guidance.informationMovement ? [`information:treatment_ep${ep.episodeNumber} — ${guidance.informationMovement}`] : []),
+            ...(guidance.stakesLayers || []).slice(0, 4).map((layer, layerIndex) =>
+              `stakes:treatment_stakes_ep${ep.episodeNumber}_${layerIndex + 1} — ${layer}`
+            ),
+            ...(guidance.episodeTurns || []).slice(0, 4).map((turn, turnIndex) =>
+              `turn:treatment_turn_ep${ep.episodeNumber}_${turnIndex + 1} — ${turn}`
+            ),
+            ...(guidance.consequenceSeeds || []).slice(0, 4).map((seed, seedIndex) =>
+              `flag:treatment_seed_ep${ep.episodeNumber}_${seedIndex + 1} — ${seed}`
+            ),
+            ...(guidance.consequenceResidue ? [`residue:treatment_ep${ep.episodeNumber} — ${guidance.consequenceResidue}`] : []),
+            ...(guidance.capabilityGrowthGuidance || []).slice(0, 2).map((growth, growthIndex) =>
+              `growth:treatment_growth_ep${ep.episodeNumber}_${growthIndex + 1} — ${growth}`
+            ),
+            ...(guidance.encounterAftermath ? [`aftermath:treatment_ep${ep.episodeNumber} — ${guidance.encounterAftermath}`] : []),
+          ],
+          isBranchPoint: (guidance.alternativePaths || []).length > 0,
+          branchOutcomes: (guidance.alternativePaths || []).length > 0 ? {
+            victory: guidance.alternativePaths![0] || `The player earns a better version of ${ep.title}.`,
+            partialVictory: guidance.alternativePaths![1] || `The player gets what they want, but residue follows.`,
+            defeat: guidance.alternativePaths![2] || `The player pays a visible cost in ${ep.title}.`,
+          } : undefined,
+        }));
+      }
+
+      const endingPressure = guidance.endingPressure
+        || guidance.authoredCliffhanger
+        || guidance.endingTurnout
+        || guidance.nextEpisodeCausality
+        || guidance.consequenceResidue;
+      if (endingPressure && ep.episodeNumber < analysis.totalEstimatedEpisodes) {
+        merged.episodeCliffhangers![epKey] = {
+          hook: endingPressure,
+          setup: guidance.encounterAftermath || guidance.exitShift || guidance.consequenceSeeds?.join(' | ') || guidance.encounterBuildup || ep.narrativeFunction.conflict,
+          resolvedEpisodeTension: guidance.exitShift || ep.narrativeFunction.resolution,
+          newOpenQuestion: endingPressure,
+          nextEpisodePressure: endingPressure,
+        };
+      } else if (guidance.resolutionAftermath && ep.episodeNumber >= analysis.totalEstimatedEpisodes) {
+        merged.episodeCliffhangers![epKey] = {
+          hook: guidance.resolutionAftermath,
+          setup: guidance.encounterAftermath || ep.narrativeFunction.conflict,
+          resolvedEpisodeTension: guidance.resolutionAftermath,
+          newOpenQuestion: guidance.resolutionAftermath,
+          nextEpisodePressure: guidance.resolutionAftermath,
+        };
+      }
+
+      if (endingIds.length > 0) {
+        merged.episodeEndingRoutes![epKey] = endingIds.map((endingId) => ({
+          endingId,
+          role: ep.episodeNumber === analysis.totalEstimatedEpisodes ? 'locks' : ep.episodeNumber === 1 ? 'opens' : 'reinforces',
+          description: `${ep.title} keeps ${endingId} available through authored treatment choice pressure.`,
+        }));
+      }
+
+      for (const [index, seed] of (guidance.consequenceSeeds || []).entries()) {
+        const id = `treatment-chain-ep${ep.episodeNumber}-${index + 1}`;
+        if (!merged.consequenceChains!.some((chain: any) => chain.id === id)) {
+          merged.consequenceChains!.push({
+            id,
+            origin: { episodeNumber: ep.episodeNumber, description: seed },
+            consequences: [
+              {
+                episodeNumber: Math.min(analysis.totalEstimatedEpisodes, ep.episodeNumber + 1),
+                description: seed,
+                severity: ep.episodeNumber + 1 >= analysis.totalEstimatedEpisodes ? 'dramatic' : 'noticeable',
+              },
+            ],
+          });
+        }
+      }
+    }
+
+    for (const branch of analysis.treatmentBranches || []) {
+      if (merged.crossEpisodeBranches!.some((existing: any) => existing.name === branch.name || existing.id === branch.id)) continue;
+      const originEpisode = branch.originEpisode || 1;
+      merged.crossEpisodeBranches!.push({
+        id: branch.id,
+        name: branch.name,
+        originEpisode,
+        trigger: { type: 'story_choice', description: branch.summary },
+        paths: [
+          {
+            id: `${branch.id}-authored`,
+            name: branch.name,
+            condition: branch.summary,
+            targetEndingIds: endingIds.length > 0 ? endingIds : undefined,
+            affectedEpisodes: [
+              {
+                episodeNumber: branch.reconvergenceEpisode || Math.min(analysis.totalEstimatedEpisodes, originEpisode + 2),
+                impact: 'major',
+                description: branch.summary,
+              },
+            ],
+          },
+        ],
+        reconvergence: branch.reconvergenceEpisode ? {
+          episodeNumber: branch.reconvergenceEpisode,
+          description: `Authored treatment reconvergence for ${branch.name}.`,
+        } : undefined,
+      });
+      merged.seasonFlags!.push({
+        flag: branch.id.replace(/-/g, '_'),
+        description: branch.summary,
+        setInEpisode: originEpisode,
+        checkedInEpisodes: [branch.reconvergenceEpisode || Math.min(analysis.totalEstimatedEpisodes, originEpisode + 2)],
+      });
+    }
+
+    return merged;
+  }
+
+  private inferEncounterType(text: string, genre: string): EncounterCategory {
+    const lower = `${text} ${genre}`.toLowerCase();
+    if (lower.includes('kiss') || lower.includes('romance') || lower.includes('bedroom')) return 'romantic';
+    if (lower.includes('conversation') || lower.includes('confession') || lower.includes('friend')) return 'dramatic';
+    if (lower.includes('club') || lower.includes('ball') || lower.includes('door')) return 'social';
+    if (lower.includes('chase') || lower.includes('run')) return 'chase';
+    if (lower.includes('investigat') || lower.includes('mystery')) return 'investigation';
+    if (lower.includes('fight') || lower.includes('attack') || lower.includes('combat')) return 'combat';
+    return 'dramatic';
+  }
+
+  private inferEncounterDifficulty(episodeNumber: number, totalEpisodes: number): PlannedEncounter['difficulty'] {
+    const progress = episodeNumber / Math.max(1, totalEpisodes);
+    if (progress >= 0.8) return 'extreme';
+    if (progress >= 0.55) return 'hard';
+    if (progress >= 0.25) return 'moderate';
+    return 'easy';
+  }
+
+  private inferRelevantSkills(text: string): string[] {
+    const lower = text.toLowerCase();
+    const skills = new Set<string>();
+    if (lower.includes('conversation') || lower.includes('club') || lower.includes('ball')) skills.add('persuasion');
+    if (lower.includes('confession') || lower.includes('friend') || lower.includes('romance')) skills.add('empathy');
+    if (lower.includes('attack') || lower.includes('fight') || lower.includes('run')) skills.add('athletics');
+    if (lower.includes('mystery') || lower.includes('realiz') || lower.includes('reveal')) skills.add('perception');
+    if (skills.size === 0) skills.add('resolve');
+    return [...skills];
+  }
+
   private buildSeasonPlan(
     analysis: SourceMaterialAnalysis,
     planData: Partial<SeasonPlan> & {
@@ -647,6 +983,8 @@ CRITICAL RULES:
   ): SeasonPlan {
     const now = new Date();
     const planId = `season-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const isSceneEpisodes = preferences?.episodeStructureMode === 'sceneEpisodes';
+    const encounterCadence = Math.max(1, preferences?.sceneEpisodeEncounterCadence || 6);
 
     // Parse episode dependencies from LLM output or use defaults
     const dependenciesMap: Record<number, number[]> = 
@@ -669,6 +1007,8 @@ CRITICAL RULES:
           difficulty: enc.difficulty || 'moderate',
           npcsInvolved: enc.npcsInvolved || [],
           stakes: enc.stakes || '',
+          centralConflict: enc.centralConflict || undefined,
+          aftermathConsequence: enc.aftermathConsequence || undefined,
           relevantSkills: enc.relevantSkills || [],
           encounterBuildup: enc.encounterBuildup || '',
           encounterSetupContext: Array.isArray(enc.encounterSetupContext) ? enc.encounterSetupContext : undefined,
@@ -750,6 +1090,23 @@ CRITICAL RULES:
       setInEpisode: f.setInEpisode || 1,
       checkedInEpisodes: f.checkedInEpisodes || [],
     }));
+    if (isSceneEpisodes) {
+      for (const branch of crossEpisodeBranches) {
+        for (const path of branch.paths) {
+          const routeFlag = this.buildSceneEpisodeRouteFlag(branch.id, path.id);
+          if (seasonFlags.some((f: any) => f.flag === routeFlag)) continue;
+          seasonFlags.push({
+            flag: routeFlag,
+            description: `Route flag for ${branch.name} / ${path.name}; origin choices set exactly one sibling route flag.`,
+            setInEpisode: branch.originEpisode,
+            checkedInEpisodes: [
+              ...path.affectedEpisodes.map(affected => affected.episodeNumber),
+              ...(branch.reconvergence?.episodeNumber ? [branch.reconvergence.episodeNumber] : []),
+            ],
+          });
+        }
+      }
+    }
 
     // Build difficulty curve
     const difficultyCurve = planData.difficultyCurve || analysis.episodeBreakdown.map((ep, idx) => {
@@ -766,6 +1123,30 @@ CRITICAL RULES:
         encounterCount: (episodeEncountersMap[ep.episodeNumber] || []).length || 1,
       };
     });
+
+    if (isSceneEpisodes) {
+      for (const ep of analysis.episodeBreakdown) {
+        const isMilestone = ep.episodeNumber % encounterCadence === 0;
+        const hasAuthoredTreatmentEncounter = Boolean(ep.treatmentGuidance && episodeEncountersMap[ep.episodeNumber]?.length);
+        if (!isMilestone && !hasAuthoredTreatmentEncounter) {
+          episodeEncountersMap[ep.episodeNumber] = [];
+          continue;
+        }
+        if (!episodeEncountersMap[ep.episodeNumber]?.length) {
+          episodeEncountersMap[ep.episodeNumber] = [{
+            id: `scene-episode-milestone-${ep.episodeNumber}`,
+            type: 'dramatic',
+            description: `Milestone confrontation for "${ep.title}"`,
+            difficulty: ep.episodeNumber >= analysis.totalEstimatedEpisodes ? 'extreme' : 'hard',
+            npcsInvolved: ep.mainCharacters.slice(0, 3),
+            stakes: ep.narrativeFunction?.conflict || ep.synopsis,
+            relevantSkills: [],
+            encounterBuildup: `Prior scene-length episodes escalate into the milestone confrontation in "${ep.title}".`,
+            isBranchPoint: false,
+          }];
+        }
+      }
+    }
 
     // Calculate total encounter count
     let totalEncounters = 0;
@@ -809,6 +1190,12 @@ CRITICAL RULES:
 
       // Get encounter data for this episode
       const plannedEncounters = episodeEncountersMap[ep.episodeNumber] || [];
+      const routeMeta = ep.routeMeta || {
+        kind: 'master' as const,
+        spineIndex: ep.episodeNumber,
+        displayLabel: `${ep.episodeNumber}`,
+        isMilestoneEncounter: isSceneEpisodes && ep.episodeNumber % encounterCadence === 0,
+      };
       
       // Get difficulty tier from curve
       const curveEntry = difficultyCurve.find((d: any) => d.episodeNumber === ep.episodeNumber);
@@ -858,6 +1245,8 @@ CRITICAL RULES:
 
       return {
         ...ep,
+        episodeStructureMode: isSceneEpisodes ? 'sceneEpisodes' as const : ep.episodeStructureMode,
+        routeMeta,
         structuralRole,
         status: 'planned' as const,
         dependsOn: deps,
@@ -877,6 +1266,13 @@ CRITICAL RULES:
         cliffhangerPlan,
       };
     });
+
+    const routedEpisodes = isSceneEpisodes
+      ? this.expandSceneEpisodeRouteEpisodes(episodes, crossEpisodeBranches, {
+          minLength: preferences?.sceneEpisodeBranchMinEpisodes || 1,
+          maxLength: preferences?.sceneEpisodeBranchMaxEpisodes || 2,
+        })
+      : episodes;
 
     // Build arcs from LLM output or source analysis. Each arc receives a
     // `beats` array computed from the structuralRoles that fall inside its
@@ -903,11 +1299,26 @@ CRITICAL RULES:
       }
       return {
         ...arc,
+        id: arc.id || `arc-${arc.episodeRange?.start || 1}-${arc.episodeRange?.end || analysis.totalEstimatedEpisodes}`,
         status: 'not_started' as const,
         completionPercentage: 0,
         beats: beats.length > 0 ? beats : undefined,
+        ...this.normalizeArcPressureArchitecture(arc as SeasonArc, analysis, episodes, beats),
       };
     });
+
+    const seasonPromiseArchitecture = this.normalizeSeasonPromiseArchitecture(
+      planData.seasonPromiseArchitecture,
+      analysis,
+      routedEpisodes,
+    );
+    const informationLedger = this.normalizeInformationLedger(
+      planData.informationLedger,
+      analysis,
+      routedEpisodes,
+      seasonPromiseArchitecture,
+      isSceneEpisodes,
+    );
 
     // Build character introductions
     const characterIntroductions = (planData as any).characterIntroductions || 
@@ -934,18 +1345,20 @@ CRITICAL RULES:
       updatedAt: now,
       analysisVersion: analysis.analysisTimestamp?.toISOString() || now.toISOString(),
       seasonTitle: planData.seasonTitle || `${analysis.sourceTitle}: Season 1`,
-      seasonSynopsis: planData.seasonSynopsis || `An interactive adaptation spanning ${analysis.totalEstimatedEpisodes} episodes.`,
-      totalEpisodes: analysis.totalEstimatedEpisodes,
-      estimatedTotalDuration: `${analysis.totalEstimatedEpisodes * 15}-${analysis.totalEstimatedEpisodes * 25} minutes`,
+      seasonSynopsis: planData.seasonSynopsis || `An interactive adaptation spanning ${routedEpisodes.length} episodes.`,
+      totalEpisodes: routedEpisodes.length,
+      estimatedTotalDuration: `${routedEpisodes.length * 3}-${routedEpisodes.length * 8} minutes`,
       genre: analysis.genre,
       tone: analysis.tone,
       themes: analysis.themes,
       arcs,
       anchors: analysis.anchors,
       sevenPoint: analysis.sevenPoint,
+      seasonPromiseArchitecture,
+      informationLedger,
       endingMode: preferences?.endingMode || analysis.resolvedEndingMode || analysis.detectedEndingMode || 'single',
       resolvedEndings: analysis.resolvedEndings || [],
-      episodes,
+      episodes: routedEpisodes,
       progress: {
         selectedCount: 0,
         completedCount: 0,
@@ -954,6 +1367,7 @@ CRITICAL RULES:
         nextRecommendedEpisode: 1,
       },
       protagonist: analysis.protagonist,
+      characterArchitecture: analysis.characterArchitecture,
       characterIntroductions,
       locationIntroductions,
       // New encounter master plan
@@ -971,7 +1385,7 @@ CRITICAL RULES:
       consequenceChains,
       seasonFlags,
       preferences: {
-        targetScenesPerEpisode: preferences?.targetScenesPerEpisode || 6,
+        targetScenesPerEpisode: isSceneEpisodes ? 1 : clampSceneCount(preferences?.targetScenesPerEpisode || 6),
         targetChoicesPerEpisode: preferences?.targetChoicesPerEpisode || 3,
         pacing: preferences?.pacing || 'moderate',
       },
@@ -979,7 +1393,7 @@ CRITICAL RULES:
         warnings: analysis.warnings || [],
         endingMode: preferences?.endingMode || analysis.resolvedEndingMode || analysis.detectedEndingMode || 'single',
         resolvedEndingCount: (analysis.resolvedEndings || []).length,
-        episodes,
+        episodes: routedEpisodes,
         crossEpisodeBranches,
       }),
       notes: [],
@@ -993,11 +1407,561 @@ CRITICAL RULES:
     const coverageResult = new SevenPointCoverageValidator().validate(
       seasonPlanToCoverageInput(plan),
     );
+    for (const warning of this.validateTreatmentHandoff(analysis, plan)) {
+      plan.warnings.push(warning);
+    }
     for (const issue of coverageResult.issues) {
       plan.warnings.push(`[SevenPointCoverage:${issue.severity}] ${issue.message}`);
     }
+    const arcPressureResult = new ArcPressureArchitectureValidator().validate(plan, {
+      episodeStructureMode: isSceneEpisodes ? 'sceneEpisodes' : 'standard',
+    });
+    for (const issue of arcPressureResult.issues) {
+      plan.warnings.push(`[ArcPressure:${issue.severity}] ${issue.message}`);
+    }
+    const characterArchitectureResult = new CharacterArchitectureValidator().validate({
+      characterArchitecture: plan.characterArchitecture,
+      plan,
+    });
+    for (const issue of characterArchitectureResult.issues) {
+      plan.warnings.push(`[CharacterArchitecture:${issue.severity}] ${issue.message}`);
+    }
+    const seasonPromiseResult = new SeasonPromiseValidator().validate(plan);
+    for (const issue of seasonPromiseResult.issues) {
+      plan.warnings.push(`[SeasonPromise:${issue.severity}] ${issue.message}`);
+    }
+    const informationResult = new InformationLedgerValidator().validate(plan, {
+      episodeStructureMode: isSceneEpisodes ? 'sceneEpisodes' : 'standard',
+    });
+    for (const issue of informationResult.issues) {
+      plan.warnings.push(`[InformationLedger:${issue.severity}] ${issue.message}`);
+    }
 
     return plan;
+  }
+
+  private normalizeInformationLedger(
+    rawEntries: any[] | undefined,
+    analysis: SourceMaterialAnalysis,
+    episodes: SeasonEpisode[],
+    seasonPromise: SeasonPromiseArchitecture,
+    isSceneEpisodes: boolean,
+  ): InformationLedgerEntry[] {
+    const totalEpisodes = Math.max(1, episodes.length || analysis.totalEstimatedEpisodes);
+    const finaleEpisode = episodes[episodes.length - 1]?.episodeNumber || totalEpisodes;
+    const targetRunway = isSceneEpisodes ? 5 : 3;
+    const fallbackTouch = Math.max(1, finaleEpisode - targetRunway);
+    const normalizedRaw = Array.isArray(rawEntries)
+      ? rawEntries.map((entry, index) => this.normalizeInformationLedgerEntry(entry, index, totalEpisodes))
+      : [];
+
+    const fallbackEntries: InformationLedgerEntry[] = [
+      {
+        id: 'info-season-central-pressure',
+        label: 'Season central pressure',
+        description: seasonPromise.centralPressure.description,
+        audienceKnowledgeState: 'shared',
+        tensionMode: 'suspense',
+        knownBy: ['player', 'protagonist'],
+        withheldFrom: [],
+        introducedEpisode: 1,
+        plannedRevealEpisode: undefined,
+        plannedPayoffEpisode: finaleEpisode,
+        setupTouchEpisodes: Array.from(new Set([1, fallbackTouch])).filter((episode) => episode < finaleEpisode),
+        payoffPlan: seasonPromise.seasonCompleteness.resolvedQuestion,
+        isBoxQuestion: false,
+        closesQuestionIds: [],
+        opensQuestionIds: [],
+      },
+    ];
+
+    for (const arc of analysis.storyArcs.slice(0, 3)) {
+      const range = arc.estimatedEpisodeRange;
+      const midpoint = this.clampEpisode(this.episodeAtArcRatio(range.start, range.end, 0.5), range.start, range.end);
+      fallbackEntries.push({
+        id: `info-${arc.id || arc.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-reframe`,
+        label: `${arc.name} reframe`,
+        description: arc.description,
+        audienceKnowledgeState: 'selective',
+        tensionMode: 'revelation',
+        knownBy: ['player', 'protagonist'],
+        withheldFrom: ['ally', 'antagonist'],
+        introducedEpisode: Math.max(1, range.start),
+        plannedRevealEpisode: midpoint,
+        plannedPayoffEpisode: Math.min(finaleEpisode, range.end),
+        setupTouchEpisodes: Array.from(new Set([range.start, Math.max(range.start, midpoint - 1)])).filter((episode) => episode < midpoint),
+        payoffPlan: `The ${arc.name} information changes what the protagonist can choose before the arc resolves.`,
+        isBoxQuestion: false,
+        closesQuestionIds: [],
+        opensQuestionIds: [],
+      });
+    }
+
+    const byId = new Map<string, InformationLedgerEntry>();
+    for (const entry of [...normalizedRaw, ...fallbackEntries]) {
+      if (!byId.has(entry.id)) byId.set(entry.id, entry);
+    }
+    const entries = [...byId.values()];
+    let mysteryCount = 0;
+    return entries.map((entry) => {
+      if (entry.tensionMode === 'mystery' || entry.isBoxQuestion) {
+        mysteryCount += 1;
+        if (mysteryCount > 3) {
+          return {
+            ...entry,
+            tensionMode: 'suspense' as const,
+            isBoxQuestion: false,
+            audienceKnowledgeState: entry.audienceKnowledgeState === 'withheld' ? 'selective' : entry.audienceKnowledgeState,
+          };
+        }
+      }
+      return entry;
+    });
+  }
+
+  private normalizeInformationLedgerEntry(
+    raw: any,
+    index: number,
+    totalEpisodes: number,
+  ): InformationLedgerEntry {
+    const introducedEpisode = this.clampEpisode(Number(raw?.introducedEpisode) || 1, 1, totalEpisodes);
+    const reveal = Number(raw?.plannedRevealEpisode) || undefined;
+    const payoff = Number(raw?.plannedPayoffEpisode) || reveal || totalEpisodes;
+    const setupTouchEpisodes = Array.isArray(raw?.setupTouchEpisodes)
+      ? raw.setupTouchEpisodes
+          .map((episode: unknown) => this.clampEpisode(Number(episode) || introducedEpisode, 1, totalEpisodes))
+          .filter((episode: number) => episode <= (payoff || totalEpisodes))
+      : [introducedEpisode];
+    return {
+      id: typeof raw?.id === 'string' && raw.id.trim() ? raw.id.trim() : `info-${index + 1}`,
+      label: typeof raw?.label === 'string' && raw.label.trim() ? raw.label.trim() : `Information ${index + 1}`,
+      description: typeof raw?.description === 'string' ? raw.description : '',
+      audienceKnowledgeState: this.normalizeAudienceKnowledgeState(raw?.audienceKnowledgeState),
+      tensionMode: this.normalizeInformationTensionMode(raw?.tensionMode),
+      knownBy: this.normalizeKnowledgeHolders(raw?.knownBy, ['player']),
+      withheldFrom: this.normalizeKnowledgeHolders(raw?.withheldFrom, []),
+      introducedEpisode,
+      plannedRevealEpisode: reveal ? this.clampEpisode(reveal, introducedEpisode, totalEpisodes) : undefined,
+      plannedPayoffEpisode: payoff ? this.clampEpisode(payoff, introducedEpisode, totalEpisodes) : undefined,
+      setupTouchEpisodes: Array.from(new Set(setupTouchEpisodes)),
+      payoffPlan: typeof raw?.payoffPlan === 'string' ? raw.payoffPlan : '',
+      isBoxQuestion: Boolean(raw?.isBoxQuestion || raw?.tensionMode === 'mystery'),
+      closesQuestionIds: Array.isArray(raw?.closesQuestionIds) ? raw.closesQuestionIds.filter((id: unknown): id is string => typeof id === 'string') : [],
+      opensQuestionIds: Array.isArray(raw?.opensQuestionIds) ? raw.opensQuestionIds.filter((id: unknown): id is string => typeof id === 'string') : [],
+    };
+  }
+
+  private normalizeAudienceKnowledgeState(value: unknown): AudienceKnowledgeState {
+    return value === 'shared' || value === 'withheld' || value === 'selective' ? value : 'shared';
+  }
+
+  private normalizeInformationTensionMode(value: unknown): InformationTensionMode {
+    return value === 'suspense' ||
+      value === 'mystery' ||
+      value === 'dramatic_irony' ||
+      value === 'surprise' ||
+      value === 'revelation' ||
+      value === 'foreshadowing'
+      ? value
+      : 'suspense';
+  }
+
+  private normalizeKnowledgeHolders(value: unknown, fallback: InformationKnowledgeHolder[]): InformationKnowledgeHolder[] {
+    const allowed: InformationKnowledgeHolder[] = ['player', 'protagonist', 'ally', 'antagonist', 'world'];
+    if (!Array.isArray(value)) return fallback;
+    const normalized = value.filter((holder): holder is InformationKnowledgeHolder => allowed.includes(holder as InformationKnowledgeHolder));
+    return normalized.length > 0 ? normalized : fallback;
+  }
+
+  private normalizeSeasonPromiseArchitecture(
+    raw: Partial<SeasonPromiseArchitecture> | undefined,
+    analysis: SourceMaterialAnalysis,
+    episodes: SeasonEpisode[],
+  ): SeasonPromiseArchitecture {
+    const protagonist = analysis.protagonist;
+    const character = analysis.characterArchitecture?.protagonist;
+    const lie = character?.lie || protagonist.arc || 'the identity pressure driving the protagonist';
+    const truth = character?.truth || protagonist.arc || 'a changed way of acting';
+    const goal = analysis.anchors?.goal || 'the season goal';
+    const stakes = analysis.anchors?.stakes || 'what matters most';
+    const firstEpisode = episodes[0];
+    const finale = episodes[episodes.length - 1];
+    const rawCentral = raw?.centralPressure;
+    const rawPromise = raw?.seasonPromise;
+    const rawCompleteness = raw?.seasonCompleteness;
+
+    return {
+      seasonDramaticQuestion: this.cleanSeasonPromiseText(
+        raw?.seasonDramaticQuestion,
+        `Can ${protagonist.name} pursue ${goal} without being ruled by ${lie}?`,
+      ),
+      centralPressure: {
+        type: this.normalizeSeasonCentralPressureType(rawCentral?.type),
+        description: this.cleanSeasonPromiseText(
+          rawCentral?.description,
+          `${goal} collides with ${stakes}, forcing ${protagonist.name}'s identity pressure into the open.`,
+        ),
+        pressuresLieBy: this.cleanSeasonPromiseText(
+          rawCentral?.pressuresLieBy,
+          `It makes ${lie} increasingly costly and makes ${truth} harder to avoid.`,
+        ),
+      },
+      seasonPromise: {
+        premisePromise: this.cleanSeasonPromiseText(
+          rawPromise?.premisePromise,
+          firstEpisode?.synopsis || `The opening promises ${analysis.genre} pressure around ${goal}.`,
+        ),
+        playerExperiencePromise: this.cleanSeasonPromiseText(
+          rawPromise?.playerExperiencePromise,
+          `The player shapes ${protagonist.name}'s choices through risk, relationships, information, and identity pressure.`,
+        ),
+        emotionalPromise: this.cleanSeasonPromiseText(
+          rawPromise?.emotionalPromise,
+          `A ${analysis.tone} season where choices leave visible cost and residue.`,
+        ),
+        variationPlan: Array.isArray(rawPromise?.variationPlan) && rawPromise!.variationPlan!.length > 0
+          ? rawPromise!.variationPlan!.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          : episodes.slice(0, 5).map((episode) =>
+              `Episode ${episode.episodeNumber} varies the promise through ${episode.narrativeFunction?.conflict || episode.synopsis}.`
+            ),
+      },
+      seasonCompleteness: {
+        resolvedQuestion: this.cleanSeasonPromiseText(
+          rawCompleteness?.resolvedQuestion,
+          finale?.narrativeFunction?.resolution || `The finale answers whether ${protagonist.name} can act beyond ${lie}.`,
+        ),
+        resolvedStakes: this.cleanSeasonPromiseText(
+          rawCompleteness?.resolvedStakes,
+          `The season shows what happened to ${stakes}.`,
+        ),
+        characterStateChange: this.cleanSeasonPromiseText(
+          rawCompleteness?.characterStateChange,
+          `By season end, ${protagonist.name} is changed by the pressure between ${lie} and ${truth}.`,
+        ),
+        openFuturePressure: this.cleanSeasonPromiseText(rawCompleteness?.openFuturePressure, ''),
+      },
+    };
+  }
+
+  private normalizeSeasonCentralPressureType(value: unknown): SeasonCentralPressureType {
+    return value === 'person' ||
+      value === 'institution' ||
+      value === 'mystery' ||
+      value === 'environment' ||
+      value === 'relationship' ||
+      value === 'internal' ||
+      value === 'situation'
+      ? value
+      : 'situation';
+  }
+
+  private cleanSeasonPromiseText(value: unknown, fallback: string): string {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback;
+  }
+
+  private normalizeArcPressureArchitecture(
+    rawArc: Partial<SeasonArc>,
+    analysis: SourceMaterialAnalysis,
+    episodes: SeasonEpisode[],
+    beats: StructuralRole[],
+  ): Pick<
+    SeasonArc,
+    | 'arcQuestion'
+    | 'seasonQuestionRelation'
+    | 'identityPressureFacet'
+    | 'midpointRecontextualization'
+    | 'lateArcCrisis'
+    | 'finaleAnswer'
+    | 'handoffPressure'
+    | 'episodeTurnouts'
+  > {
+    const start = rawArc.episodeRange?.start || 1;
+    const end = rawArc.episodeRange?.end || Math.max(1, analysis.totalEstimatedEpisodes);
+    const midpointEpisode = this.clampEpisode(
+      rawArc.midpointRecontextualization?.episodeNumber || this.episodeAtArcRatio(start, end, 0.5),
+      start,
+      end,
+    );
+    const crisisEpisode = this.clampEpisode(
+      rawArc.lateArcCrisis?.episodeNumber || this.episodeAtArcRatio(start, end, 2 / 3),
+      start,
+      end,
+    );
+    const finaleEpisode = end;
+    const midpointEp = episodes.find((ep) => ep.episodeNumber === midpointEpisode);
+    const crisisEp = episodes.find((ep) => ep.episodeNumber === crisisEpisode);
+    const finaleEp = episodes.find((ep) => ep.episodeNumber === finaleEpisode);
+    const arcName = rawArc.name || 'Arc';
+    const arcDescription = rawArc.description || `Episodes ${start}-${end}`;
+    const seasonPressure = analysis.anchors?.stakes || analysis.anchors?.goal || analysis.themes.join(', ');
+    const identityPressure = rawArc.identityPressureFacet
+      || analysis.characterArchitecture?.protagonist.lie
+      || analysis.protagonist.arc
+      || `${analysis.protagonist.name}'s self-image under pressure`;
+    const protagonistTruth = analysis.characterArchitecture?.protagonist.truth || analysis.protagonist.arc;
+
+    const episodeTurnouts = this.normalizeArcEpisodeTurnouts(
+      rawArc.episodeTurnouts,
+      episodes.filter((ep) => ep.episodeNumber >= start && ep.episodeNumber <= end),
+      {
+        start,
+        end,
+        midpointEpisode,
+        crisisEpisode,
+      },
+    );
+
+    return {
+      arcQuestion: rawArc.arcQuestion
+        || `What changes for ${analysis.protagonist.name} as "${arcName}" pressures ${arcDescription}?`,
+      seasonQuestionRelation: rawArc.seasonQuestionRelation
+        || `This arc narrows the season pressure by testing ${seasonPressure || 'the season goal and stakes'} through ${arcName}.`,
+      identityPressureFacet: identityPressure,
+      midpointRecontextualization: {
+        episodeNumber: midpointEpisode,
+        questionBefore: rawArc.midpointRecontextualization?.questionBefore
+          || `Can ${analysis.protagonist.name} survive the visible pressure of ${arcName}?`,
+        questionAfter: rawArc.midpointRecontextualization?.questionAfter
+          || `Did ${analysis.protagonist.name} understand what ${arcName} was really demanding from the Lie/Truth conflict?`,
+        description: rawArc.midpointRecontextualization?.description
+          || midpointEp?.cliffhangerPlan?.newOpenQuestion
+          || midpointEp?.synopsis
+          || `Episode ${midpointEpisode} reframes the arc question instead of merely raising the volume.`,
+      },
+      lateArcCrisis: {
+        episodeNumber: crisisEpisode,
+        apparentFailure: rawArc.lateArcCrisis?.apparentFailure
+          || crisisEp?.cliffhangerPlan?.hook
+          || `The current plan for ${arcName} appears to fail.`,
+        irreversibleCost: rawArc.lateArcCrisis?.irreversibleCost
+          || crisisEp?.cliffhangerPlan?.emotionalCharge
+          || `A cost, exposed truth, damaged bond, or lost option cannot be fully restored.`,
+        description: rawArc.lateArcCrisis?.description
+          || crisisEp?.cliffhangerPlan?.nextEpisodePressure
+          || `Episode ${crisisEpisode} creates a late-arc crisis that forces a changed approach.`,
+      },
+      finaleAnswer: rawArc.finaleAnswer
+        || finaleEp?.narrativeFunction?.resolution
+        || `Episode ${finaleEpisode} answers the local arc question for ${arcName} by forcing ${analysis.protagonist.name} toward or away from ${protagonistTruth}.`,
+      handoffPressure: rawArc.handoffPressure
+        || (finaleEpisode < analysis.totalEstimatedEpisodes
+          ? finaleEp?.cliffhangerPlan?.nextEpisodePressure || `The answer to ${arcName} creates pressure for the next arc.`
+          : undefined),
+      episodeTurnouts,
+    };
+  }
+
+  private normalizeArcEpisodeTurnouts(
+    rawTurnouts: ArcEpisodeTurnout[] | undefined,
+    arcEpisodes: SeasonEpisode[],
+    anchors: { start: number; end: number; midpointEpisode: number; crisisEpisode: number },
+  ): ArcEpisodeTurnout[] {
+    return arcEpisodes.map((episode) => {
+      const existing = rawTurnouts?.find((turnout) => turnout.episodeNumber === episode.episodeNumber);
+      const turnType = existing?.turnType || this.inferArcTurnoutType(episode, anchors);
+      const cliffhanger = episode.cliffhangerPlan;
+      return {
+        episodeNumber: episode.episodeNumber,
+        turnType,
+        description: existing?.description
+          || cliffhanger?.hook
+          || episode.narrativeFunction?.conflict
+          || episode.synopsis
+          || `Episode ${episode.episodeNumber} turns the arc.`,
+        leavesProtagonistWith: existing?.leavesProtagonistWith
+          || cliffhanger?.nextEpisodePressure
+          || cliffhanger?.emotionalCharge
+          || episode.narrativeFunction?.resolution
+          || `New consequence residue from Episode ${episode.episodeNumber}.`,
+        whyThisCannotMoveLater: existing?.whyThisCannotMoveLater
+          || `Episode ${episode.episodeNumber}'s turnout follows from its setup, structural role, and cliffhanger pressure; moving it later would break causal order.`,
+      };
+    });
+  }
+
+  private inferArcTurnoutType(
+    episode: SeasonEpisode,
+    anchors: { start: number; end: number; midpointEpisode: number; crisisEpisode: number },
+  ): ArcEpisodeTurnoutType {
+    if (episode.episodeNumber === anchors.start) return 'setup';
+    if (episode.episodeNumber === anchors.end) return anchors.end === anchors.start ? 'finale' : 'finale';
+    if (episode.episodeNumber === anchors.midpointEpisode || episode.structuralRole?.includes('midpoint')) return 'recontextualization';
+    if (episode.episodeNumber === anchors.crisisEpisode || episode.structuralRole?.includes('pinch2')) return 'crisis';
+    if (episode.structuralRole?.includes('pinch1')) return 'cost';
+    if (episode.structuralRole?.includes('plotTurn1')) return 'choice';
+    const type = episode.cliffhangerPlan?.type;
+    if (type === 'reframe') return 'recontextualization';
+    if (type === 'revelation' || type === 'mystery') return 'revelation';
+    if (type === 'loss' || type === 'betrayal') return 'cost';
+    if (type === 'decision') return 'choice';
+    if (episode.episodeNumber + 1 === anchors.end) return 'escalation';
+    return 'escalation';
+  }
+
+  private episodeAtArcRatio(start: number, end: number, ratio: number): number {
+    const length = Math.max(1, end - start);
+    return Math.round(start + length * ratio);
+  }
+
+  private clampEpisode(value: number, start: number, end: number): number {
+    return Math.max(start, Math.min(end, value));
+  }
+
+  private expandSceneEpisodeRouteEpisodes(
+    masterEpisodes: SeasonEpisode[],
+    crossEpisodeBranches: CrossEpisodeBranch[],
+    options: { minLength: number; maxLength: number }
+  ): SeasonEpisode[] {
+    if (crossEpisodeBranches.length === 0) {
+      return masterEpisodes.map((episode, index) => ({
+        ...episode,
+        episodeNumber: index + 1,
+        estimatedSceneCount: 1,
+        episodeStructureMode: 'sceneEpisodes' as const,
+        routeMeta: {
+          ...(episode.routeMeta || {}),
+          kind: 'master' as const,
+          spineIndex: episode.routeMeta?.spineIndex || episode.episodeNumber,
+          displayLabel: episode.routeMeta?.displayLabel || `${episode.routeMeta?.spineIndex || episode.episodeNumber}`,
+        },
+      }));
+    }
+
+    const branchesByOrigin = new Map<number, CrossEpisodeBranch[]>();
+    for (const branch of crossEpisodeBranches) {
+      const list = branchesByOrigin.get(branch.originEpisode) || [];
+      list.push(branch);
+      branchesByOrigin.set(branch.originEpisode, list);
+    }
+
+    const masterBySpine = new Map<number, SeasonEpisode>();
+    for (const episode of masterEpisodes) {
+      masterBySpine.set(episode.routeMeta?.spineIndex || episode.episodeNumber, episode);
+    }
+    const maxSpine = Math.max(...masterEpisodes.map(episode => episode.routeMeta?.spineIndex || episode.episodeNumber));
+    const routed: SeasonEpisode[] = [];
+    let runtimeEpisodeNumber = 1;
+
+    for (const master of masterEpisodes) {
+      const spineIndex = master.routeMeta?.spineIndex || master.episodeNumber;
+      const runtimeMasterNumber = runtimeEpisodeNumber++;
+      routed.push({
+        ...master,
+        episodeNumber: runtimeMasterNumber,
+        estimatedSceneCount: 1,
+        episodeStructureMode: 'sceneEpisodes' as const,
+        routeMeta: {
+          ...(master.routeMeta || {}),
+          kind: 'master' as const,
+          spineIndex,
+          displayLabel: master.routeMeta?.displayLabel || `${spineIndex}`,
+        },
+      });
+
+      const originBranches = branchesByOrigin.get(spineIndex) || [];
+      for (const branch of originBranches) {
+        const rejoinSpine = branch.reconvergence?.episodeNumber || Math.min(maxSpine, spineIndex + options.maxLength + 1);
+        branch.paths.forEach((path, pathIndex) => {
+          const affectedEpisodes = path.affectedEpisodes || [];
+          const pathLength = Math.max(
+            options.minLength,
+            Math.min(options.maxLength, affectedEpisodes.length || options.minLength)
+          ) as 1 | 2;
+          const displayLetter = String.fromCharCode(65 + pathIndex);
+          const routeFlag = this.buildSceneEpisodeRouteFlag(branch.id, path.id);
+
+          for (let step = 1; step <= pathLength; step++) {
+            const affected = affectedEpisodes[step - 1];
+            const sourceSpine = affected?.episodeNumber || Math.min(rejoinSpine - 1, spineIndex + step);
+            const sourceEpisode = masterBySpine.get(sourceSpine) || master;
+            routed.push({
+              ...sourceEpisode,
+              episodeNumber: runtimeEpisodeNumber++,
+              title: `${path.name}: ${sourceEpisode.title}`,
+              synopsis: affected?.description || path.condition || sourceEpisode.synopsis,
+              estimatedSceneCount: 1,
+              estimatedChoiceCount: Math.max(1, sourceEpisode.estimatedChoiceCount || 1),
+              plannedEncounters: [],
+              episodeStructureMode: 'sceneEpisodes' as const,
+              routeMeta: {
+                kind: 'branch' as const,
+                spineIndex,
+                branchGroupId: branch.id,
+                branchPathId: path.id,
+                branchStep: step,
+                branchLength: pathLength,
+                rejoinsAtSpineIndex: rejoinSpine,
+                displayLabel: `${spineIndex}${displayLetter}${pathLength > 1 ? `-${step}` : ''}`,
+                hideWhenInactive: true,
+              },
+              unlockConditions: {
+                type: 'flag' as const,
+                flag: routeFlag,
+                value: true,
+              },
+              outgoingBranches: undefined,
+              incomingBranches: [branch.id],
+              checksFlags: [
+                ...(sourceEpisode.checksFlags || []),
+                {
+                  flag: routeFlag,
+                  ifTrue: `Player is on ${path.name}.`,
+                  ifFalse: `Player is not on ${path.name}.`,
+                },
+              ],
+              dependsOn: [runtimeMasterNumber],
+              setupsForEpisodes: [rejoinSpine],
+              resolvesPlotsFrom: [runtimeMasterNumber],
+            } as SeasonEpisode);
+          }
+        });
+      }
+    }
+
+    return routed;
+  }
+
+  private buildSceneEpisodeRouteFlag(branchId: string, pathId: string): string {
+    return `route_${branchId}_${pathId}`
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  private validateTreatmentHandoff(analysis: SourceMaterialAnalysis, plan: SeasonPlan): string[] {
+    const warnings: string[] = [];
+    const treatmentEpisodes = analysis.episodeBreakdown.filter((ep) => ep.treatmentGuidance);
+    if (treatmentEpisodes.length === 0 && !(analysis.treatmentBranches || []).length) return warnings;
+
+    if ((analysis.resolvedEndings || []).length !== 3 || plan.endingMode !== 'multiple') {
+      warnings.push('[TreatmentHandoff] Treatment-driven seasons should preserve exactly 3 alternate endings in multiple-ending mode.');
+    }
+
+    for (const episode of plan.episodes) {
+      const hadTreatment = Boolean(analysis.episodeBreakdown.find((ep) => ep.episodeNumber === episode.episodeNumber)?.treatmentGuidance);
+      if (!hadTreatment) continue;
+      if (!(episode.plannedEncounters || []).length) {
+        warnings.push(`[TreatmentHandoff] Episode ${episode.episodeNumber} has treatment guidance but no planned encounter.`);
+      }
+      if (episode.episodeNumber < plan.totalEpisodes && !episode.cliffhangerPlan?.hook) {
+        warnings.push(`[TreatmentHandoff] Episode ${episode.episodeNumber} has treatment guidance but no cliffhanger hook.`);
+      }
+    }
+
+    for (const branch of analysis.treatmentBranches || []) {
+      const found = plan.crossEpisodeBranches.some((candidate) => candidate.name === branch.name || candidate.id === branch.id)
+        || plan.consequenceChains.some((candidate) => candidate.id.includes(branch.id) || candidate.origin.description.includes(branch.name));
+      if (!found) {
+        warnings.push(`[TreatmentHandoff] Treatment branch "${branch.name}" was not preserved as a branch or consequence chain.`);
+      }
+    }
+
+    const authoredAlternativeCount = treatmentEpisodes.reduce((sum, ep) => sum + (ep.treatmentGuidance?.alternativePaths?.length || 0), 0);
+    if (authoredAlternativeCount > 0 && plan.crossEpisodeBranches.length === 0 && plan.consequenceChains.length === 0) {
+      warnings.push('[TreatmentHandoff] Authored alternative paths exist but no downstream branch or residue chain was produced.');
+    }
+
+    return warnings;
   }
 
   private validateEndingPlan(input: {

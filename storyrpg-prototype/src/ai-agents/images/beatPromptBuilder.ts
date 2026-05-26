@@ -535,16 +535,29 @@ function buildCharacterPrompt(
   const stagingPattern = coveragePlan?.stagingPattern || beat.stagingPattern;
   const relationshipBlocking = coveragePlan?.relationshipBlocking || beat.relationshipBlocking;
   const coverageReason = coveragePlan?.coverageReason || beat.coverageReason;
-  if (stagingPattern) {
-    narrativeParts.push(`Coverage plan: ${stagingPattern} staging, ${coveragePlan?.shotDistance || 'planned'} shot, ${coveragePlan?.cameraAngle || 'planned angle'}.`);
-  }
-  if (relationshipBlocking) {
-    narrativeParts.push(`Relationship blocking: ${relationshipBlocking}`);
-  }
-  if (coverageReason) {
-    narrativeParts.push(`Coverage reason: ${coverageReason}`);
-  }
   const visualContinuity = coveragePlan?.visualContinuity;
+  if (stagingPattern || relationshipBlocking || coverageReason || visualContinuity?.mode) {
+    const exactCoverageAllowed = stagingPattern === 'insert'
+      || visualContinuity?.mode === 'locked_micro_progression'
+      || /\b(reveal|discover|clue|evidence|key|card|letter|ring|phone|screen|wound|blood|fight|chase|grab|strike|escape)\b/i.test([
+        beat.beatText,
+        beat.visualMoment,
+        beat.primaryAction,
+        beat.mustShowDetail,
+        coverageReason,
+      ].filter(Boolean).join(' '));
+    narrativeParts.push([
+      'Director brief:',
+      coverageReason ? `purpose=${coverageReason}` : '',
+      relationshipBlocking ? `relationship/control=${relationshipBlocking}` : '',
+      visualContinuity?.mode ? `continuity=${visualContinuity.mode}` : '',
+      exactCoverageAllowed && coveragePlan
+        ? `required coverage=${coveragePlan.stagingPattern}, ${coveragePlan.shotDistance}, ${coveragePlan.cameraAngle}, ${coveragePlan.cameraSide}`
+        : coveragePlan
+          ? `coverage intent=${coveragePlan.stagingPattern}, ${coveragePlan.shotDistance}, ${coveragePlan.cameraAngle}, ${coveragePlan.cameraSide}; coverage freedom=choose expressive composition within scene geography, visible cast, relationship frame, and continuity`
+          : 'coverage freedom=choose expressive composition within scene geography, visible cast, relationship frame, and continuity',
+    ].filter(Boolean).join(' '));
+  }
   if (visualContinuity?.mode === 'locked_micro_progression' && visualContinuity.changeOnly) {
     const preserve = visualContinuity.preserve?.length
       ? visualContinuity.preserve.join(', ')
@@ -555,10 +568,6 @@ function buildCharacterPrompt(
   } else if (visualContinuity?.mode === 'preserve_scene_axis') {
     narrativeParts.push(
       `Visual continuity: preserve the broad scene axis and spatial readability, but still use fresh composition, fresh focal point, and motivated blocking for this beat.`,
-    );
-  } else {
-    narrativeParts.push(
-      `Visual continuity: fresh composition by default. Do not repeat the previous beat's camera angle, character positions, blocking, or focal point unless explicitly requested by locked_micro_progression.`,
     );
   }
 

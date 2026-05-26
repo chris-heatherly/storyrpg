@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -108,5 +108,62 @@ describe('pipelineOutputWriter', () => {
     const legacy = JSON.parse(await readFile(`${outputDir}08-final-story.json`, 'utf8'));
     expect(legacy.artStyleProfile).toMatchObject({ rawStyle: 'bright comic art' });
     expect(legacy.styleAnchors.character.imagePath).toBe('generated-stories/story/style-bible/character.png');
+  });
+
+  it('creates recovered prompt artifacts for bound story images that lack exact prompt files', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-output-writer-'));
+    tempDirs.push(tempDir);
+    const outputDir = `${tempDir}/`;
+    const story = makeStory();
+    story.episodes[0].scenes[0].beats[0].image =
+      'generated-stories/story-writer-test/images/storyboard-v2/panels/storyboard-v2-story-beat-episode-1-scene-1-beat-1.png';
+
+    await writeFinalStoryPackage(outputDir, story, {
+      generator: { version: 'test', artStyle: 'local style lock' },
+    });
+
+    const prompt = JSON.parse(await readFile(
+      `${outputDir}images/prompts/storyboard-v2-story-beat-episode-1-scene-1-beat-1.json`,
+      'utf8',
+    ));
+    expect(prompt.metadata).toMatchObject({
+      type: 'recovered-bound-image-prompt',
+      storyId: 'story-writer-test',
+      exactOriginalPromptMissing: true,
+    });
+    expect(prompt.prompt).toContain('The package writes.');
+    expect(prompt.prompt).toContain('local style lock');
+
+    const report = JSON.parse(await readFile(`${outputDir}image-prompt-binding-report.json`, 'utf8'));
+    expect(report).toMatchObject({ checked: 1, alreadyPresent: 0, recovered: 1 });
+    expect(report.records[0]).toMatchObject({
+      status: 'recovered',
+      promptPath: 'images/prompts/storyboard-v2-story-beat-episode-1-scene-1-beat-1.json',
+    });
+  });
+
+  it('preserves existing exact prompt artifacts when writing final packages', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-output-writer-'));
+    tempDirs.push(tempDir);
+    const outputDir = `${tempDir}/`;
+    const story = makeStory();
+    story.episodes[0].scenes[0].beats[0].image =
+      'generated-stories/story-writer-test/images/beat-episode-1-scene-1-beat-1.png';
+
+    await mkdir(`${outputDir}images/prompts`, { recursive: true });
+    await writeFile(
+      `${outputDir}images/prompts/beat-episode-1-scene-1-beat-1.json`,
+      JSON.stringify({ identifier: 'original', prompt: 'original provider prompt' }, null, 2),
+    );
+
+    await writeFinalStoryPackage(outputDir, story, {
+      generator: { version: 'test', artStyle: 'local style lock' },
+    });
+
+    const prompt = JSON.parse(await readFile(`${outputDir}images/prompts/beat-episode-1-scene-1-beat-1.json`, 'utf8'));
+    expect(prompt).toEqual({ identifier: 'original', prompt: 'original provider prompt' });
+
+    const report = JSON.parse(await readFile(`${outputDir}image-prompt-binding-report.json`, 'utf8'));
+    expect(report).toMatchObject({ checked: 1, alreadyPresent: 1, recovered: 0 });
   });
 });

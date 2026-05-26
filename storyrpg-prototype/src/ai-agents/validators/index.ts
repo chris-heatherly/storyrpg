@@ -16,6 +16,18 @@ export type {
   SceneGraphBranchValidationOptions,
   SceneGraphBranchValidationResult,
 } from './SceneGraphBranchValidator';
+export { MicroEpisodeStructureValidator } from './MicroEpisodeStructureValidator';
+export type {
+  MicroEpisodeStructureIssue,
+  MicroEpisodeStructureOptions,
+  MicroEpisodeStructureResult,
+} from './MicroEpisodeStructureValidator';
+export { MicroEpisodeSeasonValidator } from './MicroEpisodeSeasonValidator';
+export type {
+  MicroEpisodeSeasonIssue,
+  MicroEpisodeSeasonOptions,
+  MicroEpisodeSeasonResult,
+} from './MicroEpisodeSeasonValidator';
 
 export { NPCDepthValidator } from './NPCDepthValidator';
 
@@ -26,12 +38,89 @@ export { StakesTriangleValidator } from './StakesTriangleValidator';
 export { FiveFactorValidator } from './FiveFactorValidator';
 export { ChoiceImpactValidator } from './ChoiceImpactValidator';
 export type { ChoiceImpactInput, ChoiceImpactMetrics, ChoiceImpactResult } from './ChoiceImpactValidator';
+export { MechanicalStorytellingValidator } from './MechanicalStorytellingValidator';
+export type {
+  MechanicalStorytellingInput,
+  MechanicalStorytellingMetrics,
+  MechanicalStorytellingResult,
+} from './MechanicalStorytellingValidator';
+export { TreatmentFidelityValidator } from './TreatmentFidelityValidator';
+export type {
+  TreatmentFidelityValidationInput,
+  TreatmentFidelityValidationResult,
+  TreatmentFinalStoryValidationInput,
+} from './TreatmentFidelityValidator';
+export { DramaticStructureValidator } from './DramaticStructureValidator';
+export type {
+  DramaticStructureMetrics,
+  DramaticStructureValidationOptions,
+  DramaticStructureValidationResult,
+} from './DramaticStructureValidator';
+export { ThemePressureValidator } from './ThemePressureValidator';
+export type {
+  ThemePressureMetrics,
+  ThemePressureValidationResult,
+} from './ThemePressureValidator';
+export { SceneTurnContractValidator } from './SceneTurnContractValidator';
+export type {
+  SceneTurnContractMetrics,
+  SceneTurnContractOptions,
+  SceneTurnContractValidationResult,
+} from './SceneTurnContractValidator';
+export { EpisodePressureArchitectureValidator } from './EpisodePressureArchitectureValidator';
+export type {
+  EpisodePressureArchitectureMetrics,
+  EpisodePressureArchitectureOptions,
+  EpisodePressureArchitectureResult,
+} from './EpisodePressureArchitectureValidator';
+export { ArcPressureArchitectureValidator } from './ArcPressureArchitectureValidator';
+export type {
+  ArcPressureArchitectureMetrics,
+  ArcPressureArchitectureOptions,
+  ArcPressureArchitectureResult,
+} from './ArcPressureArchitectureValidator';
+export { CharacterArchitectureValidator } from './CharacterArchitectureValidator';
+export type {
+  CharacterArchitectureMetrics,
+  CharacterArchitectureResult,
+} from './CharacterArchitectureValidator';
+export { SeasonPromiseValidator } from './SeasonPromiseValidator';
+export type {
+  SeasonPromiseMetrics,
+  SeasonPromiseResult,
+} from './SeasonPromiseValidator';
+export { InformationLedgerValidator } from './InformationLedgerValidator';
+export type {
+  InformationLedgerMetrics,
+  InformationLedgerOptions,
+  InformationLedgerResult,
+} from './InformationLedgerValidator';
+export { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
+export type {
+  NarrativeFailureModeCode,
+  NarrativeFailureModeInput,
+  NarrativeFailureModeIssue,
+  NarrativeFailureModeMetrics,
+  NarrativeFailureModeResult,
+} from './NarrativeFailureModeValidator';
 export { MechanicsLeakageValidator } from './MechanicsLeakageValidator';
 export type {
   MechanicsLeakageInput,
   MechanicsLeakageResult,
   MechanicsLeakageText,
 } from './MechanicsLeakageValidator';
+export { StatCheckBalanceValidator } from './StatCheckBalanceValidator';
+export type { StatCheckBalanceChoice, StatCheckBalanceInput, StatCheckBalanceResult } from './StatCheckBalanceValidator';
+export { SkillSurfaceValidator } from './SkillSurfaceValidator';
+export type { SkillSurfaceInput, SkillSurfaceResult, SkillSurfaceScene } from './SkillSurfaceValidator';
+export { SkillCoverageValidator } from './SkillCoverageValidator';
+export type { SkillCoverageInput, SkillCoverageResult } from './SkillCoverageValidator';
+export { BranchMechanicalDivergenceValidator } from './BranchMechanicalDivergenceValidator';
+export type {
+  BranchMechanicalDivergenceInput,
+  BranchMechanicalDivergenceResult,
+  BranchMechanicalScene,
+} from './BranchMechanicalDivergenceValidator';
 
 export { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
 export {
@@ -92,6 +181,11 @@ export {
 } from './IncrementalValidators';
 export { PovClarityValidator, hasPlayerReference } from './PovClarityValidator';
 export { SceneCraftValidator } from './SceneCraftValidator';
+export { auditSequencePlanSpecificity } from './sequencePlanSpecificityAudit';
+export type {
+  SequencePlanSpecificityIssue,
+  SequencePlanSpecificityResult,
+} from './sequencePlanSpecificityAudit';
 export type {
   IncrementalValidationConfig,
   SceneValidationResult,

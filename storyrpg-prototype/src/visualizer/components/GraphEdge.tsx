@@ -10,9 +10,12 @@ interface GraphEdgeProps {
   targetNode: GraphNode;
   sourceSiblingIndex: number;
   sourceSiblingCount: number;
+  targetLabelIndex?: number;
+  targetLabelCount?: number;
   isHighlighted: boolean;
   isDimmed: boolean;
   hideLabel?: boolean;
+  useChoiceLane?: boolean;
   mode: VisualizerMode;
   selectedNpcId: string | null;
   onPress?: (edge: GraphEdgeType) => void;
@@ -24,9 +27,12 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({
   targetNode,
   sourceSiblingIndex,
   sourceSiblingCount,
+  targetLabelIndex = 0,
+  targetLabelCount = 1,
   isHighlighted,
   isDimmed,
   hideLabel,
+  useChoiceLane,
   mode,
   selectedNpcId,
   onPress,
@@ -42,20 +48,27 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({
     ? '6,5'
     : edge.choiceSystem?.hasLockedGate || edge.conditioned ? '4,4' : undefined;
 
-  const path = calculateEdgePath(sourceNode, targetNode);
-
   const sourceCenterX = sourceNode.x + sourceNode.width / 2;
   const sourceBottomY = sourceNode.y + sourceNode.height;
   const targetCenterX = targetNode.x + targetNode.width / 2;
   const targetTopY = targetNode.y;
   const sourceToTargetY = targetTopY - sourceBottomY;
-  const isCompressedJump = Math.abs(sourceToTargetY) > 1400 && !isHighlighted && !matchesNpc;
+  const isMeaningfulChoiceRoute = Boolean(edge.choiceSystem?.choiceId && edge.choiceSystem.route?.isMeaningfulBranch);
+  const siblingOffset = sourceSiblingIndex - (sourceSiblingCount - 1) / 2;
+  const isNearbyChoiceSplit = isMeaningfulChoiceRoute && sourceToTargetY > 0 && sourceToTargetY < 900 && Math.abs(targetCenterX - sourceCenterX) < sourceNode.width * 2.6;
+  const shouldUseChoiceLane = Boolean(useChoiceLane) && !isNearbyChoiceSplit;
+  const choiceLaneX = shouldUseChoiceLane
+    ? getChoiceLaneX(sourceNode, targetNode, siblingOffset)
+    : sourceCenterX;
+  const path = shouldUseChoiceLane
+    ? calculateChoiceLanePath(sourceCenterX, sourceBottomY, choiceLaneX, targetCenterX, targetTopY)
+    : calculateEdgePath(sourceNode, targetNode);
+  const isCompressedJump = Math.abs(sourceToTargetY) > 1400 && !isHighlighted && !matchesNpc && !isMeaningfulChoiceRoute;
   const jumpDirection = sourceToTargetY >= 0 ? 1 : -1;
   const jumpStubLength = 130;
   const sourceStubPath = `M ${sourceCenterX} ${sourceBottomY} L ${sourceCenterX} ${sourceBottomY + jumpDirection * jumpStubLength}`;
   const targetStubPath = `M ${targetCenterX} ${targetTopY - jumpDirection * jumpStubLength} L ${targetCenterX} ${targetTopY}`;
-  const siblingOffset = sourceSiblingIndex - (sourceSiblingCount - 1) / 2;
-  const isChoiceEdge = edge.type === 'choice';
+  const isChoiceEdge = edge.type === 'choice' || Boolean(edge.choiceSystem?.choiceId);
   const isOutcomeLabel = isOutcomeEdgeLabel(edge);
   const displayLabel = isCompressedJump && !isOutcomeLabel ? '' : getEdgeLabel(edge, mode);
   const labelLines = wrapText(displayLabel.toUpperCase(), isChoiceEdge ? 23 : 28);
@@ -64,31 +77,25 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({
   const laneGap = targetTopY - sourceBottomY;
   const canFitLabelInLane = laneGap > labelHeight + 42;
 
-  // Choice labels are centered over their destination lanes. That keeps the
-  // branch text from stacking on top of sibling edges when a beat fans out.
+  // Choice labels live near the source beat where the decision is made.
+  // Sibling branches use their own lane X so labels do not stack.
   const midX = isOutcomeLabel
     ? targetCenterX
     : isChoiceEdge
-    ? targetCenterX + getTightLaneLabelXOffset(canFitLabelInLane, siblingOffset)
+    ? getChoiceLabelX(sourceNode, labelWidth, siblingOffset)
     : (sourceCenterX + targetCenterX) / 2;
   const midY = isOutcomeLabel
-    ? getSafeLaneLabelY({
-      preferredY: targetTopY - 36 - Math.abs(siblingOffset) * 4,
-      sourceBottomY,
-      targetTopY,
-      labelHeight,
-      minGap: 14,
-    })
+    ? getTargetStackLabelY(targetTopY, labelHeight, targetLabelIndex, targetLabelCount)
     : isChoiceEdge
     ? getSafeLaneLabelY({
-      preferredY: targetTopY - 50 - Math.abs(siblingOffset) * 6,
+      preferredY: getChoiceLabelY(sourceBottomY, labelHeight, siblingOffset),
       sourceBottomY,
       targetTopY,
       labelHeight,
       minGap: canFitLabelInLane ? 14 : 22,
     })
     : (sourceBottomY + targetTopY) / 2;
-  const shouldRenderLabel = Boolean(displayLabel && !hideLabel && (canFitLabelInLane || isOutcomeLabel || Math.abs(sourceCenterX - targetCenterX) > 80));
+  const shouldRenderLabel = Boolean(displayLabel && !hideLabel && (isMeaningfulChoiceRoute || canFitLabelInLane || isOutcomeLabel || Math.abs(sourceCenterX - targetCenterX) > 80));
 
   // Arrow head calculation
   const arrowSize = isHighlighted ? 8 : 6;
@@ -236,6 +243,9 @@ function getChoiceSystemColor(edge: GraphEdgeType): string {
   if (edge.synthetic) {
     return VISUALIZER_COLORS.edges[edge.type] ?? VISUALIZER_COLORS.textMuted;
   }
+  if (edge.choiceSystem?.choiceId) {
+    return VISUALIZER_COLORS.edges.choice;
+  }
   const choiceType = edge.choiceSystem?.choiceType;
   if (choiceType && VISUALIZER_COLORS.choiceTypes[choiceType]) {
     return VISUALIZER_COLORS.choiceTypes[choiceType];
@@ -284,10 +294,53 @@ function getSafeLaneLabelY(input: {
   return Math.max(minY, Math.min(maxY, input.preferredY));
 }
 
-function getTightLaneLabelXOffset(canFitLabelInLane: boolean, siblingOffset: number): number {
-  if (canFitLabelInLane) return 0;
+function getTargetStackLabelY(
+  targetTopY: number,
+  labelHeight: number,
+  targetLabelIndex: number,
+  targetLabelCount: number,
+): number {
+  const rowGap = 9;
+  const bottomRowY = targetTopY - 36;
+  const rowFromBottom = Math.max(0, targetLabelCount - 1 - targetLabelIndex);
+  return bottomRowY - rowFromBottom * (labelHeight + rowGap);
+}
+
+function getChoiceLabelY(sourceBottomY: number, labelHeight: number, siblingOffset: number): number {
+  const rowOffset = Math.max(0, Math.abs(siblingOffset) - 0.5) * (labelHeight + 8);
+  return sourceBottomY + 54 + rowOffset;
+}
+
+function getChoiceLabelX(sourceNode: GraphNode, labelWidth: number, siblingOffset: number): number {
+  const sourceCenterX = sourceNode.x + sourceNode.width / 2;
+  const labelGap = 16;
+  const offset = siblingOffset * (labelWidth + labelGap);
+  return sourceCenterX + offset;
+}
+
+function getChoiceLaneX(sourceNode: GraphNode, targetNode: GraphNode, siblingOffset: number): number {
   const direction = siblingOffset >= 0 ? 1 : -1;
-  return direction * (92 + Math.abs(siblingOffset) * 18);
+  const outsidePadding = 88 + Math.abs(siblingOffset) * 36;
+  if (direction < 0) {
+    return Math.min(sourceNode.x, targetNode.x) - outsidePadding;
+  }
+  return Math.max(sourceNode.x + sourceNode.width, targetNode.x + targetNode.width) + outsidePadding;
+}
+
+function calculateChoiceLanePath(
+  sourceCenterX: number,
+  sourceBottomY: number,
+  laneX: number,
+  targetCenterX: number,
+  targetTopY: number,
+): string {
+  const verticalDistance = Math.max(120, targetTopY - sourceBottomY);
+  const direction = laneX < sourceCenterX ? -1 : 1;
+  const bowX = laneX + direction * Math.min(90, Math.max(36, verticalDistance * 0.08));
+  const firstControlY = sourceBottomY + Math.min(170, verticalDistance * 0.24);
+  const secondControlY = targetTopY - Math.min(190, verticalDistance * 0.2);
+
+  return `M ${sourceCenterX} ${sourceBottomY} C ${bowX} ${firstControlY}, ${bowX} ${secondControlY}, ${targetCenterX} ${targetTopY}`;
 }
 
 function getEdgeLabel(edge: GraphEdgeType, mode: VisualizerMode): string {

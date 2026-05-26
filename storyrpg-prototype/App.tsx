@@ -17,14 +17,14 @@ import {
 } from './src/screens';
 import { GeneratorScreen } from './src/screens/GeneratorScreen';
 import { allStories as builtInStories } from './src/data/stories';
-import { PlayerState, Story, StoryCatalogEntry } from './src/types';
+import { MediaSetupTarget, PlayerState, Story, StoryCatalogEntry } from './src/types';
 import { TERMINAL } from './src/theme';
 import { PROXY_CONFIG } from './src/config/endpoints';
 import {
   pipelineClient,
   type PipelineHandle,
 } from './src/ai-agents/pipeline/PipelineClient';
-import { encodeStory } from './src/ai-agents/codec/storyCodec';
+import { encodeStory } from './src/story-codec/storyCodec';
 import { loadConfig } from './src/ai-agents/config';
 import type { PipelineConfig } from './src/ai-agents/config';
 import { useVideoJobStore } from './src/stores/videoJobStore';
@@ -33,6 +33,7 @@ import { GENERATOR_STORAGE_KEYS } from './src/hooks/useGeneratorSettings';
 import { fetchStoryByCatalogEntry } from './src/services/storyLibrary';
 import { useGeneratorRunner } from './src/hooks/useGeneratorRunner';
 import { useAppNavigationStore } from './src/stores/appNavigationStore';
+import { getNextPlayableEpisode } from './src/engine/storyEngine';
 import {
   captureAttributionFromUrl,
   identifyAnonymousPlayer,
@@ -60,6 +61,9 @@ type SeasonContinuation = {
   nextEpisodeNumber: number;
   totalEpisodes: number;
 };
+
+const getMediaSetupTargetKey = (target: Pick<MediaSetupTarget, 'kind' | 'storyId' | 'episodeNumber'>) =>
+  `${target.kind}:${target.storyId}:episode-${target.episodeNumber}`;
 
 const normalizeContinuationKey = (value?: string | null) => {
   if (!value) return null;
@@ -525,6 +529,30 @@ function AppContent() {
     if (currentEpisode?.id) {
       incrementPersonProperty('episodes_completed_count');
     }
+
+    const isSceneEpisodeStory = currentStory?.episodes.some(
+      episode => episode.episodeStructureMode === 'sceneEpisodes' || episode.routeMeta
+    );
+    if (isSceneEpisodeStory && currentStory && currentEpisode) {
+      const completedEpisodes = player.completedEpisodes.includes(currentEpisode.id)
+        ? player.completedEpisodes
+        : [...player.completedEpisodes, currentEpisode.id];
+      const nextEpisode = getNextPlayableEpisode(
+        currentStory,
+        currentEpisode.id,
+        { ...player, completedEpisodes }
+      );
+
+      if (nextEpisode) {
+        loadEpisode(nextEpisode.id);
+        if (nextEpisode.startingSceneId) {
+          loadScene(nextEpisode.startingSceneId, nextEpisode);
+        }
+        navigateTo('reading');
+        return;
+      }
+    }
+
     navigateTo('episodes');
   };
 
@@ -580,6 +608,14 @@ function AppContent() {
     setVisualizerStory(null);
     closeVisualizerRoute();
   };
+
+  const handleVisualizerStoryUpdated = useCallback((story: Story) => {
+    setVisualizerStory(story);
+    upsertStory(story);
+    if (currentStory?.id === story.id) {
+      updateCurrentStory(story);
+    }
+  }, [currentStory?.id, updateCurrentStory, upsertStory]);
 
   const handleOpenGenerator = (jobId?: string) => {
     track('generator opened', {
@@ -727,24 +763,25 @@ function AppContent() {
     }
   }, [builtInStories, currentStory?.id, loadStories, updateCurrentStory, upsertStory]);
 
-  const handleGenerateVideos = useCallback(async (storyId: string) => {
+  const handleGenerateVideos = useCallback(async (target: MediaSetupTarget) => {
     if (videoGeneratingStoryId) return;
-    const story = await loadFullStory(storyId);
+    const story = await loadFullStory(target.storyId);
     if (!story) return;
 
     const jobId = `vidgen-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    setVideoGeneratingStoryId(story.id);
+    const targetKey = getMediaSetupTargetKey(target);
+    setVideoGeneratingStoryId(targetKey);
     clearVideoJobs();
 
     await registerGenJob({
       id: jobId,
-      storyTitle: `VIDEO: ${story.title || 'Untitled'}`,
+      storyTitle: `VIDEO: ${story.title || 'Untitled'} · Episode ${target.episodeNumber}`,
       startedAt: new Date().toISOString(),
       status: 'running',
       currentPhase: 'video_generation',
       progress: 0,
       episodeCount: 1,
-      currentEpisode: 1,
+      currentEpisode: target.episodeNumber,
       events: [],
     });
 
@@ -812,7 +849,9 @@ function AppContent() {
         }
       });
 
-      const result = await rawPipeline.runVideoOnly(story);
+      const result = await rawPipeline.runVideoOnly(story, {
+        targetEpisodeNumber: target.episodeNumber,
+      });
 
       await updateGenJob(jobId, {
         status: 'completed',
@@ -836,10 +875,10 @@ function AppContent() {
     }
   }, [videoGeneratingStoryId, registerGenJob, updateGenJob, addJobEvent, addVideoJob, updateVideoJob, removeVideoJob, clearVideoJobs, loadFullStory]);
 
-  const handleGenerateImages = useCallback(async (storyId: string) => {
+  const handleGenerateImages = useCallback(async (target: MediaSetupTarget) => {
     if (imageGeneratingStoryId) return;
-    const storyEntry = stories.find((candidate) => candidate.id === storyId);
-    const outputDir = storyEntry?.outputDir;
+    const storyEntry = stories.find((candidate) => candidate.id === target.storyId);
+    const outputDir = target.outputDir || storyEntry?.outputDir;
     if (!outputDir) {
       Alert.alert('Missing Output Directory', 'This story does not have a saved draft directory for image generation.');
       return;
@@ -850,9 +889,10 @@ function AppContent() {
       return;
     }
 
-    const jobTitle = `${storyEntry?.title || 'Story'} Images`;
+    const jobTitle = `${storyEntry?.title || 'Story'} Episode ${target.episodeNumber} Images`;
     let workerJobId: string | null = null;
-    setImageGeneratingStoryId(storyId);
+    const targetKey = getMediaSetupTargetKey(target);
+    setImageGeneratingStoryId(targetKey);
 
     try {
       const config = await loadImageOnlyPipelineConfigFromSavedSettings();
@@ -872,11 +912,12 @@ function AppContent() {
             config: config as unknown as Record<string, unknown>,
             imageGenerationInput: {
               outputDirectory: outputDir,
+              targetEpisodeNumber: target.episodeNumber,
             },
           } as any,
-          idempotencyKey: `image-generation:${outputDir}`,
+          idempotencyKey: `image-generation:${outputDir}:episode-${target.episodeNumber}`,
           storyTitle: jobTitle,
-          episodeCount: storyEntry?.episodeCount || 1,
+          episodeCount: 1,
         },
         (event) => {
           if (!workerJobId) return;
@@ -894,8 +935,8 @@ function AppContent() {
             status: (statusData?.status as any) || 'running',
             currentPhase: statusData?.currentPhase || 'images',
             progress: Math.max(0, Math.min(100, Number(statusData?.progress ?? 0))),
-            currentEpisode: Number(statusData?.currentEpisode || 1),
-            episodeCount: Number(statusData?.episodeCount || storyEntry?.episodeCount || 1),
+            currentEpisode: Number(statusData?.currentEpisode || target.episodeNumber),
+            episodeCount: Number(statusData?.episodeCount || 1),
           });
         },
         async (jobId) => {
@@ -907,8 +948,8 @@ function AppContent() {
             status: 'running',
             currentPhase: 'queued',
             progress: 0,
-            episodeCount: storyEntry?.episodeCount || 1,
-            currentEpisode: 1,
+            episodeCount: 1,
+            currentEpisode: target.episodeNumber,
             outputDir,
             events: [],
           });
@@ -1001,7 +1042,6 @@ function AppContent() {
         <SettingsScreen
           stories={stories}
           onBack={handleBackFromSettings}
-          onSignedOut={handleSignedOut}
           onOpenVisualizer={handleOpenVisualizer}
           onOpenGenerator={handleOpenGenerator}
           onDeleteStory={handleDeleteStory}
@@ -1040,6 +1080,7 @@ function AppContent() {
         <VisualizerScreen
           story={visualizerStory}
           onBack={handleBackFromVisualizer}
+          onStoryUpdated={handleVisualizerStoryUpdated}
           onJumpToNode={(nodeId) => {
             for (const episode of visualizerStory.episodes) {
               for (const scene of episode.scenes) {

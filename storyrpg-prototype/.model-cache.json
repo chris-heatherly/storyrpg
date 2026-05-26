@@ -1,5 +1,5 @@
 {
-  "scannedAt": 1778444749392,
+  "scannedAt": 1779651841695,
   "providers": {
     "anthropic": [
       {
@@ -48,7 +48,440 @@
         "createdAt": "2025-05-22T00:00:00Z"
       }
     ],
-    "openai": null,
+    "openai": [
+      {
+        "value": "o4-mini-deep-research-2025-06-26",
+        "label": "O4 Mini Deep Research 2025 06 26"
+      },
+      {
+        "value": "o4-mini-deep-research",
+        "label": "O4 Mini Deep Research"
+      },
+      {
+        "value": "o4-mini-2025-04-16",
+        "label": "O4 Mini 2025 04 16"
+      },
+      {
+        "value": "o4-mini",
+        "label": "O4 Mini"
+      },
+      {
+        "value": "o3-pro-2025-06-10",
+        "label": "O3 Pro 2025 06 10"
+      },
+      {
+        "value": "o3-pro",
+        "label": "O3 Pro"
+      },
+      {
+        "value": "o3-mini-2025-01-31",
+        "label": "O3 Mini 2025 01 31"
+      },
+      {
+        "value": "o3-mini",
+        "label": "O3 Mini"
+      },
+      {
+        "value": "o3-deep-research-2025-06-26",
+        "label": "O3 Deep Research 2025 06 26"
+      },
+      {
+        "value": "o3-deep-research",
+        "label": "O3 Deep Research"
+      },
+      {
+        "value": "o3-2025-04-16",
+        "label": "O3 2025 04 16"
+      },
+      {
+        "value": "o3",
+        "label": "O3"
+      },
+      {
+        "value": "o1-pro-2025-03-19",
+        "label": "O1 Pro 2025 03 19"
+      },
+      {
+        "value": "o1-pro",
+        "label": "O1 Pro"
+      },
+      {
+        "value": "o1-2024-12-17",
+        "label": "O1 2024 12 17"
+      },
+      {
+        "value": "o1",
+        "label": "O1"
+      },
+      {
+        "value": "gpt-realtime-whisper",
+        "label": "Gpt Realtime Whisper"
+      },
+      {
+        "value": "gpt-realtime-translate",
+        "label": "Gpt Realtime Translate"
+      },
+      {
+        "value": "gpt-realtime-mini-2025-12-15",
+        "label": "Gpt Realtime Mini 2025 12 15"
+      },
+      {
+        "value": "gpt-realtime-mini-2025-10-06",
+        "label": "Gpt Realtime Mini 2025 10 06"
+      },
+      {
+        "value": "gpt-realtime-mini",
+        "label": "Gpt Realtime Mini"
+      },
+      {
+        "value": "gpt-realtime-2025-08-28",
+        "label": "Gpt Realtime 2025 08 28"
+      },
+      {
+        "value": "gpt-realtime-2",
+        "label": "Gpt Realtime 2"
+      },
+      {
+        "value": "gpt-realtime-1.5",
+        "label": "Gpt Realtime 1.5"
+      },
+      {
+        "value": "gpt-realtime",
+        "label": "Gpt Realtime"
+      },
+      {
+        "value": "gpt-image-2-2026-04-21",
+        "label": "Gpt Image 2 2026 04 21"
+      },
+      {
+        "value": "gpt-image-2",
+        "label": "Gpt Image 2"
+      },
+      {
+        "value": "gpt-image-1.5",
+        "label": "Gpt Image 1.5"
+      },
+      {
+        "value": "gpt-image-1-mini",
+        "label": "Gpt Image 1 Mini"
+      },
+      {
+        "value": "gpt-image-1",
+        "label": "Gpt Image 1"
+      },
+      {
+        "value": "gpt-audio-mini-2025-12-15",
+        "label": "Gpt Audio Mini 2025 12 15"
+      },
+      {
+        "value": "gpt-audio-mini-2025-10-06",
+        "label": "Gpt Audio Mini 2025 10 06"
+      },
+      {
+        "value": "gpt-audio-mini",
+        "label": "Gpt Audio Mini"
+      },
+      {
+        "value": "gpt-audio-2025-08-28",
+        "label": "Gpt Audio 2025 08 28"
+      },
+      {
+        "value": "gpt-audio-1.5",
+        "label": "Gpt Audio 1.5"
+      },
+      {
+        "value": "gpt-audio",
+        "label": "Gpt Audio"
+      },
+      {
+        "value": "gpt-5.5-pro-2026-04-23",
+        "label": "Gpt 5.5 Pro 2026 04 23"
+      },
+      {
+        "value": "gpt-5.5-pro",
+        "label": "Gpt 5.5 Pro"
+      },
+      {
+        "value": "gpt-5.5-2026-04-23",
+        "label": "Gpt 5.5 2026 04 23"
+      },
+      {
+        "value": "gpt-5.5",
+        "label": "Gpt 5.5"
+      },
+      {
+        "value": "gpt-5.4-pro-2026-03-05",
+        "label": "Gpt 5.4 Pro 2026 03 05"
+      },
+      {
+        "value": "gpt-5.4-pro",
+        "label": "Gpt 5.4 Pro"
+      },
+      {
+        "value": "gpt-5.4-nano-2026-03-17",
+        "label": "Gpt 5.4 Nano 2026 03 17"
+      },
+      {
+        "value": "gpt-5.4-nano",
+        "label": "Gpt 5.4 Nano"
+      },
+      {
+        "value": "gpt-5.4-mini-2026-03-17",
+        "label": "Gpt 5.4 Mini 2026 03 17"
+      },
+      {
+        "value": "gpt-5.4-mini",
+        "label": "Gpt 5.4 Mini"
+      },
+      {
+        "value": "gpt-5.4-2026-03-05",
+        "label": "Gpt 5.4 2026 03 05"
+      },
+      {
+        "value": "gpt-5.4",
+        "label": "Gpt 5.4"
+      },
+      {
+        "value": "gpt-5.3-codex",
+        "label": "Gpt 5.3 Codex"
+      },
+      {
+        "value": "gpt-5.3-chat-latest",
+        "label": "Gpt 5.3 Chat Latest"
+      },
+      {
+        "value": "gpt-5.2-pro-2025-12-11",
+        "label": "Gpt 5.2 Pro 2025 12 11"
+      },
+      {
+        "value": "gpt-5.2-pro",
+        "label": "Gpt 5.2 Pro"
+      },
+      {
+        "value": "gpt-5.2-codex",
+        "label": "Gpt 5.2 Codex"
+      },
+      {
+        "value": "gpt-5.2-chat-latest",
+        "label": "Gpt 5.2 Chat Latest"
+      },
+      {
+        "value": "gpt-5.2-2025-12-11",
+        "label": "Gpt 5.2 2025 12 11"
+      },
+      {
+        "value": "gpt-5.2",
+        "label": "Gpt 5.2"
+      },
+      {
+        "value": "gpt-5.1-codex-mini",
+        "label": "Gpt 5.1 Codex Mini"
+      },
+      {
+        "value": "gpt-5.1-codex-max",
+        "label": "Gpt 5.1 Codex Max"
+      },
+      {
+        "value": "gpt-5.1-codex",
+        "label": "Gpt 5.1 Codex"
+      },
+      {
+        "value": "gpt-5.1-chat-latest",
+        "label": "Gpt 5.1 Chat Latest"
+      },
+      {
+        "value": "gpt-5.1-2025-11-13",
+        "label": "Gpt 5.1 2025 11 13"
+      },
+      {
+        "value": "gpt-5.1",
+        "label": "Gpt 5.1"
+      },
+      {
+        "value": "gpt-5-search-api-2025-10-14",
+        "label": "Gpt 5 Search Api 2025 10 14"
+      },
+      {
+        "value": "gpt-5-search-api",
+        "label": "Gpt 5 Search Api"
+      },
+      {
+        "value": "gpt-5-pro-2025-10-06",
+        "label": "Gpt 5 Pro 2025 10 06"
+      },
+      {
+        "value": "gpt-5-pro",
+        "label": "Gpt 5 Pro"
+      },
+      {
+        "value": "gpt-5-nano-2025-08-07",
+        "label": "Gpt 5 Nano 2025 08 07"
+      },
+      {
+        "value": "gpt-5-nano",
+        "label": "Gpt 5 Nano"
+      },
+      {
+        "value": "gpt-5-mini-2025-08-07",
+        "label": "Gpt 5 Mini 2025 08 07"
+      },
+      {
+        "value": "gpt-5-mini",
+        "label": "Gpt 5 Mini"
+      },
+      {
+        "value": "gpt-5-codex",
+        "label": "Gpt 5 Codex"
+      },
+      {
+        "value": "gpt-5-chat-latest",
+        "label": "Gpt 5 Chat Latest"
+      },
+      {
+        "value": "gpt-5-2025-08-07",
+        "label": "Gpt 5 2025 08 07"
+      },
+      {
+        "value": "gpt-5",
+        "label": "Gpt 5"
+      },
+      {
+        "value": "gpt-4o-transcribe-diarize",
+        "label": "Gpt 4o Transcribe Diarize"
+      },
+      {
+        "value": "gpt-4o-transcribe",
+        "label": "Gpt 4o Transcribe"
+      },
+      {
+        "value": "gpt-4o-search-preview-2025-03-11",
+        "label": "Gpt 4o Search Preview 2025 03 11"
+      },
+      {
+        "value": "gpt-4o-search-preview",
+        "label": "Gpt 4o Search Preview"
+      },
+      {
+        "value": "gpt-4o-mini-tts-2025-12-15",
+        "label": "Gpt 4o Mini Tts 2025 12 15"
+      },
+      {
+        "value": "gpt-4o-mini-tts-2025-03-20",
+        "label": "Gpt 4o Mini Tts 2025 03 20"
+      },
+      {
+        "value": "gpt-4o-mini-tts",
+        "label": "Gpt 4o Mini Tts"
+      },
+      {
+        "value": "gpt-4o-mini-transcribe-2025-12-15",
+        "label": "Gpt 4o Mini Transcribe 2025 12 15"
+      },
+      {
+        "value": "gpt-4o-mini-transcribe-2025-03-20",
+        "label": "Gpt 4o Mini Transcribe 2025 03 20"
+      },
+      {
+        "value": "gpt-4o-mini-transcribe",
+        "label": "Gpt 4o Mini Transcribe"
+      },
+      {
+        "value": "gpt-4o-mini-search-preview-2025-03-11",
+        "label": "Gpt 4o Mini Search Preview 2025 03 11"
+      },
+      {
+        "value": "gpt-4o-mini-search-preview",
+        "label": "Gpt 4o Mini Search Preview"
+      },
+      {
+        "value": "gpt-4o-mini-2024-07-18",
+        "label": "Gpt 4o Mini 2024 07 18"
+      },
+      {
+        "value": "gpt-4o-mini",
+        "label": "Gpt 4o Mini"
+      },
+      {
+        "value": "gpt-4o-2024-11-20",
+        "label": "Gpt 4o 2024 11 20"
+      },
+      {
+        "value": "gpt-4o-2024-08-06",
+        "label": "Gpt 4o 2024 08 06"
+      },
+      {
+        "value": "gpt-4o-2024-05-13",
+        "label": "Gpt 4o 2024 05 13"
+      },
+      {
+        "value": "gpt-4o",
+        "label": "Gpt 4o"
+      },
+      {
+        "value": "gpt-4.1-nano-2025-04-14",
+        "label": "Gpt 4.1 Nano 2025 04 14"
+      },
+      {
+        "value": "gpt-4.1-nano",
+        "label": "Gpt 4.1 Nano"
+      },
+      {
+        "value": "gpt-4.1-mini-2025-04-14",
+        "label": "Gpt 4.1 Mini 2025 04 14"
+      },
+      {
+        "value": "gpt-4.1-mini",
+        "label": "Gpt 4.1 Mini"
+      },
+      {
+        "value": "gpt-4.1-2025-04-14",
+        "label": "Gpt 4.1 2025 04 14"
+      },
+      {
+        "value": "gpt-4.1",
+        "label": "Gpt 4.1"
+      },
+      {
+        "value": "gpt-4-turbo-2024-04-09",
+        "label": "Gpt 4 Turbo 2024 04 09"
+      },
+      {
+        "value": "gpt-4-turbo",
+        "label": "Gpt 4 Turbo"
+      },
+      {
+        "value": "gpt-4-0613",
+        "label": "Gpt 4 0613"
+      },
+      {
+        "value": "gpt-4",
+        "label": "Gpt 4"
+      },
+      {
+        "value": "gpt-3.5-turbo-instruct-0914",
+        "label": "Gpt 3.5 Turbo Instruct 0914"
+      },
+      {
+        "value": "gpt-3.5-turbo-instruct",
+        "label": "Gpt 3.5 Turbo Instruct"
+      },
+      {
+        "value": "gpt-3.5-turbo-16k",
+        "label": "Gpt 3.5 Turbo 16k"
+      },
+      {
+        "value": "gpt-3.5-turbo-1106",
+        "label": "Gpt 3.5 Turbo 1106"
+      },
+      {
+        "value": "gpt-3.5-turbo-0125",
+        "label": "Gpt 3.5 Turbo 0125"
+      },
+      {
+        "value": "gpt-3.5-turbo",
+        "label": "Gpt 3.5 Turbo"
+      }
+    ],
     "gemini": [
       {
         "value": "nano-banana-pro-preview",
@@ -99,6 +532,11 @@
         "value": "gemini-flash-latest",
         "label": "Gemini Flash Latest",
         "description": "Latest release of Gemini Flash"
+      },
+      {
+        "value": "gemini-3.5-flash",
+        "label": "Gemini 3.5 Flash",
+        "description": "Gemini 3.5 Flash"
       },
       {
         "value": "gemini-3.1-pro-preview-customtools",
@@ -214,6 +652,11 @@
         "value": "deep-research-max-preview-04-2026",
         "label": "Deep Research Max Preview (Apr-21-2026)",
         "description": "Preview release (April 21st, 2026) of Deep Research Max"
+      },
+      {
+        "value": "antigravity-preview-05-2026",
+        "label": "Antigravity Agent Preview",
+        "description": "Preview release of Antigravity Agent (05-2026)"
       }
     ],
     "atlasCloud": [

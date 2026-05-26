@@ -40,7 +40,7 @@ export function enrichStoryGraphWithChoiceSystems(story: Story, graph: StoryGrap
   const nodes = graph.nodes.map((node) => ({ ...node }));
   const edges = graph.edges.map((edge) => ({ ...edge }));
   const nodeBySceneBeat = new Map<string, GraphNode>();
-  const edgeByChoiceId = new Map<string, GraphEdge>();
+  const edgeByChoiceKey = new Map<string, GraphEdge>();
   const npcAccumulator = new Map<string, ChoiceSystemNpcSummary>();
 
   for (const node of nodes) {
@@ -51,9 +51,11 @@ export function enrichStoryGraphWithChoiceSystems(story: Story, graph: StoryGrap
   }
 
   for (const edge of edges) {
+    const sourceNode = nodes.find((node) => node.id === edge.source);
+    const sourceBeatId = (sourceNode?.data as { id?: string })?.id;
     const match = edge.id.match(/-choice-(.+?)-to-/);
-    if (match?.[1]) {
-      edgeByChoiceId.set(match[1], edge);
+    if (match?.[1] && sourceNode?.sceneId && sourceBeatId) {
+      edgeByChoiceKey.set(buildChoiceEdgeKey(sourceNode.sceneId, sourceBeatId, match[1]), edge);
     }
   }
 
@@ -86,7 +88,7 @@ export function enrichStoryGraphWithChoiceSystems(story: Story, graph: StoryGrap
             }
           }
 
-          const edge = edgeByChoiceId.get(summary.id);
+          const edge = edgeByChoiceKey.get(buildChoiceEdgeKey(scene.id, beat.id, summary.id));
           if (edge) {
             edge.choiceSystem = buildEdgeMetadata(summary);
             edge.conditioned = edge.conditioned || summary.hasLockedGate;
@@ -106,6 +108,10 @@ export function enrichStoryGraphWithChoiceSystems(story: Story, graph: StoryGrap
   };
 }
 
+function buildChoiceEdgeKey(sceneId: string, beatId: string, choiceId: string): string {
+  return `${sceneId}:${beatId}:${choiceId}`;
+}
+
 export function summarizeChoice(choice: Choice): ChoiceSystemChoiceSummary {
   const conditions = summarizeConditions(choice.conditions);
   const effects = summarizeEffects(choice);
@@ -119,6 +125,7 @@ export function summarizeChoice(choice: Choice): ChoiceSystemChoiceSummary {
     (choice.residueHints?.length ?? 0) > 0;
   const hasLockedGate = conditions.length > 0;
   const choiceType = choice.choiceType ?? 'standard';
+  const witnessReactionCount = choice.witnessReactions?.length ?? 0;
 
   return {
     id: choice.id,
@@ -130,6 +137,10 @@ export function summarizeChoice(choice: Choice): ChoiceSystemChoiceSummary {
     check,
     hasDelayedCallback,
     hasLockedGate,
+    storyVerb: choice.storyVerb,
+    affordanceSource: choice.affordanceSource,
+    witnessReactionCount,
+    failureResidueKind: choice.failureResidue?.kind,
     relationshipNpcIds,
     facets,
     authorSummary: buildAuthorChoiceSummary(choice, route, conditions, effects, check),
@@ -160,8 +171,12 @@ function summarizeRoute(choice: Choice): ChoiceSystemRouteSummary {
   if (choice.nextSceneId) {
     return {
       kind: 'nextScene',
-      authorLabel: `goes to ${humanizeId(choice.nextSceneId)}`,
-      playerLabel: 'This choice opens a different scene.',
+      authorLabel: choice.nextBeatId
+        ? `goes to ${humanizeId(choice.nextSceneId)} / ${humanizeId(choice.nextBeatId)}`
+        : `goes to ${humanizeId(choice.nextSceneId)}`,
+      playerLabel: choice.nextBeatId
+        ? 'This choice opens a specific moment in another scene.'
+        : 'This choice opens a different scene.',
       isMeaningfulBranch: true,
     };
   }
@@ -304,6 +319,39 @@ function summarizeEffects(choice: Choice): ChoiceSystemEffectSummary[] {
     });
   }
 
+  if (choice.storyVerb) {
+    effects.push({
+      kind: 'story-verb',
+      authorLabel: `story verb: ${humanizeId(choice.storyVerb)}`,
+      playerLabel: 'This choice uses a story-specific kind of action.',
+    });
+  }
+
+  if (choice.affordanceSource) {
+    effects.push({
+      kind: 'affordance',
+      authorLabel: `affordance: ${humanizeId(choice.affordanceSource)}`,
+      playerLabel: 'This option is shaped by prior story state.',
+    });
+  }
+
+  for (const reaction of choice.witnessReactions ?? []) {
+    effects.push({
+      kind: 'witness',
+      authorLabel: `${humanizeId(reaction.npcId)} ${humanizeId(reaction.stance)}: ${reaction.reactionText}`,
+      playerLabel: `${humanizeId(reaction.npcId)} notices what this choice says about you.`,
+      npcId: reaction.npcId,
+    });
+  }
+
+  if (choice.failureResidue) {
+    effects.push({
+      kind: 'failure-residue',
+      authorLabel: `failure ${humanizeId(choice.failureResidue.kind)}: ${choice.failureResidue.description}`,
+      playerLabel: 'Failure here creates story material that can continue forward.',
+    });
+  }
+
   if (choice.tintFlag || choice.impactFactors?.includes('identity')) {
     effects.push({
       kind: 'identity',
@@ -441,6 +489,10 @@ function collectFacets(
   if (conditions.some((item) => item.kind === 'attribute' || item.kind === 'skill') || effects.some((item) => item.kind === 'attribute' || item.kind === 'skill') || check) facets.add('stat');
   if (conditions.some((item) => item.kind === 'identity') || effects.some((item) => item.kind === 'identity')) facets.add('identity');
   if (effects.some((item) => item.kind === 'delayed' || item.kind === 'memory' || item.kind === 'residue')) facets.add('delayed');
+  if (choice.affordanceSource || effects.some((item) => item.kind === 'affordance')) facets.add('affordance');
+  if (choice.storyVerb || effects.some((item) => item.kind === 'story-verb')) facets.add('story-verb');
+  if ((choice.witnessReactions?.length ?? 0) > 0 || effects.some((item) => item.kind === 'witness')) facets.add('witness');
+  if (choice.failureResidue || effects.some((item) => item.kind === 'failure-residue')) facets.add('failure-residue');
   return Array.from(facets);
 }
 

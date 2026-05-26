@@ -222,7 +222,7 @@ The top-level container. Contains metadata (title, genre, synopsis, cover image)
 
 #### Episode
 
-Like an episode of a television show. Each episode has its own self-contained dramatic arc (beginning, middle, end) while contributing to the larger story. Episodes contain 5-8 scenes and end with either resolution or a cliffhanger.
+Like an episode of a television show. Each episode has its own self-contained dramatic arc (beginning, middle, end) while contributing to the larger story. Episodes contain 3-6 scenes and end with either resolution or forward pressure into the next episode.
 
 #### Scene
 
@@ -492,6 +492,25 @@ Attributes grow naturally through use:
 - **Use-Based Training:** Skills improve when used successfully, especially on difficult challenges.
 
 The player never sees numbers, but they experience their character becoming more competent over time.
+
+### Fiction-First Skill Surfaces
+
+Skills should be felt as perception and consequence, not displayed as numbers.
+StoryRPG uses five hidden skill surfaces:
+
+- **Passive insights:** capable characters notice extra usable fiction without
+  choosing a skill-check option.
+- **Prepared advantages:** prior promises, clues, relationships, items,
+  injuries, mentorship, or branch residue quietly make later choices easier.
+- **Choice affordances:** prior state can change option availability, wording,
+  locked reasons, or leverage hints.
+- **Outcome texture:** success, complication, and failure each change the story
+  in distinct ways.
+- **Branch residue:** major choices leave future flags, relationships, clues,
+  costs, callbacks, modifiers, or altered routes.
+
+The intended balance is narrative generous: build and preparation matter, but
+failure should usually become playable pressure rather than a dead end.
 
 ### Relationship Progression
 

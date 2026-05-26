@@ -17,6 +17,7 @@ const path = require('path');
 const manifestModule = require('./storyManifest');
 const codec = require('./storyCodec');
 const { spawnTsNodeWorker } = require('./tsNodeSpawn');
+const { atomicWriteJsonSync } = require('./atomicIo');
 
 function registerImageFeedbackRoutes(app, { rootDir, storiesDir, feedbackFile, cachedJsonStore }) {
   if (!rootDir || !storiesDir || !cachedJsonStore) {
@@ -28,6 +29,138 @@ function registerImageFeedbackRoutes(app, { rootDir, storiesDir, feedbackFile, c
 
   function loadFeedback() { return feedbackStore.get(); }
   function saveFeedback(feedback) { feedbackStore.set(feedback); }
+
+  function listStoryDirs() {
+    if (!fs.existsSync(storiesDir)) return [];
+    return fs.readdirSync(storiesDir, { withFileTypes: true })
+      .filter((dirent) => dirent.isDirectory())
+      .map((dirent) => dirent.name);
+  }
+
+  function readStoryRecord(dir) {
+    const outputDir = path.join(storiesDir, dir);
+    const primary = manifestModule.resolveStoryFile(outputDir);
+    if (!primary) return null;
+    const parsed = JSON.parse(fs.readFileSync(primary.abs, 'utf8'));
+    const decoded = codec.safeDecodeStory(parsed);
+    if (!decoded.ok) return null;
+    return { dir, outputDir, primary, raw: parsed, pkg: decoded.pkg };
+  }
+
+  function findStoryRecord(storyId) {
+    if (!storyId) return null;
+    for (const dir of listStoryDirs()) {
+      try {
+        const record = readStoryRecord(dir);
+        if (record?.pkg.storyId === storyId) return record;
+      } catch (err) {
+        console.error(`[Proxy] Error reading story ${dir}:`, err.message);
+      }
+    }
+    return null;
+  }
+
+  function scorePromptCandidate(promptData, filename, { sceneId, beatId }) {
+    if (!promptData || typeof promptData !== 'object') return -1;
+    if (filename.toLowerCase().endsWith('.qa.json')) return -1;
+    const metadata = promptData.metadata || {};
+    let score = 0;
+    if (beatId && metadata.beatId === beatId) score += 100;
+    if (sceneId && metadata.sceneId === sceneId) score += 40;
+    const haystack = `${promptData.identifier || ''} ${filename}`.toLowerCase();
+    if (beatId && haystack.includes(beatId.toLowerCase())) score += 20;
+    if (sceneId && haystack.includes(sceneId.toLowerCase())) score += 8;
+    if (/rerender|textfix|qa-regenerate/i.test(filename)) score -= 15;
+    return score;
+  }
+
+  function findPromptForBeat(record, { promptPath, identifier, sceneId, beatId }) {
+    if (promptPath) {
+      const abs = path.isAbsolute(promptPath) ? promptPath : path.resolve(appRoot, promptPath);
+      if (fs.existsSync(abs)) {
+        const data = JSON.parse(fs.readFileSync(abs, 'utf8'));
+        return { promptPath: abs, identifier: identifier || data.identifier || path.basename(abs, '.json') };
+      }
+    }
+    if (!record) return null;
+
+    const promptsDir = [
+      path.join(record.outputDir, 'images', 'prompts'),
+      path.join(record.outputDir, 'prompts'),
+    ].find((candidate) => fs.existsSync(candidate));
+    if (!promptsDir) return null;
+
+    let best = null;
+    for (const filename of fs.readdirSync(promptsDir)) {
+      if (!filename.endsWith('.json')) continue;
+      try {
+        const abs = path.join(promptsDir, filename);
+        const data = JSON.parse(fs.readFileSync(abs, 'utf8'));
+        const score = scorePromptCandidate(data, filename, { sceneId, beatId });
+        if (score < 0) continue;
+        if (!best || score > best.score) {
+          best = {
+            score,
+            promptPath: abs,
+            identifier: data.identifier || filename.replace(/\.json$/, ''),
+          };
+        }
+      } catch (err) {
+        console.warn(`[Proxy] Skipping unreadable prompt ${filename}: ${err.message}`);
+      }
+    }
+    return best;
+  }
+
+  function replaceBeatImageInStory(record, { episodeId, sceneId, beatId, imageUrl }, req) {
+    if (!record || !imageUrl) return null;
+    const story = record.pkg.story;
+    let replaced = false;
+
+    for (const episode of story.episodes || []) {
+      if (episodeId && episode.id !== episodeId) continue;
+      for (const scene of episode.scenes || []) {
+        if (sceneId && scene.id !== sceneId) continue;
+        for (const beat of scene.beats || []) {
+          if (beat.id !== beatId) continue;
+          beat.image = imageUrl;
+          replaced = true;
+          break;
+        }
+        if (replaced) break;
+      }
+      if (replaced) break;
+    }
+
+    if (!replaced) {
+      throw new Error(`Beat not found for regeneration update: episode=${episodeId || '*'} scene=${sceneId || '*'} beat=${beatId || '*'}`);
+    }
+
+    let nextRaw;
+    if (record.pkg.detectedSchemaVersion === 1) {
+      nextRaw = story;
+    } else {
+      nextRaw = {
+        ...record.raw,
+        story,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    const { sha256, bytes } = atomicWriteJsonSync(record.primary.abs, nextRaw, { pretty: true });
+    manifestModule.updateManifestForPrimaryRewrite(record.outputDir, {
+      primaryStoryHash: sha256,
+      primaryStoryBytes: bytes,
+    });
+
+    const updatedDecoded = codec.safeDecodeStory(nextRaw);
+    if (!updatedDecoded.ok) throw updatedDecoded.error;
+    return codec.projectForFullResponse(updatedDecoded.pkg, {
+      req,
+      port: process.env.PORT || 3001,
+      dirName: record.dir,
+    });
+  }
 
   app.get('/image-feedback', (req, res) => {
     res.json(loadFeedback());
@@ -145,7 +278,7 @@ function registerImageFeedbackRoutes(app, { rootDir, storiesDir, feedbackFile, c
   }
 
   app.post('/regenerate-image', async (req, res) => {
-    const { imageUrl, storyId, sceneId, beatId, feedback, promptPath: requestPromptPath, identifier, metadata } = req.body;
+    const { imageUrl, storyId, episodeId, sceneId, beatId, feedback, promptPath: requestPromptPath, identifier, metadata } = req.body;
 
     if (!imageUrl) {
       return res.status(400).json({ error: 'Missing required field: imageUrl' });
@@ -156,42 +289,15 @@ function registerImageFeedbackRoutes(app, { rootDir, storiesDir, feedbackFile, c
     console.log(`[Proxy] Feedback notes: ${feedback?.notes || 'none'}`);
 
     try {
-      let promptPath = requestPromptPath || null;
-      let resolvedIdentifier = identifier || null;
-
-      if (!promptPath && storyId && fs.existsSync(storiesDir)) {
-        const dirs = fs.readdirSync(storiesDir, { withFileTypes: true })
-          .filter((dirent) => dirent.isDirectory())
-          .map((dirent) => dirent.name);
-
-        for (const dir of dirs) {
-          const outputDir = path.join(storiesDir, dir);
-          const primary = manifestModule.resolveStoryFile(outputDir);
-          if (!primary) continue;
-          try {
-            const parsed = JSON.parse(fs.readFileSync(primary.abs, 'utf8'));
-            const decoded = codec.safeDecodeStory(parsed);
-            if (!decoded.ok || decoded.pkg.storyId !== storyId) continue;
-            const promptsDir = path.join(outputDir, 'prompts');
-            if (fs.existsSync(promptsDir)) {
-              const promptFiles = fs.readdirSync(promptsDir);
-              for (const pf of promptFiles) {
-                const pfLower = pf.toLowerCase();
-                if ((beatId && pfLower.includes(beatId.toLowerCase()))
-                  || (sceneId && pfLower.includes(sceneId.toLowerCase()))) {
-                  promptPath = path.join(promptsDir, pf);
-                  const promptData = JSON.parse(fs.readFileSync(promptPath, 'utf8'));
-                  resolvedIdentifier = promptData.identifier || pf.replace('.json', '');
-                  break;
-                }
-              }
-            }
-            break;
-          } catch (err) {
-            console.error(`[Proxy] Error reading story ${dir}:`, err.message);
-          }
-        }
-      }
+      const storyRecord = findStoryRecord(storyId);
+      const promptRecord = findPromptForBeat(storyRecord, {
+        promptPath: requestPromptPath,
+        identifier,
+        sceneId,
+        beatId,
+      });
+      const promptPath = promptRecord?.promptPath || null;
+      const resolvedIdentifier = promptRecord?.identifier || identifier || null;
 
       if (!promptPath) {
         console.log('[Proxy] Could not find original prompt path for rerender request');
@@ -208,10 +314,19 @@ function registerImageFeedbackRoutes(app, { rootDir, storiesDir, feedbackFile, c
         metadata,
         feedback,
       });
+      const updatedStory = storyRecord && beatId
+        ? replaceBeatImageInStory(storyRecord, {
+            episodeId,
+            sceneId,
+            beatId,
+            imageUrl: result.newImageUrl || result.imageUrl,
+          }, req)
+        : null;
 
       res.json({
         success: true,
         message: 'Image rerendered successfully',
+        story: updatedStory,
         ...result,
       });
     } catch (error) {

@@ -52,8 +52,6 @@ function pushNameParts(aliases: string[], value: string): void {
   aliases.push(name);
   const parts = name.split(/\s+/).filter(Boolean);
   if (parts[0]) aliases.push(parts[0]);
-  if (parts.length > 1 && parts[parts.length - 1]) aliases.push(parts[parts.length - 1]);
-  if (parts.length > 1) aliases.push(parts.slice(-2).join(' '));
 }
 
 function characterAliases(character: any): string[] {
@@ -66,6 +64,12 @@ function characterAliases(character: any): string[] {
     ...(Array.isArray(character.aliases) ? character.aliases : []),
     ...(Array.isArray(character.nicknames) ? character.nicknames : []),
   ].map(normalize).filter(Boolean);
+
+  const idParts = normalize(character.id).split(/[-_\s]+/).filter(Boolean);
+  if (idParts[0] === 'char' && idParts[1]) {
+    aliases.push(`char-${idParts[1]}`);
+    aliases.push(idParts[1]);
+  }
 
   for (const source of [
     character.name,

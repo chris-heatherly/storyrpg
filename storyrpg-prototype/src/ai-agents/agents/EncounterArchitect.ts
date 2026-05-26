@@ -27,6 +27,9 @@ import {
   EncounterType,
   NPCDisposition,
   Relationship,
+  ConsequenceDomain,
+  ReminderPlan,
+  ChoiceFeedbackCue,
 } from '../../types';
 import {
   StoryAnchors,
@@ -47,6 +50,7 @@ import {
   RelationshipSnapshot,
   NPCInfo,
 } from '../utils/relationshipDynamics';
+import type { StoryVerb } from '../utils/storyVerbs';
 
 // Re-export for consumers that import from this file
 export type { EncounterApproach, NPCDisposition } from '../../types';
@@ -170,6 +174,9 @@ export interface EncounterArchitectInput {
 
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
+
+  // Genre/source-specific verbs that should shape tactical action design.
+  storyVerbs?: StoryVerb[];
 }
 
 // ========================================
@@ -191,6 +198,9 @@ export interface Phase1Result {
       approach: string;
       primarySkill: string;
       impliedApproach?: string;
+      consequenceDomain?: ConsequenceDomain;
+      reminderPlan?: ReminderPlan;
+      feedbackCue?: ChoiceFeedbackCue;
       outcomes: {
         success: { narrativeText: string; goalTicks: number; threatTicks: number };
         complicated: { narrativeText: string; goalTicks: number; threatTicks: number };
@@ -215,6 +225,9 @@ export interface Phase2Situation {
     text: string;
     approach: string;
     primarySkill: string;
+    consequenceDomain?: ConsequenceDomain;
+    reminderPlan?: ReminderPlan;
+    feedbackCue?: ChoiceFeedbackCue;
     outcomes: {
       success: Phase2Outcome;
       complicated: Phase2Outcome;
@@ -324,6 +337,9 @@ export interface EmbeddedEncounterChoice {
   text: string;           // Short action-oriented choice text ("Swing at his head")
   approach: string;       // "careful", "bold", "clever", etc.
   primarySkill?: string;  // Skill that influences outcome
+  consequenceDomain?: ConsequenceDomain;
+  reminderPlan?: ReminderPlan;
+  feedbackCue?: ChoiceFeedbackCue;
   outcomes: {
     success: EncounterChoiceOutcome;
     complicated: EncounterChoiceOutcome;
@@ -394,6 +410,9 @@ export interface EncounterChoice {
   text: string;
   approach: string;
   primarySkill?: string;
+  consequenceDomain?: ConsequenceDomain;
+  reminderPlan?: ReminderPlan;
+  feedbackCue?: ChoiceFeedbackCue;
   
   // Pre-generated outcomes for each tier
   outcomes: {
@@ -1010,9 +1029,8 @@ To prevent infinite trees:
 
 Each encounter outcome (victory/defeat/escape) leads to a storylet that serves as an emotional and mechanical bridge. Storylets are where the player SEES their character grow. Every storylet must include consequence objects that produce visible character development.
 
-### Victory Storylets (2 beats)
-- **Beat 1 — Triumph**: Celebrate the achievement in-scene. Show the world reacting to success. (2-3 sentences)
-- **Beat 2 — Forward Momentum**: What this victory means going forward. The character recognizes their growth. (1-2 sentences, terminal)
+### Victory Storylets (1 beat)
+- **Beat 1 — Aftermath**: Show the achievement landing in-scene and what it changes going forward. Keep the confidence/growth in the same fiction-first beat; do not add a second generic reflection beat. (2-3 sentences, terminal)
 - **Consequences**: Include attribute or skill increases reflecting the skill that drove success (e.g. +3 to the primary skill used, +2 courage if it was a brave act). Also include the confidence score bump and victory flag.
 
 ### Defeat Storylets (3 beats — Learning Arc)
@@ -1098,11 +1116,15 @@ The "complicated" tier should produce the most interesting narrative branching. 
 - Grant partial progress (1 goal tick) but also add danger (1 threat tick)
 - Present genuinely different choices than the success/failure branches
 - Create "the price of partial success" moments that force identity-defining decisions
+- Include a structured \`cost\` with \`immediateEffect\`, \`visibleComplication\`, and at least one \`cost.consequences\` item
 
 ### Consequences Should Be Skill-Relevant
 Outcomes should include consequences that match the skill being tested:
-- A successful athletics check: \`{ "type": "score", "name": "athletic_confidence", "change": 2 }\` or similar
+- A successful athletics check: \`{ "type": "changeScore", "score": "athletic_confidence", "change": 2 }\` or similar
 - A failed social check: show the relationship shifting, not just a generic setback
+- Every success/complicated/failure outcome needs at least one durable hook in \`consequences\` or \`cost.consequences\`
+- Use a mix of flags, scores, tags, inventory, and relationships; do not make encounter fallout relationship-only
+- Costs are not just prose. If the story says the player paid a price, encode what future scenes can test or echo
 
 ---
 
@@ -1817,6 +1839,8 @@ RULES:
             );
           }
 
+          this.ensureEncounterChoiceFeedback(choice, choice.outcomes.complicated?.narrativeText || choice.outcomes.success?.narrativeText);
+
           for (const tier of ['success', 'complicated', 'failure'] as const) {
             const outcome = choice.outcomes[tier];
             if (outcome?.nextSituation) {
@@ -2162,6 +2186,63 @@ RULES:
     return 1 + getDepthFromChoices(startingBeat.choices, new Set());
   }
 
+  private lowercaseFirst(value: string): string {
+    return value ? `${value.charAt(0).toLowerCase()}${value.slice(1)}` : value;
+  }
+
+  private sentenceFromEncounterChoice(choiceText?: string): string {
+    const text = choiceText?.replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+    if (!text) return 'You chose how to meet the moment.';
+
+    const withoutYou = text.match(/^you\s+(.+)$/i)?.[1];
+    const action = withoutYou || text;
+    const dont = action.match(/^don['’]?t\s+(.+)$/i)?.[1];
+    if (dont) {
+      return `You chose not to ${this.lowercaseFirst(dont)}.`;
+    }
+
+    return `You chose to ${this.lowercaseFirst(action)}.`;
+  }
+
+  private summarizeEncounterNarrative(narrativeText?: string): string {
+    const normalized = narrativeText?.replace(/\s+/g, ' ').trim();
+    if (!normalized) return 'The choice changes the shape of the scene.';
+
+    const firstSentence = normalized.match(/^(.+?[.!?])(?:\s|$)/)?.[1] || normalized;
+    if (firstSentence.length <= 150) return firstSentence;
+
+    const trimmed = firstSentence.slice(0, 147);
+    const lastBreak = Math.max(trimmed.lastIndexOf(','), trimmed.lastIndexOf(';'), trimmed.lastIndexOf(' '));
+    return `${trimmed.slice(0, lastBreak > 80 ? lastBreak : 147).trim()}...`;
+  }
+
+  private ensureEncounterChoiceFeedback<T extends {
+    text?: string;
+    reminderPlan?: ReminderPlan;
+    feedbackCue?: ChoiceFeedbackCue;
+  }>(choice: T, narrativeText?: string): T {
+    const echoSummary = choice.feedbackCue?.echoSummary || this.sentenceFromEncounterChoice(choice.text);
+    const progressSummary =
+      choice.feedbackCue?.progressSummary
+      || choice.reminderPlan?.shortTerm
+      || this.summarizeEncounterNarrative(narrativeText);
+
+    choice.reminderPlan = {
+      immediate: choice.reminderPlan?.immediate || echoSummary,
+      shortTerm: choice.reminderPlan?.shortTerm || progressSummary,
+      ...(choice.reminderPlan?.later ? { later: choice.reminderPlan.later } : {}),
+    };
+
+    choice.feedbackCue = {
+      ...choice.feedbackCue,
+      echoSummary,
+      progressSummary,
+      checkClass: choice.feedbackCue?.checkClass || 'dramatic',
+    };
+
+    return choice;
+  }
+
   private buildDefaultOutcome(
     choiceText: string | undefined,
     tier: 'success' | 'complicated' | 'failure',
@@ -2336,8 +2417,8 @@ RULES:
       domain: derivedDomain,
       severity,
       whoPays,
-      immediateEffect: seed?.immediateEffect || text || 'The objective is achieved, but the price is immediate.',
-      visibleComplication: seed?.visibleComplication || text || 'The cost of success is visible in the aftermath.',
+      immediateEffect: seed?.immediateEffect || text || 'The win leaves something unsettled that follows the protagonist forward.',
+      visibleComplication: seed?.visibleComplication || text || 'Relief arrives with a complication still attached.',
       lingeringEffect: seed?.lingeringEffect,
       consequences: seed?.consequences,
     };
@@ -2361,7 +2442,7 @@ RULES:
         name: 'Defeat Aftermath',
         triggerOutcome: 'defeat',
         tone: 'somber',
-        narrativeFunction: 'Show cost of failure, create learning arc, build resolve for recovery',
+        narrativeFunction: 'The failure lands in the fiction and points toward recovery.',
         sequenceIntent: {
           objective: 'Make the cost of defeat visible while beginning a recovery arc.',
           activity: 'aftermath recovery sequence after failure',
@@ -2375,7 +2456,7 @@ RULES:
         beats: [
           {
             id: `${input.sceneId}-storylet-defeat-beat-1`,
-            text: `${protagonist} has failed. The weight of it settles in — there will be consequences for this.`,
+            text: `${protagonist} feels the moment slip away before anyone has to name it. The encounter leaves a mark, and the next breath already tastes like recovery will have to be earned.`,
             nextBeatId: `${input.sceneId}-storylet-defeat-beat-2`,
           },
           {
@@ -2405,12 +2486,12 @@ RULES:
         name: 'Victory Aftermath',
         triggerOutcome: 'victory',
         tone: 'triumphant',
-        narrativeFunction: 'Celebrate success, show growth from triumph',
+        narrativeFunction: 'The victory lands in the fiction and leaves the protagonist steadier.',
         sequenceIntent: {
           objective: 'Show victory changing confidence and the world response.',
           activity: 'victory aftermath sequence',
           obstacle: 'Success still has to settle into visible consequence.',
-          startState: 'The immediate danger has passed.',
+          startState: 'The pressure eases and the scene changes around the protagonist.',
           turningPoint: 'The protagonist recognizes they rose to the challenge.',
           endState: 'Earned confidence becomes visible.',
           visualThread: 'the changed space after success and the protagonist’s steadier posture',
@@ -2419,12 +2500,7 @@ RULES:
         beats: [
           {
             id: `${input.sceneId}-storylet-victory-beat-1`,
-            text: `${protagonist} has succeeded. The immediate danger has passed, and the world shifts in response.`,
-            nextBeatId: `${input.sceneId}-storylet-victory-beat-2`,
-          },
-          {
-            id: `${input.sceneId}-storylet-victory-beat-2`,
-            text: `There's a quiet sense of earned confidence — not arrogance, but the knowledge that ${protagonist} rose to the challenge.`,
+            text: `${protagonist} comes through the encounter with the pressure finally loosening. The space around them feels changed now, as if the night has had to make room for what they just proved, and the steadiness that follows feels earned rather than easy.`,
             isTerminal: true,
           },
         ],
@@ -2440,7 +2516,7 @@ RULES:
 
     if (outcome === 'partialVictory') {
       const cost = this.buildDefaultEncounterCost(
-        'The objective is achieved, but the price lands immediately and keeps shaping what comes next.',
+        'The win is real, but it leaves a complication that follows the protagonist forward.',
         [
           { type: 'score', name: 'confidence', change: 2 },
           { type: 'score', name: 'setbacks', change: 1 },
@@ -2452,12 +2528,12 @@ RULES:
         name: 'Costly Victory',
         triggerOutcome: 'partialVictory',
         tone: tones.partialVictory,
-        narrativeFunction: 'Show that the objective was achieved, but the price changes what comes next.',
+        narrativeFunction: 'The protagonist gets through, but the aftermath keeps the cost alive in the fiction.',
         sequenceIntent: {
           objective: 'Show that the goal was won while the cost remains active.',
           activity: 'costly-victory aftermath sequence',
           obstacle: 'Relief and damage arrive together.',
-          startState: 'The objective is achieved at a visible price.',
+          startState: 'The protagonist gets through with a visible complication still attached.',
           turningPoint: 'The cost becomes impossible to ignore.',
           endState: 'The next scene is shaped by both success and complication.',
           visualThread: cost.visibleComplication || 'the visible complication left by the victory',
@@ -2467,7 +2543,7 @@ RULES:
         beats: [
           {
             id: `${input.sceneId}-storylet-partial-victory-beat-1`,
-            text: `${protagonist} gets what they fought for, but the cost lands immediately. Relief and damage arrive together.`,
+            text: `${protagonist} gets through the moment, but relief does not arrive alone. Something in the scene stays unsettled, already shaping what comes next.`,
             nextBeatId: `${input.sceneId}-storylet-partial-victory-beat-2`,
             cost,
           },
@@ -2543,6 +2619,10 @@ RULES:
       ?.map(s => `- ${s.name}: level ${s.level}`)
       .join('\n') || 'Not specified';
 
+    const storyVerbList = (input.storyVerbs || [])
+      .map(storyVerb => `- ${storyVerb.verb}: ${storyVerb.description}`)
+      .join('\n');
+
     const difficultyOdds: Record<string, number> = {
       easy: 55,
       moderate: 65,
@@ -2563,6 +2643,11 @@ ${CRAFT_PRESSURE_GUIDANCE}
 
 ## Genre-Aware Jeopardy
 ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
+
+${storyVerbList ? `## Story Verbs
+Use these genre/source-specific verbs to make encounter choices feel native to the story world. Do not expose them as system labels; turn them into concrete actions, complications, and storylet consequences.
+${storyVerbList}
+` : ''}
 
 ## Story Context
 - **Title**: ${input.storyContext.title}
@@ -2587,6 +2672,9 @@ ${input.storyContext.userPrompt ? `- **User Instructions**: ${input.storyContext
 - **Target Beat Count**: ${input.targetBeatCount}
 - **Minimum Required Beats**: ${this.getMinimumRequiredBeatCount(input)}
 - **Jeopardy Requirement**: Put something serious at risk in this encounter. Match the risk to the genre and encounter style; do not force combat unless the genre/style calls for it.
+- **Skill Surface Requirement**: Each encounter must use 2-3 relevant skills, at least one fiction-first prepared advantage source, and at least one environmental or relationship affordance.
+- Prepared advantage may use existing \`statBonus\`: condition + hidden difficultyReduction + flavorText. flavorText must read like story leverage, never a bonus/modifier/percentage.
+- Every success, complicated, and failure outcome must leave playable fiction: changed posture, cost, suspicion, injury, lost leverage, relationship movement, route pressure, recovery hook, or future callback.
 - **Encounter Beat Plan**:
 ${(input.encounterBeatPlan && input.encounterBeatPlan.length > 0)
   ? input.encounterBeatPlan.map((beat, index) => `  ${index + 1}. ${beat}`).join('\n')
@@ -2975,16 +3063,12 @@ ${choiceSection}
       "name": "Victory Aftermath",
       "triggerOutcome": "victory",
       "tone": "triumphant",
-      "narrativeFunction": "Celebrate success, show growth from triumph",
+      "narrativeFunction": "Show the win landing in-scene and what it changes going forward",
       "sequenceIntent": { "objective": "Aftermath objective", "activity": "victory aftermath sequence", "obstacle": "What still complicates the win", "startState": "Outcome lands", "turningPoint": "Growth or cost becomes visible", "endState": "Changed state going forward", "visualThread": "Visible consequence carried across panels" },
       "beats": [
         {
           "id": "${input.sceneId}-storylet-victory-beat-1",
-          "text": "2-3 sentences: the world reacts to your success. Show the tangible result of victory."
-        },
-        {
-          "id": "${input.sceneId}-storylet-victory-beat-2",
-          "text": "1-2 sentences: forward momentum. The character recognizes how they've grown. A sense of earned confidence.",
+          "text": "2-3 sentences: the world reacts to the success, and the character's steadier posture or changed circumstances are visible in the same beat.",
           "isTerminal": true
         }
       ],
@@ -3285,7 +3369,7 @@ Beat 2 = "resolution" phase (the climax, all outcomes are terminal)
       "name": "Victory Aftermath",
       "triggerOutcome": "victory",
       "tone": "triumphant",
-      "narrativeFunction": "Celebrate success",
+      "narrativeFunction": "Show the win landing in-scene and what it changes going forward",
       "beats": [{ "id": "${input.sceneId}-sv-1", "text": "1-2 sentences of victory aftermath", "isTerminal": true }],
       "startingBeatId": "${input.sceneId}-sv-1",
       "consequences": [],
@@ -3633,6 +3717,11 @@ ${relationshipSection}
 - setupText: 30-50 words setting the opening situation
 - narrativeText: 30-60 words showing THE RESULT of the action (not the action itself)
 - Each outcome narrative must be SPECIFIC to the choice taken
+- Each choice must include fiction-first reader echo copy:
+  - feedbackCue.echoSummary: one sentence acknowledging the player's choice, like "You chose honesty over comfort."
+  - feedbackCue.progressSummary: one short sentence showing how the scene now feels different
+  - reminderPlan.immediate and reminderPlan.shortTerm should mirror those visible story turns
+- Do NOT use dice/result labels like "at a price," "seizing the moment," "objective achieved," or "cost lands" in feedbackCue/reminderPlan.
 
 ## TASK
 Generate 3 distinct choices (bold/cautious/clever approaches, each using a different skill).
@@ -3652,6 +3741,16 @@ For EACH choice, write 3 outcome narratives (success/complicated/failure) that a
       {
         "id": "c1", "text": "Bold action (5-10 words)", "approach": "aggressive",
         "primarySkill": "skill_name", "impliedApproach": "aggressive",
+        "consequenceDomain": "relationship",
+        "reminderPlan": {
+          "immediate": "One sentence acknowledging what the player chose.",
+          "shortTerm": "One sentence showing the visible story turn."
+        },
+        "feedbackCue": {
+          "echoSummary": "You chose directness over caution.",
+          "progressSummary": "The room reacts to the confidence before anyone speaks.",
+          "checkClass": "dramatic"
+        },
         "outcomes": {
           "success": { "narrativeText": "30-60 words", "goalTicks": 2, "threatTicks": 0 },
           "complicated": { "narrativeText": "30-60 words", "goalTicks": 1, "threatTicks": 1 },
@@ -3726,6 +3825,10 @@ For EACH outcome tier (afterSuccess, afterComplicated, afterFailure), generate:
 - Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
 - narrativeText must be SPECIFIC to the choice and situation, 30-60 words
 - Each of the 3 situations (afterSuccess/afterComplicated/afterFailure) must feel DIFFERENT
+- Every generated choice must include feedbackCue and reminderPlan with the same fiction-first two-line style as regular story choices:
+  - feedbackCue.echoSummary acknowledges what the player chose, not the dice result
+  - feedbackCue.progressSummary names the visible story/emotional turn
+  - never use tier slogans such as "at a price," "seizing the moment," or "a turn for the worse"
 
 ## JSON FORMAT
 {
@@ -3735,6 +3838,16 @@ For EACH outcome tier (afterSuccess, afterComplicated, afterFailure), generate:
     "choices": [
       {
         "id": "${choice.id}-s-c1", "text": "5-10 words", "approach": "bold", "primarySkill": "skill",
+        "consequenceDomain": "relationship",
+        "reminderPlan": {
+          "immediate": "One sentence acknowledging the chosen action.",
+          "shortTerm": "One sentence showing what changes in the scene."
+        },
+        "feedbackCue": {
+          "echoSummary": "You chose candor over pretending nothing changed.",
+          "progressSummary": "The tension has to answer you directly now.",
+          "checkClass": "dramatic"
+        },
         "outcomes": {
           "success": { "narrativeText": "...", "goalTicks": 3, "threatTicks": 0, "isTerminal": true, "encounterOutcome": "victory" },
           "complicated": { "narrativeText": "...", "goalTicks": 2, "threatTicks": 1, "isTerminal": true, "encounterOutcome": "partialVictory" },
@@ -3864,15 +3977,18 @@ Return ONLY the JSON object.`;
 ## Genre-Aware Jeopardy: ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 ${relationshipSection}
 ## TASK
-Generate 3 storylets for: victory, defeat, escape. Each is a short aftermath sequence.
+Generate 4 storylets for: victory, partialVictory, defeat, escape. Each is a short aftermath sequence.
 
-### Victory (2 beats): Triumph → Forward momentum. Tone: triumphant.
+### Victory (1 beat): Aftermath and forward motion in the same fiction-first beat. Tone: triumphant.
+### Partial Victory (2 beats): Relief → visible cost. Tone: bittersweet. The cost must be explained in fiction-first prose.
 ### Defeat (3 beats): Impact → Reflection/Learning → Resolve. Tone: somber. Must feel like START of recovery, not dead end.
 ### Escape (2 beats): Close call → Assessment. Tone: relieved/tense.
 
 ## TEXT RULES
 - Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
 - Beat text: 2-3 sentences max. Reference specific NPCs and the encounter's stakes.
+- Never use result-label prose like "victory," "defeat," "objective achieved," "cost lands," "has succeeded," or "has failed" as reader-facing text.
+- If a partialVictory has a cost, describe the concrete visible complication in the scene, not cost metadata.
 - Last beat in each storylet must have "isTerminal": true
 
 ## JSON FORMAT
@@ -3882,12 +3998,32 @@ Generate 3 storylets for: victory, defeat, escape. Each is a short aftermath seq
     "name": "Victory",
     "triggerOutcome": "victory",
     "tone": "triumphant",
-    "narrativeFunction": "Celebrate and show growth",
+    "narrativeFunction": "Show the win landing in-scene and what it changes going forward",
     "beats": [
-      { "id": "${input.sceneId}-sv-1", "text": "2-3 sentences of triumph" },
-      { "id": "${input.sceneId}-sv-2", "text": "1-2 sentences of forward momentum", "isTerminal": true }
+      { "id": "${input.sceneId}-sv-1", "text": "2-3 sentences of aftermath that show the tangible result and the character's changed posture", "isTerminal": true }
     ],
     "startingBeatId": "${input.sceneId}-sv-1",
+    "consequences": [],
+    "nextSceneId": "${input.victoryNextSceneId || 'next-scene'}"
+  },
+  "partialVictory": {
+    "id": "${input.sceneId}-sp",
+    "name": "Costly Aftermath",
+    "triggerOutcome": "partialVictory",
+    "tone": "bittersweet",
+    "narrativeFunction": "Relief with a visible complication that follows forward",
+    "cost": {
+      "domain": "mixed",
+      "severity": "moderate",
+      "whoPays": "protagonist",
+      "immediateEffect": "One sentence naming the concrete visible complication.",
+      "visibleComplication": "One sentence showing what changed in the scene."
+    },
+    "beats": [
+      { "id": "${input.sceneId}-sp-1", "text": "2-3 sentences: relief arrives, but a specific visible complication remains" },
+      { "id": "${input.sceneId}-sp-2", "text": "1-2 sentences: the cost follows into what comes next", "isTerminal": true }
+    ],
+    "startingBeatId": "${input.sceneId}-sp-1",
     "consequences": [],
     "nextSceneId": "${input.victoryNextSceneId || 'next-scene'}"
   },
@@ -3945,18 +4081,21 @@ Return ONLY the JSON object.`;
     // Build beat-1 from Phase 1
     const beat1Choices: EncounterChoice[] = phase1.openingBeat.choices.map(c => {
       const phase2 = phase2Results.find(r => r?.choiceId === c.id);
-      return {
+      return this.ensureEncounterChoiceFeedback({
         id: c.id,
         text: c.text,
         approach: c.approach as EncounterApproach,
         impliedApproach: (c.impliedApproach || c.approach) as EncounterApproach,
         primarySkill: c.primarySkill,
+        consequenceDomain: c.consequenceDomain,
+        reminderPlan: c.reminderPlan,
+        feedbackCue: c.feedbackCue,
         outcomes: {
           success: this.buildOutcomeWithBranch(c.outcomes.success, 'success', phase2?.afterSuccess, brief),
           complicated: this.buildOutcomeWithBranch(c.outcomes.complicated, 'complicated', phase2?.afterComplicated, brief),
           failure: this.buildOutcomeWithBranch(c.outcomes.failure, 'failure', phase2?.afterFailure, brief),
         },
-      } as EncounterChoice;
+      } as EncounterChoice, c.outcomes.complicated.narrativeText || c.outcomes.success.narrativeText);
     });
 
     // Apply Phase 3 enrichment
@@ -4034,17 +4173,20 @@ Return ONLY the JSON object.`;
     choice: Phase2Situation['choices'][0],
     brief: RelationshipDynamicsBrief,
   ): EmbeddedEncounterChoice {
-    return {
+    return this.ensureEncounterChoiceFeedback({
       id: choice.id,
       text: choice.text,
       approach: choice.approach,
       primarySkill: choice.primarySkill,
+      consequenceDomain: choice.consequenceDomain,
+      reminderPlan: choice.reminderPlan,
+      feedbackCue: choice.feedbackCue,
       outcomes: {
         success: this.convertPhase2Outcome(choice.outcomes.success, 'success', brief),
         complicated: this.convertPhase2Outcome(choice.outcomes.complicated, 'complicated', brief),
         failure: this.convertPhase2Outcome(choice.outcomes.failure, 'failure', brief),
       },
-    };
+    }, choice.outcomes.complicated.narrativeText || choice.outcomes.success.narrativeText);
   }
 
   private convertPhase2Outcome(
@@ -4097,7 +4239,7 @@ Return ONLY the JSON object.`;
 
     if (enrichment.conditionalChoices) {
       for (const cc of enrichment.conditionalChoices) {
-        choices.push({
+        choices.push(this.ensureEncounterChoiceFeedback({
           id: cc.id,
           text: cc.text,
           approach: cc.approach as EncounterApproach,
@@ -4110,7 +4252,7 @@ Return ONLY the JSON object.`;
             complicated: { tier: 'complicated', narrativeText: cc.outcomes.complicated.narrativeText, goalTicks: cc.outcomes.complicated.goalTicks, threatTicks: cc.outcomes.complicated.threatTicks },
             failure: { tier: 'failure', narrativeText: cc.outcomes.failure.narrativeText, goalTicks: cc.outcomes.failure.goalTicks, threatTicks: cc.outcomes.failure.threatTicks },
           },
-        } as EncounterChoice);
+        } as EncounterChoice, cc.outcomes.complicated.narrativeText || cc.outcomes.success.narrativeText));
       }
     }
   }

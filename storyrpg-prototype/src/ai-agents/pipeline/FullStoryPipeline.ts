@@ -20,6 +20,7 @@ import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 import { 
   SCENE_DEFAULTS, 
+  clampSceneCount,
   TIMING_DEFAULTS, 
   CHARACTER_DEFAULTS,
   DEFAULT_SKILLS,
@@ -88,6 +89,7 @@ import type { GeneratedImage } from '../images/imageTypes';
 import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/VideoDirectorAgent';
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
+import { deriveStoryVerbs } from '../utils/storyVerbs';
 import { buildFashionPrimaryClothing, buildFashionStyleSummary } from '../images/characterFashionStyle';
 import { resolvePlayerTemplatesInObject } from '../utils/playerTemplateResolver';
 import { applyPromptContract, sanitizeStyleContaminationText } from '../images/imagePromptContracts';
@@ -126,6 +128,7 @@ import {
   saveEncounterResumeState,
   loadEarlyDiagnosticSync,
   loadEncounterResumeStateSync,
+  writeFinalStoryPackage,
   saveBeatResumeState,
   loadBeatResumeStateSync,
   BeatResumeStateV1,
@@ -160,7 +163,7 @@ import { EncounterProviderPolicy } from '../encounters/encounterProviderPolicy';
 import { AssetRegistry } from '../images/assetRegistry';
 import { CallbackLedger } from './callbackLedger';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
-import { StoryboardV2Pipeline } from '../images/storyboard-v2/StoryboardV2Pipeline';
+import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
 import { validateRegistryCoverage } from '../images/coverageValidator';
 import { walkStoryAssets, formatAssetWalkReport } from '../validators/storyAssetWalker';
 import { findUnsupportedQuotedRecallIssues } from '../validators/quoteRecallValidator';
@@ -225,6 +228,9 @@ import {
   StructuralValidator,
   ChoiceDistributionValidator,
   SceneGraphBranchValidator,
+  MicroEpisodeStructureValidator,
+  MicroEpisodeSeasonValidator,
+  TreatmentFidelityValidator,
   type SceneGraphBranchValidationResult,
   runNarrativeDiagnostics,
 } from '../validators';
@@ -232,6 +238,7 @@ import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
+  ValidationIssue,
   ValidationError,
 } from '../../types/validation';
 import {
@@ -269,30 +276,11 @@ import {
   getLocationInfoForScene,
 } from './planningHelpers';
 import { mergeSeasonEpisodes } from './seasonStoryMerge';
+import { assembleChoiceForStory, normalizeConsequences } from './choiceAssembly';
 
 // Re-export types for consumers
 export type { OutputManifest } from '../utils/pipelineOutputWriter';
 export type { PipelineEvent } from './events';
-
-/**
- * Normalize a Consequence object to fix common LLM field-name deviations.
- * E.g. { type: 'changeScore', target: 'x', change: 5 } -> score: 'x'
- */
-function normalizeConsequence(c: Consequence): Consequence {
-  const raw = c as Record<string, unknown>;
-  if ((c.type === 'changeScore' || c.type === 'setScore') && !('score' in c) && typeof raw.target === 'string') {
-    return { ...(c as Record<string, unknown>), score: raw.target as string } as Consequence;
-  }
-  if (c.type === 'setFlag' && !('flag' in c) && typeof raw.name === 'string') {
-    return { ...(c as Record<string, unknown>), flag: raw.name as string } as Consequence;
-  }
-  return c;
-}
-
-function normalizeConsequences(consequences: Consequence[] | undefined): Consequence[] | undefined {
-  if (!consequences || !Array.isArray(consequences)) return consequences;
-  return consequences.map(normalizeConsequence);
-}
 
 /**
  * Custom error class for pipeline errors with enhanced context
@@ -431,6 +419,10 @@ export interface FullCreativeBrief {
     preferences?: {
       targetScenesPerEpisode?: number;
       targetChoicesPerEpisode?: number;
+      episodeStructureMode?: 'standard' | 'sceneEpisodes';
+      sceneEpisodeEncounterCadence?: number;
+      sceneEpisodeBranchMinEpisodes?: number;
+      sceneEpisodeBranchMaxEpisodes?: number;
       pacing?: 'tight' | 'moderate' | 'expansive';
       endingMode?: EndingMode;
     };
@@ -650,6 +642,8 @@ export class FullStoryPipeline {
   private phaseValidator: PhaseValidator;
   private distributionValidator: ChoiceDistributionValidator = new ChoiceDistributionValidator();
   private sceneGraphBranchValidator: SceneGraphBranchValidator = new SceneGraphBranchValidator();
+  private microEpisodeStructureValidator: MicroEpisodeStructureValidator = new MicroEpisodeStructureValidator();
+  private microEpisodeSeasonValidator: MicroEpisodeSeasonValidator = new MicroEpisodeSeasonValidator();
   
   // Incremental validation (per-scene during content generation)
   private incrementalValidator: IncrementalValidationRunner | null = null;
@@ -943,10 +937,11 @@ export class FullStoryPipeline {
       artifactName?: string;
     }
   ): Promise<SceneGraphBranchValidationResult> {
+    const isSceneEpisodeMode = this.config.generation?.episodeStructureMode === 'sceneEpisodes';
     const result = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, {
-      requireSceneGraphBranching: this.config.generation?.requireSceneGraphBranching,
+      requireSceneGraphBranching: isSceneEpisodeMode ? false : this.config.generation?.requireSceneGraphBranching,
       minSceneGraphBranchesPerEpisode: this.config.generation?.minSceneGraphBranchesPerEpisode,
-      allowLinearBottleneckEpisodes: this.config.generation?.allowLinearBottleneckEpisodes,
+      allowLinearBottleneckEpisodes: isSceneEpisodeMode ? true : this.config.generation?.allowLinearBottleneckEpisodes,
     });
 
     this.emit({
@@ -986,6 +981,77 @@ export class FullStoryPipeline {
     return result;
   }
 
+  private validateMicroEpisodeStructure(
+    episode: Episode,
+    context: {
+      phase: string;
+    }
+  ): void {
+    if (this.config.generation?.episodeStructureMode !== 'sceneEpisodes') return;
+
+    const result = this.microEpisodeStructureValidator.validateEpisode(episode, {
+      minScenes: this.config.generation.sceneEpisodeMinScenes || 1,
+      maxScenes: this.config.generation.sceneEpisodeMaxScenes || 1,
+      normalMinBeats: this.config.generation.sceneEpisodeNormalMinBeats || 6,
+      normalMaxBeats: this.config.generation.sceneEpisodeNormalMaxBeats || 10,
+      encounterMaxBeats: this.config.generation.sceneEpisodeEncounterMaxBeats || 15,
+    });
+
+    this.emit({
+      type: result.valid ? 'checkpoint' : 'warning',
+      phase: context.phase,
+      message: `MicroEpisodeStructureValidator: ${result.summary}`,
+      data: result,
+    });
+
+    if (!result.valid) {
+      const errors = result.issues.filter(issue => issue.severity === 'error');
+      this.throwIfFailFast(
+        `Micro-episode structure validation failed: ${errors.map(issue => issue.message).join(' ')}`,
+        context.phase,
+        {
+          context: {
+            microEpisodeMetrics: result.metrics,
+            microEpisodeIssues: result.issues,
+            failureKind: 'micro_episode_structure',
+          },
+        }
+      );
+    }
+  }
+
+  private validateMicroEpisodeSeason(story: Story, context: { phase: string }): void {
+    if (this.config.generation?.episodeStructureMode !== 'sceneEpisodes') return;
+
+    const result = this.microEpisodeSeasonValidator.validateStory(story, {
+      encounterCadence: this.config.generation.sceneEpisodeEncounterCadence || 6,
+      branchMinEpisodes: this.config.generation.sceneEpisodeBranchMinEpisodes || 1,
+      branchMaxEpisodes: this.config.generation.sceneEpisodeBranchMaxEpisodes || 2,
+    });
+
+    this.emit({
+      type: result.valid ? 'checkpoint' : 'warning',
+      phase: context.phase,
+      message: `MicroEpisodeSeasonValidator: ${result.summary}`,
+      data: result,
+    });
+
+    if (!result.valid) {
+      const errors = result.issues.filter(issue => issue.severity === 'error');
+      this.throwIfFailFast(
+        `Micro-episode season validation failed: ${errors.map(issue => issue.message).join(' ')}`,
+        context.phase,
+        {
+          context: {
+            microEpisodeSeasonMetrics: result.metrics,
+            microEpisodeSeasonIssues: result.issues,
+            failureKind: 'micro_episode_season',
+          },
+        }
+      );
+    }
+  }
+
   private async repairSceneGraphBranchingChoices(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
@@ -1008,17 +1074,35 @@ export class FullStoryPipeline {
       undefined,
     );
     const validation = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, {
-      requireSceneGraphBranching: this.config.generation?.requireSceneGraphBranching,
+      requireSceneGraphBranching: this.config.generation?.episodeStructureMode === 'sceneEpisodes'
+        ? false
+        : this.config.generation?.requireSceneGraphBranching,
       minSceneGraphBranchesPerEpisode: this.config.generation?.minSceneGraphBranchesPerEpisode,
-      allowLinearBottleneckEpisodes: this.config.generation?.allowLinearBottleneckEpisodes,
+      allowLinearBottleneckEpisodes: this.config.generation?.episodeStructureMode === 'sceneEpisodes'
+        ? true
+        : this.config.generation?.allowLinearBottleneckEpisodes,
     });
     if (validation.valid) return false;
 
-    const repairable = validation.issues.some(issue =>
+    const needsChoiceRepair = validation.issues.some(issue =>
       issue.type === 'lost_branch_during_assembly' ||
       issue.type === 'missing_scene_graph_branch'
     );
+    const needsResidueRepair = validation.issues.some(issue =>
+      issue.type === 'missing_branch_residue'
+    );
+    const repairable = needsChoiceRepair || needsResidueRepair;
     if (!repairable) return false;
+
+    const residueRepaired = needsResidueRepair
+      ? this.repairSceneGraphBranchResidue(
+          validation,
+          blueprint,
+          sceneContents,
+          context.phase,
+        )
+      : false;
+    if (!needsChoiceRepair) return residueRepaired;
 
     const branchScenes = blueprint.scenes.filter(scene =>
       scene.choicePoint?.branches &&
@@ -1026,9 +1110,9 @@ export class FullStoryPipeline {
       new Set(scene.leadsTo || []).size >= 2 &&
       !scene.isEncounter
     );
-    if (branchScenes.length === 0) return false;
+    if (branchScenes.length === 0) return residueRepaired;
 
-    let repaired = false;
+    let repaired = residueRepaired;
     for (const sceneBlueprint of branchScenes.slice(0, 2)) {
       const sceneContent = sceneContents.find(scene => scene.sceneId === sceneBlueprint.id);
       if (!sceneContent || sceneContent.beats.length === 0) continue;
@@ -1081,6 +1165,7 @@ export class FullStoryPipeline {
         optionCount: Math.max(sceneBlueprint.choicePoint?.optionHints?.length || 0, Math.min(3, sceneBlueprint.leadsTo.length)),
         sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
         memoryContext: this.cachedPipelineMemory || undefined,
+        storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
         branchContext: {
           role: 'linear',
           isBranchPoint: true,
@@ -1112,6 +1197,74 @@ export class FullStoryPipeline {
       } else {
         choiceSets.push(repairedChoiceSet);
       }
+      repaired = true;
+    }
+
+    return repaired;
+  }
+
+  private repairSceneGraphBranchResidue(
+    validation: SceneGraphBranchValidationResult,
+    blueprint: EpisodeBlueprint,
+    sceneContents: SceneContent[],
+    phase: string,
+  ): boolean {
+    const targetIds = validation.issues
+      .filter(issue => issue.type === 'missing_branch_residue' && issue.targetSceneId)
+      .map(issue => issue.targetSceneId!)
+      .filter((id, index, all) => all.indexOf(id) === index);
+    if (targetIds.length === 0) return false;
+
+    let repaired = false;
+    for (const targetId of targetIds) {
+      const sceneBlueprint = blueprint.scenes.find(scene => scene.id === targetId);
+      const sceneContent = sceneContents.find(scene => scene.sceneId === targetId);
+      if (!sceneBlueprint || !sceneContent) continue;
+
+      const incomingScenes = blueprint.scenes.filter(scene => scene.leadsTo?.includes(targetId));
+      const branchNames = incomingScenes
+        .map(scene => scene.incomingChoiceContext || scene.name)
+        .filter(Boolean)
+        .slice(0, 3);
+      const acknowledgment = branchNames.length > 0
+        ? `The path here still matters: ${branchNames.join(' / ')} leaves a visible residue in how everyone enters ${sceneBlueprint.name}.`
+        : `The route chosen before this moment still colors how everyone enters ${sceneBlueprint.name}.`;
+
+      if (sceneContent.beats.length === 0) {
+        sceneContent.beats.push({
+          id: `${targetId}-branch-residue`,
+          text: acknowledgment,
+          callbackHookIds: [`branch-reconvergence-${targetId}`],
+          intensityTier: 'supporting',
+        } as GeneratedBeat);
+        sceneContent.startingBeatId = `${targetId}-branch-residue`;
+      }
+
+      const firstBeat = sceneContent.beats[0];
+      const alreadyAcknowledged = [
+        firstBeat.text,
+        ...(firstBeat.textVariants || []).map(variant => variant.text),
+        ...(firstBeat.callbackHookIds || []),
+      ].join(' ').toLowerCase().includes('branch-reconvergence');
+      if (alreadyAcknowledged) continue;
+
+      firstBeat.text = `${firstBeat.text.trim()} ${acknowledgment}`.trim();
+      firstBeat.callbackHookIds = Array.from(new Set([
+        ...(firstBeat.callbackHookIds || []),
+        `branch-reconvergence-${targetId}`,
+      ]));
+      sceneContent.isConvergencePoint = true;
+      sceneContent.continuityNotes = Array.from(new Set([
+        ...(sceneContent.continuityNotes || []),
+        `Branch reconvergence residue repaired for ${targetId}: ${acknowledgment}`,
+      ]));
+
+      this.emit({
+        type: 'regeneration_triggered',
+        phase,
+        message: `Repairing branch reconvergence residue for ${targetId}`,
+        data: { sceneId: targetId, incomingScenes: incomingScenes.map(scene => scene.id), acknowledgment },
+      });
       repaired = true;
     }
 
@@ -1531,30 +1684,64 @@ export class FullStoryPipeline {
     };
   }
 
-  private hydrateSeasonImageStyleFromGenerator(generator?: Record<string, unknown>): void {
-    if (!generator || typeof generator !== 'object') return;
-    const savedArtStyle = typeof generator.artStyle === 'string' ? generator.artStyle.trim() : '';
-    const savedCanonicalStyle = typeof generator.canonicalArtStyle === 'string' ? generator.canonicalArtStyle.trim() : '';
-    const currentArtStyle = this.config.artStyle?.trim() || '';
-    const currentCanonicalStyle = this.config.imageGen?.gemini?.canonicalArtStyle?.trim() || '';
-    const isGenericFallback = (value: string) =>
-      /^(dramatic cinematic story art|cinematic illustration|expressive illustrated)$/i.test(value);
-    if (savedArtStyle && (!currentArtStyle || isGenericFallback(currentArtStyle))) {
-      this.config.artStyle = savedArtStyle;
-    }
+  private hydrateSeasonImageStyleFromStoryPackage(storyPackage?: { generator?: Record<string, unknown>; story?: Story } | Story): void {
+    if (!storyPackage || typeof storyPackage !== 'object') return;
+    const generator = 'generator' in storyPackage && storyPackage.generator && typeof storyPackage.generator === 'object'
+      ? storyPackage.generator
+      : undefined;
+    const story = 'story' in storyPackage && storyPackage.story
+      ? storyPackage.story
+      : ('episodes' in storyPackage ? storyPackage as Story : undefined);
+    this.hydrateSeasonImageStyleFromGenerator(generator, story);
+  }
+
+  private hydrateSeasonImageStyleFromGenerator(generator?: Record<string, unknown>, story?: Story): void {
+    const savedArtStyle = typeof generator?.artStyle === 'string' ? generator.artStyle.trim() : '';
+    const savedCanonicalStyle = typeof generator?.canonicalArtStyle === 'string' ? generator.canonicalArtStyle.trim() : '';
+    const savedProfile = (generator?.artStyleProfile || story?.artStyleProfile) as any;
+    const profileStyle = savedProfile ? composeCanonicalStyleString(savedProfile) : '';
+    const hasSavedStyle = !!(savedArtStyle || savedCanonicalStyle || profileStyle);
+    if (!hasSavedStyle && !generator?.styleAnchors && !story?.styleAnchors) return;
+
     if (!this.config.imageGen) this.config.imageGen = {};
-    if (generator.artStyleProfile && !this.config.imageGen.artStyleProfile) {
-      this.config.imageGen.artStyleProfile = generator.artStyleProfile as any;
-    }
     if (!this.config.imageGen.gemini) this.config.imageGen.gemini = {};
-    if (!currentCanonicalStyle || isGenericFallback(currentCanonicalStyle)) {
-      this.config.imageGen.gemini.canonicalArtStyle = savedCanonicalStyle || savedArtStyle || this.config.artStyle;
+
+    const effectiveStyle = savedArtStyle || savedCanonicalStyle || profileStyle;
+    if (effectiveStyle) {
+      this.config.artStyle = effectiveStyle;
+      this.config.imageGen.gemini.canonicalArtStyle = savedCanonicalStyle || effectiveStyle;
     }
-    if (savedArtStyle || savedCanonicalStyle) {
+    if (savedProfile) {
+      this.config.imageGen.artStyleProfile = savedProfile;
+    }
+
+    const savedAnchors = (generator?.styleAnchors || story?.styleAnchors) as Story['styleAnchors'] | undefined;
+    const preapprovedStyleAnchors = savedAnchors
+      ? {
+          character: savedAnchors.character?.imagePath ? { imagePath: savedAnchors.character.imagePath } : undefined,
+          arcStrip: savedAnchors.arcStrip?.imagePath ? { imagePath: savedAnchors.arcStrip.imagePath } : undefined,
+          environment: savedAnchors.environment?.imagePath ? { imagePath: savedAnchors.environment.imagePath } : undefined,
+        }
+      : undefined;
+    const hasSavedAnchor = !!(
+      preapprovedStyleAnchors?.character ||
+      preapprovedStyleAnchors?.arcStrip ||
+      preapprovedStyleAnchors?.environment
+    );
+
+    if (hasSavedStyle || hasSavedAnchor) {
+      this.config.imageGen.preapprovedStyleAnchors = hasSavedAnchor ? preapprovedStyleAnchors : undefined;
+      this.config.imageGen.uploadedStyleReferences = undefined;
+    }
+    if (preapprovedStyleAnchors?.character?.imagePath) this._styleAnchorPaths.character = preapprovedStyleAnchors.character.imagePath;
+    if (preapprovedStyleAnchors?.arcStrip?.imagePath) this._styleAnchorPaths.arcStrip = preapprovedStyleAnchors.arcStrip.imagePath;
+    if (preapprovedStyleAnchors?.environment?.imagePath) this._styleAnchorPaths.environment = preapprovedStyleAnchors.environment.imagePath;
+
+    if (hasSavedStyle) {
       this.emit({
         type: 'info',
         phase: 'images',
-        message: 'Loaded season-level image style from saved story package.',
+        message: 'Loaded authoritative season-level image style from saved story package.',
       });
     }
   }
@@ -1626,6 +1813,7 @@ export class FullStoryPipeline {
       storyletImages: Map<string, Map<string, Map<string, string>>>;
       storyletFailures?: string[];
     };
+    diagnostics?: StoryboardV2Result['diagnostics'];
   }> {
     const storyboard = new StoryboardV2Pipeline({
       config: this.config,
@@ -1641,12 +1829,31 @@ export class FullStoryPipeline {
       characterBible,
       encounters,
     });
+    const imageCompleteness = result.diagnostics?.imageCompleteness;
+    const requiredSlotFailures = result.diagnostics?.requiredSlotFailures || [];
+    if (imageCompleteness && !imageCompleteness.complete) {
+      throw new PipelineError(
+        `Storyboard v2 image generation incomplete: ${imageCompleteness.missingRequiredSlotCount} required image slot(s) were not bound.`,
+        'images',
+        {
+          context: {
+            failureKind: 'image_completeness',
+            stepId: 'storyboard_v2_required_slots',
+            resumeFromStepId: 'missing_or_failed_image_slots',
+            outputDirectory,
+            imageCompleteness,
+            requiredSlotFailures,
+          },
+        }
+      );
+    }
     return {
       imageResults: {
         beatImages: result.beatImages,
         sceneImages: result.sceneImages,
       },
       encounterImageResults: result.encounterImageResults,
+      diagnostics: result.diagnostics,
     };
   }
 
@@ -2070,6 +2277,7 @@ export class FullStoryPipeline {
     characterBible: CharacterBible,
     encounters: EncounterStructure[],
     brief: FullCreativeBrief,
+    options: { targetEpisodeNumber?: number } = {},
   ): Promise<{
     totalSlots: number;
     resolvedSlotsBefore: number;
@@ -2104,7 +2312,10 @@ export class FullStoryPipeline {
 
     const slots: ImageSlot[] = [];
     const completedEncounterBaseIdentifiersByScene: Record<string, string[]> = {};
-    for (const episode of story.episodes || []) {
+    const targetEpisodes = (story.episodes || []).filter((episode) => (
+      options.targetEpisodeNumber == null || episode.number === options.targetEpisodeNumber
+    ));
+    for (const episode of targetEpisodes) {
       for (const scene of episode.scenes || []) {
         const scopedSceneId = `episode-${episode.number}-${scene.id}`;
         const sceneContent = {
@@ -2349,6 +2560,33 @@ export class FullStoryPipeline {
     await saveEarlyDiagnostic(outputDirectory, 'image-manifest.json', this.buildImageManifestFromStory(story));
   }
 
+  private enforceFinalTreatmentFidelity(params: {
+    story: Story;
+    analysis?: SourceMaterialAnalysis;
+    expectedEpisodeCount?: number;
+    sourceEpisodeCount?: number;
+    isCompleteSeason?: boolean;
+    sourceText?: string;
+  }): void {
+    const result = new TreatmentFidelityValidator().validateFinalStory(params);
+    if (result.valid) return;
+
+    const issues: ValidationIssue[] = result.issues.map((message) => ({
+      category: 'treatment_fidelity',
+      level: 'error',
+      message,
+      location: {},
+      suggestion: 'Preserve the treatment anchor in the generated story, or regenerate the affected episode before saving final output.',
+    }));
+    this.emit({
+      type: 'error',
+      phase: 'treatment_fidelity',
+      message: `Final story treatment fidelity failed with ${issues.length} error(s): ${issues[0]?.message || 'unknown treatment fidelity issue'}`,
+      data: issues,
+    });
+    throw new ValidationError('Final story treatment fidelity failed', issues);
+  }
+
   private async finalizeImageRunFromRegistry(
     outputDirectory: string,
     story: Story,
@@ -2374,10 +2612,13 @@ export class FullStoryPipeline {
     if (terminalReason === 'cancelled' && finalStory.imagesStatus === 'pending') {
       finalStory.imagesStatus = 'partial';
     }
+    this.validateMicroEpisodeSeason(finalStory, { phase: 'micro_episode_season_final_validation' });
+    const visualContractPersistence = this.auditStoryVisualContractPersistence(finalStory);
 
     await saveEarlyDiagnostic(outputDirectory, '08-final-story.json', finalStory);
     await saveEarlyDiagnostic(outputDirectory, '08-registry-state.json', this.assetRegistry.toSnapshot());
     await saveEarlyDiagnostic(outputDirectory, 'image-integrity-report.json', imageIntegrity);
+    await saveEarlyDiagnostic(outputDirectory, 'visual-contract-persistence-report.json', visualContractPersistence);
     await this.saveDraftImageManifest(outputDirectory, finalStory);
 
     await savePipelineOutputs(outputDirectory, {
@@ -2422,7 +2663,22 @@ export class FullStoryPipeline {
     const path = await import('path');
     const outputRoot = path.resolve(outputDirectory);
     const projectRoot = process.cwd();
-    const imageValueKeys = new Set(['image', 'imageUrl', 'imagePath', 'backgroundImage', 'coverImage']);
+    const imageValueKeys = new Set([
+      'image',
+      'imageUrl',
+      'imagePath',
+      'backgroundImage',
+      'coverImage',
+      'situationImage',
+      'outcomeImage',
+      'portrait',
+      'portraitImage',
+    ]);
+    const isImageReferenceField = (key: string, value: string): boolean => {
+      if (imageValueKeys.has(key)) return true;
+      if (/prompt|description|caption|style|negative/i.test(key)) return false;
+      return /image/i.test(key) && /\.(png|jpe?g|webp)(?:[?#].*)?$/i.test(value);
+    };
 
     const toFilePath = (value: string): string | undefined => {
       if (!value || value.startsWith('data:')) return undefined;
@@ -2489,7 +2745,7 @@ export class FullStoryPipeline {
       }
       for (const [key, value] of Object.entries(node)) {
         const childPath = breadcrumb ? `${breadcrumb}.${key}` : key;
-        if (typeof value === 'string' && imageValueKeys.has(key)) {
+        if (typeof value === 'string' && isImageReferenceField(key, value)) {
           const filePath = toFilePath(value);
           if (!filePath || !filePath.startsWith(outputRoot)) continue;
           report.checked += 1;
@@ -2530,9 +2786,116 @@ export class FullStoryPipeline {
     };
   }
 
+  private applySceneVisualContractsToStoryScenes(storyScenes: Scene[] | undefined, sceneContents: SceneContent[]): {
+    sceneCount: number;
+    scenePlansPersisted: number;
+    beatCount: number;
+    beatCoveragePlansPersisted: number;
+    missingSceneIds: string[];
+  } {
+    const report = {
+      sceneCount: storyScenes?.length || 0,
+      scenePlansPersisted: 0,
+      beatCount: 0,
+      beatCoveragePlansPersisted: 0,
+      missingSceneIds: [] as string[],
+    };
+    const contentBySceneId = new Map((sceneContents || []).map((content) => [content.sceneId, content]));
+
+    for (const scene of storyScenes || []) {
+      const content = contentBySceneId.get(scene.id);
+      if (!content) {
+        report.missingSceneIds.push(scene.id);
+        continue;
+      }
+      if (content.sceneVisualSequencePlan) {
+        scene.sceneVisualSequencePlan = content.sceneVisualSequencePlan;
+        report.scenePlansPersisted += 1;
+      }
+      if (content.sequenceIntent) {
+        scene.sequenceIntent = {
+          ...(scene.sequenceIntent || {}),
+          ...content.sequenceIntent,
+        };
+      }
+
+      const contentBeatById = new Map((content.beats || []).map((beat) => [beat.id, beat]));
+      for (const beat of scene.beats || []) {
+        report.beatCount += 1;
+        const contentBeat = contentBeatById.get(beat.id);
+        if (!contentBeat) continue;
+        if (contentBeat.sequenceIntent) {
+          beat.sequenceIntent = {
+            ...(beat.sequenceIntent || {}),
+            ...contentBeat.sequenceIntent,
+          };
+        }
+        if (contentBeat.dramaticIntent) {
+          beat.dramaticIntent = {
+            ...(beat.dramaticIntent || {}),
+            ...contentBeat.dramaticIntent,
+          };
+        }
+        if (contentBeat.coveragePlan) {
+          beat.coveragePlan = contentBeat.coveragePlan;
+          report.beatCoveragePlansPersisted += 1;
+        }
+      }
+    }
+
+    return report;
+  }
+
+  private auditStoryVisualContractPersistence(story: Story): {
+    passed: boolean;
+    sceneCount: number;
+    scenesWithSequencePlan: number;
+    nonEstablishingBeatCount: number;
+    nonEstablishingBeatsWithCoveragePlan: number;
+    missingScenePlanIds: string[];
+    missingCoverageBeatIds: string[];
+  } {
+    const report = {
+      passed: true,
+      sceneCount: 0,
+      scenesWithSequencePlan: 0,
+      nonEstablishingBeatCount: 0,
+      nonEstablishingBeatsWithCoveragePlan: 0,
+      missingScenePlanIds: [] as string[],
+      missingCoverageBeatIds: [] as string[],
+    };
+
+    for (const episode of story.episodes || []) {
+      for (const scene of episode.scenes || []) {
+        report.sceneCount += 1;
+        if (scene.sceneVisualSequencePlan) {
+          report.scenesWithSequencePlan += 1;
+        } else if ((scene.beats || []).length > 1) {
+          report.missingScenePlanIds.push(scene.id);
+        }
+
+        for (const beat of scene.beats || []) {
+          const isEstablishingBeat = beat.shotType === 'establishing'
+            || beat.coveragePlan?.stagingPattern === 'environment';
+          if (isEstablishingBeat) continue;
+          report.nonEstablishingBeatCount += 1;
+          if (beat.coveragePlan) {
+            report.nonEstablishingBeatsWithCoveragePlan += 1;
+          } else {
+            report.missingCoverageBeatIds.push(`${scene.id}::${beat.id}`);
+          }
+        }
+      }
+    }
+
+    report.passed = report.missingScenePlanIds.length === 0 && report.missingCoverageBeatIds.length === 0;
+    return report;
+  }
+
   async generateImagesForDraft(
     outputDirectory: string,
-    resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> }
+    resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> },
+    options: { targetEpisodeNumber?: number } = {},
   ): Promise<FullPipelineResult> {
     this.events = [];
     this.checkpoints = [];
@@ -2549,7 +2912,7 @@ export class FullStoryPipeline {
     const worldBible = loadEarlyDiagnosticSync<WorldBible>(normalizedOutputDir, '01-world-bible.json');
     const characterBible = loadEarlyDiagnosticSync<CharacterBible>(normalizedOutputDir, '02-character-bible.json');
     const storyPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(normalizedOutputDir, 'story.json');
-    this.hydrateSeasonImageStyleFromGenerator((storyPackage as any)?.generator);
+    this.hydrateSeasonImageStyleFromStoryPackage(storyPackage);
     this.applyActiveImageStyleToRuntime();
     const story = this.loadContinuationStory(normalizedOutputDir, resumeCheckpoint);
     const savedChoiceSets = loadEarlyDiagnosticSync<ChoiceSet[]>(normalizedOutputDir, '05-choice-sets.json') || [];
@@ -2579,6 +2942,7 @@ export class FullStoryPipeline {
 	      characterBible,
 	      savedEncounters,
 	      brief,
+	      options,
 	    );
 	    this.emit({
 	      type: 'debug',
@@ -2604,6 +2968,14 @@ export class FullStoryPipeline {
 	        });
 	        for (const episode of story.episodes || []) {
 	          await this.checkCancellation();
+	          if (options.targetEpisodeNumber != null && episode.number !== options.targetEpisodeNumber) {
+	            this.emit({
+	              type: 'debug',
+	              phase: 'images',
+	              message: `Image-only run skipping episode ${episode.number}; target is episode ${options.targetEpisodeNumber}.`,
+	            });
+	            continue;
+	          }
 	          const missingForEpisode = imageResumeScan.missingSlotIds.some((slotId) => slotId.includes(`episode-${episode.number}-`));
 	          if (!missingForEpisode) {
 	            this.emit({
@@ -2663,6 +3035,15 @@ export class FullStoryPipeline {
 	            );
 	            imageResults = storyboardResult.imageResults;
 	            encounterImageResults = storyboardResult.encounterImageResults;
+	            const persistence = this.applySceneVisualContractsToStoryScenes(episode.scenes, sceneContents);
+	            await saveEarlyDiagnostic(normalizedOutputDir, `episode-${episode.number}-visual-contract-persistence.json`, {
+	              pipelineMode: 'storyboard-v2',
+	              episodeNumber: episode.number,
+	              persistence,
+	              sequenceDiagnostics: storyboardResult.diagnostics?.sequenceDiagnostics,
+	              specificityAudits: storyboardResult.diagnostics?.specificityAudits,
+	              characterNormalizationDiagnostics: storyboardResult.diagnostics?.characterNormalizationDiagnostics,
+	            });
 	          } else {
 	            imageResults = await this.imageWorkerQueue.run(() =>
 	              this.measurePhase(
@@ -2697,18 +3078,38 @@ export class FullStoryPipeline {
 	        }
 	      }
 
-      const coverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible, normalizedOutputDir);
+      const coverUrl = options.targetEpisodeNumber == null
+        ? await this.generateStoryCoverArt(brief, characterBible, worldBible, normalizedOutputDir)
+        : undefined;
       let finalStory = this.resolveGeneratedStoryPlayerTemplates(
         assembleStoryAssetsFromRegistry(story, this.assetRegistry),
         brief,
       );
       if (coverUrl) finalStory.coverImage = coverUrl;
       finalStory.outputDir = normalizedOutputDir;
+      const visualContractPersistence = this.auditStoryVisualContractPersistence(finalStory);
+      await saveEarlyDiagnostic(normalizedOutputDir, 'visual-contract-persistence-report.json', visualContractPersistence);
+      if (this.useStoryboardV2ImagePipeline() && !visualContractPersistence.passed) {
+        throw new PipelineError(
+          `Storyboard v2 visual contract persistence failed: ${visualContractPersistence.missingScenePlanIds.length} scene plan(s) and ${visualContractPersistence.missingCoverageBeatIds.length} beat coverage plan(s) missing from final story.`,
+          'images',
+          {
+            context: {
+              failureKind: 'visual_contract_persistence',
+              stepId: 'storyboard_v2_contract_persistence',
+              resumeFromStepId: 'image_generation',
+              outputDirectory: normalizedOutputDir,
+              visualContractPersistence,
+            },
+          }
+        );
+      }
       const imageIntegrity = await this.repairBoundImageReferences(finalStory, normalizedOutputDir);
       const finalImageManifest = this.buildImageManifestFromStory(finalStory);
       finalStory.imagesStatus = imageIntegrity.unresolved.length > 0
         ? 'failed'
         : finalImageManifest.imagesStatus;
+      this.validateMicroEpisodeSeason(finalStory, { phase: 'micro_episode_season_final_validation' });
       await saveEarlyDiagnostic(normalizedOutputDir, 'image-integrity-report.json', imageIntegrity);
       if (imageIntegrity.repaired.length > 0 || imageIntegrity.unresolved.length > 0) {
         this.emit({
@@ -2771,11 +3172,389 @@ export class FullStoryPipeline {
       if (error instanceof JobCancelledError) {
         throw error;
       }
+      if (error instanceof PipelineError) {
+        throw error;
+      }
       throw new PipelineError(`Image-only generation failed: ${msg}`, 'images', {
         context: { outputDirectory: normalizedOutputDir, failureKind: 'image_generation' },
         originalError: error instanceof Error ? error : undefined,
       });
     }
+  }
+
+  async generateTargetedBeatImagesForDraft(
+    outputDirectory: string,
+    targetSlots: Array<{ episodeNumber: number; sceneId: string; beatId: string }>,
+    options: {
+      skipEncounterImages?: boolean;
+      skipCover?: boolean;
+      skipCharacterRefs?: boolean;
+      skipVisualContractValidation?: boolean;
+    } = {},
+  ): Promise<FullPipelineResult> {
+    this.events = [];
+    this.checkpoints = [];
+    this.telemetry = new PipelineTelemetry();
+    this.pipelineStartedAtMs = Date.now();
+    this.completedPhases = new Set<string>();
+    this.resetCollectedVisualPlanning();
+    const startTime = Date.now();
+
+    if (!Array.isArray(targetSlots) || targetSlots.length === 0) {
+      throw new PipelineError('Spot image backfill requires at least one target slot.', 'images', {
+        context: { failureKind: 'spot_backfill_missing_targets' },
+      });
+    }
+
+    const normalizedOutputDir = outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`;
+    await ensureDirectory(normalizedOutputDir);
+
+    const brief = loadEarlyDiagnosticSync<FullCreativeBrief>(normalizedOutputDir, '00-input-brief.json');
+    const worldBible = loadEarlyDiagnosticSync<WorldBible>(normalizedOutputDir, '01-world-bible.json');
+    const characterBible = loadEarlyDiagnosticSync<CharacterBible>(normalizedOutputDir, '02-character-bible.json');
+    const storyPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(normalizedOutputDir, 'story.json');
+    this.hydrateSeasonImageStyleFromStoryPackage(storyPackage);
+    this.applyActiveImageStyleToRuntime();
+    const packagedStory = ((storyPackage as any)?.story || storyPackage) as Story | undefined;
+    const story = packagedStory?.episodes?.length
+      ? packagedStory
+      : this.loadContinuationStory(normalizedOutputDir);
+
+    if (!brief || !worldBible || !characterBible || !story) {
+      throw new PipelineError('Spot image backfill requires an output directory with brief, world bible, character bible, and story files.', 'images', {
+        context: { outputDirectory: normalizedOutputDir, failureKind: 'spot_backfill_missing_draft' },
+      });
+    }
+
+    this.config.imageGen = {
+      ...(this.config.imageGen || {}),
+      enabled: true,
+    };
+    this.imageService.setOutputDirectory(`${normalizedOutputDir}images/`);
+    this.emit({
+      type: 'phase_start',
+      phase: 'images',
+      message: `Spot image backfill: generating ${targetSlots.length} targeted beat image(s).`,
+      data: { targetSlots, options },
+    });
+
+    const fs = await import('fs/promises');
+    const nodePath = await import('path');
+    const imageDir = `${normalizedOutputDir}images/`;
+    const promptDir = `${imageDir}prompts/`;
+    await ensureDirectory(promptDir);
+    await fs.mkdir(promptDir, { recursive: true });
+
+    const uniqueTargets = Array.from(new Map(
+      targetSlots.map(slot => [`${slot.episodeNumber}::${slot.sceneId}::${slot.beatId}`, slot])
+    ).values());
+    const characterById = new Map((characterBible.characters || []).map((character: any) => [character.id, character]));
+    const missingSlotRecords: any[] = [];
+    const reportTargets: any[] = [];
+    const resolveProviderCredentialError = (): string | null => {
+      const imageConfig = this.config.imageGen || {};
+      const provider = String(imageConfig.provider || 'nano-banana');
+      const env = typeof process !== 'undefined' ? process.env : {};
+      if (
+        (provider === 'nano-banana' || provider === 'gemini')
+        && !(imageConfig.geminiApiKey || imageConfig.apiKey || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY)
+      ) {
+        return 'Gemini API key is required for nano-banana image generation.';
+      }
+      if (
+        (provider === 'openai' || provider === 'dall-e' || provider === 'gpt-image')
+        && !(imageConfig.openaiApiKey || env.OPENAI_API_KEY || env.EXPO_PUBLIC_OPENAI_API_KEY)
+      ) {
+        return 'OpenAI API key is required for OpenAI image generation.';
+      }
+      if (
+        provider === 'atlas-cloud'
+        && !(imageConfig.atlasCloudApiKey || env.EXPO_PUBLIC_ATLAS_CLOUD_API_KEY || env.ATLAS_CLOUD_API_KEY)
+      ) {
+        return 'Atlas Cloud API key is required for Atlas Cloud image generation.';
+      }
+      return null;
+    };
+    const providerCredentialError = resolveProviderCredentialError();
+
+    const normalizeId = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const characterForToken = (token?: string) => {
+      if (!token) return undefined;
+      if (characterById.has(token)) return characterById.get(token);
+      const normalized = normalizeId(token);
+      return (characterBible.characters || []).find((character: any) => {
+        const fullName = normalizeId(character.name || '');
+        const firstName = normalizeId(String(character.name || '').split(/\s+/)[0] || '');
+        return normalizeId(character.id || '') === normalized
+          || fullName === normalized
+          || firstName === normalized;
+      });
+    };
+    const collectCharacterIds = (beat: any): string[] => {
+      const values = [
+        ...(beat.visualCast?.foregroundCharacterIds || []),
+        ...(beat.visualCast?.backgroundCharacterIds || []),
+        ...(beat.visualCast?.activeCharacterIds || []),
+        ...(beat.coveragePlan?.requiredVisibleCharacterIds || []),
+        ...(beat.coveragePlan?.optionalVisibleCharacterIds || []),
+        ...(beat.coveragePlan?.focalCharacterIds || []),
+      ];
+      const ids = values
+        .map((value: string) => characterForToken(value)?.id)
+        .filter(Boolean);
+      if (ids.length === 0 && /\b(you|your|{{player\.)\b/i.test(beat.text || '') && brief.protagonist?.id) {
+        ids.push(characterForToken(brief.protagonist.id)?.id || brief.protagonist.id);
+      }
+      return Array.from(new Set(ids));
+    };
+    const readReferenceImage = async (character: any): Promise<ReferenceImage | undefined> => {
+      const candidates = [
+        `${imageDir}ref_${character.id}_front.png`,
+        `${imageDir}ref_${character.id}_front.jpg`,
+        `${imageDir}ref_${character.id}_front.webp`,
+      ];
+      for (const candidate of candidates) {
+        try {
+          const data = await fs.readFile(candidate);
+          const ext = nodePath.extname(candidate).toLowerCase();
+          return {
+            data: data.toString('base64'),
+            mimeType: ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png',
+            role: 'character-reference',
+            characterId: character.id,
+            characterName: character.name,
+            viewType: 'front',
+            url: this.servedUrlForGeneratedImagePath(candidate),
+          };
+        } catch {
+          // Try the next candidate.
+        }
+      }
+      return undefined;
+    };
+    const buildPrompt = (params: { episode: Episode; scene: Scene; beat: Beat; beatIndex: number; characterIds: string[] }): ImagePrompt => {
+      const { episode, scene, beat, beatIndex, characterIds } = params;
+      const characterNames = characterIds
+        .map(id => characterById.get(id)?.name)
+        .filter(Boolean);
+      const prompt = buildBeatImagePrompt({
+        beatId: beat.id,
+        beatText: beat.text || '',
+        beatIndex,
+        totalBeats: scene.beats?.length || 1,
+        visualMoment: (beat as any).visualMoment,
+        primaryAction: (beat as any).primaryAction,
+        emotionalRead: (beat as any).emotionalRead,
+        relationshipDynamic: (beat as any).relationshipDynamic,
+        mustShowDetail: (beat as any).mustShowDetail,
+        visibleTurn: (beat as any).visibleTurn,
+        visualSubtextCue: (beat as any).visualSubtextCue,
+        statusShift: (beat as any).statusShift,
+        shotType: (beat as any).shotType,
+        isClimaxBeat: (beat as any).isClimaxBeat,
+        isKeyStoryBeat: (beat as any).isKeyStoryBeat,
+        isChoicePayoff: (beat as any).isChoicePayoff || (beat as any).isChoiceBridge,
+        foregroundCharacterNames: characterNames,
+        visualCast: (beat as any).visualCast,
+        coveragePlan: (beat as any).coveragePlan,
+        stagingPattern: (beat as any).coveragePlan?.stagingPattern,
+        relationshipBlocking: (beat as any).coveragePlan?.relationshipBlocking,
+        coverageReason: (beat as any).coveragePlan?.coverageReason,
+      }, {
+        sceneId: scene.id,
+        sceneName: scene.name || scene.id,
+        genre: brief.story?.genre || 'interactive fiction',
+        tone: brief.story?.tone || episode.tone || 'dramatic',
+        mood: Array.isArray((scene as any).moodProgression) ? (scene as any).moodProgression.join(', ') : (scene as any).mood,
+        settingContext: (scene as any).settingContext,
+        artStyle: this.config.artStyle || this.config.imageGen?.gemini?.canonicalArtStyle,
+        styleProfile: this.config.imageGen?.artStyleProfile,
+      });
+
+      const clubDoor = episode.number === 1
+        && scene.id === 'scene-3'
+        && /\b(doorman|velvet rope|club)\b/i.test(`${beat.text || ''} ${(beat as any).visualMoment || ''}`);
+      if (clubDoor) {
+        prompt.negativePrompt = [
+          prompt.negativePrompt,
+          'Victor Vâlcescu, aristocratic male lead, vampire patron, romantic stranger, tall dark-suited romantic man',
+        ].filter(Boolean).join(', ');
+        prompt.prompt = `${prompt.prompt}\n\nCAST GUARD: use only Kylie and an anonymous doorman unless the beat explicitly introduces a named character. Do not stage any later romantic male lead in this entrance image.`;
+      }
+      return prompt;
+    };
+
+    for (const target of uniqueTargets) {
+      const episode = (story.episodes || []).find(candidate => candidate.number === target.episodeNumber);
+      const scene = episode?.scenes?.find(candidate => candidate.id === target.sceneId);
+      const beatIndex = scene?.beats?.findIndex(candidate => candidate.id === target.beatId) ?? -1;
+      const beat = beatIndex >= 0 ? scene?.beats?.[beatIndex] : undefined;
+      const scopedSceneId = `episode-${target.episodeNumber}-${target.sceneId}`;
+      const slotId = `story-beat:${scopedSceneId}::${target.beatId}`;
+      const previousUrl = (beat as any)?.image || '';
+      const missingRecord = {
+        slotId,
+        family: 'story-beat',
+        episodeNumber: target.episodeNumber,
+        sceneId: target.sceneId,
+        beatId: target.beatId,
+        fieldPath: `episodes[].scenes[id=${target.sceneId}].beats[id=${target.beatId}].image`,
+        reason: previousUrl ? 'targeted_regeneration_requested' : 'missing_targeted_beat_image',
+        status: 'pending',
+        previousUrl,
+      };
+      missingSlotRecords.push(missingRecord);
+
+      if (!episode || !scene || !beat) {
+        missingRecord.status = 'error';
+        const error = `Target beat not found: episode ${target.episodeNumber}, scene ${target.sceneId}, beat ${target.beatId}`;
+        reportTargets.push({ ...target, status: 'error', error, previousUrl });
+        continue;
+      }
+
+      const characterIds = collectCharacterIds(beat as any);
+      const characters = characterIds.map(id => characterById.get(id)).filter(Boolean);
+      const references: ReferenceImage[] = [];
+      const warnings: string[] = [];
+      if (options.skipCharacterRefs === false) {
+        warnings.push('Spot backfill does not regenerate missing character references; using already available references only.');
+      }
+      for (const character of characters) {
+        const ref = await readReferenceImage(character);
+        if (ref) {
+          references.push(ref);
+        } else {
+          warnings.push(`No existing reference image found for ${character.name || character.id}; rendering without regenerating references.`);
+        }
+      }
+
+      const prompt = buildPrompt({ episode, scene, beat, beatIndex, characterIds });
+      const identifier = `${storyBeatBaseIdentifier(scopedSceneId, target.beatId)}-spot-${Date.now()}`;
+      let generatedUrl = '';
+      let imagePath = '';
+      let promptPath = `${promptDir}${identifier}.json`;
+      const metadata = {
+        type: 'beat',
+        sceneId: target.sceneId,
+        beatId: target.beatId,
+        baseIdentifier: identifier,
+        characterNames: characters.map((character: any) => character.name).filter(Boolean),
+        characterDescriptions: characters.map((character: any) => ({
+          id: character.id,
+          name: character.name,
+          description: character.physicalDescription || character.description || character.overview || '',
+          appearance: character.physicalDescription || character.description || character.overview || '',
+        })),
+        regeneration: previousUrl ? 1 : undefined,
+      };
+      await fs.writeFile(promptPath, JSON.stringify({
+        identifier,
+        metadata,
+        prompt,
+        references: references.map(ref => ({
+          role: ref.role,
+          characterId: ref.characterId,
+          characterName: ref.characterName,
+          viewType: ref.viewType,
+          url: ref.url,
+        })),
+      }, null, 2));
+      try {
+        if (providerCredentialError) throw new Error(providerCredentialError);
+        const result = await this.imageService.generateImage(prompt, identifier, metadata, references);
+        generatedUrl = result.imageUrl || (result.imagePath ? this.servedUrlForGeneratedImagePath(result.imagePath) : '');
+        imagePath = result.imagePath || '';
+        if (!generatedUrl) throw new Error('Image provider did not return an image URL.');
+        (beat as any).image = generatedUrl;
+        missingRecord.status = 'patched';
+        missingRecord.generatedUrl = generatedUrl;
+        reportTargets.push({
+          ...target,
+          status: 'patched',
+          previousUrl,
+          generatedUrl,
+          imagePath,
+          promptPath,
+          referencesUsed: references.map(ref => ref.characterName || ref.characterId || ref.role),
+          warnings,
+          patchedModernStory: true,
+          patchedLegacyStory: true,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        missingRecord.status = 'error';
+        missingRecord.error = msg;
+        reportTargets.push({
+          ...target,
+          status: 'error',
+          previousUrl,
+          promptPath,
+          referencesUsed: references.map(ref => ref.characterName || ref.characterId || ref.role),
+          warnings,
+          error: msg,
+          patchedModernStory: false,
+          patchedLegacyStory: false,
+        });
+      }
+    }
+
+    const failed = reportTargets.filter(target => target.status === 'error');
+    const patchedCount = reportTargets.filter(target => target.status === 'patched').length;
+
+    await saveEarlyDiagnostic(normalizedOutputDir, 'missing-image-slots.json', {
+      generatedAt: new Date().toISOString(),
+      mode: 'spot',
+      slots: missingSlotRecords,
+    });
+    await saveEarlyDiagnostic(normalizedOutputDir, 'spot-image-backfill-report.json', {
+      generatedAt: new Date().toISOString(),
+      mode: 'spot',
+      options: {
+        skipEncounterImages: options.skipEncounterImages !== false,
+        skipCover: options.skipCover !== false,
+        skipCharacterRefs: options.skipCharacterRefs !== false,
+        skipVisualContractValidation: options.skipVisualContractValidation !== false,
+      },
+      targets: reportTargets,
+    });
+    let outputManifest: Awaited<ReturnType<typeof writeFinalStoryPackage>> | undefined;
+    if (patchedCount > 0) {
+      story.outputDir = normalizedOutputDir;
+      const manifest = this.buildImageManifestFromStory(story);
+      story.imagesStatus = failed.length > 0
+        ? 'partial'
+        : manifest.imagesStatus === 'pending'
+          ? 'partial'
+          : manifest.imagesStatus;
+      await this.saveDraftImageManifest(normalizedOutputDir, story);
+      outputManifest = await writeFinalStoryPackage(normalizedOutputDir, story, {
+        generator: (storyPackage as any)?.generator || this.buildStoryGeneratorMetadata(),
+      });
+    }
+
+    this.emit({
+      type: failed.length > 0 ? 'warning' : 'phase_complete',
+      phase: 'images',
+      message: failed.length > 0
+        ? `Spot image backfill patched ${reportTargets.length - failed.length}/${reportTargets.length} target beat image(s).`
+        : `Spot image backfill patched ${reportTargets.length} target beat image(s).`,
+      data: { targets: reportTargets },
+    });
+
+    return {
+      success: failed.length === 0,
+      story,
+      worldBible,
+      characterBible,
+      choiceSets: loadEarlyDiagnosticSync<ChoiceSet[]>(normalizedOutputDir, '05-choice-sets.json') || [],
+      encounters: loadEarlyDiagnosticSync<EncounterStructure[]>(normalizedOutputDir, '05b-encounters.json') || [],
+      checkpoints: this.checkpoints,
+      events: this.events,
+      duration: Date.now() - startTime,
+      outputDirectory: normalizedOutputDir,
+      outputManifest,
+      error: failed.length > 0 ? failed.map(target => target.error).join(' ') : undefined,
+    };
   }
 
   private registerStoryImageSlots(
@@ -3481,6 +4260,9 @@ export class FullStoryPipeline {
             'pov_clarity',
             'voice_fidelity',
             'branch_topology',
+            'stat_check_balance',
+            'skill_surface',
+            'branch_mechanical_divergence',
           ]);
           const repairableIssues = quickValidation.blockingIssues.filter(
             i => repairableCategories.has(i.category)
@@ -3496,7 +4278,7 @@ export class FullStoryPipeline {
 
             // --- Repair stakes_triangle and five_factor issues (existing choices) ---
             const choiceIssues = repairableIssues.filter(
-              i => i.category === 'stakes_triangle' || i.category === 'five_factor'
+              i => i.category === 'stakes_triangle' || i.category === 'five_factor' || i.category === 'stat_check_balance'
             );
 
             for (const issue of choiceIssues) {
@@ -3542,6 +4324,7 @@ export class FullStoryPipeline {
                 optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
                 sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
                 memoryContext: this.cachedPipelineMemory || undefined,
+                storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
               }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${cs.beatId} quick-val-repair)`);
 
               if (repairResult.success && repairResult.data) {
@@ -3599,6 +4382,7 @@ export class FullStoryPipeline {
                   optionCount: targetScene.choicePoint?.optionHints?.length || 3,
                   sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
                   memoryContext: this.cachedPipelineMemory || undefined,
+                  storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
                 }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${lastBeat.id} density-repair)`);
 
                 if (densityRepairResult.success && densityRepairResult.data) {
@@ -3609,7 +4393,7 @@ export class FullStoryPipeline {
 
             // --- Repair pov_clarity / voice_fidelity issues (scoped SceneWriter rewrite) ---
             const sceneRewriteIssues = repairableIssues.filter(
-              i => i.category === 'voice_fidelity' || i.category === 'pov_clarity'
+              i => i.category === 'voice_fidelity' || i.category === 'pov_clarity' || i.category === 'skill_surface'
             );
             for (const issue of sceneRewriteIssues) {
               const sceneId = issue.location?.sceneId;
@@ -3636,8 +4420,10 @@ export class FullStoryPipeline {
                     title: brief.story.title,
                     genre: brief.story.genre,
                     tone: brief.story.tone,
-                    userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL ${issue.category === 'pov_clarity' ? 'POV CLARITY' : 'VOICE FIDELITY'} FIX:\n${issue.message}\n${issue.suggestion || ''}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${existingSceneJson}\n\n${issue.category === 'pov_clarity'
+                    userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL ${issue.category === 'pov_clarity' ? 'POV CLARITY' : issue.category === 'skill_surface' ? 'SKILL SURFACE' : 'VOICE FIDELITY'} FIX:\n${issue.message}\n${issue.suggestion || ''}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${existingSceneJson}\n\n${issue.category === 'pov_clarity'
                       ? 'Rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, the protagonist name, or a concrete pronoun before focusing on NPCs, setting, or exposition. Do not emit template variables.'
+                      : issue.category === 'skill_surface'
+                        ? 'Add or repair fiction-first skill surfaces. Prefer beat-level skillInsights that reveal usable story information, and preserve all existing beat IDs, navigation, choices, visual contract fields, thread IDs, and callback IDs. Do not expose stats, skill checks, thresholds, modifiers, bonuses, rolls, or percentages.'
                       : 'Re-author this scene\'s beats with stricter voice adherence; match each character\'s vocabulary, formality, sentence length, and avoided-words list.'}`,
                     worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
                   },
@@ -3661,9 +4447,7 @@ export class FullStoryPipeline {
                   }),
                   relevantFlags: episodeBlueprint.suggestedFlags,
                   relevantScores: episodeBlueprint.suggestedScores,
-                  targetBeatCount: sceneBlueprint.purpose === 'bottleneck'
-                    ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
-                    : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
+                  targetBeatCount: this.getTargetBeatCountForScene(sceneBlueprint),
                   dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
                 }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneId} voice-repair)`);
 
@@ -3869,9 +4653,7 @@ export class FullStoryPipeline {
                 }),
                 relevantFlags: episodeBlueprint.suggestedFlags,
                 relevantScores: episodeBlueprint.suggestedScores,
-                targetBeatCount: sceneBlueprint.purpose === 'bottleneck'
-                  ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
-                  : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
+                targetBeatCount: this.getTargetBeatCountForScene(sceneBlueprint),
                 dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
                 incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
                 sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
@@ -3940,6 +4722,7 @@ export class FullStoryPipeline {
                 optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
                 sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
                 memoryContext: this.cachedPipelineMemory || undefined,
+                storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
               }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${weakCs.beatId} qa-repair-${qaRepairPass + 1})`);
 
               if (repairChoiceResult.success && repairChoiceResult.data) {
@@ -4018,6 +4801,9 @@ export class FullStoryPipeline {
           outputDirectory = await createOutputDirectory(brief.story.title);
         }
         this.addCheckpoint('Output Directory', { outputDirectory }, false);
+        const savedStoryPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(outputDirectory, 'story.json');
+        this.hydrateSeasonImageStyleFromStoryPackage(savedStoryPackage);
+        this.applyActiveImageStyleToRuntime();
         this.resetAssetRegistry(idSlugify(brief.story.title));
         await saveEarlyDiagnostic(outputDirectory, `episode-${brief.episode.number}-blueprint.json`, episodeBlueprint);
 
@@ -4048,6 +4834,9 @@ export class FullStoryPipeline {
           phase: 'branch_validation',
           outputDirectory,
           artifactName: `episode-${brief.episode.number}-branch-metrics.json`,
+        });
+        this.validateMicroEpisodeStructure(branchValidationEpisode, {
+          phase: 'micro_episode_validation',
         });
 
         // Set image service output directory to story's images folder
@@ -5202,7 +5991,15 @@ export class FullStoryPipeline {
       worldContext: worldBible.worldRules.join('. ') + ' ' + worldBible.tensions.join('. '),
       currentLocation: brief.episode.startingLocation,
       previousEpisodeSummary: brief.episode.previousSummary,
-      targetSceneCount: brief.multiEpisode?.preferences?.targetScenesPerEpisode || this.config.generation?.maxScenesPerEpisode || this.config.generation?.targetSceneCount || brief.options?.targetSceneCount || 6,
+      targetSceneCount: this.config.generation?.episodeStructureMode === 'sceneEpisodes'
+        ? (this.config.generation?.sceneEpisodeMaxScenes || 1)
+        : clampSceneCount(
+            brief.multiEpisode?.preferences?.targetScenesPerEpisode ||
+            this.config.generation?.maxScenesPerEpisode ||
+            this.config.generation?.targetSceneCount ||
+            brief.options?.targetSceneCount ||
+            6,
+          ),
       majorChoiceCount: brief.multiEpisode?.preferences?.targetChoicesPerEpisode || this.config.generation?.majorChoiceCount || brief.options?.majorChoiceCount || 2,
       pacing: brief.multiEpisode?.preferences?.pacing,
       seasonPlanDirectives,
@@ -5267,6 +6064,15 @@ export class FullStoryPipeline {
     });
 
     return result.data;
+  }
+
+  private getTargetBeatCountForScene(sceneBlueprint: SceneBlueprint): number {
+    if (this.config.generation?.episodeStructureMode === 'sceneEpisodes' && !sceneBlueprint.isEncounter) {
+      return this.config.generation.sceneEpisodeNormalTargetBeats || 8;
+    }
+    return sceneBlueprint.purpose === 'bottleneck'
+      ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
+      : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount);
   }
 
   /**
@@ -5737,9 +6543,7 @@ export class FullStoryPipeline {
           relevantFlags: blueprint.suggestedFlags,
           relevantScores: blueprint.suggestedScores,
           unresolvedCallbacks: this.getUnresolvedCallbacksForPrompt(brief.episode?.number),
-          targetBeatCount: sceneBlueprint.purpose === 'bottleneck' 
-            ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
-            : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
+          targetBeatCount: this.getTargetBeatCountForScene(sceneBlueprint),
           dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
           previousSceneSummary: previousScene
             ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
@@ -5889,9 +6693,7 @@ export class FullStoryPipeline {
             }),
             relevantFlags: blueprint.suggestedFlags,
             relevantScores: blueprint.suggestedScores,
-            targetBeatCount: sceneBlueprint.purpose === 'bottleneck'
-              ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
-              : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
+            targetBeatCount: this.getTargetBeatCountForScene(sceneBlueprint),
             dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
             previousSceneSummary: previousScene
               ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
@@ -6049,6 +6851,7 @@ export class FullStoryPipeline {
               optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
               sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
               memoryContext: this.cachedPipelineMemory || undefined,
+              storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
               growthTemplates: (() => {
                 // Attach the episode-level growth template to the FIRST
                 // strategic choice point (the development scene anchor).
@@ -6153,6 +6956,7 @@ export class FullStoryPipeline {
                       optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
                       sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
                       memoryContext: this.cachedPipelineMemory || undefined,
+                      storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
                     }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} regen)`);
 
                     if (revisedChoiceResult.success && revisedChoiceResult.data) {
@@ -6418,9 +7222,7 @@ export class FullStoryPipeline {
                 }),
                 relevantFlags: blueprint.suggestedFlags,
                 relevantScores: blueprint.suggestedScores,
-                targetBeatCount: sceneBlueprint.purpose === 'bottleneck'
-                  ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
-                  : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
+                targetBeatCount: this.getTargetBeatCountForScene(sceneBlueprint),
                 dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
                 previousSceneSummary: previousScene
                   ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
@@ -6541,7 +7343,11 @@ export class FullStoryPipeline {
         const victoryNextSceneId = leadsToScenes[0] || '';
         const defeatNextSceneId = leadsToScenes[1] || leadsToScenes[0] || '';
 
-        // Dynamic beat count based on difficulty - use config.generation.encounterBeatCount as base
+        // Dynamic beat count based on difficulty - use config.generation.encounterBeatCount as base.
+        // Scene-length milestone encounters can be richer, but still honor the configured effective path cap.
+        const sceneEpisodeEncounterMax = this.config.generation?.episodeStructureMode === 'sceneEpisodes'
+          ? (this.config.generation.sceneEpisodeEncounterMaxBeats || 15)
+          : undefined;
         const baseEncounterBeats = this.config.generation?.encounterBeatCount || 4;
         const beatCountByDifficulty: Record<string, number> = {
           easy: Math.max(2, baseEncounterBeats - 1),
@@ -6549,7 +7355,10 @@ export class FullStoryPipeline {
           hard: baseEncounterBeats + 1,
           extreme: baseEncounterBeats + 2,
         };
-        const targetBeatCount = beatCountByDifficulty[sceneBlueprint.encounterDifficulty || 'moderate'] || baseEncounterBeats;
+        const uncappedTargetBeatCount = beatCountByDifficulty[sceneBlueprint.encounterDifficulty || 'moderate'] || baseEncounterBeats;
+        const targetBeatCount = sceneEpisodeEncounterMax
+          ? Math.min(sceneEpisodeEncounterMax, uncappedTargetBeatCount)
+          : uncappedTargetBeatCount;
 
         // Extract protagonist skills from character profile if available
         const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
@@ -6704,6 +7513,7 @@ export class FullStoryPipeline {
           defeatNextSceneId,
           priorStateContext,
           memoryContext: this.cachedPipelineMemory || undefined,
+          storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
           seasonAnchors: brief.seasonPlan?.anchors,
           seasonSevenPoint: brief.seasonPlan?.sevenPoint,
           episodeStructuralRole: brief.seasonPlan?.episodes.find(
@@ -7430,6 +8240,8 @@ export class FullStoryPipeline {
         }
       }
 
+      this.ensureChoiceBridgeBeats(blueprint, sceneBlueprint, content, choiceMap);
+
       const beats: Beat[] = content.beats.map(genBeat => {
         const compositeKey = this.getEpisodeScopedBeatKey(brief, sceneBlueprint.id, genBeat.id);
         const beat: Beat = {
@@ -7439,6 +8251,7 @@ export class FullStoryPipeline {
           speaker: genBeat.speaker,
           speakerMood: genBeat.speakerMood,
           nextBeatId: genBeat.nextBeatId,
+          nextSceneId: genBeat.nextSceneId,
           onShow: genBeat.onShow,
           image: beatImages.get(compositeKey),
           video: beatVideos.get(compositeKey),
@@ -7454,6 +8267,8 @@ export class FullStoryPipeline {
           coveragePlan: (genBeat as any).coveragePlan,
           dramaticIntent: genBeat.dramaticIntent,
           sequenceIntent: (genBeat as any).sequenceIntent,
+          isChoiceBridge: genBeat.isChoiceBridge,
+          routeContext: genBeat.routeContext,
         };
 
         if (genBeat.isChoicePoint) {
@@ -7481,25 +8296,7 @@ export class FullStoryPipeline {
                 }
               }
 
-              return {
-                id: gc.id,
-                text: gc.text,
-                choiceType: gc.choiceType,
-                conditions: gc.conditions,
-                showWhenLocked: gc.showWhenLocked,
-                lockedText: gc.lockedText,
-                statCheck: gc.statCheck,
-                consequences: normalizeConsequences(gc.consequences),
-                delayedConsequences: gc.delayedConsequences,
-                nextSceneId,
-                nextBeatId: gc.nextBeatId,
-                outcomeTexts: gc.outcomeTexts,
-                reactionText: gc.reactionText,
-                tintFlag: gc.tintFlag,
-                consequenceDomain: gc.consequenceDomain,
-                reminderPlan: gc.reminderPlan,
-                feedbackCue: gc.feedbackCue,
-              };
+              return assembleChoiceForStory(gc, nextSceneId);
             });
           }
         }
@@ -7533,9 +8330,13 @@ export class FullStoryPipeline {
       title: brief.episode.title,
       synopsis: brief.episode.synopsis,
       coverImage: episodeCover,
+      episodeStructureMode: this.config.generation?.episodeStructureMode,
       scenes,
       startingSceneId: blueprint.startingSceneId,
     };
+    this.validateMicroEpisodeStructure(episode, {
+      phase: 'micro_episode_final_validation',
+    });
 
     const storyCover = episodeCover;
 
@@ -7580,6 +8381,7 @@ export class FullStoryPipeline {
           }
         : undefined,
     };
+    this.validateMicroEpisodeSeason(story, { phase: 'micro_episode_season_final_validation' });
 
     return story;
   }
@@ -7635,7 +8437,8 @@ export class FullStoryPipeline {
       role: c.role,
       pronouns: c.pronouns,
       portrait,
-      initialRelationship: c.initialStats,
+      initialRelationship: this.ensureRelationshipStats(c.initialStats, tier),
+      relationshipDimensions: this.relationshipDimensionsForNpc(c.initialStats, tier),
       tier,
       want: c.want,
       fear: c.fear,
@@ -7643,6 +8446,39 @@ export class FullStoryPipeline {
       voiceProfile: voiceSlice,
       secrets,
       arc,
+    };
+  }
+
+  private relationshipDimensionsForNpc(
+    initialStats: CharacterBible['characters'][number]['initialStats'] | undefined,
+    tier?: 'core' | 'supporting' | 'background',
+  ): RelationshipDimension[] {
+    const dimensions = new Set<RelationshipDimension>();
+    if (initialStats) {
+      if (initialStats.trust !== undefined) dimensions.add('trust');
+      if (initialStats.affection !== undefined) dimensions.add('affection');
+      if (initialStats.respect !== undefined) dimensions.add('respect');
+      if (initialStats.fear !== undefined) dimensions.add('fear');
+    }
+    if (tier === 'core') {
+      dimensions.add('trust');
+      dimensions.add('affection');
+      dimensions.add('respect');
+      dimensions.add('fear');
+    }
+    return Array.from(dimensions);
+  }
+
+  private ensureRelationshipStats(
+    initialStats: CharacterBible['characters'][number]['initialStats'] | undefined,
+    tier?: 'core' | 'supporting' | 'background',
+  ) {
+    if (tier !== 'core') return initialStats;
+    return {
+      trust: initialStats?.trust ?? 0,
+      affection: initialStats?.affection ?? 0,
+      respect: initialStats?.respect ?? 0,
+      fear: initialStats?.fear ?? 0,
     };
   }
 
@@ -7655,6 +8491,7 @@ export class FullStoryPipeline {
     // Prepare scenes for validation
     const scenes = sceneContents.map(sc => ({
       id: sc.sceneId,
+      charactersInvolved: sc.charactersInvolved || [],
       beats: sc.beats.map(b => ({
         id: b.id,
         text: b.text,
@@ -7684,14 +8521,7 @@ export class FullStoryPipeline {
           else if (c.role === 'neutral') tier = 'supporting';
         }
 
-        // Determine relationship dimensions from initial stats
-        const dimensions: RelationshipDimension[] = [];
-        if (c.initialStats) {
-          if (c.initialStats.trust !== undefined) dimensions.push('trust');
-          if (c.initialStats.affection !== undefined) dimensions.push('affection');
-          if (c.initialStats.respect !== undefined) dimensions.push('respect');
-          if (c.initialStats.fear !== undefined) dimensions.push('fear');
-        }
+        const dimensions = this.relationshipDimensionsForNpc(c.initialStats, tier);
 
         return {
           id: c.id,
@@ -7719,6 +8549,18 @@ export class FullStoryPipeline {
         outcomeTexts: choice.outcomeTexts,
         lockedText: choice.lockedText,
         reactionText: choice.reactionText,
+        sceneId: cs.sceneId,
+        statCheck: choice.statCheck,
+        conditions: choice.conditions,
+        showWhenLocked: choice.showWhenLocked,
+        tintFlag: choice.tintFlag,
+        delayedConsequences: choice.delayedConsequences,
+        residueHints: choice.residueHints,
+        memorableMoment: choice.memorableMoment,
+        storyVerb: choice.storyVerb,
+        affordanceSource: choice.affordanceSource,
+        witnessReactions: choice.witnessReactions,
+        failureResidue: choice.failureResidue,
       }))
     );
 
@@ -8013,6 +8855,10 @@ export class FullStoryPipeline {
         outputDirectory = await createOutputDirectory(baseBrief.story.title);
       }
       this.addCheckpoint('Output Directory', { outputDirectory }, false);
+
+      const savedStoryPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(outputDirectory, 'story.json');
+      this.hydrateSeasonImageStyleFromStoryPackage(savedStoryPackage);
+      this.applyActiveImageStyleToRuntime();
       
       // Initialize AssetRegistry with JSONL persistence for durable image tracking
       const registryJsonlPath = (outputDirectory.endsWith('/') ? outputDirectory : outputDirectory + '/') + '08-asset-registry.jsonl';
@@ -8349,6 +9195,16 @@ export class FullStoryPipeline {
         story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
       }
 
+      this.enforceFinalTreatmentFidelity({
+        story,
+        analysis: filteredAnalysis,
+        expectedEpisodeCount: episodesToGenerate.length,
+        sourceEpisodeCount: analysis.totalEstimatedEpisodes,
+        isCompleteSeason: story.episodes.length >= analysis.totalEstimatedEpisodes,
+        sourceText: baseBrief.rawDocument,
+      });
+      this.validateMicroEpisodeSeason(story, { phase: 'micro_episode_season_final_validation' });
+
       this.addCheckpoint('Final Story', story, false);
       await this.saveResumeUnit(
         outputDirectory,
@@ -8633,6 +9489,9 @@ export class FullStoryPipeline {
         outputDirectory,
         artifactName: `episode-${i}-branch-metrics.json`,
       });
+      this.validateMicroEpisodeStructure(branchValidationEpisode, {
+        phase: `episode_${i}_micro_episode_validation`,
+      });
 
       let imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> } | undefined;
       let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
@@ -8780,6 +9639,9 @@ export class FullStoryPipeline {
         encounters,
         encounterImageResults
       );
+      this.validateMicroEpisodeStructure(episode, {
+        phase: `episode_${i}_micro_episode_final_validation`,
+      });
 
       try {
         const narrativeDiagnostics = runNarrativeDiagnostics({
@@ -14431,13 +15293,13 @@ Design the key art. Return STRICT JSON matching the schema.`;
       if (!text.trim()) continue;
 
       for (const c of characterBible.characters) {
-        const tokens = c.name
-          .split(/\s+/)
-          .map(t => t.trim())
-          .filter(t => t.length > 2);
-        if (tokens.length === 0) continue;
-
-        const mentioned = tokens.some(tok => new RegExp(`\\b${tok.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'i').test(text));
+        const name = c.name.trim();
+        if (!name) continue;
+        const [firstName] = name.split(/\s+/).map(t => t.trim()).filter(Boolean);
+        const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escapedFirstName = firstName?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const mentioned = new RegExp(`\\b${escapedName}\\b`, 'i').test(text)
+          || Boolean(firstName && firstName.length > 2 && escapedFirstName && new RegExp(`\\b${escapedFirstName}\\b`, 'i').test(text));
         if (mentioned) characterIds.add(c.id);
       }
     }
@@ -17782,6 +18644,93 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     return heuristicMatch || worldBible.locations[0];
   }
 
+  private ensureChoiceBridgeBeats(
+    blueprint: EpisodeBlueprint,
+    sceneBlueprint: SceneBlueprint,
+    content: SceneContent,
+    choiceMap: Map<string, ChoiceSet>,
+  ): void {
+    for (const beat of content.beats || []) {
+      if (!beat.isChoicePoint) continue;
+      const choiceSet = choiceMap.get(`${sceneBlueprint.id}::${beat.id}`) || choiceMap.get(beat.id);
+      if (!choiceSet) continue;
+
+      for (const choice of choiceSet.choices || []) {
+        const targetSceneId = choice.nextSceneId;
+        if (!targetSceneId) continue;
+
+        const targetScene = blueprint.scenes.find(scene => scene.id === targetSceneId);
+        const bridgeId = `${beat.id}-bridge-${String(choice.id || 'choice')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '') || 'choice'}`;
+
+        const routeContext = {
+          sourceSceneId: sceneBlueprint.id,
+          sourceBeatId: beat.id,
+          sourceChoiceId: choice.id,
+          choiceSummary: choice.feedbackCue?.echoSummary || choice.text,
+          originalTargetSceneId: targetSceneId,
+          originalTargetBeatId: choice.nextBeatId,
+          transitionIntent: `Bridge from "${sceneBlueprint.name}" to "${targetScene?.name || targetSceneId}" without teleporting the player.`,
+          bridgePurpose: 'choice_transition',
+        };
+
+        choice.routeContext = routeContext;
+        choice.nextBeatId = bridgeId;
+        delete choice.nextSceneId;
+
+        const existingBridge = content.beats.find(candidate => candidate.id === bridgeId);
+        if (existingBridge) {
+          existingBridge.nextSceneId = targetSceneId;
+          existingBridge.nextBeatId = routeContext.originalTargetBeatId;
+          existingBridge.isChoiceBridge = true;
+          existingBridge.routeContext = routeContext;
+          continue;
+        }
+
+        const bridgeText = this.buildChoiceBridgeBeatText(choice, targetScene);
+        content.beats.push({
+          id: bridgeId,
+          text: bridgeText,
+          nextSceneId: targetSceneId,
+          nextBeatId: routeContext.originalTargetBeatId,
+          isChoiceBridge: true,
+          routeContext,
+          visualMoment: bridgeText,
+          primaryAction: bridgeText,
+          emotionalRead: 'the chosen decision visibly turns into motion',
+          relationshipDynamic: 'the protagonist carries the consequence forward before the next scene begins',
+          mustShowDetail: targetScene?.location
+            ? `a concrete transition toward ${targetScene.location}`
+            : 'a concrete transition from decision into action',
+          intensityTier: 'supporting',
+          sequenceIntent: {
+            objective: 'Carry the player choice into the next story state without a location or relationship jump.',
+            activity: 'decision, movement, and arrival',
+            obstacle: 'the story must earn the next scene before it begins',
+            startState: choice.feedbackCue?.echoSummary || choice.text,
+            endState: targetScene ? `The route is ready to enter ${targetScene.name}.` : 'The next scene is earned.',
+            beatRole: 'handoff',
+            mechanicThread: choice.consequenceDomain || choice.choiceIntent,
+          },
+        } as GeneratedBeat);
+      }
+    }
+  }
+
+  private buildChoiceBridgeBeatText(choice: ChoiceSet['choices'][number], targetScene?: SceneBlueprint): string {
+    const choiceEcho = choice.feedbackCue?.echoSummary || `You chose ${choice.text.replace(/[.!?]\s*$/, '')}.`;
+    const immediate = choice.feedbackCue?.progressSummary || choice.reminderPlan?.immediate;
+    const destination = targetScene?.name ? `toward ${targetScene.name}` : 'toward what comes next';
+    const transition = `The decision carries you ${destination}, one concrete step at a time.`;
+    return [choiceEcho, immediate, transition]
+      .filter(Boolean)
+      .map(part => String(part).trim())
+      .map(part => /[.!?]$/.test(part) ? part : `${part}.`)
+      .join(' ');
+  }
+
   private assembleEpisode(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
@@ -17908,6 +18857,8 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       const incomingScenes = blueprint.scenes.filter(s => s.leadsTo?.includes(sb.id));
       const isConvergencePoint = incomingScenes.length > 1;
 
+      this.ensureChoiceBridgeBeats(blueprint, sb, content, choiceMap);
+
       scenes.push({
         id: sb.id,
         name: sb.name,
@@ -17917,9 +18868,13 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         beats: content.beats.map(gb => ({
           id: gb.id,
           text: gb.text,
+          textVariants: gb.textVariants,
+          callbackHookIds: gb.callbackHookIds,
+          onShow: gb.onShow,
           speaker: gb.speaker,
           speakerMood: gb.speakerMood,
           nextBeatId: gb.nextBeatId,
+          nextSceneId: gb.nextSceneId,
           image: beatImages.get(this.getEpisodeScopedBeatKey(brief, sb.id, gb.id)),
           video: beatVideos.get(this.getEpisodeScopedBeatKey(brief, sb.id, gb.id)),
           visualMoment: gb.visualMoment,
@@ -17934,16 +18889,9 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           coveragePlan: (gb as any).coveragePlan,
           dramaticIntent: (gb as any).dramaticIntent,
           sequenceIntent: (gb as any).sequenceIntent,
-          choices: gb.isChoicePoint ? choiceMap.get(`${sb.id}::${gb.id}`)?.choices.map(c => ({
-            id: c.id,
-            text: c.text,
-            nextSceneId: c.nextSceneId,
-            nextBeatId: c.nextBeatId,
-            consequences: normalizeConsequences(c.consequences),
-            consequenceDomain: c.consequenceDomain,
-            reminderPlan: c.reminderPlan,
-            feedbackCue: c.feedbackCue,
-          })) : undefined
+          isChoiceBridge: gb.isChoiceBridge,
+          routeContext: gb.routeContext,
+          choices: gb.isChoicePoint ? choiceMap.get(`${sb.id}::${gb.id}`)?.choices.map(c => assembleChoiceForStory(c)) : undefined
         })),
         encounter,
         sequenceIntent: (content as any).sequenceIntent || (sb as any).sequenceIntent,
@@ -17993,13 +18941,19 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     // Use first scene's background as episode cover
     const episodeCover = scenes.length > 0 ? sceneImages.get(this.getEpisodeScopedSceneId(brief, scenes[0].id)) || '' : '';
 
+    const seasonEpisode = brief.seasonPlan?.episodes.find(e => e.episodeNumber === brief.episode.number);
+    const episodeStructureMode = seasonEpisode?.episodeStructureMode || this.config.generation?.episodeStructureMode;
+
     return {
       id: generateEpisodeId(brief.episode.number, brief.episode.title),
       number: brief.episode.number,
       title: brief.episode.title,
       synopsis: brief.episode.synopsis,
+      episodeStructureMode,
+      routeMeta: seasonEpisode?.routeMeta,
       scenes,
       startingSceneId: blueprint.startingSceneId,
+      unlockConditions: seasonEpisode?.unlockConditions,
       coverImage: episodeCover
     };
   }
@@ -18521,14 +19475,16 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
    * Bind generated video URLs to beats in the assembled story.
    * Uses the same composite key pattern as images (sceneId::beatId).
    */
-  private bindGeneratedVideoToStory(story: Story, videoResults: Map<string, string>): number {
+  private bindGeneratedVideoToStory(story: Story, videoResults: Map<string, string>, options: { targetEpisodeNumber?: number } = {}): number {
     if (!videoResults || videoResults.size === 0) return 0;
 
     let mapped = 0;
     for (const episode of story.episodes || []) {
+      if (options.targetEpisodeNumber != null && episode.number !== options.targetEpisodeNumber) continue;
       for (const scene of episode.scenes || []) {
         for (const beat of scene.beats || []) {
-          const videoUrl = videoResults.get(`${scene.id}::${beat.id}`);
+          const scopedKey = `episode-${episode.number}-${scene.id}::${beat.id}`;
+          const videoUrl = videoResults.get(scopedKey) || videoResults.get(`${scene.id}::${beat.id}`);
           if (videoUrl) {
             beat.video = videoUrl;
             mapped++;
@@ -18556,6 +19512,15 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         voiceNotes: profile?.voiceProfile?.writingGuidance,
         physicalDescription: profile?.physicalDescription,
       };
+    });
+  }
+
+  private deriveStoryVerbsForBrief(brief: FullCreativeBrief, worldBible?: WorldBible) {
+    return deriveStoryVerbs({
+      genre: brief.story.genre,
+      tone: brief.story.tone,
+      sourceSummary: brief.story.synopsis,
+      worldContext: worldBible ? this.buildCompactWorldContext(worldBible) : undefined,
     });
   }
 
@@ -19042,7 +20007,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
    * Reconstructs the data structures the video pipeline needs from the story JSON
    * and the original generation artifacts (brief, world bible) on disk.
    */
-  async runVideoOnly(story: Story): Promise<{ videosGenerated: number; story: Story }> {
+  async runVideoOnly(story: Story, options: { targetEpisodeNumber?: number } = {}): Promise<{ videosGenerated: number; story: Story }> {
     const outputDir = story.outputDir;
     if (!outputDir) throw new Error('Story has no outputDir — cannot locate generation artifacts');
 
@@ -19068,13 +20033,20 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     const sceneImages = new Map<string, string>();
     const sceneContents: SceneContent[] = [];
 
-    for (const episode of story.episodes || []) {
+    const targetEpisodes = (story.episodes || []).filter((episode) => (
+      options.targetEpisodeNumber == null || episode.number === options.targetEpisodeNumber
+    ));
+    if (options.targetEpisodeNumber != null && targetEpisodes.length === 0) {
+      throw new Error(`Episode ${options.targetEpisodeNumber} was not found in story — cannot generate video`);
+    }
+
+    for (const episode of targetEpisodes) {
       for (const scene of episode.scenes || []) {
         if (scene.encounter) continue;
 
         const beats: GeneratedBeat[] = (scene.beats || []).map(beat => {
           if (beat.image) {
-            beatImages.set(`${scene.id}::${beat.id}`, beat.image);
+            beatImages.set(`episode-${episode.number}-${scene.id}::${beat.id}`, beat.image);
           }
           return {
             id: beat.id,
@@ -19115,13 +20087,15 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     }
 
     if (beatImages.size === 0) {
-      throw new Error('No beat images found in story — video generation requires existing images');
+      throw new Error(options.targetEpisodeNumber != null
+        ? `No beat images found for episode ${options.targetEpisodeNumber} — video generation requires existing images`
+        : 'No beat images found in story — video generation requires existing images');
     }
 
     this.emit({
       type: 'agent_start',
       phase: 'video_generation',
-      message: `Found ${beatImages.size} beat images across ${sceneContents.length} scenes. Starting video generation...`,
+      message: `Found ${beatImages.size} beat images across ${sceneContents.length} scenes${options.targetEpisodeNumber != null ? ` for episode ${options.targetEpisodeNumber}` : ''}. Starting video generation...`,
     });
 
     const videosDir = `${outputDir}videos/`;
@@ -19130,12 +20104,22 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     const videoRunResult = await this.runVideoGeneration(
       sceneContents,
       { beatImages, sceneImages },
-      brief,
+      {
+        ...brief,
+        episode: options.targetEpisodeNumber != null && targetEpisodes[0]
+          ? {
+              ...(brief.episode || {}),
+              number: targetEpisodes[0].number,
+              title: targetEpisodes[0].title,
+              synopsis: targetEpisodes[0].synopsis,
+            }
+          : brief.episode,
+      },
       worldBible
     );
     const videoResults = videoRunResult.videoResults;
 
-    const videosGenerated = this.bindGeneratedVideoToStory(story, videoResults);
+    const videosGenerated = this.bindGeneratedVideoToStory(story, videoResults, options);
     await saveVideoDiagnosticsLog(outputDir, videoRunResult.diagnostics);
 
     this.emit({
@@ -19156,7 +20140,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       }),
     });
 
-    console.log(`[Pipeline] Video-only run complete: ${videosGenerated} videos for "${story.title}"`);
+    console.log(`[Pipeline] Video-only run complete: ${videosGenerated} videos for "${story.title}"${options.targetEpisodeNumber != null ? ` episode ${options.targetEpisodeNumber}` : ''}`);
     return { videosGenerated, story };
   }
 }

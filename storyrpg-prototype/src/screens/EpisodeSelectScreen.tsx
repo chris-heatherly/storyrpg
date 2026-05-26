@@ -11,7 +11,7 @@ import {
 import { ChevronRight, Lock, CheckCircle2, Clock } from 'lucide-react-native';
 import { useGamePlayerState, useGameStoryState } from '../stores/gameStore';
 import { useSettingsStore } from '../stores/settingsStore';
-import { isEpisodeUnlocked } from '../engine/storyEngine';
+import { getPlayableEpisodes, isEpisodeUnlocked } from '../engine/storyEngine';
 import { Episode } from '../types';
 import { TERMINAL } from '../theme';
 
@@ -41,9 +41,11 @@ export const EpisodeSelectScreen: React.FC<EpisodeSelectScreenProps> = ({
   const isCompleted = (episodeId: string) =>
     player.completedEpisodes.includes(episodeId);
 
+  const playableEpisodes = getPlayableEpisodes(currentStory, player);
+
   const isUnlocked = (episode: Episode, index: number) => {
     if (index === 0) return true;
-    const prevEpisode = currentStory.episodes[index - 1];
+    const prevEpisode = playableEpisodes[index - 1];
     if (!isCompleted(prevEpisode.id)) return false;
     return isEpisodeUnlocked(episode, player);
   };
@@ -77,9 +79,10 @@ export const EpisodeSelectScreen: React.FC<EpisodeSelectScreenProps> = ({
 
         {/* Episode Grid */}
         <View style={styles.episodeList}>
-          {currentStory.episodes.map((episode, index) => {
+          {playableEpisodes.map((episode, index) => {
             const unlocked = isUnlocked(episode, index);
             const completed = isCompleted(episode.id);
+            const episodeDisplayLabel = episode.routeMeta?.displayLabel || episode.number.toString().padStart(2, '0');
 
             return (
               <TouchableOpacity
@@ -96,7 +99,7 @@ export const EpisodeSelectScreen: React.FC<EpisodeSelectScreenProps> = ({
                 <View style={styles.episodeInfo}>
                   <View style={styles.episodeNumberContainer}>
                     <Text style={[styles.episodeNumber, !unlocked && styles.textLocked]}>
-                      {episode.number.toString().padStart(2, '0')}
+                      {episodeDisplayLabel}
                     </Text>
                   </View>
                   <View style={styles.episodeTextContainer}>

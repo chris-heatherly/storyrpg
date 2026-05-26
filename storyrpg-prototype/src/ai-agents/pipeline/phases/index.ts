@@ -105,6 +105,10 @@ export interface StoryBrief {
     preferences?: {
       targetScenesPerEpisode?: number;
       targetChoicesPerEpisode?: number;
+      episodeStructureMode?: 'standard' | 'sceneEpisodes';
+      sceneEpisodeEncounterCadence?: number;
+      sceneEpisodeBranchMinEpisodes?: number;
+      sceneEpisodeBranchMaxEpisodes?: number;
       pacing?: 'tight' | 'moderate' | 'expansive';
     };
   };

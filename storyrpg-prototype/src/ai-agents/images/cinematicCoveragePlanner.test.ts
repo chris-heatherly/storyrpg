@@ -9,6 +9,12 @@ const characters: CoverageCharacter[] = [
   { id: 'kenji', name: 'Kenji Tanaka' },
 ];
 
+const biteMeCharacters: CoverageCharacter[] = [
+  { id: 'char-kylie-marinescu', name: 'Kylie Marinescu' },
+  { id: 'char-mika-drgan', name: 'Mika Drăgan' },
+  { id: 'char-victor-vlcescu', name: 'Victor Vâlcescu' },
+];
+
 describe('planSceneCoverage', () => {
   it('keeps dialogue beats from becoming empty environment shots', () => {
     const plan = planSceneCoverage({
@@ -107,5 +113,36 @@ describe('planSceneCoverage', () => {
     expect(plan.diagnostics.solitaryCompositionWarnings).toEqual([
       expect.stringContaining('beat-3'),
     ]);
+  });
+
+  it('does not turn a club location surname or anonymous doorman into Victor staging', () => {
+    const plan = planSceneCoverage({
+      sceneId: 'scene-club-door',
+      sceneCharacterIds: ['char-kylie-marinescu', 'char-mika-drgan', 'char-victor-vlcescu'],
+      protagonistId: 'char-kylie-marinescu',
+      characters: biteMeCharacters,
+      beats: [
+        {
+          id: 'beat-1',
+          text: "You stand before Vâlcescu Club's velvet rope while the doorman judges your dress.",
+        },
+        {
+          id: 'beat-2',
+          text: '"Darling, you look lost." A woman with a platinum bob appears beside you. "First time at Vâlcescu?"',
+        },
+        {
+          id: 'beat-3',
+          text: 'Mika laughs and gestures you toward the door.',
+        },
+      ],
+    });
+
+    expect(plan.beats[0].visualCast.sceneCharacterIds).not.toContain('char-victor-vlcescu');
+    expect(plan.beats[0].coveragePlan.requiredVisibleCharacterIds).toEqual(['char-kylie-marinescu']);
+    expect(plan.beats[1].visualCast.sceneCharacterIds).not.toContain('char-victor-vlcescu');
+    expect(plan.beats[1].coveragePlan.requiredVisibleCharacterIds).toEqual(['char-kylie-marinescu']);
+    expect(plan.beats[2].coveragePlan.requiredVisibleCharacterIds).toEqual(
+      expect.arrayContaining(['char-kylie-marinescu', 'char-mika-drgan'])
+    );
   });
 });

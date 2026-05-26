@@ -4,20 +4,32 @@
  */
 
 export const SCENE_DEFAULTS = {
-  /** Maximum scenes per episode (cap)—engine may generate fewer if story doesn't need more */
+  /** Minimum scenes per episode. Episodes should always have setup, central pressure, and aftermath. */
+  minScenesPerEpisode: 3,
+  /** Maximum scenes per episode (hard cap). */
   maxScenesPerEpisode: 6,
   /** @deprecated Use maxScenesPerEpisode */
   targetSceneCount: 6,
   majorChoiceCount: 3,
   minBeatsPerScene: 3,
   /** Cap on beats per scene—engine may generate fewer */
-  maxBeatsPerScene: 12,
+  maxBeatsPerScene: 8,
   /** Cap for standard scenes—engine may use fewer beats */
   standardBeatCount: 8,
   /** Cap for bottleneck scenes—engine may use fewer beats */
-  bottleneckBeatCount: 10,
+  bottleneckBeatCount: 8,
   encounterBeatCount: 3,
 };
+
+export function clampSceneCount(value: number | undefined | null): number {
+  const fallback = SCENE_DEFAULTS.targetSceneCount;
+  const parsed = Number(value);
+  const numeric = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.min(
+    SCENE_DEFAULTS.maxScenesPerEpisode,
+    Math.max(SCENE_DEFAULTS.minScenesPerEpisode, numeric),
+  );
+}
 
 export const CONCURRENCY_DEFAULTS = {
   maxConcurrentScenes: 3,

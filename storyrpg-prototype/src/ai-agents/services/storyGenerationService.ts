@@ -13,6 +13,10 @@ import type { SeasonPlan } from '../../types/seasonPlan';
 type StoryAnalysisPreferences = {
   targetScenesPerEpisode?: number;
   targetChoicesPerEpisode?: number;
+  episodeStructureMode?: 'standard' | 'sceneEpisodes';
+  sceneEpisodeEncounterCadence?: number;
+  sceneEpisodeBranchMinEpisodes?: number;
+  sceneEpisodeBranchMaxEpisodes?: number;
   pacing?: 'tight' | 'moderate' | 'expansive';
   endingMode?: EndingMode;
 };
@@ -64,12 +68,19 @@ export interface StoryGenerationResponse {
 export interface ImageGenerationBatchRequest extends PipelineHookOptions {
   config?: PipelineConfig;
   outputDirectory: string;
+  targetEpisodeNumber?: number;
+  mode?: 'full' | 'spot';
+  targetSlots?: Array<{ episodeNumber: number; sceneId: string; beatId: string }>;
+  skipEncounterImages?: boolean;
+  skipCover?: boolean;
+  skipCharacterRefs?: boolean;
+  skipVisualContractValidation?: boolean;
   resumeCheckpoint?: ResumeCheckpoint;
   externalJobId?: string;
 }
 
 const DEFAULT_ANALYSIS_PREFERENCES: StoryAnalysisPreferences = {
-  targetScenesPerEpisode: 8,
+  targetScenesPerEpisode: 6,
   targetChoicesPerEpisode: 4,
   pacing: 'moderate',
 };
@@ -168,6 +179,7 @@ export async function runStoryGeneration(request: StoryGenerationRequest): Promi
 }
 
 export async function runImageGenerationBatch(request: ImageGenerationBatchRequest): Promise<StoryGenerationResponse> {
+  const isSpotMode = request.mode === 'spot' || Boolean(request.targetSlots?.length);
   const effectiveConfig = request.config
     ? {
         ...request.config,
@@ -186,7 +198,16 @@ export async function runImageGenerationBatch(request: ImageGenerationBatchReque
   }
   wirePipeline(pipeline, request);
 
-  const result = await pipeline.generateImagesForDraft(request.outputDirectory, request.resumeCheckpoint);
+  const result = isSpotMode
+    ? await pipeline.generateTargetedBeatImagesForDraft(request.outputDirectory, request.targetSlots || [], {
+        skipEncounterImages: request.skipEncounterImages ?? true,
+        skipCover: request.skipCover ?? true,
+        skipCharacterRefs: request.skipCharacterRefs ?? true,
+        skipVisualContractValidation: request.skipVisualContractValidation ?? true,
+      })
+    : await pipeline.generateImagesForDraft(request.outputDirectory, request.resumeCheckpoint, {
+        targetEpisodeNumber: request.targetEpisodeNumber,
+      });
 
   return {
     pipeline,

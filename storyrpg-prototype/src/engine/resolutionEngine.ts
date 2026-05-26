@@ -3,6 +3,7 @@ import {
   PlayerAttributes,
   ResolutionResult,
   ResolutionTier,
+  StatCheckModifier,
 } from '../types';
 import { SKILL_DEFINITIONS, ATTRIBUTE_TO_SKILL } from '../constants/pipeline';
 
@@ -23,17 +24,31 @@ import { SKILL_DEFINITIONS, ATTRIBUTE_TO_SKILL } from '../constants/pipeline';
 // Types
 // ---------------------------------------------------------------------------
 
-interface StatCheckParams {
+export interface StatCheckParams {
   skillWeights?: Record<string, number>;
   difficulty: number;
+  modifiers?: StatCheckModifier[];
   attribute?: keyof PlayerAttributes;
   skill?: string;
   retryableAfterChange?: boolean;
 }
 
-interface NormalizedCheck {
+export interface NormalizedCheck {
   skillWeights: Record<string, number>;
   difficulty: number;
+  modifiers?: StatCheckModifier[];
+}
+
+export interface OutcomeChances {
+  success: number;
+  complicated: number;
+  failure: number;
+  advantageScore: number;
+}
+
+export interface OutcomeChanceOptions {
+  modifierTotal?: number;
+  streakBonus?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,19 +87,19 @@ export class ResolutionTracker {
 
 export function normalizeStatCheck(check: StatCheckParams): NormalizedCheck {
   if (check.skillWeights && Object.keys(check.skillWeights).length > 0) {
-    return { skillWeights: check.skillWeights, difficulty: check.difficulty };
+    return { skillWeights: check.skillWeights, difficulty: check.difficulty, modifiers: check.modifiers };
   }
 
   if (check.skill) {
-    return { skillWeights: { [check.skill]: 1.0 }, difficulty: check.difficulty };
+    return { skillWeights: { [check.skill]: 1.0 }, difficulty: check.difficulty, modifiers: check.modifiers };
   }
 
   if (check.attribute) {
     const canonicalSkill = ATTRIBUTE_TO_SKILL[check.attribute] ?? 'survival';
-    return { skillWeights: { [canonicalSkill]: 1.0 }, difficulty: check.difficulty };
+    return { skillWeights: { [canonicalSkill]: 1.0 }, difficulty: check.difficulty, modifiers: check.modifiers };
   }
 
-  return { skillWeights: { survival: 1.0 }, difficulty: check.difficulty };
+  return { skillWeights: { survival: 1.0 }, difficulty: check.difficulty, modifiers: check.modifiers };
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +140,67 @@ export function computeOverlap(player: PlayerState, skillWeights: Record<string,
     coverage += computeEffectiveStat(player, skill) * weight;
   }
   return coverage;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeOutcomeChances(chances: Omit<OutcomeChances, 'advantageScore'>, advantageScore: number): OutcomeChances {
+  const total = chances.success + chances.complicated + chances.failure;
+  if (!Number.isFinite(total) || total <= 0) {
+    return { success: 0.40, complicated: 0.40, failure: 0.20, advantageScore };
+  }
+
+  return {
+    success: chances.success / total,
+    complicated: chances.complicated / total,
+    failure: chances.failure / total,
+    advantageScore,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// calculateOutcomeChances — narrative-generous weighted outcome model
+// ---------------------------------------------------------------------------
+
+export function calculateOutcomeChances(
+  player: PlayerState,
+  check: StatCheckParams,
+  options: OutcomeChanceOptions = {}
+): OutcomeChances {
+  const normalized = normalizeStatCheck(check);
+  const coverage = computeOverlap(player, normalized.skillWeights);
+  const modifierTotal = (options.modifierTotal ?? 0) + (options.streakBonus ?? 0);
+  const advantageScore = coverage + modifierTotal - normalized.difficulty;
+
+  let success = clamp(0.40 + advantageScore * 0.006, 0.15, 0.70);
+  let failure = clamp(0.20 - advantageScore * 0.004, 0.05, 0.45);
+  let complicated = 1 - success - failure;
+
+  if (advantageScore >= 35) {
+    failure = Math.min(failure, 0.05);
+    complicated = 1 - success - failure;
+  }
+
+  if (advantageScore <= -45) {
+    complicated = Math.max(complicated, 0.40);
+    success = Math.max(0.15, 1 - complicated - failure);
+  }
+
+  if (complicated < 0.20) {
+    const needed = 0.20 - complicated;
+    complicated = 0.20;
+    if (success >= failure) {
+      success = Math.max(0.15, success - needed);
+    } else {
+      failure = Math.max(0.05, failure - needed);
+    }
+  }
+
+  failure = Math.min(failure, 0.45);
+
+  return normalizeOutcomeChances({ success, complicated, failure }, advantageScore);
 }
 
 // ---------------------------------------------------------------------------
@@ -182,35 +258,28 @@ function getDominantAttribute(skillWeights: Record<string, number>): string {
 export function resolveStatCheck(
   player: PlayerState,
   check: StatCheckParams,
-  tracker?: ResolutionTracker
+  tracker?: ResolutionTracker,
+  options: OutcomeChanceOptions = {}
 ): ResolutionResult {
   const normalized = normalizeStatCheck(check);
-  const coverage = computeOverlap(player, normalized.skillWeights);
-
-  const statModifier = (coverage - 50) * 0.5;
-  let target = normalized.difficulty - statModifier;
-
-  // Fairness: streak compensation
-  if (tracker) {
-    target -= tracker.getStreakBonus();
-  }
-
+  const streakBonus = tracker?.getStreakBonus() ?? 0;
+  const chances = calculateOutcomeChances(player, normalized, {
+    ...options,
+    streakBonus: (options.streakBonus ?? 0) + streakBonus,
+  });
   const roll = Math.random() * 100;
-  const margin = target - roll;
+  const successBand = chances.success * 100;
+  const complicatedBand = successBand + chances.complicated * 100;
+  const target = normalized.difficulty - (options.modifierTotal ?? 0) - streakBonus;
+  const margin = chances.advantageScore;
   let tier: ResolutionTier;
 
-  if (roll <= target - 20) {
+  if (roll <= successBand) {
     tier = 'success';
-  } else if (roll <= target + 10) {
+  } else if (roll <= complicatedBand) {
     tier = 'complicated';
   } else {
     tier = 'failure';
-  }
-
-  // Fairness: high-confidence clamping
-  const successChance = Math.max(0, Math.min(100, 100 - (target - 10)));
-  if (successChance > 80 && tier === 'failure') {
-    tier = 'complicated';
   }
 
   if (tracker) {
@@ -239,13 +308,7 @@ export function calculateSuccessChance(
   player: PlayerState,
   check: StatCheckParams
 ): number {
-  const normalized = normalizeStatCheck(check);
-  const coverage = computeOverlap(player, normalized.skillWeights);
-
-  const statModifier = (coverage - 50) * 0.5;
-  const effectiveTarget = normalized.difficulty - statModifier;
-
-  return Math.max(0, Math.min(100, 100 - (effectiveTarget - 10)));
+  return calculateOutcomeChances(player, check).success * 100;
 }
 
 // ---------------------------------------------------------------------------
@@ -276,11 +339,11 @@ export function computeEncounterWeights(
   const modifier = ((playerStat - 50) / 50) * 0.15;
 
   let success = Math.max(0.10, Math.min(0.65, BASE_SUCCESS + modifier));
-  let failure = Math.max(0.05, Math.min(0.50, BASE_FAILURE - modifier));
+  let failure = Math.max(0.05, Math.min(0.45, BASE_FAILURE - modifier));
   let complicated = 1.0 - success - failure;
 
-  if (complicated < 0.10) {
-    complicated = 0.10;
+  if (complicated < 0.20) {
+    complicated = 0.20;
     const excess = success + failure + complicated - 1.0;
     success -= excess / 2;
     failure -= excess / 2;
@@ -293,17 +356,28 @@ export function computeEncounterWeights(
 // applyUseBasedGrowth — skill growth from attempting checks
 // ---------------------------------------------------------------------------
 
+export function buildUseBasedGrowthConsequences(
+  skillWeights: Record<string, number>,
+  tier: ResolutionTier
+): Array<{ type: 'skill'; skill: string; change: number }> {
+  const tierMultiplier = tier === 'success' ? 2 : tier === 'complicated' ? 1.5 : 1;
+  const consequences: Array<{ type: 'skill'; skill: string; change: number }> = [];
+  for (const [skill, weight] of Object.entries(skillWeights)) {
+    const growth = Math.round(weight * tierMultiplier);
+    if (growth > 0) {
+      consequences.push({ type: 'skill', skill, change: growth });
+    }
+  }
+  return consequences;
+}
+
 export function applyUseBasedGrowth(
   player: PlayerState,
   skillWeights: Record<string, number>,
   tier: ResolutionTier
 ): void {
-  const tierMultiplier = tier === 'success' ? 2 : tier === 'complicated' ? 1.5 : 1;
-  for (const [skill, weight] of Object.entries(skillWeights)) {
-    const growth = Math.round(weight * tierMultiplier);
-    if (growth > 0) {
-      player.skills[skill] = (player.skills[skill] ?? 0) + growth;
-    }
+  for (const consequence of buildUseBasedGrowthConsequences(skillWeights, tier)) {
+    player.skills[consequence.skill] = (player.skills[consequence.skill] ?? 0) + consequence.change;
   }
 }
 

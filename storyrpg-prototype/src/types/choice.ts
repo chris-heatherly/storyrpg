@@ -34,6 +34,13 @@ export type ChoiceConsequenceTier =
   | 'branchlet'
   | 'structuralBranch';
 
+export interface StakesLayers {
+  material?: string;
+  relational?: string;
+  identity?: string;
+  existential?: string;
+}
+
 // Resolution result for skill/stat checks
 export type ResolutionTier = 'success' | 'complicated' | 'failure';
 
@@ -84,6 +91,64 @@ export interface ChoiceResidueHint {
   callbackHookId?: string;
 }
 
+export type ChoiceAffordanceSource =
+  | 'identity'
+  | 'relationship'
+  | 'tag'
+  | 'item'
+  | 'skill'
+  | 'flag'
+  | 'callback';
+
+export type WitnessReactionStance =
+  | 'approves'
+  | 'disapproves'
+  | 'fears'
+  | 'admires'
+  | 'questions'
+  | 'remembers';
+
+export interface WitnessReaction {
+  npcId: string;
+  stance: WitnessReactionStance;
+  reactionText: string;
+  residueHint?: string;
+}
+
+export type FailureResidueKind =
+  | 'debt'
+  | 'suspicion'
+  | 'injury'
+  | 'lost_leverage'
+  | 'exposure'
+  | 'obligation'
+  | 'damaged_trust'
+  | 'position_shift';
+
+export interface FailureResidue {
+  kind: FailureResidueKind;
+  description: string;
+}
+
+export interface ChoiceRouteContext {
+  sourceSceneId: string;
+  sourceBeatId: string;
+  sourceChoiceId: string;
+  choiceSummary: string;
+  originalTargetSceneId?: string;
+  originalTargetBeatId?: string;
+  transitionIntent?: string;
+  bridgePurpose?: string;
+}
+
+export interface StatCheckModifier {
+  id: string;
+  condition: ConditionExpression;
+  delta: number;
+  reason: string;
+  hint?: string;
+}
+
 // A single choice option
 export interface Choice {
   id: string;
@@ -98,6 +163,7 @@ export interface Choice {
     cost: string;
     identity: string;
   };
+  stakesLayers?: StakesLayers;
 
   conditions?: ConditionExpression;
 
@@ -107,6 +173,7 @@ export interface Choice {
   statCheck?: {
     skillWeights?: Record<string, number>;
     difficulty: number;
+    modifiers?: StatCheckModifier[];
 
     // Legacy fields — converted to skillWeights at resolution time
     attribute?: keyof PlayerAttributes;
@@ -115,10 +182,14 @@ export interface Choice {
   };
 
   consequenceDomain?: ConsequenceDomain;
+  storyVerb?: string;
+  affordanceSource?: ChoiceAffordanceSource;
   reminderPlan?: ReminderPlan;
   feedbackCue?: ChoiceFeedbackCue;
   moralContract?: MoralContract;
   residueHints?: ChoiceResidueHint[];
+  witnessReactions?: WitnessReaction[];
+  failureResidue?: FailureResidue;
   visualResidueHint?: string;
 
   consequences?: Consequence[];
@@ -129,6 +200,8 @@ export interface Choice {
     delay?: { type: 'scenes' | 'episodes'; count: number };
     triggerCondition?: ConditionExpression;
   }>;
+
+  routeContext?: ChoiceRouteContext;
 
   nextSceneId?: string;
 

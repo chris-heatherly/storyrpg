@@ -68,7 +68,7 @@ function hasVisualThread(panel: SequenceAuditPanel): boolean {
 function hasTurn(panel: SequenceAuditPanel): boolean {
   const text = panelText(panel);
   return Boolean(panel.sequenceIntent?.turningPoint || panel.sequenceIntent?.endState)
-    || /\b(changes?|shifts?|turns?|reveals?|hands?|gives?|takes?|loses?|gains?|backs? away|steps? closer|breaks?|settles?|chooses?|refuses?)\b/i.test(text);
+    || /\b(changes?|shifts?|turns?|reveals?|gives?|takes?|loses?|gains?|backs? away|steps? closer|breaks?|settles?|chooses?|refuses?)\b/i.test(text);
 }
 
 function isQuietAllowed(panel: SequenceAuditPanel): boolean {

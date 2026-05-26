@@ -135,6 +135,7 @@ export interface VisualStoryboardPacket {
   validation: {
     passed: boolean;
     issues: string[];
+    warnings?: string[];
   };
 }
 
@@ -348,34 +349,47 @@ export function chunkStoryboardBeats<T extends { id: string }>(beats: T[], chunk
   return chunks;
 }
 
-export function validateVisualStoryboardPacket(packet: VisualStoryboardPacket): { passed: boolean; issues: string[] } {
+export function validateVisualStoryboardPacket(packet: VisualStoryboardPacket): { passed: boolean; issues: string[]; warnings: string[] } {
   const issues: string[] = [];
+  const warnings: string[] = [];
+  const validEffectiveModes: ImagePlanningMode[] = ['text', 'visual-storyboard'];
+
   if (packet.requestedMode !== 'visual-storyboard') issues.push('requestedMode must be visual-storyboard');
+  if (!validEffectiveModes.includes(packet.effectiveMode)) issues.push('effectiveMode must be text or visual-storyboard');
   if (!packet.sceneMasterPrompt?.thirdPersonCameraRule) issues.push('missing third-person camera rule');
   if (!Array.isArray(packet.shots) || packet.shots.length === 0) issues.push('packet has no shots');
+
   const shotBeatIds = new Set<string>();
   let solitaryRun = 0;
   let lastAngle = '';
+  const validPovModes = new Set<StoryboardShotPacket['thirdPersonPov']>([
+    'observer',
+    'over-shoulder',
+    'environmental-insert',
+  ]);
+
   for (const shot of packet.shots || []) {
     if (!shot.beatId) issues.push('shot missing beatId');
     if (shot.beatId) shotBeatIds.add(shot.beatId);
-    if (!shot.thirdPersonPov || shot.thirdPersonPov === ('subjective' as never)) {
+    if (!validPovModes.has(shot.thirdPersonPov)) {
       issues.push(`${shot.beatId || 'unknown'} uses invalid POV`);
     }
+
     const visibleCount = (shot.requiredVisibleCharacterIds?.length || 0) + (shot.optionalBackgroundCharacterIds?.length || 0);
     const isSolitaryNeutral = visibleCount <= 1 && /^(ms|mcu|cu|medium|close)/i.test(shot.shotSize || '') && /eye/i.test(shot.cameraAngle || '');
     solitaryRun = isSolitaryNeutral ? solitaryRun + 1 : 0;
-    if (solitaryRun > 2) issues.push(`${shot.beatId || 'unknown'} repeats solitary neutral composition more than twice`);
+    if (solitaryRun > 2) warnings.push(`${shot.beatId || 'unknown'} repeats solitary neutral composition more than twice`);
     const angleKey = `${shot.shotSize}|${shot.cameraAngle}|${shot.cameraHeight}|${shot.cameraSide}`;
     if (lastAngle && lastAngle === angleKey && !/locked micro/i.test(shot.dramaticReason || '')) {
-      issues.push(`${shot.beatId || 'unknown'} repeats previous camera without locked micro-progression`);
+      warnings.push(`${shot.beatId || 'unknown'} repeats previous camera without locked micro-progression`);
     }
     lastAngle = angleKey;
   }
+
   for (const beatId of packet.beatIds || []) {
     if (!shotBeatIds.has(beatId)) issues.push(`missing shot for ${beatId}`);
   }
-  return { passed: issues.length === 0, issues };
+  return { passed: issues.length === 0, issues, warnings };
 }
 
 export function visualPlanSlotsFromBeats(scopedSceneId: string, beats: Array<{ id: string; text?: string }>): StoryboardSlotInput[] {

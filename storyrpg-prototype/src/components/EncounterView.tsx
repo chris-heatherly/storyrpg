@@ -37,13 +37,10 @@ import {
   EncounterChoice,
   EncounterChoiceOutcome,
   EmbeddedEncounterChoice,
-  EncounterCost,
   EncounterOutcome,
   AppliedConsequence,
 } from '../types';
-import { ConsequenceBadgeList } from './ConsequenceBadgeList';
 import { OutcomeHeader } from './OutcomeHeader';
-import { ConsequenceToast } from './ConsequenceToast';
 import { StatCheckOverlay } from './StatCheckOverlay';
 import { computeEncounterWeights } from '../engine/resolutionEngine';
 import { evaluateCondition } from '../engine/conditionEvaluator';
@@ -55,6 +52,11 @@ import {
   ProcessedBeat,
   ProcessedChoice,
 } from '../engine/storyEngine';
+import {
+  buildEncounterConsequencePayload,
+  type EncounterOutcomeTier,
+} from '../engine/encounterConsequences';
+import { resolveChoiceSkillDisplay } from '../utils/choiceSkillDisplay';
 
 /**
  * Returns the effective stat bonus from a choice's statBonus field
@@ -114,10 +116,11 @@ import { useClickDebounce } from '../utils/useDebounce';
 import { processTemplate } from '../engine/templateProcessor';
 import { FileText, X } from 'lucide-react-native';
 import { useImagePromptOverlay } from '../hooks/useImagePromptOverlay';
-import { formatSceneBeatLabelFromImageUrl } from '../utils/imagePromptDebug';
+import { formatSceneBeatLabelFromImageUrl, getImagePanelNumberFromStory } from '../utils/imagePromptDebug';
+import { resolvePromptUrlFromImageUrl } from '../utils/imagePromptPaths';
 import { ReadingShell } from './ReadingShell';
 import { ContinueButton } from './ContinueButton';
-import { CONTINUE_COPY, EYEBROWS } from '../theme/copy';
+import { CONTINUE_COPY } from '../theme/copy';
 
 // ========================================
 // BRANCHING TREE ENCOUNTER STATE
@@ -137,6 +140,8 @@ interface CurrentSituation {
     tier: 'success' | 'complicated' | 'failure';
     narrativeText: string;
     outcomeImage?: string;
+    choiceText?: string;
+    outcomeSummary?: string;
   };
 }
 
@@ -392,6 +397,8 @@ type EncounterScreenState =
       tier: 'success' | 'complicated' | 'failure';
       narrativeText: string;
       outcomeImage?: string;
+      choiceText?: string;
+      outcomeSummary?: string;
       consequences: AppliedConsequence[];
       pendingNextSituation: CurrentSituation;
       pendingPhaseId?: string;
@@ -400,15 +407,17 @@ type EncounterScreenState =
   | { 
       type: 'terminal'; 
       outcome: EncounterOutcome;
+      tier: 'success' | 'complicated' | 'failure';
       finalNarrative: string;
       finalImage?: string;
-      cost?: EncounterCost;
+      choiceText?: string;
+      outcomeSummary?: string;
     }
   // Legacy: phase-based (for backward compatibility with old encounter format)
   | { type: 'phase'; phaseId: string; beatId: string }
-  | { type: 'beat_outcome'; phaseId: string; beatId: string; choiceId: string; outcome: 'success' | 'complicated' | 'failure'; nextBeatId?: string }
+  | { type: 'beat_outcome'; phaseId: string; beatId: string; choiceId: string; outcome: 'success' | 'complicated' | 'failure'; nextBeatId?: string; choiceText?: string; outcomeSummary?: string }
   | { type: 'phase_outcome'; phaseId: string; outcome: 'success' | 'failure'; imageIndex: number }
-  | { type: 'encounter_outcome'; outcome: EncounterOutcome };
+  | { type: 'encounter_outcome'; outcome: EncounterOutcome; tier: 'success' | 'complicated' | 'failure'; narrativeText: string; choiceText?: string; outcomeSummary?: string };
 
 /**
  * Resolve encounter outcome tier. When window.__QA_FORCE_TIER is set
@@ -447,6 +456,54 @@ function isTreeBasedEncounter(encounter: Encounter): boolean {
   return !!(outcomes.success?.nextSituation || outcomes.complicated?.nextSituation || outcomes.failure?.nextSituation);
 }
 
+const ENCOUNTER_TIER_SUMMARIES: Record<EncounterOutcomeTier, string> = {
+  success: 'The moment bends your way.',
+  complicated: 'You get through, but not cleanly.',
+  failure: 'The situation turns against you.',
+};
+
+const ENCOUNTER_TIER_FALLBACKS: Record<EncounterOutcomeTier, string> = {
+  success: 'The opening holds, and the moment bends your way.',
+  complicated: 'You get through, but the moment leaves a mark.',
+  failure: 'The move collapses, and danger closes in.',
+};
+
+function tierFromEncounterOutcome(outcome: EncounterOutcome): EncounterOutcomeTier {
+  if (outcome === 'victory') return 'success';
+  if (outcome === 'defeat') return 'failure';
+  return 'complicated';
+}
+
+function lowercaseFirst(value: string): string {
+  return value ? `${value.charAt(0).toLowerCase()}${value.slice(1)}` : value;
+}
+
+function sentenceFromChoiceText(choiceText?: string): string | undefined {
+  const text = choiceText?.replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+  if (!text) return undefined;
+
+  const withoutYou = text.match(/^you\s+(.+)$/i)?.[1];
+  const action = withoutYou || text;
+  const dont = action.match(/^don['’]?t\s+(.+)$/i)?.[1];
+  if (dont) {
+    return `You chose not to ${lowercaseFirst(dont)}.`;
+  }
+  return `You chose to ${lowercaseFirst(action)}.`;
+}
+
+function summarizeEncounterOutcome(text?: string): string | undefined {
+  const normalized = text?.replace(/\s+/g, ' ').trim();
+  if (!normalized) return undefined;
+
+  const sentenceMatch = normalized.match(/^(.+?[.!?])(?:\s|$)/);
+  const firstSentence = sentenceMatch?.[1] || normalized;
+  if (firstSentence.length <= 150) return firstSentence;
+
+  const trimmed = firstSentence.slice(0, 147);
+  const lastBreak = Math.max(trimmed.lastIndexOf(','), trimmed.lastIndexOf(';'), trimmed.lastIndexOf(' '));
+  return `${trimmed.slice(0, lastBreak > 80 ? lastBreak : 147).trim()}...`;
+}
+
 export const EncounterView: React.FC<EncounterViewProps> = ({
   encounter,
   onComplete,
@@ -462,6 +519,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     addEncounterScore,
     advanceEncounterBeat,
     applyConsequences,
+    queueDelayedConsequence,
     endEncounter,
     setEncounterApproach,
     recordOutcome,
@@ -489,6 +547,38 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     if (!url) return undefined;
     return getFeedbackForImage(url)?.regeneratedImageUrl || url;
   }, [getFeedbackForImage]);
+
+  const applyResolvedEncounterOutcome = useCallback((
+    choiceId: string,
+    tier: EncounterOutcomeTier,
+    outcome?: EncounterChoiceOutcome,
+  ): AppliedConsequence[] => {
+    const payload = buildEncounterConsequencePayload({
+      encounterId: encounter.id,
+      choiceId,
+      tier,
+      outcome,
+    });
+
+    for (const delayed of payload.delayedConsequences) {
+      queueDelayedConsequence({
+        id: `enc-dc-${encounter.id}-${choiceId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        consequence: delayed.consequence,
+        description: delayed.description,
+        delay: delayed.delay,
+        triggerCondition: delayed.triggerCondition,
+        sourceSceneId: encounter.id,
+        sourceChoiceId: choiceId,
+        scenesElapsed: 0,
+        episodesElapsed: 0,
+        fired: false,
+      });
+    }
+
+    return payload.consequences.length > 0
+      ? applyConsequences(payload.consequences as any)
+      : [];
+  }, [applyConsequences, encounter.id, queueDelayedConsequence]);
 
   const getSceneBeatLabelFromImageUrl = useCallback((url?: string): string | null => {
     return formatSceneBeatLabelFromImageUrl(url, encounter?.id);
@@ -536,9 +626,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         const beatId = ('beatId' in screenState ? screenState.beatId : undefined) || 'beat-1';
         return `${baseUrl}/${dir}/images/prompts/encounter-${encounterSceneId}-${beatId}-setup.json`;
       }
-      return imageUrl
-        .replace(/\/images\//, '/images/prompts/')
-        .replace(/\.(png|jpg|jpeg|webp)$/i, '.json');
+      return resolvePromptUrlFromImageUrl(imageUrl);
     },
   });
   const [processedBeat, setProcessedBeat] = useState<ProcessedBeat | null>(null);
@@ -552,8 +640,6 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   // --- Cinematic reveal state ---
   const lastKnownImageRef = useRef<string | undefined>(undefined);
   const allEncounterFeedbackRef = useRef<AppliedConsequence[]>([]);
-  const [consequenceFeedback, setConsequenceFeedback] = useState<AppliedConsequence[]>([]);
-  const [showBadges, setShowBadges] = useState(false);
   const [showNextSituation, setShowNextSituation] = useState(false);
   const [vignetteColor, setVignetteColor] = useState<string | null>(null);
   const [encounterStatCheck, setEncounterStatCheck] = useState<{ skillName: string; tier: 'success' | 'complicated' | 'failure' } | null>(null);
@@ -562,7 +648,6 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   // Animated values for cinematic effects
   const vignetteAnim = useRef(new Animated.Value(0)).current;
   const screenShakeAnim = useRef(new Animated.Value(0)).current;
-  const outcomeLabelAnim = useRef(new Animated.Value(0)).current;
   const dividerAnim = useRef(new Animated.Value(0)).current;
   const choiceEntryAnims = useRef<Animated.Value[]>([]).current;
 
@@ -572,6 +657,21 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     failure: TERMINAL.colors.error,
   }), []);
 
+  const buildEncounterChoiceEcho = useCallback((
+    choice: EncounterChoice | EmbeddedEncounterChoice | undefined,
+    tier: EncounterOutcomeTier,
+    narrativeText?: string,
+  ) => ({
+    choiceText: choice?.feedbackCue?.echoSummary
+      || sentenceFromChoiceText(
+        choice?.text ? processTemplate(choice.text, player, currentStory) : undefined
+      ),
+    outcomeSummary: choice?.feedbackCue?.progressSummary
+      || choice?.reminderPlan?.shortTerm
+      || summarizeEncounterOutcome(narrativeText)
+      || ENCOUNTER_TIER_SUMMARIES[tier],
+  }), [player, currentStory]);
+
   // Fire vignette + screen shake based on outcome tier
   const playOutcomeEffects = useCallback((tier: 'success' | 'complicated' | 'failure') => {
     setVignetteColor(TIER_COLORS[tier]);
@@ -580,13 +680,6 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       Animated.timing(vignetteAnim, { toValue: 1, duration: TIMING.fast, useNativeDriver: Platform.OS !== 'web' }),
       Animated.timing(vignetteAnim, { toValue: 0, duration: TIMING.slow, useNativeDriver: Platform.OS !== 'web' }),
     ]).start();
-
-    outcomeLabelAnim.setValue(0);
-    if (tier === 'success') {
-      Animated.spring(outcomeLabelAnim, { toValue: 1, friction: 5, tension: 80, useNativeDriver: Platform.OS !== 'web' }).start();
-    } else {
-      Animated.timing(outcomeLabelAnim, { toValue: 1, duration: TIMING.normal, useNativeDriver: Platform.OS !== 'web' }).start();
-    }
 
     if (tier === 'failure') {
       screenShakeAnim.setValue(0);
@@ -598,7 +691,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         Animated.timing(screenShakeAnim, { toValue: 0, duration: 50, easing: Easing.linear, useNativeDriver: Platform.OS !== 'web' }),
       ]).start();
     }
-  }, [TIER_COLORS, vignetteAnim, outcomeLabelAnim, screenShakeAnim]);
+  }, [TIER_COLORS, vignetteAnim, screenShakeAnim]);
 
   // Stagger choice button entrance
   const animateChoiceEntrance = useCallback((count: number) => {
@@ -877,16 +970,12 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       addEncounterScore(scoreChange);
       syncEncounterStateSystems(tier, goalTicks, threatTicks, choice.approach);
       
-      // Apply consequences and capture feedback for badges
-      let applied: AppliedConsequence[] = [];
-      if (outcome.consequences && outcome.consequences.length > 0) {
-        applied = applyConsequences(outcome.consequences as any);
-      }
+      // Apply outcome, cost, memory flags, and delayed aftermath.
+      const applied = applyResolvedEncounterOutcome(choice.id, tier, outcome);
       const playerFacing = applied.filter(a => a.type !== 'flag');
-      setConsequenceFeedback(playerFacing);
       allEncounterFeedbackRef.current = [...allEncounterFeedbackRef.current, ...playerFacing];
-      setShowBadges(false);
       setShowNextSituation(false);
+      const choiceEcho = buildEncounterChoiceEcho(choice, tier, outcome.narrativeText);
 
       // Fire cinematic outcome effects
       playOutcomeEffects(tier);
@@ -934,11 +1023,10 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         setScreenState({
           type: 'terminal',
           outcome: finalOutcome,
+          tier,
           finalNarrative: outcome.narrativeText,
           finalImage: terminalFinalImage,
-          cost: finalOutcome === 'partialVictory'
-            ? outcome.cost || encounter.outcomes.partialVictory?.cost
-            : undefined,
+          ...choiceEcho,
         });
       });
       return;
@@ -964,6 +1052,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         tier,
         narrativeText: outcome.narrativeText,
         outcomeImage: outcome.outcomeImage || situation.situationImage || lastKnownImageRef.current,
+        ...choiceEcho,
         consequences: playerFacing,
         pendingNextSituation: nextSituation,
         pendingPhaseId: screenState.phaseId,
@@ -981,7 +1070,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     } else {
       proceedWithOutcome();
     }
-  }, [screenState, player, currentStory, encounterState, addGoalProgress, addThreatProgress, addEncounterScore, applyConsequences, syncEncounterStateSystems]);
+  }, [screenState, player, currentStory, encounterState, addGoalProgress, addThreatProgress, addEncounterScore, applyResolvedEncounterOutcome, syncEncounterStateSystems, buildEncounterChoiceEcho]);
   
   // Debounced tree choice handler
   const handleTreeChoice = useClickDebounce(handleTreeChoicePress, 500);
@@ -1052,25 +1141,20 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     addEncounterScore(scoreChange);
     syncEncounterStateSystems(outcome, goalTicks, threatTicks, choice.approach);
 
-    // Check if beat has outcome images
-    const outcomeImages = beat.outcomeSequences?.[outcome] || beat.outcomeSequences?.success || [];
-    
+    const outcomeData = 'outcomes' in choice ? choice.outcomes?.[outcome] : undefined;
+    const applied = applyResolvedEncounterOutcome(choice.id, outcome, outcomeData);
+    const playerFacing = applied.filter(a => a.type !== 'flag');
+    allEncounterFeedbackRef.current = [...allEncounterFeedbackRef.current, ...playerFacing];
+
     // Try to get narrative text from choice outcomes (EncounterChoice type)
     let narrativeText = '';
-    if ('outcomes' in choice && choice.outcomes && choice.outcomes[outcome]) {
-      narrativeText = choice.outcomes[outcome].narrativeText || '';
+    if (outcomeData) {
+      narrativeText = outcomeData.narrativeText || '';
     }
     
     // Fallback to generic text if no narrative provided
     if (!narrativeText) {
-      const goalName = encounter.goalClock?.name || 'your objective';
-      const threatName = encounter.threatClock?.name || 'the threat';
-      const genericTexts = {
-        success: `You make significant progress toward ${goalName.toLowerCase()}.`,
-        complicated: `Progress, but ${threatName.toLowerCase()} grows closer.`,
-        failure: `A setback. ${threatName} advances.`,
-      };
-      narrativeText = genericTexts[outcome];
+      narrativeText = ENCOUNTER_TIER_FALLBACKS[outcome];
     }
     
     // Determine next beat - prefer outcome's nextBeatId, then choice's, then result's
@@ -1089,10 +1173,11 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       choiceId: choice.id,
       outcome,
       nextBeatId,
+      ...buildEncounterChoiceEcho(choice as EncounterChoice, outcome, narrativeText),
     });
     
     setOutcomeText(narrativeText);
-  }, [screenState, currentPhase, processedBeat, player, encounter, addGoalProgress, addThreatProgress, addEncounterScore]);
+  }, [screenState, currentPhase, processedBeat, player, encounter, addGoalProgress, addThreatProgress, addEncounterScore, applyResolvedEncounterOutcome, buildEncounterChoiceEcho]);
   
   const handleChoicePressBase = useCallback((choiceId: string) => {
     if (screenState.type !== 'phase' || !currentPhase || !processedBeat || selectedChoiceId) return;
@@ -1283,12 +1368,35 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
 
   const handleEncounterEnd = (outcome: EncounterOutcome) => {
     const outcomeData = encounter.outcomes[outcome];
-    if (outcomeData?.consequences) {
-      const endApplied = applyConsequences(outcomeData.consequences);
+    const endTier: EncounterOutcomeTier =
+      screenState.type === 'terminal' ? screenState.tier :
+      screenState.type === 'beat_outcome' ? screenState.outcome :
+      screenState.type === 'phase_outcome' ? (screenState.outcome === 'success' ? 'success' : 'failure') :
+      tierFromEncounterOutcome(outcome);
+    const echoState = ('choiceText' in screenState || 'outcomeSummary' in screenState)
+      ? {
+          choiceText: (screenState as any).choiceText,
+          outcomeSummary: (screenState as any).outcomeSummary
+            || summarizeEncounterOutcome(outcomeData?.outcomeText),
+        }
+      : {};
+    const endConsequences = [
+      { type: 'setFlag', flag: `encounter.${encounter.id}.outcome.${outcome}`, value: true },
+      ...(outcomeData?.consequences ?? []),
+      ...((outcomeData as any)?.cost?.consequences ?? []),
+    ];
+    if (endConsequences.length > 0) {
+      const endApplied = applyConsequences(endConsequences as any);
       allEncounterFeedbackRef.current = [...allEncounterFeedbackRef.current, ...endApplied.filter(a => a.type !== 'flag')];
     }
 
-    setScreenState({ type: 'encounter_outcome', outcome });
+    setScreenState({
+      type: 'encounter_outcome',
+      outcome,
+      tier: endTier,
+      narrativeText: outcomeData?.outcomeText || ENCOUNTER_TIER_FALLBACKS[endTier],
+      ...echoState,
+    });
     endEncounter();
   };
 
@@ -1376,23 +1484,21 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     
     const scoreChange = outcome === 'success' ? 3 : outcome === 'complicated' ? 1 : -1;
     addEncounterScore(scoreChange);
+
+    const outcomeData = 'outcomes' in choice ? choice.outcomes?.[outcome] : undefined;
+    const applied = applyResolvedEncounterOutcome(choice.id, outcome, outcomeData);
+    const playerFacing = applied.filter(a => a.type !== 'flag');
+    allEncounterFeedbackRef.current = [...allEncounterFeedbackRef.current, ...playerFacing];
     
     // Try to get narrative text from choice outcomes
     let narrativeText = '';
-    if ('outcomes' in choice && choice.outcomes && choice.outcomes[outcome]) {
-      narrativeText = choice.outcomes[outcome].narrativeText || '';
+    if (outcomeData) {
+      narrativeText = outcomeData.narrativeText || '';
     }
     
     // Fallback to generic text if no narrative provided
     if (!narrativeText) {
-      const goalName = encounter.goalClock?.name || 'your objective';
-      const threatName = encounter.threatClock?.name || 'the threat';
-      const genericTexts = {
-        success: `You make significant progress toward ${goalName.toLowerCase()}.`,
-        complicated: `Progress, but ${threatName.toLowerCase()} grows closer.`,
-        failure: `A setback. ${threatName} advances.`,
-      };
-      narrativeText = genericTexts[outcome];
+      narrativeText = ENCOUNTER_TIER_FALLBACKS[outcome];
     }
     
     // Determine next beat - prefer outcome's nextBeatId, then choice's, then result's
@@ -1412,6 +1518,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         choiceId: choice.id,
         outcome,
         nextBeatId: nextNextBeatId,
+        ...buildEncounterChoiceEcho(choice as EmbeddedEncounterChoice, outcome, narrativeText),
       });
       
       setOutcomeText(narrativeText);
@@ -1522,11 +1629,56 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     />
   );
 
-  const renderEncounterDevBadge = (label: string) => (developerMode && encounterSceneLabel) ? (
-    <View style={[styles.devBadge, { pointerEvents: 'none' as const }]}>
-      <Text style={styles.devBadgeText}>{label}</Text>
-    </View>
-  ) : null;
+  const renderEncounterDevBadge = (label: string, image?: string | null) => {
+    if (!developerMode || !label) return null;
+    const panelNumber = getImagePanelNumberFromStory(currentStory, image);
+    const devLabel = panelNumber ? `${label} • IMG ${panelNumber}` : label;
+    return (
+      <View style={[styles.devBadge, { pointerEvents: 'none' as const }]}>
+        <Text style={styles.devBadgeText}>{devLabel}</Text>
+      </View>
+    );
+  };
+
+  const renderEncounterConsequenceBeat = (params: {
+    tier: EncounterOutcomeTier;
+    narrativeText?: string;
+    choiceText?: string;
+    outcomeSummary?: string;
+    animate?: boolean;
+    onAnimationComplete?: () => void;
+  }) => {
+    const tierColor = TIER_COLORS[params.tier];
+    const summary = params.outcomeSummary || ENCOUNTER_TIER_SUMMARIES[params.tier];
+    const narrative = params.narrativeText || ENCOUNTER_TIER_FALLBACKS[params.tier];
+
+    return (
+      <>
+        <View style={[
+          styles.encounterEchoPanel,
+          {
+            borderColor: withAlpha(tierColor, 0.35),
+            backgroundColor: withAlpha(tierColor, 0.08),
+          },
+        ]}>
+          <Text style={styles.encounterEchoSummaryText}>
+            {params.choiceText || summary}
+          </Text>
+          {!!params.choiceText && !!summary && (
+            <Text style={styles.encounterEchoProgressText}>{summary}</Text>
+          )}
+        </View>
+
+        <View style={styles.textPanel}>
+          <NarrativeText
+            text={tpl(narrative)}
+            animate={params.animate ?? false}
+            onAnimationComplete={params.onAnimationComplete || (() => {})}
+          />
+        </View>
+      </>
+    );
+  };
 
   // ========================================
   // RENDER: TREE-BASED ENCOUNTER (Action/Reaction Flow)
@@ -1547,6 +1699,12 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       .map(c => {
         const availability = getEncounterChoiceAvailability(c, player, currentStory);
         if (!availability.visible) return null;
+        const skillBonusValue = resolveStatBonus(c, player);
+        const skillDisplay = resolveChoiceSkillDisplay({
+          skillKey: c.primarySkill,
+          player,
+          bonus: skillBonusValue,
+        });
         return {
           id: c.id,
           text: processTemplate(c.text, player, currentStory),
@@ -1554,10 +1712,11 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           lockedReason: availability.lockedReason,
           hasStatCheck: !!c.primarySkill,
           statCheckInfo: c.primarySkill ? { skill: c.primarySkill } : undefined,
-          primarySkillLabel: c.primarySkill
-            ? c.primarySkill.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
-            : undefined,
-          hasAdvantage: !!(c.statBonus && resolveStatBonus(c, player) > 0),
+          primarySkillKey: skillDisplay.skillKey,
+          primarySkillLabel: skillDisplay.skillLabel,
+          effectiveSkillValue: skillDisplay.effectiveSkillValue,
+          skillBonusValue: skillDisplay.skillBonusValue,
+          hasAdvantage: !!(c.statBonus && skillBonusValue > 0),
           advantageText: c.statBonus?.flavorText,
           echoSummary: c.feedbackCue?.echoSummary ?? c.reminderPlan?.immediate,
           progressSummary: c.feedbackCue?.progressSummary ?? c.reminderPlan?.shortTerm,
@@ -1570,7 +1729,6 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     const threatFilled = encounterState && encounterState.threatProgress >= encounterState.threatMax;
     const encounterEnding = goalFilled || threatFilled;
 
-    const playerFacingBadges = consequenceFeedback.filter(a => a.type !== 'flag');
     const situationStateNarration = buildEncounterStateNarration(encounter, encounterState);
     const activeSituationText = situationStateNarration.length > 0
       ? `${situation.setupText}\n\n${situationStateNarration.join(' ')}`
@@ -1595,43 +1753,31 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           approximateThreat: true,
         })}
         imageExtras={renderEncounterDevPromptButton(displayImage)}
-        overlays={renderEncounterDevPromptPanel()}
+        overlays={
+          <>
+            {renderEncounterDevPromptPanel()}
+            {renderEncounterDevBadge(getSceneBeatLabelFromImageUrl(displayImage) ?? encounterSceneLabel, displayImage)}
+          </>
+        }
       >
         {/* Action Result (if coming from a choice) */}
             {hasOutcome && situation.previousOutcome && (
-              <View style={styles.textPanel}>
-                <OutcomeHeader tier={situation.previousOutcome.tier} context="encounter" animValue={outcomeLabelAnim} />
-                <NarrativeText
-                  text={tpl(situation.previousOutcome.narrativeText)}
-                  animate={isAnimating}
-                  onAnimationComplete={() => {
-                    setIsAnimating(false);
-                    if (playerFacingBadges.length > 0) {
-                      setShowBadges(true);
-                      setTimeout(() => {
-                        setShowNextSituation(true);
-                        animateDivider();
-                      }, 800);
-                      setTimeout(() => {
-                        setShowChoices(true);
-                        animateChoiceEntrance(processedChoices.length);
-                      }, 1200);
-                    } else {
-                      setShowNextSituation(true);
-                      animateDivider();
-                      setTimeout(() => {
-                        setShowChoices(true);
-                        animateChoiceEntrance(processedChoices.length);
-                      }, 400);
-                    }
-                  }}
-                />
-
-                {/* Consequence Toast */}
-                {showBadges && playerFacingBadges.length > 0 && (
-                  <ConsequenceToast consequences={playerFacingBadges} />
-                )}
-              </View>
+              renderEncounterConsequenceBeat({
+                tier: situation.previousOutcome.tier,
+                narrativeText: situation.previousOutcome.narrativeText,
+                choiceText: situation.previousOutcome.choiceText,
+                outcomeSummary: situation.previousOutcome.outcomeSummary,
+                animate: isAnimating,
+                onAnimationComplete: () => {
+                  setIsAnimating(false);
+                  setShowNextSituation(true);
+                  animateDivider();
+                  setTimeout(() => {
+                    setShowChoices(true);
+                    animateChoiceEntrance(processedChoices.length);
+                  }, 400);
+                },
+              })
             )}
 
             {/* New Situation Setup - staggered reveal after outcome */}
@@ -1689,7 +1835,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
 
         {encounterEnding && (
           <ContinueButton
-            label={goalFilled && !threatFilled ? 'CLAIM VICTORY' : 'SEE RESULTS'}
+            label="SEE AFTERMATH"
             onPress={() => {
               const finalOutcome = goalFilled && !threatFilled ? 'victory' :
                                    threatFilled && !goalFilled ? 'defeat' :
@@ -1707,10 +1853,9 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   // ========================================
 
   if (screenState.type === 'outcome_result') {
-    const { tier, narrativeText, outcomeImage, consequences, pendingNextSituation, pendingPhaseId } = screenState;
+    const { tier, narrativeText, outcomeImage, choiceText, outcomeSummary, pendingNextSituation, pendingPhaseId } = screenState;
     const resolvedOutcomeImage = resolveImageUrl(outcomeImage);
     if (resolvedOutcomeImage) lastKnownImageRef.current = resolvedOutcomeImage;
-    const playerFacingBadges = consequences.filter(a => a.type !== 'flag');
 
     return (
       <ReadingShell
@@ -1726,45 +1871,41 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           </>
         }
         chromeTop={renderEncounterClockChrome()}
+        imageExtras={renderEncounterDevPromptButton(resolvedOutcomeImage)}
+        overlays={
+          <>
+            {renderEncounterDevPromptPanel()}
+            {renderEncounterDevBadge(getSceneBeatLabelFromImageUrl(resolvedOutcomeImage) ?? encounterSceneLabel, resolvedOutcomeImage)}
+          </>
+        }
       >
-        <View style={styles.textPanel}>
-          <OutcomeHeader tier={tier} context="encounter" animValue={outcomeLabelAnim} />
-          <NarrativeText
-            text={tpl(narrativeText)}
-            animate={isAnimating}
-            onAnimationComplete={() => {
-              setIsAnimating(false);
-              if (playerFacingBadges.length > 0) {
-                setShowBadges(true);
-              }
-            }}
-          />
+        {renderEncounterConsequenceBeat({
+          tier,
+          narrativeText,
+          choiceText,
+          outcomeSummary,
+          animate: isAnimating,
+          onAnimationComplete: () => setIsAnimating(false),
+        })}
 
-          {showBadges && playerFacingBadges.length > 0 && (
-            <ConsequenceToast consequences={playerFacingBadges} />
-          )}
-
-          <ContinueButton
-            copyKey="default"
-            disabled={isAnimating}
-            testID="encounter-outcome-continue"
-            onPress={() => {
-              if (isAnimating) return;
-              transitionTo(() => {
-                setScreenState({
-                  type: 'active',
-                  situation: pendingNextSituation,
-                  phaseId: pendingPhaseId,
-                });
-                setIsAnimating(true);
-                setShowChoices(false);
-                setShowBadges(false);
-                setConsequenceFeedback([]);
-                scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+        <ContinueButton
+          copyKey="default"
+          disabled={isAnimating}
+          testID="encounter-outcome-continue"
+          onPress={() => {
+            if (isAnimating) return;
+            transitionTo(() => {
+              setScreenState({
+                type: 'active',
+                situation: pendingNextSituation,
+                phaseId: pendingPhaseId,
               });
-            }}
-          />
-        </View>
+              setIsAnimating(true);
+              setShowChoices(false);
+              scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+            });
+          }}
+        />
       </ReadingShell>
     );
   }
@@ -1774,15 +1915,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   // ========================================
   
   if (screenState.type === 'terminal') {
-    const { outcome, finalNarrative, finalImage, cost } = screenState;
-    
-    const terminalLabels: Record<string, { label: string; tier: 'success' | 'complicated' | 'failure'; color: string }> = {
-      victory: { label: 'VICTORY', tier: 'success', color: TERMINAL.colors.success },
-      defeat: { label: 'DEFEATED', tier: 'failure', color: TERMINAL.colors.error },
-      escape: { label: 'ESCAPED', tier: 'complicated', color: TERMINAL.colors.amber },
-      partialVictory: { label: 'PARTIAL VICTORY', tier: 'complicated', color: TERMINAL.colors.amber },
-    };
-    const labelInfo = terminalLabels[outcome] || terminalLabels.victory;
+    const { outcome, tier, finalNarrative, finalImage, choiceText, outcomeSummary } = screenState;
 
     // Image fallback chain: explicit outcomeImage → last image shown during encounter → phase situationImage
     const terminalImage = resolveImageUrl(
@@ -1791,48 +1924,28 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         || encounter.phases?.[encounter.phases.length - 1]?.situationImage
         || undefined
     );
-    const terminalCost = outcome === 'partialVictory'
-      ? cost || encounter.outcomes.partialVictory?.cost
-      : undefined;
     
     return (
       <ReadingShell
         imageUrl={terminalImage}
         imageOpacity={imageOpacity}
         placeholderWatermark
-        vignette={renderEncounterTerminalBand(labelInfo.color)}
+        vignette={renderEncounterTerminalBand(TIER_COLORS[tier])}
         imageExtras={renderEncounterDevPromptButton(terminalImage)}
         overlays={
           <>
             {renderEncounterDevPromptPanel()}
-            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • ${outcome.toUpperCase()}`)}
+            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • Result`, terminalImage)}
           </>
         }
       >
-        <View style={styles.textPanel}>
-          <OutcomeHeader tier={labelInfo.tier} context="encounter" text={labelInfo.label} fontSize={28} />
-          <NarrativeText
-            text={tpl(finalNarrative)}
-            animate={true}
-            onAnimationComplete={() => {}}
-          />
-
-          {terminalCost && (
-            <View style={styles.costPanel}>
-              <Text style={styles.costPanelLabel}>{EYEBROWS.cost}</Text>
-              <Text style={styles.costPanelTitle}>{terminalCost.visibleComplication}</Text>
-              <Text style={styles.costPanelMeta}>{`${terminalCost.severity.toUpperCase()} ${terminalCost.domain.toUpperCase()} COST`}</Text>
-              <Text style={styles.costPanelBody}>{terminalCost.immediateEffect}</Text>
-              {!!terminalCost.lingeringEffect && (
-                <Text style={styles.costPanelLingering}>{terminalCost.lingeringEffect}</Text>
-              )}
-            </View>
-          )}
-
-          {consequenceFeedback.length > 0 && (
-            <ConsequenceBadgeList consequences={consequenceFeedback} layout="inline" animated={false} maxVisible={10} />
-          )}
-        </View>
+        {renderEncounterConsequenceBeat({
+          tier,
+          narrativeText: finalNarrative,
+          choiceText,
+          outcomeSummary,
+          animate: true,
+        })}
 
         <ContinueButton
           copyKey="encounterConclude"
@@ -1877,17 +1990,25 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       .map(c => {
         const availability = getEncounterChoiceAvailability(c as EncounterChoice | EmbeddedEncounterChoice, player, currentStory);
         if (!availability.visible) return null;
+        const skillBonusValue = resolveStatBonus(c as EncounterChoice | EmbeddedEncounterChoice, player);
+        const primarySkill = 'primarySkill' in c ? c.primarySkill : undefined;
+        const skillDisplay = resolveChoiceSkillDisplay({
+          skillKey: primarySkill,
+          player,
+          bonus: skillBonusValue,
+        });
         return {
           id: c.id,
           text: processTemplate(c.text, player, currentStory),
           isLocked: availability.isLocked,
           lockedReason: availability.lockedReason,
-          hasStatCheck: !!('primarySkill' in c && c.primarySkill),
-          statCheckInfo: 'primarySkill' in c && c.primarySkill ? { skill: c.primarySkill } : undefined,
-          primarySkillLabel: 'primarySkill' in c && c.primarySkill
-            ? c.primarySkill.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
-            : undefined,
-          hasAdvantage: !!(c.statBonus && resolveStatBonus(c as EncounterChoice | EmbeddedEncounterChoice, player) > 0),
+          hasStatCheck: !!primarySkill,
+          statCheckInfo: primarySkill ? { skill: primarySkill } : undefined,
+          primarySkillKey: skillDisplay.skillKey,
+          primarySkillLabel: skillDisplay.skillLabel,
+          effectiveSkillValue: skillDisplay.effectiveSkillValue,
+          skillBonusValue: skillDisplay.skillBonusValue,
+          hasAdvantage: !!(c.statBonus && skillBonusValue > 0),
           advantageText: c.statBonus?.flavorText,
           echoSummary: c.feedbackCue?.echoSummary ?? c.reminderPlan?.immediate,
           progressSummary: c.feedbackCue?.progressSummary ?? c.reminderPlan?.shortTerm,
@@ -1909,29 +2030,31 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         imageOpacity={imageOpacity}
         chromeTop={renderEncounterClockChrome()}
       >
-        <View style={styles.textPanel}>
-          <OutcomeHeader tier={phaseOutcomeTier} context="encounter" />
-          <NarrativeText text={tpl(outcomeText)} animate={false} />
+        {renderEncounterConsequenceBeat({
+          tier: phaseOutcomeTier,
+          narrativeText: outcomeText,
+          choiceText: screenState.choiceText,
+          outcomeSummary: screenState.outcomeSummary,
+        })}
 
-          {nextBeat && 'setupText' in nextBeat && nextBeat.setupText && !encounterEnding && (() => {
-            const nb = nextBeat as EncounterBeat;
-            let displayText = nb.setupText;
-            if (nb.setupTextVariants?.length) {
-              for (const v of nb.setupTextVariants) {
-                try { if (evaluateCondition(v.condition as any, player)) { displayText = v.text; break; } } catch { /* ignore */ }
-              }
+        {nextBeat && 'setupText' in nextBeat && nextBeat.setupText && !encounterEnding && (() => {
+          const nb = nextBeat as EncounterBeat;
+          let displayText = nb.setupText;
+          if (nb.setupTextVariants?.length) {
+            for (const v of nb.setupTextVariants) {
+              try { if (evaluateCondition(v.condition as any, player)) { displayText = v.text; break; } } catch { /* ignore */ }
             }
-            const encounterStateNarration = buildEncounterStateNarration(encounter, encounterState);
-            if (encounterStateNarration.length > 0) {
-              displayText = `${displayText}\n\n${encounterStateNarration.join(' ')}`;
-            }
-            return (
-              <View style={styles.nextBeatSetupWrap}>
-                <NarrativeText text={tpl(displayText)} animate={false} />
-              </View>
-            );
-          })()}
-        </View>
+          }
+          const encounterStateNarration = buildEncounterStateNarration(encounter, encounterState);
+          if (encounterStateNarration.length > 0) {
+            displayText = `${displayText}\n\n${encounterStateNarration.join(' ')}`;
+          }
+          return (
+            <View style={[styles.textPanel, styles.nextSituationPanel]}>
+              <NarrativeText text={tpl(displayText)} animate={false} />
+            </View>
+          );
+        })()}
 
         {!encounterEnding && nextBeatChoices.length > 0 && (
           <View style={styles.choicesList}>
@@ -1949,7 +2072,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         {(encounterEnding || nextBeatChoices.length === 0) && (
           <ContinueButton
             label={encounterEnding
-              ? (goalFilled && !threatFilled ? 'CLAIM VICTORY' : 'SEE RESULTS')
+              ? 'SEE AFTERMATH'
               : CONTINUE_COPY.default}
             onPress={handleContinue}
           />
@@ -2000,72 +2123,29 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
                        || lastKnownImageRef.current
                        || lastPhase?.situationImage;
 
-    // Use encounter-level outcome text if available, otherwise generic fallback
-    const outcomeData = encounter.outcomes?.[screenState.outcome]
-      || (screenState.outcome === 'partialVictory' ? encounter.outcomes?.partialVictory : undefined)
-      || encounter.outcomes?.[screenState.outcome === 'victory' ? 'victory' : 'defeat'];
-    const outcomeNarrative = outcomeData?.outcomeText
-      || (screenState.outcome === 'victory'
-          ? 'You emerged triumphant from this challenge.'
-          : screenState.outcome === 'defeat'
-          ? 'Things did not go as planned, but the story continues...'
-          : screenState.outcome === 'partialVictory'
-          ? 'You achieved your goal, but not without a price...'
-          : 'You managed to get away and live to fight another day.');
-
-    const legacyLabels: Record<string, { label: string; tier: 'success' | 'complicated' | 'failure'; color: string }> = {
-      victory: { label: 'VICTORY', tier: 'success', color: TERMINAL.colors.success },
-      defeat: { label: 'DEFEATED', tier: 'failure', color: TERMINAL.colors.error },
-      escape: { label: 'ESCAPED', tier: 'complicated', color: TERMINAL.colors.amber },
-      partialVictory: { label: 'PARTIAL VICTORY', tier: 'complicated', color: TERMINAL.colors.amber },
-    };
-    const labelInfo = legacyLabels[screenState.outcome] || legacyLabels.escape;
-    const outcomeLabel = labelInfo.label;
-    const legacyTier = labelInfo.tier;
-    const outcomeBorderColor = labelInfo.color;
+    const legacyTier = screenState.tier;
 
     return (
       <ReadingShell
         imageUrl={finalImage}
         imageOpacity={imageOpacity}
         placeholderWatermark
-        vignette={renderEncounterTerminalBand(outcomeBorderColor)}
+        vignette={renderEncounterTerminalBand(TIER_COLORS[legacyTier])}
         imageExtras={renderEncounterDevPromptButton(finalImage)}
         overlays={
           <>
             {renderEncounterDevPromptPanel()}
-            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • ${outcomeLabel}`)}
+            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • Result`, finalImage)}
           </>
         }
       >
-        <View style={styles.textPanel}>
-          <OutcomeHeader tier={legacyTier} context="encounter" text={outcomeLabel} fontSize={28} />
-          <NarrativeText
-            text={tpl(outcomeNarrative)}
-            animate={true}
-            onAnimationComplete={() => {}}
-          />
-
-          {screenState.outcome === 'partialVictory' && (() => {
-            const legacyCost = outcomeData?.cost || encounter.outcomes?.partialVictory?.cost;
-            if (!legacyCost) return null;
-            return (
-              <View style={styles.costPanel}>
-                <Text style={styles.costPanelLabel}>{EYEBROWS.cost}</Text>
-                <Text style={styles.costPanelTitle}>{legacyCost.visibleComplication}</Text>
-                <Text style={styles.costPanelMeta}>{`${legacyCost.severity.toUpperCase()} ${legacyCost.domain.toUpperCase()} COST`}</Text>
-                <Text style={styles.costPanelBody}>{legacyCost.immediateEffect}</Text>
-                {!!legacyCost.lingeringEffect && (
-                  <Text style={styles.costPanelLingering}>{legacyCost.lingeringEffect}</Text>
-                )}
-              </View>
-            );
-          })()}
-
-          {consequenceFeedback.length > 0 && (
-            <ConsequenceBadgeList consequences={consequenceFeedback} layout="inline" animated={false} maxVisible={10} />
-          )}
-        </View>
+        {renderEncounterConsequenceBeat({
+          tier: legacyTier,
+          narrativeText: screenState.narrativeText,
+          choiceText: screenState.choiceText,
+          outcomeSummary: screenState.outcomeSummary,
+          animate: true,
+        })}
 
         <ContinueButton copyKey="encounterConclude" onPress={handleContinue} />
       </ReadingShell>
@@ -2185,6 +2265,13 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       imageOpacity={imageOpacity}
       scrollViewRef={scrollViewRef as any}
       chromeTop={legacyChromeTop}
+      imageExtras={renderEncounterDevPromptButton(currentImage)}
+      overlays={
+        <>
+          {renderEncounterDevPromptPanel()}
+          {renderEncounterDevBadge(getSceneBeatLabelFromImageUrl(currentImage) ?? encounterSceneLabel, currentImage)}
+        </>
+      }
       onImageError={(e) => {
         console.warn(`[EncounterView] Image failed to load: ${currentImage}`, e?.nativeEvent);
         if (processedBeat && currentImage === processedBeat.image) {
@@ -2194,7 +2281,10 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     >
       <View style={styles.textPanel}>
         <NarrativeText
-          text={tpl(processedBeat.text)}
+          text={tpl([
+            processedBeat.text,
+            ...(processedBeat.skillInsights ?? []),
+          ].filter(Boolean).join('\n\n'))}
           speaker={processedBeat.speaker}
           speakerMood={processedBeat.speakerMood}
           animate={true}
@@ -2382,23 +2472,26 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     textAlign: 'left',
   },
-  costPanel: {
-    ...sharedStyles.sectionCard,
-    marginTop: 16,
-    borderColor: withAlpha(TERMINAL.colors.amber, 0.35),
-    backgroundColor: withAlpha(TERMINAL.colors.amber, 0.08),
+  encounterEchoPanel: {
+    borderWidth: 1,
+    borderRadius: RADIUS.choice,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 12,
   },
-  costPanelLabel: { ...sharedStyles.sectionEyebrow, color: TERMINAL.colors.amber, marginBottom: 6 },
-  costPanelTitle: { ...sharedStyles.sectionCardTitle, marginBottom: 6 },
-  costPanelMeta: {
+  encounterEchoSummaryText: {
     color: TERMINAL.colors.textLight,
-    fontSize: 11,
+    fontSize: 15,
     fontWeight: '700',
-    letterSpacing: 1,
-    marginBottom: 8,
+    lineHeight: 22,
   },
-  costPanelBody: sharedStyles.sectionCardBody,
-  costPanelLingering: { ...sharedStyles.sectionCardMeta, marginTop: 8 },
+  encounterEchoProgressText: {
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 13,
+    lineHeight: 18,
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
   nextBeatSetup: {
     marginTop: 16,
     paddingTop: 16,

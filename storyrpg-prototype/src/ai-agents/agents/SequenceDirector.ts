@@ -58,6 +58,87 @@ function isWeak(value: unknown): boolean {
   return text.length < 8 || /\b(derive|unknown|not provided|n\/a|tbd)\b/i.test(text);
 }
 
+function isPlaceholderText(value: unknown): boolean {
+  const text = clean(value);
+  return !text || /\b(derive|unknown|not provided|n\/a|tbd|placeholder|fill later)\b/i.test(text);
+}
+
+function isGenericVisualPlanText(value: unknown): boolean {
+  const text = clean(value).toLowerCase();
+  if (!text) return true;
+  if (text.length < 16) return true;
+  return /\b(scene|sequence|clear|visible|emotional|spatial|dynamic|geography|track power|leverage|attention|distance|control)\b/.test(text)
+    && !/\b(door|window|table|desk|bed|screen|phone|letter|key|card|ring|map|bar|booth|stairs|street|car|threshold|rope|laptop|knife|cup|bag|mirror|hall|corridor|kitchen|office|club|apartment|market|station|bridge|gate|lamp|light)\b/.test(text);
+}
+
+function isSpecificButUnconventional(value: unknown): boolean {
+  const text = clean(value);
+  if (text.length < 16) return false;
+  return /\b(presses?|slides?|holds?|drops?|hides?|opens?|closes?|crosses?|backs?|steps?|leans?|turns?|waits?|watches?|writes?|types?|searches?|carries?|passes?|refuses?|chooses?)\b/i.test(text)
+    || /\b[A-Z][a-z]+(?:'s)?\b/.test(text)
+    || /\b(left|right|near|behind|between|under|against|across|toward|away from|beside)\b/i.test(text);
+}
+
+function isStrongAuthoredText(value: unknown): boolean {
+  if (isPlaceholderText(value) || isWeak(value)) return false;
+  return !isGenericVisualPlanText(value) || isSpecificButUnconventional(value);
+}
+
+function authoredTextOr(value: unknown, fallback: string): string {
+  return isStrongAuthoredText(value) ? clean(value) : fallback;
+}
+
+function authoredListOr<T>(value: unknown, fallback: T[], minimum = 1): T[] {
+  return Array.isArray(value) && value.length >= minimum ? value as T[] : fallback;
+}
+
+function isQuietScene(text: string): boolean {
+  return /\b(say|says|ask|asks|answer|answers|whisper|whispers|talk|argue|confess|apologize|remember|realize|think|quiet|silence|process|writes?|typing|draft)\b/i.test(text)
+    && !/\b(chase|fight|attack|sprint|shoot|stab|explode|crash|battle|escape)\b/i.test(text);
+}
+
+function inferAnchorZones(text: string, sceneName?: string): string[] {
+  const zones: string[] = [];
+  const candidates: Array<[RegExp, string]> = [
+    [/\b(apartment|bedroom|room|home)\b/i, 'room interior where private choices become visible'],
+    [/\b(bed|nightstand)\b/i, 'bed or nightstand holding personal residue'],
+    [/\b(desk|laptop|screen|phone|blog|write|typing|draft)\b/i, 'desk/screen workspace where attention narrows'],
+    [/\b(window|balcony|city|street)\b/i, 'window or street edge connecting the room to the outside pressure'],
+    [/\b(club|bar|booth|dance floor|velvet|rope)\b/i, 'public threshold, crowd, bar/booth, and private edge of the room'],
+    [/\b(door|gate|threshold|entrance|exit)\b/i, 'door or threshold where access and refusal are staged'],
+    [/\b(market|street|alley|corridor|hall)\b/i, 'route through public space with changing exits'],
+    [/\b(table|counter)\b/i, 'table or counter where object control can pass between characters'],
+    [/\b(car|train|station|platform)\b/i, 'vehicle or platform boundary that controls escape'],
+  ];
+  for (const [pattern, zone] of candidates) {
+    if (pattern.test(text)) zones.push(zone);
+  }
+  if (zones.length === 0) zones.push(`${sceneName || 'scene'} playable foreground, threshold, and background pressure`);
+  if (zones.length === 1) zones.push('opposing edge of the space where the visible consequence lands');
+  return Array.from(new Set(zones)).slice(0, 4);
+}
+
+function inferBoundaryOrThreshold(text: string, anchorZones: string[]): string {
+  const match = text.match(/\b(door|gate|window|screen|phone|laptop|table|bar|booth|velvet rope|threshold|stairs|corridor|street|car|bed|desk)\b/i)?.[0];
+  if (match) return `the ${match} marks where attention, access, or power changes`;
+  return `${anchorZones[0] || 'the main scene boundary'} marks the visible line characters cross or fail to cross`;
+}
+
+function inferPhysicalCarrier(text: string, visualThread: string, quiet: boolean): string | undefined {
+  const prop = text.match(/\b(letter|key card|key|ring|phone|screen|laptop|map|knife|cup|glass|door|window|blood|wound|bag|book|mask|coin|flower|lantern|torch|photograph|ticket|pendant|shoe|shoes|draft|notebook)\b/i)?.[0];
+  if (prop) return `the ${prop} carries the visible change as it is handled, withheld, moved, or reinterpreted`;
+  if (quiet) return `${visualThread}; give the conversation a visible task, object, threshold, or repeated gesture that changes by the end`;
+  return undefined;
+}
+
+function concreteGeography(scene: SceneContent, context: SequenceDirectorContext, text: string, anchorZones: string[]): string {
+  const authored = clean(context.sceneDescription)
+    || clean((scene.settingContext as any)?.description)
+    || clean(context.locationName);
+  if (authored && !isGenericVisualPlanText(authored)) return authored;
+  return `${scene.sceneName || 'Scene'} staged as ${anchorZones.join('; ')}. Preserve entrances, exits, useful props, and the main light source so attention can move coherently across beats.`;
+}
+
 function nonEstablishingBeats(scene: SceneContent): GeneratedBeat[] {
   return (scene.beats || []).filter((beat) => !isEstablishing(beat));
 }
@@ -142,38 +223,88 @@ function offscreenIds(scene: SceneContent, visibleIds: string[]): string[] {
 export function buildSceneVisualSequencePlan(scene: SceneContent, context: SequenceDirectorContext = {}): SceneVisualSequencePlan {
   const text = sceneText(scene);
   const sequence = scene.sequenceIntent;
-  const objective = !isWeak(sequence?.objective)
+  const authoredPlan = scene.sceneVisualSequencePlan;
+  const quiet = isQuietScene(text);
+  const inferredObjective = !isWeak(sequence?.objective)
     ? clean(sequence?.objective)
     : `${scene.sceneName || 'The scene'} moves from unresolved pressure to a visible changed state.`;
-  const activity = !isWeak(sequence?.activity) ? clean(sequence?.activity) : inferActivity(text);
-  const obstacle = !isWeak(sequence?.obstacle)
+  let activity = !isWeak(sequence?.activity) ? clean(sequence?.activity) : inferActivity(text);
+  const inferredObstacle = !isWeak(sequence?.obstacle)
     ? clean(sequence?.obstacle)
     : 'The visible pressure, uncertainty, danger, or relationship resistance makes the objective difficult.';
-  const turningPoint = !isWeak(sequence?.turningPoint)
+  let turningPoint = !isWeak(sequence?.turningPoint)
     ? clean(sequence?.turningPoint)
     : clean(nonEstablishingBeats(scene).find((beat) => beat.isClimaxBeat || beat.isKeyStoryBeat || beat.intensityTier === 'dominant')?.dramaticIntent?.visibleTurn)
       || 'A visible shift changes leverage, attention, distance, or object control.';
-  const endState = !isWeak(sequence?.endState)
+  let endState = !isWeak(sequence?.endState)
     ? clean(sequence?.endState)
     : clean((scene.beats || [])[Math.max(0, (scene.beats || []).length - 1)]?.dramaticIntent?.statusAfter)
       || 'By the end, the characters occupy a new emotional, tactical, or informational position.';
-  const visualThread = inferVisualThread(scene, text);
-  const geography = clean(context.sceneDescription)
-    || clean((scene.settingContext as any)?.description)
-    || clean(context.locationName)
-    || `${scene.sceneName || 'the scene'} geography`;
+  const inferredVisualThread = inferVisualThread(scene, text);
+  const inferredAnchorZones = inferAnchorZones(text, scene.sceneName);
+  let anchorZones = authoredListOr<string>(authoredPlan?.anchorZones, inferredAnchorZones, 2);
+  let visualThread = authoredTextOr(authoredPlan?.visualThread, inferredVisualThread);
+  let boundaryOrThreshold = authoredTextOr(authoredPlan?.boundaryOrThreshold, inferBoundaryOrThreshold(text, anchorZones));
+  let physicalCarrier = authoredTextOr(authoredPlan?.physicalCarrier, inferPhysicalCarrier(text, visualThread, quiet) || '');
+  if (physicalCarrier && isGenericVisualPlanText(activity)) {
+    activity = `${activity}, externalized through ${physicalCarrier}`;
+  } else if (isGenericVisualPlanText(activity)) {
+    activity = `${activity} through ${anchorZones.join(' and ')}`;
+  }
+  if (isGenericVisualPlanText(turningPoint)) {
+    turningPoint = `${turningPoint} around ${physicalCarrier || boundaryOrThreshold}`;
+  }
+  if (isGenericVisualPlanText(endState)) {
+    endState = `${endState} at ${anchorZones[Math.max(0, anchorZones.length - 1)]}`;
+  }
+  const inferredGeography = concreteGeography(scene, context, text, anchorZones);
+  const geography = authoredTextOr(authoredPlan?.geography, inferredGeography);
+  const movementLine = authoredTextOr(
+    authoredPlan?.movementLine,
+    `${activity}; attention travels through ${anchorZones.join(' -> ')} while ${boundaryOrThreshold}.`,
+  );
+  const powerBlocking = authoredTextOr(
+    authoredPlan?.powerBlocking,
+    `${sequence?.startState || 'At first, pressure controls the scene'}; ${turningPoint}; by the end, ${endState}`,
+  );
+
+  const objective = authoredTextOr(authoredPlan?.objective, inferredObjective);
+  activity = authoredTextOr(authoredPlan?.activity, activity);
+  const obstacle = authoredTextOr(authoredPlan?.obstacle, inferredObstacle);
+  turningPoint = authoredTextOr(authoredPlan?.turningPoint, turningPoint);
+  endState = authoredTextOr(authoredPlan?.endState, endState);
+  anchorZones = authoredListOr<string>(authoredPlan?.anchorZones, anchorZones, 2);
+  visualThread = authoredTextOr(authoredPlan?.visualThread, visualThread);
+  boundaryOrThreshold = authoredTextOr(authoredPlan?.boundaryOrThreshold, boundaryOrThreshold);
+  physicalCarrier = authoredTextOr(authoredPlan?.physicalCarrier, physicalCarrier);
+
+  const defaultAvoid = [
+    'unrelated hero portraits',
+    'repeating the same centered character pose',
+    'camera choices that ignore the scene geography or visual thread',
+  ];
 
   return {
     objective,
     activity,
     obstacle,
     geography,
-    movementLine: `${activity}; track where attention, distance, and control move from beat to beat.`,
+    movementLine,
     visualThread,
-    shotRhythm: SHOT_RHYTHM,
-    powerBlocking: 'Track power through height, foreground/background, distance, who controls the key object, and who has a clear exit.',
+    shotRhythm: Array.isArray(authoredPlan?.shotRhythm) && authoredPlan.shotRhythm.length >= 2
+      ? authoredPlan.shotRhythm
+      : SHOT_RHYTHM,
+    powerBlocking,
     turningPoint,
     endState,
+    anchorZones,
+    boundaryOrThreshold,
+    physicalCarrier: physicalCarrier || undefined,
+    rhythmIntent: authoredTextOr(
+      authoredPlan?.rhythmIntent,
+      `${activity} moves from ${anchorZones[0]} toward ${anchorZones[Math.max(0, anchorZones.length - 1)]}, using scale, subject, and screen direction only as needed to clarify the visible change.`,
+    ),
+    avoid: authoredListOr<string>(authoredPlan?.avoid, defaultAvoid),
   };
 }
 
@@ -227,17 +358,23 @@ export function applySequenceDirectorPlan(scene: SceneContent, context: Sequence
       requiredVisibleCharacterIds,
       optionalVisibleCharacterIds: existing?.optionalVisibleCharacterIds || [],
       offscreenCharacterIds: existing?.offscreenCharacterIds || offscreenIds(scene, requiredVisibleCharacterIds),
-      relationshipBlocking: existing?.relationshipBlocking
-        || beat.relationshipDynamic
+      relationshipBlocking: isStrongAuthoredText(existing?.relationshipBlocking) ? existing!.relationshipBlocking
+        : beat.relationshipDynamic
         || `${sequencePlan.visualThread}; show who gains or loses distance, control, or attention.`,
-      coverageReason: existing?.coverageReason
-        || `${role} beat in the scene sequence: ${beat.dramaticIntent?.visibleTurn || beat.visualMoment || beat.primaryAction || beat.text}`,
+      coverageReason: isStrongAuthoredText(existing?.coverageReason) ? existing!.coverageReason
+        : `${role} beat in the scene sequence: ${beat.dramaticIntent?.visibleTurn || beat.visualMoment || beat.primaryAction || beat.text}`,
       visualContinuity: existing?.visualContinuity || {
         mode: role === 'turn' ? 'preserve_scene_axis' : 'fresh_composition',
         reason: `SequenceDirector: preserve ${sequencePlan.visualThread} while varying shot size, camera side, and focal subject.`,
         preserve: ['environment', 'lighting'],
       },
     };
+    if (existing?.relationshipBlocking && !isStrongAuthoredText(existing.relationshipBlocking)) {
+      warnings.push(`Repaired weak relationshipBlocking for ${beat.id}.`);
+    }
+    if (existing?.coverageReason && !isStrongAuthoredText(existing.coverageReason)) {
+      warnings.push(`Repaired weak coverageReason for ${beat.id}.`);
+    }
     coverageBeatIds.push(beat.id);
   });
 

@@ -84,7 +84,7 @@ describe('StoryboardV2Pipeline', () => {
       outputDirectory,
     });
 
-    await pipeline.generateEpisode({
+    const result = await pipeline.generateEpisode({
       brief: {
         story: { title: 'Test Story', genre: 'fantasy', tone: 'ominous' },
         episode: { number: 1, title: 'Pilot' },
@@ -129,14 +129,16 @@ describe('StoryboardV2Pipeline', () => {
     expect(sheetCall.prompt.prompt).toContain('Never use white mats');
     expect(sheetCall.prompt.prompt).toContain('episodeStyleLockRef controls palette');
     expect(sheetCall.prompt.prompt).toContain('each visible canonical character may appear exactly once');
-    expect(sheetCall.prompt.prompt).toContain('VISUAL STORYTELLING DIRECTIVE');
+    expect(sheetCall.prompt.prompt).toContain('Director brief');
+    expect(sheetCall.prompt.prompt).toContain('coverage intent=');
+    expect(sheetCall.prompt.prompt).toContain('coverage freedom=choose expressive composition');
+    expect(sheetCall.prompt.prompt).toContain('FREEDOM CLAUSE');
     expect(sheetCall.prompt.prompt).toContain('Scene visual geography');
     expect(sheetCall.prompt.prompt).toContain('Scene visual movement line');
-    expect(sheetCall.prompt.prompt).toContain('Scene visual shot rhythm');
-    expect(sheetCall.prompt.prompt).toContain('Coverage plan');
-    expect(sheetCall.prompt.prompt).toContain('60% base');
-    expect(sheetCall.prompt.prompt).toContain('Lighting and color are variations inside the master art style, not new style instructions.');
-    expect(sheetCall.prompt.prompt.indexOf('REFERENCE ROLE HIERARCHY:')).toBeLessThan(sheetCall.prompt.prompt.indexOf('VISUAL STORYTELLING DIRECTIVE'));
+    expect(sheetCall.prompt.prompt).toContain('Scene visual rhythm intent');
+    expect(sheetCall.prompt.prompt).not.toContain('VISUAL STORYTELLING DIRECTIVE');
+    expect(sheetCall.prompt.prompt).not.toContain('Coverage plan');
+    expect(sheetCall.prompt.prompt.indexOf('REFERENCE ROLE HIERARCHY:')).toBeLessThan(sheetCall.prompt.prompt.indexOf('Director brief'));
     expect(sheetCall.prompt.prompt).not.toContain('dramatic cinematic story art');
     expect(sheetCall.prompt.prompt).not.toMatch(/\b(?:photoreal|DSLR|Hitchcock|Kubrick|orange and teal)\b/i);
     expect(sheetCall.refs.map((ref: any) => ref.role)).toEqual([
@@ -145,14 +147,19 @@ describe('StoryboardV2Pipeline', () => {
     ]);
     const refineCall = prompts.find((call) => call.identifier.includes('panels/storyboard-v2-'));
     expect(refineCall.prompt.prompt.startsWith('ART STYLE: messy risograph pulp fantasy')).toBe(true);
-    expect(refineCall.prompt.prompt).toContain('VISUAL STORYTELLING DIRECTIVE');
-    expect(refineCall.prompt.prompt.indexOf('REFERENCE ROLE HIERARCHY:')).toBeLessThan(refineCall.prompt.prompt.indexOf('VISUAL STORYTELLING DIRECTIVE'));
+    expect(refineCall.prompt.prompt).toContain('Director brief');
+    expect(refineCall.prompt.prompt).toContain('coverage intent=');
+    expect(refineCall.prompt.prompt).not.toContain('VISUAL STORYTELLING DIRECTIVE');
+    expect(refineCall.prompt.prompt.indexOf('REFERENCE ROLE HIERARCHY:')).toBeLessThan(refineCall.prompt.prompt.indexOf('Director brief'));
     expect(refineCall.metadata.renderRoute).toBe('storyboard-sheet-crop-refine');
     expect(refineCall.refs.map((ref: any) => ref.role)).toEqual([
       'storyboard-panel-crop',
       'character-reference',
       'episode-style-lock',
     ]);
+    expect(result.diagnostics.sequenceDiagnostics.length).toBe(1);
+    expect(result.diagnostics.specificityAudits.length).toBe(1);
+    expect(result.diagnostics.characterNormalizationDiagnostics.length).toBe(1);
   });
 
   it('prewarms character references for every CharacterBible character before storyboard rendering', async () => {
@@ -253,6 +260,13 @@ describe('StoryboardV2Pipeline', () => {
           physicalDescription: 'short silver hair and brown skin',
           typicalAttire: 'gray cloak',
           distinctiveFeatures: ['scar through eyebrow'],
+        }, {
+          id: 'alex',
+          name: 'Alex',
+          role: 'ally',
+          importance: 'supporting',
+          overview: 'A wary companion at the gate.',
+          physicalDescription: 'dark hair and a red scarf',
         }],
       } as any,
       sceneContents: [{

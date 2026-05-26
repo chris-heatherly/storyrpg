@@ -268,6 +268,7 @@ export interface CharacterAppearanceDescription {
 export interface ReferenceThumbnail {
   id: string;
   uri: string;
+  localPath?: string;
   characterName?: string;
   viewType?: string;
   role: string;
@@ -2159,6 +2160,93 @@ export class ImageGenerationService {
     return this.toOutputHttpUrl(imagePath);
   }
 
+  private localImageFileExists(imagePath?: string): boolean {
+    if (!imagePath || /\.(txt)$/i.test(imagePath)) return false;
+    if (!nodeFs || typeof nodeFs.existsSync !== 'function' || typeof nodeFs.statSync !== 'function') return false;
+    try {
+      const stat = nodeFs.statSync(normalizeManagedOutputPath(imagePath));
+      return stat.isFile();
+    } catch {
+      return false;
+    }
+  }
+
+  private extensionForImageMimeType(mimeType: string | undefined): string {
+    const normalized = (mimeType || '').toLowerCase();
+    if (normalized.includes('jpeg') || normalized.includes('jpg')) return 'jpg';
+    if (normalized.includes('webp')) return 'webp';
+    return 'png';
+  }
+
+  private arrayBufferToBase64(buffer: ArrayBuffer): string {
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(buffer).toString('base64');
+    }
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    let binary = '';
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      const chunk = bytes.subarray(index, index + chunkSize);
+      binary += String.fromCharCode(...Array.from(chunk));
+    }
+    return btoa(binary);
+  }
+
+  private async ensureGeneratedImageStoredLocally(result: GeneratedImage, identifier: string): Promise<GeneratedImage> {
+    if (result.imagePath && this.localImageFileExists(result.imagePath)) {
+      return {
+        ...result,
+        imageUrl: result.imageUrl || this.getServedImageUrl(result.imagePath),
+      };
+    }
+
+    let imageData = result.imageData;
+    let mimeType = result.mimeType;
+
+    if (!imageData && result.imageUrl?.startsWith('data:image')) {
+      const parsed = detectImageMimeType(result.imageUrl);
+      imageData = parsed.base64Data;
+      mimeType = mimeType || parsed.mimeType;
+    } else if (!imageData && /^https?:\/\//i.test(result.imageUrl || '')) {
+      const response = await fetch(result.imageUrl as string);
+      if (!response.ok) {
+        throw new Error(`Generated image for "${identifier}" was returned as a remote URL but could not be downloaded: ${response.status}`);
+      }
+      const contentType = response.headers.get('content-type') || undefined;
+      imageData = this.arrayBufferToBase64(await response.arrayBuffer());
+      mimeType = mimeType || contentType || detectImageMimeType(imageData).mimeType;
+    }
+
+    if (!imageData) {
+      if (result.imagePath && !this.localImageFileExists(result.imagePath) && /\.(png|jpe?g|webp)$/i.test(result.imagePath)) {
+        throw new Error(`Generated image for "${identifier}" points at a missing local file: ${result.imagePath}`);
+      }
+      return result;
+    }
+
+    const detected = detectImageMimeType(imageData);
+    const finalMimeType = mimeType || detected.mimeType;
+    const extension = this.extensionForImageMimeType(finalMimeType);
+    const imagePath = this.joinPath(this.outputDir, `${identifier}.${extension}`);
+
+    await this.writeFile(imagePath, detected.base64Data, true);
+    if (!isWebRuntime() && !this.localImageFileExists(imagePath)) {
+      throw new Error(`Generated image for "${identifier}" was not written to disk: ${imagePath}`);
+    }
+
+    return {
+      ...result,
+      imagePath,
+      imageUrl: this.toImageHttpUrl(imagePath, finalMimeType, detected.base64Data),
+      imageData: detected.base64Data,
+      mimeType: finalMimeType,
+      metadata: {
+        ...(result.metadata || {}),
+        format: result.metadata?.format || extension,
+      },
+    };
+  }
+
   private async ensureDirectory(dirPath: string): Promise<void> {
     if (!this.config.enabled) return;
     if (nodeFs && typeof nodeFs.existsSync === 'function') {
@@ -2262,6 +2350,7 @@ export class ImageGenerationService {
       thumbnails.push({
         id: `${identifier}-${thumbnails.length}`,
         uri,
+        localPath: filePath,
         characterName: ref.characterName,
         viewType: ref.viewType,
         role: ref.role,
@@ -2717,18 +2806,23 @@ export class ImageGenerationService {
       const cacheKey = this.computePromptHash(normalizedPrompt, metadata);
       const cached = this._promptCache.get(cacheKey);
       if (cached) {
-        this.pipelineMetrics.cacheHits++;
-        console.log(`[ImageGenerationService] Prompt cache HIT for ${identifier} (no UI job created)`);
         const hydrated = this.hydrateExistingImageFile(cached.imagePath);
-        return {
-          prompt: normalizedPrompt,
-          imagePath: cached.imagePath,
-          imageUrl: cached.imageUrl || this.getServedImageUrl(cached.imagePath) || (hydrated && cached.imagePath
-            ? this.toImageHttpUrl(cached.imagePath, hydrated.mimeType, hydrated.imageData)
-            : undefined),
-          imageData: hydrated?.imageData,
-          mimeType: hydrated?.mimeType || cached.mimeType,
-        };
+        if (cached.imagePath && !hydrated && !this.localImageFileExists(cached.imagePath)) {
+          console.warn(`[ImageGenerationService] Prompt cache STALE for ${identifier}; local file is missing: ${cached.imagePath}`);
+          this._promptCache.delete(cacheKey);
+        } else {
+          this.pipelineMetrics.cacheHits++;
+          console.log(`[ImageGenerationService] Prompt cache HIT for ${identifier} (no UI job created)`);
+          return {
+            prompt: normalizedPrompt,
+            imagePath: cached.imagePath,
+            imageUrl: cached.imageUrl || this.getServedImageUrl(cached.imagePath) || (hydrated && cached.imagePath
+              ? this.toImageHttpUrl(cached.imagePath, hydrated.mimeType, hydrated.imageData)
+              : undefined),
+            imageData: hydrated?.imageData,
+            mimeType: hydrated?.mimeType || cached.mimeType,
+          };
+        }
       }
       this.pipelineMetrics.cacheMisses++;
     }
@@ -2876,6 +2970,7 @@ export class ImageGenerationService {
       hasReferenceSheetStyleAnchor: this.hasReferenceSheetStyleAnchor(),
       styleAnchorSource: (metadata as any)?.styleAnchorSource || (this.hasSeasonStyleReference() ? 'season-style-reference' : undefined),
       referenceAudit,
+      referenceThumbnails,
       inputReferences: (providerInputRefs || []).map((ref) => ({
         role: ref.role,
         characterId: ref.characterId,
@@ -2972,6 +3067,8 @@ export class ImageGenerationService {
         );
       }
 
+      result = await this.ensureGeneratedImageStoredLocally(result, identifier);
+
       if (!result.imageUrl && result.imagePath) {
         result.imageUrl = this.getServedImageUrl(result.imagePath);
       }
@@ -2985,7 +3082,10 @@ export class ImageGenerationService {
         this.isPlaceholderResult(result)
       ) {
         console.warn(`[ImageGenerationService] Encounter fallback: nano-banana returned placeholder for "${identifier}", trying Atlas Cloud`);
-        const fallbackResult = await this.generateWithAtlasCloud(normalizedPrompt, `${identifier}-atlas-fallback`, jobId, referenceImages, metadata?.type, metadata);
+        const fallbackResult = await this.ensureGeneratedImageStoredLocally(
+          await this.generateWithAtlasCloud(normalizedPrompt, `${identifier}-atlas-fallback`, jobId, referenceImages, metadata?.type, metadata),
+          `${identifier}-atlas-fallback`,
+        );
         if (fallbackResult.imagePath && !fallbackResult.imageUrl) {
           fallbackResult.imageUrl = this.getServedImageUrl(fallbackResult.imagePath);
         }
@@ -3105,7 +3205,10 @@ export class ImageGenerationService {
 
       if (fallbackEligible) {
         try {
-          const fallbackResult = await this.generateWithAtlasCloud(normalizedPrompt, `${identifier}-atlas-fallback`, jobId, referenceImages, metadata?.type, metadata);
+          const fallbackResult = await this.ensureGeneratedImageStoredLocally(
+            await this.generateWithAtlasCloud(normalizedPrompt, `${identifier}-atlas-fallback`, jobId, referenceImages, metadata?.type, metadata),
+            `${identifier}-atlas-fallback`,
+          );
           if (!fallbackResult.imageUrl && fallbackResult.imagePath) {
             fallbackResult.imageUrl = this.getServedImageUrl(fallbackResult.imagePath);
           }

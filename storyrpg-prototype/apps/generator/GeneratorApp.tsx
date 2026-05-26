@@ -9,7 +9,7 @@ import { useGenerationJobStore } from '../../src/stores/generationJobStore';
 import { useVideoJobStore } from '../../src/stores/videoJobStore';
 import { seasonPlanStore } from '../../src/stores/seasonPlanStore';
 import { GeneratorScreen } from '../../src/screens/GeneratorScreen';
-import { SettingsScreen, VisualizerScreen } from '../../src/screens';
+import { LoginScreen, SettingsScreen, VisualizerScreen } from '../../src/screens';
 import { allStories as builtInStories } from '../../src/data/stories';
 import type { MediaSetupTarget, Story, StoryCatalogEntry } from '../../src/types';
 import { TERMINAL } from '../../src/theme';
@@ -18,7 +18,9 @@ import { pipelineClient, type PipelineHandle } from '../../src/ai-agents/pipelin
 import { loadConfig, type PipelineConfig } from '../../src/ai-agents/config';
 import { GENERATOR_STORAGE_KEYS } from '../../src/hooks/useGeneratorSettings';
 import { useStoryLibrary } from '../../src/hooks/useStoryLibrary';
+import { useAuthSession } from '../../src/hooks/useAuthSession';
 import { useGeneratorRunner } from '../../src/hooks/useGeneratorRunner';
+import type { AuthUser } from '../../src/services/authSession';
 import { fetchStoryByCatalogEntry } from '../../src/services/storyLibrary';
 import {
   captureAttributionFromUrl,
@@ -187,6 +189,19 @@ const isSeasonEpisodeGenerated = (episode?: {
 
 function GeneratorAppContent() {
   const [route, setRoute] = useState<GeneratorRoute>('home');
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const {
+    authUser,
+    signedOutLatch,
+    isChecking: isAuthChecking,
+    isSignedIn,
+    handleAuthenticated,
+    handleSignedOut,
+  } = useAuthSession({
+    onSessionRestored: () => {
+      setRoute('home');
+    },
+  });
   const [resumeJobId, setResumeJobId] = useState<string | undefined>();
   const [generatorSeasonPlanId, setGeneratorSeasonPlanId] = useState<string | undefined>();
   const [generatorSetupView, setGeneratorSetupView] = useState<GeneratorSetupView>('story');
@@ -225,6 +240,29 @@ function GeneratorAppContent() {
     clearJobs: clearVideoJobs,
   } = useVideoJobStore();
   const fonts = useSettingsStore((state) => state.getFontSizes());
+
+  const onAuthenticated = useCallback(
+    (user: AuthUser) => {
+      handleAuthenticated(user);
+      setRoute('home');
+    },
+    [handleAuthenticated],
+  );
+
+  const onSignOut = useCallback(async () => {
+    setIsSigningOut(true);
+    setResumeJobId(undefined);
+    setGeneratorSeasonPlanId(undefined);
+    setGeneratorSetupView('story');
+    setMediaSetupTarget(undefined);
+    setVisualizerStory(null);
+    try {
+      await handleSignedOut();
+    } finally {
+      setIsSigningOut(false);
+      setRoute('home');
+    }
+  }, [handleSignedOut]);
 
   useEffect(() => {
     initAnalytics();
@@ -603,7 +641,7 @@ function GeneratorAppContent() {
     upsertStory,
   ]);
 
-  if (!storiesLoaded) {
+  if (isSigningOut || (!signedOutLatch && isAuthChecking) || (isSignedIn && !storiesLoaded)) {
     return (
       <View style={[styles.container, styles.centered]}>
         <StatusBar style="light" />
@@ -614,12 +652,25 @@ function GeneratorAppContent() {
     );
   }
 
+  const showAppShell = !signedOutLatch && authUser != null;
+
+  if (!showAppShell) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="light" />
+        <LoginScreen onAuthenticated={onAuthenticated} allowDevBypass={false} />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
       {route === 'home' ? (
         <SettingsScreen
           stories={stories}
+          authUser={authUser}
+          onSignOut={() => { void onSignOut(); }}
           onBack={() => openGenerator()}
           onOpenVisualizer={handleOpenVisualizer}
           onOpenGenerator={(jobId?: string) => openGenerator(jobId)}

@@ -1,0 +1,32 @@
+#!/bin/sh
+# Pre-commit guard — see docs/PROJECT_AUDIT_2026-05-28.md, Track A4.
+#
+# Dependency-free (no husky) because the git root is ABOVE the npm project
+# (storyrpg-prototype/), which makes husky's core.hooksPath setup fragile.
+# Installed by the package.json "prepare" script via `git config core.hooksPath`.
+#
+# Git runs hooks from the repo top-level, so staged paths are repo-root-relative.
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+# 1. Block runtime artifacts (prevents the L2 leaked-artifact recurrence).
+blocked=$(printf '%s\n' "$staged" | grep -E '(\.backup-|\.model-cache\.json$|\.generator-settings\.json$|\.codex-expo-web\.|\.generation-jobs\.json|\.worker-(jobs|checkpoints|dead-letter)|/generated-stories/)' || true)
+if [ -n "$blocked" ]; then
+  echo "✗ pre-commit: refusing to commit runtime artifacts:" >&2
+  printf '%s\n' "$blocked" | sed 's/^/    /' >&2
+  echo "  These are gitignored runtime state. Unstage them: git restore --staged <file>" >&2
+  exit 1
+fi
+
+# 2. Lint staged TypeScript files (errors only — fast local gate; the
+#    repo-wide --max-warnings ratchet runs in CI).
+ts_files=$(printf '%s\n' "$staged" | grep -E '^storyrpg-prototype/src/.*\.(ts|tsx)$' | sed 's#^storyrpg-prototype/##' || true)
+if [ -n "$ts_files" ]; then
+  ( cd storyrpg-prototype && npx eslint $ts_files --quiet ) || {
+    echo "✗ pre-commit: eslint found errors in staged files (run: cd storyrpg-prototype && npx eslint <file>)." >&2
+    exit 1
+  }
+fi
+
+exit 0

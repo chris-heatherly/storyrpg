@@ -54,7 +54,19 @@ export default tseslint.config(
       '@typescript-eslint/no-empty-object-type': 'off',
       '@typescript-eslint/no-require-imports': 'off',
       '@typescript-eslint/no-unused-expressions': 'off',
-      '@typescript-eslint/ban-ts-comment': 'off',
+      // Block NEW `@ts-nocheck` (whole-file type suppression) — the existing
+      // 21 files are allowlisted in the override block below. `@ts-ignore` /
+      // `@ts-expect-error` are intentionally left allowed for now; tighten
+      // later. With the --max-warnings ratchet, any new @ts-nocheck fails lint.
+      '@typescript-eslint/ban-ts-comment': [
+        'warn',
+        {
+          'ts-nocheck': true,
+          'ts-ignore': false,
+          'ts-expect-error': false,
+          'ts-check': false,
+        },
+      ],
       '@typescript-eslint/no-namespace': 'off',
       'no-empty': 'off',
       'no-case-declarations': 'off',
@@ -80,7 +92,7 @@ export default tseslint.config(
         },
       ],
       'no-restricted-imports': [
-        'warn',
+        'error',
         {
           patterns: [
             {
@@ -91,6 +103,38 @@ export default tseslint.config(
           ],
         },
       ],
+    },
+  },
+  {
+    // Allowlist of files that already carry `@ts-nocheck` as of 2026-05-28.
+    // The ban-ts-comment rule above blocks NEW `@ts-nocheck`; these are
+    // grandfathered until typed (see docs/PROJECT_AUDIT_2026-05-28.md, Track A).
+    // To pay down debt: remove a file here once its @ts-nocheck is gone.
+    files: [
+      'src/ai-agents/agents/SceneWriter.ts',
+      'src/ai-agents/agents/image-team/CharacterReferenceSheetAgent.ts',
+      'src/ai-agents/agents/image-team/ImageAgentTeam.ts',
+      'src/ai-agents/agents/image-team/StoryboardAgent.ts',
+      'src/ai-agents/pipeline/EpisodePipeline.ts',
+      'src/ai-agents/pipeline/FullStoryPipeline.ts',
+      'src/ai-agents/pipeline/FullStoryPipeline.microEpisodeRepair.test.ts',
+      'src/ai-agents/pipeline/FullStoryPipeline.references.test.ts',
+      'src/ai-agents/pipeline/FullStoryPipeline.spotImageBackfill.test.ts',
+      'src/ai-agents/pipeline/phases/index.ts',
+      'src/ai-agents/server/worker-runner.ts',
+      'src/ai-agents/utils/pipelineOutputWriter.ts',
+      'src/components/EncounterView.tsx',
+      'src/data/stories/bladesOfValoria.ts',
+      'src/data/stories/savageNightsInParadise.ts',
+      'src/data/stories/theVelvetJob.ts',
+      'src/screens/GeneratorScreen.tsx',
+      'src/services/narrationService.ts',
+      'src/stores/gameStore.ts',
+      'src/stores/seasonPlanStore.ts',
+      'src/visualizer/storyGraphTransformer.ts',
+    ],
+    rules: {
+      '@typescript-eslint/ban-ts-comment': 'off',
     },
   },
   {

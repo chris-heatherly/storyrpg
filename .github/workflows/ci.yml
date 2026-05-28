@@ -1,0 +1,54 @@
+name: CI
+
+# Blocking quality gate (docs/PROJECT_AUDIT_2026-05-28.md, Track A).
+# Wires up scripts that already existed but were never enforced.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# The npm project lives in storyrpg-prototype/, below the git root.
+defaults:
+  run:
+    working-directory: storyrpg-prototype
+
+jobs:
+  validate:
+    name: typecheck · lint · test · boundary · monolith
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: storyrpg-prototype/package-lock.json
+      - run: npm ci
+      - name: Typecheck (all targets)
+        run: npm run typecheck
+      - name: Lint (max-warnings ratchet)
+        run: npm run lint
+      - name: Unit tests + coverage thresholds
+        run: npm run test:coverage
+      - name: Reader/generator boundary (import graph)
+        run: npm run check:reader-boundary
+      - name: Monolith line-count ratchet
+        run: npm run check:monolith-size
+
+  reader-bundle-scan:
+    # Builds the actual reader export and scans it for leaked provider-key
+    # values (the strongest part of the secret boundary). Separate job so the
+    # heavier expo export can't flake the core validate gate.
+    name: reader secret-leak scan (built bundle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: storyrpg-prototype/package-lock.json
+      - run: npm ci
+      - name: Build reader + mandatory bundle secret scan
+        # Reader build must NOT receive provider keys — only public reader env.
+        run: npm run verify:reader

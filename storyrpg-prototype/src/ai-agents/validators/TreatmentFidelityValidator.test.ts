@@ -179,6 +179,144 @@ describe('TreatmentFidelityValidator', () => {
     expect(result.issues).toEqual([]);
   });
 
+  it('does not require future whole-treatment source anchors for a partial sceneEpisode slice', () => {
+    const story = {
+      id: 'bite-me',
+      title: 'Bite Me',
+      genre: 'Paranormal Romance',
+      synopsis: 'Kylie begins the Bucharest season.',
+      coverImage: '',
+      initialState: { attributes: {} as any, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: Array.from({ length: 6 }, (_, index) => ({
+        id: `episode-${index + 1}`,
+        number: index + 1,
+        title: `SceneEp ${index + 1}`,
+        synopsis: 'A pressure-bearing sceneEpisode.',
+        coverImage: '',
+        startingSceneId: 'scene-1',
+        scenes: [{
+          id: 'scene-1',
+          name: 'Bucharest Pressure',
+          startingBeatId: 'beat-1',
+          beats: [{ id: 'beat-1', text: 'Kylie makes a choice that changes the next sceneEpisode.' }],
+        }],
+      })),
+    } satisfies Story;
+
+    const result = new TreatmentFidelityValidator().validateFinalStory({
+      story,
+      expectedEpisodeCount: 6,
+      sourceEpisodeCount: 27,
+      isCompleteSeason: false,
+      analysis: {
+        sourceFormat: 'story_treatment',
+        totalEstimatedEpisodes: 27,
+        majorCharacters: [],
+        keyLocations: [],
+        adaptationGuidance: {
+          elementsToPreserve: ['Friend group dynamics and betrayals that pay off after sceneEpisode 20'],
+        },
+        episodeBreakdown: [],
+      } as any,
+      sourceText: [
+        'Future sceneEpisodes include Club Nocturne, Daniel Hayes, Sadie, The Mountain, and Cișmigiu.',
+        'The blog readership later reaches 80K, 310K, 470K, 130K, 180K, 240K, 260K, 280K, and 800K.',
+      ].join('\n'),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toEqual([]);
+  });
+
+  it('counts runtime encounter prose and fuzzy major-location matches in final story fidelity', () => {
+    const story = {
+      id: 'bite-me',
+      title: 'Bite Me',
+      genre: 'Paranormal Romance',
+      synopsis: 'Kylie begins again in Bucharest.',
+      coverImage: '',
+      initialState: { attributes: {} as any, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [{
+        id: 'episode-1',
+        number: 1,
+        title: 'Arrival',
+        synopsis: "Kylie arrives at her grandmother's Lipscani apartment.",
+        coverImage: '',
+        startingSceneId: 'scene-1',
+        scenes: [{
+          id: 'scene-1',
+          name: 'The Apartment',
+          startingBeatId: 'beat-1',
+          beats: [{
+            id: 'beat-1',
+            text: 'The phone keeps buzzing at the kitchen table.',
+          }],
+          encounter: {
+            phases: [{
+              beats: [{
+                id: 'enc-beat-1',
+                setupText: 'Choice pressure: (1) Open the laptop, or wait. (2) Block Daniel, archive his messages, or read them.',
+                choices: [],
+              }],
+            }],
+            storylets: {
+              victory: {
+                beats: [{
+                  id: 'storylet-1',
+                  text: 'Forward pressure: Because Kylie is in Bucharest with a draft file and no material. She needs a story. She goes out.',
+                }],
+              },
+            },
+          } as any,
+        }],
+      }],
+    } satisfies Story;
+
+    const result = new TreatmentFidelityValidator().validateFinalStory({
+      story,
+      expectedEpisodeCount: 1,
+      sourceEpisodeCount: 27,
+      isCompleteSeason: false,
+      analysis: {
+        sourceFormat: 'story_treatment',
+        totalEstimatedEpisodes: 27,
+        majorCharacters: [],
+        keyLocations: [{
+          id: 'loc-kylie',
+          name: "Kylie's Lipscani apartment",
+          description: '',
+          importance: 'major',
+          firstAppearance: 1,
+        }],
+        adaptationGuidance: { elementsToPreserve: [] },
+        episodeBreakdown: [{
+          episodeNumber: 1,
+          title: 'Arrival',
+          synopsis: '',
+          sourceChapters: [],
+          sourceSummary: '',
+          plotPoints: [],
+          mainCharacters: [],
+          supportingCharacters: [],
+          locations: [],
+          estimatedSceneCount: 1,
+          estimatedChoiceCount: 1,
+          narrativeFunction: { setup: '', conflict: '', resolution: '' },
+          treatmentGuidance: {
+            authoredTitle: 'Arrival',
+            majorChoicePressures: ['(1) Open the laptop, or wait. (2) Block Daniel, archive his messages, or read them.'],
+            authoredCliffhanger: 'Because Kylie is in Bucharest with a draft file and no material. She needs a story. She goes out.',
+          },
+        }],
+      } as any,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toEqual([]);
+  });
+
   it('fails the Bite Me drift pattern before SceneWriter can spend it into prose', () => {
     const blueprint = baseBlueprint({
       synopsis: 'Kylie meets new friends at a rooftop bar, walks home alone, is attacked by three men, and sees Victor reveal inhuman eyes.',

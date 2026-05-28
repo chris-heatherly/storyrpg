@@ -28,6 +28,13 @@ export type {
   MicroEpisodeSeasonOptions,
   MicroEpisodeSeasonResult,
 } from './MicroEpisodeSeasonValidator';
+export { FinalStoryContractValidator } from './FinalStoryContractValidator';
+export type {
+  FinalStoryContractInput,
+  FinalStoryContractIssue,
+  FinalStoryContractIssueType,
+  FinalStoryContractReport,
+} from './FinalStoryContractValidator';
 
 export { NPCDepthValidator } from './NPCDepthValidator';
 

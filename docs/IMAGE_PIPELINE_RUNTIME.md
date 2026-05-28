@@ -1,8 +1,9 @@
 # Image Pipeline Runtime
 
-**Last Updated:** May 2026
+**Last Updated:** May 25, 2026
 
 This document captures the live runtime behavior of the StoryRPG image pipeline.
+For the project-wide implementation snapshot, see `docs/PROJECT_STATUS.md`.
 
 ## Goals
 
@@ -15,7 +16,7 @@ This document captures the live runtime behavior of the StoryRPG image pipeline.
   contract. Previous-panel references are same-path helpers only and must not
   cross sibling branches or override the storyboard sheet.
 
-## Recent Improvements (April 2026)
+## Recent Improvements (April-May 2026)
 
 The image pipeline has been extended with several foundational and
 pillar-specific improvements. All of them are gated behind explicit
@@ -78,6 +79,18 @@ opts in:
   diplomacy / stealth / etc.) now emits a concrete visual-language
   clause in the prompt so the rendered beat matches the narrative
   intent.
+- **Storyboard-v2 default path** — `PipelineConfig.imageGen.pipelineMode`
+  defaults to `storyboard-v2`. The v2 path compiles storyboard sheets and
+  panel metadata through `src/ai-agents/images/storyboard-v2/` and then
+  hands contracted prompts to the provider layer. The old provider-heavy
+  path remains available only when explicitly set to `legacy`.
+- **Runtime asset resolver alignment** — generated media may be referenced by
+  legacy string paths or content-addressed `AssetRef` objects. Reader-facing
+  URL rewriting is centralized in `src/assets/assetResolver.ts` and
+  `src/services/storyLibrary.ts`.
+- **Reader/generator split awareness** — image generation controls live in the
+  Generator target. The public Reader target consumes completed packages and
+  must not import image provider code or provider secrets.
 - **B6 / color-script follow-through per beat** — per-beat color-script
   hints flow into the prompt so palette shifts are honored across the
   sequence rather than only at scene boundaries.
@@ -576,7 +589,7 @@ Eligibility knobs are grouped in
 | Field                         | Default      | Notes                                                                 |
 |-------------------------------|--------------|-----------------------------------------------------------------------|
 | `enabled`                     | `false`      | Master switch. Always false unless opted in via env or UI.            |
-| `backend`                     | `'disabled'` | `disabled` | `kohya` | `diffusers` | `replicate`. Only `kohya` is wired today. |
+| `backend`                     | `'disabled'` | Allowed enum: `disabled`, `kohya`, `a1111-dreambooth`, `comfy-training`, `replicate`, `fal`. Only `kohya` is wired today. |
 | `baseUrl` / `apiKey`          | unset        | Overrides `LORA_TRAINER_BASE_URL` / `LORA_TRAINER_API_KEY` per call.  |
 | `characterThresholds.minRefs` | `6`          | Skip training a character until this many reference images exist.     |
 | `characterThresholds.tiers`   | core/major/supporting | Character tiers eligible for training. Minor cast excluded by default. |

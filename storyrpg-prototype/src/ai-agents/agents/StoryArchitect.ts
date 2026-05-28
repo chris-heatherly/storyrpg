@@ -960,6 +960,536 @@ export class StoryArchitect extends BaseAgent {
     ].map((value) => value?.trim()).filter(Boolean) as string[]));
   }
 
+  private hasBlueprintText(value: unknown): value is string {
+    return typeof value === 'string'
+      && value.trim().length > 0
+      && !/\b(tbd|none|n\/a|unknown|placeholder|not specified)\b/i.test(value);
+  }
+
+  private hasConcretePersonalStake(value: unknown): value is string {
+    if (!this.hasBlueprintText(value)) return false;
+    const text = value.trim();
+    const personalTerms = /\b(friend|family|sibling|parent|child|lover|ally|mentor|home|name|reputation|trust|promise|vow|identity|future|memory|belonging|freedom|dignity|relationship|bond|wound|secret|debt|cost|lose|loss|save|protect|betray|exile|access)\b/i;
+    const abstractOnly = /\b(everything|the world|the realm|the kingdom|the city|all hope|fate|destiny|survival|stakes are high|danger grows)\b/i;
+    return personalTerms.test(text) || !abstractOnly.test(text);
+  }
+
+  private pickBlueprintText(...values: Array<string | undefined>): string {
+    return values.find((value) => this.hasBlueprintText(value)) || '';
+  }
+
+  private pickPersonalStake(...values: Array<string | undefined>): string {
+    return values.find((value) => this.hasConcretePersonalStake(value)) || this.pickBlueprintText(...values);
+  }
+
+  private hasThemeChoiceAction(value: unknown): value is string {
+    return this.hasBlueprintText(value)
+      && /\b(player|protagonist|choice|chooses|choose|decision|decides|act|acts|action|refusal|refuses|sacrifice|risks|commit|commits|reveals|hides|protects|betrays|trusts|confronts|accepts|rejects|identity|cost|open|block|archive|read|wait|decline|publish|invite|thank|kiss|scream|run|freeze|fight)\b/i.test(value);
+  }
+
+  private buildTreatmentThemeChoicePressure(
+    guidance: TreatmentEpisodeGuidance | undefined,
+    themePressure: string,
+  ): string {
+    const authoredChoice = guidance?.forcedChoice || guidance?.majorChoicePressures?.[0] || themePressure;
+    return `Player/protagonist choice makes the theme answerable: ${authoredChoice}. The action tests ${themePressure}`;
+  }
+
+  private normalizeInformationPlan(
+    items: unknown,
+    guidance: TreatmentEpisodeGuidance | undefined,
+    fallbackItem: string,
+    fallbackPayoff: string,
+  ): DramaticStructureAudit['informationPlan'] {
+    const rawItems = Array.isArray(items) ? items : items ? [items] : [];
+    const normalized = rawItems.map((raw, index) => {
+      const item = raw && typeof raw === 'object' ? raw as Partial<DramaticStructureAudit['informationPlan'][number]> : {};
+      const fallback = index === 0
+        ? fallbackItem
+        : (guidance?.cSeed || guidance?.informationMovement || guidance?.visualAnchor || fallbackItem);
+      return {
+        item: this.pickBlueprintText(item.item, fallback),
+        knownBy: this.sanitizeInformationOwners(item.knownBy),
+        revealTiming: this.pickBlueprintText(item.revealTiming, 'During this episode.'),
+        payoff: this.pickBlueprintText(item.payoff, fallbackPayoff),
+      };
+    });
+
+    return normalized.length > 0
+      ? normalized
+      : [{
+          item: fallbackItem,
+          knownBy: ['player', 'protagonist'],
+          revealTiming: 'During this episode.',
+          payoff: fallbackPayoff,
+        }];
+  }
+
+  private shouldRemoveCurrentExistentialStake(value: string | undefined): boolean {
+    if (!this.hasBlueprintText(value)) return true;
+    if (this.episodeStructureMode === 'sceneEpisodes') return true;
+    return /\bexistential\b/i.test(value)
+      && /\bunknown to|unaware|hidden from|not yet known|audience knows/i.test(value);
+  }
+
+  private mergeTreatmentStakesLayers(
+    existing: StakesLayers | undefined,
+    inferred: StakesLayers,
+  ): StakesLayers {
+    const merged: StakesLayers = {
+      ...inferred,
+      ...(existing || {}),
+    };
+    if (this.shouldRemoveCurrentExistentialStake(merged.existential)) {
+      delete merged.existential;
+    }
+    return merged;
+  }
+
+  private inferTreatmentStakesLayers(guidance: TreatmentEpisodeGuidance | undefined, input: StoryArchitectInput): StakesLayers {
+    const authored = (guidance?.stakesLayers || []).join(' ');
+    const layers: StakesLayers = {};
+
+    const materialSource = [
+      guidance?.entryGoal,
+      guidance?.obstacle,
+      guidance?.aPressure,
+      authored,
+    ].filter(Boolean).join(' ');
+    const relationalSource = [
+      guidance?.bPressure,
+      guidance?.powerShift,
+      authored,
+      input.availableNPCs?.[0]?.name,
+    ].filter(Boolean).join(' ');
+    const identitySource = [
+      guidance?.liePressure,
+      guidance?.themePressure,
+      guidance?.forcedChoice,
+      authored,
+    ].filter(Boolean).join(' ');
+
+    layers.material = materialSource || 'Access, evidence, time, safety, or leverage can be lost by how this scene turns.';
+    layers.relational = relationalSource || 'Trust, intimacy, reputation, or alliance pressure changes around the protagonist.';
+    layers.identity = identitySource || 'The protagonist must show who they are becoming under pressure.';
+
+    if (!this.shouldRemoveCurrentExistentialStake(authored)
+      && /\bexistential|survival|life|death|freedom|home|meaning|irreversible\b/i.test(authored)) {
+      layers.existential = authored;
+    }
+
+    return layers;
+  }
+
+  private splitAuthoredChoiceOptions(pressure: string): string[] {
+    const cleaned = pressure
+      .replace(/^\s*[-*]\s+/, '')
+      .replace(/\s+[—–-]\s+(?=WANT:|COST:|IDENTITY:).*/i, '')
+      .replace(/\s*\(\d+\)\s*/g, ' | ')
+      .trim();
+    const options = cleaned
+      .split(/\s*(?:\||,?\s+or\s+|\/|;)\s*/i)
+      .map((option) => option.replace(/^\(?\d+\)?\.?\s*/, '').trim())
+      .filter((option) => option.length > 0);
+    return Array.from(new Set(options)).slice(0, 4);
+  }
+
+  private chooseAuthoredChoicePressure(guidance: TreatmentEpisodeGuidance | undefined): string | undefined {
+    const pressures = guidance?.majorChoicePressures || [];
+    return pressures.find((pressure) => this.splitAuthoredChoiceOptions(pressure).length >= 2)
+      || pressures.find((pressure) => this.hasBlueprintText(pressure));
+  }
+
+  private findSceneForAuthoredChoice(blueprint: EpisodeBlueprint): SceneBlueprint | undefined {
+    return blueprint.scenes?.find((scene) => scene.choicePoint && !scene.isEncounter)
+      || blueprint.scenes?.find((scene) => scene.choicePoint)
+      || blueprint.scenes?.find((scene) => !scene.isEncounter)
+      || blueprint.scenes?.[0];
+  }
+
+  private inferChoiceConsequenceDomain(pressure: string, guidance: TreatmentEpisodeGuidance | undefined): NonNullable<SceneBlueprint['choicePoint']>['consequenceDomain'] {
+    const text = [pressure, guidance?.bPressure, guidance?.consequenceResidue, guidance?.informationMovement].filter(Boolean).join(' ').toLowerCase();
+    if (/\b(trust|friend|family|lover|relationship|mika|stela|radu|daniel|victor)\b/.test(text)) return 'relationship';
+    if (/\b(photo|publish|blog|message|secret|read|archive|name|codename|information|laptop)\b/.test(text)) return 'information';
+    if (/\b(key|card|quartz|access|money|resource|object|item)\b/.test(text)) return 'resource';
+    if (/\b(reputation|public|column|blog|publish)\b/.test(text)) return 'reputation';
+    if (/\b(danger|threat|attack|safety)\b/.test(text)) return 'danger';
+    return 'identity';
+  }
+
+  private repairTreatmentMajorChoicePressure(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    const pressure = this.chooseAuthoredChoicePressure(guidance);
+    if (!pressure) return;
+
+    const scene = this.findSceneForAuthoredChoice(blueprint);
+    if (!scene) return;
+
+    const options = this.splitAuthoredChoiceOptions(pressure);
+    const stakesLayers = this.inferTreatmentStakesLayers(guidance, input);
+    const personalStake = this.pickPersonalStake(
+      scene.personalStake,
+      blueprint.dramaticAudit?.personalStake,
+      guidance?.liePressure,
+      guidance?.bPressure,
+      guidance?.consequenceResidue,
+      `The protagonist's identity, reputation, trust, and future options are at risk.`
+    );
+    const residue = this.collectAuthoredResidue(guidance);
+    const existingChoice = scene.choicePoint;
+
+    scene.choicePoint = {
+      ...(existingChoice || {}),
+      type: existingChoice?.type === 'expression' || !existingChoice?.type ? 'dilemma' : existingChoice.type,
+      branches: existingChoice?.branches || false,
+      stakes: {
+        want: pressure,
+        cost: guidance?.consequenceResidue || guidance?.exitShift || existingChoice?.stakes?.cost || 'Each option leaves a different cost, residue, or lost possibility.',
+        identity: guidance?.liePressure || guidance?.themePressure || existingChoice?.stakes?.identity || 'The choice defines who the protagonist becomes under pressure.',
+      },
+      stakesLayers: this.mergeTreatmentStakesLayers(existingChoice?.stakesLayers, stakesLayers),
+      themeAnswer: existingChoice?.themeAnswer || guidance?.themePressure || guidance?.liePressure,
+      description: `Authored treatment choice: ${pressure}`,
+      optionHints: options.length >= 2 ? options : [pressure],
+      consequenceDomain: existingChoice?.consequenceDomain || this.inferChoiceConsequenceDomain(pressure, guidance),
+      reminderPlan: {
+        immediate: existingChoice?.reminderPlan?.immediate || `The next beat visibly responds to the authored choice: ${pressure}`,
+        shortTerm: existingChoice?.reminderPlan?.shortTerm || `Later sceneEpisode pressure remembers which option the player chose.`,
+        ...(existingChoice?.reminderPlan?.later
+          ? { later: existingChoice.reminderPlan.later }
+          : residue[0]
+            ? { later: `Carry forward treatment residue: ${residue[0]}` }
+            : {}),
+      },
+      expectedResidue: Array.from(new Set([
+        ...(existingChoice?.expectedResidue || []),
+        ...residue,
+        `Authored choice pressure remains visible: ${pressure}`,
+      ])),
+    };
+
+    scene.personalStake = personalStake;
+    scene.keyBeats = Array.isArray(scene.keyBeats) ? scene.keyBeats : [];
+    if (!scene.keyBeats.some((beat) => beat.includes(pressure))) {
+      scene.keyBeats.push(`Choice pressure: ${pressure}`);
+    }
+  }
+
+  private ensureDramaticAuditMinimums(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    const audit = blueprint.dramaticAudit || {} as DramaticStructureAudit;
+    const themePressure = this.pickBlueprintText(
+      audit.themePressure,
+      guidance?.themePressure,
+      guidance?.liePressure,
+      `This episode tests the theme through protagonist choice, cost, identity, relationship, and information pressure.`
+    );
+    const personalStake = this.pickPersonalStake(
+      audit.personalStake,
+      guidance?.liePressure,
+      guidance?.bPressure,
+      guidance?.consequenceResidue,
+      `The protagonist's identity, reputation, trust, and future options are at risk.`
+    );
+    const stakesLayers = this.mergeTreatmentStakesLayers(
+      audit.stakesLayers,
+      this.inferTreatmentStakesLayers(guidance, input)
+    );
+
+    blueprint.dramaticAudit = {
+      ...audit,
+      episodeQuestion: this.pickBlueprintText(
+        audit.episodeQuestion,
+        guidance?.dramaticQuestion,
+        `Will the protagonist change the situation in ${input.episodeTitle}?`
+      ),
+      themeQuestion: this.pickBlueprintText(
+        audit.themeQuestion,
+        'What does the protagonist owe the truth of who they are becoming?'
+      ),
+      themePressure,
+      themeAngle: this.pickBlueprintText(audit.themeAngle, guidance?.themePressure, themePressure),
+      themeChoicePressure: this.hasThemeChoiceAction(audit.themeChoicePressure)
+        ? audit.themeChoicePressure
+        : this.buildTreatmentThemeChoicePressure(guidance, themePressure),
+      personalStake,
+      stakesLayers,
+      majorTurns: Array.isArray(audit.majorTurns) && audit.majorTurns.length > 0
+        ? audit.majorTurns
+        : [{
+            id: 'turn-1',
+            description: guidance?.forcedChoice || guidance?.obstacle || `The protagonist must act in ${input.episodeTitle}.`,
+            turnType: 'choice',
+            driver: 'player_choice',
+            protagonistInfluence: guidance?.forcedChoice || 'The player/protagonist action changes the episode pressure.',
+            closesQuestion: 'The opening pressure becomes a decision.',
+            opensQuestion: guidance?.endingPressure || guidance?.nextEpisodeCausality || 'The choice leaves visible residue.',
+            memorableImageOrLine: guidance?.visualAnchor || input.episodeTitle,
+          }],
+      informationPlan: this.normalizeInformationPlan(
+        audit.informationPlan,
+        guidance,
+        guidance?.informationMovement || guidance?.cSeed || themePressure,
+        guidance?.endingPressure || guidance?.nextEpisodeCausality || 'The information changes what the player can choose next.',
+      ),
+    };
+
+    for (const scene of blueprint.scenes || []) {
+      scene.themePressure = this.pickBlueprintText(scene.themePressure, themePressure);
+      scene.personalStake = this.pickPersonalStake(scene.personalStake, personalStake);
+      scene.stakesLayers = this.mergeTreatmentStakesLayers(scene.stakesLayers, stakesLayers);
+      if (scene.choicePoint) {
+        scene.choicePoint.themeAnswer = this.pickBlueprintText(scene.choicePoint.themeAnswer, blueprint.dramaticAudit.themeChoicePressure);
+        scene.choicePoint.stakesLayers = this.mergeTreatmentStakesLayers(scene.choicePoint.stakesLayers, stakesLayers);
+      }
+    }
+  }
+
+  private repairTreatmentForwardPressure(blueprint: EpisodeBlueprint, guidance: TreatmentEpisodeGuidance | undefined): void {
+    const endingPressure = guidance?.endingPressure
+      || guidance?.authoredCliffhanger
+      || guidance?.endingTurnout
+      || guidance?.nextEpisodeCausality;
+    if (!this.hasBlueprintText(endingPressure)) return;
+
+    const finalScenes = (blueprint.scenes || []).filter((scene) => (scene.leadsTo || []).length === 0);
+    const finalScene = finalScenes[0] || blueprint.scenes?.[blueprint.scenes.length - 1];
+    if (!finalScene) return;
+
+    finalScene.keyBeats = Array.isArray(finalScene.keyBeats) ? finalScene.keyBeats : [];
+    if (!finalScene.keyBeats.some((beat) => beat.includes(endingPressure))) {
+      finalScene.keyBeats.push(`Forward pressure: ${endingPressure}`);
+    }
+    finalScene.narrativeFunction = finalScene.narrativeFunction
+      ? `${finalScene.narrativeFunction} Forward pressure: ${endingPressure}`
+      : `Forward pressure: ${endingPressure}`;
+    finalScene.dramaticStructure = {
+      question: finalScene.dramaticStructure?.question || guidance?.dramaticQuestion || blueprint.dramaticAudit?.episodeQuestion || 'What changes because of this scene?',
+      turn: finalScene.dramaticStructure?.turn || guidance?.forcedChoice || guidance?.informationMovement || endingPressure,
+      pressurePeak: finalScene.dramaticStructure?.pressurePeak || guidance?.endingTurnout || guidance?.consequenceResidue || endingPressure,
+      changedState: finalScene.dramaticStructure?.changedState || endingPressure,
+    };
+    finalScene.residue = Array.isArray(finalScene.residue) ? finalScene.residue : [];
+    if (!finalScene.residue.some((item) => item.description?.includes(endingPressure))) {
+      finalScene.residue.push({ type: 'promise', description: endingPressure });
+    }
+
+    blueprint.arc = blueprint.arc || {
+      hook: '',
+      plotTurn1: '',
+      pinch1: '',
+      midpoint: '',
+      pinch2: '',
+      climax: '',
+      resolution: '',
+    };
+    if (!blueprint.arc.resolution?.includes(endingPressure)) {
+      blueprint.arc.resolution = [blueprint.arc.resolution, endingPressure].filter(Boolean).join(' ');
+    }
+  }
+
+  private repairTreatmentDramaticAudit(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance || {};
+
+    const stakesLayers = this.inferTreatmentStakesLayers(guidance, input);
+    const episodeQuestion = guidance.dramaticQuestion
+      || blueprint.dramaticAudit?.episodeQuestion
+      || `Will the protagonist change the situation in ${input.episodeTitle}?`;
+    const themePressure = guidance.themePressure
+      || guidance.liePressure
+      || `This episode tests the theme through the protagonist's choice, cost, identity, and relationship pressure.`;
+    const themeChoicePressure = this.hasThemeChoiceAction(blueprint.dramaticAudit?.themeChoicePressure)
+      ? blueprint.dramaticAudit!.themeChoicePressure
+      : this.buildTreatmentThemeChoicePressure(guidance, themePressure);
+    const personalStake = guidance.liePressure
+      || guidance.bPressure
+      || guidance.consequenceResidue
+      || `The protagonist's identity, reputation, trust, and future options are at risk.`;
+    const nextEpisodePressure = guidance.nextEpisodeCausality
+      || guidance.endingPressure
+      || guidance.authoredCliffhanger
+      || guidance.endingTurnout
+      || guidance.consequenceResidue
+      || `The changed state of ${input.episodeTitle} creates the next pressure.`;
+    const openingPromise = {
+      hook: this.pickBlueprintText(
+        blueprint.dramaticAudit?.openingPromise?.hook,
+        guidance.openingImage,
+        guidance.coldOpenFunction,
+        guidance.entryGoal,
+        input.episodeSynopsis,
+      ),
+      episodePromise: this.pickBlueprintText(
+        blueprint.dramaticAudit?.openingPromise?.episodePromise,
+        guidance.episodePromise,
+        episodeQuestion,
+      ),
+      activePressure: this.pickBlueprintText(
+        blueprint.dramaticAudit?.openingPromise?.activePressure,
+        guidance.obstacle,
+        guidance.aPressure,
+        guidance.forcedChoice,
+        input.episodeSynopsis,
+      ),
+      optionalStakes: this.pickBlueprintText(
+        blueprint.dramaticAudit?.openingPromise?.optionalStakes,
+        personalStake,
+      ),
+    };
+    const episodePressureLanes = {
+      aPlot: {
+        externalPressure: this.pickBlueprintText(
+          blueprint.dramaticAudit?.episodePressureLanes?.aPlot?.externalPressure,
+          guidance.aPressure,
+          guidance.entryGoal,
+          input.episodeSynopsis,
+        ),
+        climaxIntersection: this.pickBlueprintText(
+          blueprint.dramaticAudit?.episodePressureLanes?.aPlot?.climaxIntersection,
+          guidance.endingTurnout,
+          guidance.exitShift,
+          nextEpisodePressure,
+        ),
+      },
+      ...(blueprint.dramaticAudit?.episodePressureLanes?.bPlot || guidance.bPressure ? {
+        bPlot: {
+          mode: blueprint.dramaticAudit?.episodePressureLanes?.bPlot?.mode
+            || (this.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisode' : 'scene'),
+          relationshipOrIdentityPressure: this.pickBlueprintText(
+            blueprint.dramaticAudit?.episodePressureLanes?.bPlot?.relationshipOrIdentityPressure,
+            guidance.bPressure,
+            personalStake,
+          ),
+          protagonistVisibleSignals: Array.isArray(blueprint.dramaticAudit?.episodePressureLanes?.bPlot?.protagonistVisibleSignals)
+            && blueprint.dramaticAudit!.episodePressureLanes!.bPlot!.protagonistVisibleSignals.length > 0
+            ? blueprint.dramaticAudit!.episodePressureLanes!.bPlot!.protagonistVisibleSignals
+            : [this.pickBlueprintText(guidance.bPressure, personalStake)],
+          climaxIntersection: this.pickBlueprintText(
+            blueprint.dramaticAudit?.episodePressureLanes?.bPlot?.climaxIntersection,
+            guidance.exitShift,
+            guidance.consequenceResidue,
+            nextEpisodePressure,
+          ),
+          scenesOrEpisodes: blueprint.dramaticAudit?.episodePressureLanes?.bPlot?.scenesOrEpisodes,
+        },
+      } : {}),
+      ...(blueprint.dramaticAudit?.episodePressureLanes?.cPlot || guidance.cSeed ? {
+        cPlot: {
+          function: blueprint.dramaticAudit?.episodePressureLanes?.cPlot?.function || 'future_seed',
+          seed: this.pickBlueprintText(
+            blueprint.dramaticAudit?.episodePressureLanes?.cPlot?.seed,
+            guidance.cSeed,
+            nextEpisodePressure,
+          ),
+          visiblePlant: this.pickBlueprintText(
+            blueprint.dramaticAudit?.episodePressureLanes?.cPlot?.visiblePlant,
+            guidance.cSeed,
+            guidance.visualAnchor,
+            nextEpisodePressure,
+          ),
+          payoffPlan: this.pickBlueprintText(
+            blueprint.dramaticAudit?.episodePressureLanes?.cPlot?.payoffPlan,
+            `Carry forward from ${input.episodeTitle}.`,
+          ),
+          targetPayoff: blueprint.dramaticAudit?.episodePressureLanes?.cPlot?.targetPayoff || 'later_episode',
+        },
+      } : {}),
+    };
+
+    blueprint.dramaticAudit = {
+      episodeQuestion: this.pickBlueprintText(blueprint.dramaticAudit?.episodeQuestion, episodeQuestion),
+      episodeQuestionSetup: this.pickBlueprintText(blueprint.dramaticAudit?.episodeQuestionSetup, guidance.openingImage, guidance.openingSituation, guidance.entryGoal, episodeQuestion),
+      episodeQuestionAnswer: this.pickBlueprintText(blueprint.dramaticAudit?.episodeQuestionAnswer, guidance.exitShift, guidance.endingTurnout, nextEpisodePressure),
+      themeQuestion: this.pickBlueprintText(blueprint.dramaticAudit?.themeQuestion, 'What does the protagonist owe the truth of who they are becoming?'),
+      themePressure: this.pickBlueprintText(blueprint.dramaticAudit?.themePressure, themePressure),
+      themeAngle: this.pickBlueprintText(blueprint.dramaticAudit?.themeAngle, guidance.themePressure, themePressure),
+      themeChoicePressure,
+      openingPromise,
+      episodePressureLanes,
+      episodeEndStateDelta: this.pickBlueprintText(blueprint.dramaticAudit?.episodeEndStateDelta, guidance.endStateChange, guidance.exitShift, guidance.consequenceResidue, nextEpisodePressure),
+      nextEpisodePressure: this.pickBlueprintText(blueprint.dramaticAudit?.nextEpisodePressure, nextEpisodePressure),
+      personalStake: this.pickPersonalStake(blueprint.dramaticAudit?.personalStake, personalStake),
+      stakesLayers: this.mergeTreatmentStakesLayers(blueprint.dramaticAudit?.stakesLayers, stakesLayers),
+      majorTurns: Array.isArray(blueprint.dramaticAudit?.majorTurns) && blueprint.dramaticAudit!.majorTurns.length > 0
+        ? blueprint.dramaticAudit!.majorTurns
+        : [
+            {
+              id: 'turn-1',
+              description: guidance.entryGoal || guidance.openingImage || `The episode opens its pressure in ${input.episodeTitle}.`,
+              turnType: 'escalation',
+              driver: 'protagonist',
+              protagonistInfluence: guidance.entryGoal || 'The protagonist enters with intent and chooses how to meet the pressure.',
+              closesQuestion: 'The opening situation becomes active.',
+              opensQuestion: episodeQuestion,
+              memorableImageOrLine: guidance.visualAnchor || guidance.openingImage || input.episodeTitle,
+            },
+            {
+              id: 'turn-2',
+              description: guidance.forcedChoice || guidance.obstacle || `The protagonist must make a consequential choice.`,
+              turnType: 'choice',
+              driver: 'player_choice',
+              protagonistInfluence: guidance.forcedChoice || 'The player choice reshapes the pressure and residue.',
+              closesQuestion: 'Passive chronology ends.',
+              opensQuestion: guidance.consequenceResidue || nextEpisodePressure,
+              memorableImageOrLine: guidance.visualAnchor || guidance.consequenceResidue || input.episodeTitle,
+            },
+            {
+              id: 'turn-3',
+              description: guidance.exitShift || guidance.endingTurnout || nextEpisodePressure,
+              turnType: 'cost',
+              driver: 'protagonist',
+              protagonistInfluence: guidance.exitShift || 'The protagonist leaves changed by the choice and its cost.',
+              closesQuestion: episodeQuestion,
+              opensQuestion: nextEpisodePressure,
+              memorableImageOrLine: guidance.visualAnchor || guidance.endingTurnout || nextEpisodePressure,
+            },
+          ],
+      informationPlan: this.normalizeInformationPlan(
+        blueprint.dramaticAudit?.informationPlan,
+        guidance,
+        guidance.informationMovement || guidance.cSeed || guidance.visualAnchor || nextEpisodePressure,
+        nextEpisodePressure,
+      ),
+    };
+
+    for (const scene of blueprint.scenes || []) {
+      scene.personalStake = this.pickPersonalStake(scene.personalStake, personalStake);
+      scene.themePressure = this.pickBlueprintText(scene.themePressure, themePressure);
+      scene.stakesLayers = this.mergeTreatmentStakesLayers(scene.stakesLayers, stakesLayers);
+      if (scene.choicePoint) {
+        scene.choicePoint.stakesLayers = this.mergeTreatmentStakesLayers(scene.choicePoint.stakesLayers, stakesLayers);
+      }
+    }
+
+    if (this.episodeStructureMode === 'sceneEpisodes' && blueprint.scenes?.[0]) {
+      const firstScene = blueprint.scenes[0];
+      const pressureBeat = `Pressure: ${guidance.obstacle || guidance.forcedChoice || guidance.themePressure || guidance.liePressure || episodeQuestion}`;
+      firstScene.keyBeats = Array.isArray(firstScene.keyBeats) ? firstScene.keyBeats : [];
+      if (!/\b(pressure|threat|danger|risk|cost|want|need|fear|question|choice|choose|decide|reveal|secret|must|promise|trust|relationship|identity|help|refus\w*|confront\w*)\b|[?]/i.test(firstScene.keyBeats[0] || '')) {
+        firstScene.keyBeats.unshift(pressureBeat);
+      }
+    }
+  }
+
+  private sanitizeInformationOwners(owners: unknown): InformationOwner[] {
+    const rawOwners = Array.isArray(owners) ? owners : owners ? [owners] : [];
+    const mapped = rawOwners.flatMap((owner): InformationOwner[] => {
+      const value = String(owner || '').toLowerCase();
+      if (!value.trim()) return [];
+      if (['player', 'audience', 'protagonist', 'ally', 'antagonist', 'world'].includes(value)) {
+        return [value as InformationOwner];
+      }
+      if (/\b(player|reader|audience)\b/.test(value)) return ['player'];
+      if (/\b(protagonist|lead|hero|heroine|kylie|aethavyr)\b/.test(value)) return ['protagonist'];
+      if (/\b(ally|friend|stela|mika|radu|companion|support)\b/.test(value)) return ['ally'];
+      if (/\b(antagonist|villain|victor|enemy|opponent)\b/.test(value)) return ['antagonist'];
+      if (/\b(world|public|city|court|community|society)\b/.test(value)) return ['world'];
+      return [];
+    });
+    const unique = Array.from(new Set(mapped));
+    return unique.length > 0 ? unique : ['player', 'protagonist'];
+  }
+
   private repairTreatmentResidue(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const guidance = input.seasonPlanDirectives?.treatmentGuidance;
     const authoredResidue = this.collectAuthoredResidue(guidance);
@@ -1346,6 +1876,9 @@ REQUIREMENTS:
         if (scene.requires && !Array.isArray(scene.requires)) {
           scene.requires = [scene.requires as unknown as string];
         }
+        if (scene.requires) {
+          scene.requires = scene.requires.filter((targetId) => targetId !== scene.id);
+        }
 
         // Normalize choicePoint
         if (scene.choicePoint) {
@@ -1372,8 +1905,14 @@ REQUIREMENTS:
         const scene = blueprint.scenes[i];
         const originalLeadsTo = [...scene.leadsTo];
         
-        // Filter out invalid scene references
+        // Filter out invalid scene references and self-routes. A scene that
+        // points to itself becomes its own dependency prerequisite and blocks
+        // content generation, especially in single-scene sceneEpisodes.
         scene.leadsTo = scene.leadsTo.filter(targetId => {
+          if (targetId === scene.id) {
+            console.warn(`[StoryArchitect] Removed self leadsTo reference: ${scene.id} -> ${targetId}`);
+            return false;
+          }
           if (validSceneIds.has(targetId)) {
             return true;
           }
@@ -1387,6 +1926,12 @@ REQUIREMENTS:
           scene.leadsTo = [nextScene.id];
           console.log(`[StoryArchitect] Auto-added sequential link: ${scene.id} -> ${nextScene.id}`);
         }
+
+        const distinctLeadsTo = new Set(scene.leadsTo);
+        if (scene.choicePoint?.branches && distinctLeadsTo.size < 2) {
+          scene.choicePoint.branches = false;
+          console.warn(`[StoryArchitect] Removed branches=true from ${scene.id}; fewer than two distinct future scene targets remain`);
+        }
         
         // Log if we made repairs
         if (originalLeadsTo.length !== scene.leadsTo.length || 
@@ -1395,18 +1940,18 @@ REQUIREMENTS:
         }
       }
 
+      if (!blueprint.bottleneckScenes) {
+        blueprint.bottleneckScenes = [];
+      } else if (!Array.isArray(blueprint.bottleneckScenes)) {
+        blueprint.bottleneckScenes = [blueprint.bottleneckScenes as unknown as string];
+      }
+
       // Also repair bottleneckScenes to remove invalid references
       blueprint.bottleneckScenes = blueprint.bottleneckScenes.filter(id => {
         if (validSceneIds.has(id)) return true;
         console.warn(`[StoryArchitect] Removed invalid bottleneck reference: ${id}`);
         return false;
       });
-
-      if (!blueprint.bottleneckScenes) {
-        blueprint.bottleneckScenes = [];
-      } else if (!Array.isArray(blueprint.bottleneckScenes)) {
-        blueprint.bottleneckScenes = [blueprint.bottleneckScenes as unknown as string];
-      }
 
       // Normalize other top-level arrays
       if (!blueprint.themes) {
@@ -1524,7 +2069,13 @@ REQUIREMENTS:
       this.repairChoiceDensity(blueprint, input);
       this.repairPlannedEncounterCoverage(blueprint, input);
       this.repairSceneGraphBranchCoverage(blueprint);
+      this.repairTreatmentDramaticAudit(blueprint, input);
+      this.repairTreatmentMajorChoicePressure(blueprint, input);
+      this.repairTreatmentForwardPressure(blueprint, input.seasonPlanDirectives?.treatmentGuidance);
       this.repairTreatmentResidue(blueprint, input);
+      this.ensureDramaticAuditMinimums(blueprint, input);
+      this.repairSceneTransitions(blueprint);
+      this.repairSceneTurnContracts(blueprint);
 
       // Log choice point info BEFORE validation
       const scenesWithChoices = blueprint.scenes?.filter(s => s.choicePoint) || [];
@@ -2877,6 +3428,172 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     }
 
     console.log(`[StoryArchitect] Choice density validation passed: ${scenesWithChoices.length}/${blueprint.scenes.length} scenes have choices (${Math.round(choiceDensity * 100)}%)`);
+  }
+
+  private repairSceneTransitions(blueprint: EpisodeBlueprint): void {
+    const scenes = blueprint.scenes || [];
+    const sceneMap = new Map(scenes.map((scene, index) => [scene.id, { scene, index }]));
+
+    for (const [index, scene] of scenes.entries()) {
+      const leadsTo = Array.isArray(scene.leadsTo) ? scene.leadsTo : [];
+      const existingTransitions = Array.isArray(scene.transitionOut)
+        ? scene.transitionOut
+        : scene.transitionOut
+          ? [scene.transitionOut as unknown as SceneTransitionOut]
+          : [];
+      const transitionByTarget = new Map(
+        existingTransitions
+          .filter((transition) => transition?.toSceneId)
+          .map((transition) => [transition.toSceneId, transition])
+      );
+
+      scene.transitionOut = leadsTo.map((toSceneId, leadIndex) => {
+        const existing = transitionByTarget.get(toSceneId);
+        const target = sceneMap.get(toSceneId);
+        const connector = existing?.connector === 'therefore' || existing?.connector === 'but'
+          ? existing.connector
+          : this.inferTransitionConnector(scene, target?.index ?? index + leadIndex + 1, index, leadIndex);
+
+        return {
+          toSceneId,
+          connector,
+          causalLink: this.pickBlueprintText(
+            existing?.causalLink,
+            this.buildTransitionCausalLink(scene, target?.scene, connector),
+          ),
+          pressureChange: this.pickBlueprintText(
+            existing?.pressureChange,
+            this.buildTransitionPressureChange(scene, target?.scene, connector),
+          ),
+        };
+      });
+    }
+  }
+
+  private inferTransitionConnector(
+    scene: SceneBlueprint,
+    targetIndex: number,
+    sceneIndex: number,
+    leadIndex: number
+  ): 'therefore' | 'but' {
+    if (leadIndex > 0 || scene.choicePoint?.branches) return 'but';
+    if (targetIndex > sceneIndex + 1) return 'but';
+    return 'therefore';
+  }
+
+  private buildTransitionCausalLink(
+    scene: SceneBlueprint,
+    target: SceneBlueprint | undefined,
+    connector: 'therefore' | 'but'
+  ): string {
+    const sceneChange = this.pickBlueprintText(
+      scene.dramaticStructure?.changedState,
+      scene.residue?.[0]?.description,
+      scene.choicePoint?.reminderPlan?.immediate,
+      scene.choicePoint?.description,
+      scene.keyBeats?.[scene.keyBeats.length - 1],
+      scene.narrativeFunction,
+      scene.description,
+    );
+    const targetPressure = this.pickBlueprintText(
+      target?.dramaticQuestion,
+      target?.conflictEngine,
+      target?.description,
+      target?.name,
+      'the next scene',
+    );
+    const connectorText = connector === 'but'
+      ? 'that result creates a complication'
+      : 'that result makes the next pressure necessary';
+    return `${scene.name} changes the situation: ${sceneChange}. ${connectorText}, driving ${target?.name || 'the next scene'}: ${targetPressure}`;
+  }
+
+  private buildTransitionPressureChange(
+    scene: SceneBlueprint,
+    target: SceneBlueprint | undefined,
+    connector: 'therefore' | 'but'
+  ): string {
+    const pressureBeat = scene.keyBeats?.find((beat) =>
+      /\b(peak|cost|choice|pressure|risk|danger|reveal|turn)\b/i.test(beat)
+    );
+    const fromPressure = this.pickBlueprintText(
+      scene.dramaticStructure?.pressurePeak,
+      scene.choicePoint?.stakes?.cost,
+      scene.personalStake,
+      scene.conflictEngine,
+      pressureBeat,
+      scene.name,
+    );
+    const toPressure = this.pickBlueprintText(
+      target?.conflictEngine,
+      target?.dramaticQuestion,
+      target?.personalStake,
+      target?.narrativeFunction,
+      target?.name,
+      'a sharper problem',
+    );
+    const verb = connector === 'but' ? 'reverses into' : 'escalates into';
+    return `${fromPressure} ${verb} ${toPressure}.`;
+  }
+
+  private repairSceneTurnContracts(blueprint: EpisodeBlueprint): void {
+    for (const scene of blueprint.scenes || []) {
+      if (scene.choicePoint || this.sceneHasForcedDecision(scene)) continue;
+
+      const forcedReaction = this.buildForcedReactionText(scene);
+      scene.keyBeats = Array.isArray(scene.keyBeats) ? scene.keyBeats : [];
+      if (!scene.keyBeats.some((beat) => beat.includes(forcedReaction))) {
+        scene.keyBeats.push(`PEAK: ${forcedReaction}`);
+      }
+
+      scene.dramaticStructure = {
+        question: scene.dramaticStructure?.question || scene.dramaticQuestion || `What changes in ${scene.name}?`,
+        turn: scene.dramaticStructure?.turn || scene.conflictEngine || scene.keyBeats[0] || forcedReaction,
+        pressurePeak: this.pickBlueprintText(scene.dramaticStructure?.pressurePeak, forcedReaction),
+        changedState: this.pickBlueprintText(
+          scene.dramaticStructure?.changedState,
+          `${scene.name} leaves the protagonist committed to a changed course because ${forcedReaction}`,
+        ),
+      };
+
+      scene.residue = Array.isArray(scene.residue) ? scene.residue : [];
+      if (!scene.residue.some((residue) => residue.description?.includes(forcedReaction))) {
+        scene.residue.push({
+          type: 'danger',
+          description: forcedReaction,
+        });
+      }
+    }
+  }
+
+  private sceneHasForcedDecision(scene: SceneBlueprint): boolean {
+    const text = [
+      scene.dramaticStructure?.pressurePeak,
+      scene.dramaticStructure?.changedState,
+      scene.sequenceIntent?.turningPoint,
+      ...(scene.keyBeats || []),
+      ...(scene.transitionOut || []).flatMap((transition) => [transition.causalLink, transition.pressureChange]),
+      ...(scene.residue || []).map((residue) => residue.description),
+    ].filter(Boolean).join(' ');
+    return /\b(decide|decides|decision|choose|chooses|choice|chose|commit|commits|commitment|refuse|refuses|refusal|accept|accepts|reject|rejects|reveal|reveals|hide|hides|sacrifice|sacrifices|tradeoff|trade-off|risk|risks|betray|betrays|trust|trusts|confront|confronts|promise|promises|confess|confesses|answer|answers|must|cannot|can no longer|turns toward|turns away|irreversible)\b/i.test(text);
+  }
+
+  private buildForcedReactionText(scene: SceneBlueprint): string {
+    const pressure = this.pickBlueprintText(
+      scene.dramaticStructure?.pressurePeak,
+      scene.conflictEngine,
+      scene.personalStake,
+      scene.keyBeats?.[scene.keyBeats.length - 1],
+      scene.description,
+      scene.name,
+    );
+    const target = this.pickBlueprintText(
+      scene.dramaticQuestion,
+      scene.wantVsNeed,
+      scene.narrativeFunction,
+      'what the pressure means now',
+    );
+    return `The pressure forces an irreversible reaction: the protagonist must commit, refuse, reveal, or accept a cost around ${target}; ${pressure}`;
   }
 
   private collectTreatmentFidelityIssues(blueprint: EpisodeBlueprint, input: StoryArchitectInput): string[] {

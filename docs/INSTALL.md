@@ -1,8 +1,11 @@
 # StoryRPG - Installation and Setup Guide
 
-**Version:** 1.1  
-**Last Updated:** April 2026  
+**Version:** 1.2
+**Last Updated:** May 25, 2026
 **Audience:** Anyone setting up StoryRPG on a new machine
+
+For the current architecture map, read `docs/PROJECT_STATUS.md`. For the
+reader/generator deployment split, read `docs/READER_GENERATOR_SPLIT.md`.
 
 ---
 
@@ -40,6 +43,7 @@
 | **Xcode** | iOS development | Only for building native iOS app |
 | **Android Studio** | Android development | Only for building native Android app |
 | **Playwright Chromium** | Tier-2 browser playthrough QA | Install with `npx playwright install chromium` before `npm run test:e2e` or before running the in-pipeline browser QA phase |
+| **Cloud SQL Auth Proxy** | Postgres auth/session development | Only if you are using the Postgres-backed auth path |
 | **Mermaid Chart** | Text-based diagrams and flowcharts | Optional architecture/story-branching diagrams at https://mermaid.ai/ |
 
 ### Required API Keys
@@ -49,7 +53,10 @@ You need at least one API key to use the full application. The keys are obtained
 | Service | Purpose | Required? | Cost | Sign Up |
 |---|---|---|---|---|
 | **Anthropic (Claude)** | Text generation (story content) | Yes, for generating stories | Pay-per-use (~$3-15 per story) | https://console.anthropic.com/ |
-| **Google Gemini** | Image generation | Recommended (default provider) | Free tier available | https://aistudio.google.com/ |
+| **Google Gemini** | Image generation and optional Veo video | Recommended (default image provider) | Free tier available | https://aistudio.google.com/ |
+| **OpenAI** | Optional LLM and GPT Image provider | Optional | Pay-per-use | https://platform.openai.com/ |
+| **Atlas Cloud** | Alternative image generation | Optional | Pay-per-use | Provider account |
+| **MidAPI** | Midjourney via API proxy | Optional | Pay-per-use | Provider account |
 | **ElevenLabs** | Voice narration | Optional | Free tier available | https://elevenlabs.io/ |
 
 **Note:** You can play the four built-in stories without any API keys. API keys are only needed for generating new stories.
@@ -80,16 +87,26 @@ npm install
 # 4. Create the environment file
 cp .env.example .env
 
-# 5. Edit .env and add your API keys (at minimum, the Gemini key for images)
+# 5. Edit .env and add your local generation API keys
 # Open .env in any text editor and fill in:
-#   EXPO_PUBLIC_GEMINI_API_KEY=your-gemini-api-key-here
-#   ANTHROPIC_API_KEY=your-anthropic-key-here  (needed only for generation)
+#   ANTHROPIC_API_KEY=your-anthropic-key-here
+#   EXPO_PUBLIC_GEMINI_API_KEY=your-gemini-api-key-here  (current local Gemini image path)
 
-# 6. Start everything
+# 6. Start proxy + public reader target
 npm run dev
 ```
 
-This starts both the proxy server (port 3001) and the web app (port 8081). Open your browser to `http://localhost:8081`.
+This starts both the proxy server (port 3001) and the Reader web app (port
+8081). Open your browser to `http://localhost:8081`.
+
+To use the Generator UI, start it in a second terminal:
+
+```bash
+cd storyrpg-prototype
+npm run generator:web
+```
+
+Open `http://localhost:8082`.
 
 ---
 
@@ -126,14 +143,14 @@ nvm use 20
 
 If the project is in a Git repository:
 ```bash
-git clone <repository-url> StoryRPG_New
-cd StoryRPG_New
+git clone <repository-url> StoryRPG_fork
+cd StoryRPG_fork
 ```
 
 If you received the project as a zip file or folder:
 ```bash
 # Unzip or copy the folder to your desired location
-cd StoryRPG_New
+cd StoryRPG_fork
 ```
 
 ### Step 3: Install Dependencies
@@ -163,13 +180,17 @@ cp .env.example .env
 Open `.env` in any text editor (VS Code, Notepad, nano, vim, etc.) and add the following:
 
 ```env
-# === REQUIRED FOR IMAGE GENERATION ===
+# === REQUIRED FOR IMAGE GENERATION (current local generator compatibility path) ===
 EXPO_PUBLIC_GEMINI_API_KEY=your-gemini-api-key-here
 EXPO_PUBLIC_IMAGE_GENERATION_ENABLED=true
 EXPO_PUBLIC_IMAGE_PROVIDER=nano-banana
 
 # === REQUIRED FOR STORY GENERATION ===
 ANTHROPIC_API_KEY=your-anthropic-api-key-here
+
+# === OPTIONAL: Alternate text/image provider ===
+# OPENAI_API_KEY=your-openai-key-here
+# EXPO_PUBLIC_OPENAI_IMAGE_MODEL=gpt-image-2
 
 # === OPTIONAL: Voice Narration ===
 # ELEVENLABS_API_KEY=your-elevenlabs-key-here
@@ -178,6 +199,7 @@ ANTHROPIC_API_KEY=your-anthropic-api-key-here
 # EXPO_PUBLIC_ANALYTICS_ENABLED=true
 # EXPO_PUBLIC_POSTHOG_KEY=phc_your_project_key
 # EXPO_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+# EXPO_PUBLIC_LOG_LEVEL=info
 
 # === OPTIONAL: Advanced Settings ===
 # PORT=3001
@@ -194,11 +216,11 @@ Run a quick check to make sure everything is ready:
 ```bash
 # Check that the proxy server starts correctly
 node proxy-server.js &
-# You should see "Proxy server listening on port 3001"
+# You should see "Proxy running on http://localhost:3001"
 
 # Check the health endpoint
 curl http://localhost:3001/
-# Should return {"status":"ok",...}
+# Should return {"status":"ok"}
 
 # Kill the test server
 kill %1
@@ -226,7 +248,9 @@ This key is required to generate new stories. The AI uses Claude to write all na
 
 ### Google Gemini API Key — For Image Generation
 
-This key is used by the default image provider (Nano-Banana/Gemini) to generate illustrations.
+This key is used by the default image provider (`nano-banana` / Gemini) to
+generate illustrations. It is also the fallback key for optional Veo video
+generation.
 
 1. Go to https://aistudio.google.com/
 2. Sign in with your Google account
@@ -239,6 +263,22 @@ This key is used by the default image provider (Nano-Banana/Gemini) to generate 
    ```
 
 **Cost note:** Gemini has a generous free tier for image generation. For most users, the free tier is sufficient.
+
+### OpenAI API Key — Optional Text and Image Provider
+
+OpenAI can be used as an alternate LLM provider and as the GPT Image provider.
+
+1. Go to https://platform.openai.com/
+2. Create an API key
+3. Add to your `.env` file:
+   ```env
+   OPENAI_API_KEY=sk-your-openai-key
+   EXPO_PUBLIC_OPENAI_IMAGE_MODEL=gpt-image-2
+   ```
+
+The current generator UI and pipeline still include some
+`EXPO_PUBLIC_OPENAI_*` compatibility fallbacks for local Expo builds, but
+public Reader deployments should not include provider secrets.
 
 ### ElevenLabs API Key — For Voice Narration (Optional)
 
@@ -319,8 +359,8 @@ EXPO_PUBLIC_LORA_AUTO_TRAIN=true
 # Also read by the CLI/worker entry point:
 LORA_AUTO_TRAIN=true
 
-# Trainer backend. Only "kohya" is wired today; "diffusers" and
-# "replicate" are reserved for future adapters.
+# Trainer backend. Only "kohya" is wired today; other enum values are reserved
+# for future adapters.
 LORA_TRAINER_BACKEND=kohya
 EXPO_PUBLIC_LORA_TRAINER_BACKEND=kohya
 
@@ -359,9 +399,18 @@ npm run dev
 This command:
 1. Kills any existing Node.js processes (to avoid port conflicts)
 2. Starts the proxy server on port 3001
-3. Starts the Expo web development server on port 8081
+3. Starts the Reader Expo web development server on port 8081
 
-Open your browser to **http://localhost:8081** to use the app.
+Open your browser to **http://localhost:8081** to use the Reader app.
+
+The Generator app is separate:
+
+```bash
+cd storyrpg-prototype
+npm run generator:web
+```
+
+Open **http://localhost:8082** for generation controls.
 
 ### Option B: Start Components Separately
 
@@ -372,20 +421,24 @@ If you need more control, start each component in its own terminal:
 cd storyrpg-prototype
 npm run proxy
 ```
-You should see: `Proxy server listening on port 3001`
+You should see: `Proxy running on http://localhost:3001`
 
 **Terminal 2 — Web App:**
 ```bash
 cd storyrpg-prototype
-npm run web
+npm run reader:web
 ```
 The Expo dev server will start and show a QR code and URL. Open the URL in your browser (usually `http://localhost:8081`).
 
+`npm run web` is a reader alias. Use `npm run generator:web` for the
+Generator target.
+
 ### What You Should See
 
-1. **Proxy server terminal:** Shows "Proxy server listening on port 3001" and occasional request logs.
-2. **Web app terminal:** Shows the Expo bundler output with the development server URL.
-3. **Browser:** The StoryRPG home screen with a list of available stories (4 built-in stories should appear).
+1. **Proxy server terminal:** Shows `Proxy running on http://localhost:3001` and occasional request logs.
+2. **Reader terminal:** Shows the Expo bundler output for port 8081.
+3. **Reader browser:** The StoryRPG home screen with a list of available stories.
+4. **Generator browser, if started:** The generation workflow on port 8082.
 
 ### Playing a Built-In Story
 
@@ -403,16 +456,18 @@ Story generation requires the Anthropic API key. Image generation requires the G
 
 ### From the App UI
 
-1. Click the **Generator** button on the home screen
-2. Choose your input method:
+1. Start the Generator target with `npm run generator:web`
+2. Open `http://localhost:8082`
+3. Choose your input method:
    - **From prompt:** Enter a genre and brief description
    - **From document:** Upload a text file or PDF as source material
-3. Wait for the analysis phase (1-2 minutes)
-4. Review the season plan — the AI will suggest episodes with outlines
-5. Customize if desired (change episode count, review outlines)
-6. Click **Generate** to start content creation
-7. Monitor progress — the UI shows phase-by-phase progress with estimated time remaining
-8. When complete, the story appears in your library
+4. Wait for the analysis phase (1-2 minutes)
+5. Review the season plan — the AI will suggest episodes with outlines
+6. Customize if desired (change episode count, review outlines)
+7. Complete style setup if you want preapproved style-bible anchors
+8. Click **Generate** to start content creation
+9. Monitor progress — the UI shows phase-by-phase progress with estimated time remaining
+10. When complete, the story appears in the generated story catalog and can be played by the Reader
 
 **Expected generation time:** 15-60 minutes per episode, depending on:
 - Number of scenes (5-8 per episode)
@@ -440,7 +495,10 @@ npm run generate:doc -- --input /path/to/your/document.txt
 npm run generate:template -- --input /path/to/your/template.txt
 ```
 
-Generated stories appear in the `generated-stories/` directory and will show up in the app's story catalog on next refresh.
+Generated stories appear in the `generated-stories/` directory. Modern runs
+write `story.json`, `manifest.json`, and the legacy `08-final-story.json`
+mirror. They show up in the Reader catalog on refresh when the proxy is
+running.
 
 ---
 
@@ -468,8 +526,8 @@ npm run proxy:health
 # View logs
 npm run proxy:compose:logs
 
-# Start the web app (still runs locally)
-npm run web
+# Start the Reader app (still runs locally)
+npm run reader:web
 ```
 
 ### Docker Details
@@ -565,14 +623,14 @@ The proxy server must be running and accessible from the mobile device. If testi
 **Solutions:**
 1. Re-run `npm install` to ensure all dependencies are present
 2. Check that you're running commands from the `storyrpg-prototype` directory
-3. Restart the Expo dev server: stop it (Ctrl+C) and run `npm run web` again
+3. Restart the Expo dev server: stop it (Ctrl+C) and run `npm run reader:web` or `npm run generator:web` again
 
 ### Stories don't appear in the app
 
 **Problem:** Generated stories or built-in stories don't show up.
 
 **Solutions:**
-1. Make sure the proxy server is running (built-in stories are installed through it)
+1. Make sure the proxy server is running if you expect generated stories from `generated-stories/`
 2. Check that `generated-stories/` directory exists in `storyrpg-prototype/`
 3. Refresh the app (pull-to-refresh or press Shift+R in browser)
 4. Check browser console for errors (F12 → Console tab)
@@ -673,7 +731,7 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 # See docs/LORA_TRAINING.md for the kohya sidecar contract.
 # EXPO_PUBLIC_LORA_AUTO_TRAIN=false          # master switch in the Generator UI
 # LORA_AUTO_TRAIN=false                      # same, for CLI/worker entry points
-# LORA_TRAINER_BACKEND=disabled              # disabled | kohya | diffusers | replicate
+# LORA_TRAINER_BACKEND=disabled              # disabled | kohya | a1111-dreambooth | comfy-training | replicate | fal
 # EXPO_PUBLIC_LORA_TRAINER_BACKEND=disabled
 # LORA_TRAINER_BASE_URL=http://localhost:7861
 # EXPO_PUBLIC_LORA_TRAINER_BASE_URL=http://localhost:7861
@@ -742,6 +800,37 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 # SESSION_COOKIE_SAMESITE=none
 
 # ===================================================================
+# AUTH DATABASE (Optional)
+# ===================================================================
+# DATABASE_URL=postgresql://USER:PASSWORD@127.0.0.1:5433/story_rpg_db
+# CLOUD_SQL_INSTANCE=project:region:instance
+# CLOUD_SQL_PORT=5433
+
+# ===================================================================
+# PUBLIC READER CONTENT / STORAGE (Optional)
+# ===================================================================
+# Reader can load exported public story packages through a Blob manifest.
+# EXPO_PUBLIC_BLOB_MANIFEST_URL=https://...
+#
+# Upload scripts:
+# BLOB_READ_WRITE_TOKEN=...
+# GCS_BUCKET_NAME=...
+# GCS_STORIES_PREFIX=stories
+# GCS_UPLOAD_CONCURRENCY=4
+# GCS_UPLOAD_RETRIES=3
+#
+# Proxy-side generated story serving can redirect to GCS:
+# STORY_STORAGE_MODE=gcs
+
+# ===================================================================
+# APP TARGETS / LINKS
+# ===================================================================
+# STORYRPG_APP_TARGET=reader          # reader | generator, usually set by npm scripts
+# EXPO_PUBLIC_READER_APP_URL=http://localhost:8081
+# EXPO_PUBLIC_GENERATOR_APP_URL=http://localhost:8082
+# EXPO_PUBLIC_ENABLE_INTERNAL_APP_LINKS=false
+
+# ===================================================================
 # LLM CONFIGURATION
 # ===================================================================
 
@@ -757,6 +846,7 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 
 # Enable debug logging
 # EXPO_PUBLIC_DEBUG=true
+# EXPO_PUBLIC_LOG_LEVEL=info
 
 # Enable image generation debug logging
 # EXPO_PUBLIC_DEBUG_IMAGE_GENERATION=true
@@ -782,9 +872,19 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 
 | Script | What It Does |
 |---|---|
-| `npm run dev` | Start proxy + web app together (kills existing node processes) |
+| `npm run dev` | Start proxy + Reader web together (kills existing node processes) |
 | `npm run proxy` | Start only the proxy server |
-| `npm run web` | Start only the Expo web dev server |
+| `npm run proxy:health` | Check proxy server health |
+| `npm run web` | Start the Reader Expo web dev server on port 8081 |
+| `npm run reader:web` | Start the Reader target on port 8081 |
+| `npm run generator:web` | Start the Generator target on port 8082 |
+| `npm run reader:export` | Export public Reader web build to `dist-reader` |
+| `npm run reader:export:with-content` | Export Reader and copy reader-safe generated content |
+| `npm run generator:export:internal` | Export internal Generator build |
+| `npm run reader:typecheck` | Typecheck the Reader target |
+| `npm run generator:typecheck` | Typecheck the Generator target |
+| `npm run check:reader-boundary` | Enforce that Reader cannot import generator-only modules/secrets |
+| `npm run validate:reader` | Reader typecheck + boundary check + focused reader tests |
 | `npm start` | Start Expo with platform selection menu |
 | `npm run ios` | Start Expo for iOS |
 | `npm run android` | Start Expo for Android |
@@ -796,14 +896,20 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 | `npm run proxy:compose:up` | Start proxy in Docker |
 | `npm run proxy:compose:down` | Stop Docker proxy |
 | `npm run proxy:compose:logs` | View Docker proxy logs |
-| `npm run proxy:health` | Check proxy server health |
 | `npm test` | Run Vitest unit tests |
-| `npm run typecheck` | Run TypeScript type checking (app, test, contracts configs) |
-| `npm run validate` | Run both type checking and tests |
+| `npm run typecheck` | Run TypeScript type checking across app, tests, contracts, and worker configs |
+| `npm run lint` | Run ESLint over `src/**/*.{ts,tsx}` |
+| `npm run validate` | Run typecheck, lint, and tests |
 | `npm run test:e2e` | Run Playwright E2E playthrough tests (proxy + web must be running) |
 | `npm run test:e2e:story` | Run E2E tests filtered by title, e.g. `npm run test:e2e:story -- "Blade Runner"` |
 | `npm run validate:assets` | Standalone Tier-1 asset HTTP verification over a generated story directory |
 | `npm run clean:runtime` | Clean up runtime artifacts |
+| `npm run content:reader:export` | Copy reader-safe generated content into `public/reader-content` or `READER_CONTENT_OUTPUT_DIR` |
+| `npm run db:proxy` | Start Cloud SQL Auth Proxy helper |
+| `npm run db:migrate` | Apply auth database migrations |
+| `npm run db:verify` | Verify `DATABASE_URL` connectivity |
+| `npm run upload:gcs:latest` | Upload the latest generated story package to GCS |
+| `npm run upload:gcs:all` | Upload all generated story packages to GCS |
 
 ---
 
@@ -816,7 +922,11 @@ storyrpg-prototype/               ← The application root
 ├── .env                          ← Your API keys (DO NOT share or commit)
 ├── package.json                  ← Dependencies and scripts
 ├── proxy-server.js               ← The backend server
-├── App.tsx                       ← The app's main entry point
+├── App.tsx                       ← Legacy monolithic app shell
+├── apps/
+│   ├── reader/ReaderApp.tsx      ← Public Reader app entry
+│   └── generator/GeneratorApp.tsx ← Internal Generator app entry
+├── proxy/                        ← Modular Express route handlers
 │
 ├── src/
 │   ├── screens/                  ← The app's pages/views
@@ -826,6 +936,8 @@ storyrpg-prototype/               ← The application root
 │   │   ├── EpisodeSelectScreen.tsx
 │   │   ├── SettingsScreen.tsx
 │   │   └── VisualizerScreen.tsx
+│   │   ├── reader/               ← Reader-only settings screen
+│   │   └── generator/            ← Generator step components and hooks
 │   │
 │   ├── components/               ← Reusable UI pieces
 │   ├── engine/                   ← Story playback logic
@@ -833,14 +945,17 @@ storyrpg-prototype/               ← The application root
 │   │   ├── conditionEvaluator.ts ← Choice/branch logic
 │   │   └── templateProcessor.ts  ← Dynamic content processing
 │   │
-│   ├── stores/                   ← Data management (Zustand stores)
-│   │   ├── gameStore.ts          ← Player state management
+│   ├── stores/                   ← Data management
+│   │   ├── gameStore.ts          ← Player state management (React Context)
 │   │   ├── generationJobStore.ts ← Generation progress tracking
 │   │   ├── seasonPlanStore.ts    ← Season planning interface state
 │   │   └── settingsStore.ts      ← User preferences
 │   │
 │   ├── types/                    ← Data structure definitions
-│   │   └── index.ts              ← All type definitions
+│   │   └── index.ts              ← Barrel re-export of topic modules
+│   │
+│   ├── story-codec/              ← Reader/package story codec and asset index
+│   ├── assets/                   ← AssetRef helpers and runtime URL resolver
 │   │
 │   ├── ai-agents/                ← The AI story generation system
 │   │   ├── agents/               ← Individual AI specialists
@@ -865,6 +980,7 @@ storyrpg-prototype/               ← The application root
 │   ├── TDD.md                    ← Technical Design Document
 │   └── INSTALL.md                ← This file
 │
+├── public/reader-content/        ← Reader-safe exported story packages (optional)
 ├── generated-stories/            ← Output folder for generated stories
 └── scripts/                     ← Utility scripts
 ```
@@ -874,11 +990,15 @@ storyrpg-prototype/               ← The application root
 | File | What It Is |
 |---|---|
 | `proxy-server.js` | The Node.js server that proxies API calls and manages files |
-| `App.tsx` | The React component that starts the app and handles navigation |
-| `src/types/index.ts` | All the data structure definitions (the "contract" between generation and playback) |
+| `apps/reader/ReaderApp.tsx` | Public Reader target entry |
+| `apps/generator/GeneratorApp.tsx` | Internal Generator target entry |
+| `App.tsx` | Legacy monolithic shell retained for compatibility |
+| `src/types/index.ts` | Barrel export for the topic-oriented canonical data model |
+| `src/story-codec/storyCodec.ts` | Versioned story package encode/decode boundary |
+| `src/assets/assetResolver.ts` | Runtime media URL resolution for strings and `AssetRef` objects |
 | `src/engine/storyEngine.ts` | The core logic that processes story data into the player experience |
 | `src/ai-agents/pipeline/FullStoryPipeline.ts` | The main AI generation coordinator |
-| `src/ai-agents/agents/config.ts` | Configuration for the AI pipeline |
+| `src/ai-agents/config.ts` | Configuration for the AI pipeline |
 | `src/stores/gameStore.ts` | Player state management (saves, progress, etc.) |
 | `src/screens/ReadingScreen.tsx` | The main reading/playing interface |
 
@@ -891,15 +1011,17 @@ Run through this checklist after setup to confirm everything is functioning:
 - [ ] `node --version` shows v20.x or higher
 - [ ] `npm --version` shows 10.x or higher
 - [ ] `npm install` completed without errors
-- [ ] `.env` file exists with at least `EXPO_PUBLIC_GEMINI_API_KEY`
-- [ ] `npm run proxy` starts without errors (shows "listening on port 3001")
+- [ ] `.env` file exists with `ANTHROPIC_API_KEY` for generation and a selected image provider key if generating images
+- [ ] `npm run proxy` starts without errors (shows `Proxy running on http://localhost:3001`)
 - [ ] `curl http://localhost:3001/` returns `{"status":"ok"}`
-- [ ] `npm run web` starts the Expo dev server
+- [ ] `npm run reader:web` starts the Reader Expo dev server
 - [ ] Browser at `http://localhost:8081` shows the StoryRPG home screen
 - [ ] At least one story appears in the catalog (built-in stories)
 - [ ] Tapping a story shows its episodes
 - [ ] Starting an episode shows the reading interface with images
-- [ ] (If Anthropic key set) The Generator screen can start story generation
+- [ ] `npm run generator:web` starts the Generator target at `http://localhost:8082`
+- [ ] (If Anthropic key set) The Generator target can start story generation
+- [ ] `npm run check:reader-boundary` passes before any public Reader export
 
 ---
 

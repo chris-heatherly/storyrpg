@@ -1,8 +1,13 @@
 # StoryRPG - Technical Design Document
 
 **Version:** 3.1 (Comprehensive Reference Edition)  
-**Last Updated:** May 2026
+**Last Updated:** May 25, 2026
 **Status:** Active Development
+
+Read `docs/PROJECT_STATUS.md` first for the current implementation snapshot.
+This TDD is the deeper technical reference; older architecture descriptions in
+this file should be interpreted through the reader/generator split and pipeline
+status documented there.
 
 ---
 
@@ -39,7 +44,15 @@
 
 ## 1) System Overview
 
-StoryRPG is a local-first interactive fiction application built with React Native/Expo, backed by a Node.js/Express proxy server, and powered by a TypeScript AI agent generation pipeline. The system generates, validates, and plays back branching interactive stories with images and optional audio narration.
+StoryRPG is a local-first interactive fiction application built with React Native/Expo, backed by a Node.js/Express proxy server, and powered by a TypeScript AI agent generation pipeline. The system generates, validates, and plays back branching interactive stories with images, optional video, and optional audio narration.
+
+The app now has two target-specific web entries in one package:
+
+- **Reader** (`apps/reader/ReaderApp.tsx`) is the public playback target.
+- **Generator** (`apps/generator/GeneratorApp.tsx`) is the internal creation/operator target.
+
+`App.tsx` remains as a legacy monolithic shell, but `STORYRPG_APP_TARGET`
+selects the target used by Metro and Expo config.
 
 The architecture is designed around three core requirements:
 
@@ -71,10 +84,11 @@ The user starts generation from the client app. The client calls the proxy serve
 | React Native | 0.81.5 | Cross-platform mobile framework |
 | Expo | ~54.0.31 | React Native build tooling and dev server |
 | React Native Web | ^0.21.0 | Web platform support for React Native components |
-| Zustand | ^5.0.10 | Lightweight state management (for generation jobs) |
+| Zustand | ^5.0.10 | Lightweight state management for navigation, jobs, and generator state |
 | AsyncStorage | ^2.2.0 | Client-side persistent key-value store |
 | Lucide React Native | ^0.563.0 | Icon library |
 | pdfjs-dist | ^3.11.174 | PDF parsing for source material upload |
+| posthog-js | ^1.372.6 | Optional web analytics |
 
 ### Backend (Proxy/Control Plane)
 
@@ -85,6 +99,9 @@ The user starts generation from the client app. The client calls the proxy serve
 | cors | ^2.8.5 | Cross-origin request handling |
 | dotenv | ^17.2.3 | Environment variable loading |
 | sharp | ^0.34.5 | Server-side image processing |
+| pg | ^8.21.0 | Optional Postgres auth/session persistence |
+| passport + strategies | various | Local, Google, and Discord-style OAuth |
+| @google-cloud/storage | ^7.17.0 | Optional GCS-backed story storage |
 
 ### Build and Development
 
@@ -103,9 +120,12 @@ The user starts generation from the client app. The client calls the proxy serve
 | Service | Purpose | Required? |
 |---|---|---|
 | Anthropic (Claude) | Primary LLM for text generation | Yes (for generation) |
-| Google Gemini | Image generation (Nano-Banana provider) | Optional (default image provider) |
+| Google Gemini | Image generation (Nano-Banana provider) and optional Veo video | Optional (default image provider) |
+| OpenAI | Optional text provider and GPT Image provider | Optional |
 | Atlas Cloud | Alternative image generation | Optional |
 | MidAPI (Midjourney) | Premium image generation | Optional |
+| Stable Diffusion A1111/Forge | Self-hosted image generation | Optional |
+| kohya sidecar | Stable Diffusion LoRA auto-training | Optional |
 | ElevenLabs | Voice narration and text-to-speech | Optional |
 | catbox.moe | Public hosting for reference images (MidAPI requirement) | Only with MidAPI |
 
@@ -117,19 +137,19 @@ The system is partitioned into three execution zones that communicate through we
 
 ### Zone 1: Client Runtime
 
-**What it is:** The React Native/Expo application that runs in the user's browser (web) or on their phone (iOS/Android).
+**What it is:** The React Native/Expo application that runs in the user's browser (web) or on their phone (iOS/Android). On web, the current implementation is split into Reader and Generator targets selected by `STORYRPG_APP_TARGET`.
 
 **What it does:**
 - Displays the story catalog and lets users select stories
 - Plays back stories through the reading interface
-- Provides the generation configuration and monitoring UI
+- Provides generation configuration and monitoring UI in the Generator target
 - Manages player state (game progress, settings, identity)
-- Polls the proxy for generation job updates
+- Polls the proxy for generation job updates in the Generator target
 
 **What it does NOT do:**
 - It does not call LLM APIs directly (all API calls go through the proxy)
 - It does not write files to the filesystem (file writes go through proxy endpoints)
-- It does not execute generation pipeline code (that runs in worker processes)
+- The Reader target does not execute or import generation pipeline code. The Generator target imports the pipeline client/config surface but long-running work still runs in worker processes.
 
 ### Zone 2: Proxy/Control Plane
 
@@ -141,6 +161,8 @@ The system is partitioned into three execution zones that communicate through we
 - Provides a filesystem API for reading/writing generated story files
 - Maintains durable job state (generation jobs, worker checkpoints, dead letter queue)
 - Serves generated images and audio files as static assets
+- Persists generator settings, style anchors, reference images, image feedback, auth sessions, and optional Postgres-backed user records
+- Redirects generated-story assets to GCS when `STORY_STORAGE_MODE=gcs`
 
 **Key characteristic:** This is the "durability boundary" — if the client crashes or refreshes, the proxy still knows the state of all running jobs and can resume communication when the client reconnects.
 
@@ -173,6 +195,23 @@ Client ←→ Filesystem: Via proxy HTTP endpoints only
 
 ## 4) Directory Structure
 
+Current layout notes:
+
+- The workspace root in this fork is `StoryRPG_fork/`, though many historical
+  docs and examples still refer to `StoryRPG_New/`.
+- `storyrpg-prototype/apps/reader/ReaderApp.tsx` and
+  `storyrpg-prototype/apps/generator/GeneratorApp.tsx` are the current web
+  target entries.
+- `App.tsx` is retained as a legacy monolithic shell and compatibility
+  reference.
+- `src/story-codec/` is the reader/runtime package codec. `src/ai-agents/codec/`
+  contains pipeline-side codec/event helpers.
+- `src/types/index.ts` is now a barrel over topic-oriented type modules rather
+  than a single monolithic type file.
+- Proxy routes include auth, GCS-aware catalog serving, generated story
+  mutation, style anchors, image feedback, model scanning, Stable Diffusion,
+  LoRA trainer forwarding, and worker lifecycle routes.
+
 ```
 StoryRPG_New/
 ├── AGENTS.md                           # Agent orientation (workspace rule)
@@ -197,9 +236,12 @@ StoryRPG_New/
 │   └── reference/                      # Original reference materials
 │
 └── storyrpg-prototype/                 # Main application directory
-    ├── App.tsx                         # Application entry point and screen router
+    ├── App.tsx                         # Legacy monolithic app shell
+    ├── apps/
+    │   ├── reader/ReaderApp.tsx        # Public Reader target entry
+    │   └── generator/GeneratorApp.tsx  # Internal Generator target entry
     ├── index.ts                        # Expo app registration + polyfills
-    ├── proxy-server.js                 # Express proxy server (~2500 lines)
+    ├── proxy-server.js                 # Express proxy server bootstrap
     ├── package.json                    # Dependencies and scripts
     ├── tsconfig.json                   # TypeScript config (client)
     ├── tsconfig.worker.json            # TypeScript config (worker processes)
@@ -225,14 +267,26 @@ StoryRPG_New/
     ├── playwright.config.ts            # Playwright config (port 8081, chromium, 5 min timeouts)
     │
     ├── proxy/                          # Proxy server modules
+    │   ├── authRoutes.js               # Passport/local/OAuth session routes
+    │   ├── authUserStore.js            # Auth user persistence helper
     │   ├── cachedJsonStore.js
     │   ├── catalogRoutes.js
+    │   ├── db/pool.js                  # Optional Postgres pool
     │   ├── fileRoutes.js
+    │   ├── gcsConfig.js                # GCS storage-mode helpers
     │   ├── generatorSettingsRoutes.js  # Persist/restore full generator UI settings
+    │   ├── imageFeedbackRoutes.js      # Image feedback persistence
+    │   ├── loraTrainingRoutes.js       # LoRA trainer sidecar forwarding
     │   ├── modelScanRoutes.js          # Discover available LLM/image models (24h cache)
     │   ├── refImageRoutes.js
+    │   ├── runtimePaths.js             # Local/ephemeral runtime path layout
+    │   ├── stableDiffusionRoutes.js    # A1111/Forge proxy route
     │   ├── storyCatalog.js
+    │   ├── storyCodec.js
+    │   ├── storyManifest.js
     │   ├── storyMutationRoutes.js
+    │   ├── styleRoutes.js              # Style-bible anchor persistence
+    │   ├── workerLifecycle.js          # Worker spawn/state/checkpoint lifecycle
     │   ├── workerJobSync.js
     │   └── workerProgress.js
     │
@@ -267,11 +321,11 @@ StoryRPG_New/
     │   │   │   ├── callbackLedger.ts   # Setup/payoff ledger backing ThreadPlanner + delayed consequences
     │   │   │   └── phases/             # Phase-specific logic (WorldBuildingPhase, SavingPhase, …)
     │   │   │
-    │   │   ├── codec/                  # Versioned on-disk story codec
+    │   │   ├── codec/                  # Pipeline-side codec/event helpers
     │   │   │   ├── storyCodec.ts       # Encode/decode + version tag
     │   │   │   ├── storyManifest.ts    # Asset manifest per story
     │   │   │   ├── assetIndex.ts       # Asset index helper
-    │   │   │   └── v1ToV2.ts, v2ToV3.ts  # Schema migrations
+    │   │   │   └── workerEvent.ts      # Worker event codec
     │   │   │
     │   │   ├── images/                 # Art direction and provider plumbing
     │   │   │   ├── artStyleProfile.ts  # ArtStyleProfile interface + heuristics (`buildVerbatimProfile`, `composeCanonicalStyleString`)
@@ -354,15 +408,15 @@ StoryRPG_New/
     │   │   ├── config.ts              # Pipeline configuration
     │   │   └── types/                  # Pipeline-specific types
     │   │
-    │   ├── screens/                    # Application screens
+    │   ├── screens/                    # Shared application screens
     │   │   ├── HomeScreen.tsx          # Story catalog
     │   │   ├── EpisodeSelectScreen.tsx # Episode chooser
     │   │   ├── ReadingScreen.tsx       # Story playback
     │   │   ├── GeneratorScreen.tsx     # Generation workflow
     │   │   ├── SettingsScreen.tsx      # Preferences and management
     │   │   ├── VisualizerScreen.tsx    # Story graph visualization
-    │   │   └── generator/              # Generation screen components
-    │   │       └── useEndingModePlanner.ts
+    │   │   ├── reader/                 # Reader-only settings composition
+    │   │   └── generator/              # Generation screen components, steps, hooks
     │   │
     │   ├── components/                 # Reusable UI components
     │   │   ├── StoryReader.tsx         # Core reading interface (~2000 lines)
@@ -405,11 +459,16 @@ StoryRPG_New/
     │   │   └── growthConsequenceBuilder.ts  # Builds growth/skill consequences for choices
     │   │
     │   ├── services/                   # Client-side services
+    │   │   ├── analyticsService.ts     # Optional PostHog analytics wrapper
+    │   │   ├── authSession.ts          # Proxy session fetch helpers
+    │   │   ├── storyLibrary.ts         # Catalog/package loading + media resolution
     │   │   ├── narrationService.ts     # Audio narration playback
     │   │   └── encounterMemoryService.ts # Encounter state persistence
+    │   ├── story-codec/                # Runtime reader story package codec
+    │   ├── assets/                     # AssetRef and media URL resolver
     │   │
-    │   ├── types/                      # TypeScript type definitions
-    │   │   ├── index.ts                # Core types (~1300 lines)
+    │   ├── types/                      # Topic-oriented TypeScript type definitions
+    │   │   ├── index.ts                # Barrel re-export for compatibility
     │   │   ├── seasonPlan.ts           # Season planning types
     │   │   ├── sourceAnalysis.ts       # Source analysis types
     │   │   └── validation.ts           # Validation types
@@ -462,20 +521,45 @@ StoryRPG_New/
 
 1. **`index.ts`** — Registers the root component with Expo. Applies Node.js polyfills (Buffer, process, crypto, stream) needed for some libraries to function in the browser/mobile environment.
 
-2. **`App.tsx`** — The root React component. Sets up the provider hierarchy and manages screen navigation.
+2. **`@storyrpg/app-entry`** — Metro resolves this virtual entry to either `apps/reader/ReaderApp.tsx` or `apps/generator/GeneratorApp.tsx` based on `STORYRPG_APP_TARGET`.
+
+3. **`apps/reader/ReaderApp.tsx`** — Public playback shell. Sets up game/settings providers, story library loading, reader navigation, player persistence, and reader analytics.
+
+4. **`apps/generator/GeneratorApp.tsx`** — Internal creator shell. Sets up game/settings/generator providers, story library access, generator runner helpers, media continuation jobs, visualizer routing, and generator analytics.
+
+5. **`App.tsx`** — Legacy monolithic shell retained in the repo. It still reflects many integration patterns but is no longer the cleanest deployment boundary.
 
 ### Provider Hierarchy
 
 ```
 ErrorBoundary
-  └── SettingsProvider (React Context — font size, dev mode, etc.)
-      └── GameProvider (React Context — player state, story progress, etc.)
-          └── AppContent (screen switching logic)
+  └── SettingsProvider / GeneratorSettingsProvider
+      └── GameProvider
+          └── Target-specific app content
 ```
+
+Reader uses `SettingsProvider` and `GameProvider`. Generator uses those plus
+`GeneratorSettingsProvider`. Zustand stores live outside the provider tree for
+navigation and job state where module-level subscriptions are easier to manage.
 
 ### Navigation Model
 
-The app uses state-based navigation (no URL router). A single state variable `currentScreen` determines which screen is displayed:
+The app uses state-based navigation rather than a URL router.
+
+Reader keeps a local screen state:
+
+```typescript
+type ReaderScreen = 'home' | 'episodes' | 'reading' | 'settings';
+```
+
+Generator keeps a smaller internal route state for creator flows:
+
+```typescript
+type GeneratorRoute = 'home' | 'generator' | 'visualizer';
+```
+
+The legacy/monolithic shell and some shared navigation helpers still use
+`appNavigationStore`:
 
 ```typescript
 type Screen = 'home' | 'episodes' | 'reading' | 'settings' | 'visualizer' | 'generator';
@@ -737,12 +821,22 @@ The proxy server (`proxy-server.js`) is the central coordination hub. It runs as
 
 The proxy is organized into modular route handlers:
 
+- **authRoutes.js:** Passport session, local login/register, Google OAuth, Discord OAuth
 - **catalogRoutes.js:** Story discovery and catalog management
 - **fileRoutes.js:** File read/write operations
 - **refImageRoutes.js:** Reference image upload and management
 - **storyMutationRoutes.js:** Story modification operations
+- **styleRoutes.js:** Style-bible anchor/reference persistence
+- **imageFeedbackRoutes.js:** Image feedback CRUD and image regeneration requests
+- **stableDiffusionRoutes.js:** A1111/Forge Stable Diffusion proxying
+- **loraTrainingRoutes.js:** LoRA trainer sidecar preflight/proxying
+- **anthropicProxyRoutes.js:** Anthropic `/v1/messages` proxy
+- **atlasCloudRoutes.js / midApiRoutes.js / elevenLabsRoutes.js:** Provider-specific proxy surfaces
 - **modelScanRoutes.js:** AI model detection and management
 - **generatorSettingsRoutes.js:** Generation configuration persistence
+- **runtimePaths.js:** Local vs ephemeral runtime layout
+- **gcsConfig.js:** GCS storage-mode mapping and redirects
+- **workerLifecycle.js:** Worker spawn, stream, checkpoint, cancel, resume, export, cleanup
 - **workerJobSync.js:** Worker process synchronization
 - **workerProgress.js:** Progress estimation and telemetry
 
@@ -750,15 +844,27 @@ The proxy is organized into modular route handlers:
 
 | Endpoint | Purpose | Method |
 |---|---|---|
+| `/` | Proxy health check | GET |
 | `/list-stories` | Discover generated stories | GET |
-| `/story/{id}` | Load specific story data | GET |
-| `/generation-jobs` | List/manage generation jobs | GET/POST/DELETE |
-| `/worker-jobs` | Worker process management | GET/POST |
+| `/stories/:storyId` | Load specific story data | GET |
+| `/generated-stories/*` | Static asset serving or GCS redirect | GET |
+| `/generation-jobs` and `/generation-jobs/:jobId` | List/manage generation job mirrors | GET/POST/PATCH/DELETE |
+| `/worker-jobs/start` | Start a worker generation job | POST |
+| `/worker-jobs/:jobId/stream` | Stream worker job events | GET |
+| `/worker-jobs/:jobId/cancel` | Cancel a worker job | POST |
+| `/worker-jobs/:jobId/resume` | Resume a failed/interrupted worker job | POST |
 | `/write-file` | Write arbitrary files | POST |
+| `/generator-settings` | Persist/restore generator UI settings | GET/POST/PATCH |
+| `/models/available`, `/models/scan` | Model availability cache and scan | GET/POST |
+| `/auth/*` | Session, local auth, Google OAuth, Discord OAuth | GET/POST |
+| `/style-anchor/*`, `/style-reference/save` | Style setup image persistence | GET/POST |
+| `/image-feedback/*`, `/regenerate-image` | Feedback CRUD and image regeneration | GET/POST/PATCH/DELETE |
+| `/sd-api/*` | Stable Diffusion WebUI proxy | GET/POST |
+| `/lora-training/*` | LoRA trainer sidecar proxy | GET/POST |
 | `/atlas-cloud-api/*` | Atlas Cloud API proxy | POST |
 | `/midapi/*` | MidAPI proxy | POST |
 | `/elevenlabs/*` | ElevenLabs API proxy | POST |
-| `/generated-stories/*` | Static asset serving | GET |
+| `/v1/messages` | Anthropic messages proxy | POST |
 
 ---
 
@@ -1273,20 +1379,31 @@ Unresolved templates are handled gracefully:
 
 | File Type | Location | Purpose |
 |---|---|---|
-| Story JSON | `generated-stories/` | Complete story data |
+| Story package | `generated-stories/{run}/story.json` | Primary versioned story package |
+| Story manifest | `generated-stories/{run}/manifest.json` | Primary-file pointer and checksum |
+| Legacy story mirror | `generated-stories/{run}/08-final-story.json` | Backward compatibility |
 | Images | `generated-stories/{story}/images/` | Generated artwork |
 | Audio | `generated-stories/{story}/audio/` | Narration files |
+| Content-addressed assets | `generated-stories/{story}/assets/` | AssetRef-backed media |
+| Style anchors | `generated-stories/{story}/style-bible/` | User-approved/generated style anchors |
+| LoRA registry/artifacts | `generated-stories/{story}/loras/` | Stable Diffusion LoRA cache |
 | Reference images | `.ref-images/` | Character reference sheets |
 | Job state | `.generation-jobs.json` | Persistent job tracking |
 | Worker state | `.worker-jobs.json` | Worker process state |
 | Checkpoints | `.worker-checkpoints.json` | Recovery checkpoints |
+| Dead letters | `.worker-dead-letter.json` | Failed job inspection |
+| Image feedback | `.image-feedback.json` | User/operator feedback and remediation metadata |
+
+The proxy can also serve generated-story assets from GCS when
+`STORY_STORAGE_MODE=gcs`. Reader deployments can consume public packages from a
+Blob manifest through `EXPO_PUBLIC_BLOB_MANIFEST_URL`.
 
 ### Cross-Platform Considerations
 
 The same persistence code works across platforms through:
 
 1. **Abstraction layers:** AsyncStorage provides consistent API across platforms
-2. **URL rewriting:** File paths are dynamically rewritten for web deployment
+2. **URL rewriting:** `assetResolver` rewrites legacy paths and `AssetRef` objects for web/native/proxy runtimes
 3. **Fallback strategies:** Graceful degradation when storage is unavailable
 
 ---
@@ -1399,27 +1516,39 @@ API keys are managed through environment variables and secure storage:
 ```bash
 # .env file
 ANTHROPIC_API_KEY=your_key_here
+OPENAI_API_KEY=your_key_here
+GEMINI_API_KEY=your_key_here
 ELEVENLABS_API_KEY=your_key_here
 ATLAS_CLOUD_API_KEY=your_key_here
 MIDAPI_TOKEN=your_key_here
+STABLE_DIFFUSION_BASE_URL=http://localhost:7860
+LORA_TRAINER_BASE_URL=http://localhost:7861
 ```
+
+The current local generator path still supports several `EXPO_PUBLIC_*` key
+fallbacks for Expo compatibility. Do not set provider secrets in the public
+Reader deployment. Reader-safe public variables should be limited to public
+content manifests, analytics configuration, public app links, and logging
+flags.
 
 ### Proxy Security
 
 The proxy server implements several security measures:
 
-1. **Local-only binding:** Only accepts connections from localhost by default
-2. **CORS configuration:** Strict CORS policy for production deployments
-3. **Request validation:** All proxied requests are validated before forwarding
-4. **Rate limiting:** Built-in rate limiting to prevent API abuse
+1. **Session isolation:** Auth/session state is owned by the proxy and signed with `SESSION_SECRET`.
+2. **Provider isolation:** External provider keys are read by the proxy/worker path, not the public Reader bundle.
+3. **CORS configuration:** Local dev allows the Expo app to reach the proxy; production should run behind an intentional origin/proxy setup.
+4. **Reader boundary check:** `npm run check:reader-boundary` blocks generator-only imports and secret strings from the Reader target.
+5. **Provider throttling:** LLM/image concurrency and RPM limits are enforced in the pipeline/provider layers.
 
 ### Client Security
 
 Client-side security considerations:
 
-1. **No API key exposure:** API keys never leave the server environment
+1. **Reader secret boundary:** The public Reader target must not include provider keys.
 2. **Input sanitization:** All user input is sanitized before processing
 3. **Content validation:** Generated content is validated before display
+4. **Package validation:** `decodeStory` validates modern story packages before playback where possible
 
 ---
 
@@ -1433,7 +1562,8 @@ npm run dev
 
 # Individual services
 npm run proxy      # Start proxy server only
-npm run web        # Start Expo web only
+npm run reader:web # Start Reader web on port 8081
+npm run generator:web # Start Generator web on port 8082
 npm run android    # Start Android development
 npm run ios        # Start iOS development
 ```
@@ -1444,10 +1574,19 @@ npm run ios        # Start iOS development
 |---|---|---|
 | `npm run dev` | Full development environment (proxy + web) | Development |
 | `npm run proxy` | Proxy server only | Development |
-| `npm run web` | Web client only | Development |
-| `npm run typecheck` | Type checking across app, test, and contracts configs | All |
+| `npm run web` / `npm run reader:web` | Reader web target | Development |
+| `npm run generator:web` | Generator web target | Development |
+| `npm run reader:export` | Public Reader web export | Deployment |
+| `npm run reader:export:with-content` | Reader export plus reader-safe content copy | Deployment |
+| `npm run generator:export:internal` | Internal Generator export | Internal |
+| `npm run reader:typecheck` | Reader target typecheck | All |
+| `npm run generator:typecheck` | Generator target typecheck | All |
+| `npm run check:reader-boundary` | Reader/generator import and secret boundary check | CI/CD |
+| `npm run validate:reader` | Reader typecheck, boundary check, focused reader tests | CI/CD |
+| `npm run typecheck` | Type checking across app, test, contracts, and worker configs | All |
+| `npm run lint` | ESLint over source TypeScript/TSX | All |
 | `npm test` | Run Vitest test suite | All |
-| `npm run validate` | `typecheck` + `test` | CI/CD |
+| `npm run validate` | `typecheck` + `lint` + `test` | CI/CD |
 | `npm run test:e2e` | Run Playwright E2E tests (Tier 2 QA harness) | CI/CD |
 | `npm run test:e2e:story` | Run Playwright tests filtered by `--grep` | Ad-hoc |
 | `npm run validate:assets` | Standalone Tier 1 asset HTTP verification | Maintenance |
@@ -1456,11 +1595,15 @@ npm run ios        # Start iOS development
 | `npm run generate:doc`, `generate:template` | Document-driven generation | Generation |
 | `npm run clean:runtime` | Clean generated artifacts | Maintenance |
 | `npm run proxy:health` | Health-check the running proxy server | CI/CD |
+| `npm run db:proxy`, `db:migrate`, `db:verify` | Optional auth database setup/verification | Auth |
+| `npm run upload:gcs:latest`, `upload:gcs:all` | Upload generated stories to GCS | Deployment |
 
 ### TypeScript Configuration
 
 Multiple TypeScript configurations for different contexts:
 
+- **tsconfig.reader.json:** Reader target subset and public boundary.
+- **tsconfig.generator.json:** Generator target subset.
 - **tsconfig.app.json:** Client application code
 - **tsconfig.test.json:** Test files
 - **tsconfig.contracts.json:** Type contract validation

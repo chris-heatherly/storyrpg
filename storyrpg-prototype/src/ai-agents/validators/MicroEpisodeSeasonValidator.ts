@@ -58,7 +58,9 @@ export class MicroEpisodeSeasonValidator {
 
     for (const episode of masterEpisodes) {
       const spineIndex = episode.routeMeta?.spineIndex || episode.number;
-      if (spineIndex > 0 && spineIndex % config.encounterCadence === 0 && !episode.scenes.some(scene => scene.encounter)) {
+      const milestoneEncounterRequired = episode.routeMeta?.isMilestoneEncounter === true
+        || (episode.routeMeta?.isMilestoneEncounter == null && spineIndex > 0 && spineIndex % config.encounterCadence === 0);
+      if (milestoneEncounterRequired && !episode.scenes.some(scene => scene.encounter)) {
         issues.push({
           severity: 'error',
           type: 'encounter_cadence',

@@ -1,6 +1,6 @@
 # QA Fixes Summary
 
-**Last Updated:** April 2026
+**Last Updated:** May 25, 2026
 
 This document summarizes all fixes implemented during QA audits and bug-fixing sessions.
 
@@ -8,6 +8,10 @@ Current status note: older entries that mention `EpisodePipeline.ts` are
 historical. New generation work runs through `FullStoryPipeline.ts`; the
 current story package is `story.json` + `manifest.json`, with
 `08-final-story.json` kept as a legacy mirror.
+
+For the current debt ranking and latest validation baseline, read
+`docs/TECH_DEBT_AUDIT.md`. For the current architecture snapshot, read
+`docs/PROJECT_STATUS.md`.
 
 ---
 

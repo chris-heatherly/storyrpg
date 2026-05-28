@@ -3,13 +3,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Story } from '../../types';
-import { writeFinalStoryPackage } from './pipelineOutputWriter';
+import { savePipelineOutputs, writeFinalStoryPackage } from './pipelineOutputWriter';
 
 vi.mock('expo-file-system', () => ({
   default: {},
   writeAsStringAsync: vi.fn(),
   makeDirectoryAsync: vi.fn(),
-  getInfoAsync: vi.fn(),
+  getInfoAsync: vi.fn(async () => ({ exists: false })),
   EncodingType: { UTF8: 'utf8', Base64: 'base64' },
 }));
 
@@ -165,5 +165,53 @@ describe('pipelineOutputWriter', () => {
 
     const report = JSON.parse(await readFile(`${outputDir}image-prompt-binding-report.json`, 'utf8'));
     expect(report).toMatchObject({ checked: 1, alreadyPresent: 1, recovered: 0 });
+  });
+
+  it('writes the final story contract sidecar and manifest summary', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-output-writer-'));
+    tempDirs.push(tempDir);
+    const outputDir = `${tempDir}/`;
+
+    await savePipelineOutputs(outputDir, {
+      brief: {
+        story: {
+          id: 'story-writer-test',
+          title: 'Story Writer Test',
+          genre: 'Mystery',
+          synopsis: 'A tiny story package fixture.',
+          themes: [],
+        },
+      },
+      finalStory: makeStory(),
+      finalStoryContractReport: {
+        passed: true,
+        blockingIssues: [],
+        warnings: [],
+        metrics: {
+          episodesChecked: 1,
+          scenesChecked: 1,
+          beatsChecked: 1,
+          encounterScenesChecked: 0,
+          validEncounterScenes: 0,
+          requestedEpisodesMissing: 0,
+          failedIncrementalResults: 0,
+          callbackIssues: 0,
+          mechanicsLeaks: 0,
+        },
+        generatedAt: '2026-05-28T00:00:00.000Z',
+      },
+    } as any, 123);
+
+    const contract = JSON.parse(await readFile(`${outputDir}07b-final-story-contract.json`, 'utf8'));
+    expect(contract).toMatchObject({ passed: true });
+
+    const manifest = JSON.parse(await readFile(`${outputDir}manifest.json`, 'utf8'));
+    expect(manifest.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Final Story Contract', type: 'final-story-contract' }),
+    ]));
+    expect(manifest.summary).toMatchObject({
+      finalStoryContractPassed: true,
+      finalStoryContractBlockingIssues: 0,
+    });
   });
 });

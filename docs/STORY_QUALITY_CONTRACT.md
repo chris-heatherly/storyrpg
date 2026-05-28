@@ -1,6 +1,7 @@
 # Story Quality Contract
 
 **Status:** Active rule contract for the current `FullStoryPipeline`.
+**Last updated:** May 25, 2026
 
 This document captures what StoryRPG keeps from the older pipeline: durable
 story and image-quality rules, not the old orchestration model.
@@ -20,6 +21,9 @@ story and image-quality rules, not the old orchestration model.
 - **Delayed memory:** important choices should echo later through conditional
   text, NPC recognition, altered descriptions, relationship tone, visual state,
   or later choice wording.
+- **Mechanical storytelling:** choices should leave fiction-visible residue
+  through story verbs, affordance sources, witness reactions, and playable
+  failure residue rather than invisible stat bookkeeping.
 - **Skill surfaces:** hidden skills must matter through fiction-first surfaces:
   passive insights, prepared advantages, choice affordances, outcome texture,
   and branch residue. Hard checks should usually have at least two surfaces.
@@ -68,6 +72,7 @@ story and image-quality rules, not the old orchestration model.
 | Skill surfaces | `SkillSurfaceValidator` |
 | Skill / attribute coverage | `SkillCoverageValidator` |
 | Branch mechanical residue | `BranchMechanicalDivergenceValidator` |
+| Mechanical storytelling metadata | `MechanicalStorytellingValidator`, story verb helpers |
 | Callback coverage | `CallbackCoverageValidator`, `CallbackOpportunitiesValidator` |
 | Consequence budget | `ConsequenceBudgetValidator` |
 | Branch graph validity | `SceneGraphBranchValidator`, `DivergenceValidator` |
@@ -76,6 +81,8 @@ story and image-quality rules, not the old orchestration model.
 | Character change | `ArcDeltaValidator`, `SceneCraftValidator` |
 | Visual defects | storyboard-v2 QA, `imageDefectGate`, visual validators |
 | Provider refs | `referencePackBuilder`, `referenceStrategy`, `providerCapabilities` |
+| Treatment/source fidelity | `TreatmentFidelityValidator`, quote recall diagnostics |
+| Sequence specificity/continuity | `sequencePlanSpecificityAudit`, `sequenceContinuityAudit`, `turnAudit` |
 
 ## Deprecated Structure Boundary
 

@@ -2,7 +2,14 @@
 
 How StoryRPG creates, manages, and constrains story branches.
 
-**Last Updated:** April 2026
+**Last Updated:** May 25, 2026
+
+Current implementation note: branch-and-bottleneck remains the design model.
+The active pipeline also runs deterministic scene graph checks,
+`SceneGraphBranchValidator`, `DivergenceValidator`, mechanical divergence
+checks, branch-shadow diagnostics, and visualizer diagnostics where enabled.
+Encounter/storylet branching is valuable but does not satisfy the regular
+scene-graph branch requirement by itself.
 
 ## Table of Contents
 

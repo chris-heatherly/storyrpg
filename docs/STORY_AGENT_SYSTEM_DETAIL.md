@@ -1,8 +1,11 @@
 # StoryRPG: Complete System Architecture Document
 
-**Last Updated:** May 2026
+**Last Updated:** May 25, 2026
 
 A comprehensive reference for the story agent structure, storytelling rules, branching mechanics, and choice determination systems.
+
+Read `docs/PROJECT_STATUS.md` for the current app/proxy/deployment snapshot.
+This file focuses on agents, runtime mechanics, generation flow, and validation.
 
 ---
 
@@ -36,18 +39,23 @@ StoryRPG is an AI-driven interactive fiction platform that generates and plays b
 2. **Engine** — A runtime system that plays the generated story, handling scene navigation, choice filtering, stat checks, consequence application, and text rendering.
 3. **State** — A persistent player state model that tracks attributes, skills, relationships, flags, scores, tags, inventory, identity profile, and branch history.
 
-The platform is built as a React Native/Expo app with LLM integration via Anthropic Claude and Google Gemini (with OpenAI as fallback).
+The platform is built as a React Native/Expo app with a public Reader target
+and an internal Generator target. LLM integration supports Anthropic, OpenAI,
+and Gemini. Image generation supports Gemini (`nano-banana`), Atlas Cloud,
+MidAPI/Midjourney, Stable Diffusion A1111/Forge, placeholder fallback, and
+legacy compatibility aliases.
 
 ### Architectural Layers
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │                    UI Layer                           │
-│  ReadingScreen · GeneratorScreen · SettingsScreen     │
-│  HomeScreen · EpisodeSelectScreen · VisualizerScreen  │
+│  ReaderApp · GeneratorApp · ReadingScreen             │
+│  GeneratorScreen · SettingsScreen · VisualizerScreen  │
 ├──────────────────────────────────────────────────────┤
 │                 State Layer                           │
-│  gameStore (React Context) · settingsStore (Zustand)  │
+│  gameStore (React Context) · settingsStore (Zustand + │
+│  provider wrapper) · generatorSettingsStore           │
 │  appNavigationStore · generationJobStore             │
 │  imageJobStore · videoJobStore · seasonPlanStore      │
 │  imageFeedbackStore · encounterStatePersistence       │
@@ -61,10 +69,11 @@ The platform is built as a React Native/Expo app with LLM integration via Anthro
 │              Generation Layer                         │
 │  FullStoryPipeline (authoritative)                   │
 │  AI Agents · Validators · Prompts                    │
-│  Image/Video Infrastructure · Converters             │
+│  Storyboard-v2 · Image/Video/Audio Infrastructure     │
 ├──────────────────────────────────────────────────────┤
-│                LLM Providers                         │
-│  Anthropic Claude · Google Gemini · OpenAI (fallback)│
+│                Provider Layer                         │
+│  Anthropic · OpenAI · Gemini · Atlas · MidAPI · SD    │
+│  ElevenLabs · kohya LoRA sidecar                     │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -196,26 +205,30 @@ The `FullStoryPipeline` (`src/ai-agents/pipeline/FullStoryPipeline.ts`) is the a
 ```
 1. Source Material Analysis (if adapting IP)
      ↓
-2. World Building (World Builder → World Bible)
+2. Season Planning (optional, with 3-act / 7-point validation)
      ↓
-3. Character Design (Character Designer → Character Profiles)
+3. World Building (World Builder → World Bible)
      ↓
-4. Season Planning (Season Planner → Episode Plans)
+4. Character Design (Character Designer → Character Profiles)
      ↓
 5. Per-Episode Generation:
    a. Story Architect → Episode Blueprint (scene graph)
-   b. Scene Writer → Beat prose for each scene
-   c. Choice Author → Choices for each choice point
-   d. Encounter Architect → Encounter structure + storylets
-   e. Branch Manager → Branch analysis + validation
-   f. Incremental Validation → Per-scene quality checks
-   g. Quick Validation → Best-practices checks
-   h. QA Agents → Full quality validation
-   i. Image Generation → Scene art, character images, encounter images
-   j. Video Generation (optional) → Scene video via Veo
+   b. Branch Manager + deterministic topology helpers
+   c. Thread Planner / Twist Architect / Character Arc Tracker
+   d. Scene Writer → Beat prose for each scene
+   e. Choice Author → Choices for each choice point
+   f. Encounter Architect → Encounter structure + storylets
+   g. Incremental Validation → Per-scene/choice/encounter quality checks
+   h. Quick Validation and LLM QA
+   i. Image Generation → storyboard-v2, scene art, character refs, encounter images
+   j. Video Generation (optional) → scene video via Veo
      ↓
-6. Final Story Assembly + Output Writing (`story.json` primary, `08-final-story.json` legacy mirror)
+6. Final Story Assembly + Output Writing (`story.json`, `manifest.json`, `08-final-story.json`)
 ```
+
+`SavingPhase` is extracted and wired. `WorldBuildingPhase` is scaffolded under
+`src/ai-agents/pipeline/phases/` but should be wired only as a
+behavior-preserving phase migration.
 
 ### 3.2 Per-Episode Flow Inside FullStoryPipeline
 
@@ -225,7 +238,7 @@ Each episode goes through a sub-flow inside `FullStoryPipeline`:
 2. **Content Phase**: Scene Writer generates beat-level prose. Choice Author creates choices. Incremental validators check quality after each scene/choice.
 3. **Encounter Phase**: Encounter Architect designs the encounter's internal structure — phases, approaches, decision trees, and storylets.
 4. **Validation Phase**: Branch Manager validates branch structure. Various validators check types, percentages, budgets, and story principles.
-5. **Image Phase**: Image agents generate scene art, character images, encounter images, and visual content.
+5. **Image Phase**: storyboard-v2 and image agents generate scene art, character reference sheets, style anchors, encounter images, and visual content.
 6. **Video Phase** (optional): VideoDirectorAgent generates video direction, VideoGenerationService renders via Veo.
 
 ### 3.3 Pipeline Parallelism

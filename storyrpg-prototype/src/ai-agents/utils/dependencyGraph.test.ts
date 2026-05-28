@@ -70,6 +70,20 @@ describe('dependencyGraph', () => {
     expect(waves).toEqual([]);
   });
 
+  it('ignores self edges so a single scene can still generate content', () => {
+    const blueprint = makeBlueprint([
+      makeScene({ id: 'scene-1', leadsTo: ['scene-1'], requires: ['scene-1'] }),
+    ]);
+
+    const graph = buildSceneDependencyGraph(blueprint);
+    expect(graph.hasCycle).toBe(false);
+    expect(graph.nodes.get('scene-1')?.predecessors).toEqual([]);
+    expect(graph.nodes.get('scene-1')?.successors).toEqual([]);
+    expect(buildTopologicalWaves(blueprint).map((wave) => wave.sceneIds)).toEqual([
+      ['scene-1'],
+    ]);
+  });
+
   it('returns a single wave when every scene is independent', () => {
     const blueprint = makeBlueprint([
       makeScene({ id: 'a' }),

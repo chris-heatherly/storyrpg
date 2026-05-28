@@ -361,6 +361,16 @@ export interface SceneContent {
   settingContext?: SceneSettingContext;
 }
 
+function stripAgentFacingPressureLabel(value: string): string {
+  return String(value || '')
+    .replace(/^(?:pressure|choice pressure|forward pressure):\s*/i, '')
+    .trim();
+}
+
+function isAgentFacingPressureNote(value: string): boolean {
+  return /^(?:choice pressure|forward pressure):/i.test(String(value || '').trim());
+}
+
 export class SceneWriter extends BaseAgent {
   private choiceDensityValidator: ChoiceDensityValidator;
   private textLimits: {
@@ -748,6 +758,16 @@ ${CHOICE_DENSITY_REQUIREMENTS}
     return Boolean(firstBadBeat);
   }
 
+  private stripAgentFacingPressureParagraphs(text: string, fallback: string): string {
+    const cleaned = String(text || '')
+      .split(/\n{2,}|\r?\n/)
+      .map((part) => part.trim())
+      .filter((part) => part && !/^(?:pressure|choice pressure|forward pressure):/i.test(part))
+      .join('\n\n')
+      .trim();
+    return cleaned || this.ensureTerminalPunctuation(fallback);
+  }
+
   private async repairMalformedSceneJson(
     input: SceneWriterInput,
     malformedResponse: string,
@@ -761,12 +781,17 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       location: input.sceneBlueprint.location,
       mood: input.sceneBlueprint.mood,
       purpose: input.sceneBlueprint.purpose,
-      narrativeFunction: input.sceneBlueprint.narrativeFunction,
+      narrativeFunction: this.stripAgentFacingPressureParagraphs(
+        input.sceneBlueprint.narrativeFunction,
+        input.sceneBlueprint.description || input.sceneBlueprint.name
+      ),
       dramaticQuestion: input.sceneBlueprint.dramaticQuestion,
       wantVsNeed: input.sceneBlueprint.wantVsNeed,
       conflictEngine: input.sceneBlueprint.conflictEngine,
       themePressure: input.sceneBlueprint.themePressure,
-      keyBeats: input.sceneBlueprint.keyBeats,
+      keyBeats: (input.sceneBlueprint.keyBeats || [])
+        .filter((beat) => !isAgentFacingPressureNote(beat))
+        .map(stripAgentFacingPressureLabel),
       choicePoint: input.sceneBlueprint.choicePoint,
       leadsTo: input.sceneBlueprint.leadsTo,
     };
@@ -931,6 +956,10 @@ Return exactly one complete SceneContent JSON object with:
         }
         console.warn(`[SceneWriter] Beat ${beat.id || i} had non-string text, converted to string: ${beat.text.substring(0, 50)}...`);
       }
+      beat.text = this.stripAgentFacingPressureParagraphs(
+        beat.text,
+        input?.sceneBlueprint?.description || input?.sceneBlueprint?.dramaticQuestion || input?.sceneBlueprint?.name || 'The story pressure changes.'
+      );
 
       if (beat.textVariants && !Array.isArray(beat.textVariants)) {
         beat.textVariants = [beat.textVariants as unknown as TextVariant];
@@ -1161,9 +1190,10 @@ Return exactly one complete SceneContent JSON object with:
 
     pushText(scene.description);
     for (const keyBeat of scene.keyBeats || []) {
-      pushText(keyBeat);
+      if (isAgentFacingPressureNote(keyBeat)) continue;
+      pushText(stripAgentFacingPressureLabel(keyBeat));
     }
-    pushText(scene.narrativeFunction);
+    pushText(this.stripAgentFacingPressureParagraphs(scene.narrativeFunction, scene.description || scene.name));
     pushText(scene.encounterBuildup);
 
     while (leadIns.length < count) {
@@ -1294,7 +1324,7 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 - **Location**: ${input.sceneBlueprint.location}
 - **Mood**: ${input.sceneBlueprint.mood}
 - **Purpose**: ${input.sceneBlueprint.purpose}
-- **Narrative Function**: ${input.sceneBlueprint.narrativeFunction}
+- **Narrative Function**: ${this.stripAgentFacingPressureParagraphs(input.sceneBlueprint.narrativeFunction, input.sceneBlueprint.description || input.sceneBlueprint.name)}
 ${input.sceneBlueprint.themePressure ? `- **Theme Pressure**: ${input.sceneBlueprint.themePressure}` : ''}
 
 ### Scene Craft Targets
@@ -1359,7 +1389,10 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 - **Sequence Intent**: ${this.formatSequenceIntent(input.sceneBlueprint.sequenceIntent)}
 
 ### Key Beats to Hit
-${input.sceneBlueprint.keyBeats.map(b => `- ${b}`).join('\n')}
+${input.sceneBlueprint.keyBeats
+  .filter((beat) => !isAgentFacingPressureNote(beat))
+  .map((beat) => `- ${stripAgentFacingPressureLabel(beat)}`)
+  .join('\n')}
 
 ${input.sceneBlueprint.choicePoint ? `
 ### Choice Point
@@ -1469,6 +1502,7 @@ If this scene has no outgoing scene, write the last beat as serialized-TV craft:
 ` : ''}
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
+${input.targetBeatCount >= 6 ? '- If this is a scene-length episode, write at least 6 beats and keep the final beat as the visible choice point. Do not compress the episode into only setup to crisis to choice.\n' : ''}
 - ${input.dialogueHeavy ? 'This is dialogue-heavy - focus on conversation' : 'Balance description with any dialogue'}
 - The first non-empty player-facing beat MUST anchor POV to the player character with "you", "your", the protagonist's actual name, or a concrete pronoun before focusing on NPCs or setting.
 - Add optional skillInsights on beats where hidden capability should change what the character notices.
@@ -2189,6 +2223,8 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
       issues.push(`NO BEATS - Scene must have at least 1 beat.`);
     } else if (beatCount === 1 && input.targetBeatCount >= 3) {
       issues.push(`SINGLE BEAT - Consider splitting into 2-3 beats for pacing.`);
+    } else if (input.targetBeatCount >= 6 && input.sceneBlueprint.choicePoint && beatCount < 6) {
+      issues.push(`SCENE-LENGTH UNDERFILL - This scene-length choice episode needs at least 6 beats before validation; found ${beatCount}. Expand with concrete escalation, reversal, discovery, cost, and choice residue beats.`);
     }
 
     return issues;

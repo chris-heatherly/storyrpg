@@ -1,12 +1,12 @@
 # StoryRPG Pipeline Mermaid Chart
 
-**Last Updated:** May 2026
+**Last Updated:** May 25, 2026
 
 This diagram shows the end-to-end StoryRPG generation pipeline, from the Generator UI through the proxy worker, multi-agent story generation, media generation, QA, output writing, and playback.
 
 ```mermaid
 flowchart TD
-    A[GeneratorScreen: user starts generation] --> B[PipelineClient]
+    A[GeneratorApp / GeneratorScreen: user starts generation] --> B[PipelineClient]
     B --> C[Express proxy server]
     C --> D[Worker process]
     D --> E[Build PipelineConfig]
@@ -139,7 +139,7 @@ flowchart TD
         M2[Style bible anchors]
         M3[Character reference sheets]
         M4[ColorScriptAgent]
-        M5[StoryboardAgent]
+        M5[Storyboard-v2 / StoryboardAgent]
         M6[VisualIllustratorAgent: scene and beat prompts]
         M7[EncounterImageAgent: encounter prompts]
         M8{Provider supports LoRA training?}
@@ -182,8 +182,9 @@ flowchart TD
         O2[SavingPhase / pipelineOutputWriter]
         O3[Write generated-stories story directory]
         O4[story.json primary package]
+        O4a[manifest.json package metadata]
         O4b[08-final-story.json legacy mirror]
-        O5[Images, audio, video, manifest, prompts, reports]
+        O5[Images, audio, video, assets, prompts, reports]
         O6[Tier 1 asset HTTP validation]
         O7[storyPathAnalyzer coverage plan]
         O8[Tier 2 Playwright multi-path QA]
@@ -199,6 +200,7 @@ flowchart TD
     O1 --> O2
     O2 --> O3
     O3 --> O4
+    O3 --> O4a
     O3 --> O4b
     O3 --> O5
     O4 --> O6
@@ -213,7 +215,7 @@ flowchart TD
     O9 -- no --> O11
 
     subgraph Playback["Runtime playback"]
-        R1[StoryLibrary discovers generated story]
+        R1[ReaderApp / StoryLibrary discovers generated story]
         R2[Home / EpisodeSelect screens]
         R3[ReadingScreen / StoryReader]
         R4[storyEngine]
@@ -222,7 +224,7 @@ flowchart TD
         R7[templateProcessor]
         R8[identityEngine]
         R9[gameStore and persisted PlayerState]
-        R10[EpisodeRecapScreen / VisualizerScreen]
+        R10[StoryReader recap state / VisualizerScreen]
     end
 
     O11 --> R1

@@ -409,6 +409,73 @@ describe('SceneWriter structural guards', () => {
     expect(normalized.transitionIn).toBe('42');
   });
 
+  it('strips agent-facing pressure notes from player-facing beat text and prompts', () => {
+    const writer = new SceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+    const input = {
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'Ambush at the Gate',
+        description: 'The escort is hit from both sides.',
+        location: 'road',
+        mood: 'urgent',
+        purpose: 'branch',
+        narrativeFunction: 'Force Aethavyr to choose who receives protection first.',
+        dramaticQuestion: 'Who does Aethavyr protect first?',
+        wantVsNeed: 'Duty versus earned loyalty',
+        conflictEngine: 'Arrows split the formation.',
+        npcsPresent: ['brightwell', 'lysandra'],
+        keyBeats: [
+          'Pressure: Lord Brightwell stumbles under the first volley.',
+          'Choice pressure: - When the ambush hits, does Aethavyr protect Lord Brightwell or Lysandra? WANT: do your duty. COST: leave one exposed. IDENTITY: who counts first?',
+          'Forward pressure: The exposed person remembers who Aethavyr chose.',
+        ],
+        leadsTo: [],
+      },
+      storyContext: {
+        title: 'Test Story',
+        genre: 'fantasy',
+        tone: 'urgent',
+        worldContext: 'A roadside ambush.',
+      },
+      protagonistInfo: {
+        name: 'Aethavyr',
+        pronouns: 'they/them',
+        description: 'A sworn protector.',
+      },
+      npcs: [],
+      targetBeatCount: 4,
+      dialogueHeavy: false,
+    } as any;
+
+    const prompt = (writer as any).buildPrompt(input);
+    expect(prompt).toContain('- Lord Brightwell stumbles under the first volley.');
+    expect(prompt).not.toContain('Choice pressure:');
+    expect(prompt).not.toContain('Forward pressure:');
+
+    const normalized = (writer as any).normalizeContent({
+      sceneId: 'scene-1',
+      sceneName: 'Ambush at the Gate',
+      beats: [{
+        id: 'beat-1',
+        text: 'Aethavyr hears the first arrow hit the carriage.\n\nChoice pressure: - When the ambush hits, does Aethavyr protect Lord Brightwell or Lysandra? WANT: do your duty.',
+      }],
+      startingBeatId: 'beat-1',
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    }, input);
+
+    expect(normalized.beats[0].text).not.toContain('Choice pressure:');
+    expect(normalized.beats[0].text).toContain('Aethavyr hears the first arrow hit the carriage.');
+  });
+
   it('flags unresolved schema variables in player-facing beat text', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',

@@ -1,8 +1,15 @@
 # Incremental Validation System
 
-**Last Updated:** April 2026
+**Last Updated:** May 25, 2026
 
 **Status:** ✅ Implemented
+
+Current implementation note: incremental validation now sits alongside a much
+larger validator family documented in `docs/PROJECT_STATUS.md` and
+`docs/STORY_QUALITY_CONTRACT.md`, including scene graph branching, mechanical
+storytelling, setup/payoff, twist, arc pressure, sequence continuity, and
+treatment-fidelity checks. This document remains the focused reference for the
+original per-scene validation rollout.
 
 ## Overview
 

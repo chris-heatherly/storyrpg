@@ -270,6 +270,140 @@ describe('StoryArchitect treatment fidelity validation', () => {
     ]));
   });
 
+  it('repairs treatment theme pressure and sceneEpisode forward pressure into validator-visible fields', () => {
+    const architect = new StoryArchitect(config, { episodeStructureMode: 'sceneEpisodes', allowLinearBottleneckEpisodes: true } as any);
+    const input = makeInput({
+      episodeNumber: 3,
+      episodeTitle: 'The Bookshop',
+      seasonPlanDirectives: {
+        treatmentGuidance: {
+          dramaticQuestion: 'Will Kylie accept that Stela sees more than Kylie wants seen?',
+          themePressure: 'First real pressure on being known instead of merely adored.',
+          liePressure: 'Kylie believes being unknown means she does not exist.',
+          entryGoal: 'Find the bookshop and get material for the blog.',
+          obstacle: 'Stela knows too much without being told.',
+          forcedChoice: 'Accept the rose quartz or keep the friendship aesthetic and shallow.',
+          exitShift: 'Kylie leaves with protection she is not ready to believe in.',
+          stakesLayers: ['Existential (unknown to Kylie), relational.'],
+          aPressure: 'The blog needs a story.',
+          bPressure: 'Stela offers unsettling friendship.',
+          cSeed: 'The rose quartz becomes a future ward.',
+          informationMovement: 'Plant Stela knowledge and the quartz.',
+          consequenceResidue: 'The rose quartz is now in Kylie bag.',
+          visualAnchor: 'A rose quartz on a velvet counter.',
+          nextEpisodeCausality: 'Because Mika texts her at 3pm: *Iubita, bring the bookshop girl Friday.*',
+          endingPressure: 'Because Mika texts her at 3pm: *Iubita, bring the bookshop girl Friday.*',
+          alternativePaths: ['Accepting the quartz leaves protection; refusing it leaves the apartment vulnerable.'],
+        },
+      },
+    });
+    const blueprint: any = {
+      episodeId: 'episode-3',
+      title: 'The Bookshop',
+      synopsis: 'Kylie meets Stela.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      themes: [],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1'],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+      dramaticAudit: {
+        episodeQuestion: 'Will Kylie trust the strange bookshop girl?',
+        themePressure: 'TBD',
+        themeAngle: 'TBD',
+        openingPromise: {
+          hook: 'TBD',
+          episodePromise: '',
+          activePressure: 'none',
+        },
+        episodePressureLanes: {
+          aPlot: {
+            externalPressure: '',
+            climaxIntersection: 'TBD',
+          },
+        },
+        personalStake: 'Kylie identity, trust, reputation, and future safety are at risk.',
+        stakesLayers: {
+          material: 'The blog and quartz protection can be lost.',
+          relational: 'Stela trust changes.',
+          identity: 'Kylie must choose whether being known matters.',
+          existential: 'Existential danger unknown to Kylie.',
+        },
+        majorTurns: [{
+          id: 'turn-1',
+          description: 'Kylie enters the bookshop and Stela sees too much.',
+          driver: 'protagonist',
+          protagonistInfluence: 'Kylie chooses whether to stay.',
+        }],
+        informationPlan: [{
+          item: 'Stela knows more than she should.',
+          knownBy: ['Kylie', 'Stela'] as any,
+          revealTiming: 'During the scene.',
+          payoff: 'The quartz matters later.',
+        }],
+      },
+      scenes: [{
+        id: 'scene-1',
+        name: 'Bookshop',
+        description: 'Kylie enters Lumina Books.',
+        location: 'bookshop',
+        mood: 'curious',
+        purpose: 'bottleneck',
+        dramaticQuestion: 'Will Kylie accept Stela help?',
+        wantVsNeed: 'Material for the blog vs being known.',
+        conflictEngine: 'Stela sees through her.',
+        npcsPresent: ['stela'],
+        narrativeFunction: 'Kylie encounters unsettling friendship.',
+        keyBeats: ['Kylie steps inside.', 'Risk narrows when Stela names what Kylie has not said.', 'The choice reveals a cost and changes future protection.'],
+        leadsTo: [],
+        stakesLayers: {
+          material: 'The blog and quartz protection can be lost.',
+          relational: 'Stela trust changes.',
+          identity: 'Kylie must choose whether being known matters.',
+          existential: 'Existential danger unknown to Kylie.',
+        },
+        choicePoint: {
+          type: 'dilemma',
+          stakes: { want: 'Stay independent', cost: 'Reject help', identity: 'Known or merely adored' },
+          description: 'Accept the quartz or refuse it.',
+          optionHints: ['Accept it.', 'Refuse it.'],
+          consequenceDomain: 'identity',
+          stakesLayers: {
+            material: 'The quartz can protect or be refused.',
+            relational: 'Stela trust changes.',
+            identity: 'Kylie chooses whether being known matters.',
+            existential: 'Existential danger unknown to Kylie.',
+          },
+          reminderPlan: { immediate: 'Stela notices the response.', shortTerm: 'The apartment feels different later.' },
+        },
+      }],
+    };
+
+    (architect as any).repairTreatmentDramaticAudit(blueprint, input);
+    (architect as any).repairTreatmentForwardPressure(blueprint, input.seasonPlanDirectives?.treatmentGuidance);
+    (architect as any).repairTreatmentResidue(blueprint, input);
+
+    const dramaticIssues = (architect as any).collectDramaticStructureIssues(blueprint, input, false);
+    const treatmentIssues = (architect as any).collectTreatmentFidelityIssues(blueprint, input);
+
+    expect(dramaticIssues.join('\n')).not.toContain('dramaticAudit.themePressure is missing');
+    expect((architect as any).collectThemePressureIssues(blueprint, false).join('\n')).not.toContain('themeAngle is missing');
+    expect((architect as any).collectEpisodePressureIssues(blueprint, input, false).join('\n')).not.toContain('openingPromise is incomplete');
+    expect(blueprint.dramaticAudit.openingPromise.hook).toContain('Find the bookshop');
+    expect(blueprint.dramaticAudit.openingPromise.episodePromise).toContain('Will Kylie accept');
+    expect(blueprint.dramaticAudit.informationPlan[0].knownBy).toEqual(['protagonist', 'ally']);
+    expect(treatmentIssues.join('\n')).not.toContain('authored ending pressure');
+    expect(blueprint.dramaticAudit.themePressure).toContain('known');
+    expect(blueprint.dramaticAudit.themeAngle).toContain('known');
+    expect(blueprint.dramaticAudit.stakesLayers.existential).toBeUndefined();
+    expect(blueprint.scenes[0].stakesLayers.existential).toBeUndefined();
+    expect(blueprint.scenes[0].choicePoint.stakesLayers.existential).toBeUndefined();
+    expect(blueprint.scenes[0].keyBeats[0]).toContain('Pressure:');
+    expect(blueprint.scenes[0].keyBeats.join('\n')).toContain('Because Mika texts');
+  });
+
   it('surfaces treatment drift as structural retry feedback before SceneWriter', () => {
     const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const input = makeInput({
@@ -384,6 +518,172 @@ describe('StoryArchitect treatment fidelity validation', () => {
     expect(issues.join('\n')).toContain('[TreatmentFidelity]');
     expect(issues.join('\n')).toContain('major choice pressure');
   });
+
+  it('repairs authored treatment choice pressure into a concrete choicePoint before validation', () => {
+    const architect = new StoryArchitect(config, { episodeStructureMode: 'sceneEpisodes', allowLinearBottleneckEpisodes: true } as any);
+    const input = makeInput({
+      episodeNumber: 1,
+      seasonPlanDirectives: {
+        treatmentGuidance: {
+          majorChoicePressures: [
+            'Open the laptop, or wait.',
+            'Block Daniel, archive his messages, or read them.',
+          ],
+          themePressure: 'Kylie tests whether attention is intimacy or surveillance.',
+          liePressure: 'Kylie risks becoming the woman who confuses being watched with being wanted.',
+          consequenceResidue: 'The laptop choice changes what Kylie thinks she is allowed to know.',
+        },
+      },
+    });
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Arrival',
+      synopsis: 'Kylie arrives in Bucharest.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      themes: [],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1'],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+      dramaticAudit: {
+        episodeQuestion: 'Will Kylie open the laptop?',
+        themePressure: 'Kylie tests whether attention is intimacy or surveillance.',
+        personalStake: 'Survival.',
+        stakesLayers: { material: 'The laptop.', relational: 'Daniel.', identity: 'Curiosity.' },
+        majorTurns: [{ id: 'turn-1', description: 'Arrival', turnType: 'choice', driver: 'player_choice' }],
+        informationPlan: [{ item: 'Daniel messages', knownBy: ['player'], revealTiming: 'now', payoff: 'choice' }],
+      },
+      scenes: [
+        {
+          id: 'scene-1',
+          name: 'The Blank Page',
+          description: 'Kylie sits with the laptop.',
+          location: 'apartment',
+          mood: 'uneasy',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'Will Kylie look?',
+          wantVsNeed: 'Know versus protect herself.',
+          conflictEngine: 'Daniel keeps pulling at her attention.',
+          dramaticStructure: {
+            question: 'Will Kylie look?',
+            turn: 'The laptop becomes a demand.',
+            pressurePeak: 'The messages wait.',
+            changedState: 'She must decide.',
+          },
+          personalStake: 'Survival.',
+          stakesLayers: { material: 'The laptop.', relational: 'Daniel.', identity: 'Curiosity.' },
+          npcsPresent: [],
+          narrativeFunction: 'Opening pressure.',
+          keyBeats: ['The laptop waits.', 'Daniel messages again.'],
+          leadsTo: [],
+          choicePoint: {
+            type: 'expression',
+            stakes: { want: 'React to the laptop', cost: 'Tone changes', identity: 'Posture' },
+            description: 'Choose how Kylie feels.',
+            optionHints: ['Calm.', 'Angry.'],
+            consequenceDomain: 'identity',
+          },
+        },
+      ],
+    };
+
+    (architect as any).repairTreatmentDramaticAudit(blueprint, input);
+    (architect as any).repairTreatmentMajorChoicePressure(blueprint, input);
+
+    expect(blueprint.scenes[0].choicePoint.type).toBe('dilemma');
+    expect(blueprint.scenes[0].choicePoint.description).toContain('Open the laptop');
+    expect(blueprint.scenes[0].choicePoint.optionHints).toEqual(['Open the laptop', 'wait.']);
+    expect(blueprint.scenes[0].choicePoint.expectedResidue.join('\n')).toContain('laptop choice');
+    expect(blueprint.dramaticAudit.personalStake).toContain('woman who confuses');
+    expect(blueprint.dramaticAudit.themeChoicePressure).toContain('Player/protagonist choice');
+    expect((architect as any).collectTreatmentFidelityIssues(blueprint, input).join('\n')).not.toContain('major choice pressure');
+    expect((architect as any).collectDramaticStructureIssues(blueprint, input, false).join('\n')).not.toContain('personalStake is missing or abstract');
+  });
+
+  it('repairs incomplete information plan rows before dramatic validation', () => {
+    const architect = new StoryArchitect(config, { episodeStructureMode: 'sceneEpisodes', allowLinearBottleneckEpisodes: true } as any);
+    const input = makeInput({
+      episodeNumber: 5,
+      episodeTitle: 'Cismigiu',
+      seasonPlanDirectives: {
+        treatmentGuidance: {
+          informationMovement: 'Victor knows Kylie by name before she introduces herself.',
+          cSeed: 'The black roses will prove he knows where she lives.',
+          endingPressure: 'Because at 4am Kylie cannot sleep and the draft file is open.',
+          themePressure: 'Kylie must decide whether rescue is care or possession.',
+          liePressure: 'Being chosen feels like proof she exists.',
+        },
+      },
+    });
+    const blueprint: any = {
+      episodeId: 'episode-5',
+      title: 'Cismigiu',
+      synopsis: 'Kylie is attacked and rescued.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      themes: [],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1'],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+      dramaticAudit: {
+        episodeQuestion: 'Will Kylie survive the walk home?',
+        themePressure: 'Kylie must decide whether rescue is care or possession.',
+        personalStake: 'Her safety and trust are at risk.',
+        stakesLayers: { material: 'The walk home.', relational: 'Victor.', identity: 'Independence.' },
+        majorTurns: [{ id: 'turn-1', description: 'The rescue', driver: 'player_choice', protagonistInfluence: 'Kylie chooses how to respond.' }],
+        informationPlan: [
+          { item: 'Victor knows her name.', knownBy: ['player'], revealTiming: 'At the rescue.', payoff: 'The rescue becomes unsettling.' },
+          { item: '', knownBy: [], revealTiming: '', payoff: '' },
+        ],
+      },
+      scenes: [{
+        id: 'scene-1',
+        name: 'The Shadow in the Fog',
+        description: 'Kylie faces the attack.',
+        location: 'park',
+        mood: 'danger',
+        purpose: 'bottleneck',
+        dramaticQuestion: 'Can she survive?',
+        wantVsNeed: 'Safety versus agency.',
+        conflictEngine: 'A shadow attacks her.',
+        dramaticStructure: {
+          question: 'Can she survive?',
+          turn: 'Victor appears.',
+          pressurePeak: 'The shadow marks her.',
+          changedState: 'She owes Victor attention.',
+        },
+        personalStake: 'Her safety and trust are at risk.',
+        stakesLayers: { material: 'The route home.', relational: 'Victor.', identity: 'Independence.' },
+        npcsPresent: [],
+        narrativeFunction: 'Attack and rescue.',
+        keyBeats: ['The route home turns dangerous.', 'Victor knows her name.'],
+        leadsTo: [],
+        choicePoint: {
+          type: 'dilemma',
+          stakes: { want: 'Survive', cost: 'Owe Victor', identity: 'Agency' },
+          description: 'Scream, run, freeze, or fight.',
+          optionHints: ['Scream', 'run', 'freeze', 'fight'],
+          consequenceDomain: 'danger',
+          reminderPlan: { immediate: 'The response changes the rescue.', shortTerm: 'The bruise or debt carries forward.' },
+        },
+      }],
+    };
+
+    (architect as any).repairTreatmentDramaticAudit(blueprint, input);
+    (architect as any).ensureDramaticAuditMinimums(blueprint, input);
+
+    expect(blueprint.dramaticAudit.informationPlan[1]).toMatchObject({
+      item: 'The black roses will prove he knows where she lives.',
+      knownBy: ['player', 'protagonist'],
+      revealTiming: 'During this episode.',
+      payoff: 'Because at 4am Kylie cannot sleep and the draft file is open.',
+    });
+    expect((architect as any).collectDramaticStructureIssues(blueprint, input, false).join('\n')).not.toContain('Information plan item is incomplete');
+  });
 });
 
 describe('StoryArchitect scene-graph branch repair', () => {
@@ -465,6 +765,222 @@ describe('StoryArchitect scene-graph branch repair', () => {
     expect(blueprint.scenes[0].choicePoint.type).toBe('dilemma');
     expect(new Set(blueprint.scenes[0].leadsTo).size).toBe(2);
     expect(blueprint.scenes[0].leadsTo).toEqual(['scene-2', 'scene-3']);
+  });
+});
+
+describe('StoryArchitect transition repair', () => {
+  it('adds therefore/but transitionOut metadata for every leadsTo edge', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'The Hunt',
+      synopsis: 'A three-scene pursuit.',
+      scenes: [
+        {
+          id: 'scene-1',
+          name: 'Storm Shelter',
+          description: 'Alex takes shelter as signs gather.',
+          location: 'barn',
+          mood: 'tense',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'Will Alex recognize the danger?',
+          wantVsNeed: 'Stay hidden vs understand the threat.',
+          conflictEngine: 'The storm hides the first sign of pursuit.',
+          dramaticStructure: {
+            question: 'Will Alex recognize the danger?',
+            turn: 'The storm reveals a hunter sign.',
+            pressurePeak: 'The hidden mark proves Alex has been tracked.',
+            changedState: 'Alex leaves knowing the shelter is not safe.',
+          },
+          personalStake: 'Alex safety and freedom are at risk.',
+          npcsPresent: [],
+          narrativeFunction: 'Buildup to the hunt.',
+          keyBeats: ['The hidden mark proves Alex has been tracked.'],
+          leadsTo: ['scene-2', 'scene-3'],
+          transitionOut: [{
+            toSceneId: 'scene-2',
+            connector: 'therefore',
+            causalLink: '',
+            pressureChange: '',
+          }],
+          residue: [{ type: 'information', description: 'Alex knows the shelter is compromised.' }],
+        },
+        {
+          id: 'scene-2',
+          name: 'Signs of the Hunt',
+          description: 'Alex follows the signs into the woods.',
+          location: 'woods',
+          mood: 'danger',
+          purpose: 'branch',
+          dramaticQuestion: 'Can Alex read the signs before the hunter arrives?',
+          wantVsNeed: 'Find a safe path vs confront the pattern.',
+          conflictEngine: 'The signs point in two directions.',
+          personalStake: 'Alex could lose the only safe route.',
+          npcsPresent: [],
+          narrativeFunction: 'Turns fear into pursuit logic.',
+          keyBeats: ['The signs split the route.'],
+          leadsTo: ['scene-3'],
+          residue: [{ type: 'information', description: 'The route choice changes what Alex knows.' }],
+        },
+        {
+          id: 'scene-3',
+          name: 'Hunter Arrives',
+          description: 'The hunter steps from the rain.',
+          location: 'clearing',
+          mood: 'danger',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'Will Alex survive the confrontation?',
+          wantVsNeed: 'Escape vs stand their ground.',
+          conflictEngine: 'The hunter closes the distance.',
+          personalStake: 'Alex body and freedom are at risk.',
+          npcsPresent: ['hunter'],
+          narrativeFunction: 'The pursuit becomes confrontation.',
+          keyBeats: ['The hunter arrives.'],
+          leadsTo: [],
+          transitionOut: [],
+          residue: [{ type: 'cost', description: 'The confrontation leaves a mark.' }],
+        },
+      ],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1', 'scene-3'],
+      themes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+
+    (architect as any).repairSceneTransitions(blueprint);
+
+    expect(blueprint.scenes[0].transitionOut).toHaveLength(2);
+    expect(blueprint.scenes[0].transitionOut[0]).toMatchObject({
+      toSceneId: 'scene-2',
+      connector: 'therefore',
+    });
+    expect(blueprint.scenes[0].transitionOut[0].causalLink).toContain('Storm Shelter changes the situation');
+    expect(blueprint.scenes[0].transitionOut[0].pressureChange).toContain('escalates into');
+    expect(blueprint.scenes[0].transitionOut[1]).toMatchObject({
+      toSceneId: 'scene-3',
+      connector: 'but',
+    });
+    expect(blueprint.scenes[1].transitionOut[0]).toMatchObject({
+      toSceneId: 'scene-3',
+      connector: 'therefore',
+    });
+    expect((architect as any).collectDramaticStructureIssues(blueprint, makeInput(), false).join('\n')).not.toContain('without transitionOut metadata');
+  });
+
+  it('repairs pressure-only scenes with an irreversible reaction for scene turn validation', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Signs',
+      synopsis: 'A warning becomes action.',
+      scenes: [
+        {
+          id: 'scene-1',
+          name: 'Shelter',
+          description: 'Alex enters shelter from the storm.',
+          location: 'barn',
+          mood: 'tense',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'Will Alex get clear of the storm?',
+          wantVsNeed: 'Hide from the storm vs notice the pattern.',
+          conflictEngine: 'The storm cuts off the road.',
+          dramaticStructure: {
+            question: 'Will Alex get clear of the storm?',
+            turn: 'The road floods.',
+            pressurePeak: 'The road floods behind Alex.',
+            changedState: 'Alex is trapped inside the shelter.',
+          },
+          personalStake: 'Alex safety and route home are at risk.',
+          npcsPresent: [],
+          narrativeFunction: 'Opening pressure.',
+          keyBeats: ['The road floods behind Alex.'],
+          leadsTo: ['scene-2'],
+          transitionOut: [],
+          residue: [{ type: 'cost', description: 'The road home is gone.' }],
+          choicePoint: {
+            type: 'dilemma',
+            stakes: { want: 'leave safely', cost: 'risk the storm', identity: 'careful or bold' },
+            description: 'Choose whether to stay or run.',
+            optionHints: ['Stay', 'Run'],
+            consequenceDomain: 'identity',
+            reminderPlan: { immediate: 'Alex moves differently after the choice.', shortTerm: 'The storm choice echoes later.' },
+          },
+        },
+        {
+          id: 'scene-2',
+          name: 'Signs of Danger',
+          description: 'Alex finds warning signs in the rafters.',
+          location: 'barn',
+          mood: 'dread',
+          purpose: 'transition',
+          dramaticQuestion: 'Will Alex understand what is hunting them?',
+          wantVsNeed: 'Stay hidden vs read the warning.',
+          conflictEngine: 'The signs suggest the storm is not natural.',
+          dramaticStructure: {
+            question: 'Will Alex understand what is hunting them?',
+            turn: 'A mark appears in the rafters.',
+            pressurePeak: 'The old warning sign points toward the woods.',
+            changedState: 'Alex knows the shelter is part of the hunt.',
+          },
+          personalStake: 'Alex safety and freedom are at risk.',
+          npcsPresent: [],
+          narrativeFunction: 'Turns atmosphere into threat.',
+          keyBeats: ['The old warning sign points toward the woods.'],
+          leadsTo: ['scene-3'],
+          transitionOut: [],
+          residue: [{ type: 'information', description: 'The signs expose the hunt.' }],
+        },
+        {
+          id: 'scene-3',
+          name: 'The Woods',
+          description: 'The hunt moves outside.',
+          location: 'woods',
+          mood: 'danger',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'Can Alex survive the hunter?',
+          wantVsNeed: 'Escape vs confront the danger.',
+          conflictEngine: 'The hunter closes in.',
+          dramaticStructure: {
+            question: 'Can Alex survive the hunter?',
+            turn: 'The hunter steps into view.',
+            pressurePeak: 'The hunter blocks the only path.',
+            changedState: 'Alex has no clean escape.',
+          },
+          personalStake: 'Alex life and freedom are at risk.',
+          npcsPresent: ['hunter'],
+          narrativeFunction: 'Confrontation.',
+          keyBeats: ['The hunter blocks the only path.', 'Alex must confront the hunter.'],
+          leadsTo: [],
+          transitionOut: [],
+          residue: [{ type: 'cost', description: 'The confrontation leaves Alex marked.' }],
+          choicePoint: {
+            type: 'dilemma',
+            stakes: { want: 'survive', cost: 'lose safety', identity: 'prey or fighter' },
+            description: 'Choose whether to run, bargain, or fight.',
+            optionHints: ['Run', 'Bargain', 'Fight'],
+            consequenceDomain: 'identity',
+            reminderPlan: { immediate: 'The hunter responds.', shortTerm: 'The confrontation changes Alex.' },
+          },
+        },
+      ],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1', 'scene-3'],
+      themes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+
+    (architect as any).repairSceneTransitions(blueprint);
+    (architect as any).repairSceneTurnContracts(blueprint);
+
+    expect(blueprint.scenes[1].keyBeats.join('\n')).toContain('irreversible reaction');
+    expect(blueprint.scenes[1].residue[1]).toMatchObject({ type: 'danger' });
+    expect((architect as any).collectSceneTurnContractIssues(blueprint, false).join('\n')).not.toContain('lacks a forced decision or irreversible reaction');
   });
 });
 

@@ -1,13 +1,14 @@
 # LoRA Auto-Training Subsystem
 
-**Last Updated:** April 2026
+**Last Updated:** May 25, 2026
 
 This document describes the auto-train-LoRA subsystem that ships inside
 StoryRPG's image pipeline. The subsystem is Stable-Diffusion-only; for
 every other image provider it is a hard no-op.
 
-See also: `docs/IMAGE_PIPELINE_RUNTIME.md` (runtime flow) and
-`docs/TDD.md` (architecture).
+See also: `docs/PROJECT_STATUS.md` (current project snapshot),
+`docs/IMAGE_PIPELINE_RUNTIME.md` (runtime flow), and `docs/TDD.md`
+(architecture).
 
 ## Goals
 
@@ -43,7 +44,7 @@ LoraTrainingAgent ──┬──► datasetBuilder ──► LoraTrainerAdapter
 | `src/ai-agents/images/loraRegistry.ts` | Fingerprint-keyed cache under `generated-stories/<storyId>/loras/registry.json` |
 | `src/ai-agents/services/lora-training/LoraTrainerAdapter.ts` | Interface + shared types |
 | `src/ai-agents/services/lora-training/KohyaAdapter.ts` | `kohya_ss` implementation |
-| `src/ai-agents/services/lora-training/factory.ts` | Backend selection (kohya today, stubs for diffusers / replicate) |
+| `src/ai-agents/services/lora-training/factory.ts` | Backend selection (`kohya` is implemented; other enum values are future adapter placeholders) |
 | `src/ai-agents/images/providerCapabilities.ts` | `supportsLoraTraining` capability gate |
 | `proxy/loraTrainingRoutes.js` | Express proxy mount for `/lora-training/*` |
 
@@ -260,7 +261,7 @@ LoRA-specific vars:
 |---|---|
 | `EXPO_PUBLIC_LORA_AUTO_TRAIN` | Default-on the master switch in the Generator UI |
 | `LORA_AUTO_TRAIN` | Same, but for worker/CLI entry points |
-| `LORA_TRAINER_BACKEND` / `EXPO_PUBLIC_LORA_TRAINER_BACKEND` | `disabled` \| `kohya` \| `diffusers` \| `replicate` |
+| `LORA_TRAINER_BACKEND` / `EXPO_PUBLIC_LORA_TRAINER_BACKEND` | `disabled` \| `kohya` \| `a1111-dreambooth` \| `comfy-training` \| `replicate` \| `fal`; only `kohya` is implemented today |
 | `LORA_TRAINER_BASE_URL` / `EXPO_PUBLIC_LORA_TRAINER_BASE_URL` | Base URL of the trainer sidecar |
 | `LORA_TRAINER_API_KEY` | Bearer token for the trainer sidecar |
 | `LORA_TRAINER_AUTH_HEADER` | Header name to use instead of `Authorization` |

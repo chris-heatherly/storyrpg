@@ -15,7 +15,7 @@
   "atlasCloudModel": "black-forest-labs/flux-dev-lora",
   "artStyle": "Fantasy anime illustration style, elegant cinematic composition, expressive clean character design, refined semi-realistic faces, graceful silhouettes, polished cel-shading blended with soft painterly gradients, atmospheric fantasy lighting, luminous rim light, rich but harmonious color palette, delicate linework, detailed but readable costumes and accessories, soft environmental depth, magical storybook mood, graceful motion, clear focal hierarchy, smooth color transitions, restrained texture, low visual noise, uncluttered composition, polished high-end animation concept art finish, no photorealism, no gritty realism, no muddy colors, no excessive micro-detail, no speckling, no pointillism, no messy linework.",
   "generationSettings": {
-    "episodeStructureMode": "sceneEpisodes",
+    "episodeStructureMode": "standard",
     "sceneEpisodeMinScenes": 1,
     "sceneEpisodeMaxScenes": 1,
     "sceneEpisodeNormalMinBeats": 6,

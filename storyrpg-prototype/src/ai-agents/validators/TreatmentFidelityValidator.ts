@@ -65,6 +65,21 @@ function hasCloseMatch(needle: string | undefined, haystack: string, minScore = 
   return tokenOverlapScore(needle, haystack) >= minScore;
 }
 
+function deepText(value: unknown, depth = 0): string {
+  if (value === undefined || value === null || depth > 8) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map((item) => deepText(item, depth + 1)).filter(Boolean).join(' ');
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !/(image|audio|video|url|path|base64|mime|embedding|vector)/i.test(key))
+      .map(([, item]) => deepText(item, depth + 1))
+      .filter(Boolean)
+      .join(' ');
+  }
+  return '';
+}
+
 function stripMarkdownBullet(value: string): string {
   return value.replace(/^\s*[-*]\s+/, '').trim();
 }
@@ -171,6 +186,7 @@ function storyText(story: Story): string {
       ...(episode.scenes || []).map((scene) => [
         scene.name,
         ...(scene.charactersInvolved || []),
+        deepText(scene.encounter),
         ...(scene.beats || []).map((beat) => [
           beat.text,
           ...(beat.textVariants || []).map((variant) => variant.text),
@@ -196,6 +212,12 @@ function storyText(story: Story): string {
 function pushMissingExactAnchor(issues: string[], label: string, anchor: string, haystack: string): void {
   if (!anchor.trim()) return;
   if (normalize(haystack).includes(normalize(anchor))) return;
+  issues.push(`[TreatmentFidelity] Final story is missing required ${label}: "${anchor}".`);
+}
+
+function pushMissingFuzzyAnchor(issues: string[], label: string, anchor: string, haystack: string, minScore = 0.45): void {
+  if (!anchor.trim()) return;
+  if (hasCloseMatch(anchor, haystack, minScore)) return;
   issues.push(`[TreatmentFidelity] Final story is missing required ${label}: "${anchor}".`);
 }
 
@@ -282,6 +304,7 @@ export class TreatmentFidelityValidator {
     const sourceEpisodeCount = input.sourceEpisodeCount || input.analysis?.totalEstimatedEpisodes || input.expectedEpisodeCount;
     const isCompleteSeason = input.isCompleteSeason
       ?? (sourceEpisodeCount !== undefined && (story.episodes || []).length >= sourceEpisodeCount);
+    const isPartialStoryTreatment = input.analysis?.sourceFormat === 'story_treatment' && !isCompleteSeason;
 
     if (input.expectedEpisodeCount !== undefined && story.episodes.length !== input.expectedEpisodeCount) {
       issues.push(
@@ -297,12 +320,14 @@ export class TreatmentFidelityValidator {
       }
       for (const location of input.analysis.keyLocations || []) {
         if (location.importance === 'major' && (location.firstAppearance <= maxGeneratedEpisode || isCompleteSeason)) {
-          pushMissingExactAnchor(issues, 'major location', location.name, allStoryText);
+          pushMissingFuzzyAnchor(issues, 'major location', location.name, allStoryText);
         }
       }
-      for (const element of input.analysis.adaptationGuidance?.elementsToPreserve || []) {
-        if (!hasCloseMatch(element, allStoryText, 0.28)) {
-          issues.push(`[TreatmentFidelity] Final story does not preserve treatment element: "${element}".`);
+      if (!isPartialStoryTreatment) {
+        for (const element of input.analysis.adaptationGuidance?.elementsToPreserve || []) {
+          if (!hasCloseMatch(element, allStoryText, 0.28)) {
+            issues.push(`[TreatmentFidelity] Final story does not preserve treatment element: "${element}".`);
+          }
         }
       }
       for (const episodeGuidance of input.analysis.episodeBreakdown || []) {
@@ -353,8 +378,10 @@ export class TreatmentFidelityValidator {
       }
     }
 
-    for (const anchor of collectCriticalSourceAnchors(input.sourceText)) {
-      pushMissingExactAnchor(issues, anchor.label, anchor.value, allStoryText);
+    if (!isPartialStoryTreatment) {
+      for (const anchor of collectCriticalSourceAnchors(input.sourceText)) {
+        pushMissingExactAnchor(issues, anchor.label, anchor.value, allStoryText);
+      }
     }
 
     const victorIndex = firstMentionIndex(allStoryText, 'Victor');

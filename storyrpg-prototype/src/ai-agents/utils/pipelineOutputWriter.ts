@@ -18,6 +18,7 @@ import { QAReport } from '../agents/QAAgents';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import type { EncounterTelemetry } from '../agents/EncounterArchitect';
 import type { SceneValidationResult } from '../validators/IncrementalValidators';
+import type { FinalStoryContractReport } from '../validators/FinalStoryContractValidator';
 import type { LlmLedger } from './pipelineTelemetry';
 import type { BranchShadowDiff } from './branchShadowDiff';
 import { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
@@ -480,6 +481,7 @@ export interface PipelineOutputs {
    */
   branchShadowDiffs?: Array<{ episodeId: string; diff: BranchShadowDiff }>;
   bestPracticesReport?: ComprehensiveValidationReport;
+  finalStoryContractReport?: FinalStoryContractReport;
   finalStory?: Story;
   // Visual planning assets
   visualPlanning?: VisualPlanningOutputs;
@@ -519,6 +521,8 @@ export interface OutputManifest {
     qaScore?: number;
     validationScore?: number;
     validationPassed?: boolean;
+    finalStoryContractPassed?: boolean;
+    finalStoryContractBlockingIssues?: number;
     // Visual planning stats
     hasColorScript?: boolean;
     characterReferencesCount?: number;
@@ -1418,6 +1422,13 @@ export async function savePipelineOutputs(
     files.push({ name: 'Validation Metrics', path: validationPath, type: 'validation', size: validationSize });
   }
 
+  // 8b. Save final story publish contract
+  if (outputs.finalStoryContractReport) {
+    const contractPath = outputDir + '07b-final-story-contract.json';
+    const contractSize = await writeJsonFile(contractPath, outputs.finalStoryContractReport);
+    files.push({ name: 'Final Story Contract', path: contractPath, type: 'final-story-contract', size: contractSize });
+  }
+
   // 9. Save Final Story — atomic write + manifest.json + v3 story.json
   // The legacy 08-final-story.json stays on disk (produced by
   // writeFinalStoryPackage) until every reader has migrated.
@@ -1962,6 +1973,8 @@ export async function savePipelineOutputs(
       qaScore: outputs.qaReport?.overallScore,
       validationScore: outputs.bestPracticesReport?.overallScore,
       validationPassed: outputs.bestPracticesReport?.overallPassed,
+      finalStoryContractPassed: outputs.finalStoryContractReport?.passed,
+      finalStoryContractBlockingIssues: outputs.finalStoryContractReport?.blockingIssues.length,
       // Visual planning stats
       hasColorScript: !!outputs.visualPlanning?.colorScript,
       characterReferencesCount: outputs.visualPlanning?.characterReferences?.length || 0,

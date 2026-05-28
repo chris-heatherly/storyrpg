@@ -1,12 +1,18 @@
 node_modules/
 .expo/
+.vercel/
 .ref-images/
 generated-stories/
 dist/
+dist-reader/
+dist-generator-internal/
 *.pdf
 *.zip
 *.DS_Store
 .git/
+.env
+.env.*
+!.env.example
 .generation-jobs.json
 .image-feedback.json
 .worker-jobs.json
@@ -14,5 +20,4 @@ dist/
 .worker-dead-letter.json
 .worker-checkpoint-outputs/
 .worker-results/
-scripts/
 .env.vercel

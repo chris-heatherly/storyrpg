@@ -42,6 +42,7 @@ export interface SceneGraphBranchValidationOptions {
   requireChoiceBridge?: boolean;
   minSceneGraphBranchesPerEpisode?: number;
   allowLinearBottleneckEpisodes?: boolean;
+  ignoreBlueprintBranchesWithoutSceneRouting?: boolean;
   importantNpcIds?: string[];
 }
 
@@ -179,7 +180,7 @@ export class SceneGraphBranchValidator {
     const blueprintMultiTargetSceneCount = blueprint?.scenes?.filter(scene => new Set(scene.leadsTo || []).size > 1).length || 0;
     const blueprintRequiresBranches = blueprintBranchPointCount > 0 || blueprintMultiTargetSceneCount > 0;
 
-    if (blueprintRequiresBranches && sceneGraphBranchChoiceCount === 0) {
+    if (blueprintRequiresBranches && sceneGraphBranchChoiceCount === 0 && !options.ignoreBlueprintBranchesWithoutSceneRouting) {
       issues.push({
         type: 'lost_branch_during_assembly',
         severity: 'error',

@@ -1,8 +1,13 @@
 # StoryRPG - Game Design Document
 
 **Version:** 3.1 (Comprehensive Reference Edition)  
-**Last Updated:** April 23, 2026  
+**Last Updated:** May 25, 2026
 **Status:** Active Development
+
+This GDD describes the product and game-design intent. For the current
+implementation map, read `docs/PROJECT_STATUS.md`; for the active technical
+architecture, read `docs/TDD.md`; for the public Reader vs internal Generator
+split, read `docs/READER_GENERATOR_SPLIT.md`.
 
 ---
 
@@ -33,6 +38,21 @@
 ---
 
 ## 1) Vision and Core Concept
+
+### Current Product Shape
+
+The project currently ships as two targets in one Expo package:
+
+- **Reader:** the public player experience, focused on story library,
+  episode selection, full-screen reading, player choices, reader settings,
+  and persisted progress.
+- **Generator:** the internal creator experience, focused on source analysis,
+  season planning, provider selection, story/image/video/audio generation,
+  style setup, job monitoring, and visualizer diagnostics.
+
+This split does not change the game design. It makes the product boundary
+clear: players should experience StoryRPG as a polished fiction reader, while
+creators/operators use the generator as a production tool.
 
 ### What Is StoryRPG?
 

@@ -1,8 +1,13 @@
 # Mobile-First Reader Redesign
 
-**Last Updated:** April 2026
+**Last Updated:** May 25, 2026
 
 Two passes of redesign are captured here: the original mobile-first reader layout, and the April 2026 rework that unified the reader and settings chrome around a small set of shared UI primitives.
+
+Current implementation note: the public Reader target is
+`apps/reader/ReaderApp.tsx`; generator-only screens now run through
+`apps/generator/GeneratorApp.tsx`. Reader UI changes should be verified in the
+Reader target with `npm run reader:web`.
 
 ---
 
@@ -35,7 +40,7 @@ Two passes of redesign are captured here: the original mobile-first reader layou
 2. Open the devtools console and look for `[StoryReader]` logs to confirm image status.
 3. Visually confirm: full-screen image, text in the bottom portion with a dark semi-transparent background, hamburger menu in the top-left, and no header bar.
 
-If changes don't appear: restart `npm run web`, clear the browser cache, and confirm `src/screens/ReadingScreen.tsx` still has the latest code.
+If changes don't appear: restart `npm run reader:web`, clear the browser cache, and confirm `src/screens/ReadingScreen.tsx` still has the latest code.
 
 ---
 

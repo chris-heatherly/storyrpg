@@ -230,6 +230,8 @@ import {
   SceneGraphBranchValidator,
   MicroEpisodeStructureValidator,
   MicroEpisodeSeasonValidator,
+  FinalStoryContractValidator,
+  type FinalStoryContractReport,
   TreatmentFidelityValidator,
   type SceneGraphBranchValidationResult,
   runNarrativeDiagnostics,
@@ -266,6 +268,7 @@ import { PipelineTelemetry } from '../utils/pipelineTelemetry';
 import { analyzeBranchTopology } from '../utils/branchTopology';
 import { buildBranchShadowDiff } from '../utils/branchShadowDiff';
 import { collectMissingEncounterImageKeys, getEncounterBeats } from '../utils/encounterImageCoverage';
+import { extractTreatmentFromMarkdown } from '../utils/treatmentExtraction';
 import { PROXY_CONFIG } from '../../config/endpoints';
 import {
   buildSceneSettingContext,
@@ -648,6 +651,7 @@ export class FullStoryPipeline {
   // Incremental validation (per-scene during content generation)
   private incrementalValidator: IncrementalValidationRunner | null = null;
   private sceneValidationResults: SceneValidationResult[] = [];
+  private allSceneValidationResults: SceneValidationResult[] = [];
 
   // Per-encounter telemetry, populated from EncounterArchitect.execute()'s
   // response metadata. Persisted via pipelineOutputWriter so we can later
@@ -942,6 +946,7 @@ export class FullStoryPipeline {
       requireSceneGraphBranching: isSceneEpisodeMode ? false : this.config.generation?.requireSceneGraphBranching,
       minSceneGraphBranchesPerEpisode: this.config.generation?.minSceneGraphBranchesPerEpisode,
       allowLinearBottleneckEpisodes: isSceneEpisodeMode ? true : this.config.generation?.allowLinearBottleneckEpisodes,
+      ignoreBlueprintBranchesWithoutSceneRouting: isSceneEpisodeMode,
     });
 
     this.emit({
@@ -979,6 +984,57 @@ export class FullStoryPipeline {
     }
 
     return result;
+  }
+
+  private async enforceFinalStoryContract(input: {
+    story: Story;
+    brief: FullCreativeBrief;
+    requestedEpisodeNumbers?: number[];
+    qaReport?: QAReport;
+    bestPracticesReport?: ComprehensiveValidationReport;
+    phase: string;
+  }): Promise<FinalStoryContractReport | undefined> {
+    if (!this.config.validation?.enabled || this.config.validation?.mode === 'disabled') {
+      return undefined;
+    }
+
+    const report = await new FinalStoryContractValidator().validate({
+      story: input.story,
+      requestedEpisodeNumbers: input.requestedEpisodeNumbers,
+      sourceSeasonPlan: input.brief.seasonPlan,
+      incrementalValidationResults: this.allSceneValidationResults.length > 0
+        ? this.allSceneValidationResults
+        : this.sceneValidationResults,
+      qaReport: input.qaReport,
+      bestPracticesReport: input.bestPracticesReport,
+      validSkills: Object.keys(input.story.initialState?.skills || {}),
+      mode: this.config.validation.mode,
+    });
+
+    this.emit({
+      type: report.passed ? 'checkpoint' : 'error',
+      phase: input.phase,
+      message: report.passed
+        ? `Final story contract passed (${report.metrics.episodesChecked} episode(s), ${report.metrics.scenesChecked} scene(s))`
+        : `Final story contract failed with ${report.blockingIssues.length} blocking issue(s): ${report.blockingIssues.slice(0, 3).map(issue => issue.message).join('; ')}`,
+      data: report,
+    });
+
+    if (!report.passed) {
+      throw new PipelineError(
+        `Final story contract failed with ${report.blockingIssues.length} blocking issue(s)`,
+        input.phase,
+        {
+          context: {
+            failureKind: 'final_story_contract',
+            blockingIssues: report.blockingIssues.slice(0, 10),
+            metrics: report.metrics,
+          },
+        }
+      );
+    }
+
+    return report;
   }
 
   private validateMicroEpisodeStructure(
@@ -1049,6 +1105,368 @@ export class FullStoryPipeline {
           },
         }
       );
+    }
+  }
+
+  private compactSceneEpisodeBeatOverflow(
+    sceneContents: SceneContent[],
+    choiceSets: ChoiceSet[],
+    encounters: Map<string, EncounterStructure> | undefined,
+    context: { phase: string }
+  ): void {
+    if (this.config.generation?.episodeStructureMode !== 'sceneEpisodes') return;
+
+    const maxBeats = this.config.generation.sceneEpisodeNormalMaxBeats || 10;
+    const minBeats = this.config.generation.sceneEpisodeNormalMinBeats || 6;
+    const protectedChoiceBeatIds = new Set(
+      choiceSets
+        .map((choiceSet) => choiceSet.beatId)
+        .filter(Boolean)
+    );
+
+    for (const content of sceneContents) {
+      if (!content?.beats?.length) continue;
+      if (encounters?.has(content.sceneId)) continue;
+      if (content.beats.length <= maxBeats) continue;
+
+      const originalCount = content.beats.length;
+      while (content.beats.length > maxBeats) {
+        const removeIndex = this.findSceneEpisodeOverflowBeatIndex(content.beats, protectedChoiceBeatIds);
+        if (removeIndex < 0) break;
+        const [removed] = content.beats.splice(removeIndex, 1);
+        const mergeTarget = content.beats[Math.max(0, removeIndex - 1)];
+        if (mergeTarget && removed) {
+          mergeTarget.text = [mergeTarget.text, removed.text].filter(Boolean).join('\n\n');
+          if (!mergeTarget.visualMoment && removed.visualMoment) mergeTarget.visualMoment = removed.visualMoment;
+          if (!mergeTarget.primaryAction && removed.primaryAction) mergeTarget.primaryAction = removed.primaryAction;
+          if (!mergeTarget.emotionalRead && removed.emotionalRead) mergeTarget.emotionalRead = removed.emotionalRead;
+          if (removed.nextSceneId && !mergeTarget.nextSceneId) mergeTarget.nextSceneId = removed.nextSceneId;
+          if (removed.callbackHookIds?.length) {
+            mergeTarget.callbackHookIds = [...new Set([...(mergeTarget.callbackHookIds || []), ...removed.callbackHookIds])];
+          }
+        }
+      }
+
+      this.relinkSceneEpisodeBeats(content);
+      if (content.beats.length >= minBeats && content.beats.length < originalCount) {
+        this.emit({
+          type: 'debug',
+          phase: context.phase,
+          message: `Compacted sceneEpisode ${content.sceneId} from ${originalCount} to ${content.beats.length} beats before micro-episode validation.`,
+        });
+      }
+    }
+  }
+
+  private findSceneEpisodeOverflowBeatIndex(beats: GeneratedBeat[], protectedChoiceBeatIds: Set<string>): number {
+    const protectedIndexes = new Set<number>([0, beats.length - 1]);
+    beats.forEach((beat, index) => {
+      if (beat.isChoicePoint || protectedChoiceBeatIds.has(beat.id)) {
+        protectedIndexes.add(index);
+      }
+    });
+
+    for (let index = beats.length - 2; index >= 1; index--) {
+      if (!protectedIndexes.has(index)) return index;
+    }
+    return -1;
+  }
+
+  private relinkSceneEpisodeBeats(content: SceneContent): void {
+    content.beats.forEach((beat, index) => {
+      const next = content.beats[index + 1];
+      beat.nextBeatId = next?.id;
+      if (!next) delete beat.nextBeatId;
+    });
+    if (!content.beats.some((beat) => beat.id === content.startingBeatId)) {
+      content.startingBeatId = content.beats[0]?.id || content.startingBeatId;
+    }
+  }
+
+  private repairSceneEpisodePlayableContract(
+    sceneBlueprint: SceneBlueprint,
+    content: SceneContent,
+    choiceSets: ChoiceSet[],
+    context: { phase: string }
+  ): boolean {
+    if (this.config.generation?.episodeStructureMode !== 'sceneEpisodes') return false;
+    if (sceneBlueprint.isEncounter || content?.encounter) return false;
+
+    content.beats = Array.isArray(content.beats) ? content.beats : [];
+    let repaired = false;
+
+    if (content.beats.length === 0) {
+      content.beats.push(this.createSceneEpisodeSyntheticBeat(
+        sceneBlueprint,
+        'beat-1',
+        sceneBlueprint.description || sceneBlueprint.dramaticQuestion || 'The scene pressure arrives.',
+        true,
+      ));
+      content.startingBeatId = 'beat-1';
+      repaired = true;
+    }
+
+    let choiceBeat = content.beats.find((beat) => beat.isChoicePoint);
+    if (!choiceBeat) {
+      choiceBeat = content.beats[content.beats.length - 1];
+      if (choiceBeat) {
+        choiceBeat.isChoicePoint = true;
+        repaired = true;
+      }
+    }
+
+    const minBeats = this.config.generation.sceneEpisodeNormalMinBeats || 6;
+    const maxBeats = this.config.generation.sceneEpisodeNormalMaxBeats || 10;
+    const targetFloor = Math.min(minBeats, maxBeats);
+    while (content.beats.length < targetFloor) {
+      const insertIndex = choiceBeat ? Math.max(0, content.beats.indexOf(choiceBeat)) : content.beats.length;
+      const beatId = this.nextSceneEpisodeSyntheticBeatId(content);
+      content.beats.splice(insertIndex, 0, this.createSceneEpisodeSyntheticBeat(
+        sceneBlueprint,
+        beatId,
+        this.buildSceneEpisodeSyntheticBeatText(sceneBlueprint, content.beats.length, targetFloor),
+        insertIndex === 0,
+      ));
+      repaired = true;
+    }
+
+    if (choiceBeat && !content.beats.includes(choiceBeat)) {
+      choiceBeat = content.beats[content.beats.length - 1];
+      if (choiceBeat) choiceBeat.isChoicePoint = true;
+    }
+
+    this.relinkSceneEpisodeBeats(content);
+
+    const activeChoiceBeat = content.beats.find((beat) => beat.isChoicePoint) || content.beats[content.beats.length - 1];
+    if (activeChoiceBeat) {
+      activeChoiceBeat.isChoicePoint = true;
+      const existingChoiceSet = choiceSets.find((choiceSet) =>
+        choiceSet.sceneId === sceneBlueprint.id && choiceSet.beatId === activeChoiceBeat.id
+      );
+      if (!existingChoiceSet) {
+        choiceSets.push(this.createFallbackSceneEpisodeChoiceSet(sceneBlueprint, activeChoiceBeat));
+        repaired = true;
+      }
+    }
+
+    if (!content.startingBeatId && content.beats[0]) {
+      content.startingBeatId = content.beats[0].id;
+      repaired = true;
+    }
+
+    if (repaired) {
+      this.emit({
+        type: 'debug',
+        phase: context.phase,
+        message: `Repaired sceneEpisode playable contract for ${sceneBlueprint.id}: ${content.beats.length} beat(s), ${choiceSets.filter(cs => cs.sceneId === sceneBlueprint.id).length} choice set(s).`,
+      });
+    }
+
+    return repaired;
+  }
+
+  private createSceneEpisodeSyntheticBeat(
+    sceneBlueprint: SceneBlueprint,
+    id: string,
+    text: string,
+    isOpening = false
+  ): GeneratedBeat {
+    const cleanText = this.ensureSentence(text || sceneBlueprint.description || 'The pressure changes shape.');
+    return {
+      id,
+      text: cleanText,
+      isChoicePoint: false,
+      visualMoment: cleanText,
+      primaryAction: cleanText,
+      emotionalRead: isOpening
+        ? 'the protagonist enters with visible intent'
+        : 'the protagonist absorbs the pressure and chooses what it means',
+      relationshipDynamic: sceneBlueprint.npcsPresent?.length
+        ? 'the power dynamic tightens between the protagonist and the people present'
+        : 'the protagonist is pressed by the situation itself',
+      mustShowDetail: sceneBlueprint.location || sceneBlueprint.name,
+      intensityTier: isOpening ? 'rest' : 'supporting',
+      sequenceIntent: {
+        objective: sceneBlueprint.dramaticQuestion || 'Keep the sceneEpisode pressure moving toward a choice.',
+        activity: sceneBlueprint.choicePoint?.description || sceneBlueprint.conflictEngine || 'pressure, reaction, and decision',
+        obstacle: sceneBlueprint.conflictEngine || sceneBlueprint.choicePoint?.stakes?.cost || 'the situation resists a clean answer',
+        startState: sceneBlueprint.personalStake || sceneBlueprint.description || 'The scene begins under pressure.',
+        endState: sceneBlueprint.choicePoint?.description || 'The next beat leaves a clearer choice.',
+        beatRole: isOpening ? 'setup' : 'escalation',
+        mechanicThread: sceneBlueprint.choicePoint?.consequenceDomain || sceneBlueprint.purpose || 'sceneEpisode',
+      },
+    } as GeneratedBeat;
+  }
+
+  private buildSceneEpisodeSyntheticBeatText(
+    sceneBlueprint: SceneBlueprint,
+    currentBeatCount: number,
+    targetFloor: number
+  ): string {
+    const authoredBeats = (sceneBlueprint.keyBeats || [])
+      .map((beat) => String(beat || '').trim())
+      .filter(Boolean)
+      .filter((beat) => !/^choice pressure:/i.test(beat));
+    const authored = authoredBeats[currentBeatCount % Math.max(1, authoredBeats.length)];
+    if (authored) return authored;
+
+    const choicePressure = sceneBlueprint.choicePoint?.description;
+    const dramaticQuestion = sceneBlueprint.dramaticQuestion || sceneBlueprint.dramaticStructure?.question;
+    const pressurePeak = sceneBlueprint.dramaticStructure?.pressurePeak || sceneBlueprint.choicePoint?.stakes?.cost;
+    const exitShift = this.stripAgentFacingFidelityText(
+      sceneBlueprint.dramaticStructure?.changedState || sceneBlueprint.narrativeFunction || '',
+      sceneBlueprint.description || sceneBlueprint.name || 'The choice leaves residue.'
+    );
+    const fallbackCycle = [
+      dramaticQuestion ? `The scene presses its question: ${dramaticQuestion}` : '',
+      pressurePeak ? `The cost becomes harder to ignore: ${pressurePeak}` : '',
+      choicePressure ? `The decision narrows: ${choicePressure}` : '',
+      exitShift ? `The moment leaves residue: ${exitShift}` : '',
+    ].filter(Boolean);
+    return fallbackCycle[currentBeatCount % Math.max(1, fallbackCycle.length)]
+      || `The scene holds one more turn before the choice can land (${currentBeatCount + 1}/${targetFloor}).`;
+  }
+
+  private nextSceneEpisodeSyntheticBeatId(content: SceneContent): string {
+    const ids = new Set(content.beats.map((beat) => beat.id));
+    let index = content.beats.length + 1;
+    while (ids.has(`beat-${index}`) || ids.has(`beat-synth-${index}`)) index++;
+    return ids.has(`beat-${index}`) ? `beat-synth-${index}` : `beat-${index}`;
+  }
+
+  private createFallbackSceneEpisodeChoiceSet(
+    sceneBlueprint: SceneBlueprint,
+    choiceBeat: GeneratedBeat
+  ): ChoiceSet {
+    const choicePoint = sceneBlueprint.choicePoint;
+    const optionHints = (choicePoint?.optionHints || [])
+      .map((hint) => String(hint || '').trim())
+      .filter(Boolean);
+    const options = (optionHints.length >= 2 ? optionHints : [
+      choicePoint?.description || 'Act on the pressure now.',
+      choicePoint?.stakes?.cost ? `Hold back and pay the cost: ${choicePoint.stakes.cost}` : 'Hold back and read the danger.',
+    ]).slice(0, 5);
+    const stakes = choicePoint?.stakes || {
+      want: sceneBlueprint.dramaticQuestion || sceneBlueprint.description || 'change the situation',
+      cost: sceneBlueprint.conflictEngine || 'accept the visible cost',
+      identity: sceneBlueprint.wantVsNeed || 'decide who this pressure is making the protagonist become',
+    };
+    const choiceType = choicePoint?.type || 'dilemma';
+
+    return {
+      beatId: choiceBeat.id,
+      sceneId: sceneBlueprint.id,
+      choiceType,
+      overallStakes: stakes,
+      overallStakesLayers: choicePoint?.stakesLayers || sceneBlueprint.stakesLayers,
+      designNotes: 'Deterministic sceneEpisode fallback: preserves authored choice pressure when ChoiceAuthor does not produce a usable choice set.',
+      choices: options.map((text, index) => ({
+        id: `${choiceBeat.id}-fallback-choice-${index + 1}`,
+        text: this.ensureSentence(text),
+        choiceType,
+        stakes,
+        stakesLayers: choicePoint?.stakesLayers || sceneBlueprint.stakesLayers,
+        stakesAnnotation: stakes,
+        consequenceDomain: choicePoint?.consequenceDomain || 'identity',
+        consequences: [],
+        reminderPlan: choicePoint?.reminderPlan || {
+          immediate: sceneBlueprint.choicePoint?.description || 'The decision changes the tone of the scene.',
+          shortTerm: this.stripAgentFacingFidelityText(
+            sceneBlueprint.narrativeFunction || '',
+            'The residue carries into the next sceneEpisode.'
+          ),
+        },
+        feedbackCue: {
+          echoSummary: `You chose: ${this.ensureSentence(text)}`,
+          progressSummary: this.stripAgentFacingFidelityText(
+            choicePoint?.reminderPlan?.immediate || sceneBlueprint.narrativeFunction || '',
+            'The choice leaves visible residue.'
+          ),
+        },
+        expectedResidue: choicePoint?.expectedResidue,
+      })),
+    } as ChoiceSet;
+  }
+
+  private ensureSentence(text: string): string {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) return 'The pressure changes shape.';
+    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  }
+
+  private stripAgentFacingFidelityText(text: string, fallback: string): string {
+    const cleaned = String(text || '')
+      .split(/\n{2,}|\r?\n/)
+      .map((part) => part.trim())
+      .filter((part) => part && !/^(?:pressure|choice pressure|forward pressure):/i.test(part))
+      .join('\n\n')
+      .trim();
+    return cleaned || this.ensureSentence(fallback || 'The story pressure changes what can happen next.');
+  }
+
+  private sanitizeSceneContentForReader(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
+    if (!Array.isArray(content.beats)) return;
+    for (const beat of content.beats) {
+      const sceneFallback = sceneBlueprint.description || sceneBlueprint.dramaticQuestion || sceneBlueprint.name || 'The story pressure changes.';
+      beat.text = this.stripAgentFacingFidelityText(
+        beat.text,
+        sceneFallback
+      );
+      beat.visualMoment = this.stripAgentFacingFidelityText(
+        beat.visualMoment || beat.text,
+        beat.text || sceneFallback
+      );
+      beat.primaryAction = this.stripAgentFacingFidelityText(
+        beat.primaryAction || beat.text,
+        beat.text || sceneFallback
+      );
+      beat.emotionalRead = this.stripAgentFacingFidelityText(
+        beat.emotionalRead || '',
+        'The protagonist absorbs the consequence.'
+      );
+      beat.relationshipDynamic = this.stripAgentFacingFidelityText(
+        beat.relationshipDynamic || '',
+        sceneBlueprint.npcsPresent?.length
+          ? 'The relationship pressure changes.'
+          : 'The situation pressure changes.'
+      );
+    }
+  }
+
+  private sanitizeReaderFacingSceneName(name: string | undefined, fallback = 'the next scene'): string {
+    const cleaned = String(name || fallback)
+      .replace(/\s*\((?:[^)]*\b(?:ENCOUNTER|Episode\s+Climax|Buildup|Setup|Transition|Bridge)\b[^)]*)\)\s*/gi, ' ')
+      .replace(/\s*\[(?:[^\]]*\b(?:ENCOUNTER|Episode\s+Climax|Buildup|Setup|Transition|Bridge)\b[^\]]*)\]\s*/gi, ' ')
+      .replace(/\s+-\s*(?:ENCOUNTER|Episode\s+Climax|Buildup|Setup|Transition|Bridge)\b.*$/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return cleaned || fallback;
+  }
+
+  private cleanChoiceBridgeFragment(value: string | undefined): string {
+    return this.sanitizeReaderFacingSceneName(value || '', '')
+      .replace(/\bThe decision carries you\b.*$/i, '')
+      .replace(/\bone concrete step at a time\b\.?/i, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private ensureBlueprintFidelityText(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
+    const importantBeats = (sceneBlueprint.keyBeats || [])
+      .map((beat) => (beat || '').trim())
+      .filter((beat) => /^(?:pressure|choice pressure|forward pressure):/i.test(beat));
+    if (importantBeats.length === 0) return;
+
+    content.continuityNotes = Array.isArray(content.continuityNotes) ? content.continuityNotes : [];
+    for (const importantBeat of importantBeats) {
+      const note = `Agent-facing fidelity pressure preserved outside reader prose: ${importantBeat}`;
+      if (!content.continuityNotes.includes(note)) {
+        content.continuityNotes.push(note);
+      }
+    }
+
+    if (!content.startingBeatId && content.beats?.[0]) {
+      content.startingBeatId = content.beats[0].id;
     }
   }
 
@@ -1560,6 +1978,23 @@ export class FullStoryPipeline {
         },
       });
     }
+  }
+
+  private recordSceneValidationResult(result: SceneValidationResult): void {
+    const localIdx = this.sceneValidationResults.findIndex(v => v.sceneId === result.sceneId);
+    if (localIdx >= 0) {
+      this.sceneValidationResults[localIdx] = result;
+    } else {
+      this.sceneValidationResults.push(result);
+    }
+
+    for (let idx = this.allSceneValidationResults.length - 1; idx >= 0; idx--) {
+      if (this.allSceneValidationResults[idx].sceneId === result.sceneId) {
+        this.allSceneValidationResults[idx] = result;
+        return;
+      }
+    }
+    this.allSceneValidationResults.push(result);
   }
 
   private mapCheckpointPhaseToStepId(phase: string): string | null {
@@ -3789,6 +4224,8 @@ export class FullStoryPipeline {
       waveCount: 0,
       fallbackToSerial: false,
     };
+    this.sceneValidationResults = [];
+    this.allSceneValidationResults = [];
     this.resetCollectedVisualPlanning(); // Reset visual planning collection for new run
     const startTime = Date.now();
 
@@ -4501,6 +4938,7 @@ export class FullStoryPipeline {
       await this.checkCancellation();
       let qaReport: QAReport | undefined;
       let bestPracticesReport: ComprehensiveValidationReport | undefined;
+      let finalStoryContractReport: FinalStoryContractReport | undefined;
 
       if (brief.options?.runQA !== false) {
         this.emit({ type: 'phase_start', phase: 'qa', message: 'Phase 5: Running quality assurance' });
@@ -5139,6 +5577,26 @@ export class FullStoryPipeline {
                   }
                 }
               }
+
+              if (!encounterValidation.passed && this.config.validation?.enabled && this.config.validation?.mode !== 'disabled') {
+                const message = `Encounter ${sceneBlueprint.id} failed validation after regeneration: ${encounterValidation.issues.map(i => `${i.type}: ${i.detail}`).slice(0, 5).join('; ')}`;
+                this.emit({
+                  type: 'error',
+                  phase: 'encounters',
+                  message,
+                  data: { issues: encounterValidation.issues },
+                });
+                throw new PipelineError(message, 'encounters', {
+                  agent: 'EncounterArchitect',
+                  context: {
+                    sceneId: sceneBlueprint.id,
+                    sceneName: sceneBlueprint.name,
+                    encounterType: sceneBlueprint.encounterType,
+                    failureKind: 'encounter_validation',
+                    issues: encounterValidation.issues,
+                  },
+                });
+              }
             }
           }
         }
@@ -5254,6 +5712,15 @@ export class FullStoryPipeline {
         story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
       }
 
+      finalStoryContractReport = await this.enforceFinalStoryContract({
+        story,
+        brief,
+        requestedEpisodeNumbers: [brief.episode.number],
+        qaReport,
+        bestPracticesReport,
+        phase: 'final_story_contract',
+      });
+
       this.addCheckpoint('Final Story', story, false);
 
       // === PHASE 7: SAVE OUTPUTS ===
@@ -5283,13 +5750,14 @@ export class FullStoryPipeline {
               encounters: Array.from(encounters.values()),
               qaReport,
               incrementalValidationResults:
-                this.sceneValidationResults.length > 0 ? this.sceneValidationResults : undefined,
+                this.allSceneValidationResults.length > 0 ? this.allSceneValidationResults : undefined,
               encounterTelemetry:
                 this.encounterTelemetry.length > 0 ? this.encounterTelemetry : undefined,
               llmLedger: this.telemetry.getLlmLedger() ?? undefined,
               branchShadowDiffs:
                 this.branchShadowDiffs.length > 0 ? this.branchShadowDiffs : undefined,
               bestPracticesReport,
+              finalStoryContractReport,
               finalStory: story,
               visualPlanning: visualPlanningOutputs,
               videoClipsGenerated: videoResults?.size || 0,
@@ -6242,6 +6710,26 @@ export class FullStoryPipeline {
         console.warn(`[Pipeline] Scene ${scene.id} has isEncounter=true but missing encounterType — defaulting to 'mixed'`);
         this.emit({ type: 'warning', phase: 'content', message: `Scene ${scene.id} encounter missing encounterType — defaulted to 'mixed'` });
       }
+      const originalLeadsTo = [...(scene.leadsTo || [])];
+      scene.leadsTo = originalLeadsTo.filter((targetId) => targetId && targetId !== scene.id);
+      if (scene.requires?.length) {
+        scene.requires = scene.requires.filter((targetId) => targetId && targetId !== scene.id);
+      }
+      if (originalLeadsTo.length !== scene.leadsTo.length) {
+        this.emit({
+          type: 'warning',
+          phase: 'content',
+          message: `Removed self-routing leadsTo from scene ${scene.id} before content generation.`,
+        });
+      }
+      if (scene.choicePoint?.branches && new Set(scene.leadsTo || []).size < 2) {
+        scene.choicePoint.branches = false;
+        this.emit({
+          type: 'warning',
+          phase: 'content',
+          message: `Removed branches=true from scene ${scene.id}; fewer than two distinct future scene targets remain.`,
+        });
+      }
     }
 
     // Phase 1.1: Build a per-scene branch topology index from BranchManager output.
@@ -6400,7 +6888,7 @@ export class FullStoryPipeline {
       const requiredScenes = new Set<string>([
         ...(sceneBlueprint.requires || []),
         ...((dependencyGraph.nodes.get(sceneBlueprint.id)?.predecessors || [])),
-      ]);
+      ].filter((sceneId) => sceneId && sceneId !== sceneBlueprint.id));
       const unresolvedDeps = Array.from(requiredScenes).filter((dep) => !finalizedScenes.has(dep));
       if (unresolvedDeps.length > 0) {
         throw new PipelineError(
@@ -7124,7 +7612,7 @@ export class FullStoryPipeline {
             undefined // No encounter for regular scenes
           );
 
-          this.sceneValidationResults.push(sceneValidation);
+          this.recordSceneValidationResult(sceneValidation);
 
           this.emit({
             type: 'incremental_validation',
@@ -7268,6 +7756,7 @@ export class FullStoryPipeline {
                 if (valIdx !== -1) {
                   this.sceneValidationResults[valIdx] = revisedValidation;
                 }
+                this.recordSceneValidationResult(revisedValidation);
                 this.emit({
                   type: 'debug',
                   phase: 'scenes',
@@ -7682,7 +8171,7 @@ export class FullStoryPipeline {
                 validationTimeMs: 0,
               };
               
-              this.sceneValidationResults.push(sceneValidation);
+              this.recordSceneValidationResult(sceneValidation);
 
               this.emit({
                 type: 'incremental_validation',
@@ -7756,13 +8245,18 @@ export class FullStoryPipeline {
                       this.captureEncounterTelemetry(regenEncounterResult.metadata);
                       // Update the stored validation result
                       const valIdx = this.sceneValidationResults.findIndex(v => v.sceneId === sceneBlueprint.id);
+                      let updatedSceneValidation: SceneValidationResult | undefined;
                       if (valIdx !== -1) {
-                        this.sceneValidationResults[valIdx] = {
+                        updatedSceneValidation = {
                           ...this.sceneValidationResults[valIdx],
                           encounter: regenValidation,
                           overallPassed: regenValidation.passed,
                           regenerationRequested: regenValidation.passed ? 'none' : 'encounter',
                         };
+                        this.sceneValidationResults[valIdx] = updatedSceneValidation;
+                      }
+                      if (updatedSceneValidation) {
+                        this.recordSceneValidationResult(updatedSceneValidation);
                       }
                       this.emit({
                         type: 'debug',
@@ -7801,6 +8295,14 @@ export class FullStoryPipeline {
         );
       }
       const completedScene = sceneContents.find((sc) => sc.sceneId === sceneBlueprint.id);
+      if (completedScene) {
+        this.repairSceneEpisodePlayableContract(
+          sceneBlueprint,
+          completedScene,
+          choiceSets,
+          { phase: episodeNumber ? `episode_${episodeNumber}_micro_episode_repair` : 'micro_episode_repair' }
+        );
+      }
       if (completedScene && outputDirectory && episodeNumber) {
         await this.saveResumeUnit(outputDirectory, sceneUnitId, sceneCheckpointPath, completedScene);
         const completedChoice = choiceSets.find((cs) =>
@@ -8240,7 +8742,9 @@ export class FullStoryPipeline {
         }
       }
 
+      this.ensureBlueprintFidelityText(sceneBlueprint, content);
       this.ensureChoiceBridgeBeats(blueprint, sceneBlueprint, content, choiceMap);
+      this.sanitizeSceneContentForReader(sceneBlueprint, content);
 
       const beats: Beat[] = content.beats.map(genBeat => {
         const compositeKey = this.getEpisodeScopedBeatKey(brief, sceneBlueprint.id, genBeat.id);
@@ -8306,7 +8810,7 @@ export class FullStoryPipeline {
 
       return {
         id: sceneBlueprint.id,
-        name: sceneBlueprint.name,
+        name: this.sanitizeReaderFacingSceneName(sceneBlueprint.name, sceneBlueprint.name),
         charactersInvolved: content.charactersInvolved || sceneBlueprint.npcsPresent,
         beats,
         startingBeatId: content.startingBeatId,
@@ -8743,6 +9247,8 @@ export class FullStoryPipeline {
   ): Promise<FullPipelineResult> {
     // Input validation
     this.validateBrief(baseBrief);
+    analysis = this.refreshAnalysisFromTreatmentDocument(analysis, baseBrief.rawDocument);
+    baseBrief = this.refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis);
     
     if (!analysis || !analysis.episodeBreakdown || analysis.episodeBreakdown.length === 0) {
       throw new Error('Invalid source analysis: no episode breakdown provided');
@@ -8778,6 +9284,8 @@ export class FullStoryPipeline {
       waveCount: 0,
       fallbackToSerial: false,
     };
+    this.sceneValidationResults = [];
+    this.allSceneValidationResults = [];
     const startTime = Date.now();
 
     // Determine which episodes to generate
@@ -8813,6 +9321,15 @@ export class FullStoryPipeline {
 
       // 1. Filter analysis for the requested episodes (use specific list or range)
       const filteredAnalysis = this.filterAnalysisForEpisodeRange(analysis, episodeRange, episodesToGenerate);
+      const missingOutlines = episodesToGenerate.filter((episodeNumber) =>
+        !filteredAnalysis.episodeBreakdown.some((episode) => episode.episodeNumber === episodeNumber)
+      );
+      if (missingOutlines.length > 0) {
+        throw new Error(
+          `Requested episode(s) ${missingOutlines.join(', ')} are missing from source analysis after treatment parsing. ` +
+          'Re-run source analysis or check the treatment sceneEpisode headings.'
+        );
+      }
 
       // 2. Build foundation (World & Characters)
       this.emit({ type: 'phase_start', phase: 'foundation', message: 'Building story foundation...' });
@@ -9030,6 +9547,7 @@ export class FullStoryPipeline {
       // Aggregate per-episode QA reports into a single summary
       let aggregatedQAReport: QAReport | undefined;
       let aggregatedBPReport: ComprehensiveValidationReport | undefined;
+      let finalStoryContractReport: FinalStoryContractReport | undefined;
 
       if (episodeQAReports.length > 0) {
         const avgScore = Math.round(episodeQAReports.reduce((sum, r) => sum + r.overallScore, 0) / episodeQAReports.length);
@@ -9134,6 +9652,41 @@ export class FullStoryPipeline {
         };
       }
 
+      const failedEpisodeResults = episodeResults.filter(result => !result.success);
+      if (failedEpisodeResults.length > 0) {
+        const failedErrors = failedEpisodeResults
+          .map(result => `Episode ${result.episodeNumber}: ${result.error || 'Unknown error'}`)
+          .join('; ');
+        const failMsg = `${failedEpisodeResults.length} of ${episodeResults.length} episode(s) failed to generate: ${failedErrors}`;
+        console.error(`[Pipeline] ❌ ${failMsg}`);
+
+        if (this.jobId) {
+          await failJob(this.jobId, failMsg);
+        }
+
+        this.emit({ type: 'error', phase: 'episode_generation', message: failMsg });
+
+        try {
+          await savePipelineErrorLog(outputDirectory,
+            failedEpisodeResults.map(result => ({
+              timestamp: new Date().toISOString(),
+              phase: `episode_${result.episodeNumber}`,
+              message: result.error || 'Unknown error',
+              episodeNumber: result.episodeNumber,
+            }))
+          );
+        } catch (_logErr) { /* non-fatal */ }
+
+        return {
+          success: false,
+          checkpoints: this.checkpoints,
+          events: this.events,
+          error: failMsg,
+          duration: Date.now() - startTime,
+          outputDirectory,
+        };
+      }
+
       // 5. Generate cover art + Assemble final story
       let multiCoverUrl: string | undefined;
       if (this.config.imageGen?.enabled) {
@@ -9205,6 +9758,15 @@ export class FullStoryPipeline {
       });
       this.validateMicroEpisodeSeason(story, { phase: 'micro_episode_season_final_validation' });
 
+      finalStoryContractReport = await this.enforceFinalStoryContract({
+        story,
+        brief: baseBrief,
+        requestedEpisodeNumbers: episodesToGenerate,
+        qaReport: aggregatedQAReport,
+        bestPracticesReport: aggregatedBPReport,
+        phase: 'final_story_contract',
+      });
+
       this.addCheckpoint('Final Story', story, false);
       await this.saveResumeUnit(
         outputDirectory,
@@ -9225,8 +9787,8 @@ export class FullStoryPipeline {
         generator: this.buildStoryGeneratorMetadata(),
         visualPlanning: visualPlanningOutputs,
         qaReport: aggregatedQAReport,
-        incrementalValidationResults: this.sceneValidationResults.length > 0
-          ? this.sceneValidationResults
+        incrementalValidationResults: this.allSceneValidationResults.length > 0
+          ? this.allSceneValidationResults
           : undefined,
         encounterTelemetry: this.encounterTelemetry.length > 0
           ? this.encounterTelemetry
@@ -9236,6 +9798,7 @@ export class FullStoryPipeline {
           ? this.branchShadowDiffs
           : undefined,
         bestPracticesReport: aggregatedBPReport,
+        finalStoryContractReport,
         encounterImageDiagnostics: allEncounterImageDiagnostics,
       }, Date.now() - startTime);
       const multiEpTimeout = new Promise<never>((_, reject) =>
@@ -9472,6 +10035,9 @@ export class FullStoryPipeline {
         encounters,
         { phase: `episode_${i}_branch_repair` }
       );
+      this.compactSceneEpisodeBeatOverflow(sceneContents, choiceSets, encounters, {
+        phase: `episode_${i}_micro_episode_compaction`,
+      });
 
       const branchValidationEpisode = this.assembleEpisode(
         episodeBrief,
@@ -18665,6 +19231,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-|-$/g, '') || 'choice'}`;
 
+        const readerTargetName = this.sanitizeReaderFacingSceneName(targetScene?.name || targetSceneId, targetSceneId);
         const routeContext = {
           sourceSceneId: sceneBlueprint.id,
           sourceBeatId: beat.id,
@@ -18672,7 +19239,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           choiceSummary: choice.feedbackCue?.echoSummary || choice.text,
           originalTargetSceneId: targetSceneId,
           originalTargetBeatId: choice.nextBeatId,
-          transitionIntent: `Bridge from "${sceneBlueprint.name}" to "${targetScene?.name || targetSceneId}" without teleporting the player.`,
+          transitionIntent: `Bridge from "${this.sanitizeReaderFacingSceneName(sceneBlueprint.name)}" to "${readerTargetName}" without teleporting the player.`,
           bridgePurpose: 'choice_transition',
         };
 
@@ -18710,7 +19277,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
             activity: 'decision, movement, and arrival',
             obstacle: 'the story must earn the next scene before it begins',
             startState: choice.feedbackCue?.echoSummary || choice.text,
-            endState: targetScene ? `The route is ready to enter ${targetScene.name}.` : 'The next scene is earned.',
+            endState: targetScene ? `The route is ready to enter ${readerTargetName}.` : 'The next scene is earned.',
             beatRole: 'handoff',
             mechanicThread: choice.consequenceDomain || choice.choiceIntent,
           },
@@ -18720,11 +19287,11 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
   }
 
   private buildChoiceBridgeBeatText(choice: ChoiceSet['choices'][number], targetScene?: SceneBlueprint): string {
-    const choiceEcho = choice.feedbackCue?.echoSummary || `You chose ${choice.text.replace(/[.!?]\s*$/, '')}.`;
-    const immediate = choice.feedbackCue?.progressSummary || choice.reminderPlan?.immediate;
-    const destination = targetScene?.name ? `toward ${targetScene.name}` : 'toward what comes next';
-    const transition = `The decision carries you ${destination}, one concrete step at a time.`;
-    return [choiceEcho, immediate, transition]
+    const immediate = this.cleanChoiceBridgeFragment(choice.feedbackCue?.progressSummary || choice.reminderPlan?.immediate);
+    const targetName = this.sanitizeReaderFacingSceneName(targetScene?.name, '');
+    const destination = this.cleanChoiceBridgeFragment(targetScene?.description)
+      || (targetName ? `${targetName} waits ahead.` : 'The next threshold waits ahead.');
+    return [immediate || 'The choice changes the air around you.', destination]
       .filter(Boolean)
       .map(part => String(part).trim())
       .map(part => /[.!?]$/.test(part) ? part : `${part}.`)
@@ -18788,6 +19355,20 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         const convMsg = convError instanceof Error ? convError.message : String(convError);
         console.error(`[Pipeline] Failed to convert encounter for scene ${sb.id} (non-fatal): ${convMsg}`);
         assemblyWarnings.push(`Encounter conversion failed for ${sb.id}: ${convMsg}`);
+        if (this.config.validation?.enabled && this.config.validation?.mode !== 'disabled') {
+          throw new PipelineError(
+            `Encounter conversion failed for scene ${sb.id}: ${convMsg}`,
+            'assembly',
+            {
+              context: {
+                sceneId: sb.id,
+                sceneName: sb.name,
+                failureKind: 'encounter_conversion',
+              },
+              originalError: convError instanceof Error ? convError : undefined,
+            }
+          );
+        }
         encounter = undefined; // Continue without the encounter
       }
       
@@ -18857,11 +19438,13 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       const incomingScenes = blueprint.scenes.filter(s => s.leadsTo?.includes(sb.id));
       const isConvergencePoint = incomingScenes.length > 1;
 
+      this.ensureBlueprintFidelityText(sb, content);
       this.ensureChoiceBridgeBeats(blueprint, sb, content, choiceMap);
+      this.sanitizeSceneContentForReader(sb, content);
 
       scenes.push({
         id: sb.id,
-        name: sb.name,
+        name: this.sanitizeReaderFacingSceneName(sb.name, sb.name),
         charactersInvolved: content.charactersInvolved || sb.npcsPresent,
         startingBeatId: content.startingBeatId,
         backgroundImage: sceneImages.get(this.getEpisodeScopedSceneId(brief, sb.id)),
@@ -19728,6 +20311,214 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       majorCharacters: charactersToUse,
       totalEstimatedEpisodes: selectedEpisodes.length,
       episodeBreakdown: selectedEpisodes,
+    };
+  }
+
+  private refreshAnalysisFromTreatmentDocument(
+    analysis: SourceMaterialAnalysis,
+    sourceText?: string
+  ): SourceMaterialAnalysis {
+    if (!sourceText?.trim()) return analysis;
+    const treatment = extractTreatmentFromMarkdown(sourceText);
+    const treatmentEpisodeNumbers = Object.keys(treatment.episodes || {})
+      .map(Number)
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    if (!treatment.isTreatment || treatmentEpisodeNumbers.length === 0) return analysis;
+
+    const existingByNumber = new Map((analysis.episodeBreakdown || []).map((episode) => [episode.episodeNumber, episode]));
+    const protagonistName = analysis.majorCharacters?.find((character) => character.importance === 'core')?.name
+      || analysis.majorCharacters?.[0]?.name
+      || 'the protagonist';
+
+    const episodeBreakdown = treatmentEpisodeNumbers.map((episodeNumber) => {
+      const existing = existingByNumber.get(episodeNumber);
+      const guidance = treatment.episodes[episodeNumber];
+      const structuralRole = guidance.normalizedStructuralRoles?.length
+        ? guidance.normalizedStructuralRoles
+        : existing?.structuralRole;
+
+      return {
+        ...(existing || {
+          episodeNumber,
+          title: guidance.authoredTitle || `Episode ${episodeNumber}`,
+          synopsis: guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || `Treatment sceneEpisode ${episodeNumber}`,
+          sourceChapters: [`Treatment sceneEpisode ${episodeNumber}`],
+          sourceSummary: guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || '',
+          plotPoints: [],
+          mainCharacters: [protagonistName],
+          supportingCharacters: [],
+          locations: [],
+          estimatedSceneCount: 1,
+          estimatedChoiceCount: 1,
+          narrativeFunction: {
+            setup: guidance.entryGoal || guidance.openingImage || 'Treatment setup',
+            conflict: guidance.obstacle || guidance.forcedChoice || 'Treatment conflict',
+            resolution: guidance.exitShift || guidance.endingPressure || guidance.authoredCliffhanger || 'Treatment turn',
+          },
+        }),
+        episodeNumber,
+        title: guidance.authoredTitle || existing?.title || `Episode ${episodeNumber}`,
+        synopsis: existing?.synopsis || guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || `Treatment sceneEpisode ${episodeNumber}`,
+        sourceSummary: existing?.sourceSummary || guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || '',
+        estimatedSceneCount: treatment.seasonGuidance?.episodeStructureMode === 'sceneEpisodes'
+          ? 1
+          : (existing?.estimatedSceneCount || 1),
+        estimatedChoiceCount: treatment.seasonGuidance?.episodeStructureMode === 'sceneEpisodes'
+          ? Math.max(1, Math.min(existing?.estimatedChoiceCount || 1, 2))
+          : (existing?.estimatedChoiceCount || 1),
+        episodeStructureMode: treatment.seasonGuidance?.episodeStructureMode || existing?.episodeStructureMode,
+        routeMeta: treatment.seasonGuidance?.episodeStructureMode === 'sceneEpisodes'
+          ? {
+              kind: 'master',
+              spineIndex: episodeNumber,
+              displayLabel: `${episodeNumber}`,
+              isMilestoneEncounter: existing?.routeMeta?.isMilestoneEncounter || false,
+            }
+          : existing?.routeMeta,
+        structuralRole,
+        treatmentGuidance: guidance,
+      };
+    });
+
+    if (episodeBreakdown.length !== analysis.episodeBreakdown?.length) {
+      this.emit({
+        type: 'debug',
+        phase: 'treatment_refresh',
+        message: `Refreshed cached source analysis from treatment document (${episodeBreakdown.length} treatment episode(s)).`,
+      });
+    }
+
+    return {
+      ...analysis,
+      sourceFormat: 'story_treatment',
+      totalEstimatedEpisodes: episodeBreakdown.length,
+      treatmentSeasonGuidance: treatment.seasonGuidance || analysis.treatmentSeasonGuidance,
+      resolvedEndings: treatment.endings?.length ? treatment.endings : analysis.resolvedEndings,
+      episodeBreakdown,
+    };
+  }
+
+  private refreshBriefSeasonPlanFromAnalysis(
+    baseBrief: FullCreativeBrief,
+    analysis: SourceMaterialAnalysis
+  ): FullCreativeBrief {
+    const plan = baseBrief.seasonPlan;
+    const outlines = analysis?.episodeBreakdown || [];
+    if (!plan || outlines.length === 0) return baseBrief;
+
+    const isTreatmentPlan = analysis.sourceFormat === 'story_treatment'
+      || analysis.treatmentSeasonGuidance?.episodeStructureMode === 'sceneEpisodes'
+      || outlines.some((outline) => outline.treatmentGuidance);
+    if (!isTreatmentPlan) return baseBrief;
+
+    const planByNumber = new Map((plan.episodes || []).map((episode) => [episode.episodeNumber, episode]));
+    const treatmentMode = analysis.treatmentSeasonGuidance?.episodeStructureMode;
+
+    const isStale = plan.totalEpisodes !== outlines.length
+      || (plan.episodes || []).length !== outlines.length
+      || outlines.some((outline) => {
+        const planned = planByNumber.get(outline.episodeNumber);
+        if (!planned) return true;
+        if (treatmentMode && planned.episodeStructureMode !== treatmentMode) return true;
+        if ((planned.treatmentGuidance?.authoredTitle || planned.title) !== (outline.treatmentGuidance?.authoredTitle || outline.title)) {
+          return true;
+        }
+        const plannedChoices = (planned.treatmentGuidance?.majorChoicePressures || []).join('\n');
+        const outlineChoices = (outline.treatmentGuidance?.majorChoicePressures || []).join('\n');
+        return plannedChoices !== outlineChoices;
+      });
+
+    if (!isStale) return baseBrief;
+
+    const protagonistName = analysis.protagonist?.name
+      || analysis.majorCharacters?.find((character) => character.importance === 'core')?.name
+      || analysis.majorCharacters?.[0]?.name
+      || plan.protagonist?.name
+      || 'the protagonist';
+
+    const alignedEpisodes = outlines.map((outline) => {
+      const existing = planByNumber.get(outline.episodeNumber);
+      const previousEpisode = outline.episodeNumber > 1 ? [outline.episodeNumber - 1] : [];
+      const nextEpisode = outline.episodeNumber < outlines.length ? [outline.episodeNumber + 1] : [];
+      const guidance = outline.treatmentGuidance;
+      const narrativeFunction = outline.narrativeFunction || {
+        setup: guidance?.entryGoal || guidance?.openingImage || 'Treatment setup',
+        conflict: guidance?.obstacle || guidance?.forcedChoice || 'Treatment conflict',
+        resolution: guidance?.exitShift || guidance?.endingPressure || guidance?.authoredCliffhanger || 'Treatment turn',
+      };
+
+      return {
+        ...(existing || {}),
+        ...outline,
+        episodeNumber: outline.episodeNumber,
+        title: guidance?.authoredTitle || outline.title || existing?.title || `Episode ${outline.episodeNumber}`,
+        synopsis: outline.synopsis || guidance?.episodePromise || guidance?.dramaticQuestion || existing?.synopsis || '',
+        sourceChapters: outline.sourceChapters?.length
+          ? outline.sourceChapters
+          : (existing?.sourceChapters?.length ? existing.sourceChapters : [`Treatment sceneEpisode ${outline.episodeNumber}`]),
+        sourceSummary: outline.sourceSummary || guidance?.episodePromise || guidance?.dramaticQuestion || existing?.sourceSummary || '',
+        plotPoints: outline.plotPoints || existing?.plotPoints || [],
+        mainCharacters: outline.mainCharacters?.length
+          ? outline.mainCharacters
+          : (existing?.mainCharacters?.length ? existing.mainCharacters : [protagonistName]),
+        supportingCharacters: outline.supportingCharacters || existing?.supportingCharacters || [],
+        locations: outline.locations || existing?.locations || [],
+        estimatedSceneCount: treatmentMode === 'sceneEpisodes'
+          ? 1
+          : (outline.estimatedSceneCount || existing?.estimatedSceneCount || 1),
+        estimatedChoiceCount: treatmentMode === 'sceneEpisodes'
+          ? Math.max(1, Math.min(outline.estimatedChoiceCount || existing?.estimatedChoiceCount || 1, 2))
+          : (outline.estimatedChoiceCount || existing?.estimatedChoiceCount || 1),
+        narrativeFunction,
+        structuralRole: outline.structuralRole || existing?.structuralRole,
+        treatmentGuidance: guidance || existing?.treatmentGuidance,
+        episodeStructureMode: treatmentMode || outline.episodeStructureMode || existing?.episodeStructureMode,
+        routeMeta: treatmentMode === 'sceneEpisodes'
+          ? {
+              kind: 'master',
+              spineIndex: outline.episodeNumber,
+              displayLabel: `${outline.episodeNumber}`,
+              isMilestoneEncounter: existing?.routeMeta?.isMilestoneEncounter || false,
+            }
+          : (outline.routeMeta || existing?.routeMeta),
+        status: existing?.status || 'planned',
+        dependsOn: existing?.dependsOn?.length ? existing.dependsOn : previousEpisode,
+        setupsForEpisodes: existing?.setupsForEpisodes?.length ? existing.setupsForEpisodes : nextEpisode,
+        resolvesPlotsFrom: existing?.resolvesPlotsFrom?.length ? existing.resolvesPlotsFrom : previousEpisode,
+        introducesCharacters: existing?.introducesCharacters || [],
+        endingRoutes: existing?.endingRoutes,
+        cliffhangerPlan: existing?.cliffhangerPlan,
+      };
+    });
+
+    const refreshedPlan = {
+      ...plan,
+      totalEpisodes: outlines.length,
+      updatedAt: new Date(),
+      episodes: alignedEpisodes,
+      anchors: analysis.anchors || plan.anchors,
+      sevenPoint: analysis.sevenPoint || plan.sevenPoint,
+      endingMode: analysis.resolvedEndingMode || analysis.detectedEndingMode || plan.endingMode,
+      resolvedEndings: analysis.resolvedEndings?.length ? analysis.resolvedEndings : plan.resolvedEndings,
+      characterArchitecture: analysis.characterArchitecture || plan.characterArchitecture,
+      warnings: [
+        ...(plan.warnings || []).filter((warning) =>
+          !warning.includes('Refreshed stale seasonPlan episode guidance from source analysis')
+        ),
+        `Refreshed stale seasonPlan episode guidance from source analysis (${outlines.length} treatment episode(s)).`,
+      ],
+    };
+
+    this.emit({
+      type: 'debug',
+      phase: 'season_plan_refresh',
+      message: `Refreshed stale seasonPlan episode guidance from source analysis (${outlines.length} treatment episode(s)).`,
+    });
+
+    return {
+      ...baseBrief,
+      seasonPlan: refreshedPlan,
     };
   }
 

@@ -1981,7 +1981,11 @@ export class FullStoryPipeline {
   }
 
   private recordSceneValidationResult(result: SceneValidationResult): void {
-    const localIdx = this.sceneValidationResults.findIndex(v => v.sceneId === result.sceneId);
+    const matchesSameScene = (candidate: SceneValidationResult) =>
+      candidate.sceneId === result.sceneId
+      && (candidate.episodeNumber === result.episodeNumber || candidate.episodeNumber === undefined || result.episodeNumber === undefined);
+
+    const localIdx = this.sceneValidationResults.findIndex(matchesSameScene);
     if (localIdx >= 0) {
       this.sceneValidationResults[localIdx] = result;
     } else {
@@ -1989,7 +1993,7 @@ export class FullStoryPipeline {
     }
 
     for (let idx = this.allSceneValidationResults.length - 1; idx >= 0; idx--) {
-      if (this.allSceneValidationResults[idx].sceneId === result.sceneId) {
+      if (matchesSameScene(this.allSceneValidationResults[idx])) {
         this.allSceneValidationResults[idx] = result;
         return;
       }
@@ -7611,6 +7615,7 @@ export class FullStoryPipeline {
             voiceProfiles,
             undefined // No encounter for regular scenes
           );
+          sceneValidation.episodeNumber = brief.episode.number;
 
           this.recordSceneValidationResult(sceneValidation);
 
@@ -7741,6 +7746,7 @@ export class FullStoryPipeline {
                 voiceProfiles,
                 undefined
               );
+              revisedValidation.episodeNumber = brief.episode.number;
 
               if (revisedValidation.regenerationRequested === 'none' ||
                   (revisedValidation.voice && sceneValidation.voice &&
@@ -7752,7 +7758,9 @@ export class FullStoryPipeline {
                   sceneContents[sceneIdx] = revisedContent;
                 }
                 // Update the validation result too
-                const valIdx = this.sceneValidationResults.findIndex(v => v.sceneId === sceneBlueprint.id);
+                const valIdx = this.sceneValidationResults.findIndex(v =>
+                  v.sceneId === sceneBlueprint.id && (v.episodeNumber === undefined || v.episodeNumber === brief.episode.number)
+                );
                 if (valIdx !== -1) {
                   this.sceneValidationResults[valIdx] = revisedValidation;
                 }
@@ -8164,6 +8172,7 @@ export class FullStoryPipeline {
               // Create a validation result for the encounter scene
               const sceneValidation: SceneValidationResult = {
                 sceneId: sceneBlueprint.id,
+                episodeNumber: brief.episode.number,
                 sceneName: sceneBlueprint.name,
                 encounter: encounterValidation,
                 overallPassed: encounterValidation.passed,
@@ -8244,7 +8253,9 @@ export class FullStoryPipeline {
                       encounters.set(sceneBlueprint.id, regenEncounterResult.data);
                       this.captureEncounterTelemetry(regenEncounterResult.metadata);
                       // Update the stored validation result
-                      const valIdx = this.sceneValidationResults.findIndex(v => v.sceneId === sceneBlueprint.id);
+                      const valIdx = this.sceneValidationResults.findIndex(v =>
+                        v.sceneId === sceneBlueprint.id && (v.episodeNumber === undefined || v.episodeNumber === brief.episode.number)
+                      );
                       let updatedSceneValidation: SceneValidationResult | undefined;
                       if (valIdx !== -1) {
                         updatedSceneValidation = {

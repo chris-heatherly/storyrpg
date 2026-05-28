@@ -255,6 +255,224 @@ If Mara exposes Jonas in Episode 1, Episode 2 begins with guarded access. If she
     expect(extracted.endings).toHaveLength(3);
   });
 
+  it('extracts authored regular-episode variants without swallowing the finale', () => {
+    const endSongStyleTreatment = `
+# Twilight Song Treatment
+
+A StoryRPG branching-narrative season treatment.
+
+## 7. 3-Act / 7-Point Season Spine
+
+- Hook: The escort mission breaks.
+- Climax: The final grove choice.
+
+## 9. Episode Outline
+
+### Episode 1 — "Dissonance in the Pass"
+- **Act:** I. **Arc:** 1. **Structural role:** HOOK (anchor episode).
+- **Dramatic question:** Can a perfect Sentinel keep his contempt intact?
+- **Cold open function:** Dawn over the pass establishes the Lie.
+- **A lane:** The ambush and duel.
+- **B lane:** A mortal ally proves braver than expected.
+- **C lane:** The antagonist calls him old friend.
+- **Turns:** (1) Dissonance rises. (2) Ambush erupts. (3) The ally wounds a raider.
+- **Synopsis:** The escort mission becomes personal.
+- **Encounter anchor:** The pass ambush.
+- **Major choices (Want/Cost/Identity):**
+  - Hold formation or break to defend the vulnerable.
+  - Pursue the antagonist or secure the wounded.
+- **Alternative paths / reconvergence:** Guard survival changes later resources; all paths reconverge after the bloodline reveal.
+- **Consequence seeds:** Guard count; first impression.
+- **Ending turnout:** The antagonist promises to return.
+- **End-state change:** The mission is no longer routine.
+
+### Episode 10 — "The Last Keeper"
+- **Act:** III. **Arc:** 3. **Structural role:** Aftermath / final-pressure buffer.
+- **Dramatic question:** Will the protagonist defend the truth against his own people?
+- **Turns:** (1) Sanctuary. (2) Raid. (3) Flight.
+- **Encounter anchor:** The raid on the enclave.
+- **Major choices:** Parley or flee; spend essence or conserve it.
+- **Alternative paths / reconvergence:** Ending weights shift; paths reconverge at the grove.
+- **Consequence seeds:** The wound; the pursuit.
+- **Ending turnout:** Both armies hunt them.
+
+### Episode 11 — "Endsong" (FINALE)
+- **Act:** III. **Arc:** 3. **Structural role:** CLIMAX + RESOLUTION (finale; resolves and integrates).
+- **Dramatic question:** What will the protagonist freely give?
+- **Turns:** (1) Last refuge. (2) Armies converge. (3) The climax choice. (4) Epilogue.
+- **Encounter anchor:** The convergence at the grove and the choice over the artifact.
+- **Major choices (the ending-locking node):**
+  - Destroy the artifact and die together.
+  - Preserve the artifact and flee.
+  - Seize the artifact's power.
+- **Alternative paths / reconvergence:** Three endings converge on the epilogue frame.
+- **Consequence seeds:** The echo; the pendant.
+- **Ending turnout:** The surviving image changes by ending.
+- **End-state change:** The season question is answered.
+
+## 11. Cross-Episode Branches And Consequence Chains
+
+**Branch 1 — The Romance Trust Spine (created Ep1; pays off Ep11).**
+- *What creates it:* Disclosure versus withholding.
+- *Where it reconverges:* The final grove in Episode 11.
+- *Residue:* Dialogue, trust, and ending eligibility.
+
+**Branch 2 — The Keeper's Wound (created Ep10; pays off Ep11).**
+- *What creates it:* Essence spending in Episode 10.
+- *Where it reconverges:* Episode 11.
+- *Residue:* Mortal vulnerability and available power.
+
+## 14. Alternate Endings (exactly 3)
+
+### Ending A — "The Echo" (canonical)
+- **Summary:** The lovers destroy the artifact and become a remembered song.
+- **Emotional register:** Bittersweet.
+- **Theme payoff:** Love outlasts survival.
+- **State drivers:** Trust and sacrifice.
+- **Target conditions:** Choose connection repeatedly.
+
+### Ending B — "The Keeper"
+- **Summary:** The lovers survive in hiding with the truth preserved.
+- **Emotional register:** Hopeful but uneasy.
+- **Theme payoff:** Connection can choose life.
+- **State drivers:** Trust and restraint.
+- **Target conditions:** Choose preservation repeatedly.
+
+### Ending C — "The Crown"
+- **Summary:** The protagonist claims power and becomes what he feared.
+- **Emotional register:** Tragic.
+- **Theme payoff:** Control curdles love.
+- **State drivers:** Control and vengeance.
+- **Target conditions:** Choose domination repeatedly.
+`;
+
+    const extracted = extractTreatmentFromMarkdown(endSongStyleTreatment);
+
+    expect(extracted.isTreatment).toBe(true);
+    expect(Object.keys(extracted.episodes).map(Number)).toEqual([1, 10, 11]);
+    expect(extracted.episodes[1]?.actLabel).toBe('I.');
+    expect(extracted.episodes[1]?.arcLabel).toBe('1.');
+    expect(extracted.episodes[1]?.normalizedStructuralRoles).toEqual(['hook']);
+    expect(extracted.episodes[1]?.episodeTurns).toHaveLength(3);
+    expect(extracted.episodes[1]?.aPressure).toContain('ambush');
+    expect(extracted.episodes[1]?.bPressure).toContain('mortal ally');
+    expect(extracted.episodes[1]?.cSeed).toContain('old friend');
+    expect(extracted.episodes[1]?.majorChoicePressures?.join(' ')).toContain('Pursue the antagonist');
+    expect(extracted.episodes[11]?.authoredTitle).toBe('Endsong');
+    expect(extracted.episodes[11]?.normalizedStructuralRoles).toEqual(['climax', 'resolution']);
+    expect(extracted.branches.map((branch) => branch.name)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Romance Trust Spine'),
+        expect.stringContaining('Keeper'),
+      ]),
+    );
+    expect(extracted.endings).toHaveLength(3);
+  });
+
+  it('extracts parser-stable cliffhanger fields without swallowing later top-level lists', () => {
+    const cliffhangerTreatment = `
+# Harbor Debt Treatment
+
+## 9. Episode Outline
+
+### Episode 1: The Ledger Opens
+- Act: Act 1
+- Arc: Harbor Debt
+- Structural role: buffer (rising buffer toward Pinch 1)
+- Structural note: This escalates toward the first pinch without carrying the pinch anchor.
+- Episode dramatic question: Will Mara protect Jonas or the ledger?
+- Episode turns:
+  - Mara finds the ledger in a fish crate.
+  - Jonas lies about the red seal.
+- Major choice pressure:
+  - Expose Jonas in public.
+  - Hide the ledger and owe the auctioneer.
+- Alternative paths:
+  - Exposure creates public suspicion and guarded access.
+  - Secrecy preserves intimacy but creates private debt.
+- Information movement: Plant the red seal and open the missing brother question.
+- Consequence seeds:
+  - Jonas's broken trust.
+  - The auctioneer's debt marker.
+- Ending turnout: The ledger page names Mara's father.
+- Resolved episode tension: Mara chooses to take the ledger case.
+- Cliffhanger hook: The red seal appears on her father's locked file.
+- Cliffhanger question: Why did Mara's father sign the syndicate ledger?
+- Next episode pressure: The question forces Mara into the closed registry.
+- Cliffhanger setup: The seal appears twice before the final file.
+- Cliffhanger type: revelation
+- Emotional charge: intimate dread
+- End-state change: Mara cannot investigate from outside anymore.
+
+### Episode 2: The Closed Registry
+- Act: Act 1
+- Arc: Harbor Debt
+- Structural role: Pinch 1
+- Episode dramatic question: Can Mara get the record before Jonas does?
+- Ending turnout: The registry door shuts behind her.
+- Resolution / aftermath: The record is found and paid for.
+
+## 11. Cross-Episode Branches And Consequence Chains
+
+### Branch A: Jonas Trust
+- Origin episode: E1
+- Reconvergence episode: E3
+- Summary: Exposure and secrecy alter registry access.
+
+### Branch B: Auction Debt
+- What creates it: The debt marker created in Episodes 1-2.
+- Where it reconverges: The harbor hearing in Episode 4.
+- Residue: The auctioneer asks for a favor.
+
+## 14. Alternate Endings
+
+### Ending 1: The Witness
+- Summary: Mara publishes the ledger.
+- Emotional register: Bittersweet.
+- Theme payoff: Truth frees her when shared.
+- State drivers: Identity.
+- Target conditions in plain language: Choose exposure with compassion.
+
+### Ending 2: The Fixer
+- Summary: Mara controls the ledger.
+- Emotional register: Corrupted victory.
+- Theme payoff: Control preserves safety but kills trust.
+- State drivers: Choice pattern.
+- Target conditions in plain language: Hide evidence repeatedly.
+
+### Ending 3: The Debt Paid
+- Summary: Mara sacrifices her license.
+- Emotional register: Redemptive cost.
+- Theme payoff: Love pays truth's price.
+- State drivers: Relationship.
+- Target conditions in plain language: Protect Jonas while refusing the syndicate.
+`;
+
+    const extracted = extractTreatmentFromMarkdown(cliffhangerTreatment);
+
+    expect(extracted.isTreatment).toBe(true);
+    expect(extracted.episodes[1]?.normalizedStructuralRoles).toEqual(['rising']);
+    expect(extracted.episodes[1]?.structuralNote).toContain('escalates toward');
+    expect(extracted.episodes[1]?.episodeTurns).toEqual([
+      expect.stringContaining('fish crate'),
+      expect.stringContaining('red seal'),
+    ]);
+    expect(extracted.episodes[1]?.majorChoicePressures).toHaveLength(2);
+    expect(extracted.episodes[1]?.alternativePaths).toHaveLength(2);
+    expect(extracted.episodes[1]?.consequenceSeeds).toHaveLength(2);
+    expect(extracted.episodes[1]?.cliffhangerHook).toContain('locked file');
+    expect(extracted.episodes[1]?.cliffhangerQuestion).toContain('Why did Mara');
+    expect(extracted.episodes[1]?.nextEpisodePressure).toContain('closed registry');
+    expect(extracted.episodes[1]?.cliffhangerType).toBe('revelation');
+    expect(extracted.episodes[1]?.emotionalCharge).toBe('intimate dread');
+    expect(extracted.branches[0]?.originEpisode).toBe(1);
+    expect(extracted.branches[0]?.reconvergenceEpisode).toBe(3);
+    expect(extracted.branches[1]?.originEpisode).toBe(1);
+    expect(extracted.branches[1]?.reconvergenceEpisode).toBe(4);
+    expect(extracted.endings[0]?.targetConditions.join(' ')).toContain('compassion');
+    expect(extracted.metadata.warnings.join(' ')).not.toContain('Episode 1 is missing a cliffhanger question');
+  });
+
   it('extracts sceneEpisode treatment fields and marks the treatment as sceneEpisodes', () => {
     const sceneEpisodeTreatment = `
 # Harbor Debt SceneEpisode Treatment

@@ -139,6 +139,7 @@ export interface CharacterVoiceProfile {
 
 export interface SceneValidationResult {
   sceneId: string;
+  episodeNumber?: number;
   sceneName: string;
   povClarity?: PovClarityResult;
   voice?: IncrementalVoiceResult;

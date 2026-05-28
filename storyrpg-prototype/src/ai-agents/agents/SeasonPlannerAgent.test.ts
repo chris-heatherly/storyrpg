@@ -187,6 +187,67 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     expect(plan.episodes[0].cliffhangerPlan.hook).toContain('shadow points inland');
   });
 
+  it('uses authored treatment cliffhanger questions as next-episode pressure and exempts finales', () => {
+    const planner = makePlanner();
+    const analysis = {
+      ...makeAnalysis(),
+      sourceTitle: 'Harbor Debt',
+      totalEstimatedEpisodes: 2,
+      treatmentBranches: [],
+      resolvedEndings: [],
+      episodeBreakdown: [1, 2].map((episodeNumber) => ({
+        episodeNumber,
+        title: episodeNumber === 1 ? 'The Ledger Opens' : 'The Closed Registry',
+        synopsis: `Synopsis ${episodeNumber}`,
+        sourceChapters: [`${episodeNumber}`],
+        sourceSummary: `Synopsis ${episodeNumber}`,
+        plotPoints: [],
+        mainCharacters: ['Mara'],
+        supportingCharacters: [],
+        locations: ['Harbor'],
+        estimatedSceneCount: 6,
+        estimatedChoiceCount: 4,
+        structuralRole: episodeNumber === 1 ? ['rising'] : ['resolution'],
+        narrativeFunction: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        treatmentGuidance: episodeNumber === 1
+          ? {
+              authoredTitle: 'The Ledger Opens',
+              dramaticQuestion: 'Will Mara protect Jonas or the ledger?',
+              encounterAnchors: ['The auction fight over the ledger.'],
+              endingTurnout: "The ledger page names Mara's father.",
+              resolvedEpisodeTension: 'Mara chooses to take the case.',
+              cliffhangerHook: "The red seal appears on her father's locked file.",
+              cliffhangerQuestion: "Why did Mara's father sign the syndicate ledger?",
+              nextEpisodePressure: 'The question forces Mara into the closed registry.',
+              cliffhangerSetup: 'The seal appears twice before the final file.',
+              cliffhangerType: 'revelation',
+              emotionalCharge: 'intimate dread',
+            }
+          : {
+              authoredTitle: 'The Closed Registry',
+              dramaticQuestion: 'Can Mara survive the truth?',
+              endingTurnout: 'Mara gets the record.',
+              resolutionAftermath: 'Mara understands the record and chooses what to do with it.',
+            },
+      })),
+    } as any;
+
+    const merged = (planner as any).mergeTreatmentGuidanceIntoPlanData(analysis, {});
+    const plan = (planner as any).buildSeasonPlan(analysis, merged, {
+      targetScenesPerEpisode: 6,
+      targetChoicesPerEpisode: 4,
+      pacing: 'moderate',
+    });
+
+    expect(plan.episodes[0].cliffhangerPlan.hook).toContain('locked file');
+    expect(plan.episodes[0].cliffhangerPlan.newOpenQuestion).toContain("Why did Mara's father");
+    expect(plan.episodes[0].cliffhangerPlan.nextEpisodePressure).toContain('closed registry');
+    expect(plan.episodes[0].cliffhangerPlan.resolvedEpisodeTension).toContain('take the case');
+    expect(plan.episodes[0].cliffhangerPlan.type).toBe('revelation');
+    expect(plan.episodes[0].cliffhangerPlan.emotionalCharge).toBe('intimate dread');
+    expect(plan.episodes[1].cliffhangerPlan.nextEpisodePressure).toContain('understands the record');
+  });
+
   it('carries sceneEpisode treatment contracts into encounters and cliffhangers without encounter anchors', () => {
     const planner = makePlanner();
     const analysis = {

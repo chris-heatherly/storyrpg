@@ -149,6 +149,7 @@ export class FinalStoryContractValidator {
 
         const sceneFailedEncounterIncrementally = input.incrementalValidationResults?.some(result =>
           result.sceneId === scene.id &&
+          (result.episodeNumber === undefined || result.episodeNumber === episode.number) &&
           result.regenerationRequested === 'encounter' &&
           result.overallPassed === false
         );
@@ -466,6 +467,7 @@ export class FinalStoryContractValidator {
         type: 'failed_incremental_validation',
         severity: 'error',
         message: `Scene "${result.sceneName || result.sceneId}" still has unrepaired incremental validation failures.`,
+        episodeNumber: result.episodeNumber,
         sceneId: result.sceneId,
         validator: 'IncrementalValidationRunner',
         suggestion: `Regeneration requested: ${result.regenerationRequested}`,

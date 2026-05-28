@@ -200,6 +200,53 @@ describe('FinalStoryContractValidator', () => {
     ]));
   });
 
+  it('scopes incremental encounter failures by episode when scene ids repeat', async () => {
+    const base = validStory();
+    const story = validStory({
+      episodes: [
+        {
+          ...base.episodes[0],
+          id: 'episode-1',
+          number: 1,
+          scenes: [{
+            ...base.episodes[0].scenes[0],
+            id: 'scene-2',
+            name: 'Into the Mist',
+          }],
+          startingSceneId: 'scene-2',
+        },
+        {
+          ...base.episodes[0],
+          id: 'episode-2',
+          number: 2,
+          scenes: [{
+            ...base.episodes[0].scenes[0],
+            id: 'scene-2',
+            name: 'The Wall Falls',
+          }],
+          startingSceneId: 'scene-2',
+        },
+      ],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({
+      story,
+      incrementalValidationResults: [{
+        episodeNumber: 2,
+        sceneId: 'scene-2',
+        sceneName: 'The Wall Falls',
+        overallPassed: false,
+        regenerationRequested: 'encounter',
+        validationTimeMs: 0,
+      }],
+    });
+
+    const missingEncounterIssues = report.blockingIssues.filter(issue => issue.type === 'missing_runtime_encounter');
+    expect(missingEncounterIssues).toHaveLength(1);
+    expect(missingEncounterIssues[0]).toMatchObject({ episodeNumber: 2, sceneId: 'scene-2' });
+    expect(missingEncounterIssues[0]?.message).toContain('The Wall Falls');
+  });
+
   it('fails an invalid runtime encounter', async () => {
     const story = validStory({
       episodes: [{

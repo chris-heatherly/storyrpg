@@ -400,8 +400,12 @@ export class TreatmentFidelityValidator {
 
     const allBlueprintText = blueprintText(input.blueprint);
 
-    if (guidance.endingPressure || guidance.authoredCliffhanger) {
-      const endingPressure = guidance.endingPressure || guidance.authoredCliffhanger;
+    if (guidance.cliffhangerHook || guidance.cliffhangerQuestion || guidance.nextEpisodePressure || guidance.endingPressure || guidance.authoredCliffhanger) {
+      const endingPressure = guidance.cliffhangerHook
+        || guidance.cliffhangerQuestion
+        || guidance.nextEpisodePressure
+        || guidance.endingPressure
+        || guidance.authoredCliffhanger;
       const cliffhangerHaystack = [
         finalSceneText(input.blueprint),
         input.blueprint.arc?.resolution,

@@ -328,6 +328,25 @@ Avoid generic style words unless the user explicitly requests that style:
 
 Ask the LLM to create these sections.
 
+## Machine-Readable Output Contract
+
+The finished treatment should stay human-readable Markdown, but the generator also parses it mechanically. Use these exact structural conventions so authored intent survives ingestion:
+
+- Use `## N. Section Name` for every required section.
+- In `## 9. Episode Outline`, every episode must use `### Episode N: Title`. Do not spell out the number. Do not skip numbers. Finale headings may add `(FINALE)` after the title.
+- Put `Act`, `Arc`, `Structural role`, and `Structural note` on separate bullets. Do not combine them on one line.
+- Use bold top-level field labels exactly, such as `- **Episode turns:**`. Put list items only as indented child bullets under that label.
+- `Structural role` must be one or more canonical role tokens only: `hook`, `plotTurn1`, `pinch1`, `midpoint`, `pinch2`, `climax`, `resolution`, `rising`, or `falling`. Put explanatory text like "buffer toward Pinch 1" in `Structural note`, not `Structural role`.
+- Use these exact episode field labels: `Episode dramatic question`, `Cold open function`, `A pressure lane`, `B pressure lane`, `C seed`, `Episode turns`, `Synopsis`, `Opening situation`, `Encounter anchor`, `How the encounter manifests the central conflict`, `Stakes layers present in the major scene/encounter`, `Theme angle`, `Lie pressure`, `Encounter buildup`, `Major choice pressure`, `Alternative paths`, `Information movement`, `Consequence seeds`, `Ending turnout`, `Resolved episode tension`, `Cliffhanger hook`, `Cliffhanger question`, `Next episode pressure`, `Cliffhanger setup`, `Cliffhanger type`, `Emotional charge`, and `End-state change`.
+- For non-finale episodes, `Cliffhanger question` is required. It is the question hanging at the end of this episode and should become central pressure for the next episode.
+- For finale episodes, use `Resolution / aftermath` instead of non-finale cliffhanger fields.
+- For list fields, put child items on indented bullets under the field label. This is especially important for `Episode turns`, `Major choice pressure`, `Alternative paths`, and `Consequence seeds`.
+- In `## 11. Cross-Episode Branches And Consequence Chains`, every branch must use `### Branch A: Name`, `### Branch B: Name`, etc.
+- In every branch, include exact fields `Origin episode` and `Reconvergence episode`. You may write `Episode 1`, `Ep 1`, `E1`, or a range like `E1-E3`, but the explicit fields must be present.
+- In `## 14. Alternate Endings`, provide exactly three headings: `### Ending 1: Name`, `### Ending 2: Name`, and `### Ending 3: Name`.
+- In every ending, use the exact field label `Target conditions`.
+- Do not include the prompt guide, checklist, examples, or instructions in the final treatment output. Output only the filled treatment.
+
 ### 1. Story Premise
 
 - Title
@@ -475,10 +494,11 @@ For each arc:
 
 For each episode:
 
-- Episode number and title
+- Episode number and title, formatted exactly as `### Episode N: Title`
 - Act
 - Arc
-- Structural role: anchor, fused anchors, or buffer
+- Structural role: canonical token(s) only: `hook`, `plotTurn1`, `pinch1`, `midpoint`, `pinch2`, `climax`, `resolution`, `rising`, or `falling`
+- Structural note: anchor, fused anchor, or buffer explanation
 - Episode dramatic question
 - Cold open function: hook + promise + optional stakes
 - A pressure lane
@@ -498,6 +518,13 @@ For each episode:
 - Information movement: plant, touch, reveal, payoff, close, or sharpen
 - Consequence seeds
 - Ending turnout: consequence, reversal, discovery, cost, escalation, or choice residue
+- Resolved episode tension: the immediate episode question or pressure that gets answered enough to feel authored
+- Cliffhanger hook: the concrete image, line, reveal, danger, decision, betrayal, arrival, departure, loss, or emotional hook at the end
+- Cliffhanger question: the unresolved question hanging at the end; for non-finales, this becomes central pressure for the next episode
+- Next episode pressure: how the next episode must begin or respond because of this question
+- Cliffhanger setup: the earlier detail, choice, clue, cost, or relationship pressure that earns the cliffhanger
+- Cliffhanger type: revelation, danger, mystery, betrayal, arrival, departure, decision, transformation, shock, emotional_hook, reframe, or loss
+- Emotional charge: the feeling the cliffhanger should leave in the player
 - End-state change: why the episode cannot be removed
 
 ### 10. Scene Planning Notes
@@ -518,9 +545,10 @@ For each important scene:
 ### 11. Cross-Episode Branches And Consequence Chains
 
 - 2-4 major branch points if the season has 3+ episodes
+- Origin episode
 - What choice or encounter outcome creates each branch
 - How each branch changes a later episode
-- Where it reconverges
+- Reconvergence episode
 - What residue remains after reconvergence
 - Which ending eligibility, relationship, information, identity, reputation, resource, or access state it changes
 
@@ -536,7 +564,10 @@ For each non-finale ending:
 
 - What immediate question closes
 - What bigger question opens
+- The exact cliffhanger question hanging at the end of the episode
 - What cost, reveal, danger, relationship rupture, choice consequence, or pressure carries forward
+- How that cliffhanger question becomes the central pressure of the next episode
+- What prior setup makes the cliffhanger earned
 - Why this is not fake withholding
 
 For finale/resolution:
@@ -558,7 +589,7 @@ For each:
 - Emotional register
 - Theme payoff
 - State drivers
-- Target conditions in plain language
+- Target conditions
 - What repeated choice pattern this ending pays off
 
 The three endings should be distinct emotional and thematic destinations, not success/neutral/failure reskins.
@@ -614,6 +645,8 @@ Core rules:
 - Each regular episode should have one encounter anchor that manifests the episode's central conflict.
 - Each episode should pose a dramatic question early and answer it by the climax.
 - Non-finale episodes end with forward pressure. Finale episodes resolve the central conflict and show aftermath.
+- Each non-finale episode must end on a cliffhanger question: the unresolved question hanging over the final image that becomes central pressure for the next episode.
+- Cliffhangers must resolve or acknowledge the immediate episode tension, open a sharper next-episode question, carry specific emotional charge, connect to character/stakes, and feel earned by prior setup.
 - Every planned scene needs entry goal, obstacle, forced choice, and exit shift.
 - Major scenes should stack material, relational, identity, and/or existential stakes, usually at least 3 layers.
 - Escalate gradually. Establish personal stakes before expanding to larger-scale threats.
@@ -629,6 +662,21 @@ Core rules:
 - Be visually specific in story terms, not generic art-direction terms.
 
 Create a treatment with these sections:
+
+Output format contract:
+- Use `## N. Section Name` for required sections.
+- Use `### Episode N: Title` for every episode in section 9. Do not skip episode numbers. The finale may add `(FINALE)`.
+- Put `Act`, `Arc`, `Structural role`, and `Structural note` on separate bullets.
+- Use bold top-level field labels exactly, such as `- **Episode turns:**`. Put list items only as indented child bullets under that label.
+- `Structural role` must contain only canonical token(s): `hook`, `plotTurn1`, `pinch1`, `midpoint`, `pinch2`, `climax`, `resolution`, `rising`, or `falling`. Put explanatory text like "buffer toward Pinch 1" in `Structural note`.
+- Use exact parse labels: `Episode dramatic question`, `Cold open function`, `A pressure lane`, `B pressure lane`, `C seed`, `Episode turns`, `Synopsis`, `Opening situation`, `Encounter anchor`, `How the encounter manifests the central conflict`, `Stakes layers present in the major scene/encounter`, `Theme angle`, `Lie pressure`, `Encounter buildup`, `Major choice pressure`, `Alternative paths`, `Information movement`, `Consequence seeds`, `Ending turnout`, `Resolved episode tension`, `Cliffhanger hook`, `Cliffhanger question`, `Next episode pressure`, `Cliffhanger setup`, `Cliffhanger type`, `Emotional charge`, `End-state change`, and finale-only `Resolution / aftermath`.
+- For every non-finale episode, include `Cliffhanger question`; it is the question hanging at the end of the episode and should become central pressure for the next episode.
+- For finale episodes, use `Resolution / aftermath` instead of non-finale cliffhanger fields.
+- Use `### Branch A: Name` headings in section 11.
+- In every branch, include exact fields `Origin episode` and `Reconvergence episode`.
+- Use exactly `### Ending 1: Name`, `### Ending 2: Name`, and `### Ending 3: Name` in section 14.
+- In every ending, use exact field label `Target conditions`.
+- Output only the filled treatment, not this prompt guide or checklist.
 
 1. Story Premise
 - Title
@@ -689,16 +737,17 @@ List major information items with: ID, information, audience/player knowledge st
 For each arc: title, episode range, arc dramatic question, relation to season question, protagonist Lie facet under pressure, midpoint recontextualization, late-arc crisis, arc finale answer, handoff pressure, episode turnouts.
 
 9. Episode Outline
-For each episode: episode number/title, act, arc, structural role, episode dramatic question, cold open function, A pressure lane, B pressure lane if present, C seed if present, 3-6 episode turns, synopsis, opening situation, encounter anchor, how encounter manifests central conflict, stakes layers, theme angle, Lie pressure, encounter buildup, 2-4 major choice pressures, alternative paths and reconvergence, information movement, consequence seeds, ending turnout, end-state change.
+For each episode: episode number/title, act, arc, structural role token(s), structural note, episode dramatic question, cold open function, A pressure lane, B pressure lane if present, C seed if present, 3-6 episode turns, synopsis, opening situation, encounter anchor, how encounter manifests central conflict, stakes layers, theme angle, Lie pressure, encounter buildup, 2-4 major choice pressures, alternative paths and reconvergence, information movement, consequence seeds, ending turnout, resolved episode tension, cliffhanger hook, cliffhanger question, next episode pressure, cliffhanger setup, cliffhanger type, emotional charge, end-state change. For finale episodes, replace non-finale cliffhanger fields with resolution/aftermath.
 
 10. Scene Planning Notes
 For important scenes only: entry goal, obstacle, forced choice, exit shift, power shift if multi-character, subtext gap, stakes layers, and how the scene connects through consequence/reversal/discovery/cost/escalation/choice residue.
 
 11. Cross-Episode Branches And Consequence Chains
 - 2-4 major branch points if the season has 3+ episodes
+- Origin episode for each branch
 - What creates each branch
 - How each branch changes a later episode
-- Where it reconverges
+- Reconvergence episode for each branch
 - What residue remains
 - What ending eligibility, relationship, information, identity, reputation, resource, or access state it changes
 
@@ -708,11 +757,11 @@ For important scenes only: entry goal, obstacle, forced choice, exit shift, powe
 - How growth stays fiction-first
 
 13. Episode Endings
-For each non-finale ending: immediate question closed, bigger question opened, cost/reveal/danger/rupture/consequence/pressure carried forward, and why it is not fake withholding.
+For each non-finale ending: immediate question closed, exact cliffhanger question opened, cost/reveal/danger/rupture/consequence/pressure carried forward, how that question becomes the next episode's central pressure, what setup earns it, and why it is not fake withholding.
 For finale: central conflict resolved, what was saved/lost, what protagonist becomes, remaining cost, future or legacy.
 
 14. Alternate Endings
-Provide exactly 3 alternate season ending targets. For each: name, summary, emotional register, theme payoff, state drivers, target conditions, repeated choice pattern paid off.
+Provide exactly 3 alternate season ending targets. For each: name, summary, emotional register, theme payoff, state drivers, `Target conditions`, repeated choice pattern paid off.
 
 15. Failure Mode Audit
 Check for escalation trap, mystery box collapse, character drift, shaggy dog setup, passive protagonist, reset disease, theme drift, unmotivated escalation, snowglobe arcs, inverted thematic rhyme, convenient coincidence, telegraphed twist, and cheating twist.

@@ -850,18 +850,24 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
         }));
       }
 
-      const endingPressure = guidance.endingPressure
-        || guidance.authoredCliffhanger
-        || guidance.endingTurnout
+      const forwardPressure = guidance.nextEpisodePressure
         || guidance.nextEpisodeCausality
+        || guidance.cliffhangerQuestion
+        || guidance.cliffhangerHook
+        || guidance.endingPressure
+        || guidance.authoredCliffhanger
         || guidance.consequenceResidue;
-      if (endingPressure && ep.episodeNumber < analysis.totalEstimatedEpisodes) {
+      const cliffhangerHook = guidance.cliffhangerHook || forwardPressure || guidance.endingTurnout;
+      const cliffhangerQuestion = guidance.cliffhangerQuestion || forwardPressure;
+      if (forwardPressure && ep.episodeNumber < analysis.totalEstimatedEpisodes) {
         merged.episodeCliffhangers![epKey] = {
-          hook: endingPressure,
-          setup: guidance.encounterAftermath || guidance.exitShift || guidance.consequenceSeeds?.join(' | ') || guidance.encounterBuildup || ep.narrativeFunction.conflict,
-          resolvedEpisodeTension: guidance.exitShift || ep.narrativeFunction.resolution,
-          newOpenQuestion: endingPressure,
-          nextEpisodePressure: endingPressure,
+          ...(guidance.cliffhangerType ? { type: guidance.cliffhangerType } : {}),
+          hook: cliffhangerHook,
+          setup: guidance.cliffhangerSetup || guidance.encounterAftermath || guidance.exitShift || guidance.consequenceSeeds?.join(' | ') || guidance.encounterBuildup || ep.narrativeFunction.conflict,
+          resolvedEpisodeTension: guidance.resolvedEpisodeTension || guidance.exitShift || guidance.endingTurnout || ep.narrativeFunction.resolution,
+          newOpenQuestion: cliffhangerQuestion,
+          emotionalCharge: guidance.emotionalCharge,
+          nextEpisodePressure: forwardPressure,
         };
       } else if (guidance.resolutionAftermath && ep.episodeNumber >= analysis.totalEstimatedEpisodes) {
         merged.episodeCliffhangers![epKey] = {

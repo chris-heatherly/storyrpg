@@ -5,6 +5,8 @@
  * into episode-sized chunks for interactive fiction generation.
  */
 
+import type { CliffhangerType } from './story';
+
 // ========================================
 // 7-POINT STORY STRUCTURE
 // ========================================
@@ -261,6 +263,7 @@ export interface TreatmentEpisodeGuidance {
   arcLabel?: string;
   rawStructuralRole?: string;
   normalizedStructuralRoles?: StructuralRole[];
+  structuralNote?: string;
   dramaticQuestion?: string;
   episodePromise?: string;
   coldOpenFunction?: string;
@@ -294,6 +297,13 @@ export interface TreatmentEpisodeGuidance {
   endingTurnout?: string;
   endingPressure?: string;
   authoredCliffhanger?: string;
+  resolvedEpisodeTension?: string;
+  cliffhangerHook?: string;
+  cliffhangerQuestion?: string;
+  nextEpisodePressure?: string;
+  cliffhangerSetup?: string;
+  cliffhangerType?: CliffhangerType;
+  emotionalCharge?: string;
   nextEpisodeCausality?: string;
   endStateChange?: string;
   resolutionAftermath?: string;

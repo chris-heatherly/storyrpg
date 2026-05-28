@@ -1223,14 +1223,14 @@ export class StoryArchitect extends BaseAgent {
             driver: 'player_choice',
             protagonistInfluence: guidance?.forcedChoice || 'The player/protagonist action changes the episode pressure.',
             closesQuestion: 'The opening pressure becomes a decision.',
-            opensQuestion: guidance?.endingPressure || guidance?.nextEpisodeCausality || 'The choice leaves visible residue.',
+            opensQuestion: guidance?.cliffhangerQuestion || guidance?.nextEpisodePressure || guidance?.endingPressure || guidance?.nextEpisodeCausality || 'The choice leaves visible residue.',
             memorableImageOrLine: guidance?.visualAnchor || input.episodeTitle,
           }],
       informationPlan: this.normalizeInformationPlan(
         audit.informationPlan,
         guidance,
         guidance?.informationMovement || guidance?.cSeed || themePressure,
-        guidance?.endingPressure || guidance?.nextEpisodeCausality || 'The information changes what the player can choose next.',
+        guidance?.nextEpisodePressure || guidance?.cliffhangerQuestion || guidance?.endingPressure || guidance?.nextEpisodeCausality || 'The information changes what the player can choose next.',
       ),
     };
 
@@ -1247,6 +1247,9 @@ export class StoryArchitect extends BaseAgent {
 
   private repairTreatmentForwardPressure(blueprint: EpisodeBlueprint, guidance: TreatmentEpisodeGuidance | undefined): void {
     const endingPressure = guidance?.endingPressure
+      || guidance?.cliffhangerHook
+      || guidance?.cliffhangerQuestion
+      || guidance?.nextEpisodePressure
       || guidance?.authoredCliffhanger
       || guidance?.endingTurnout
       || guidance?.nextEpisodeCausality;
@@ -1305,7 +1308,10 @@ export class StoryArchitect extends BaseAgent {
       || guidance.bPressure
       || guidance.consequenceResidue
       || `The protagonist's identity, reputation, trust, and future options are at risk.`;
-    const nextEpisodePressure = guidance.nextEpisodeCausality
+    const nextEpisodePressure = guidance.nextEpisodePressure
+      || guidance.cliffhangerQuestion
+      || guidance.cliffhangerHook
+      || guidance.nextEpisodeCausality
       || guidance.endingPressure
       || guidance.authoredCliffhanger
       || guidance.endingTurnout
@@ -3010,6 +3016,24 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       }
       if (guidance.nextEpisodeCausality) {
         section += `- Why the next unit exists because of this one: ${guidance.nextEpisodeCausality}\n`;
+      }
+      if (guidance.resolvedEpisodeTension) {
+        section += `- Resolved episode tension: ${guidance.resolvedEpisodeTension}\n`;
+      }
+      if (guidance.cliffhangerHook) {
+        section += `- Cliffhanger hook to deliver: ${guidance.cliffhangerHook}\n`;
+      }
+      if (guidance.cliffhangerQuestion) {
+        section += `- Cliffhanger question that should become next episode pressure: ${guidance.cliffhangerQuestion}\n`;
+      }
+      if (guidance.nextEpisodePressure) {
+        section += `- Next-episode pressure: ${guidance.nextEpisodePressure}\n`;
+      }
+      if (guidance.cliffhangerSetup) {
+        section += `- Cliffhanger setup that earns the ending: ${guidance.cliffhangerSetup}\n`;
+      }
+      if (guidance.emotionalCharge) {
+        section += `- Cliffhanger emotional charge: ${guidance.emotionalCharge}\n`;
       }
       if (guidance.endingPressure || guidance.authoredCliffhanger || guidance.endingTurnout) {
         section += `- Authored ending pressure (MUST be supported by the final scene narrativeFunction/keyBeats unless this is a finale): ${guidance.endingPressure || guidance.authoredCliffhanger || guidance.endingTurnout}\n`;

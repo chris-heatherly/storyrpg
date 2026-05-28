@@ -30,6 +30,7 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "validate": "npm run typecheck && npm run lint && npm test",
     "check:reader-boundary": "node scripts/check-reader-boundary.mjs",
+    "verify:reader": "npm run reader:export && node scripts/check-reader-boundary.mjs --require-bundle",
     "validate:reader": "npm run reader:typecheck && npm run check:reader-boundary && npm test -- storyLibrary storyEngine conditionEvaluator resolutionEngine",
     "db:proxy": "bash scripts/run-db-proxy.sh",
     "db:migrate": "node scripts/db-migrate.mjs",

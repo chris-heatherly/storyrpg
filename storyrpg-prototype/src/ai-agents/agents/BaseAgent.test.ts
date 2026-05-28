@@ -39,3 +39,26 @@ describe('BaseAgent JSON repair', () => {
     });
   });
 });
+
+describe('BaseAgent truncation-loss signal (L4)', () => {
+  it('flags wasLastResponseTruncated when recovery drops content', () => {
+    const agent = new TestAgent();
+
+    // Truncated array of objects (ends mid-string, no closing brackets) — the
+    // recovery cuts back to the last complete object, dropping the rest.
+    const parsed = agent.parse<{ shots: Array<Record<string, unknown>> }>(
+      '{"shots":[{"a":1},{"b":2},{"c":"hello',
+    );
+
+    expect(parsed.shots).toEqual([{ a: 1 }, { b: 2 }]);
+    expect(agent.wasLastResponseTruncated()).toBe(true);
+  });
+
+  it('does not flag truncation for a complete response', () => {
+    const agent = new TestAgent();
+
+    agent.parse<{ ok: boolean }>('{"ok":true}');
+
+    expect(agent.wasLastResponseTruncated()).toBe(false);
+  });
+});

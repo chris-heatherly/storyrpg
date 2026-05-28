@@ -1,26 +1,18 @@
 #!/bin/bash
-# Auto-commit and push any changes to GitHub on a schedule.
-# Skips if there are no changes or if a rebase/merge is in progress.
+# RETIRED 2026-05-28 (see docs/PROJECT_AUDIT_2026-05-28.md, landmine L2).
+#
+# This script previously ran `git add -A && git commit && git push origin main`
+# on an hourly cron with NO validation. That is unsafe: it sweeps untracked
+# runtime artifacts into commits, pushes broken/in-progress states straight to
+# the shared `main` branch, and bypasses review and CI. It was the most likely
+# source of the multi-megabyte runtime backups that ended up in git history.
+#
+# It is intentionally disabled. To stop it firing entirely, also remove the
+# crontab entry that calls it:
+#     crontab -l | grep -v auto-commit-push | crontab -
+#
+# If you want periodic local backups, use a dedicated WIP branch and gate on
+# `npm run validate` — never a blind push to `main`. Do NOT re-enable this as-is.
 
-REPO_DIR="/Users/chrisheatherly/StoryRPG_New"
-LOG_FILE="$REPO_DIR/scripts/.auto-commit.log"
-
-cd "$REPO_DIR" || exit 1
-
-if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ] || [ -f .git/MERGE_HEAD ]; then
-  echo "$(date '+%Y-%m-%d %H:%M:%S') — Skipped: rebase or merge in progress" >> "$LOG_FILE"
-  exit 0
-fi
-
-git add -A
-
-if git diff --cached --quiet; then
-  echo "$(date '+%Y-%m-%d %H:%M:%S') — Skipped: no changes" >> "$LOG_FILE"
-  exit 0
-fi
-
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
-git commit -m "Auto-save: $TIMESTAMP"
-git push origin main
-
-echo "$(date '+%Y-%m-%d %H:%M:%S') — Committed and pushed" >> "$LOG_FILE"
+echo "auto-commit-push.sh is retired (see docs/PROJECT_AUDIT_2026-05-28.md, L2). No action taken." >&2
+exit 0

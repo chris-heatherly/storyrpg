@@ -57,6 +57,12 @@ yarn-error.*
 .worker-results/
 .vercel
 
+# runtime state backups and caches (never commit — see L2 in docs/PROJECT_AUDIT_2026-05-28.md)
+*.backup-*
+.model-cache.json
+.generator-settings.json
+.codex-expo-web.*
+
 # Generated story content (large binary + JSON assets, not source code)
 generated-stories/
 

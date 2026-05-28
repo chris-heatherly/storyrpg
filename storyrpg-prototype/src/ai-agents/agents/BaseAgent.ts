@@ -97,6 +97,20 @@ export abstract class BaseAgent {
    */
   protected includeSystemPrompt: boolean = false;
 
+  /**
+   * Set to true when the most recent parseJSON() had to recover from a
+   * truncated response by DROPPING content (e.g. max_tokens was hit and trailing
+   * scenes/beats were cut). This is silent data loss that otherwise looks like a
+   * successful parse, so callers/pipeline can read this flag to surface or gate
+   * on it. See docs/PROJECT_AUDIT_2026-05-28.md, landmine L4.
+   */
+  protected lastResponseTruncated = false;
+
+  /** Whether the last parseJSON() dropped content during truncation recovery. */
+  public wasLastResponseTruncated(): boolean {
+    return this.lastResponseTruncated;
+  }
+
   // Shared circuit breaker — prevents retry storms when the proxy/Anthropic is down.
   // After CIRCUIT_BREAKER_THRESHOLD consecutive failures across ALL agents, all LLM
   // calls pause for CIRCUIT_BREAKER_COOLDOWN_MS before the next attempt.
@@ -811,6 +825,9 @@ Do not use markdown code blocks around the JSON.
    * Parse JSON response from LLM, handling common issues
    */
   protected parseJSON<T>(response: string): T {
+    // Reset the per-call truncation-loss signal (set by handleTruncation if it
+    // has to drop content). See landmine L4.
+    this.lastResponseTruncated = false;
     // Strip markdown code blocks with regex for more robust handling
     const cleaned = this.stripMarkdownCodeBlocks(response);
 
@@ -1008,7 +1025,13 @@ Do not use markdown code blocks around the JSON.
       if (lastCompletePos > 0) {
         // Truncate after the last complete object
         const truncated = json.slice(0, lastCompletePos + 1);
-        log.debug(`[BaseAgent] Truncated to last complete object at position ${lastCompletePos}`);
+        const droppedChars = json.length - truncated.length;
+        this.lastResponseTruncated = true;
+        log.warn(
+          `[${this.name}] Truncation recovery DROPPED ~${droppedChars} chars of content ` +
+            `(recovered to last complete object). Output is incomplete — likely missing trailing ` +
+            `scenes/beats. Consider raising maxTokens. See landmine L4.`,
+        );
         return truncated;
       }
     }
@@ -1041,7 +1064,13 @@ Do not use markdown code blocks around the JSON.
           }
           if (truncateAt > 0) {
             const truncated = json.slice(0, truncateAt).replace(/,\s*$/, '');
-            log.debug(`[BaseAgent] Truncated before incomplete property at position ${truncateAt}`);
+            const droppedChars = json.length - truncated.length;
+            this.lastResponseTruncated = true;
+            log.warn(
+              `[${this.name}] Truncation recovery DROPPED ~${droppedChars} chars of content ` +
+                `(cut an incomplete property). Output is incomplete — likely missing trailing ` +
+                `scenes/beats. Consider raising maxTokens. See landmine L4.`,
+            );
             return truncated;
           }
         }

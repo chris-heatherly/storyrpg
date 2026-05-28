@@ -40,6 +40,7 @@ const { createRuntimeLayout } = require('./proxy/runtimePaths');
 const { getStoryStorageMode, getGcsBucketName, getGcsPublicBaseUrl, mapProxyPathToGcsObjectPath } = require('./proxy/gcsConfig');
 const { resolveGeneratedStoryAssetFallback } = require('./proxy/generatedStoryAssetFallback');
 const { registerAuthRoutes } = require('./proxy/authRoutes');
+const { createCorsOptions, createExposureGuard } = require('./proxy/proxyGuards');
 
 const app = express();
 if (process.env.TRUST_PROXY === '1' || process.env.NODE_ENV === 'production') {
@@ -123,11 +124,19 @@ app.use('/generated-stories', (req, res, next) => {
   stream.pipe(res);
 });
 
-app.use(cors({ origin: true, credentials: true }));
+// CORS allowlist (localhost always allowed; external origins must be in
+// PROXY_ALLOWED_ORIGINS unless PROXY_ALLOW_ALL_ORIGINS=1). See L1 in
+// docs/PROJECT_AUDIT_2026-05-28.md.
+app.use(cors(createCorsOptions()));
 app.use(express.json({ limit: '50mb' }));
 
 // OAuth (Passport) + sessions — must run before routes that read req.user
 registerAuthRoutes(app, { port: PORT });
+
+// Exposure auth gate — no-op locally; when PROXY_REQUIRE_AUTH=1 (set this
+// before exposing the proxy via ngrok / deploy) it requires an authenticated
+// session or a PROXY_API_TOKEN bearer for all mutating requests.
+app.use(createExposureGuard());
 
 registerCatalogRoutes(app, {
   listLatestStoryRecords,

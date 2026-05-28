@@ -334,7 +334,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       try {
         await AsyncStorage.setItem(STORAGE_KEYS.PLAYER_STATE, serializePlayerState(player));
       } catch (e) {
-        console.warn('[GameStore] Failed to persist player state:', e);
+        // Player progress write failed — this is silent data loss for the
+        // player. Escalated to error so it surfaces in error reporting.
+        // TODO(L4): surface to the player via UI. See docs/PROJECT_AUDIT_2026-05-28.md.
+        console.error('[GameStore] Failed to persist player state (progress may be lost):', e);
       }
     };
     
@@ -354,7 +357,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           [STORAGE_KEYS.CURRENT_BRANCH_TONE, currentBranchTone || ''],
         ]);
       } catch (e) {
-        console.warn('[GameStore] Failed to persist navigation state:', e);
+        // TODO(L4): surface to the player via UI. See docs/PROJECT_AUDIT_2026-05-28.md.
+        console.error('[GameStore] Failed to persist navigation state (progress may be lost):', e);
       }
     };
     
@@ -417,14 +421,16 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 }
               }
             } else {
-              console.warn('[GameStore] Failed to persist encounter state (non-quota error):', storageErr);
+              // TODO(L4): surface to the player via UI. See docs/PROJECT_AUDIT_2026-05-28.md.
+              console.error('[GameStore] Failed to persist encounter state (progress may be lost, non-quota error):', storageErr);
             }
           }
         } else {
           await AsyncStorage.removeItem(STORAGE_KEYS.ENCOUNTER_STATE);
         }
       } catch (e) {
-        console.warn('[GameStore] Failed to persist encounter state:', e);
+        // TODO(L4): surface to the player via UI. See docs/PROJECT_AUDIT_2026-05-28.md.
+        console.error('[GameStore] Failed to persist encounter state (progress may be lost):', e);
       }
     };
     

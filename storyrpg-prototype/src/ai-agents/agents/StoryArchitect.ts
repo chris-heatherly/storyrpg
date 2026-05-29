@@ -3365,18 +3365,27 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       s => s.choicePoint && (s.choicePoint.branches || s.choicePoint.type === 'dilemma')
     );
 
+    // Major choices must carry stakes, a consequenceDomain, and a reminderPlan.
+    // The LLM intermittently omits one of these, so REPAIR the missing field in
+    // place rather than aborting the whole episode (F6/F7 — same ship-with-
+    // recorded-defaults pattern as the rest of the audit work). The architect
+    // already defaults these in other paths; this is the validation-time
+    // backstop. See docs/PROJECT_AUDIT_2026-05-28.md.
     for (const scene of majorChoices) {
-      const stakes = scene.choicePoint!.stakes;
+      const cp = scene.choicePoint!;
+
+      // (1) Incomplete stakes — fill the missing want/cost/identity sub-field.
+      const stakes = (cp.stakes ||= { want: '', cost: '', identity: '' });
       if (!stakes.want || !stakes.cost || !stakes.identity) {
-        throw new Error(`Scene ${scene.id} has a major choice but incomplete stakes`);
+        const missing: string[] = [];
+        if (!stakes.want) { stakes.want = 'Pursue what the protagonist most wants from this moment.'; missing.push('want'); }
+        if (!stakes.cost) { stakes.cost = 'Risk something the protagonist would rather not lose.'; missing.push('cost'); }
+        if (!stakes.identity) { stakes.identity = 'Reveal who the protagonist chooses to be under pressure.'; missing.push('identity'); }
+        console.warn(`[StoryArchitect] Scene ${scene.id} major choice had incomplete stakes; filled defaults for: ${missing.join(', ')}.`);
       }
-      if (scene.choicePoint && !scene.choicePoint.consequenceDomain) {
-        // Repair instead of aborting (F6): consequenceDomain is a categorization
-        // enum the LLM intermittently omits, and the architect already defaults
-        // it elsewhere. Infer it from the choice's own stakes (reusing the
-        // existing inference) rather than failing the whole episode.
-        // See docs/PROJECT_AUDIT_2026-05-28.md.
-        const cp = scene.choicePoint;
+
+      // (2) Missing consequenceDomain — infer from the choice's own stakes.
+      if (!cp.consequenceDomain) {
         const pressure = [cp.stakes?.want, cp.stakes?.cost, cp.stakes?.identity, cp.description]
           .filter(Boolean)
           .join(' ');
@@ -3386,8 +3395,14 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         );
         console.warn(`[StoryArchitect] Scene ${scene.id} major choice missing consequenceDomain; inferred '${cp.consequenceDomain}'.`);
       }
-      if (!scene.choicePoint?.reminderPlan?.immediate || !scene.choicePoint?.reminderPlan?.shortTerm) {
-        throw new Error(`Scene ${scene.id} has a major choice but no usable reminderPlan`);
+
+      // (3) Missing/partial reminderPlan — fill the established defaults.
+      if (!cp.reminderPlan?.immediate || !cp.reminderPlan?.shortTerm) {
+        cp.reminderPlan = {
+          immediate: cp.reminderPlan?.immediate || 'The selected choice changes the next scene.',
+          shortTerm: cp.reminderPlan?.shortTerm || 'Later narration remembers which path the player chose.',
+        };
+        console.warn(`[StoryArchitect] Scene ${scene.id} major choice missing reminderPlan; filled defaults.`);
       }
     }
 

@@ -52,6 +52,19 @@ All app code and commands live in `storyrpg-prototype/`. Run commands from there
   validator/abort behavior, and the quality ledger.
 - `pipeline-agent-development` — extending `BaseAgent`, LLM prompting/parsing, converters.
 - `pipeline-validation` — validators + the story-structure contract they enforce.
+- `story-structure-rules` — story-architecture craft: 7-point spine, scene graph,
+  branch-and-bottleneck, choice taxonomy, consequence budget, encounter design.
+- `twist-and-thread-craft` — twist construction, narrative-thread lifecycle,
+  foreshadow→reveal timing, path-aware payoffs, reconvergence residue
+  (BranchManager / ThreadPlanner / TwistArchitect / SequenceDirector).
+- `character-arc-and-voice-craft` — identity axes + deltas, arc phases, voice
+  profiles, relationship dimensions by NPC tier, Want/Fear/Flaw, micro-lies
+  (CharacterDesigner / CharacterArcTracker).
+- `prose-and-scene-craft` — fiction-first prose, intensity tiering, show-don't-tell,
+  the scene-turn contract, SceneCritic rewrite discipline (SceneWriter / SceneCritic
+  / StyleArchitect).
+- `worldbuilding-craft` — emergent lore, environmental storytelling, consistent rule
+  systems, sensory immersion, location-design checklist (WorldBuilder).
 - `media-generation` — image providers/LoRA + audio narration (ElevenLabs).
 - `proxy-server` — Express proxy routes, worker lifecycle, and proxy auth-gating.
 - `story-playback` — the deterministic runtime (engine, `gameStore`, fiction-first).

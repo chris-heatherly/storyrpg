@@ -43,15 +43,25 @@ All app code and commands live in `storyrpg-prototype/`. Run commands from there
 - Reader runtime: `src/screens/reader`, `src/stores/gameStore.ts`, `src/engine/`
 - Proxy/worker: `proxy-server.js`, `proxy/`, `src/ai-agents/server/worker-runner.ts`
 
-## Skills index (`.claude/skills/`)
+## Skills index (`storyrpg-prototype/.claude/skills/`)
 
 - `reader-generator-safety` — the reader/generator boundary, `STORYRPG_APP_TARGET`,
   secret rules, and how to verify a reader change is safe. **Start here for any
   reader/deploy work.**
 - `pipeline-debugging` — diagnosing generation failures, stuck worker jobs,
   validator/abort behavior, and the quality ledger.
+- `pipeline-agent-development` — extending `BaseAgent`, LLM prompting/parsing, converters.
+- `pipeline-validation` — validators + the story-structure contract they enforce.
+- `media-generation` — image providers/LoRA + audio narration (ElevenLabs).
+- `proxy-server` — Express proxy routes, worker lifecycle, and proxy auth-gating.
+- `story-playback` — the deterministic runtime (engine, `gameStore`, fiction-first).
+- `testing-tooling` — Vitest/Playwright, the four tsconfigs, `npm run validate`.
+- `ux-design` — fiction-first UI, theme tokens, shared components.
+- `integration-expo` — PostHog analytics (web + native) and the `phc_` key rule.
 
-Richer (Cursor-targeted) skills also exist under `storyrpg-prototype/.cursor/skills/`.
+These are concise; **richer (Cursor-targeted) skills with the same coverage live under
+`storyrpg-prototype/.cursor/skills/`**, and a Codex-targeted set under `codex-skills/` (each with an
+`agents/openai.yaml`). Keep the three sets in sync when a skill's facts change.
 
 ## Recent context
 

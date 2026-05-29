@@ -16,8 +16,8 @@ Treat the proxy as the durability boundary:
 
 ## Guardrails
 
-- The Express proxy is local-dev-only; do not turn it into a deployed backend without explicit scope.
-- Keep API keys server-side unless an `EXPO_PUBLIC_` variable is intentionally needed in the client bundle.
+- The Express proxy is local-dev infrastructure by default, but it binds `0.0.0.0` and CAN be exposed (ngrok/deploy). Before exposing it publicly, set `PROXY_REQUIRE_AUTH=1` + `PROXY_API_TOKEN` (auto-on under `NODE_ENV=production`); see `proxy/proxyGuards.js`. Never leave a tunnel up unauthenticated.
+- Keep provider API keys server-side. Never behind `EXPO_PUBLIC_*` (Expo inlines those into the client bundle); the only client-safe key is the PostHog publishable `phc_` key.
 - Do not hardcode proxy URLs or external endpoints outside `endpoints.ts`.
 - Preserve generated story file layout and avoid runtime artifact churn.
 - Keep long-running worker jobs resilient to refreshes, cancellations, and partial failures.

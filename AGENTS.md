@@ -279,5 +279,7 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/PARALLEL_GENERATION.md` | Parallel generation status (ParallelStoryPipeline removed; concurrency lives in `FullStoryPipeline`) |
 | `docs/reference/` | Original reference materials (PDF text extracts) |
 | `CLAUDE.md` (root) | Claude Code orientation: non-negotiables + skills index (points back here) |
-| `storyrpg-prototype/.claude/skills/` | Claude Code skills: `reader-generator-safety`, `pipeline-debugging` |
-| `.cursor/skills/` | Cursor agent skills: pipeline debugging, validation, orchestration, agent development, image generation, story playback, proxy server, audio narration, testing tooling, UX design, story structure rules, update docs |
+| `storyrpg-prototype/.claude/skills/` | Claude Code skills (concise): reader-generator-safety, pipeline-debugging, pipeline-agent-development, pipeline-validation, media-generation, proxy-server, story-playback, testing-tooling, ux-design, integration-expo (PostHog analytics) |
+| `storyrpg-prototype/.cursor/skills/` | Cursor agent skills (deep): pipeline debugging, validation, orchestration, agent development, image generation, audio narration, story playback, proxy server, reader-generator-safety, testing tooling, UX design, story structure rules, analytics-integration, update docs |
+| `codex-skills/` | Codex agent skills (grouped, each + `agents/openai.yaml`): pipeline-debugging, pipeline-agent-development, narrative-validation, media-pipeline, proxy-worker, reader-playback, reader-generator-safety, ux-design, analytics-integration, testing-validation |
+| Skill-set sync | The three sets mirror the same topics at different depth. When a skill's facts change, update its counterpart in the other two sets. |

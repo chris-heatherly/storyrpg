@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG UX Design"
+  short_description: "Keep StoryRPG player-facing UI fiction-first and visually consistent"
+  default_prompt: "Use $storyrpg-ux-design when editing StoryRPG UI components, screens, styles, theming, or animation."
+policy:
+  allow_implicit_invocation: true

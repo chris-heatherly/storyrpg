@@ -361,6 +361,20 @@ Do not use markdown code blocks around the JSON.
     throw lastError || new Error('LLM call failed after retries');
   }
 
+  /**
+   * Build the Anthropic `system` field as a cache-controlled content block so
+   * the (large, stable) system prompt is cached across calls (prompt caching,
+   * ~90% input-cost reduction on the cached prefix). Returns undefined when
+   * there is no system prompt (utility agents). See docs/PROJECT_AUDIT_2026-05-28.md (C1).
+   *
+   * Below Anthropic's minimum cacheable size the cache_control is simply
+   * ignored by the API (no error), so it is always safe to set.
+   */
+  protected buildCachedSystemField(systemText: string): Array<{ type: 'text'; text: string; cache_control: { type: 'ephemeral' } }> | undefined {
+    if (!systemText) return undefined;
+    return [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }];
+  }
+
   private async callAnthropic(
     messages: AgentMessage[],
     signal?: AbortSignal,
@@ -373,15 +387,18 @@ Do not use markdown code blocks around the JSON.
       + otherMessages.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0);
     log.debug(`[${this.name}] Calling Anthropic API via ${isWebRuntime() ? 'proxy' : 'direct'}... (input ~${Math.round(totalInputChars / 4)} tokens, maxTokens: ${this.config.maxTokens})`);
 
+    const systemText = typeof systemMessage?.content === 'string'
+      ? systemMessage.content
+      : (Array.isArray(systemMessage?.content)
+          ? (systemMessage?.content[0] as any)?.text || ''
+          : '');
+
     const body: any = {
       model: this.config.model,
       max_tokens: this.config.maxTokens,
       temperature: this.config.temperature,
-      system: typeof systemMessage?.content === 'string' 
-        ? systemMessage.content 
-        : (Array.isArray(systemMessage?.content) 
-            ? (systemMessage?.content[0] as any)?.text || '' 
-            : ''),
+      // Cache the stable system prompt prefix across calls (C1).
+      system: this.buildCachedSystemField(systemText),
       messages: otherMessages.map((m) => {
         if (typeof m.content === 'string') {
           return { role: m.role, content: m.content };
@@ -455,7 +472,11 @@ Do not use markdown code blocks around the JSON.
       const stopReason = data.stop_reason;
       const outputTokens = data.usage?.output_tokens ?? '?';
       const inputTokens = data.usage?.input_tokens ?? '?';
-      log.debug(`[${this.name}] Anthropic response: ${inputTokens} input tokens, ${outputTokens} output tokens, stop_reason: ${stopReason}`);
+      // Prompt-cache visibility (C1): confirms the system prefix is being cached.
+      const cacheRead = data.usage?.cache_read_input_tokens ?? 0;
+      const cacheCreate = data.usage?.cache_creation_input_tokens ?? 0;
+      const cacheNote = (cacheRead || cacheCreate) ? `, cache_read: ${cacheRead}, cache_created: ${cacheCreate}` : '';
+      log.debug(`[${this.name}] Anthropic response: ${inputTokens} input tokens, ${outputTokens} output tokens, stop_reason: ${stopReason}${cacheNote}`);
       if (usageOut) {
         if (typeof data.usage?.input_tokens === 'number') usageOut.inputTokens = data.usage.input_tokens;
         if (typeof data.usage?.output_tokens === 'number') usageOut.outputTokens = data.usage.output_tokens;
@@ -518,7 +539,8 @@ Do not use markdown code blocks around the JSON.
         model: this.config.model,
         max_tokens: this.config.maxTokens,
         temperature: this.config.temperature,
-        system: systemText,
+        // Cache the stable system prompt prefix across calls (C1).
+        system: this.buildCachedSystemField(systemText),
         messages: conversationMessages,
         tools: [{ type: 'memory_20250818', name: 'memory' }],
       };

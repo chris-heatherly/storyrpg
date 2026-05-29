@@ -20,6 +20,10 @@ class TestAgent extends BaseAgent {
     return this.parseJSON<T>(response);
   }
 
+  cachedSystem(text: string) {
+    return this.buildCachedSystemField(text);
+  }
+
   async execute(): Promise<AgentResponse<unknown>> {
     return { success: true };
   }
@@ -37,6 +41,21 @@ describe('BaseAgent JSON repair', () => {
       episodeId: null,
       title: 'Dating After Dusk',
     });
+  });
+});
+
+describe('BaseAgent prompt caching (C1)', () => {
+  it('wraps a non-empty system prompt in a cache_control:ephemeral block', () => {
+    const agent = new TestAgent();
+    const field = agent.cachedSystem('You are a storyteller. '.repeat(50));
+    expect(Array.isArray(field)).toBe(true);
+    expect(field).toHaveLength(1);
+    expect(field![0].type).toBe('text');
+    expect(field![0].cache_control).toEqual({ type: 'ephemeral' });
+  });
+
+  it('returns undefined when there is no system prompt (utility agents)', () => {
+    expect(new TestAgent().cachedSystem('')).toBeUndefined();
   });
 });
 

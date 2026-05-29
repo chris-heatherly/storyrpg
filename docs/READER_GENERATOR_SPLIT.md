@@ -4,7 +4,7 @@
 
 StoryRPG now has two app targets in one package:
 
-- Reader: public end-user app for story library, playback, and reader settings.
+- Reader: end-user app for story library, playback, and reader settings (sign-in required).
 - Generator: internal/local app for story generation, jobs, provider controls, and pipeline work.
 
 This split is the deployment safety boundary. Reader can ship publicly.
@@ -113,6 +113,32 @@ npm run dev
 
 This starts the proxy and reader web target. Start `npm run generator:web` in a
 separate terminal when you need the generator UI.
+
+### Creator authentication
+
+The generator app requires sign-in (email/password, Google, or Discord via the proxy) before the studio shell loads. The proxy needs `DATABASE_URL` and applied migrations (`npm run db:migrate`).
+
+For local OAuth on port **8082**, set on the proxy:
+
+```bash
+AUTH_SUCCESS_REDIRECT=http://localhost:8082/?afterAuth=home
+AUTH_FAILURE_REDIRECT=http://localhost:8082/?auth=error
+```
+
+Sign out is available under **System Info** in generator settings. The creator login screen does not offer a dev bypass; users must authenticate through the proxy.
+
+### Reader authentication
+
+The reader app uses the same proxy auth stack. Sign-in is required before the library loads. For local OAuth on port **8081**:
+
+```bash
+AUTH_SUCCESS_REDIRECT=http://localhost:8081/?afterAuth=home
+AUTH_FAILURE_REDIRECT=http://localhost:8081/?auth=error
+```
+
+Sign out is under **Settings → System**. No dev bypass on the reader login screen.
+
+If one proxy serves both apps locally, only one `AUTH_SUCCESS_REDIRECT` can be active at a time — use separate proxy processes or alternate the redirect when testing OAuth for each app.
 
 ## Vercel
 

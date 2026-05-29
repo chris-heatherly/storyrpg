@@ -1001,9 +1001,11 @@ export function StoryLibrarySection({
 
 interface SystemInfoSectionProps {
   styles: SettingsStyles;
+  accountLabel?: string | null;
+  onSignOut?: () => void;
 }
 
-export function SystemInfoSection({ styles }: SystemInfoSectionProps) {
+export function SystemInfoSection({ styles, accountLabel, onSignOut }: SystemInfoSectionProps) {
   return (
     <View style={styles.section}>
       <SectionHeader
@@ -1014,6 +1016,14 @@ export function SystemInfoSection({ styles }: SystemInfoSectionProps) {
       />
 
       <View style={styles.infoCard}>
+        {accountLabel ? (
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>SIGNED IN</Text>
+            <Text style={styles.infoValue} numberOfLines={1}>
+              {accountLabel.toUpperCase()}
+            </Text>
+          </View>
+        ) : null}
         <View style={styles.infoRow}>
           <Text style={styles.infoLabel}>APPLICATION</Text>
           <Text style={styles.infoValue}>STORYRPG ENGINE</Text>
@@ -1026,6 +1036,14 @@ export function SystemInfoSection({ styles }: SystemInfoSectionProps) {
           <Text style={styles.infoLabel}>STATUS</Text>
           <Text style={[styles.infoValue, { color: TERMINAL.colors.primary }]}>OPERATIONAL</Text>
         </View>
+        {onSignOut ? (
+          <TouchableOpacity
+            style={[styles.confirmButtonCancel, { marginTop: 16 }]}
+            onPress={onSignOut}
+          >
+            <Text style={styles.confirmButtonCancelText}>SIGN OUT</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     </View>
   );

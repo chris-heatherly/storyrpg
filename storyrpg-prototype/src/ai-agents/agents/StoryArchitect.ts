@@ -1754,6 +1754,10 @@ ${sceneEpisodeMode}
 
     console.log(`[StoryArchitect] Building episode blueprint...${retryCount > 0 ? ` (retry ${retryCount}/${maxRetries})` : ''}`);
 
+    // Hoisted so the catch block can return a parsed-but-advisory-failing
+    // blueprint instead of aborting the whole run (validator tiering, B1).
+    let parsedBlueprint: EpisodeBlueprint | undefined;
+
     try {
       const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
         { role: 'user', content: prompt }
@@ -1784,6 +1788,7 @@ REQUIREMENTS:
       let blueprint: EpisodeBlueprint;
       try {
         blueprint = this.unwrapDynamoTypedJson(this.parseJSON<EpisodeBlueprint>(response)) as EpisodeBlueprint;
+        parsedBlueprint = blueprint;
       } catch (parseError) {
         console.error(`[StoryArchitect] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
         if (retryCount < maxRetries) {
@@ -2111,29 +2116,11 @@ REQUIREMENTS:
       const errorMsg = error instanceof Error ? error.message : String(error);
       console.error(`[StoryArchitect] Error:`, errorMsg);
 
-      const isChoiceDensityError = errorMsg.includes('choice density') ||
-                                    errorMsg.includes('choicePoint') ||
-                                    errorMsg.includes('consecutive scenes without choices');
-      const isEncounterPlanningError = errorMsg.includes('encounter scene') ||
-                                       errorMsg.includes('planned encounter') ||
-                                       errorMsg.includes('season plan requires') ||
-                                       errorMsg.includes('Blueprint only defines');
-      const isStructuralError = errorMsg.includes('non-existent scene') ||
-                                 errorMsg.includes('Bottleneck scene') ||
-                                 errorMsg.includes('Starting scene') ||
-                                 errorMsg.includes('must have at least');
-      const isTreatmentFidelityError = errorMsg.includes('[TreatmentFidelity]');
-      const isDramaticStructureError = errorMsg.includes('[DramaticStructure]');
-      const isThemePressureError = errorMsg.includes('[ThemePressure]');
-      const isSceneTurnContractError = errorMsg.includes('[SceneTurnContract]');
-      const isEpisodePressureError = errorMsg.includes('[EpisodePressure]');
-      const isParseError = errorMsg.includes('Failed to parse JSON response') ||
-                           errorMsg.includes('Expected double-quoted property name') ||
-                           errorMsg.includes('Unexpected token');
+      const cls = StoryArchitect.classifyBlueprintFailure(errorMsg);
 
-      if ((isChoiceDensityError || isEncounterPlanningError || isStructuralError || isTreatmentFidelityError || isDramaticStructureError || isThemePressureError || isSceneTurnContractError || isEpisodePressureError || isParseError) && retryCount < maxRetries) {
-        console.log(`[StoryArchitect] Retrying due to structural blueprint issue: ${errorMsg.slice(0, 120)}`);
-        this.lastStructuralFeedback = isParseError
+      if (cls.retryable && retryCount < maxRetries) {
+        console.log(`[StoryArchitect] Retrying due to blueprint issue: ${errorMsg.slice(0, 120)}`);
+        this.lastStructuralFeedback = cls.isParseError
           ? [
               'Previous response was not parseable strict JSON. Return one plain JSON object only: no markdown, no comments, no trailing commas, no DynamoDB typed wrappers like {"S":"value"} or {"L":[...]}.',
             ]
@@ -2141,11 +2128,94 @@ REQUIREMENTS:
         return this.execute(input, retryCount + 1);
       }
 
+      // Validator tiering (B1): craft/fidelity advisories that persist after
+      // all retries must NOT abort the whole story. If the ONLY remaining
+      // issues are advisory and we have a parsed blueprint, proceed with the
+      // blueprint and record the issues as warnings. Hard correctness failures
+      // (structural graph, choice density, encounter planning, parse) still
+      // block. See docs/PROJECT_AUDIT_2026-05-28.md (Track B1).
+      if (cls.advisoryOnly && parsedBlueprint) {
+        const warnings = errorMsg.split('\n').map(s => s.trim()).filter(Boolean);
+        this.lastAdvisoryWarnings = warnings;
+        console.warn(
+          `[StoryArchitect] Advisory validation issues persist after ${maxRetries} retries; ` +
+            `proceeding with the blueprint and recording ${warnings.length} warning(s) instead of aborting.`,
+        );
+        return {
+          success: true,
+          data: parsedBlueprint,
+          warnings,
+        };
+      }
+
       return {
         success: false,
         error: errorMsg,
       };
     }
+  }
+
+  /**
+   * Tracks advisory (non-fatal) validation warnings from the most recent
+   * execute() that succeeded despite craft/fidelity issues (B1).
+   */
+  public lastAdvisoryWarnings: string[] = [];
+
+  /**
+   * Classify a blueprint-validation error message into hard vs advisory.
+   *
+   * - Hard correctness failures (structural graph, choice density, encounter
+   *   planning, unparseable JSON) must block the run.
+   * - Advisory craft/fidelity failures (TreatmentFidelity, DramaticStructure,
+   *   ThemePressure, SceneTurnContract, EpisodePressure) should be retried, but
+   *   after retries are exhausted they degrade to warnings rather than aborting.
+   *
+   * Pure function of the message text so it can be unit-tested directly.
+   * See docs/PROJECT_AUDIT_2026-05-28.md (Track B1).
+   */
+  static classifyBlueprintFailure(errorMsg: string): {
+    hasHard: boolean;
+    hasAdvisory: boolean;
+    advisoryOnly: boolean;
+    retryable: boolean;
+    isParseError: boolean;
+  } {
+    const advisoryTags = ['[TreatmentFidelity]', '[DramaticStructure]', '[ThemePressure]', '[SceneTurnContract]', '[EpisodePressure]'];
+
+    // Classify per line. Advisory validator messages carry a `[Tag]` prefix and
+    // can incidentally mention hard-error keywords (e.g. TreatmentFidelity's
+    // "...into a real choicePoint"), so hard-error keyword checks must only run
+    // against lines that are NOT advisory — otherwise the most common advisory
+    // failure would be misread as hard and still abort the run.
+    const lines = errorMsg.split('\n').map(l => l.trim()).filter(Boolean);
+    const isAdvisoryLine = (l: string) => advisoryTags.some(tag => l.includes(tag));
+    const hasAdvisory = lines.some(isAdvisoryLine);
+    const hardText = lines.filter(l => !isAdvisoryLine(l)).join('\n');
+
+    const isChoiceDensityError = hardText.includes('choice density') ||
+                                  hardText.includes('choicePoint') ||
+                                  hardText.includes('consecutive scenes without choices');
+    const isEncounterPlanningError = hardText.includes('encounter scene') ||
+                                     hardText.includes('planned encounter') ||
+                                     hardText.includes('season plan requires') ||
+                                     hardText.includes('Blueprint only defines');
+    const isStructuralError = hardText.includes('non-existent scene') ||
+                               hardText.includes('Bottleneck scene') ||
+                               hardText.includes('Starting scene') ||
+                               hardText.includes('must have at least');
+    const isParseError = hardText.includes('Failed to parse JSON response') ||
+                         hardText.includes('Expected double-quoted property name') ||
+                         hardText.includes('Unexpected token');
+
+    const hasHard = isChoiceDensityError || isEncounterPlanningError || isStructuralError || isParseError;
+
+    return {
+      hasHard,
+      hasAdvisory,
+      advisoryOnly: hasAdvisory && !hasHard,
+      retryable: hasHard || hasAdvisory,
+      isParseError,
+    };
   }
 
   private unwrapDynamoTypedJson(value: unknown): unknown {

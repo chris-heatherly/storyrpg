@@ -21,6 +21,7 @@ import type { SceneValidationResult } from '../validators/IncrementalValidators'
 import type { FinalStoryContractReport } from '../validators/FinalStoryContractValidator';
 import type { LlmLedger } from './pipelineTelemetry';
 import type { BranchShadowDiff } from './branchShadowDiff';
+import { appendQualityLedger } from './qualityLedger';
 import { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import type { 
   ColorScript,
@@ -864,7 +865,7 @@ export async function savePipelineErrorLog(
   }>
 ): Promise<void> {
   if (!outputDir || errors.length === 0) return;
-  
+
   try {
     const errorLogPath = outputDir + '99-pipeline-errors.json';
     await writeJsonFile(errorLogPath, {
@@ -876,6 +877,20 @@ export async function savePipelineErrorLog(
   } catch (e) {
     console.warn('[OutputWriter] Failed to save error log:', e);
   }
+
+  // Record the failed run in the cross-run quality ledger (B3) so the
+  // generation success/failure rate is tracked, not just visible by reading
+  // the filesystem. Best-effort.
+  try {
+    const baseDir = getOutputBaseDir();
+    const runDir = outputDir.replace(baseDir, '').replace(/\/+$/, '');
+    await appendQualityLedger(baseDir, {
+      timestamp: new Date().toISOString(),
+      runDir,
+      outcome: 'failed',
+      errorCount: errors.length,
+    });
+  } catch { /* ledger is best-effort */ }
 }
 
 export async function saveVideoDiagnosticsLog(
@@ -1996,6 +2011,23 @@ export async function savePipelineOutputs(
 
   console.log(`[OutputWriter] ✓ Saved ${files.length} files to ${outputDir}`);
   console.log(`[OutputWriter] Summary:`, manifest.summary);
+
+  // Record the successful run in the cross-run quality ledger (B3).
+  try {
+    const baseDir = getOutputBaseDir();
+    const runDir = outputDir.replace(baseDir, '').replace(/\/+$/, '');
+    await appendQualityLedger(baseDir, {
+      timestamp: manifest.generatedAt || new Date().toISOString(),
+      runDir,
+      storyId: manifest.storyId,
+      storyTitle: manifest.storyTitle,
+      outcome: 'success',
+      overallScore: manifest.summary?.validationScore,
+      qaScore: manifest.summary?.qaScore,
+      validationPassed: manifest.summary?.validationPassed,
+      finalStoryContractPassed: manifest.summary?.finalStoryContractPassed,
+    });
+  } catch { /* ledger is best-effort */ }
 
   return manifest;
 }

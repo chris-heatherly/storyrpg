@@ -84,6 +84,41 @@ story and image-quality rules, not the old orchestration model.
 | Treatment/source fidelity | `TreatmentFidelityValidator`, quote recall diagnostics |
 | Sequence specificity/continuity | `sequencePlanSpecificityAudit`, `sequenceContinuityAudit`, `turnAudit` |
 
+## Blocking vs Advisory (validator tiering)
+
+The #1 product goal is shipping complete, playable stories. Craft/fidelity
+validators must NOT produce zero output when they can't be fully satisfied.
+StoryArchitect retries on any validation failure, but on the **final** attempt
+the outcome depends on the failure tier:
+
+| Tier | Examples | Final-attempt behavior |
+|---|---|---|
+| **Hard correctness** | scene-graph references a non-existent scene, bottleneck/starting scene invalid, choice-density floor unmet, required encounter missing, unparseable JSON | **Blocks** — the episode fails (story cannot be played if these are broken). |
+| **Advisory craft/fidelity** | `[TreatmentFidelity]`, `[DramaticStructure]`, `[ThemePressure]`, `[SceneTurnContract]`, `[EpisodePressure]` | **Degrades to a recorded warning** — the blueprint still ships; warnings are emitted as pipeline `warning` events and surfaced on the run, not discarded. |
+
+Classification lives in `StoryArchitect.classifyBlueprintFailure()` (pure,
+unit-tested). Hard-error keyword checks run only on non-advisory lines so an
+advisory message that incidentally mentions a hard keyword (e.g. TreatmentFidelity's
+"…into a real choicePoint") is not misread as hard. See
+`docs/PROJECT_AUDIT_2026-05-28.md` (Track B1).
+
+## Quality Score Bands & Ledger
+
+The best-practices validator computes a 0-100 `overallScore` per run. Bands
+(defined in `src/ai-agents/utils/qualityLedger.ts`):
+
+| Band | Score | Meaning |
+|---|---|---|
+| **ship** | ≥ 70 | Good to publish. |
+| **warn** | 50–69 | Publishable but flagged for review. |
+| **block** | < 50 | Needs rework. |
+
+Every run appends one JSONL row to `generated-stories/quality-ledger.jsonl`
+(`outcome`, `overallScore`, `band`, `qaScore`, `validationPassed`,
+`finalStoryContractPassed`, `errorCount`, timestamps). This makes the
+generation success/failure rate and quality trend trackable over time rather
+than invisible in the filesystem. See `docs/PROJECT_AUDIT_2026-05-28.md` (B3).
+
 ## Deprecated Structure Boundary
 
 | Deprecated / Legacy Item | Replacement | Compatibility Policy | Status |

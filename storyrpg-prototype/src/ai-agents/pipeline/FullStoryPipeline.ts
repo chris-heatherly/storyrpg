@@ -625,6 +625,10 @@ export class FullStoryPipeline {
   private worldBuilder: WorldBuilder;
   private characterDesigner: CharacterDesigner;
   private storyArchitect: StoryArchitect;
+  // Advisory (non-fatal) validation warnings accumulated across episodes when
+  // the architect ships a blueprint despite craft/fidelity issues (B1). Fed
+  // into the run's quality record so the issues stay visible.
+  private architectAdvisoryWarnings: string[] = [];
   private sceneWriter: SceneWriter;
   private choiceAuthor: ChoiceAuthor;
   private qaRunner: QARunner;
@@ -6534,6 +6538,19 @@ export class FullStoryPipeline {
       agent: 'StoryArchitect',
       message: `Created blueprint with ${result.data.scenes.length} scenes`,
     });
+
+    // Validator tiering (B1): the architect may now succeed despite advisory
+    // craft/fidelity issues that previously aborted the whole run. Surface them
+    // as warnings and record them so the story still ships with the issues
+    // visible (rather than producing zero output).
+    if (result.warnings && result.warnings.length > 0) {
+      this.architectAdvisoryWarnings.push(...result.warnings);
+      this.emit({
+        type: 'warning',
+        phase: 'episode_architecture',
+        message: `StoryArchitect proceeded with ${result.warnings.length} unresolved advisory issue(s) (story still generated): ${result.warnings.slice(0, 3).join(' | ')}${result.warnings.length > 3 ? ' …' : ''}`,
+      });
+    }
 
     return result.data;
   }

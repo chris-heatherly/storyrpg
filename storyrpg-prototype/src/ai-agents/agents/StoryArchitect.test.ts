@@ -1439,3 +1439,50 @@ describe('StoryArchitect opening agency requirements', () => {
     expect(() => (architect as any).validateBlueprint(blueprint, makeInput({ episodeNumber: 2 }))).not.toThrow();
   });
 });
+
+describe('StoryArchitect.classifyBlueprintFailure (validator tiering, B1)', () => {
+  it('treats advisory-only failures as degradable (not hard)', () => {
+    const c = StoryArchitect.classifyBlueprintFailure(
+      '[TreatmentFidelity] Blueprint does not turn any authored major choice pressure into a real choicePoint.',
+    );
+    expect(c.hasAdvisory).toBe(true);
+    expect(c.hasHard).toBe(false);
+    expect(c.advisoryOnly).toBe(true);
+    expect(c.retryable).toBe(true);
+  });
+
+  it('recognizes all five advisory tags', () => {
+    for (const tag of ['[TreatmentFidelity]', '[DramaticStructure]', '[ThemePressure]', '[SceneTurnContract]', '[EpisodePressure]']) {
+      expect(StoryArchitect.classifyBlueprintFailure(`${tag} something`).advisoryOnly).toBe(true);
+    }
+  });
+
+  it('keeps structural failures hard (must block)', () => {
+    const c = StoryArchitect.classifyBlueprintFailure('Bottleneck scene "s9" references a non-existent scene.');
+    expect(c.hasHard).toBe(true);
+    expect(c.advisoryOnly).toBe(false);
+    expect(c.retryable).toBe(true);
+  });
+
+  it('keeps parse failures hard and flagged', () => {
+    const c = StoryArchitect.classifyBlueprintFailure('Failed to parse JSON response: Unexpected token');
+    expect(c.isParseError).toBe(true);
+    expect(c.hasHard).toBe(true);
+    expect(c.advisoryOnly).toBe(false);
+  });
+
+  it('mixed hard+advisory is NOT advisoryOnly (hard wins, still blocks)', () => {
+    const c = StoryArchitect.classifyBlueprintFailure(
+      '[DramaticStructure] weak midpoint\nBottleneck scene "s3" references a non-existent scene.',
+    );
+    expect(c.hasAdvisory).toBe(true);
+    expect(c.hasHard).toBe(true);
+    expect(c.advisoryOnly).toBe(false);
+  });
+
+  it('an unrecognized error is neither retryable nor advisory', () => {
+    const c = StoryArchitect.classifyBlueprintFailure('some unexpected runtime error');
+    expect(c.retryable).toBe(false);
+    expect(c.advisoryOnly).toBe(false);
+  });
+});

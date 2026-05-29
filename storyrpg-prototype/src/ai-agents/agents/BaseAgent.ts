@@ -29,6 +29,13 @@ export interface AgentResponse<T> {
   data?: T;
   rawResponse?: string;
   error?: string;
+  /**
+   * Non-fatal issues recorded when an agent succeeds despite advisory
+   * validation failures (e.g. craft/fidelity checks that, after retries, are
+   * degraded to warnings instead of aborting the run). See validator tiering
+   * in docs/PROJECT_AUDIT_2026-05-28.md (Track B1).
+   */
+  warnings?: string[];
   usage?: {
     inputTokens: number;
     outputTokens: number;

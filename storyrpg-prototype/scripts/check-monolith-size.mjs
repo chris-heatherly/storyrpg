@@ -18,7 +18,7 @@ const projectRoot = path.resolve(__dirname, '..');
 // commit (e.g. the B1 warning-surfacing added ~17 lines to FullStoryPipeline);
 // it must never creep up via unreviewed accretion — that's what this guards.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21012,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21034,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

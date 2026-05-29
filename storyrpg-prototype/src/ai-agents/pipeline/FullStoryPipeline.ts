@@ -282,6 +282,7 @@ import {
 } from './planningHelpers';
 import { mergeSeasonEpisodes } from './seasonStoryMerge';
 import { assembleChoiceForStory, normalizeConsequences } from './choiceAssembly';
+import { repairLostSceneGraphBranches } from './branchRepair';
 
 // Re-export types for consumers
 export type { OutputManifest } from '../utils/pipelineOutputWriter';
@@ -962,12 +963,33 @@ export class FullStoryPipeline {
     }
   ): Promise<SceneGraphBranchValidationResult> {
     const isSceneEpisodeMode = this.config.generation?.episodeStructureMode === 'sceneEpisodes';
-    const result = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, {
+    const branchOptions = {
       requireSceneGraphBranching: isSceneEpisodeMode ? false : this.config.generation?.requireSceneGraphBranching,
       minSceneGraphBranchesPerEpisode: this.config.generation?.minSceneGraphBranchesPerEpisode,
       allowLinearBottleneckEpisodes: isSceneEpisodeMode ? true : this.config.generation?.allowLinearBottleneckEpisodes,
       ignoreBlueprintBranchesWithoutSceneRouting: isSceneEpisodeMode,
-    });
+    };
+    let result = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
+
+    // Repair a branch the blueprint planned but assembly dropped (intermittent),
+    // then re-validate. Deterministic: wires/synthesizes nextSceneId onto the
+    // branch scene's choice point. See branchRepair.ts / PROJECT_AUDIT.
+    if (!result.valid && !isSceneEpisodeMode) {
+      const lostBranch = result.issues.some(
+        issue => issue.type === 'lost_branch_during_assembly' || issue.type === 'missing_scene_graph_branch'
+      );
+      if (lostBranch) {
+        const wired = repairLostSceneGraphBranches(episode, blueprint);
+        if (wired > 0) {
+          this.emit({
+            type: 'warning',
+            phase: context.phase,
+            message: `Repaired ${wired} lost scene-graph branch(es) by wiring nextSceneId onto the branch scene's choices (would otherwise have aborted the episode).`,
+          });
+          result = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
+        }
+      }
+    }
 
     this.emit({
       type: result.valid ? 'checkpoint' : 'warning',

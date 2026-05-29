@@ -28,6 +28,8 @@ export interface RepairChoice {
 export interface RepairBeat {
   id?: string;
   isChoicePoint?: boolean;
+  isChoiceBridge?: boolean;
+  nextSceneId?: string;
   choices?: RepairChoice[];
   [key: string]: unknown;
 }
@@ -50,22 +52,61 @@ export interface RepairBlueprint {
   scenes?: RepairBlueprintScene[];
 }
 
-function buildSyntheticBranchChoice(
-  targetSceneId: string,
-  targetScene: RepairScene | undefined,
-  beatId: string,
-  index: number,
-): RepairChoice {
-  const where = targetScene?.name ? `toward ${targetScene.name}` : `down a different path`;
+function buildSyntheticBranchChoice(beatId: string, index: number): RepairChoice {
   return {
     id: `${beatId || 'beat'}-branch-${index + 1}`,
-    text: `Commit ${where}.`,
+    text: `Commit to this path.`,
     choiceType: 'strategic',
-    nextSceneId: targetSceneId,
     consequences: [],
     // Marks this as a repair-synthesized branch so it's traceable in output.
     synthesizedBranch: true,
   };
+}
+
+/**
+ * Whether a choice already routes to another scene — either directly via
+ * nextSceneId, or via a same-scene choice-bridge beat (nextBeatId -> beat with
+ * nextSceneId). Mirrors the validator's effective-target logic so repair never
+ * double-fires on an episode that already branches.
+ */
+function choiceHasSceneTarget(scene: RepairScene, choice: RepairChoice): boolean {
+  if (choice.nextSceneId) return true;
+  if (choice.nextBeatId) {
+    const bridge = (scene.beats || []).find((b) => b.id === choice.nextBeatId);
+    if (bridge?.nextSceneId) return true;
+  }
+  return false;
+}
+
+/**
+ * Route a choice to a target scene THROUGH a choice-bridge beat (the contract
+ * the validator enforces when requireChoiceBridge is on): the choice points at
+ * a bridge beat via nextBeatId (never a raw nextSceneId), and the bridge beat
+ * carries isChoiceBridge + nextSceneId. Mirrors FullStoryPipeline.ensureChoiceBridgeBeats.
+ */
+function wireChoiceThroughBridge(
+  scene: RepairScene,
+  beatId: string,
+  choice: RepairChoice,
+  targetSceneId: string,
+  targetScene: RepairScene | undefined,
+  index: number,
+): void {
+  const beats = scene.beats || (scene.beats = []);
+  const bridgeId = `${beatId || scene.id}-bridge-${index + 1}`;
+  choice.nextBeatId = bridgeId;
+  delete choice.nextSceneId;
+
+  if (!beats.find((b) => b.id === bridgeId)) {
+    const where = targetScene?.name ? ` toward ${targetScene.name}` : '';
+    beats.push({
+      id: bridgeId,
+      isChoiceBridge: true,
+      nextSceneId: targetSceneId,
+      text: `The decision turns into motion${where}.`,
+      synthesizedBranch: true,
+    });
+  }
 }
 
 /**
@@ -82,9 +123,10 @@ export function repairLostSceneGraphBranches(
   const bpScenes = blueprint?.scenes;
   if (!scenes?.length || !bpScenes?.length) return 0;
 
-  // If any choice already routes to another scene, the episode branches — leave it.
+  // If any choice already routes to another scene (directly or via a bridge
+  // beat), the episode branches — leave it.
   const alreadyBranches = scenes.some((s) =>
-    (s.beats || []).some((b) => (b.choices || []).some((c) => !!c.nextSceneId)),
+    (s.beats || []).some((b) => (b.choices || []).some((c) => choiceHasSceneTarget(s, c))),
   );
   if (alreadyBranches) return 0;
 
@@ -116,20 +158,23 @@ export function repairLostSceneGraphBranches(
     }
     beat.isChoicePoint = true;
     if (!beat.choices) beat.choices = [];
+    const beatId = beat.id || scene.id;
 
-    // First, wire existing choices that lack a scene target.
+    // Route each target THROUGH a choice-bridge beat (never a raw nextSceneId,
+    // which the validator rejects). Reuse existing target-less choices first,
+    // then synthesize one per remaining target.
     let assigned = 0;
     for (const choice of beat.choices) {
       if (assigned >= targets.length) break;
-      if (!choice.nextSceneId) {
-        choice.nextSceneId = targets[assigned];
+      if (!choiceHasSceneTarget(scene, choice)) {
+        wireChoiceThroughBridge(scene, beatId, choice, targets[assigned], scenes.find((s) => s.id === targets[assigned]), assigned);
         assigned += 1;
       }
     }
-    // Synthesize choices for any remaining targets (e.g. the beat had no choices).
     for (let t = assigned; t < targets.length; t += 1) {
-      const targetScene = scenes.find((s) => s.id === targets[t]);
-      beat.choices.push(buildSyntheticBranchChoice(targets[t], targetScene, beat.id || scene.id, t));
+      const choice = buildSyntheticBranchChoice(beatId, t);
+      beat.choices.push(choice);
+      wireChoiceThroughBridge(scene, beatId, choice, targets[t], scenes.find((s) => s.id === targets[t]), t);
     }
 
     wired += 1;

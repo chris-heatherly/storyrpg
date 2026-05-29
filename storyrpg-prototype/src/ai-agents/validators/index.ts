@@ -150,9 +150,11 @@ export type { ValidationIssue, ValidationResult } from './BaseValidator';
 export { StructuralValidator } from './StructuralValidator';
 export type { StructuralIssue, StructuralReport } from './StructuralValidator';
 
-// Future validators (available but not yet integrated into pipeline)
-// TODO: Integrate these validators when multi-episode/season generation is enabled
-export { SeasonValidator } from './SeasonValidator';
+// These were mislabeled "not yet integrated" — all three are wired:
+// CliffhangerValidator in FullStoryPipeline, PhaseValidator in the
+// world/character/blueprint phases, PixarPrinciplesValidator inside
+// IntegratedBestPracticesValidator. The dead SeasonValidator was removed.
+// See `validatorRegistry.ts` for the full stage→validator→tier dispatch map.
 export { CliffhangerValidator } from './CliffhangerValidator';
 export { PhaseValidator } from './PhaseValidator';
 export { PixarPrinciplesValidator } from './PixarPrinciplesValidator';

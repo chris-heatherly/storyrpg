@@ -9668,7 +9668,7 @@ export class FullStoryPipeline {
         
         // Persist all episode errors to disk
         try {
-          await savePipelineErrorLog(outputDirectory, 
+          await savePipelineErrorLog(outputDirectory,
             episodeResults.filter(r => !r.success).map(r => ({
               timestamp: new Date().toISOString(),
               phase: `episode_${r.episodeNumber}`,
@@ -9676,6 +9676,8 @@ export class FullStoryPipeline {
               episodeNumber: r.episodeNumber,
             }))
           );
+          // F4: early-return path — record the failed run in the quality ledger.
+          await appendFailedRunLedger(outputDirectory, episodeResults.filter(r => !r.success).length);
         } catch (_logErr) { /* non-fatal */ }
         
         // Still save partial results (world bible, character bible) for debugging
@@ -9729,6 +9731,9 @@ export class FullStoryPipeline {
               episodeNumber: result.episodeNumber,
             }))
           );
+          // F4: this episode-failure path returns early (never reaches the
+          // terminal catch), so record the failed run in the quality ledger here.
+          await appendFailedRunLedger(outputDirectory, failedEpisodeResults.length);
         } catch (_logErr) { /* non-fatal */ }
 
         return {

@@ -428,8 +428,11 @@ export class FinalStoryContractValidator {
     for (const issue of result.issues) {
       if (issue.level !== 'error') continue;
       issues.push({
+        // F3: callback debt is a craft/quality issue, not a playability bug —
+        // advisory so the story still ships (recorded as a warning + in the
+        // quality ledger). See docs/PROJECT_AUDIT_2026-05-28.md.
         type: 'unrepaired_callback_debt',
-        severity: 'error',
+        severity: 'warning',
         message: issue.message,
         validator: 'CallbackOpportunitiesValidator',
         suggestion: issue.suggestion,
@@ -483,8 +486,11 @@ export class FinalStoryContractValidator {
   ): void {
     if (qaReport && (!qaReport.passesQA || qaReport.criticalIssues.length > 0)) {
       issues.push({
+        // F3: QA score is an LLM self-assessment (craft signal), not a hard
+        // playability gate — advisory so the story ships with the score
+        // recorded rather than producing zero output.
         type: 'qa_blocker_present',
-        severity: 'error',
+        severity: 'warning',
         message: `QA report did not pass: ${qaReport.criticalIssues.join('; ') || `score ${qaReport.overallScore}`}`,
         validator: 'QARunner',
       });
@@ -496,8 +502,9 @@ export class FinalStoryContractValidator {
         : 'qa_blocker_present';
       if (type === 'unrepaired_callback_debt') metrics.callbackIssues++;
       issues.push({
+        // F3: best-practices craft findings are advisory at the final gate.
         type,
-        severity: 'error',
+        severity: 'warning',
         message: issue.message,
         validator: 'IntegratedBestPracticesValidator',
         suggestion: issue.suggestion,

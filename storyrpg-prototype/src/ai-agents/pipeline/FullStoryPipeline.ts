@@ -122,6 +122,7 @@ import {
   savePipelineOutputs,
   savePipelineErrorLog,
   savePartialStory,
+  appendFailedRunLedger,
   saveEarlyDiagnostic,
   saveAudioDiagnosticsLog,
   saveEncounterImageDiagnosticsLog,
@@ -633,6 +634,10 @@ export class FullStoryPipeline {
   // C4: running total of LLM tokens (input + output) across the whole run, used
   // to enforce config.generation.tokenBudgetPerStory in checkCancellation.
   private _totalTokensUsed = 0;
+  // F4: last-known run output dir, so the terminal catch (which is outside the
+  // try scope that declares outputDirectory) can still write the error log +
+  // a 'failed' quality-ledger row on abort.
+  private _currentOutputDirectory?: string;
   private sceneWriter: SceneWriter;
   private choiceAuthor: ChoiceAuthor;
   private qaRunner: QARunner;
@@ -9419,6 +9424,7 @@ export class FullStoryPipeline {
       } else {
         outputDirectory = await createOutputDirectory(baseBrief.story.title);
       }
+      this._currentOutputDirectory = outputDirectory; // F4: visible to the terminal catch
       this.addCheckpoint('Output Directory', { outputDirectory }, false);
 
       const savedStoryPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(outputDirectory, 'story.json');
@@ -9943,6 +9949,17 @@ export class FullStoryPipeline {
         // Mark job as failed
         if (this.jobId) {
           await failJob(this.jobId, errorMessage);
+        }
+        // F4: record the failure to disk + the quality ledger. The catch is
+        // outside the try that declares outputDirectory, so use the field.
+        if (this._currentOutputDirectory) {
+          await savePipelineErrorLog(this._currentOutputDirectory, [{
+            timestamp: new Date().toISOString(),
+            phase: 'pipeline_abort',
+            message: errorMessage,
+            stack: error instanceof Error ? error.stack : undefined,
+          }]);
+          await appendFailedRunLedger(this._currentOutputDirectory);
         }
       }
 

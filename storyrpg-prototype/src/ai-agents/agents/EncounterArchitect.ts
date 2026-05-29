@@ -699,6 +699,59 @@ export interface TensionPoint {
 }
 
 // ========================================
+// ENCOUNTER SKILL NORMALIZATION (F1)
+// ========================================
+// The LLM frequently invents non-canonical skill names for encounter choices
+// (e.g. fantasy stories use "arcana"/"tactics", or attribute names like
+// "empathy"). Those fail the playable-encounter contract (and wouldn't resolve
+// at runtime, since only the canonical skills are defined). Snap each choice's
+// primarySkill back to a valid skill. See docs/PROJECT_AUDIT_2026-05-28.md.
+
+export const CANONICAL_ENCOUNTER_SKILLS = [
+  'athletics', 'stealth', 'perception', 'persuasion',
+  'intimidation', 'deception', 'investigation', 'survival',
+];
+
+const ENCOUNTER_SKILL_SYNONYMS: Record<string, string> = {
+  // social / emotional
+  empathy: 'persuasion', compassion: 'persuasion', charm: 'persuasion',
+  diplomacy: 'persuasion', negotiation: 'persuasion', rhetoric: 'persuasion', leadership: 'persuasion',
+  // observation / reasoning
+  insight: 'perception', intuition: 'perception', awareness: 'perception', observation: 'perception',
+  tactics: 'investigation', strategy: 'investigation', logic: 'investigation', reason: 'investigation',
+  // knowledge / arcane
+  arcana: 'investigation', lore: 'investigation', knowledge: 'investigation', history: 'investigation',
+  academics: 'investigation', magic: 'investigation', spellcraft: 'investigation', research: 'investigation',
+  // physical / survival
+  medicine: 'survival', healing: 'survival', nature: 'survival', endurance: 'survival',
+  acrobatics: 'athletics', climbing: 'athletics', strength: 'athletics', combat: 'athletics',
+  fighting: 'athletics', melee: 'athletics', agility: 'athletics',
+  // stealth / guile
+  sleight: 'stealth', thievery: 'stealth', pickpocket: 'stealth', sneak: 'stealth',
+  intimidate: 'intimidation', menace: 'intimidation', coercion: 'intimidation',
+  lying: 'deception', bluff: 'deception', disguise: 'deception',
+};
+
+/**
+ * Snap a raw (possibly LLM-invented) skill name to a valid one. Prefers an
+ * exact match against `validSkills` (the story's defined skills), then a
+ * synonym mapping, then a sensible fallback. Pure + exported for testing (F1).
+ */
+export function snapEncounterSkill(raw: string | undefined, validSkills: string[]): string {
+  const canonical = validSkills && validSkills.length
+    ? validSkills.map((s) => String(s).toLowerCase())
+    : [...CANONICAL_ENCOUNTER_SKILLS];
+  const set = new Set(canonical);
+  const fallback = set.has('perception') ? 'perception' : canonical[0];
+  if (!raw || typeof raw !== 'string') return fallback;
+  const key = raw.trim().toLowerCase();
+  if (set.has(key)) return key;
+  const mapped = ENCOUNTER_SKILL_SYNONYMS[key];
+  if (mapped && set.has(mapped)) return mapped;
+  return fallback;
+}
+
+// ========================================
 // ENCOUNTER ARCHITECT CLASS
 // ========================================
 
@@ -1787,9 +1840,37 @@ RULES:
       structure.beats = [structure.beats as unknown as EncounterBeat];
     }
 
-    // Log insufficient beats but DON'T create fallbacks — let the retry loop handle it
+    // F2: an encounter with fewer than 2 beats is unplayable and fails the
+    // final story contract. Rather than only logging and hoping the retry loop
+    // fixes it (it doesn't always), synthesize the missing beat(s) from the
+    // known-good deterministic fallback so the encounter is always playable.
+    // See docs/PROJECT_AUDIT_2026-05-28.md.
     if (structure.beats.length < 2) {
-      console.warn(`[EncounterArchitect] Only ${structure.beats.length} beats returned by LLM (minimum 2 required)`);
+      console.warn(`[EncounterArchitect] Only ${structure.beats.length} beat(s) returned by LLM (minimum 2); synthesizing a resolution beat (F2).`);
+      try {
+        const fallbackBeats = this.buildDeterministicFallback(input).beats;
+        if (structure.beats.length === 0) {
+          structure.beats = fallbackBeats;
+        } else {
+          const resolutionBeat = fallbackBeats[fallbackBeats.length - 1];
+          resolutionBeat.id = 'synthetic-resolution';
+          resolutionBeat.phase = 'resolution' as EscalationPhase;
+          (resolutionBeat as EncounterBeat).isTerminal = true;
+          // Route the existing beat's non-terminal outcomes into the new beat so
+          // it is reachable.
+          for (const choice of structure.beats[0].choices || []) {
+            for (const tier of ['success', 'complicated', 'failure'] as const) {
+              const outcome = choice.outcomes?.[tier];
+              if (outcome && !outcome.isTerminal && !outcome.nextSituation) {
+                outcome.nextBeatId = resolutionBeat.id;
+              }
+            }
+          }
+          structure.beats.push(resolutionBeat);
+        }
+      } catch (err) {
+        console.warn(`[EncounterArchitect] Failed to synthesize fallback beat: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     // Normalize each beat
@@ -1851,6 +1932,22 @@ RULES:
       };
 
       ensureChoiceOutcomes(beat.choices, beat.phase);
+
+      // F1: snap any invented choice skills to the story's valid skills so they
+      // satisfy the playable-encounter contract and resolve at runtime.
+      const validSkillNames = (input.availableSkills || []).map((s) => s?.name).filter(Boolean) as string[];
+      const normalizeChoiceSkills = (choices?: EmbeddedEncounterChoice[] | EncounterChoice[]) => {
+        for (const choice of choices || []) {
+          if (choice.primarySkill !== undefined && choice.primarySkill !== null) {
+            choice.primarySkill = snapEncounterSkill(choice.primarySkill, validSkillNames);
+          }
+          for (const tier of ['success', 'complicated', 'failure'] as const) {
+            const outcome = choice.outcomes?.[tier];
+            if (outcome?.nextSituation) normalizeChoiceSkills(outcome.nextSituation.choices);
+          }
+        }
+      };
+      normalizeChoiceSkills(beat.choices);
 
       const ensureChoiceVisualContracts = (choices?: EmbeddedEncounterChoice[] | EncounterChoice[], phase: EscalationPhase = beat.phase) => {
         for (const choice of choices || []) {

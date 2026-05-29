@@ -877,18 +877,37 @@ export async function savePipelineErrorLog(
   } catch (e) {
     console.warn('[OutputWriter] Failed to save error log:', e);
   }
+  // Note: the failed-run quality-ledger row is written by appendFailedRunLedger
+  // at the true terminal abort (F4), NOT here — savePipelineErrorLog is also
+  // called for non-fatal diagnostics and must not mark a run failed.
+}
 
-  // Record the failed run in the cross-run quality ledger (B3) so the
-  // generation success/failure rate is tracked, not just visible by reading
-  // the filesystem. Best-effort.
+// The cross-run quality ledger lives in the PARENT of a run's output dir
+// (e.g. generated-stories/quality-ledger.jsonl). Deriving the base dir from the
+// run dir (rather than a global) keeps test runs writing to their own temp
+// dirs instead of polluting the real ledger (F4).
+function ledgerBaseDir(outputDir: string): string {
+  const trimmed = outputDir.replace(/\/+$/, '');
+  const slash = trimmed.lastIndexOf('/');
+  return slash >= 0 ? trimmed.slice(0, slash + 1) : './';
+}
+function runNameFromDir(outputDir: string): string {
+  const trimmed = outputDir.replace(/\/+$/, '');
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1);
+}
+
+/**
+ * Append a 'failed' row to the cross-run quality ledger at a genuine terminal
+ * abort (F4). Best-effort; never throws.
+ */
+export async function appendFailedRunLedger(outputDir: string, errorCount = 1): Promise<void> {
+  if (!outputDir) return;
   try {
-    const baseDir = getOutputBaseDir();
-    const runDir = outputDir.replace(baseDir, '').replace(/\/+$/, '');
-    await appendQualityLedger(baseDir, {
+    await appendQualityLedger(ledgerBaseDir(outputDir), {
       timestamp: new Date().toISOString(),
-      runDir,
+      runDir: runNameFromDir(outputDir),
       outcome: 'failed',
-      errorCount: errors.length,
+      errorCount,
     });
   } catch { /* ledger is best-effort */ }
 }
@@ -2037,13 +2056,13 @@ export async function savePipelineOutputs(
   console.log(`[OutputWriter] ✓ Saved ${files.length} files to ${outputDir}`);
   console.log(`[OutputWriter] Summary:`, manifest.summary);
 
-  // Record the successful run in the cross-run quality ledger (B3).
+  // Record the successful run in the cross-run quality ledger (B3). Base dir is
+  // derived from the run dir's parent so test runs don't pollute the real
+  // ledger (F4).
   try {
-    const baseDir = getOutputBaseDir();
-    const runDir = outputDir.replace(baseDir, '').replace(/\/+$/, '');
-    await appendQualityLedger(baseDir, {
+    await appendQualityLedger(ledgerBaseDir(outputDir), {
       timestamp: manifest.generatedAt || new Date().toISOString(),
-      runDir,
+      runDir: runNameFromDir(outputDir),
       storyId: manifest.storyId,
       storyTitle: manifest.storyTitle,
       outcome: 'success',

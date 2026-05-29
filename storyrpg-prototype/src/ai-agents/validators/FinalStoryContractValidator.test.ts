@@ -322,4 +322,18 @@ describe('FinalStoryContractValidator', () => {
       expect.objectContaining({ type: 'missing_requested_episode', episodeNumber: 2 }),
     ]));
   });
+
+  it('does NOT block on craft-only QA failures — tiering (F3)', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      // A failing QA self-assessment (score 61) used to hard-block the run.
+      qaReport: { passesQA: false, overallScore: 61, criticalIssues: [] } as any,
+    });
+
+    // Story still ships...
+    expect(report.passed).toBe(true);
+    // ...with the QA failure recorded as a warning, not a blocking issue.
+    expect(report.warnings.some((i) => i.type === 'qa_blocker_present')).toBe(true);
+    expect(report.blockingIssues.some((i) => i.type === 'qa_blocker_present')).toBe(false);
+  });
 });

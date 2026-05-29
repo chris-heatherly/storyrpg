@@ -822,10 +822,19 @@ export class FullStoryPipeline {
       this.config.validation.rules = defaultValidationConfig.rules;
     }
 
-    // Initialize all agents
-    this.worldBuilder = new WorldBuilder(this.config.agents.storyArchitect);
-    this.characterDesigner = new CharacterDesigner(this.config.agents.storyArchitect);
-    this.storyArchitect = new StoryArchitect(this.config.agents.storyArchitect, this.config.generation);
+    // Initialize all agents.
+    // The planning agents emit large structured JSON (world bible, character
+    // bible, the full episode blueprint, branch analysis). The default maxTokens
+    // is too small for complex/climax episodes and truncates the response
+    // mid-JSON (observed: episode-3 blueprint, "Unterminated string in JSON at
+    // position 31479"). Force ample headroom regardless of config source (F8).
+    const planningConfig = {
+      ...this.config.agents.storyArchitect,
+      maxTokens: Math.max(this.config.agents.storyArchitect.maxTokens ?? 0, 32000),
+    };
+    this.worldBuilder = new WorldBuilder(planningConfig);
+    this.characterDesigner = new CharacterDesigner(planningConfig);
+    this.storyArchitect = new StoryArchitect(planningConfig, this.config.generation);
     this.sceneWriter = new SceneWriter(this.config.agents.sceneWriter, this.config.generation);
     this.choiceAuthor = new ChoiceAuthor(this.config.agents.choiceAuthor, this.config.generation);
     // C2/C3: QA grader uses its own config when provided (cheaper / decorrelated
@@ -833,7 +842,7 @@ export class FullStoryPipeline {
     this.qaRunner = new QARunner(this.config.agents.qaRunner || this.config.agents.storyArchitect);
     const sourceMaterialConfig = { ...this.config.agents.storyArchitect, maxTokens: 16384 };
     this.sourceMaterialAnalyzer = new SourceMaterialAnalyzer(sourceMaterialConfig);
-    this.branchManager = new BranchManager(this.config.agents.storyArchitect);
+    this.branchManager = new BranchManager(planningConfig);
     if (this.config.sceneCritic?.enabled) {
       this.sceneCritic = new SceneCritic(this.config.agents.sceneWriter);
     }

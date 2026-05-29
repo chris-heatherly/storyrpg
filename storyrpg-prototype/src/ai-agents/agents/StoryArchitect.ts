@@ -3370,8 +3370,21 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       if (!stakes.want || !stakes.cost || !stakes.identity) {
         throw new Error(`Scene ${scene.id} has a major choice but incomplete stakes`);
       }
-      if (!scene.choicePoint?.consequenceDomain) {
-        throw new Error(`Scene ${scene.id} has a major choice but no consequenceDomain`);
+      if (scene.choicePoint && !scene.choicePoint.consequenceDomain) {
+        // Repair instead of aborting (F6): consequenceDomain is a categorization
+        // enum the LLM intermittently omits, and the architect already defaults
+        // it elsewhere. Infer it from the choice's own stakes (reusing the
+        // existing inference) rather than failing the whole episode.
+        // See docs/PROJECT_AUDIT_2026-05-28.md.
+        const cp = scene.choicePoint;
+        const pressure = [cp.stakes?.want, cp.stakes?.cost, cp.stakes?.identity, cp.description]
+          .filter(Boolean)
+          .join(' ');
+        cp.consequenceDomain = this.inferChoiceConsequenceDomain(
+          pressure,
+          input.seasonPlanDirectives?.treatmentGuidance,
+        );
+        console.warn(`[StoryArchitect] Scene ${scene.id} major choice missing consequenceDomain; inferred '${cp.consequenceDomain}'.`);
       }
       if (!scene.choicePoint?.reminderPlan?.immediate || !scene.choicePoint?.reminderPlan?.shortTerm) {
         throw new Error(`Scene ${scene.id} has a major choice but no usable reminderPlan`);

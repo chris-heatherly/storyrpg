@@ -1436,7 +1436,14 @@ describe('StoryArchitect opening agency requirements', () => {
       }],
     });
 
+    // F6: a major choice missing consequenceDomain is repaired (inferred), not rejected.
+    const majorScene = blueprint.scenes.find(
+      (s: any) => s.choicePoint && (s.choicePoint.branches || s.choicePoint.type === 'dilemma'),
+    );
+    delete majorScene.choicePoint.consequenceDomain;
+
     expect(() => (architect as any).validateBlueprint(blueprint, makeInput({ episodeNumber: 2 }))).not.toThrow();
+    expect(majorScene.choicePoint.consequenceDomain).toBeTruthy();
   });
 });
 

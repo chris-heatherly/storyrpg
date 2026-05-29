@@ -150,20 +150,39 @@ All commands run from `storyrpg-prototype/`:
 ```bash
 npm run dev          # Start proxy + web app together (kills existing node processes first)
 npm run proxy        # Start only the proxy server (port 3001)
-npm run web          # Start only the Expo web dev server (port 8081)
-npm run validate     # Typecheck (4 configs) + lint + run tests
+
+# Two web targets — driven by STORYRPG_APP_TARGET (see "Application Split" below):
+npm run reader:web      # Reader (public playback) on port 8081  [also: npm run web]
+npm run generator:web   # Generator (internal creation) on port 8082
+
+npm run validate     # Typecheck (4 configs) + lint (--max-warnings ratchet) + tests
 npm test             # Vitest only
 npm run typecheck    # TypeScript checking across app, test, contracts, and worker configs
-npm run generate     # CLI story generation
-npm run generate:heist    # Generate heist story type
-npm run generate:fantasy  # Generate fantasy story type
+npm run lint         # ESLint with --max-warnings ratchet (CI-enforced; new @ts-nocheck blocked)
+
+# Reader/generator boundary + secret safety (CI-enforced — see CLAUDE.md):
+npm run check:reader-boundary  # Reader must not import generator code (import-graph walk)
+npm run verify:reader          # Build dist-reader + scan the bundle for leaked secret VALUES
+npm run check:monolith-size    # Fail if the two monoliths grow past baseline
+
+# Generation (run by the proxy worker; CLI entry points for local runs):
+npm run generate          # CLI story generation
 npm run generate:doc      # Generate from document
-npm run generate:template # Generate template from document
-npm run clean:runtime     # Clean runtime artifacts
+npm run clean:runtime     # Clean runtime artifacts (job state, caches, backups)
 npm run validate:assets   # Validate story assets
-npm run test:e2e          # Run Playwright E2E tests
-npm run test:e2e:story    # Run story-specific E2E tests
+npm run test:e2e          # Playwright E2E (story playthrough) — nightly in CI
+
+# Auth / Postgres (proxy):
+npm run db:migrate   # Run DB migrations
+npm run db:verify    # Verify DB connection
 ```
+
+> **Reader/generator split (load-bearing):** the app ships two web targets from
+> one package, selected by `STORYRPG_APP_TARGET`. **Reader** is the public
+> player app and must never import generator code (`src/ai-agents`, generation
+> stores, provider settings) or carry provider API keys — `check:reader-boundary`
+> and `verify:reader` enforce this. **Generator** is the internal creation app.
+> See `docs/PROJECT_STATUS.md` and the `reader-generator-safety` skill.
 
 ## Environment Variables
 
@@ -237,7 +256,7 @@ The pipeline honours a structural spine derived from a 3-act / 7-point model:
 - **Typecheck split** — Five tsconfig files: `tsconfig.app.json` (narrow app subset), `tsconfig.test.json`, `tsconfig.contracts.json` (shared types for worker payloads), `tsconfig.worker.json`, and base `tsconfig.json`.
 - **Tests** — Co-located `*.test.ts` files, run with Vitest in Node env with RN stubs in `test/stubs/`.
 - **Generated content** — `generated-stories/` contains large JSON + image files and dominates repo size. Runtime artifacts (`.generation-jobs.json`, `pipeline-memories/`, `.ref-images/`) are transient.
-- **EXPO_PUBLIC_** prefix — Required for env vars that need to be accessible in the Expo client bundle.
+- **EXPO_PUBLIC_** prefix — Required for env vars that need to be accessible in the Expo client bundle. **Never use it for provider API keys or other secrets** — Expo inlines `EXPO_PUBLIC_*` into the public reader bundle. Provider keys are server-side (proxy) only; `npm run verify:reader` scans the built bundle for leaked key values. (PostHog `phc_` publishable keys are the one client-safe exception.)
 
 ## Deeper Documentation
 
@@ -265,4 +284,6 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/visual_storytelling_quick_reference.md` | Compact visual storytelling reference |
 | `docs/sample-story.md` | Example story structure |
 | `docs/reference/` | Original reference materials (PDF text extracts) |
+| `CLAUDE.md` (root) | Claude Code orientation: non-negotiables + skills index (points back here) |
+| `storyrpg-prototype/.claude/skills/` | Claude Code skills: `reader-generator-safety`, `pipeline-debugging` |
 | `.cursor/skills/` | Cursor agent skills: pipeline debugging, validation, orchestration, agent development, image generation, story playback, proxy server, audio narration, testing tooling, UX design, story structure rules, update docs |

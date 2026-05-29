@@ -893,6 +893,31 @@ export async function savePipelineErrorLog(
   } catch { /* ledger is best-effort */ }
 }
 
+/**
+ * B2: write a recovery snapshot of the assembled story to `partial-story.json`
+ * BEFORE the final gates (treatment fidelity, story contract) that can abort
+ * the run. If a later phase throws, the completed episodes survive on disk
+ * instead of being discarded. Distinct filename so it never shadows the real
+ * `story.json` / catalog. Best-effort: never throws.
+ * See docs/PROJECT_AUDIT_2026-05-28.md (Track B2).
+ */
+export async function savePartialStory(outputDir: string, story: Story): Promise<void> {
+  if (!outputDir || !story) return;
+  try {
+    await ensureDirectory(outputDir);
+    await writeJsonFile(outputDir + 'partial-story.json', {
+      _partial: true,
+      _note: 'Recovery snapshot written before final validation gates. The completed episodes are playable; later phases may not have run.',
+      savedAt: new Date().toISOString(),
+      episodeCount: Array.isArray(story.episodes) ? story.episodes.length : 0,
+      story,
+    });
+    console.info(`[OutputWriter] Wrote partial-story.json recovery snapshot (${Array.isArray(story.episodes) ? story.episodes.length : 0} episode(s))`);
+  } catch (e) {
+    console.warn('[OutputWriter] Failed to write partial story snapshot (non-fatal):', e instanceof Error ? e.message : String(e));
+  }
+}
+
 export async function saveVideoDiagnosticsLog(
   outputDir: string,
   diagnostics: VideoGenerationDiagnostic[],

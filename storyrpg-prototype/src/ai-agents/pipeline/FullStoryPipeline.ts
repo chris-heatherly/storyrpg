@@ -121,6 +121,7 @@ import {
   ensureDirectory,
   savePipelineOutputs,
   savePipelineErrorLog,
+  savePartialStory,
   saveEarlyDiagnostic,
   saveAudioDiagnosticsLog,
   saveEncounterImageDiagnosticsLog,
@@ -9794,6 +9795,11 @@ export class FullStoryPipeline {
       } else if (this.config.imageGen?.enabled) {
         story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
       }
+
+      // B2: never discard generated work. Snapshot the assembled story BEFORE
+      // the final gates (treatment fidelity, story contract) that can throw, so
+      // completed episodes survive a late abort as partial-story.json.
+      await savePartialStory(outputDirectory, story);
 
       this.enforceFinalTreatmentFidelity({
         story,

@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Story } from '../../types';
-import { savePipelineOutputs, writeFinalStoryPackage } from './pipelineOutputWriter';
+import { savePipelineOutputs, writeFinalStoryPackage, savePartialStory } from './pipelineOutputWriter';
 
 vi.mock('expo-file-system', () => ({
   default: {},
@@ -65,6 +65,24 @@ afterEach(async () => {
 });
 
 describe('pipelineOutputWriter', () => {
+  it('savePartialStory writes a marked recovery snapshot with the completed episodes (B2)', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-partial-'));
+    tempDirs.push(tempDir);
+    const outputDir = `${tempDir}/`;
+
+    await savePartialStory(outputDir, makeStory());
+
+    const raw = await readFile(`${outputDir}partial-story.json`, 'utf8');
+    const parsed = JSON.parse(raw);
+    expect(parsed._partial).toBe(true);
+    expect(parsed.episodeCount).toBe(1);
+    expect(parsed.story.title).toBe('Story Writer Test');
+  });
+
+  it('savePartialStory is best-effort and does not throw on a bad dir', async () => {
+    await expect(savePartialStory('', makeStory())).resolves.toBeUndefined();
+  });
+
   it('writes final story packages through Node built-in modules when require is unavailable', async () => {
     const originalGetBuiltinModule = process.getBuiltinModule;
     const requestedModules: string[] = [];

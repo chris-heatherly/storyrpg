@@ -629,6 +629,9 @@ export class FullStoryPipeline {
   // the architect ships a blueprint despite craft/fidelity issues (B1). Fed
   // into the run's quality record so the issues stay visible.
   private architectAdvisoryWarnings: string[] = [];
+  // C4: running total of LLM tokens (input + output) across the whole run, used
+  // to enforce config.generation.tokenBudgetPerStory in checkCancellation.
+  private _totalTokensUsed = 0;
   private sceneWriter: SceneWriter;
   private choiceAuthor: ChoiceAuthor;
   private qaRunner: QARunner;
@@ -781,6 +784,11 @@ export class FullStoryPipeline {
         attempt: observation.attempt,
         error: observation.error,
       });
+      // C4: accumulate total tokens so checkCancellation can enforce a per-story
+      // ceiling and abort runaway retry fan-out.
+      if (observation.usage) {
+        this._totalTokensUsed += (observation.usage.inputTokens || 0) + (observation.usage.outputTokens || 0);
+      }
     });
     // A5: default image worker mode ON. The per-provider throttle in
     // ImageGenerationService now enforces its own rate limits per provider,
@@ -813,7 +821,9 @@ export class FullStoryPipeline {
     this.storyArchitect = new StoryArchitect(this.config.agents.storyArchitect, this.config.generation);
     this.sceneWriter = new SceneWriter(this.config.agents.sceneWriter, this.config.generation);
     this.choiceAuthor = new ChoiceAuthor(this.config.agents.choiceAuthor, this.config.generation);
-    this.qaRunner = new QARunner(this.config.agents.storyArchitect);
+    // C2/C3: QA grader uses its own config when provided (cheaper / decorrelated
+    // from the author model); falls back to storyArchitect config otherwise.
+    this.qaRunner = new QARunner(this.config.agents.qaRunner || this.config.agents.storyArchitect);
     const sourceMaterialConfig = { ...this.config.agents.storyArchitect, maxTokens: 16384 };
     this.sourceMaterialAnalyzer = new SourceMaterialAnalyzer(sourceMaterialConfig);
     this.branchManager = new BranchManager(this.config.agents.storyArchitect);
@@ -4195,6 +4205,15 @@ export class FullStoryPipeline {
         this._cancelled = true;
         throw new JobCancelledError(this.jobId);
       }
+    }
+    // C4: per-story token ceiling. Abort fast if a runaway retry loop blows the
+    // budget. Disabled unless config.generation.tokenBudgetPerStory is set.
+    const budget = this.config.generation?.tokenBudgetPerStory;
+    if (budget && budget > 0 && this._totalTokensUsed > budget) {
+      throw new Error(
+        `Token budget exceeded: used ${this._totalTokensUsed} tokens > budget ${budget}. ` +
+          `Aborting to prevent runaway cost. Raise generation.tokenBudgetPerStory to allow more.`,
+      );
     }
   }
 

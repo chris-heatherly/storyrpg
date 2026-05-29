@@ -174,6 +174,13 @@ export interface GenerationSettingsConfig {
   llmMaxGlobalInFlight?: number;
   llmMaxPerProviderInFlight?: number;
   llmBackoffJitterRatio?: number;
+  /**
+   * C4: hard ceiling on total LLM tokens (input + output) for a single story
+   * generation. When set and exceeded, the run aborts fast instead of letting a
+   * hard-to-satisfy validator balloon cost via multiplicative retries. Unset =
+   * no ceiling (default). Enforced at cancellation checkpoints.
+   */
+  tokenBudgetPerStory?: number;
   // Sequential mode preserves previous-episode summary dependency chain.
   episodeDependencyMode?: 'sequential' | 'independent';
   // Optional cloud uplift (kept disabled by default for local-first rollout)
@@ -659,6 +666,13 @@ export interface PipelineConfig {
     choiceAuthor: AgentConfig;
     imagePlanner?: AgentConfig;
     videoDirector?: AgentConfig;
+    /**
+     * C2/C3: QA grader config. Defaults to the main model, but can use a
+     * different (cheaper and/or decorrelated-from-author) model via
+     * EXPO_PUBLIC_QA_LLM_MODEL so QA isn't graded by the same model that wrote
+     * the content. See docs/PROJECT_AUDIT_2026-05-28.md.
+     */
+    qaRunner?: AgentConfig;
   };
   // Validation configuration
   validation: ValidationConfig;
@@ -914,6 +928,16 @@ export function loadConfig(): PipelineConfig {
         ...defaultConfig,
         temperature: 0.75, // Balanced for meaningful choices
       },
+      qaRunner: {
+        ...defaultConfig,
+        // Use a distinct (cheaper / decorrelated) model for QA grading when
+        // configured; otherwise fall back to the main model (no behavior
+        // change). Decorrelating the judge from the author is the point (C3).
+        provider: ((env.EXPO_PUBLIC_QA_LLM_PROVIDER || env.QA_LLM_PROVIDER) as AgentConfig['provider']) || defaultConfig.provider,
+        model: env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model,
+        apiKey: resolveProviderApiKey(((env.EXPO_PUBLIC_QA_LLM_PROVIDER || env.QA_LLM_PROVIDER) as AgentConfig['provider']) || defaultConfig.provider),
+        temperature: 0.3, // Lower temp for more consistent grading
+      },
       imagePlanner: {
         provider: ((env.EXPO_PUBLIC_IMAGE_LLM_PROVIDER || env.IMAGE_LLM_PROVIDER) as AgentConfig['provider']) || defaultConfig.provider,
         model: env.EXPO_PUBLIC_IMAGE_LLM_MODEL || env.IMAGE_LLM_MODEL || defaultConfig.model,
@@ -990,6 +1014,11 @@ export function loadConfig(): PipelineConfig {
       allowLinearBottleneckEpisodes:
         env.EXPO_PUBLIC_ALLOW_LINEAR_BOTTLENECK_EPISODES === 'true' ||
         env.ALLOW_LINEAR_BOTTLENECK_EPISODES === 'true',
+      // C4: per-story token ceiling (0/unset = no ceiling).
+      tokenBudgetPerStory: Number.parseInt(
+        env.EXPO_PUBLIC_TOKEN_BUDGET_PER_STORY || env.TOKEN_BUDGET_PER_STORY || '0',
+        10,
+      ) || undefined,
     },
     memory: {
       enabled: env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' || env.CLAUDE_MEMORY === 'true' || defaultConfig.provider === 'anthropic',

@@ -185,9 +185,13 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
   }
 
   private normalizeReport(report: ContinuityReport): ContinuityReport {
-    // Ensure overallScore is a number
+    // Ensure overallScore is a number. Fail CLOSED (C3): an unparseable QA
+    // response must not masquerade as a neutral 50 "pass". Score it 0 so it
+    // fails the QA threshold and triggers a (bounded) repair pass instead of
+    // silently shipping unverified content. See docs/PROJECT_AUDIT_2026-05-28.md.
     if (typeof report.overallScore !== 'number') {
-      report.overallScore = 50;
+      console.warn(`[${this.name}] QA report had no numeric overallScore — failing closed (0), not defaulting to 50.`);
+      report.overallScore = 0;
     }
 
     // Ensure arrays are arrays
@@ -422,9 +426,13 @@ You ensure every character sounds like themselves and nobody else. Distinct voic
   }
 
   private normalizeReport(report: VoiceReport): VoiceReport {
-    // Ensure overallScore is a number
+    // Ensure overallScore is a number. Fail CLOSED (C3): an unparseable QA
+    // response must not masquerade as a neutral 50 "pass". Score it 0 so it
+    // fails the QA threshold and triggers a (bounded) repair pass instead of
+    // silently shipping unverified content. See docs/PROJECT_AUDIT_2026-05-28.md.
     if (typeof report.overallScore !== 'number') {
-      report.overallScore = 50;
+      console.warn(`[${this.name}] QA report had no numeric overallScore — failing closed (0), not defaulting to 50.`);
+      report.overallScore = 0;
     }
 
     // Ensure distinctionScore is a number
@@ -680,9 +688,13 @@ Every significant choice needs:
   }
 
   private normalizeReport(report: StakesReport): StakesReport {
-    // Ensure overallScore is a number
+    // Ensure overallScore is a number. Fail CLOSED (C3): an unparseable QA
+    // response must not masquerade as a neutral 50 "pass". Score it 0 so it
+    // fails the QA threshold and triggers a (bounded) repair pass instead of
+    // silently shipping unverified content. See docs/PROJECT_AUDIT_2026-05-28.md.
     if (typeof report.overallScore !== 'number') {
-      report.overallScore = 50;
+      console.warn(`[${this.name}] QA report had no numeric overallScore — failing closed (0), not defaulting to 50.`);
+      report.overallScore = 0;
     }
 
     // Ensure metrics exists with all fields

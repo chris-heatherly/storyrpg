@@ -34,9 +34,6 @@ docs/
 ├── QA_FIXES_SUMMARY.md            ← QA fixes and patterns
 ├── MOBILE_REDESIGN.md             ← Mobile-first reader redesign notes
 ├── PARALLEL_GENERATION.md         ← Parallel generation status (ParallelStoryPipeline has been removed)
-├── visual_storytelling_guide.md   ← Visual storytelling design guide
-├── visual_storytelling_quick_reference.md
-├── sample-story.md                ← Example story structure
 └── reference/                     ← Original reference materials (PDF text extracts)
     ├── Interactive_Storytelling_Complete_Expert_Guide.docx.pdf.txt
     └── StoryRPG_Engine_GDD.docx.pdf.txt
@@ -280,9 +277,6 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/QA_FIXES_SUMMARY.md` | QA fixes and recurring patterns |
 | `docs/MOBILE_REDESIGN.md` | Mobile-first reader redesign notes + April 2026 unified reader/settings UX primitives |
 | `docs/PARALLEL_GENERATION.md` | Parallel generation status (ParallelStoryPipeline removed; concurrency lives in `FullStoryPipeline`) |
-| `docs/visual_storytelling_guide.md` | Visual storytelling design principles |
-| `docs/visual_storytelling_quick_reference.md` | Compact visual storytelling reference |
-| `docs/sample-story.md` | Example story structure |
 | `docs/reference/` | Original reference materials (PDF text extracts) |
 | `CLAUDE.md` (root) | Claude Code orientation: non-negotiables + skills index (points back here) |
 | `storyrpg-prototype/.claude/skills/` | Claude Code skills: `reader-generator-safety`, `pipeline-debugging` |

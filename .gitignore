@@ -22,3 +22,7 @@ scripts/.auto-commit.log
 # Firebase Hosting local cache
 storyrpg-prototype/.firebase/
 .firebase/
+
+# Guard against re-committing the nested-duplicate dir and codex scratch folders
+storyrpg-prototype/storyrpg-prototype/
+**/.codex-tmp/

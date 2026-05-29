@@ -9,6 +9,19 @@ reader/generator deployment split, read `docs/READER_GENERATOR_SPLIT.md`.
 
 ---
 
+## 0) Agent Execution Rules
+
+If you are an AI agent running this guide top-to-bottom, follow these rules:
+
+1. **Always run commands from the paths specified.** Most commands run inside `storyrpg-prototype/`, not the workspace root.
+2. **Never commit `.env`.** It contains API keys. If you touch it, do not stage it.
+3. **Never overwrite an existing `.env`** without asking — the user's keys may already be there. Read it first; only append missing keys.
+4. **Wait for long commands.** `npm install` can take 1–3 minutes. `npm run dev` is long-running; launch it in the background and poll for the "listening on port 3001" / Expo bundler lines.
+5. **Stop and report** if a step fails twice. Do not invent credentials, fabricate API keys, or skip verification.
+6. **Ports used:** `3001` (proxy), `8081` (Expo web). If either is in use, kill the offending process or pick a different port via `PORT=` before proceeding.
+
+---
+
 ## Table of Contents
 
 1. [Prerequisites](#1-prerequisites)

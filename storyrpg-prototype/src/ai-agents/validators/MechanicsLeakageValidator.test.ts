@@ -45,6 +45,19 @@ describe('MechanicsLeakageValidator', () => {
     expect(result.issues).toEqual([]);
   });
 
+  it('still flags genuine die-result language despite the action-verb carve-out', () => {
+    const result = new MechanicsLeakageValidator().validate({
+      texts: [
+        { id: 'b1', text: 'You roll a 17 on the check and shove the door open.' },
+        { id: 'b2', text: 'She rolled a 4 and the rope slipped.' },
+        { id: 'b3', text: 'Roll under 12 to slip past unseen.' },
+      ],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.metrics.leaksFound).toBeGreaterThanOrEqual(3);
+  });
+
   it('still flags genuine RPG optimization terms', () => {
     const result = new MechanicsLeakageValidator().validate({
       texts: [

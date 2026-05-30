@@ -9983,11 +9983,18 @@ export class FullStoryPipeline {
         // F4: record the failure to disk + the quality ledger. The catch is
         // outside the try that declares outputDirectory, so use the field.
         if (this._currentOutputDirectory) {
+          // Preserve the structured failure context (e.g. the final story
+          // contract's specific blocking issues) so the run is inspectable on
+          // disk and the generator can be fixed — not just the top-line message.
+          const details = error instanceof PipelineError && error.context
+            ? error.context
+            : undefined;
           await savePipelineErrorLog(this._currentOutputDirectory, [{
             timestamp: new Date().toISOString(),
             phase: 'pipeline_abort',
             message: errorMessage,
             stack: error instanceof Error ? error.stack : undefined,
+            ...(details ? { details } : {}),
           }]);
           await appendFailedRunLedger(this._currentOutputDirectory);
         }

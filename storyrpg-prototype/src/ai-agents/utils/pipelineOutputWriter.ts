@@ -862,6 +862,10 @@ export async function savePipelineErrorLog(
     message: string;
     stack?: string;
     episodeNumber?: number;
+    // Structured failure context (e.g. the specific blocking issues from the
+    // final story contract) so a failed run is inspectable on disk and the
+    // generator can be fixed — not just the top-line message.
+    details?: Record<string, unknown>;
   }>
 ): Promise<void> {
   if (!outputDir || errors.length === 0) return;

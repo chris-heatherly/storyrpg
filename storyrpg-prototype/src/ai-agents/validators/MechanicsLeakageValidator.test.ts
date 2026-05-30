@@ -27,4 +27,31 @@ describe('MechanicsLeakageValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.issues).toEqual([]);
   });
+
+  it('does not false-positive on the ordinary words "build", "bonus", "modifier"', () => {
+    const result = new MechanicsLeakageValidator().validate({
+      texts: [
+        // Regression: "build" as a verb hard-failed a real story's final contract.
+        { id: 'b1', text: 'You watch, with the authority of centuries spent watching mortals build and fall.' },
+        { id: 'b2', text: 'A welcome bonus from the king arrived with the dawn.' },
+        { id: 'b3', text: 'She works to build trust with the wary villagers.' },
+      ],
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toEqual([]);
+  });
+
+  it('still flags genuine RPG optimization terms', () => {
+    const result = new MechanicsLeakageValidator().validate({
+      texts: [
+        { id: 'b1', text: 'Respec your character build for the boss.' },
+        { id: 'b2', text: 'That grants a stat bonus to your next attempt.' },
+        { id: 'b3', text: 'The skill modifier applies before the check.' },
+      ],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.metrics.leaksFound).toBeGreaterThanOrEqual(3);
+  });
 });

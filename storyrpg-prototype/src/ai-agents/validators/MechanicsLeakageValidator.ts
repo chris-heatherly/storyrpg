@@ -38,7 +38,12 @@ const LEAK_PATTERNS: Array<{ pattern: RegExp; label: string; suggestion: string 
     suggestion: 'Replace checks and thresholds with fictional affordances, pressure, or limits.',
   },
   {
-    pattern: /\b(?:skill\s*check|level requirement|build|modifier|bonus|success chance|failure chance)\b/i,
+    // NOTE: the optimization terms must stay RPG-specific. Bare "build",
+    // "bonus", and "modifier" are ordinary English ("mortals build and fall",
+    // "a welcome bonus") and false-positive on fiction-first prose, hard-failing
+    // the whole story at the final contract. Qualify them to their mechanical
+    // sense; "+N bonus" is still caught by the numeric-stat-delta pattern below.
+    pattern: /\b(?:skill\s*check|level requirement|character\s+build|(?:stat|skill|attribute)\s+(?:modifier|bonus)|success chance|failure chance)\b/i,
     label: 'player-facing optimization language',
     suggestion: 'Describe capability through what the character notices, risks, or can lean on in the fiction.',
   },

@@ -7890,22 +7890,16 @@ export class FullStoryPipeline {
           ...(sceneBlueprint.npcsPresent || []),
         ]));
         
-        // Merge in skills from season plan's planned encounters for this scene
-        if (brief.seasonPlan) {
-          if (encounterRelevantSkills.length > 0) {
-            const existingNames = new Set(defaultSkills.map(s => s.name.toLowerCase()));
-            for (const skillName of encounterRelevantSkills) {
-              if (!existingNames.has(skillName.toLowerCase())) {
-                // Infer attribute from skill name
-                const socialSkills = ['diplomacy', 'charm', 'bluff', 'negotiation', 'leadership', 'empathy'];
-                const mindSkills = ['arcana', 'lore', 'history', 'medicine', 'technology', 'hacking', 'engineering', 'science'];
-                const attr = socialSkills.includes(skillName.toLowerCase()) ? 'social' 
-                  : mindSkills.includes(skillName.toLowerCase()) ? 'mind' : 'body';
-                defaultSkills.push({ name: skillName.toLowerCase(), attribute: attr, description: `${skillName} (from season plan)` });
-              }
-            }
-          }
-        }
+        // NOTE: encounterRelevantSkills are passed to the architect as *prompt
+        // hints* (see availableSkills/encounterRelevantSkills inputs below), but
+        // they must NOT be merged into the valid-skill canon. The story's skill
+        // set is hardwired to DEFAULT_SKILLS (see initialState.skills), so any
+        // name beyond those (e.g. "empathy", "resolve", "honesty") is undefined
+        // at runtime and fails FinalStoryContractValidator's playable-encounter
+        // check. Keeping availableSkills == DEFAULT_SKILLS lets EncounterArchitect's
+        // snapEncounterSkill() map invented skills back to a canonical one
+        // (empathy→persuasion, agility→athletics, …). Do NOT re-add a merge here.
+        // See docs/PROJECT_AUDIT_2026-05-28.md (F1).
 
         // Determine next scene IDs for storylet branching
         // Victory continues to first leadsTo scene, defeat to second (or same if only one)

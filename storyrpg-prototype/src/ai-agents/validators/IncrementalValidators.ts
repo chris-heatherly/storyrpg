@@ -1081,17 +1081,42 @@ export class IncrementalEncounterValidator extends BaseValidator {
 
     const encounterBeats = getEncounterBeats(encounter as any);
 
-    // Check beat count
-    if (encounterBeats.length === 0) {
+    // Tree-format encounters (EncounterArchitect.convertFlatToTree) deliberately
+    // collapse to a single top-level beat whose progression lives in nested
+    // `outcome.nextSituation` trees. Count those nested situations as playable
+    // units so a deep, fully-authored tree isn't rejected for "only 1 beat".
+    // A genuinely truncated single-beat encounter (no nested situations) still
+    // fails, which is the case this check exists to catch.
+    const countNestedSituations = (choices: any[] | undefined): number => {
+      let count = 0;
+      for (const choice of choices || []) {
+        for (const tier of ['success', 'complicated', 'failure'] as const) {
+          const next = choice?.outcomes?.[tier]?.nextSituation;
+          if (next) {
+            count += 1;
+            count += countNestedSituations(next.choices);
+          }
+        }
+      }
+      return count;
+    };
+    const nestedSituations = encounterBeats.reduce(
+      (sum, beat: any) => sum + countNestedSituations(beat.choices),
+      0
+    );
+    const playableUnits = encounterBeats.length + nestedSituations;
+
+    // Check playable unit count (top-level beats + nested situations)
+    if (playableUnits === 0) {
       issues.push({
         type: 'missing_beats',
         detail: 'Encounter has no beats defined',
         severity: 'error',
       });
-    } else if (encounterBeats.length < 2) {
+    } else if (playableUnits < 2) {
       issues.push({
         type: 'missing_beats',
-        detail: `Encounter has only ${encounterBeats.length} beat(s) - minimum 2 required for a playable encounter`,
+        detail: `Encounter has only ${playableUnits} playable situation(s) - minimum 2 required for a playable encounter`,
         severity: 'error',
       });
     }

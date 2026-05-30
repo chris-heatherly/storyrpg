@@ -401,4 +401,114 @@ describe('IncrementalEncounterValidator', () => {
       expect.objectContaining({ type: 'missing_outcome', detail: expect.stringContaining('defeat') }),
     ]));
   });
+
+  // Regression: EncounterArchitect.convertFlatToTree() collapses a multi-beat
+  // encounter into ONE top-level beat whose progression lives in nested
+  // `nextSituation` trees. The beat-count check must count those nested
+  // situations, not just top-level beats, or every tree-format encounter fails
+  // the playable-encounter contract for "only 1 beat".
+  it('does not flag missing_beats for a single top-level beat that branches into nested situations', () => {
+    const validator = new IncrementalEncounterValidator(['persuasion', 'perception']);
+
+    const encounter = {
+      sceneId: 'scene-tree',
+      encounterType: 'social',
+      startingBeatId: 'beat-1',
+      goalClock: { name: 'Goal', segments: 4, description: 'Goal' },
+      threatClock: { name: 'Threat', segments: 4, description: 'Threat' },
+      stakes: { victory: 'Win', defeat: 'Lose' },
+      tensionCurve: [],
+      beats: [
+        {
+          id: 'beat-1',
+          phase: 'setup',
+          name: 'Opening',
+          description: 'The single authored beat; depth lives in the tree.',
+          setupText: 'The conversation opens.',
+          choices: [{
+            id: 'choice-1',
+            text: 'Press gently',
+            approach: 'direct',
+            primarySkill: 'persuasion',
+            outcomes: {
+              success: {
+                tier: 'success', narrativeText: 'They open up.', goalTicks: 1, threatTicks: 0,
+                nextSituation: {
+                  setupText: 'A deeper question surfaces.',
+                  choices: [{
+                    id: 'choice-1a', text: 'Hold the moment', approach: 'steady', primarySkill: 'perception',
+                    outcomes: {
+                      success: { tier: 'success', narrativeText: 'Trust holds.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                      complicated: { tier: 'complicated', narrativeText: 'Fragile.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'victory' },
+                      failure: { tier: 'failure', narrativeText: 'It breaks.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+                    },
+                  }],
+                },
+              },
+              complicated: { tier: 'complicated', narrativeText: 'They waver.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'victory' },
+              failure: { tier: 'failure', narrativeText: 'They withdraw.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+            },
+          }],
+        } as any,
+      ],
+      storylets: {
+        victory: { id: 'v', name: 'v', triggerOutcome: 'victory', tone: 'triumphant', narrativeFunction: '', startingBeatId: 'v1', consequences: [], beats: [{ id: 'v1', text: 'v', isTerminal: true }] },
+        defeat: { id: 'd', name: 'd', triggerOutcome: 'defeat', tone: 'somber', narrativeFunction: '', startingBeatId: 'd1', consequences: [], beats: [{ id: 'd1', text: 'd', isTerminal: true }] },
+      },
+      environmentalElements: [],
+      npcStates: [],
+      escalationTriggers: [],
+      informationVisibility: { threatClockVisible: true, npcTellsRevealAt: 'immediate', environmentElementsHidden: [], choiceOutcomesUnknown: false },
+    };
+
+    const result = validator.validateEncounter(encounter as unknown as EncounterStructure);
+
+    expect(result.issues.some(issue => issue.type === 'missing_beats')).toBe(false);
+  });
+
+  it('still flags missing_beats for a truncated single-beat encounter with no nested situations', () => {
+    const validator = new IncrementalEncounterValidator(['persuasion']);
+
+    const encounter = {
+      sceneId: 'scene-truncated',
+      encounterType: 'social',
+      startingBeatId: 'beat-1',
+      goalClock: { name: 'Goal', segments: 4, description: 'Goal' },
+      threatClock: { name: 'Threat', segments: 4, description: 'Threat' },
+      stakes: { victory: 'Win', defeat: 'Lose' },
+      tensionCurve: [],
+      beats: [
+        {
+          id: 'beat-1',
+          phase: 'setup',
+          name: 'Opening',
+          description: 'A dead-end single beat.',
+          setupText: 'The only moment.',
+          choices: [{
+            id: 'choice-1',
+            text: 'Act',
+            approach: 'direct',
+            primarySkill: 'persuasion',
+            outcomes: {
+              success: { tier: 'success', narrativeText: 'Win.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+              complicated: { tier: 'complicated', narrativeText: 'Mixed.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'victory' },
+              failure: { tier: 'failure', narrativeText: 'Lose.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+            },
+          }],
+        } as any,
+      ],
+      storylets: {
+        victory: { id: 'v', name: 'v', triggerOutcome: 'victory', tone: 'triumphant', narrativeFunction: '', startingBeatId: 'v1', consequences: [], beats: [{ id: 'v1', text: 'v', isTerminal: true }] },
+        defeat: { id: 'd', name: 'd', triggerOutcome: 'defeat', tone: 'somber', narrativeFunction: '', startingBeatId: 'd1', consequences: [], beats: [{ id: 'd1', text: 'd', isTerminal: true }] },
+      },
+      environmentalElements: [],
+      npcStates: [],
+      escalationTriggers: [],
+      informationVisibility: { threatClockVisible: true, npcTellsRevealAt: 'immediate', environmentElementsHidden: [], choiceOutcomesUnknown: false },
+    };
+
+    const result = validator.validateEncounter(encounter as unknown as EncounterStructure);
+
+    expect(result.issues.some(issue => issue.type === 'missing_beats')).toBe(true);
+  });
 });

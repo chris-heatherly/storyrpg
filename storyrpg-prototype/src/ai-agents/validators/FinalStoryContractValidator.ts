@@ -467,8 +467,15 @@ export class FinalStoryContractValidator {
       if (result.overallPassed) continue;
       metrics.failedIncrementalResults++;
       issues.push({
+        // F3: incremental failure means regeneration was requested but couldn't
+        // fully repair the scene. The scene still has content — empty_scene,
+        // broken_navigation, and invalid_encounter are separate hard-error checks
+        // that catch actual unplayability. A residual incremental failure is a
+        // craft/quality signal, not a playability blocker. Advisory so the story
+        // ships and the issue is recorded in the quality ledger rather than
+        // producing zero output.
         type: 'failed_incremental_validation',
-        severity: 'error',
+        severity: 'warning',
         message: `Scene "${result.sceneName || result.sceneId}" still has unrepaired incremental validation failures.`,
         episodeNumber: result.episodeNumber,
         sceneId: result.sceneId,

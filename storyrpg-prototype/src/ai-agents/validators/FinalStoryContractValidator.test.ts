@@ -193,9 +193,14 @@ describe('FinalStoryContractValidator', () => {
       }],
     });
 
+    // missing_runtime_encounter is still a hard error (unplayable)
     expect(report.passed).toBe(false);
     expect(report.blockingIssues).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'missing_runtime_encounter' }),
+    ]));
+    // failed_incremental_validation is now advisory (F3 — craft signal, not
+    // playability blocker; separate structural checks catch real unplayability)
+    expect(report.warnings).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'failed_incremental_validation' }),
     ]));
   });

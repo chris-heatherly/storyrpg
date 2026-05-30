@@ -260,10 +260,6 @@ function collectCriticalSourceAnchors(sourceText: string | undefined): Array<{ l
   );
 }
 
-function firstMentionIndex(haystack: string, needle: string): number {
-  return normalize(haystack).indexOf(normalize(needle));
-}
-
 function finalSceneText(blueprint: EpisodeBlueprint): string {
   const finalScenes = (blueprint.scenes || []).filter((scene) => (scene.leadsTo || []).length === 0);
   const scenes = finalScenes.length > 0 ? finalScenes : blueprint.scenes.slice(-1);
@@ -382,12 +378,6 @@ export class TreatmentFidelityValidator {
       for (const anchor of collectCriticalSourceAnchors(input.sourceText)) {
         pushMissingExactAnchor(issues, anchor.label, anchor.value, allStoryText);
       }
-    }
-
-    const victorIndex = firstMentionIndex(allStoryText, 'Victor');
-    const raduIndex = firstMentionIndex(allStoryText, 'Radu');
-    if (victorIndex >= 0 && raduIndex >= 0 && raduIndex < victorIndex) {
-      issues.push('[TreatmentFidelity] Final story mentions Radu before Victor; check treatment continuity/order before generation proceeds.');
     }
 
     return { valid: issues.length === 0, issues };

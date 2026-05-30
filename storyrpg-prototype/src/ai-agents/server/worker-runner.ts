@@ -3,6 +3,7 @@
 import * as fs from 'fs/promises';
 import type { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import { PipelineError } from '../pipeline/FullStoryPipeline';
+import { ValidationError } from '../../types/validation';
 import { atomicWriteJson } from '../utils/atomicIo';
 import {
   encodeStory,
@@ -61,6 +62,17 @@ function buildFailurePayload(error: unknown): Record<string, unknown> {
       resumeFromStepId: typeof context.resumeFromStepId === 'string' ? context.resumeFromStepId : error.phase,
       resumePatchableInputs: Array.isArray(context.resumePatchableInputs) ? context.resumePatchableInputs : ['settings'],
       context,
+    };
+  }
+  if (error instanceof ValidationError && error.issues?.length) {
+    // Surface the specific validation issues (e.g. treatment-fidelity anchors)
+    // so the failure is inspectable and the generator can be fixed.
+    return {
+      message,
+      stack,
+      failureKind: 'validation',
+      resumePatchableInputs: ['settings'],
+      context: { issues: error.issues },
     };
   }
   return {

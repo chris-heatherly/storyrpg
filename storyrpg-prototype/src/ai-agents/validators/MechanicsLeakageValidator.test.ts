@@ -5,7 +5,7 @@ describe('MechanicsLeakageValidator', () => {
   it('flags dice, thresholds, stat deltas, and probabilities in player-facing prose', () => {
     const result = new MechanicsLeakageValidator().validate({
       texts: [
-        { id: 'b1', text: 'You roll a d20 and succeed.' },
+        { id: 'b1', text: 'You roll a d20 and succeed.' },  // RPG dice — should flag
         { id: 'b2', text: 'Trust +10 appears beside her name.' },
         { id: 'b3', text: 'Your skill must be 12 or above.' },
         { id: 'b4', text: 'You have a 65% chance of success.' },
@@ -28,13 +28,16 @@ describe('MechanicsLeakageValidator', () => {
     expect(result.issues).toEqual([]);
   });
 
-  it('does not false-positive on the ordinary words "build", "bonus", "modifier"', () => {
+  it('does not false-positive on ordinary uses of "build", "bonus", "modifier", "roll"', () => {
     const result = new MechanicsLeakageValidator().validate({
       texts: [
         // Regression: "build" as a verb hard-failed a real story's final contract.
         { id: 'b1', text: 'You watch, with the authority of centuries spent watching mortals build and fall.' },
         { id: 'b2', text: 'A welcome bonus from the king arrived with the dawn.' },
         { id: 'b3', text: 'She works to build trust with the wary villagers.' },
+        // Regression: "roll" as a physical action verb hard-failed a real story.
+        { id: 'b4', text: "Aethavyr's arms close around Lysandra as they roll to safety." },
+        { id: 'b5', text: 'Together you rolled away before the floor collapsed.' },
       ],
     });
 

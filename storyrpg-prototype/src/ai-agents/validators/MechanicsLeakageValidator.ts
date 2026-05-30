@@ -28,7 +28,11 @@ export interface MechanicsLeakageResult extends ValidationResult {
 
 const LEAK_PATTERNS: Array<{ pattern: RegExp; label: string; suggestion: string }> = [
   {
-    pattern: /\b(?:roll|rolled|dice|d20|d12|d10|d8|d6|d4)\b/i,
+    // NOTE: bare "roll"/"rolled" are common physical action verbs ("roll to
+    // safety", "rolled away") — false-positives that hard-block real stories.
+    // Qualify them to their RPG sense: followed by a die expression or the
+    // words "for/a/the" preceding a check. "dice", "d20", etc. are unambiguous.
+    pattern: /\b(?:roll(?:ed)?\s+(?:a\s+)?(?:d\d+|dice|check|for\s+\w+)|dice|d20|d12|d10|d8|d6|d4)\b/i,
     label: 'dice language',
     suggestion: 'Describe uncertainty and outcome through action, tension, and consequence instead of dice.',
   },

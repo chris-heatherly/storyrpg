@@ -148,6 +148,8 @@ export interface SceneValidationResult {
   continuity?: IncrementalContinuityResult;
   encounter?: IncrementalEncounterResult;
   craft?: SceneCraftResult;
+  /** True when the scene had no authored beats and no runtime encounter (unplayable). */
+  emptyScene?: boolean;
   overallPassed: boolean;
   regenerationRequested: 'scene' | 'choices' | 'encounter' | 'none';
   validationTimeMs: number;
@@ -1407,6 +1409,20 @@ export class IncrementalValidationRunner {
       if (!results.encounter.passed) {
         results.regenerationRequested = results.regenerationRequested === 'none' ? 'encounter' : results.regenerationRequested;
         results.overallPassed = false;
+      }
+    }
+
+    // Hard guard: a scene with no authored beats and no runtime encounter is
+    // not playable and must fail — the per-validator checks above can all pass
+    // vacuously on empty content, which previously let zero-beat scenes slip
+    // through as "passed, 0 issues". Encounter scenes legitimately carry empty
+    // placeholder beats and are validated via the dedicated encounter path
+    // (with `encounter` supplied), so they are exempt here.
+    if (!encounter && (sceneContent.beats?.length ?? 0) === 0) {
+      results.emptyScene = true;
+      results.overallPassed = false;
+      if (results.regenerationRequested === 'none') {
+        results.regenerationRequested = 'scene';
       }
     }
 

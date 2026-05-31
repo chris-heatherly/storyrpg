@@ -110,6 +110,24 @@ describe('EncounterArchitect deterministic fallback', () => {
     }
   });
 
+  it('Phase-4 fallback emits all four outcome storylets including partialVictory', () => {
+    // Regression: buildDefaultStorylets omitted partialVictory, so a defaulted
+    // encounter shipped with no costly-victory path and the partialVictory
+    // collision check could never fire. The fallback must author all four
+    // slots, and partialVictory must carry structured cost data.
+    const architect = new EncounterArchitect(config);
+    const storylets = (architect as any).buildDefaultStorylets(input);
+
+    expect(storylets.victory).toBeDefined();
+    expect(storylets.partialVictory).toBeDefined();
+    expect(storylets.defeat).toBeDefined();
+    expect(storylets.escape).toBeDefined();
+
+    // partialVictory must satisfy IncrementalEncounterValidator's cost check.
+    expect(storylets.partialVictory.cost?.visibleComplication).toBeTruthy();
+    expect(storylets.partialVictory.cost?.immediateEffect).toBeTruthy();
+  });
+
   it('prompts for encounter and storylet sequence intent without adding a new mechanics layer', () => {
     const architect = new EncounterArchitect(config);
     const prompt = (architect as any).buildPrompt(input);

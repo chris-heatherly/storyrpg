@@ -17,8 +17,15 @@ const projectRoot = path.resolve(__dirname, '..');
 // is allowed ONLY for a deliberate, reviewed change that is called out in its
 // commit (e.g. the B1 warning-surfacing added ~17 lines to FullStoryPipeline);
 // it must never creep up via unreviewed accretion — that's what this guards.
+//
+// +35 (21043 -> 21078): Phase-0 encounter default-collision gating (PR A 0.3).
+// Drives best-effort encounter regeneration when an outcome ships identical
+// fallback prose, as advisory-only (never blocks). The collision read lives in
+// a helper (getPhase4DefaultCollisions); the remainder is loop-woven decision
+// logic inside the existing Karpathy regeneration loop and is not separable
+// without threading the loop's scene-local state into a helper.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21043,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21078,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

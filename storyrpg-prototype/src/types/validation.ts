@@ -231,6 +231,20 @@ export interface ValidationMetrics {
     branchesWithResidue: number;
     branchesWithoutResidue: number;
   };
+  choiceDistribution?: {
+    totalChoiceSets: number;
+    counts: Record<string, number>;
+    actualPercentages: Record<string, number>;
+    targetPercentages: {
+      expression: number;
+      relationship: number;
+      strategic: number;
+      dilemma: number;
+    };
+    deviations: Record<string, number>;
+    branchingCount: number;
+    branchingCap: number;
+  };
 }
 
 export interface ComprehensiveValidationReport {

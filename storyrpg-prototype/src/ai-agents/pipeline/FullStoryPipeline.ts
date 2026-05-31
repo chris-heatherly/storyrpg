@@ -8271,8 +8271,23 @@ export class FullStoryPipeline {
                 });
               }
 
-              // === KARPATHY LOOP: Encounter regeneration based on incremental validation ===
-              if (sceneValidation.regenerationRequested === 'encounter' && incrementalConfig.encounterValidation) {
+              // Phase-4 default-collisions (identical fallback prose) are
+              // advisory: they drive a best-effort regeneration but NEVER fail
+              // the recorded scene validation, so they can't cause aborts.
+              let phase4Collisions = this.getPhase4DefaultCollisions(encounterResult.metadata);
+              if (phase4Collisions.length > 0) {
+                this.emit({
+                  type: 'warning',
+                  phase: 'encounter',
+                  message: `Encounter ${sceneBlueprint.id} shipped default fallback prose for: ${phase4Collisions.join(', ')} — attempting regeneration for distinct outcomes`,
+                });
+              }
+
+              // === KARPATHY LOOP: regenerate on a real failure OR a collision. ===
+              if (
+                (sceneValidation.regenerationRequested === 'encounter' || phase4Collisions.length > 0) &&
+                incrementalConfig.encounterValidation
+              ) {
                 let encounterRegenAttempt = 0;
                 const maxEncounterRegenAttempts = incrementalConfig.maxRegenerationAttempts;
 
@@ -8289,11 +8304,14 @@ export class FullStoryPipeline {
                     data: { issues: encounterValidation.issues },
                   });
 
+                  const collisionGuidance = phase4Collisions.length > 0
+                    ? `\n\nThese outcomes shipped identical fallback prose and MUST be authored as distinct, outcome-specific scenes: ${phase4Collisions.join(', ')}.`
+                    : '';
                   const regenEncounterInput: EncounterArchitectInput = {
                     ...encounterInput,
                     storyContext: {
                       ...encounterInput.storyContext,
-                      userPrompt: `${encounterInput.storyContext.userPrompt || ''}\n\nCRITICAL ENCOUNTER FIXES REQUIRED:\n${issueDescriptions}\n\nEnsure the encounter has ${!encounterValidation.hasVictoryPath ? 'a clear victory path, ' : ''}${!encounterValidation.hasDefeatPath ? 'a clear defeat path, ' : ''}proper skill checks, and complete outcome branches.`,
+                      userPrompt: `${encounterInput.storyContext.userPrompt || ''}\n\nCRITICAL ENCOUNTER FIXES REQUIRED:\n${issueDescriptions}\n\nEnsure the encounter has ${!encounterValidation.hasVictoryPath ? 'a clear victory path, ' : ''}${!encounterValidation.hasDefeatPath ? 'a clear defeat path, ' : ''}proper skill checks, and complete outcome branches.${collisionGuidance}`,
                     },
                   };
 
@@ -8314,12 +8332,15 @@ export class FullStoryPipeline {
                     }
 
                     const regenValidation = this.incrementalValidator!.validators.encounter.validateEncounter(regenEncounterResult.data);
+                    const regenCollisions = this.getPhase4DefaultCollisions(regenEncounterResult.metadata);
 
                     if (regenValidation.passed ||
-                        regenValidation.issues.length < encounterValidation.issues.length) {
+                        regenValidation.issues.length < encounterValidation.issues.length ||
+                        regenCollisions.length < phase4Collisions.length) {
                       encounters.set(sceneBlueprint.id, regenEncounterResult.data);
                       this.captureEncounterTelemetry(regenEncounterResult.metadata);
-                      // Update the stored validation result
+                      // overallPassed is driven only by the real validator —
+                      // collisions never flip a passing scene to failed.
                       const valIdx = this.sceneValidationResults.findIndex(v =>
                         v.sceneId === sceneBlueprint.id && (v.episodeNumber === undefined || v.episodeNumber === brief.episode.number)
                       );
@@ -8339,9 +8360,11 @@ export class FullStoryPipeline {
                       this.emit({
                         type: 'debug',
                         phase: 'encounters',
-                        message: `Encounter ${sceneBlueprint.id} regenerated (issues: ${encounterValidation.issues.length} -> ${regenValidation.issues.length})`,
+                        message: `Encounter ${sceneBlueprint.id} regenerated (issues: ${encounterValidation.issues.length} -> ${regenValidation.issues.length}, collisions: ${phase4Collisions.length} -> ${regenCollisions.length})`,
                       });
-                      if (regenValidation.passed) break;
+                      phase4Collisions = regenCollisions;
+                      // Stop only once it both passes and is collision-free.
+                      if (regenValidation.passed && phase4Collisions.length === 0) break;
                       Object.assign(encounterValidation, regenValidation);
                     } else {
                       this.emit({
@@ -8653,6 +8676,12 @@ export class FullStoryPipeline {
     if (raw && typeof raw.sceneId === 'string') {
       this.encounterTelemetry.push(raw);
     }
+  }
+
+  /** Outcome slots that shipped identical default fallback prose (advisory). */
+  private getPhase4DefaultCollisions(metadata: Record<string, unknown> | undefined): string[] {
+    const raw = metadata?.encounterTelemetry as EncounterTelemetry | undefined;
+    return Array.isArray(raw?.phase4DefaultCollisions) ? raw.phase4DefaultCollisions : [];
   }
 
   /**

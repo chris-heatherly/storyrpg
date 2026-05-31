@@ -58,6 +58,54 @@ describe('IntegratedBestPracticesValidator (aggregator)', () => {
     expect(stakesIssue?.location?.choiceId).toBe('c-dilemma');
   });
 
+  it('reports totalChoices from the real choice inventory, not choice-point beats', async () => {
+    // Regression: choiceDensity.totalChoices used to read ChoiceDensity's
+    // choiceCount (beats flagged isChoicePoint, ~2), making a 14-choice story
+    // read as a 2-choice story. It must report the actual choice count.
+    const choices = Array.from({ length: 14 }, (_, i) => ({
+      id: `c${i}`,
+      text: `Choice ${i}`,
+      choiceType: 'expression',
+      sceneId: 'scene-1',
+      consequences: [],
+    }));
+    const validator = new IntegratedBestPracticesValidator(agentConfig);
+    const report = await validator.runFullValidation(baseInput({ choices }));
+    expect(report.metrics.choiceDensity.totalChoices).toBe(14);
+  });
+
+  it('surfaces the choice TYPE distribution metric (previously unmeasured)', async () => {
+    // ChoiceDistributionValidator was unregistered, so the taxonomy mix was
+    // never reported. Full validation must now expose it.
+    const mk = (i: number, type: string, branches = false) => ({
+      id: `c${i}`,
+      text: `Choice ${i}`,
+      choiceType: type,
+      sceneId: 'scene-1',
+      consequences: [],
+      ...(branches ? { nextSceneId: 'scene-2' } : {}),
+    });
+    const choices = [
+      ...Array.from({ length: 7 }, (_, i) => mk(i, 'expression')),
+      ...Array.from({ length: 4 }, (_, i) => mk(i + 7, 'relationship', i < 2)),
+      ...Array.from({ length: 2 }, (_, i) => mk(i + 11, 'strategic')),
+      mk(13, 'dilemma'),
+    ];
+    const validator = new IntegratedBestPracticesValidator(agentConfig);
+    const report = await validator.runFullValidation(baseInput({ choices }));
+
+    const dist = report.metrics.choiceDistribution;
+    expect(dist).toBeDefined();
+    expect(dist?.totalChoiceSets).toBe(14);
+    expect(dist?.counts.expression).toBe(7);
+    expect(dist?.counts.relationship).toBe(4);
+    expect(dist?.counts.strategic).toBe(2);
+    expect(dist?.counts.dilemma).toBe(1);
+    // Two relationship choices route to another scene.
+    expect(dist?.branchingCount).toBe(2);
+    expect(dist?.targetPercentages).toEqual({ expression: 35, relationship: 30, strategic: 20, dilemma: 15 });
+  });
+
   it('full validation returns a scored ComprehensiveValidationReport', async () => {
     const validator = new IntegratedBestPracticesValidator(agentConfig);
     const report = await validator.runFullValidation(baseInput());

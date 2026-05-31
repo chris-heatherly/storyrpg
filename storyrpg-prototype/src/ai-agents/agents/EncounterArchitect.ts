@@ -4217,7 +4217,7 @@ Return ONLY the JSON object.`;
     } else {
       console.warn(
         `[EncounterArchitect] Phase 4 unavailable for ${input.sceneId}; ` +
-        `using createDefaultStorylet fallback (victory/defeat/escape)`
+        `using createDefaultStorylet fallback (victory/partialVictory/defeat/escape)`
       );
       storylets = this.buildDefaultStorylets(input);
     }
@@ -4403,8 +4403,15 @@ Return ONLY the JSON object.`;
    * richer default content (multi-beat, with consequences and flags).
    */
   private buildDefaultStorylets(input: EncounterArchitectInput): Phase4Result {
+    // Emit all four canonical outcome slots. Omitting partialVictory left the
+    // costly-victory path unauthored on the Phase-4 fallback, so a defaulted
+    // encounter shipped with no "win at a cost" branch (and the partialVictory
+    // collision check below could never fire). createDefaultStorylet builds a
+    // structured cost (visibleComplication + immediateEffect) so this satisfies
+    // IncrementalEncounterValidator's partial-victory cost check.
     return {
       victory: this.createDefaultStorylet('victory', input),
+      partialVictory: this.createDefaultStorylet('partialVictory', input),
       defeat: this.createDefaultStorylet('defeat', input),
       escape: this.createDefaultStorylet('escape', input),
     };

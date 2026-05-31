@@ -15,6 +15,7 @@
 
 import { AgentConfig } from '../config';
 import { ChoiceDensityValidator } from './ChoiceDensityValidator';
+import { ChoiceDistributionValidator } from './ChoiceDistributionValidator';
 import { NPCDepthValidator } from './NPCDepthValidator';
 import { ConsequenceBudgetValidator } from './ConsequenceBudgetValidator';
 import { StakesTriangleValidator } from './StakesTriangleValidator';
@@ -55,6 +56,11 @@ import {
   FiveFactorInput,
 } from '../../types/validation';
 import { CHOICE_DENSITY_DEFAULTS } from '../../constants/validation';
+
+// Branching-frequency reference cap fed to ChoiceDistributionValidator's
+// reporting pass. The metric only reports branchingCount vs. this cap today;
+// enforcing it (and the taxonomy deviation) is deferred to the Phase 2 re-arm.
+const CHOICE_DISTRIBUTION_BRANCHING_CAP = 6;
 
 // Default validation configuration
 const DEFAULT_CONFIG: ValidationConfig = {
@@ -171,6 +177,7 @@ export interface ValidationInput {
 export class IntegratedBestPracticesValidator {
   private config: ValidationConfig;
   private choiceDensityValidator: ChoiceDensityValidator;
+  private choiceDistributionValidator: ChoiceDistributionValidator;
   private npcDepthValidator: NPCDepthValidator;
   private consequenceBudgetValidator: ConsequenceBudgetValidator;
   private stakesTriangleValidator: StakesTriangleValidator;
@@ -192,6 +199,7 @@ export class IntegratedBestPracticesValidator {
     this.choiceDensityValidator = new ChoiceDensityValidator(
       this.config.rules.choiceDensity
     );
+    this.choiceDistributionValidator = new ChoiceDistributionValidator();
     this.npcDepthValidator = new NPCDepthValidator(
       this.config.rules.npcDepth
     );
@@ -442,7 +450,11 @@ export class IntegratedBestPracticesValidator {
       choiceDensity: {
         averageGapSeconds: 0,
         firstChoiceSeconds: 0,
-        totalChoices: 0,
+        // totalChoices is the real choice inventory, NOT the choice-point-beat
+        // count. ChoiceDensityValidator.choiceCount counts beats flagged
+        // isChoicePoint (used for pacing/gap math) — that under-counts the
+        // story's actual choices (e.g. reported 2 for a 14-choice story).
+        totalChoices: input.choices.length,
       },
       consequenceBudget: {
         allocation: { callback: 0, tint: 0, branchlet: 0, branch: 0 },
@@ -469,8 +481,26 @@ export class IntegratedBestPracticesValidator {
       metrics.choiceDensity = {
         averageGapSeconds: densityResult.metrics.averageGapSeconds,
         firstChoiceSeconds: densityResult.metrics.firstChoiceSeconds,
-        totalChoices: densityResult.metrics.choiceCount,
+        // Headline count = real choices, not choice-point beats (see init above).
+        totalChoices: input.choices.length,
       };
+    }
+
+    // 1.6 Choice TYPE distribution (taxonomy) — reporting only.
+    // ChoiceDistributionValidator was previously unregistered, so the
+    // taxonomy mix (e.g. the dilemma-monoculture problem) was never measured.
+    // Surface it as a metric here; gating on deviation is deferred (Phase 2).
+    if (input.choices.length > 0) {
+      metrics.choiceDistribution = this.choiceDistributionValidator.computeMetrics({
+        choiceSets: input.choices.map((c) => ({
+          beatId: c.id,
+          choiceType: c.choiceType,
+          sceneId: c.sceneId,
+          hasBranching: Boolean(c.nextSceneId),
+        })),
+        targets: { expression: 35, relationship: 30, strategic: 20, dilemma: 15 },
+        maxBranchingChoicesPerEpisode: CHOICE_DISTRIBUTION_BRANCHING_CAP,
+      });
     }
 
     // 1.5 Choice Impact Validation

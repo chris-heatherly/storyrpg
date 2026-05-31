@@ -104,8 +104,13 @@ ${fragments.prose.length ? `### Notable Prose & Style
 ${fragments.prose.map(p => `- ${p}`).join('\n')}
 ` : ''}
 
-${fragments.terminology.length ? `### Key Terminology
+${fragments.terminology.length ? `### Key Terminology (LOCKED — use verbatim)
 ${fragments.terminology.join(', ')}
+
+Use these EXACT terms whenever the concept appears. Do NOT rename them, coin
+synonyms, or swap in a generic equivalent (e.g. never turn "All-Song" into
+"Codex"). They are the story's signature vocabulary and must read identically in
+every scene.
 ` : ''}
 
 ${guidance ? `### Adaptation Guidance

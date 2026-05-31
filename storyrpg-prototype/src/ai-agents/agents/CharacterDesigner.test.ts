@@ -125,3 +125,23 @@ describe('CharacterDesigner fashion style handling', () => {
     expect(bible.characters[0].typicalAttire).toContain('Weatherproof traveler layers');
   });
 });
+
+describe('CharacterDesigner relationship-dimension backfill (1.4)', () => {
+  const designer: any = new CharacterDesigner({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });
+  const normalize = (characters: any[]) => designer.normalizeCharacterBible({ characters, keyDynamics: [], gaps: [], doNotForget: [] });
+
+  it('backfills all four neutral dimensions for a core NPC with no initialStats', () => {
+    const bible = normalize([{ id: 'rival', name: 'Rival', pronouns: 'she/her', tier: 'core' }]);
+    expect(bible.characters[0].initialStats).toEqual({ trust: 0, affection: 0, respect: 0, fear: 0 });
+  });
+
+  it('preserves authored values and fills only missing dimensions for supporting NPCs', () => {
+    const bible = normalize([{ id: 'ally', name: 'Ally', pronouns: 'he/him', tier: 'supporting', initialStats: { trust: 40 } }]);
+    expect(bible.characters[0].initialStats).toEqual({ trust: 40, affection: 0, respect: 0, fear: 0 });
+  });
+
+  it('leaves background NPCs untouched', () => {
+    const bible = normalize([{ id: 'extra', name: 'Extra', pronouns: 'they/them', tier: 'background' }]);
+    expect(bible.characters[0].initialStats).toBeUndefined();
+  });
+});

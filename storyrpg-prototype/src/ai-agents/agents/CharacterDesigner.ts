@@ -600,6 +600,22 @@ CRITICAL REQUIREMENTS:
 
       character.fashionStyle = normalizeFashionStyle(character.fashionStyle);
 
+      // 1.4: a core/supporting NPC must carry modeled relationship dimensions —
+      // NPCDepthValidator infers them from `initialStats` presence (all four for
+      // core, >=2 for supporting). Backfill any dimension the LLM omitted with a
+      // neutral (0) baseline so a relationship-bearing NPC isn't marked depthless
+      // purely for a missing stats block. Real authored values are preserved;
+      // only missing dimensions are filled. Background NPCs are left untouched.
+      if (character.tier === 'core' || character.tier === 'supporting') {
+        const s = character.initialStats;
+        character.initialStats = {
+          trust: typeof s?.trust === 'number' ? s.trust : 0,
+          affection: typeof s?.affection === 'number' ? s.affection : 0,
+          respect: typeof s?.respect === 'number' ? s.respect : 0,
+          fear: typeof s?.fear === 'number' ? s.fear : 0,
+        };
+      }
+
       const validPronouns: PronounSet[] = ['he/him', 'she/her', 'they/them'];
       if (!character.pronouns || !validPronouns.includes(character.pronouns)) {
         const desc = (character.physicalDescription || character.overview || '').toLowerCase();

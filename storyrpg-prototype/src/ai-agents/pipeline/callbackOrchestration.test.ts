@@ -57,21 +57,49 @@ describe('harvestEpisodeCallbacks', () => {
     expect(beat).toHaveProperty('callbackHookIds');
     expect((beat as { callbackHookIds?: string[] }).callbackHookIds).toContain('hook-A');
   });
+
+  it('seeds a hook for a trackable set-flag consequence, skipping tint/route flags (1.1)', () => {
+    const ledger = new CallbackLedger();
+    const { newHooks } = harvestEpisodeCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [],
+      choiceSets: [
+        {
+          sceneId: 'scene-1',
+          choices: [
+            { id: 'c1', consequences: [{ type: 'setFlag', flag: 'door_open', value: true }] },
+            { id: 'c2', consequences: [{ type: 'setFlag', flag: 'tint:bold', value: true }] }, // cosmetic -> skipped
+            { id: 'c3', consequences: [{ type: 'setFlag', flag: 'route_left', value: true }] }, // structural -> skipped
+          ],
+        },
+      ],
+    });
+    expect(newHooks).toBe(1);
+    expect(ledger.size()).toBe(1);
+  });
 });
 
 describe('getUnresolvedCallbacksForPrompt', () => {
-  it('returns undefined for episode 1 or earlier (no callbacks injected yet)', () => {
+  it('returns undefined when the episode is undefined or < 1', () => {
+    const ledger = new CallbackLedger();
+    expect(getUnresolvedCallbacksForPrompt(ledger, undefined)).toBeUndefined();
+    expect(getUnresolvedCallbacksForPrompt(ledger, 0)).toBeUndefined();
+  });
+
+  it('injects episode-1 flag hooks within episode 1 (EP1 skip removed, 1.1)', () => {
     const ledger = new CallbackLedger();
     harvestEpisodeCallbacks(ledger, {
       episodeNumber: 1,
       sceneContents: [],
       choiceSets: [
-        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'hook-A', summary: 'A choice that matters.' } }] },
+        { sceneId: 'scene-1', choices: [{ id: 'c1', consequences: [{ type: 'setFlag', flag: 'spared_herald', value: true }] }] },
       ],
     });
-    // The episode<=1 guard fires regardless of ledger contents.
-    expect(getUnresolvedCallbacksForPrompt(ledger, 1)).toBeUndefined();
-    expect(getUnresolvedCallbacksForPrompt(ledger, undefined)).toBeUndefined();
+    // A flag hook seeded in ep 1 is eligible from ep 1 (minEpisode = episode),
+    // and ep 1 is no longer skipped, so it can be injected within the episode.
+    const shaped = getUnresolvedCallbacksForPrompt(ledger, 1);
+    expect(shaped).toBeDefined();
+    expect(shaped!.some((h) => h.flags.includes('spared_herald'))).toBe(true);
   });
 
   it('returns undefined when there are no eligible unresolved hooks', () => {

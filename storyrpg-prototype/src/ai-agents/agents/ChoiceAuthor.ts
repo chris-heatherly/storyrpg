@@ -856,7 +856,31 @@ Before finalizing:
     }
     if (choice.nextSceneId) return 'structuralBranch';
     if (choice.memorableMoment?.id || choice.reminderPlan?.later) return 'callback';
+    // 1.3: a choice that sets a trackable (non-tint, non-routing) flag is a
+    // callback opportunity by default — the callback ledger seeds a hook for it
+    // (1.1) and the orphan-flag reconciliation later demotes it to sceneTint if
+    // nothing ever reads it. Defaulting these to 'callback' (instead of
+    // branchlet/sceneTint) is what moves the realized mix toward the 60/25/10/5
+    // budget without inventing routing the story doesn't have.
+    if (this.setsTrackableFlag(choice)) return 'callback';
     return choiceType === 'dilemma' ? 'branchlet' : 'sceneTint';
+  }
+
+  /**
+   * True when the choice sets at least one flag that is meant to be read later
+   * (a callback opportunity): a `setFlag` consequence whose flag is neither a
+   * cosmetic `tint:` flag nor a structural `route_` flag, and which sets rather
+   * than clears the flag.
+   */
+  private setsTrackableFlag(choice: GeneratedChoice): boolean {
+    return (choice.consequences ?? []).some(
+      (c) =>
+        c.type === 'setFlag' &&
+        typeof c.flag === 'string' &&
+        !c.flag.startsWith('tint:') &&
+        !c.flag.startsWith('route_') &&
+        c.value !== false,
+    );
   }
 
   private buildPrompt(input: ChoiceAuthorInput): string {

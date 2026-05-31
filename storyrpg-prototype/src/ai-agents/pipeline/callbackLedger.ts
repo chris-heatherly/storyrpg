@@ -135,6 +135,65 @@ export class CallbackLedger {
     });
   }
 
+  /**
+   * Seed a lightweight callback hook for a single trackable flag a choice sets
+   * (1.1). Unlike `recordChoice` — which only seeds `memorableMoment`-tagged
+   * choices — this brings ordinary `setFlag` consequences into the ledger so
+   * they enter the inject -> payoff loop and stop shipping as unread debt.
+   *
+   * Cosmetic (`tint:`) and structural (`route_`) flags are skipped, as are
+   * flag clears. Returns the hook, or undefined when the flag isn't trackable.
+   * The hook id is keyed on the flag so repeated sets of the same flag merge.
+   */
+  recordFlagSet(params: {
+    choice: Choice;
+    flag: string;
+    episode: number;
+    sceneId: string;
+  }): CallbackHook | undefined {
+    const { flag } = params;
+    if (!flag || flag.startsWith('tint:') || flag.startsWith('route_')) return undefined;
+    const summary = params.choice.memorableMoment?.summary
+      || (params.choice.text ? `Earlier choice: "${params.choice.text}" (sets ${flag}).` : `An earlier choice set ${flag}.`);
+    return this.add({
+      id: `flag:${flag}`,
+      sourceEpisode: params.episode,
+      sourceSceneId: params.sceneId,
+      sourceChoiceId: params.choice.id,
+      flags: [flag],
+      conditionKeys: [flag],
+      impactFactors: params.choice.impactFactors ?? [],
+      consequenceTier: 'callback',
+      summary,
+      payoffWindow: {
+        // Eligible from the setting episode onward (same-episode payoff allowed).
+        minEpisode: params.episode,
+        maxEpisode: params.episode + this.config.defaultWindowSpan,
+      },
+    });
+  }
+
+  /**
+   * Trackable flags a choice sets: `setFlag` consequences that are neither
+   * cosmetic (`tint:`) nor structural (`route_`), and that set rather than
+   * clear the flag. Mirrors ChoiceAuthor.setsTrackableFlag.
+   */
+  trackableFlagsOf(choice: Choice): string[] {
+    const flags: string[] = [];
+    for (const consequence of choice.consequences ?? []) {
+      if (
+        consequence.type === 'setFlag' &&
+        typeof consequence.flag === 'string' &&
+        !consequence.flag.startsWith('tint:') &&
+        !consequence.flag.startsWith('route_') &&
+        consequence.value !== false
+      ) {
+        flags.push(consequence.flag);
+      }
+    }
+    return flags;
+  }
+
   private inferConsequenceTier(choice: Choice): ChoiceConsequenceTier {
     if (choice.nextSceneId) return 'branchlet';
     if (choice.tintFlag) return 'sceneTint';

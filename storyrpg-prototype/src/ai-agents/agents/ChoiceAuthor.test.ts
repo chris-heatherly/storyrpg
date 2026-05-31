@@ -307,3 +307,28 @@ describe('ChoiceAuthor.normalizeChoiceSet', () => {
     );
   });
 });
+
+describe('ChoiceAuthor.normalizeConsequenceTier (1.3 flag → callback)', () => {
+  const author: any = new ChoiceAuthor(config);
+  const tier = (choice: any, choiceType: any) => author.normalizeConsequenceTier(choice, choiceType);
+
+  it('classifies a choice that sets a trackable flag as callback', () => {
+    const choice = { id: 'c1', consequences: [{ type: 'setFlag', flag: 'spared_herald', value: true }] };
+    expect(tier(choice, 'relationship')).toBe('callback');
+  });
+
+  it('does NOT treat tint or routing flags as callback', () => {
+    const tintOnly = { id: 'c2', consequences: [{ type: 'setFlag', flag: 'tint:mercy', value: true }] };
+    expect(tier(tintOnly, 'relationship')).toBe('sceneTint');
+    const routeOnly = { id: 'c3', consequences: [{ type: 'setFlag', flag: 'route_left', value: true }] };
+    // routing flag isn't a callback; a non-dilemma with no trackable flag falls to sceneTint
+    expect(tier(routeOnly, 'relationship')).toBe('sceneTint');
+  });
+
+  it('preserves existing tier and routing precedence', () => {
+    expect(tier({ id: 'c4', nextSceneId: 'scene-2', consequences: [{ type: 'setFlag', flag: 'x', value: true }] }, 'strategic')).toBe('structuralBranch');
+    expect(tier({ id: 'c5', consequenceTier: 'branchlet', consequences: [{ type: 'setFlag', flag: 'x', value: true }] }, 'strategic')).toBe('branchlet');
+    expect(tier({ id: 'c6' }, 'expression')).toBe('sceneTint');
+    expect(tier({ id: 'c7', consequences: [] }, 'dilemma')).toBe('branchlet');
+  });
+});

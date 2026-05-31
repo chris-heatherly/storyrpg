@@ -62,7 +62,11 @@ export function getUnresolvedCallbacksForPrompt(
   ledger: CallbackLedger,
   episodeNumber: number | undefined,
 ): UnresolvedCallbackForPrompt[] | undefined {
-  if (!episodeNumber || episodeNumber <= 1) return undefined;
+  // 1.1: previously episode 1 was skipped entirely, so first-episode (and
+  // single-episode) hooks could never be injected and so never paid off. Allow
+  // episode 1; `unresolvedFor` still gates on each hook's payoff window, so no
+  // hook is offered before it exists.
+  if (!episodeNumber || episodeNumber < 1) return undefined;
   const hooks = ledger.unresolvedFor(episodeNumber);
   if (hooks.length === 0) return undefined;
   return hooks.map((hook) => ({
@@ -91,9 +95,22 @@ export function harvestEpisodeCallbacks(
   for (const choiceSet of params.choiceSets) {
     const sceneId = choiceSet.sceneId || '';
     for (const choice of choiceSet.choices || []) {
+      const typedChoice = choice as unknown as Choice;
       if (choice.memorableMoment?.id) {
         const added = ledger.recordChoice({
-          choice: choice as unknown as Choice,
+          choice: typedChoice,
+          episode: params.episodeNumber,
+          sceneId,
+        });
+        if (added) newHooks += 1;
+      }
+      // 1.1: seed a hook for every trackable flag the choice sets, not just
+      // memorableMoment-tagged choices, so ordinary set-flags enter the
+      // inject -> payoff loop instead of shipping unread.
+      for (const flag of ledger.trackableFlagsOf(typedChoice)) {
+        const added = ledger.recordFlagSet({
+          choice: typedChoice,
+          flag,
           episode: params.episodeNumber,
           sceneId,
         });

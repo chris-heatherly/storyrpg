@@ -43,6 +43,7 @@ import {
 import {
   distributeSevenPoints,
   describeDistribution,
+  backfillMissingBeats,
 } from '../utils/sevenPointDistribution';
 import { SEASON_PLANNER_CRAFT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import {
@@ -1178,6 +1179,13 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
         structuralRoleByEpisode.set(ep.episodeNumber, [...ep.structuralRole]);
       }
     }
+
+    // 1.5: a PARTIAL LLM-authored distribution can drop a canonical 7-point beat
+    // (e.g. no episode keeps `climax`, leaving the finale without one). Run the
+    // coverage check that already exists but was never called, and backfill any
+    // missing canonical beat onto the episode the default distribution assigns
+    // it — feeding the result back into the map instead of discarding it.
+    backfillMissingBeats(structuralRoleByEpisode, defaultDistribution);
 
     // Build SeasonEpisode objects with encounter data
     const episodes: SeasonEpisode[] = analysis.episodeBreakdown.map(ep => {

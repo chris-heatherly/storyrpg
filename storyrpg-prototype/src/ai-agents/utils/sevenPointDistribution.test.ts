@@ -3,6 +3,7 @@ import {
   distributeSevenPoints,
   describeDistribution,
   checkSevenPointCoverage,
+  backfillMissingBeats,
   CANONICAL_BEATS,
 } from './sevenPointDistribution';
 
@@ -137,5 +138,36 @@ describe('checkSevenPointCoverage', () => {
 
     // All 7 beats missing.
     expect(issues.length).toBe(CANONICAL_BEATS.length);
+  });
+});
+
+describe('backfillMissingBeats (1.5)', () => {
+  it('backfills a canonical beat dropped by a partial LLM distribution', () => {
+    const defaults = distributeSevenPoints(7);
+    // Simulate a partial LLM distribution that drops `climax`.
+    const roleByEpisode = new Map<any, any>();
+    for (const e of defaults) {
+      roleByEpisode.set(e.episodeNumber, e.structuralRole.filter((r: string) => r !== 'climax'));
+    }
+    // Precondition: climax is missing.
+    expect(checkSevenPointCoverage(
+      Array.from(roleByEpisode.entries()).map(([episodeNumber, structuralRole]) => ({ episodeNumber, structuralRole })),
+    ).some((i) => i.includes('climax'))).toBe(true);
+
+    backfillMissingBeats(roleByEpisode, defaults);
+
+    // Postcondition: full coverage, no missing beats.
+    const issues = checkSevenPointCoverage(
+      Array.from(roleByEpisode.entries()).map(([episodeNumber, structuralRole]) => ({ episodeNumber, structuralRole })),
+    );
+    expect(issues.filter((i) => i.startsWith('Missing 7-point beat'))).toHaveLength(0);
+  });
+
+  it('is a no-op when coverage is already complete', () => {
+    const defaults = distributeSevenPoints(7);
+    const roleByEpisode = new Map<any, any>(defaults.map((e) => [e.episodeNumber, [...e.structuralRole]]));
+    const before = JSON.stringify(Array.from(roleByEpisode.entries()));
+    backfillMissingBeats(roleByEpisode, defaults);
+    expect(JSON.stringify(Array.from(roleByEpisode.entries()))).toBe(before);
   });
 });

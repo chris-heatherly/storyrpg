@@ -168,4 +168,37 @@ export function checkSevenPointCoverage(
   return issues;
 }
 
+/**
+ * Ensure every canonical 7-point beat is carried by some episode (1.5). Any
+ * beat missing from `roleByEpisode` is backfilled onto the episode the default
+ * distribution assigns it. No-op when coverage is already complete. Mutates and
+ * returns the map.
+ */
+export function backfillMissingBeats(
+  roleByEpisode: Map<number, StructuralRole[]>,
+  defaultDistribution: Array<{ episodeNumber: number; structuralRole: StructuralRole[] }>,
+): Map<number, StructuralRole[]> {
+  const covered = new Set<StructuralRole>();
+  for (const roles of roleByEpisode.values()) {
+    for (const role of roles) covered.add(role);
+  }
+  if (CANONICAL_BEATS.every((beat) => covered.has(beat))) return roleByEpisode;
+
+  const defaultEpisodeForBeat = new Map<StructuralRole, number>();
+  for (const entry of defaultDistribution) {
+    for (const role of entry.structuralRole) {
+      if (!defaultEpisodeForBeat.has(role)) defaultEpisodeForBeat.set(role, entry.episodeNumber);
+    }
+  }
+  for (const beat of CANONICAL_BEATS) {
+    if (covered.has(beat)) continue;
+    const targetEpisode = defaultEpisodeForBeat.get(beat);
+    if (targetEpisode === undefined) continue;
+    const roles = roleByEpisode.get(targetEpisode) ?? [];
+    if (!roles.includes(beat)) roles.push(beat);
+    roleByEpisode.set(targetEpisode, roles);
+  }
+  return roleByEpisode;
+}
+
 export { CANONICAL_BEATS };

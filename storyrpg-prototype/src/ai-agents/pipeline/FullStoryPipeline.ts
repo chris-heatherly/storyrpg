@@ -115,6 +115,17 @@ import {
   PixarStakes, GeneratedStorylet as TypeGeneratedStorylet, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
 import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './events';
+import {
+  type GenerationPlan,
+  applyEventToPlan,
+  computeOverallProgress,
+  initPlan,
+  setEpisodeScenes,
+  setSceneBeats,
+  markEpisode,
+  markSceneActive,
+  snapshotPlan,
+} from './generationPlan';
 import { SavingPhase } from './phases/SavingPhase';
 import {
   createOutputDirectory,
@@ -740,6 +751,13 @@ export class FullStoryPipeline {
   private telemetry: PipelineTelemetry = new PipelineTelemetry();
   private pipelineStartedAtMs: number = 0;
   private lastTelemetryOverallProgress: number = 0;
+  /**
+   * Structure-driven progress plan (episodes -> scenes -> beats). Built up as
+   * the pipeline discovers structure and used to drive the headline % and the
+   * generator's progress tree. Null until seeded at the start of a run; stays
+   * null for analysis-only runs (no episode generation).
+   */
+  private generationPlan: GenerationPlan | null = null;
   private imageWorkerQueue: LocalWorkerQueue;
   private audioWorkerQueue: LocalWorkerQueue;
   private videoWorkerQueue: LocalWorkerQueue;
@@ -1965,7 +1983,12 @@ export class FullStoryPipeline {
     }
 
     let overallProgress = this.lastTelemetryOverallProgress;
-    if (phaseProgress !== undefined) {
+    if (this.generationPlan) {
+      // Fully unit-weighted: once a structure plan exists it is the authoritative
+      // source for the headline %. The legacy phase ramp below is only used for
+      // analysis-only runs (no plan) and very early single-episode emits.
+      overallProgress = computeOverallProgress(this.generationPlan);
+    } else if (phaseProgress !== undefined) {
       overallProgress = Math.round(phaseStart + ((phaseEnd - phaseStart) * (phaseProgress / 100)));
     } else if (event.type === 'phase_start') {
       overallProgress = phaseStart;
@@ -1995,7 +2018,23 @@ export class FullStoryPipeline {
     };
   }
 
+  /**
+   * Emit a snapshot of the current structure plan so the generator UI can render
+   * the episode -> scene -> beat tree. Rides the existing `event.data` channel;
+   * `overallProgress` is recomputed from the plan inside buildProgressTelemetry.
+   */
+  private emitPlanUpdate(message: string): void {
+    if (!this.generationPlan) return;
+    this.emit({
+      type: 'debug',
+      phase: 'content',
+      message,
+      data: { generationPlan: snapshotPlan(this.generationPlan) },
+    });
+  }
+
   private emit(event: Omit<PipelineEvent, 'timestamp'>): void {
+    if (this.generationPlan) applyEventToPlan(this.generationPlan, event);
     const telemetry = event.telemetry || this.buildProgressTelemetry(event);
     const fullEvent: PipelineEvent = { ...event, telemetry, timestamp: new Date() };
     this.events.push(fullEvent);
@@ -4298,6 +4337,22 @@ export class FullStoryPipeline {
     this.externallyAssignedJobId = null;
     this.totalEpisodes = 1;
     this.currentEpisode = 1;
+    // Seed the structure plan up front so the headline % is driven by real
+    // work units (episodes -> scenes -> beats) from the start. Scenes/beats
+    // fill in once StoryArchitect / SceneWriter run for this episode.
+    this.generationPlan = initPlan({
+      totalEpisodes: 1,
+      episodes: [{
+        number: brief.episode.number,
+        title: brief.episode.title,
+        expectedSceneCount:
+          this.config.generation?.maxScenesPerEpisode ||
+          this.config.generation?.targetSceneCount ||
+          brief.options?.targetSceneCount ||
+          6,
+      }],
+    });
+    this.emitPlanUpdate('Generation plan: 1 episode');
     await registerJob({
       id: this.jobId,
       storyTitle: brief.story.title,
@@ -4669,6 +4724,12 @@ export class FullStoryPipeline {
           );
       const { sceneContents, choiceSets, encounters } = contentGenerationResult;
       this.markPhaseComplete('content_generation');
+      // Mark this single episode complete in the structure plan (covers the
+      // resume path, where setSceneBeats never ran for the cached scenes).
+      if (this.generationPlan) {
+        markEpisode(this.generationPlan, brief.episode.number, 'complete');
+        this.emitPlanUpdate('Episode content complete');
+      }
       if (resumedSceneContent) {
         this.emit({ type: 'debug', phase: 'content', message: 'Resumed from durable scene content checkpoint' });
       } else {
@@ -6595,6 +6656,22 @@ export class FullStoryPipeline {
       message: `Created blueprint with ${result.data.scenes.length} scenes`,
     });
 
+    // Fill this episode's scenes into the structure plan (estimate-then-fill:
+    // each scene is pre-seeded with its target beat count until SceneWriter runs).
+    if (this.generationPlan) {
+      setEpisodeScenes(
+        this.generationPlan,
+        brief.episode.number,
+        result.data.scenes.map((scene) => ({
+          id: scene.id,
+          title: scene.name,
+          expectedBeatCount: this.getTargetBeatCountForScene(scene),
+          isEncounter: Boolean(scene.isEncounter),
+        })),
+      );
+      this.emitPlanUpdate(`Episode ${brief.episode.number} blueprint: ${result.data.scenes.length} scenes`);
+    }
+
     // Validator tiering (B1): the architect may now succeed despite advisory
     // craft/fidelity issues that previously aborted the whole run. Surface them
     // as warnings and record them so the story still ships with the issues
@@ -6991,6 +7068,9 @@ export class FullStoryPipeline {
           if (resumedEncounter) encounters.set(sceneBlueprint.id, resumedEncounter);
           contentWorkCompleted += 1 + (resumedChoice ? 1 : 0) + (resumedEncounter ? 1 : 0);
           finalizedScenes.add(sceneBlueprint.id);
+          if (this.generationPlan) {
+            setSceneBeats(this.generationPlan, episodeNumber ?? brief.episode.number, sceneBlueprint.id, resumedScene.beats?.length ?? 0);
+          }
           this.emitPhaseProgress(
             'content',
             contentWorkCompleted,
@@ -7000,6 +7080,11 @@ export class FullStoryPipeline {
           );
           continue;
         }
+      }
+
+      if (this.generationPlan) {
+        markSceneActive(this.generationPlan, episodeNumber ?? brief.episode.number, sceneBlueprint.id, 'writing');
+        this.emitPlanUpdate(`Writing scene ${sceneBlueprint.id}`);
       }
 
       // Filter protagonist from npcsPresent — the protagonist is always implicit,
@@ -7354,6 +7439,15 @@ export class FullStoryPipeline {
           agent: 'SceneWriter',
           message: `Wrote ${sceneContent.beats.length} beats for ${sceneBlueprint.id}`,
         });
+        if (this.generationPlan) {
+          setSceneBeats(
+            this.generationPlan,
+            episodeNumber ?? brief.episode.number,
+            sceneBlueprint.id,
+            sceneContent.beats.length,
+          );
+          this.emitPlanUpdate(`Scene ${sceneBlueprint.id} written (${sceneContent.beats.length} beats)`);
+        }
         contentWorkCompleted += 1;
         this.emitPhaseProgress(
           'content',
@@ -7573,6 +7667,17 @@ export class FullStoryPipeline {
               if (nonBranchingChoices.length > 0 && choicePointBeat) {
                 const nextSceneId = sceneBlueprint.leadsTo?.[0];
 
+                // The choice point is the scene's decision beat; navigation
+                // after a choice flows payoff → next scene, never back to the
+                // choice point. A self-referential successor (some SceneWriter
+                // outputs point the last/choice beat at itself) would loop
+                // payoff → choice point → payoff forever, so treat it as "no
+                // onward beat" and let the payoff advance to the next scene.
+                const choicePointSuccessor =
+                  choicePointBeat.nextBeatId && choicePointBeat.nextBeatId !== choicePointBeat.id
+                    ? choicePointBeat.nextBeatId
+                    : undefined;
+
                 for (let ci = 0; ci < nonBranchingChoices.length; ci++) {
                   const choice = nonBranchingChoices[ci];
                   const payoffId = `${choicePointBeat.id}-payoff-${ci + 1}`;
@@ -7621,7 +7726,17 @@ export class FullStoryPipeline {
                       },
                     ] : undefined,
                     isChoicePoint: false,
-                    nextBeatId: choicePointBeat.nextBeatId,
+                    nextBeatId: choicePointSuccessor,
+                    // When the choice point has no real onward beat, route the
+                    // payoff straight to the next scene instead of dead-ending
+                    // or looping back into the choice point.
+                    nextSceneId: choicePointSuccessor ? undefined : nextSceneId,
+                    // A payoff beat that carries the scene transition IS the
+                    // choice bridge: it's the prose beat between the choice and
+                    // the next scene. Flag it so the scene-graph branching
+                    // contract (which rejects choices that teleport without a
+                    // bridge beat) recognizes it. See SceneGraphBranchValidator.
+                    isChoiceBridge: !choicePointSuccessor && !!nextSceneId,
                     // Use the narrative prose as the visual description, NOT the choice label.
                     // The choice label is dialogue/decision text; the outcomeTexts describe the
                     // physical action unfolding — which is what the image should depict.
@@ -9415,9 +9530,21 @@ export class FullStoryPipeline {
       currentEpisode: this.currentEpisode,
     });
 
+    // Seed the structure plan before world/character/image work so the headline
+    // % is driven by real work units from the start. Episode titles and scene
+    // counts fill in once the per-episode outlines and architect run.
+    const estimatedScenesPerEpisode = this.config.generation?.episodeStructureMode === 'sceneEpisodes'
+      ? (this.config.generation?.sceneEpisodeMaxScenes || 1)
+      : (this.config.generation?.maxScenesPerEpisode || this.config.generation?.targetSceneCount || 6);
+    this.generationPlan = initPlan({
+      totalEpisodes: this.totalEpisodes,
+      episodes: episodesToGenerate.map((number) => ({ number, expectedSceneCount: estimatedScenesPerEpisode })),
+    });
+    this.emitPlanUpdate(`Generation plan: ${this.totalEpisodes} episode(s)`);
+
     try {
       await this.checkCancellation();
-      const episodeListStr = episodeRange.specific 
+      const episodeListStr = episodeRange.specific
         ? `episodes ${episodesToGenerate.join(', ')}`
         : `episodes ${episodeRange.start} to ${episodeRange.end}`;
       this.emit({
@@ -9538,6 +9665,19 @@ export class FullStoryPipeline {
       const totalEpisodeProgressItems = Math.max(1, episodeSpecs.length);
       const allStoryletFailures: string[] = [];
       const allEncounterImageDiagnostics: EncounterImageRunDiagnostic[] = [];
+      // Enrich the seeded plan with real episode titles + scene estimates now
+      // that the per-episode outlines are known.
+      if (this.generationPlan) {
+        for (const spec of episodeSpecs) {
+          const node = this.generationPlan.episodes.find((e) => e.number === spec.episodeNumber);
+          if (!node) continue;
+          node.title = spec.outline.title;
+          if (typeof spec.outline.estimatedSceneCount === 'number' && spec.outline.estimatedSceneCount > 0) {
+            node.expectedSceneCount = spec.outline.estimatedSceneCount;
+          }
+        }
+        this.emitPlanUpdate('Episode outlines ready');
+      }
       this.emitPhaseProgress('content', 0, totalEpisodeProgressItems, 'episodes', 'Preparing episode generation queue...');
 
       if (parallelEnabled) {
@@ -9559,6 +9699,7 @@ export class FullStoryPipeline {
               phase: `episode_${spec.episodeNumber}`,
               message: `Generating Episode ${spec.episodeNumber}: ${spec.outline.title}`,
             });
+            if (this.generationPlan) markEpisode(this.generationPlan, spec.episodeNumber, 'active');
             const generatedEpisode = await this.generateEpisodeFromOutline({
               episodeNumber: spec.episodeNumber,
               episodeIndex: spec.idx,
@@ -9572,6 +9713,10 @@ export class FullStoryPipeline {
               previousSummary: baseBrief.episode.previousSummary,
             });
             completedEpisodeCount += 1;
+            if (this.generationPlan) {
+              markEpisode(this.generationPlan, spec.episodeNumber, 'complete');
+              this.emitPlanUpdate(`Episode ${spec.episodeNumber} complete`);
+            }
             this.emitPhaseProgress(
               'content',
               completedEpisodeCount,
@@ -9608,6 +9753,7 @@ export class FullStoryPipeline {
             phase: `episode_${i}`,
             message: `Generating Episode ${i}: ${spec.outline.title}`,
           });
+          if (this.generationPlan) markEpisode(this.generationPlan, i, 'active');
           const previousSummary = episodes.length > 0
             ? this.summarizeEpisode(episodes[episodes.length - 1])
             : baseBrief.episode.previousSummary;
@@ -9628,6 +9774,10 @@ export class FullStoryPipeline {
           if (generated.qaReport) episodeQAReports.push(generated.qaReport);
           if (generated.bestPracticesReport) episodeBPReports.push(generated.bestPracticesReport);
           completedEpisodeCount += 1;
+          if (this.generationPlan) {
+            markEpisode(this.generationPlan, i, 'complete');
+            this.emitPlanUpdate(`Episode ${i} complete`);
+          }
           this.emitPhaseProgress(
             'content',
             completedEpisodeCount,

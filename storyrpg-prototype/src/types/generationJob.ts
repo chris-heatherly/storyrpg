@@ -1,3 +1,5 @@
+import type { GenerationPlan } from './generationPlan';
+
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface PipelineEventData {
@@ -100,6 +102,8 @@ export interface GenerationJob {
   missingImageSlotCount?: number;
   events?: PipelineEventData[];
   checkpoint?: GenerationJobCheckpoint;
+  /** Structure-driven progress plan (episodes -> scenes -> beats). */
+  generationPlan?: GenerationPlan;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -203,6 +207,10 @@ export function normalizeGenerationJob(value: unknown): GenerationJob | null {
     missingImageSlotCount: typeof value.missingImageSlotCount === 'number' ? value.missingImageSlotCount : undefined,
     events: normalizedEvents,
     checkpoint: isRecord(value.checkpoint) ? value.checkpoint as GenerationJobCheckpoint : undefined,
+    generationPlan:
+      isRecord(value.generationPlan) && Array.isArray((value.generationPlan as Record<string, unknown>).episodes)
+        ? (value.generationPlan as unknown as GenerationPlan)
+        : undefined,
   };
 }
 

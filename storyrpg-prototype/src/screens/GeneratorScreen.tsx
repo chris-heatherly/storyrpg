@@ -403,6 +403,10 @@ const buildPipelineRuntimeSnapshot = (
     imageProgress,
     imageJobs: Array.isArray(statusData?.imageJobs) ? statusData.imageJobs : [],
     imageManifest: Array.isArray(statusData?.imageManifest) ? statusData.imageManifest : [],
+    generationPlan:
+      statusData?.generationPlan && Array.isArray(statusData.generationPlan.episodes)
+        ? statusData.generationPlan
+        : undefined,
     resumeFromJobId: statusData?.resumeFromJobId,
     outputDirectory:
       statusData?.checkpoint?.resumeContext?.outputDirectory ||

@@ -343,6 +343,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const activeBeatKeyRef = useRef<string | null>(null);
   const choiceResolutionInFlightRef = useRef(false);
   const encounterStartedRef = useRef<Set<string>>(new Set());
+  // Cycle guard: beats already shown since entering the current scene. Used to
+  // break malformed nextBeatId loops (e.g. a choice payoff that points back to
+  // its choice point) so the reader advances instead of asking the same
+  // question forever. See transitionToBeatSafely.
+  const visitedSceneBeatsRef = useRef<{ sceneId: string | null; beats: Set<string> }>({ sceneId: null, beats: new Set() });
 
   const getSceneBeatLabelFromImageUrl = useCallback((url?: string): string | null => {
     return formatSceneBeatLabelFromImageUrl(url, currentScene?.id, currentBeatId);
@@ -837,6 +842,16 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       proceedAfterStatCheckRef.current = null;
     }
 
+    // Cycle guard: remember which beats we've shown since entering this scene.
+    // Reset the set whenever the scene changes; record the current beat so a
+    // later loop back to it can be detected (see transitionToBeatSafely).
+    const cycleGuard = visitedSceneBeatsRef.current;
+    if (cycleGuard.sceneId !== currentScene.id) {
+      cycleGuard.sceneId = currentScene.id;
+      cycleGuard.beats = new Set();
+    }
+    cycleGuard.beats.add(currentBeatId);
+
     if (beat.onShow && beat.onShow.length > 0) {
       applyConsequences(beat.onShow);
     }
@@ -1247,11 +1262,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         isEncounterEntry ? 'dramatic' : 'crossfade'
       );
     } else if (nextBeatId) {
-      transitionTo(() => setBeat(nextBeatId), 'crossfade');
+      transitionToBeatSafely(nextBeatId, 'crossfade');
     } else {
-      const nextBeatId = processedBeat?.nextBeatId;
-      if (nextBeatId) {
-        transitionTo(() => setBeat(nextBeatId), 'crossfade');
+      const fallbackNextBeatId = processedBeat?.nextBeatId;
+      if (fallbackNextBeatId) {
+        transitionToBeatSafely(fallbackNextBeatId, 'crossfade');
       } else {
         advanceToNextScene();
       }
@@ -1306,7 +1321,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     if (nextSceneId) {
       transitionTo(() => loadScene(nextSceneId, undefined, nextBeatId));
     } else if (nextBeatId) {
-      transitionTo(() => setBeat(nextBeatId));
+      transitionToBeatSafely(nextBeatId);
     } else {
       advanceToNextScene();
     }
@@ -1327,6 +1342,21 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     } else {
       finishEpisode();
     }
+  };
+
+  // Navigate to a beat within the current scene, breaking malformed loops: if
+  // the target was already shown since we entered this scene, advance to the
+  // next scene instead of re-rendering it. Defends the reader against
+  // self-referential or payoff→choice-point cycles in generated stories that
+  // would otherwise re-present the same beat (and its choices) forever.
+  const transitionToBeatSafely = (nextBeatId: string, style: TransitionStyle = 'crossfade') => {
+    const guard = visitedSceneBeatsRef.current;
+    if (guard.sceneId === currentScene?.id && guard.beats.has(nextBeatId)) {
+      console.warn(`[StoryReader] Beat "${nextBeatId}" already shown in scene "${currentScene?.id}" — breaking navigation loop, advancing to next scene.`);
+      advanceToNextScene();
+      return;
+    }
+    transitionTo(() => setBeat(nextBeatId), style);
   };
 
   // Dev Mode: beat/scene shortcut navigation (doesn't apply consequences)

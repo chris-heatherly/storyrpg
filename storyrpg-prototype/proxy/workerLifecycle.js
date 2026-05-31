@@ -900,6 +900,11 @@ function createWorkerLifecycle({
               const strippedShots = evt.data.shots.map((s) => stripLargeValues(s, 200));
               updates.imageManifest = existing.concat(strippedShots);
             }
+            // Structure-driven progress plan (episodes -> scenes -> beats).
+            // Latest-wins snapshot; flows out to the frontend via publicJobState.
+            if (evt.data && evt.data.generationPlan && typeof evt.data.generationPlan === 'object') {
+              updates.generationPlan = evt.data.generationPlan;
+            }
             upsertWorkerJob(workerJob.id, updates);
             if (evt.eventType === 'checkpoint' && evt.data && typeof evt.data === 'object' && evt.data.stepId && Object.prototype.hasOwnProperty.call(evt.data, 'output')) {
               const checkpointFile = persistCheckpointOutput(workerJob.id, evt.data.stepId, evt.data.output);

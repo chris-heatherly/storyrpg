@@ -24,8 +24,13 @@ const projectRoot = path.resolve(__dirname, '..');
 // a helper (getPhase4DefaultCollisions); the remainder is loop-woven decision
 // logic inside the existing Karpathy regeneration loop and is not separable
 // without threading the loop's scene-local state into a helper.
+//
+// +150 (21078 -> 21228): structure-driven progress plan instrumentation, incl.
+// per-scene active/activity emission for the generator progress UI. The plan
+// math/accumulation lives in pipeline/generationPlan.ts; the remainder is
+// irreducible per-episode/scene/beat emission call sites woven through the run.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21078,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21228,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

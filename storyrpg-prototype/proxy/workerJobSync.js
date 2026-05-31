@@ -69,6 +69,7 @@ function createSyncGenerationMirrorFromWorker(deps) {
       currentItem: typeof workerJob.currentItem === 'number' ? workerJob.currentItem : undefined,
       totalItems: typeof workerJob.totalItems === 'number' ? workerJob.totalItems : undefined,
       subphaseLabel: typeof workerJob.subphaseLabel === 'string' ? workerJob.subphaseLabel : undefined,
+      generationPlan: workerJob.generationPlan && typeof workerJob.generationPlan === 'object' ? workerJob.generationPlan : undefined,
       checkpoint: {
         isResumable: workerJob.status === 'failed' || workerJob.status === 'cancelled',
         resumeHint: workerJob.error ? `Failed: ${workerJob.error}` : undefined,

@@ -17,17 +17,14 @@ import {
   Activity,
   AlertCircle,
   ChevronRight,
-  Bot,
   Clock,
   Zap,
-  Users,
-  BookOpen,
   Image as ImageIcon,
-  Package,
 } from 'lucide-react-native';
 import { TERMINAL } from '../theme';
 
 import type { PipelineEvent } from '../ai-agents/pipeline';
+import type { GenerationPlan, EpisodeNode, SceneNode } from '../types/generationPlan';
 
 interface PipelineProgressProps {
   events: PipelineEvent[];
@@ -74,68 +71,46 @@ export interface PipelineRuntimeSnapshot {
   }>;
   resumeFromJobId?: string;
   outputDirectory?: string;
+  generationPlan?: GenerationPlan;
 }
 
 /**
- * Sub-phase IDs reported by the pipeline (after normalizePhaseId), grouped by
- * lifecycle band. The mapping is intentional — adding a new phase means
- * deciding which user-facing band it belongs to, which keeps the UI stable.
+ * The five lifecycle steps shown in the horizontal phase rail. Each maps to the
+ * set of pipeline sub-phase IDs (after normalizePhaseId) it rolls up. Adding a
+ * new phase means deciding which step it belongs to, which keeps the UI stable.
  */
-const BANDS = [
-  {
-    id: 'world',
-    name: 'WORLD & CHARACTERS',
-    icon: Users,
-    subPhases: ['queued', 'initialization', 'source_analysis', 'world', 'characters', 'npc_validation'],
-    subLabels: {
-      source_analysis: 'Source analysis',
-      queued: 'Queued',
-      initialization: 'Initializing',
-      world: 'World building',
-      characters: 'Character design',
-      npc_validation: 'NPC validation',
-    } as Record<string, string>,
-  },
-  {
-    id: 'plot',
-    name: 'PLOT & SCENES',
-    icon: BookOpen,
-    subPhases: ['architecture', 'branch_analysis', 'content', 'scenes', 'choices', 'encounters', 'quick_validation', 'qa'],
-    subLabels: {
-      architecture: 'Episode blueprint',
-      branch_analysis: 'Branch analysis',
-      content: 'Scene writing',
-      scenes: 'Scene writing',
-      choices: 'Choice authoring',
-      encounters: 'Encounter design',
-      quick_validation: 'Quick validation',
-      qa: 'Quality assurance',
-    } as Record<string, string>,
-  },
-  {
-    id: 'visuals',
-    name: 'VISUALS',
-    icon: ImageIcon,
-    subPhases: ['master_images', 'images', 'video_generation'],
-    subLabels: {
-      master_images: 'Reference art',
-      images: 'Scene imagery',
-      video_generation: 'Video generation',
-    } as Record<string, string>,
-  },
-  {
-    id: 'package',
-    name: 'PACKAGE',
-    icon: Package,
-    subPhases: ['assembly', 'saving', 'audio_generation', 'browser_qa'],
-    subLabels: {
-      assembly: 'Final assembly',
-      saving: 'Saving outputs',
-      audio_generation: 'Audio narration',
-      browser_qa: 'Browser QA',
-    } as Record<string, string>,
-  },
+const STEPS = [
+  { id: 'world', name: 'WORLD', subPhases: ['queued', 'initialization', 'source_analysis', 'world'] },
+  { id: 'characters', name: 'CHARACTERS', subPhases: ['characters', 'npc_validation'] },
+  { id: 'episodes', name: 'EPISODES', subPhases: ['architecture', 'branch_analysis', 'content', 'scenes', 'choices', 'encounters', 'quick_validation', 'qa'] },
+  { id: 'visuals', name: 'VISUALS', subPhases: ['master_images', 'images', 'video_generation'] },
+  { id: 'package', name: 'PACKAGE', subPhases: ['assembly', 'saving', 'audio_generation', 'browser_qa'] },
 ] as const;
+
+/** Human labels for normalized sub-phase IDs, used by the NOW panel. */
+const PHASE_LABELS: Record<string, string> = {
+  source_analysis: 'Source analysis',
+  queued: 'Queued',
+  initialization: 'Initializing',
+  world: 'World building',
+  characters: 'Character design',
+  npc_validation: 'NPC validation',
+  architecture: 'Episode blueprint',
+  branch_analysis: 'Branch analysis',
+  content: 'Scene writing',
+  scenes: 'Scene writing',
+  choices: 'Choice authoring',
+  encounters: 'Encounter design',
+  quick_validation: 'Quick validation',
+  qa: 'Quality assurance',
+  master_images: 'Reference art',
+  images: 'Scene imagery',
+  video_generation: 'Video generation',
+  assembly: 'Final assembly',
+  saving: 'Saving outputs',
+  audio_generation: 'Audio narration',
+  browser_qa: 'Browser QA',
+};
 
 const normalizePhaseId = (phase?: string): string | undefined => {
   if (!phase) return undefined;
@@ -161,14 +136,20 @@ const normalizePhaseId = (phase?: string): string | undefined => {
 
 const labelForPhase = (phase?: string): string => {
   const normalized = normalizePhaseId(phase);
-  for (const band of BANDS) {
-    if (normalized && normalized in band.subLabels) return band.subLabels[normalized].toUpperCase();
-  }
+  if (normalized && normalized in PHASE_LABELS) return PHASE_LABELS[normalized].toUpperCase();
   return (phase || 'initializing').replace(/[_-]+/g, ' ').toUpperCase();
 };
 
 type PhaseStatus = 'pending' | 'active' | 'complete' | 'error';
-type BandStatus = PhaseStatus;
+
+/** Plain-language label + accent for a scene's current activity chip. */
+const ACTIVITY_CHIP: Record<string, { label: string; color: string }> = {
+  writing: { label: 'WRITING PROSE', color: TERMINAL.colors.amber },
+  choices: { label: 'AUTHORING CHOICES', color: TERMINAL.colors.cyan },
+  encounter: { label: 'DESIGNING ENCOUNTER', color: '#a78bfa' },
+  art: { label: 'GENERATING ART', color: '#ec4899' },
+  validating: { label: 'CHECKING CONTINUITY', color: TERMINAL.colors.cyan },
+};
 
 export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   events,
@@ -180,6 +161,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   runtime,
 }) => {
   const [showDebugLog, setShowDebugLog] = useState(false);
+  const [expandedEpisodes, setExpandedEpisodes] = useState<Record<number, boolean>>({});
   const effectiveCurrentPhase = runtime?.currentPhase || currentPhase;
   const normalizedCurrentPhase = normalizePhaseId(effectiveCurrentPhase);
 
@@ -205,36 +187,14 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
     return 'pending';
   };
 
-  // Roll a band's status up from its sub-phases: error wins, then any active,
+  // Roll a step's status up from its sub-phases: error wins, then any active,
   // then all-complete, else pending.
-  const getBandStatus = (subPhases: readonly string[]): BandStatus => {
+  const getBandStatus = (subPhases: readonly string[]): PhaseStatus => {
     const statuses = subPhases.map(getPhaseStatus);
     if (statuses.includes('error')) return 'error';
     if (statuses.includes('active')) return 'active';
     if (statuses.every((s) => s === 'complete')) return 'complete';
     return 'pending';
-  };
-
-  // Progress share per band (0-100) reflects how many sub-phases have
-  // completed or started. This gives a glanceable bar per band even before
-  // the pipeline reports overallProgress.
-  const getBandProgress = (subPhases: readonly string[]): number => {
-    if (subPhases.length === 0) return 0;
-    let score = 0;
-    for (const id of subPhases) {
-      const status = getPhaseStatus(id);
-      if (status === 'complete') score += 1;
-      else if (status === 'active') score += 0.5;
-    }
-    return Math.round((score / subPhases.length) * 100);
-  };
-
-  const getActiveSubLabel = (band: (typeof BANDS)[number]): string | undefined => {
-    for (const id of band.subPhases) {
-      const status = getPhaseStatus(id);
-      if (status === 'active') return band.subLabels[id];
-    }
-    return undefined;
   };
 
   const normalizedProgress = Math.max(0, Math.min(100, Math.round(runtime?.progress ?? progress ?? 0)));
@@ -319,18 +279,192 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
     return `${secs}S`;
   };
 
-  const renderStatusIcon = (status: PhaseStatus) => {
+  const renderStatusIcon = (status: PhaseStatus, size = 16) => {
     switch (status) {
       case 'complete':
-        return <CheckCircle2 size={16} color={TERMINAL.colors.primary} />;
+        return <CheckCircle2 size={size} color={TERMINAL.colors.primary} />;
       case 'active':
-        return <Activity size={16} color={TERMINAL.colors.amber} />;
+        return <Activity size={size} color={TERMINAL.colors.amber} />;
       case 'error':
-        return <AlertCircle size={16} color={TERMINAL.colors.error} />;
+        return <AlertCircle size={size} color={TERMINAL.colors.error} />;
       default:
-        return <Circle size={16} color={TERMINAL.colors.muted} opacity={0.3} />;
+        return <Circle size={size} color={TERMINAL.colors.muted} opacity={0.3} />;
     }
   };
+
+  // Structure-driven progress tree (episodes -> scenes -> beats).
+  const plan = runtime?.generationPlan;
+
+  // The scene currently being worked on (drives the NOW headline + hero subline).
+  let activeEpisode: EpisodeNode | undefined;
+  let activeScene: SceneNode | undefined;
+  let activeSceneIndex = 0;
+  if (plan) {
+    for (const ep of plan.episodes) {
+      const idx = ep.scenes.findIndex((s) => s.status === 'active');
+      if (idx >= 0) {
+        activeEpisode = ep;
+        activeScene = ep.scenes[idx];
+        activeSceneIndex = idx + 1;
+        break;
+      }
+    }
+  }
+  const completedEpisodes = plan ? plan.episodes.filter((e) => e.status === 'complete').length : 0;
+  const currentEpisodeNumber = activeEpisode?.number
+    ?? (plan ? Math.min(plan.totalEpisodes, completedEpisodes + 1) : undefined);
+
+  const sceneBeatLabel = (scene: SceneNode): string => {
+    const realBeats = scene.beats.filter((b) => !b.estimated).length;
+    let label: string;
+    if (scene.status === 'complete' || realBeats > 0) {
+      const n = realBeats || scene.beats.length;
+      label = `${n} BEAT${n === 1 ? '' : 'S'}`;
+    } else {
+      const est = scene.expectedBeatCount ?? scene.beats.length;
+      label = est > 0 ? `~${est} BEATS` : 'PENDING';
+    }
+    return scene.isEncounter ? `${label} · ENCOUNTER` : label;
+  };
+
+  // Activity chip text + accent for a scene row.
+  const sceneChip = (scene: SceneNode): { label: string; color: string } => {
+    if (scene.status === 'complete') return { label: 'DONE', color: TERMINAL.colors.primary };
+    if (scene.status === 'error') return { label: 'FAILED', color: TERMINAL.colors.error };
+    if (scene.status === 'active') {
+      return scene.activity ? ACTIVITY_CHIP[scene.activity] : { label: 'WORKING', color: TERMINAL.colors.amber };
+    }
+    return { label: 'QUEUED', color: TERMINAL.colors.muted };
+  };
+
+  const episodeSceneSummary = (episode: EpisodeNode): string => {
+    if (episode.scenes.length === 0) {
+      const est = episode.expectedSceneCount ?? 0;
+      return est > 0 ? `~${est} SCENES PLANNED` : 'PLANNING';
+    }
+    const done = episode.scenes.filter((s) => s.status === 'complete').length;
+    return `${done} / ${episode.scenes.length} SCENES`;
+  };
+
+  const episodeProgressPct = (episode: EpisodeNode): number => {
+    if (episode.status === 'complete') return 100;
+    if (episode.scenes.length === 0) return 0;
+    const done = episode.scenes.filter((s) => s.status === 'complete').length;
+    return Math.round((done / episode.scenes.length) * 100);
+  };
+
+  const isEpisodeExpanded = (episode: EpisodeNode): boolean => {
+    const override = expandedEpisodes[episode.number];
+    if (override !== undefined) return override;
+    return episode.status === 'active'; // auto-expand the active episode
+  };
+
+  const toggleEpisode = (episode: EpisodeNode) => {
+    setExpandedEpisodes((prev) => ({ ...prev, [episode.number]: !isEpisodeExpanded(episode) }));
+  };
+
+  const renderPlanTree = () => {
+    if (!plan || plan.episodes.length === 0) return null;
+    return (
+      <View style={styles.episodeList}>
+        {plan.episodes.map((episode) => {
+          const epPct = episodeProgressPct(episode);
+          const expanded = isEpisodeExpanded(episode) && episode.scenes.length > 0;
+          return (
+            <View
+              key={episode.number}
+              style={[
+                styles.epCard,
+                episode.status === 'active' && styles.epCardActive,
+                episode.status === 'complete' && styles.epCardDone,
+              ]}
+            >
+              <TouchableOpacity
+                style={styles.epHead}
+                onPress={() => toggleEpisode(episode)}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+              >
+                {renderStatusIcon(episode.status, 14)}
+                <Text style={styles.epName}>EP {episode.number}</Text>
+                {episode.title ? (
+                  <Text style={styles.epTitle} numberOfLines={1}>{episode.title}</Text>
+                ) : <View style={{ flex: 1 }} />}
+                <Text style={styles.epMeta}>{episodeSceneSummary(episode)}</Text>
+                <Text style={[styles.epPct, episode.status === 'pending' && styles.epPctMuted]}>{epPct}%</Text>
+                {episode.scenes.length > 0 && (
+                  <ChevronRight
+                    size={11}
+                    color={TERMINAL.colors.muted}
+                    style={{ transform: [{ rotate: expanded ? '90deg' : '0deg' }] }}
+                  />
+                )}
+              </TouchableOpacity>
+              <View style={styles.epTrack}>
+                <View
+                  style={[
+                    styles.epFill,
+                    { width: `${epPct}%` },
+                    episode.status === 'active' && styles.epFillActive,
+                  ]}
+                />
+              </View>
+              {expanded && (
+                <View style={styles.sceneList}>
+                  {episode.scenes.map((scene, i) => {
+                    const chip = sceneChip(scene);
+                    const beatsDone = scene.beats.filter((b) => b.status === 'complete').length;
+                    const beatsTotal = Math.max(scene.expectedBeatCount ?? 0, scene.beats.length, 1);
+                    const beatPct = scene.status === 'complete' ? 100 : Math.round((beatsDone / beatsTotal) * 100);
+                    return (
+                      <View key={scene.id} style={styles.sceneRow}>
+                        {renderStatusIcon(scene.status, 11)}
+                        <View style={styles.sceneBody}>
+                          <Text style={[styles.sceneName, scene.status === 'pending' && styles.sceneNameMuted]} numberOfLines={1}>
+                            {`SCENE ${i + 1} · ${(scene.title || scene.id).toUpperCase()}`}
+                          </Text>
+                          <View style={styles.sceneBeats}>
+                            <View style={styles.beatBar}>
+                              <View
+                                style={[
+                                  styles.beatFill,
+                                  { width: `${beatPct}%` },
+                                  scene.status !== 'complete' && styles.beatFillPending,
+                                ]}
+                              />
+                            </View>
+                            <Text style={[styles.beatCount, scene.status === 'complete' && styles.beatCountDone]}>
+                              {sceneBeatLabel(scene)}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={[styles.chip, { color: chip.color, backgroundColor: `${chip.color}22` }]}>
+                          {chip.label}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          );
+        })}
+      </View>
+    );
+  };
+
+  // NOW panel: one plain-language sentence about the current action.
+  const activityVerb: Record<string, string> = {
+    writing: 'Writing', choices: 'Authoring choices for', encounter: 'Designing encounter for',
+    art: 'Illustrating', validating: 'Checking continuity in',
+  };
+  const nowHeadline = activeScene
+    ? `${activeScene.activity ? activityVerb[activeScene.activity] : 'Working on'} “${activeScene.title || activeScene.id}” — Scene ${activeSceneIndex} of Episode ${activeEpisode?.number}`
+    : activeImageJob?.identifier
+      ? `Generating art — ${activeImageJob.identifier}`
+      : labelForPhase(effectiveCurrentPhase);
+  const heartbeatLabel = lastUpdateAgeSeconds === undefined ? 'LIVE' : `HEARTBEAT ${lastUpdateAgeSeconds}S AGO`;
+  const workerHealthy = lastUpdateAgeSeconds === undefined || lastUpdateAgeSeconds < 90;
 
   return (
     <View style={styles.container}>
@@ -352,6 +486,19 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
             <Text style={styles.progressMeta}>{remainingPercent}% REMAINING</Text>
             <Text style={styles.progressMeta}>ETA {formatEta(effectiveEta)}</Text>
           </View>
+          <View style={styles.heroSubline}>
+            {currentEpisodeNumber && plan ? (
+              <>
+                <Text style={styles.heroSublineText}>EPISODE {currentEpisodeNumber} / {plan.totalEpisodes}</Text>
+                <Text style={styles.heroDot}>·</Text>
+              </>
+            ) : null}
+            <Text style={styles.heroSublineText}>ELAPSED {formatDuration(elapsedSeconds)}</Text>
+            <Text style={styles.heroDot}>·</Text>
+            <Text style={[styles.heroSublineText, workerHealthy ? styles.heroOk : styles.heroStale]}>
+              ● {workerHealthy ? 'WORKER HEALTHY' : 'WORKER STALE'}
+            </Text>
+          </View>
           {effectiveImageProgress && effectiveImageProgress.total > 0 && normalizedCurrentPhase === 'images' && (
             <View style={styles.imageProgressRow}>
               <ImageIcon size={12} color={TERMINAL.colors.amber} />
@@ -371,24 +518,62 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
         </View>
       )}
 
-      {(runtime || latestMeaningfulEvent) && (
-        <View style={styles.opsPanel}>
-          <Text style={styles.opsEyebrow}>NOW</Text>
-          <Text style={styles.opsTitle}>{labelForPhase(effectiveCurrentPhase)}</Text>
-          <Text style={styles.opsMessage} numberOfLines={2}>
+      {/* Phase rail */}
+      <View style={styles.stepper}>
+        {STEPS.map((step) => {
+          const status = getBandStatus(step.subPhases);
+          return (
+            <View key={step.id} style={styles.step}>
+              <View style={styles.stepGlyph}>{renderStatusIcon(status, 13)}</View>
+              <Text
+                style={[
+                  styles.stepLabel,
+                  status === 'complete' && styles.stepLabelComplete,
+                  status === 'active' && styles.stepLabelActive,
+                  status === 'error' && styles.stepLabelError,
+                ]}
+                numberOfLines={1}
+              >
+                {step.name}
+              </Text>
+              <View
+                style={[
+                  styles.stepTrack,
+                  status === 'complete' && styles.stepTrackComplete,
+                  status === 'active' && styles.stepTrackActive,
+                ]}
+              />
+            </View>
+          );
+        })}
+      </View>
+
+      {/* Episodes → scenes → beats */}
+      {plan && plan.episodes.length > 0 && (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>EPISODES</Text>
+          {renderPlanTree()}
+        </View>
+      )}
+
+      {/* NOW — one plain-language line about the current action */}
+      {isRunning && (runtime || latestMeaningfulEvent) && (
+        <View style={styles.now}>
+          <Text style={styles.nowEyebrow}>NOW</Text>
+          <Text style={styles.nowHeadline}>{nowHeadline}</Text>
+          <Text style={styles.nowDetail} numberOfLines={2}>
             {activeImageJob?.identifier
               ? `${String(activeImageJob.status || 'processing').toUpperCase()}: ${activeImageJob.identifier}`
               : String(latestMeaningfulEvent?.message || runtime?.subphaseLabel || 'Worker is active')}
+          </Text>
+          <Text style={styles.nowAgent}>
+            ▸ {currentAgent ? currentAgent.toUpperCase() : labelForPhase(effectiveCurrentPhase)} · {heartbeatLabel}
           </Text>
 
           <View style={styles.opsGrid}>
             <View style={styles.opsMetric}>
               <Text style={styles.opsMetricLabel}>JOB</Text>
               <Text style={styles.opsMetricValue} numberOfLines={1}>{runtime?.jobId || 'LOCAL'}</Text>
-            </View>
-            <View style={styles.opsMetric}>
-              <Text style={styles.opsMetricLabel}>HEARTBEAT</Text>
-              <Text style={styles.opsMetricValue}>{lastUpdateAgeSeconds === undefined ? 'UNKNOWN' : `${lastUpdateAgeSeconds}S AGO`}</Text>
             </View>
             <View style={styles.opsMetric}>
               <Text style={styles.opsMetricLabel}>ELAPSED</Text>
@@ -417,7 +602,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
           {(plannedBeatCount > 0 || slotTotal > 0) && (
             <View style={styles.workPlan}>
               <View style={styles.workPlanHeader}>
-                <Text style={styles.workPlanTitle}>MASTER WORK PLAN</Text>
+                <Text style={styles.workPlanTitle}>IMAGE WORK PLAN</Text>
                 <Text style={styles.workPlanValue}>
                   {completedBeatCount}/{plannedBeatCount || completedBeatCount} BEATS IMAGED
                 </Text>
@@ -441,86 +626,6 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
           )}
         </View>
       )}
-
-      {/* Active Agent Status */}
-      {isRunning && (
-        <View style={styles.agentCard}>
-          <View style={styles.agentHeader}>
-            <Bot size={18} color={TERMINAL.colors.primary} />
-            <Text style={styles.agentLabel}>ACTIVE AGENT</Text>
-          </View>
-          <Text style={styles.agentName}>
-            {currentAgent ? currentAgent.toUpperCase() : labelForPhase(effectiveCurrentPhase)}
-          </Text>
-          {(activeAgent || latestMeaningfulEvent) && (
-            <Text style={styles.agentMessage}>
-              {String((activeAgent || latestMeaningfulEvent)?.message || '').toUpperCase()}
-            </Text>
-          )}
-        </View>
-      )}
-
-      {/* Lifecycle Bands */}
-      <View style={styles.bandList}>
-        {BANDS.map((band) => {
-          const status = getBandStatus(band.subPhases);
-          const pct = getBandProgress(band.subPhases);
-          const activeSubLabel = getActiveSubLabel(band);
-          const Icon = band.icon;
-          return (
-            <View
-              key={band.id}
-              style={[
-                styles.bandRow,
-                status === 'active' && styles.bandRowActive,
-                status === 'complete' && styles.bandRowComplete,
-                status === 'error' && styles.bandRowError,
-              ]}
-            >
-              <View style={styles.bandHeader}>
-                <View style={styles.bandIconWrap}>{renderStatusIcon(status)}</View>
-                <Icon
-                  size={14}
-                  color={
-                    status === 'active'
-                      ? TERMINAL.colors.amber
-                      : status === 'complete'
-                        ? TERMINAL.colors.primary
-                        : status === 'error'
-                          ? TERMINAL.colors.error
-                          : TERMINAL.colors.muted
-                  }
-                />
-                <Text
-                  style={[
-                    styles.bandName,
-                    status === 'complete' && styles.bandNameComplete,
-                    status === 'active' && styles.bandNameActive,
-                    status === 'error' && styles.bandNameError,
-                  ]}
-                >
-                  {band.name}
-                </Text>
-                <Text style={styles.bandPct}>{pct}%</Text>
-              </View>
-              <View style={styles.bandTrack}>
-                <View
-                  style={[
-                    styles.bandFill,
-                    { width: `${pct}%` },
-                    status === 'active' && styles.bandFillActive,
-                    status === 'complete' && styles.bandFillComplete,
-                    status === 'error' && styles.bandFillError,
-                  ]}
-                />
-              </View>
-              {activeSubLabel && (
-                <Text style={styles.bandSubLabel}>{activeSubLabel.toUpperCase()}</Text>
-              )}
-            </View>
-          );
-        })}
-      </View>
 
       {/* Collapsible Debug Log */}
       <TouchableOpacity
@@ -600,15 +705,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 2,
   },
-  agentCard: {
-    backgroundColor: TERMINAL.colors.bg,
-    borderRadius: 16,
-    padding: 18,
-    minHeight: 118,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(59, 130, 246, 0.2)',
-  },
   progressCard: {
     backgroundColor: TERMINAL.colors.bg,
     borderRadius: 16,
@@ -667,7 +763,154 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 1,
   },
-  opsPanel: {
+  // Hero subline (episode / elapsed / worker health)
+  heroSubline: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 7,
+  },
+  heroSublineText: {
+    color: TERMINAL.colors.muted,
+    fontSize: 8.5,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  heroDot: { color: 'rgba(255,255,255,0.2)', fontSize: 9 },
+  heroOk: { color: '#34d399' },
+  heroStale: { color: TERMINAL.colors.amber },
+
+  // Horizontal phase rail
+  stepper: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 18,
+  },
+  step: { flex: 1, alignItems: 'center', gap: 4 },
+  stepGlyph: { height: 16, justifyContent: 'center' },
+  stepLabel: {
+    fontSize: 7.5,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+    color: TERMINAL.colors.muted,
+    textAlign: 'center',
+  },
+  stepLabelComplete: { color: TERMINAL.colors.primary },
+  stepLabelActive: { color: TERMINAL.colors.amber },
+  stepLabelError: { color: TERMINAL.colors.error },
+  stepTrack: {
+    height: 2,
+    alignSelf: 'stretch',
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  stepTrackComplete: { backgroundColor: TERMINAL.colors.primary },
+  stepTrackActive: { backgroundColor: TERMINAL.colors.amber },
+
+  // Section
+  section: { marginBottom: 18 },
+  sectionLabel: {
+    fontSize: 8.5,
+    fontWeight: '900',
+    letterSpacing: 1.6,
+    color: TERMINAL.colors.cyan,
+    marginBottom: 10,
+  },
+
+  // Episode cards
+  episodeList: { gap: 10 },
+  epCard: {
+    backgroundColor: TERMINAL.colors.bg,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    paddingBottom: 12,
+    overflow: 'hidden',
+  },
+  epCardActive: {
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    backgroundColor: 'rgba(245, 158, 11, 0.03)',
+  },
+  epCardDone: { borderColor: 'rgba(59, 130, 246, 0.22)' },
+  epHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    padding: 13,
+  },
+  epName: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: 'white',
+    letterSpacing: 0.5,
+  },
+  epTitle: {
+    flex: 1,
+    fontSize: 10,
+    fontWeight: '700',
+    color: TERMINAL.colors.muted,
+    letterSpacing: 0.3,
+  },
+  epMeta: {
+    fontSize: 8,
+    fontWeight: '900',
+    color: TERMINAL.colors.cyan,
+    letterSpacing: 0.5,
+  },
+  epPct: { fontSize: 10, fontWeight: '900', color: 'white', width: 34, textAlign: 'right' },
+  epPctMuted: { color: TERMINAL.colors.muted },
+  epTrack: {
+    height: 3,
+    marginHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
+  },
+  epFill: { height: '100%', borderRadius: 999, backgroundColor: TERMINAL.colors.primary },
+  epFillActive: { backgroundColor: TERMINAL.colors.amber },
+
+  // Scene rows
+  sceneList: { paddingHorizontal: 14, paddingLeft: 30, marginTop: 8, gap: 7 },
+  sceneRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  sceneBody: { flex: 1, minWidth: 0 },
+  sceneName: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    color: 'rgba(255,255,255,0.75)',
+    letterSpacing: 0.3,
+  },
+  sceneNameMuted: { color: TERMINAL.colors.muted },
+  sceneBeats: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
+  beatBar: {
+    flex: 1,
+    maxWidth: 120,
+    height: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
+  },
+  beatFill: { height: '100%', borderRadius: 999, backgroundColor: '#34d399' },
+  beatFillPending: { backgroundColor: TERMINAL.colors.amber },
+  beatCount: {
+    fontSize: 7.5,
+    fontWeight: '900',
+    color: TERMINAL.colors.muted,
+    letterSpacing: 0.4,
+  },
+  beatCountDone: { color: TERMINAL.colors.primary },
+  chip: {
+    fontSize: 7.5,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+
+  // NOW panel
+  now: {
     backgroundColor: 'rgba(59, 130, 246, 0.06)',
     borderRadius: 16,
     padding: 14,
@@ -675,25 +918,32 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(34, 211, 238, 0.2)',
   },
-  opsEyebrow: {
-    color: TERMINAL.colors.cyan,
+  nowEyebrow: {
+    color: TERMINAL.colors.amber,
     fontSize: 8,
     fontWeight: '900',
     letterSpacing: 1.5,
-    marginBottom: 4,
   },
-  opsTitle: {
+  nowHeadline: {
     color: 'white',
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '900',
-    letterSpacing: 0,
+    marginTop: 5,
+    lineHeight: 18,
   },
-  opsMessage: {
+  nowDetail: {
     color: TERMINAL.colors.muted,
-    fontSize: 10,
-    lineHeight: 15,
-    marginTop: 6,
+    fontSize: 9.5,
+    lineHeight: 14,
+    marginTop: 5,
     fontWeight: '700',
+  },
+  nowAgent: {
+    color: TERMINAL.colors.cyan,
+    fontSize: 8.5,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    marginTop: 8,
   },
   opsGrid: {
     marginTop: 12,
@@ -791,116 +1041,6 @@ const styles = StyleSheet.create({
     fontSize: 8,
     fontWeight: '800',
     letterSpacing: 0.7,
-  },
-  agentHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  agentLabel: {
-    color: TERMINAL.colors.primary,
-    fontSize: 8,
-    fontWeight: '900',
-    letterSpacing: 1,
-  },
-  agentName: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '900',
-    lineHeight: 21,
-    letterSpacing: 0,
-  },
-  agentMessage: {
-    color: TERMINAL.colors.muted,
-    fontSize: 10,
-    lineHeight: 15,
-    marginTop: 8,
-    fontWeight: '700',
-    letterSpacing: 0,
-    flexShrink: 1,
-  },
-  bandList: {
-    gap: 12,
-    marginBottom: 16,
-  },
-  bandRow: {
-    backgroundColor: TERMINAL.colors.bg,
-    borderRadius: 16,
-    padding: 14,
-    gap: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-  },
-  bandRowActive: {
-    borderColor: 'rgba(245, 158, 11, 0.35)',
-    backgroundColor: 'rgba(245, 158, 11, 0.04)',
-  },
-  bandRowComplete: {
-    borderColor: 'rgba(59, 130, 246, 0.25)',
-  },
-  bandRowError: {
-    borderColor: 'rgba(239, 68, 68, 0.35)',
-    backgroundColor: 'rgba(239, 68, 68, 0.04)',
-  },
-  bandHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  bandIconWrap: {
-    width: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bandName: {
-    flex: 1,
-    fontSize: 11,
-    fontWeight: '900',
-    color: TERMINAL.colors.muted,
-    letterSpacing: 1,
-  },
-  bandNameComplete: {
-    color: TERMINAL.colors.primary,
-  },
-  bandNameActive: {
-    color: TERMINAL.colors.amber,
-  },
-  bandNameError: {
-    color: TERMINAL.colors.error,
-  },
-  bandPct: {
-    fontSize: 10,
-    fontWeight: '900',
-    color: TERMINAL.colors.muted,
-    letterSpacing: 0.5,
-  },
-  bandTrack: {
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    overflow: 'hidden',
-  },
-  bandFill: {
-    height: '100%',
-    borderRadius: 999,
-    backgroundColor: TERMINAL.colors.muted,
-  },
-  bandFillActive: {
-    backgroundColor: TERMINAL.colors.amber,
-  },
-  bandFillComplete: {
-    backgroundColor: TERMINAL.colors.primary,
-  },
-  bandFillError: {
-    backgroundColor: TERMINAL.colors.error,
-  },
-  bandSubLabel: {
-    fontSize: 9,
-    fontWeight: '800',
-    color: TERMINAL.colors.amber,
-    letterSpacing: 0.8,
-    marginLeft: 30,
   },
   debugToggle: {
     flexDirection: 'row',

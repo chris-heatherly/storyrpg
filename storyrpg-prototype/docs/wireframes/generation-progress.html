@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Wireframe — Generation Progress (episode → scene → beat)</title>
+<style>
+  :root {
+    --bg: #070b12;
+    --bg-light: #0d131d;
+    --card: #0a1019;
+    --line: rgba(255,255,255,0.06);
+    --primary: #3b82f6;   /* complete / done */
+    --cyan: #22d3ee;      /* labels / info */
+    --amber: #f59e0b;     /* active / now */
+    --green: #34d399;     /* finished tick */
+    --error: #ef4444;
+    --muted: #6b7686;
+    --text: #e7ecf3;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    -webkit-font-smoothing: antialiased; padding: 24px; display: flex; justify-content: center;
+  }
+  .frame { width: 460px; background: var(--bg-light); border: 1px solid var(--line); border-radius: 22px; overflow: hidden; }
+
+  /* header */
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .topbar .back { color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: 1.5px; }
+  .topbar .title { font-size: 11px; font-weight: 900; letter-spacing: 2px; }
+  .topbar .gear { color: var(--muted); }
+
+  .pad { padding: 18px; }
+
+  /* hero */
+  .story-title { font-size: 18px; font-weight: 900; margin: 0 0 12px; }
+  .bar { height: 12px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--primary), var(--cyan)); }
+  .hero-meta { display: flex; justify-content: space-between; align-items: baseline; margin-top: 8px; }
+  .pct { font-size: 22px; font-weight: 900; }
+  .eta { font-size: 10px; font-weight: 800; color: var(--cyan); letter-spacing: 0.5px; }
+  .subline { margin-top: 8px; font-size: 9.5px; color: var(--muted); font-weight: 700; letter-spacing: 0.4px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .subline .dot { color: var(--line); }
+  .ok { color: var(--green); }
+
+  /* phase stepper */
+  .stepper { display: flex; gap: 6px; margin: 16px 0 4px; }
+  .step { flex: 1; text-align: center; }
+  .step .glyph { font-size: 13px; }
+  .step .lbl { font-size: 7.5px; font-weight: 900; letter-spacing: 0.6px; margin-top: 3px; color: var(--muted); }
+  .step.done .glyph { color: var(--primary); } .step.done .lbl { color: var(--primary); }
+  .step.active .glyph { color: var(--amber); } .step.active .lbl { color: var(--amber); }
+  .step.todo .glyph { color: var(--muted); opacity: .5; }
+  .step-track { height: 2px; background: var(--line); margin-top: 6px; border-radius: 2px; }
+  .step.done .step-track { background: var(--primary); }
+  .step.active .step-track { background: linear-gradient(90deg,var(--amber),transparent); }
+
+  .section-label { font-size: 8.5px; font-weight: 900; letter-spacing: 1.6px; color: var(--cyan); margin: 18px 0 10px; }
+
+  /* episode cards */
+  .ep { background: var(--card); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 10px; overflow: hidden; }
+  .ep.active { border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.03); }
+  .ep.done { border-color: rgba(59,130,246,0.22); }
+  .ep-head { display: flex; align-items: center; gap: 9px; padding: 13px 14px; cursor: pointer; }
+  .ep-glyph { width: 16px; text-align: center; font-size: 13px; }
+  .ep.done .ep-glyph { color: var(--primary); }
+  .ep.active .ep-glyph { color: var(--amber); }
+  .ep.todo .ep-glyph { color: var(--muted); opacity: .55; }
+  .ep-name { font-size: 11px; font-weight: 900; letter-spacing: .5px; white-space: nowrap; }
+  .ep-title { flex: 1; font-size: 10px; font-weight: 700; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ep-meta { font-size: 8px; font-weight: 900; color: var(--cyan); letter-spacing: .5px; }
+  .ep-pct { font-size: 10px; font-weight: 900; width: 34px; text-align: right; }
+  .ep.todo .ep-pct { color: var(--muted); }
+  .ep-track { height: 3px; background: rgba(255,255,255,0.06); margin: 0 14px; border-radius: 999px; overflow: hidden; }
+  .ep-track > i { display:block; height:100%; background: var(--primary); }
+  .ep.active .ep-track > i { background: var(--amber); }
+  .chev { color: var(--muted); font-size: 10px; transition: transform .15s; }
+  .ep.collapsed .chev { transform: rotate(-90deg); }
+
+  /* scene rows */
+  .scenes { padding: 6px 14px 12px 30px; }
+  .ep.collapsed .scenes { display: none; }
+  .scene { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid rgba(255,255,255,0.04); }
+  .scene:first-child { border-top: none; }
+  .sc-glyph { width: 13px; text-align: center; font-size: 11px; }
+  .scene.done .sc-glyph { color: var(--primary); }
+  .scene.active .sc-glyph { color: var(--amber); }
+  .scene.todo .sc-glyph { color: var(--muted); opacity: .5; }
+  .sc-body { flex: 1; min-width: 0; }
+  .sc-name { font-size: 9.5px; font-weight: 800; letter-spacing: .3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .scene.todo .sc-name { color: var(--muted); }
+  .sc-beats { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  .beatbar { flex: 1; height: 3px; background: rgba(255,255,255,0.06); border-radius: 999px; overflow: hidden; max-width: 120px; }
+  .beatbar > i { display:block; height:100%; background: var(--green); }
+  .beatbar.todo > i { background: var(--muted); opacity:.4; }
+  .sc-beatcount { font-size: 7.5px; font-weight: 900; color: var(--muted); letter-spacing: .4px; white-space: nowrap; }
+  .sc-beatcount.done { color: var(--primary); }
+  /* activity chip — the human-readable replacement for "CONTENT:WORK 2/12" */
+  .chip { font-size: 7.5px; font-weight: 900; letter-spacing: .5px; padding: 3px 7px; border-radius: 999px; white-space: nowrap; }
+  .chip.prose  { background: rgba(245,158,11,0.14); color: var(--amber); }
+  .chip.choice { background: rgba(34,211,238,0.12); color: var(--cyan); }
+  .chip.enc    { background: rgba(167,139,250,0.14); color: #a78bfa; }
+  .chip.art    { background: rgba(236,72,153,0.13); color: #ec4899; }
+  .chip.done   { background: rgba(59,130,246,0.12); color: var(--primary); }
+  .chip.todo   { background: rgba(255,255,255,0.05); color: var(--muted); }
+
+  /* NOW panel */
+  .now { margin-top: 16px; background: rgba(59,130,246,0.06); border: 1px solid rgba(34,211,238,0.2); border-radius: 14px; padding: 14px; }
+  .now .eyebrow { font-size: 8px; font-weight: 900; letter-spacing: 1.5px; color: var(--amber); }
+  .now .headline { font-size: 13px; font-weight: 900; margin-top: 5px; }
+  .now .detail { font-size: 9.5px; font-weight: 700; color: var(--muted); margin-top: 5px; letter-spacing: .3px; }
+  .now .agentline { font-size: 8.5px; font-weight: 800; color: var(--cyan); margin-top: 8px; letter-spacing: .5px; }
+  .log-toggle { margin-top: 12px; font-size: 9px; font-weight: 900; letter-spacing: 1px; color: var(--muted); display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+  .callout { margin-top: 18px; border-top: 1px dashed var(--line); padding-top: 12px; font-size: 9px; color: var(--muted); line-height: 1.6; }
+  .callout b { color: var(--cyan); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 8px; font-weight: 800; color: var(--muted); margin-top: 6px; }
+  .legend span::before { content: "● "; }
+</style>
+</head>
+<body>
+<div class="frame">
+
+  <div class="topbar">
+    <span class="back">◀ BACK</span>
+    <span class="title">GENERATING STORY</span>
+    <span class="gear">⚙</span>
+  </div>
+
+  <div class="pad">
+    <!-- HERO -->
+    <h1 class="story-title">The Obsidian Pact</h1>
+    <div class="bar"><i style="width:68%"></i></div>
+    <div class="hero-meta">
+      <span class="pct">68%</span>
+      <span class="eta">ETA 12:49</span>
+    </div>
+    <div class="subline">
+      <span>EPISODE 2 / 3</span><span class="dot">·</span>
+      <span>ELAPSED 58:22</span><span class="dot">·</span>
+      <span class="ok">● WORKER HEALTHY</span>
+    </div>
+
+    <!-- PHASE STEPPER (replaces the 4 stacked bands with a glanceable rail) -->
+    <div class="stepper">
+      <div class="step done"><div class="glyph">✓</div><div class="lbl">WORLD</div><div class="step-track"></div></div>
+      <div class="step done"><div class="glyph">✓</div><div class="lbl">CHARACTERS</div><div class="step-track"></div></div>
+      <div class="step active"><div class="glyph">◉</div><div class="lbl">EPISODES</div><div class="step-track"></div></div>
+      <div class="step todo"><div class="glyph">○</div><div class="lbl">VISUALS</div><div class="step-track"></div></div>
+      <div class="step todo"><div class="glyph">○</div><div class="lbl">PACKAGE</div><div class="step-track"></div></div>
+    </div>
+
+    <!-- EPISODES -->
+    <div class="section-label">EPISODES</div>
+
+    <!-- EP 1: complete, collapsed -->
+    <div class="ep done collapsed" onclick="this.classList.toggle('collapsed')">
+      <div class="ep-head">
+        <span class="ep-glyph">✓</span>
+        <span class="ep-name">EP 1</span>
+        <span class="ep-title">Arrival</span>
+        <span class="ep-meta">6 / 6 SCENES</span>
+        <span class="ep-pct">100%</span>
+        <span class="chev">▾</span>
+      </div>
+      <div class="ep-track"><i style="width:100%"></i></div>
+      <div class="scenes"></div>
+    </div>
+
+    <!-- EP 2: active, expanded — the focus of the screen -->
+    <div class="ep active" onclick="if(event.target.closest('.scenes'))return; this.classList.toggle('collapsed')">
+      <div class="ep-head">
+        <span class="ep-glyph">◉</span>
+        <span class="ep-name">EP 2</span>
+        <span class="ep-title">The Bargain</span>
+        <span class="ep-meta">3 / 6 SCENES</span>
+        <span class="ep-pct">52%</span>
+        <span class="chev">▾</span>
+      </div>
+      <div class="ep-track"><i style="width:52%"></i></div>
+      <div class="scenes">
+
+        <div class="scene done">
+          <span class="sc-glyph">✓</span>
+          <div class="sc-body">
+            <div class="sc-name">Scene 1 · Threshold</div>
+            <div class="sc-beats"><div class="beatbar"><i style="width:100%"></i></div><span class="sc-beatcount done">8 beats</span></div>
+          </div>
+          <span class="chip done">DONE</span>
+        </div>
+
+        <div class="scene done">
+          <span class="sc-glyph">✓</span>
+          <div class="sc-body">
+            <div class="sc-name">Scene 2 · The Offer</div>
+            <div class="sc-beats"><div class="beatbar"><i style="width:100%"></i></div><span class="sc-beatcount done">6 beats · 3 choices</span></div>
+          </div>
+          <span class="chip done">DONE</span>
+        </div>
+
+        <div class="scene done">
+          <span class="sc-glyph">✓</span>
+          <div class="sc-body">
+            <div class="sc-name">Scene 3 · Doubt</div>
+            <div class="sc-beats"><div class="beatbar"><i style="width:100%"></i></div><span class="sc-beatcount done">7 beats</span></div>
+          </div>
+          <span class="chip done">DONE</span>
+        </div>
+
+        <!-- ACTIVE scene: shows beat-level progress + what's happening in plain words -->
+        <div class="scene active">
+          <span class="sc-glyph">◉</span>
+          <div class="sc-body">
+            <div class="sc-name">Scene 4 · Confrontation</div>
+            <div class="sc-beats"><div class="beatbar"><i style="width:62%"></i></div><span class="sc-beatcount">beat 5 / 8</span></div>
+          </div>
+          <span class="chip prose">WRITING PROSE</span>
+        </div>
+
+        <div class="scene todo">
+          <span class="sc-glyph">○</span>
+          <div class="sc-body">
+            <div class="sc-name">Scene 5 · Fallout</div>
+            <div class="sc-beats"><div class="beatbar todo"><i style="width:0%"></i></div><span class="sc-beatcount">~8 beats planned</span></div>
+          </div>
+          <span class="chip todo">QUEUED</span>
+        </div>
+
+        <div class="scene todo">
+          <span class="sc-glyph">○</span>
+          <div class="sc-body">
+            <div class="sc-name">Scene 6 · Cliffhanger</div>
+            <div class="sc-beats"><div class="beatbar todo"><i style="width:0%"></i></div><span class="sc-beatcount">~8 beats planned · encounter</span></div>
+          </div>
+          <span class="chip todo">QUEUED</span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- EP 3: pending, collapsed -->
+    <div class="ep todo collapsed" onclick="this.classList.toggle('collapsed')">
+      <div class="ep-head">
+        <span class="ep-glyph">○</span>
+        <span class="ep-name">EP 3</span>
+        <span class="ep-title">Reckoning</span>
+        <span class="ep-meta">~6 SCENES PLANNED</span>
+        <span class="ep-pct">0%</span>
+        <span class="chev">▾</span>
+      </div>
+      <div class="ep-track"><i style="width:0%"></i></div>
+      <div class="scenes"></div>
+    </div>
+
+    <!-- NOW: one plain-English sentence of the current action -->
+    <div class="now">
+      <div class="eyebrow">NOW</div>
+      <div class="headline">Writing “Confrontation” — Scene 4 of Episode 2</div>
+      <div class="detail">Drafting beat 5 of 8. Next: author the scene’s branching choice, then continuity check.</div>
+      <div class="agentline">▸ SceneWriter · heartbeat 6s ago</div>
+      <div class="log-toggle">▸ SHOW ACTIVITY LOG</div>
+    </div>
+
+    <!-- Design annotations (not part of the shipped screen) -->
+    <div class="callout">
+      <b>What this fixes.</b> Today the screen shows <code>CONTENT:WORK 2/12</code> — an opaque count that
+      blends scenes + choices + encounters with no names. Here, every unit is a named row with a status,
+      a beat-level bar, and an <b>activity chip</b> that says what the agent is doing in plain words.
+      <div class="legend">
+        <span style="color:var(--amber)">WRITING PROSE = SceneWriter</span>
+        <span style="color:var(--cyan)">AUTHORING CHOICES = ChoiceAuthor</span>
+        <span style="color:#a78bfa">DESIGNING ENCOUNTER = EncounterArchitect</span>
+        <span style="color:#ec4899">GENERATING ART = image team</span>
+        <span style="color:var(--primary)">DONE</span>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

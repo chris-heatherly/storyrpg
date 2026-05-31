@@ -674,6 +674,11 @@ export class EpisodePipeline {
                   // For non-branching choices: navigate to the reaction beat.
                   nextBeatId: branchSceneId ? undefined : reactionId,
                   nextSceneId: branchSceneId || undefined,
+                  // A payoff beat that carries the scene transition IS the choice
+                  // bridge — flag it so the scene-graph branching contract accepts
+                  // it instead of failing on a "teleporting" choice. See
+                  // SceneGraphBranchValidator (missing_choice_bridge).
+                  isChoiceBridge: !!branchSceneId,
                   // Visual contract: use the narrative prose as the image description.
                   // outcomeTexts.partial describes the physical action; choice.text is the decision label.
                   visualMoment: basePayoffText,

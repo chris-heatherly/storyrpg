@@ -90,6 +90,51 @@ describe('StructuralValidator.autoFix', () => {
     expect(result.fixes.some((f) => f.toLowerCase().includes('broken'))).toBe(true);
   });
 
+  it('breaks a choice-payoff → choice-point navigation loop and routes payoffs forward', () => {
+    // Reproduces the shipped Endsong bug: a choice point whose per-choice
+    // payoff beats point back to it (choice → payoff → choice point → ...),
+    // trapping the reader on the same question. The single-node self-reference
+    // fix does not catch this multi-node back-edge.
+    const story = makeStory();
+    const scene = story.episodes[0].scenes[0] as any;
+    const choicePoint = scene.beats[2]; // beat-3 (has choices)
+    choicePoint.nextBeatId = choicePoint.id; // self-referential, as in the bug
+    choicePoint.choices = [
+      { id: 'choice-1', text: 'A', choiceType: 'expression', nextBeatId: 'beat-3-payoff-1' },
+      { id: 'choice-2', text: 'B', choiceType: 'expression', nextBeatId: 'beat-3-payoff-2' },
+    ];
+    scene.beats.push({ id: 'beat-3-payoff-1', text: 'Outcome A', nextBeatId: 'beat-3' });
+    scene.beats.push({ id: 'beat-3-payoff-2', text: 'Outcome B', nextBeatId: 'beat-3' });
+
+    const validator = new StructuralValidator();
+    const result = validator.autoFix(story);
+
+    const fixedScene = result.story.episodes[0].scenes[0] as any;
+    const payoff1 = fixedScene.beats.find((b: any) => b.id === 'beat-3-payoff-1');
+    const payoff2 = fixedScene.beats.find((b: any) => b.id === 'beat-3-payoff-2');
+    // Both payoffs no longer loop back to the choice point...
+    expect(payoff1.nextBeatId).toBeUndefined();
+    expect(payoff2.nextBeatId).toBeUndefined();
+    // ...and instead advance forward (next scene / episode-end).
+    expect(payoff1.nextSceneId).toBe('episode-end');
+    expect(payoff2.nextSceneId).toBe('episode-end');
+    expect(result.fixes.some((f) => f.includes('navigation loop'))).toBe(true);
+  });
+
+  it('does not touch a legitimate forward edge into a choice point', () => {
+    // beat-2 → beat-3 (the choice point) is normal lead-in flow; it must stay.
+    const story = makeStory();
+    const scene = story.episodes[0].scenes[0] as any;
+    scene.beats[1].nextBeatId = 'beat-3';
+
+    const validator = new StructuralValidator();
+    const result = validator.autoFix(story);
+
+    const fixedScene = result.story.episodes[0].scenes[0] as any;
+    expect(fixedScene.beats[1].nextBeatId).toBe('beat-3');
+    expect(result.fixes.some((f) => f.includes('navigation loop'))).toBe(false);
+  });
+
   it('recovers empty beat text from alternate fields or falls back to a safe placeholder', () => {
     const story = makeStory();
     const beats = (story.episodes[0].scenes[0] as any).beats;

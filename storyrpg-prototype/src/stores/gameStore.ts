@@ -23,6 +23,7 @@ import {
 import { applyIdentityShifts } from '../engine/identityEngine';
 import { evaluateCondition } from '../engine/conditionEvaluator';
 import { getRelationshipDescription } from '../engine/storyEngine';
+import { normalizeConsequenceShape } from '../engine/consequenceNormalize';
 import {
   createInitialPlayerState,
   DEFAULT_ATTRIBUTES,
@@ -561,7 +562,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // Apply fired consequences
       if (toFire.length > 0) {
         // Apply them inline (without recursing into setPlayer)
-        for (const consequence of toFire) {
+        for (const rawConsequence of toFire) {
+          const consequence = normalizeConsequenceShape(rawConsequence);
           switch (consequence.type) {
             case 'setFlag':
               updatedPlayer.flags = { ...updatedPlayer.flags, [consequence.flag]: consequence.value };
@@ -670,7 +672,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setPlayer(prevPlayer => {
       const newPlayer = { ...prevPlayer };
 
-      for (const consequence of consequences) {
+      for (const rawConsequence of consequences) {
+        const consequence = normalizeConsequenceShape(rawConsequence);
         switch (consequence.type) {
           case 'attribute': {
             const dir = consequence.change >= 0 ? 'up' : 'down';

@@ -658,7 +658,7 @@ function GeneratorAppContent() {
     return (
       <View style={styles.container}>
         <StatusBar style="light" />
-        <LoginScreen onAuthenticated={onAuthenticated} allowDevBypass={false} />
+        <LoginScreen onAuthenticated={onAuthenticated} allowDevBypass={true} />
       </View>
     );
   }

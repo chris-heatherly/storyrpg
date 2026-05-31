@@ -647,7 +647,37 @@ export class StructuralValidator {
             }
           }
         }
-        
+
+        // BREAK NAVIGATION LOOPS: a beat whose nextBeatId points back to an
+        // earlier choice point re-presents that choice forever (the classic
+        // choice-payoff → choice-point cycle: choice → payoff beat → back to
+        // the choice point). The single-node self-reference fix above does not
+        // catch this multi-node back-edge. Reroute the offending beat to the
+        // scene's forward target so it advances instead of looping.
+        if (scene.beats && scene.beats.length > 0) {
+          const indexById = new Map(scene.beats.map((b, idx) => [b.id, idx]));
+          const sceneIndex = episode.scenes.findIndex(s => s.id === scene.id);
+          const forwardSceneId = (scene as any).fallbackSceneId
+            || episode.scenes[sceneIndex + 1]?.id
+            || 'episode-end';
+          for (let i = 0; i < scene.beats.length; i++) {
+            const beat = scene.beats[i];
+            if (!beat.nextBeatId) continue;
+            const targetIdx = indexById.get(beat.nextBeatId);
+            if (targetIdx === undefined) continue;
+            const target = scene.beats[targetIdx];
+            const targetIsChoicePoint = !!(target.choices && target.choices.length > 0);
+            // A back- or self-edge into a choice point is the loop signature.
+            // Forward edges into a choice point are legitimate lead-ins.
+            if (targetIdx <= i && targetIsChoicePoint) {
+              beat.nextBeatId = undefined;
+              if (!beat.nextSceneId) beat.nextSceneId = forwardSceneId;
+              fixes.push(`Broke navigation loop: beat ${scene.id}/${beat.id} pointed back to choice point ${target.id}; routed to ${beat.nextSceneId}`);
+              fixedCount++;
+            }
+          }
+        }
+
         // Fix encounter beats
         if (scene.encounter) {
           for (const phase of scene.encounter.phases || []) {

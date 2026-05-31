@@ -910,7 +910,11 @@ export class StoryArchitect extends BaseAgent {
     candidate.leadsTo = futureSceneIds;
     if (!candidate.choicePoint || candidate.choicePoint.type === 'expression') {
       candidate.choicePoint = {
-        type: 'dilemma',
+        // 1.2: a routing branch needs `branches: true`, not type `dilemma`.
+        // Forcing dilemma here was a major driver of the dilemma monoculture;
+        // a path choice is strategic by default. The LLM's own non-expression
+        // type is preserved below.
+        type: 'strategic',
         branches: true,
         stakes: {
           want: candidate.choicePoint?.stakes?.want || `Choose how to handle ${candidate.name}`,
@@ -930,7 +934,7 @@ export class StoryArchitect extends BaseAgent {
       };
     }
 
-    candidate.choicePoint.type = candidate.choicePoint.type === 'expression' ? 'dilemma' : candidate.choicePoint.type;
+    candidate.choicePoint.type = candidate.choicePoint.type === 'expression' ? 'strategic' : candidate.choicePoint.type;
     candidate.choicePoint.branches = true;
     candidate.choicePoint.optionHints = futureSceneIds.map((targetId) => {
       const target = scenes.find((scene) => scene.id === targetId);
@@ -1703,6 +1707,12 @@ Every non-encounter scene must earn its place by making the encounter MORE meani
 - **Relationship (~30%)**: Bond building with NPCs. Affect trust, affection, respect, fear. May branch.
 - **Strategic (~20%)**: Skill/stat-based choices. May branch.
 - **Dilemma (~15%)**: Value-testing, high impact, no clearly right answer. May branch.
+
+**Vary \`choicePoint.type\` across scenes to roughly match this mix.** Most
+choice points are expression / relationship / strategic — only about **1 in 7**
+should be a \`dilemma\`, reserved for genuine no-right-answer value tests. Do NOT
+default every choice point to \`dilemma\`. The single \`dilemma\` in the JSON
+example below is one illustration, not a template to repeat.
 
 ## Branching
 

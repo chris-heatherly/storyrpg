@@ -232,6 +232,18 @@ export class ChoiceAuthor extends BaseAgent {
   };
   private maxBranchingChoicesPerEpisode: number;
 
+  // 1.7: running count of skills exercised by statChecks this agent has seen,
+  // used to rotate auto-assigned default skills off the persuasion/investigation
+  // monoculture toward >=5/6 attribute coverage across the season.
+  private skillUsage: Record<string, number> = {};
+  // Candidate skills per choice type, ordered to lead away from the historical
+  // persuasion-first default. Selection picks the least-used among these.
+  private static readonly RELEVANT_SKILLS: Record<string, string[]> = {
+    relationship: ['persuasion', 'deception', 'intimidation'],
+    strategic: ['investigation', 'perception', 'stealth', 'athletics', 'survival'],
+    dilemma: ['survival', 'investigation', 'perception', 'athletics', 'persuasion'],
+  };
+
   constructor(config: AgentConfig, generationConfig?: GenerationSettingsConfig) {
     super('Choice Author', config);
     this.includeSystemPrompt = true;
@@ -883,6 +895,36 @@ Before finalizing:
     );
   }
 
+  /** Record the skills exercised by a choice set's existing statChecks (1.7). */
+  private trackStatCheckSkills(choices: GeneratedChoice[]): void {
+    for (const choice of choices) {
+      const sc = choice.statCheck as { skill?: string; skillWeights?: Record<string, number> } | undefined;
+      if (!sc) continue;
+      if (sc.skillWeights) {
+        for (const skill of Object.keys(sc.skillWeights)) {
+          this.skillUsage[skill] = (this.skillUsage[skill] ?? 0) + 1;
+        }
+      } else if (sc.skill) {
+        this.skillUsage[sc.skill] = (this.skillUsage[sc.skill] ?? 0) + 1;
+      }
+    }
+  }
+
+  /** Least-used skill relevant to the choice type, for a rotated default (1.7). */
+  private leastUsedRelevantSkill(choiceType: ChoiceType): string {
+    const candidates = ChoiceAuthor.RELEVANT_SKILLS[choiceType] ?? ['investigation'];
+    let best = candidates[0];
+    let bestCount = Infinity;
+    for (const skill of candidates) {
+      const count = this.skillUsage[skill] ?? 0;
+      if (count < bestCount) {
+        bestCount = count;
+        best = skill;
+      }
+    }
+    return best;
+  }
+
   private buildPrompt(input: ChoiceAuthorInput): string {
     const npcList = input.npcsInScene
       .map(npc => {
@@ -1375,15 +1417,18 @@ CRITICAL REQUIREMENTS:
     }
 
     // Strategic, dilemma, and relationship choices MUST include statCheck on ≥1 option.
-    // Auto-assign a default statCheck if the LLM forgot.
+    // Auto-assign a default statCheck if the LLM forgot. Rotate the skill off
+    // the historical persuasion/investigation/survival monoculture (1.7): record
+    // skills already in use, then pick the least-used skill relevant to the
+    // choice type so the season exercises >=5/6 attributes.
     if (choiceSet.choiceType === 'strategic' || choiceSet.choiceType === 'dilemma' || choiceSet.choiceType === 'relationship') {
+      this.trackStatCheckSkills(choiceSet.choices);
       const hasStatCheck = choiceSet.choices.some(c => c.statCheck);
       if (!hasStatCheck) {
-        const defaultSkill = choiceSet.choiceType === 'relationship' ? 'persuasion'
-          : choiceSet.choiceType === 'strategic' ? 'investigation'
-          : 'survival';
+        const defaultSkill = this.leastUsedRelevantSkill(choiceSet.choiceType);
         const defaultDiff = choiceSet.choiceType === 'dilemma' ? 60 : 50;
         choiceSet.choices[0].statCheck = { skillWeights: { [defaultSkill]: 1.0 }, difficulty: defaultDiff };
+        this.skillUsage[defaultSkill] = (this.skillUsage[defaultSkill] ?? 0) + 1;
         console.warn(
           `[ChoiceAuthor] ${choiceSet.choiceType.toUpperCase()} choice set "${choiceSet.beatId}" ` +
           `had no statCheck — auto-assigned ${defaultSkill}@${defaultDiff} to choice-0.`

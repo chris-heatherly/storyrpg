@@ -332,3 +332,23 @@ describe('ChoiceAuthor.normalizeConsequenceTier (1.3 flag → callback)', () => 
     expect(tier({ id: 'c7', consequences: [] }, 'dilemma')).toBe('branchlet');
   });
 });
+
+describe('ChoiceAuthor skill rotation (1.7)', () => {
+  it('rotates the default relationship skill off persuasion as it gets used', () => {
+    const author: any = new ChoiceAuthor(config);
+    expect(author.leastUsedRelevantSkill('relationship')).toBe('persuasion');
+    author.skillUsage['persuasion'] = 1;
+    expect(author.leastUsedRelevantSkill('relationship')).toBe('deception');
+  });
+
+  it('counts skills from existing statChecks and avoids the most-used', () => {
+    const author: any = new ChoiceAuthor(config);
+    author.trackStatCheckSkills([
+      { statCheck: { skillWeights: { investigation: 1 } } },
+      { statCheck: { skill: 'stealth' } },
+    ]);
+    expect(author.skillUsage.investigation).toBe(1);
+    expect(author.skillUsage.stealth).toBe(1);
+    expect(author.leastUsedRelevantSkill('strategic')).not.toBe('investigation');
+  });
+});

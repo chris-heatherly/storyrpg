@@ -29,8 +29,12 @@ const projectRoot = path.resolve(__dirname, '..');
 // per-scene active/activity emission for the generator progress UI. The plan
 // math/accumulation lives in pipeline/generationPlan.ts; the remainder is
 // irreducible per-episode/scene/beat emission call sites woven through the run.
+//
+// -56 (21228 -> 21172): extracted callback orchestration (episode harvest +
+// unresolved-hook prompt shaping) to pipeline/callbackOrchestration.ts. The
+// pipeline keeps thin delegating wrappers. Decomposition progress (PR B).
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21228,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21172,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

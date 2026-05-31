@@ -175,6 +175,12 @@ import {
 import { EncounterProviderPolicy } from '../encounters/encounterProviderPolicy';
 import { AssetRegistry } from '../images/assetRegistry';
 import { CallbackLedger } from './callbackLedger';
+import {
+  getUnresolvedCallbacksForPrompt as getUnresolvedCallbacksForPromptImpl,
+  harvestEpisodeCallbacks as harvestEpisodeCallbacksImpl,
+  type UnresolvedCallbackForPrompt,
+  type HarvestEpisodeCallbacksParams,
+} from './callbackOrchestration';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
 import { validateRegistryCoverage } from '../images/coverageValidator';
@@ -17702,27 +17708,10 @@ Design the key art. Return STRICT JSON matching the schema.`;
    * Returns `undefined` when there are no hooks, so the prompt section is
    * skipped cleanly.
    */
-  private getUnresolvedCallbacksForPrompt(episodeNumber: number | undefined): Array<{
-    id: string;
-    sourceEpisode: number;
-    summary: string;
-    flags: string[];
-    conditionKeys?: string[];
-    impactFactors?: string[];
-    consequenceTier?: string;
-  }> | undefined {
-    if (!episodeNumber || episodeNumber <= 1) return undefined;
-    const hooks = this.callbackLedger.unresolvedFor(episodeNumber);
-    if (hooks.length === 0) return undefined;
-    return hooks.map((hook) => ({
-      id: hook.id,
-      sourceEpisode: hook.sourceEpisode,
-      summary: hook.summary,
-      flags: hook.flags,
-      conditionKeys: hook.conditionKeys,
-      impactFactors: hook.impactFactors,
-      consequenceTier: hook.consequenceTier,
-    }));
+  private getUnresolvedCallbacksForPrompt(
+    episodeNumber: number | undefined,
+  ): UnresolvedCallbackForPrompt[] | undefined {
+    return getUnresolvedCallbacksForPromptImpl(this.callbackLedger, episodeNumber);
   }
 
   /**
@@ -17730,55 +17719,10 @@ Design the key art. Return STRICT JSON matching the schema.`;
    * from `memorableMoment` choice fields, and record payoffs for any
    * TextVariants that reference an existing hook id.
    */
-  private harvestEpisodeCallbacks(params: {
-    episodeNumber: number;
-    sceneContents: Array<{ sceneId: string; beats: Array<{ id?: string; callbackHookIds?: string[]; textVariants?: Array<{ callbackHookId?: string }>; choices?: Array<{ id: string; memorableMoment?: { id: string; summary: string; flags?: string[] } }> }> }>;
-    choiceSets: Array<{ sceneId?: string; beatId?: string; choices: Array<{ id: string; memorableMoment?: { id: string; summary: string; flags?: string[] }; consequences?: unknown[] }> }>;
-  }): { newHooks: number; payoffs: number } {
-    let newHooks = 0;
-    let payoffs = 0;
-
-    for (const choiceSet of params.choiceSets) {
-      const sceneId = choiceSet.sceneId || '';
-      for (const choice of choiceSet.choices || []) {
-        if (choice.memorableMoment?.id) {
-          const added = this.callbackLedger.recordChoice({
-            choice: choice as unknown as Choice,
-            episode: params.episodeNumber,
-            sceneId,
-          });
-          if (added) newHooks += 1;
-        }
-      }
-    }
-
-    for (const scene of params.sceneContents) {
-      for (const beat of scene.beats || []) {
-        if (beat.choices) {
-          for (const choice of beat.choices) {
-            if (choice.memorableMoment?.id) {
-              const added = this.callbackLedger.recordChoice({
-                choice: choice as unknown as Choice,
-                episode: params.episodeNumber,
-                sceneId: scene.sceneId,
-              });
-              if (added) newHooks += 1;
-            }
-          }
-        }
-        if (beat.textVariants) {
-          const matched = this.callbackLedger.recordPayoffsFromVariants(beat.textVariants);
-          payoffs += matched.length;
-          if (matched.length > 0) {
-            const hookIds = new Set(beat.callbackHookIds || []);
-            for (const hookId of matched) hookIds.add(hookId);
-            beat.callbackHookIds = Array.from(hookIds);
-          }
-        }
-      }
-    }
-
-    return { newHooks, payoffs };
+  private harvestEpisodeCallbacks(
+    params: HarvestEpisodeCallbacksParams,
+  ): { newHooks: number; payoffs: number } {
+    return harvestEpisodeCallbacksImpl(this.callbackLedger, params);
   }
 
   /**

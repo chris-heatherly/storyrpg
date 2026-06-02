@@ -130,6 +130,7 @@ import { assignChoiceTypes } from './choiceTypePlanner';
 import { extractPlantsFromChoiceSet, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { SeasonCanon } from './seasonCanon';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
+import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
 import type { EpisodeStateSnapshot } from './episodeStateSnapshot';
 import { SavingPhase } from './phases/SavingPhase';
 import {
@@ -9897,6 +9898,15 @@ export class FullStoryPipeline {
       episodes.sort((a, b) => (a.number || 0) - (b.number || 0));
       episodeResults.sort((a, b) => a.episodeNumber - b.episodeNumber);
       this.assertEpisodeOrderingInvariants(episodes, episodeResults);
+
+      // Season Canon (P5): when the whole season has been sealed, run the
+      // completion gate — every promise must be paid or abandoned. Advisory.
+      if (this.config.generation?.seasonCanonEnabled &&
+          this.seasonCanon.sealedEpisodeNumbers().length >= (analysis.totalEstimatedEpisodes || this.totalEpisodes)) {
+        for (const issue of validateSeasonCompletion(this.callbackLedger)) {
+          this.emit({ type: 'warning', phase: 'season_canon_completion', message: `[advisory] ${issue.message}` });
+        }
+      }
 
       // Aggregate per-episode QA reports into a single summary
       let aggregatedQAReport: QAReport | undefined;

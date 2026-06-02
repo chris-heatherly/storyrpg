@@ -81,8 +81,13 @@ const projectRoot = path.resolve(__dirname, '..');
 // default-off via generation.seasonCanonEnabled). All logic lives in
 // pipeline/seasonSealOrchestration.ts / seasonCanon.ts / episodeStateSnapshot.ts;
 // these are the irreducible reset/resume/seal call sites + two new private fields.
+//
+// +10 (21285 -> 21295): Season Canon P5 — season-completion gate. When the whole
+// season has sealed, advisory-check that every promise is paid or abandoned. Gate
+// lives in validators/promiseLedgerValidators.ts (validateSeasonCompletion) +
+// pipeline/spinePlantMap.ts; only the thin season-end call site + import are here.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21285,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21295,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

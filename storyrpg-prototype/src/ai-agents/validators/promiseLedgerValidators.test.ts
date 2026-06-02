@@ -5,6 +5,7 @@ import {
   validateNoDanglingPayoffs,
   validatePlantValidity,
   validatePromiseLedger,
+  validateSeasonCompletion,
 } from './promiseLedgerValidators';
 
 /** Build a ledger with one hook planted in `sourceEpisode`, optionally targeted. */
@@ -132,5 +133,24 @@ describe('validatePromiseLedger (combined gate)', () => {
     const result = validatePromiseLedger({ ledger, episode: 2, seasonLength: 5 });
     expect(result.valid).toBe(false);
     expect(result.issues.some((i) => i.location === 'promise:h1')).toBe(true);
+  });
+});
+
+describe('validateSeasonCompletion', () => {
+  it('flags a promise left open at season end', () => {
+    const ledger = ledgerWithHook({ sourceEpisode: 1, payoffEpisode: 2 });
+    expect(validateSeasonCompletion(ledger)).toHaveLength(1);
+  });
+
+  it('passes when the promise was paid (resolved)', () => {
+    const ledger = ledgerWithHook({ sourceEpisode: 1, payoffEpisode: 2, payoffCount: 2 });
+    ledger.recordPayoff('h1'); // pushes payoffCount past the threshold -> resolved
+    expect(validateSeasonCompletion(ledger)).toHaveLength(0);
+  });
+
+  it('passes when the promise was explicitly abandoned', () => {
+    const ledger = ledgerWithHook({ sourceEpisode: 1, payoffEpisode: 2 });
+    ledger.abandon('h1', 'path never taken');
+    expect(validateSeasonCompletion(ledger)).toHaveLength(0);
   });
 });

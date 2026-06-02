@@ -111,6 +111,23 @@ export function validatePlantValidity(ledger: CallbackLedger, seasonLength: numb
   return issues;
 }
 
+/**
+ * season-completion: when ALL planned episodes are sealed, every promise must be
+ * paid (resolved) or explicitly abandoned — nothing silently left open. This is a
+ * formality if promise-due held each episode, but it's the season-level safety net.
+ * Runs only at season end (the caller decides when all episodes are sealed).
+ */
+export function validateSeasonCompletion(ledger: CallbackLedger): ValidationIssue[] {
+  return ledger.stillOpen().map((hook) => ({
+    severity: 'error' as const,
+    message: `Promise "${hook.summary}" (${hook.id}) is still open at season end — never paid off or abandoned.`,
+    location: `promise:${hook.id}`,
+    suggestion: hook.payoffEpisode
+      ? `It was targeted at episode ${hook.payoffEpisode}; author its payoff there or abandon it with a reason.`
+      : 'Pay it off in a later episode or abandon it with a reason.',
+  }));
+}
+
 export interface PromiseLedgerGateInput {
   ledger: CallbackLedger;
   /** The episode being sealed (current episode). */

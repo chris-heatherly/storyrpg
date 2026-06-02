@@ -215,16 +215,39 @@ Extend SeasonPlanner; wire the completion gate.
   impossible only when canon establishes the fact in a *later* episode). 11 unit
   tests. Registered in the manifest.
 
-**Remaining (integration + LLM; need a multi-episode regen to verify end-to-end):**
+- **Phase 4 — EpisodeStateSnapshot + incremental seal/resume runner (deterministic
+  core landed).** New `pipeline/episodeStateSnapshot.ts` (cumulative path-aware
+  carry-forward: flag/score union + open promise ids) and
+  `pipeline/seasonSealOrchestration.ts` (`evaluateEpisodeForSeal` runs the promise +
+  canon gates; `sealEpisodeIntoCanon` freezes facts, skipping already-sealed for
+  resume; `sealAndPersistEpisode` is the one-call runner step). Wired into
+  `generateMultipleEpisodes`' sequential loop with per-run reset + disk-resume
+  rehydration of canon/ledger/snapshot. Gated default-off by
+  `generation.seasonCanonEnabled`; gate issues run ADVISORY (emitted, persisted,
+  never blocking). 11 unit tests. Monolith +37 (baseline 21285).
+- **Phase 5 — spine plant→payoff map + season-completion gate (deterministic core
+  landed).** New `pipeline/spinePlantMap.ts` (`applySpinePlantMap` pins each spine
+  entry's explicit `payoffEpisode` onto its ledger hook, by hookId or `flag:<flag>`).
+  `CallbackLedger` gains `abandon`/`stillOpen`. New `validateSeasonCompletion`
+  (every promise paid or abandoned at season end), wired advisory at season end when
+  the whole season has sealed. 8 unit tests. Monolith +10 (baseline 21295).
 
-- **Phase 4 — EpisodeStateSnapshot + incremental seal/resume runner.** Wire P2/P3
-  into `generateMultipleEpisodes`: load(canon, ledger, prior snapshot) → generate →
-  extract structured deltas (LLM → deterministic) → run the promise + canon gates →
-  seal → persist; resume skips sealed episodes. This is where the validators move
-  from "registered + unit-tested" to "fired in the per-episode gate", and where the
-  LLM-extraction handoff (episode prose → KnowledgeClaim[] / EpisodeCanonDeltas) lives.
-- **Phase 5 — SeasonPlanner emits plant→payoff episode map + season-completion gate.**
-  Source of the explicit `payoffEpisode` targets; the final season formality gate.
+**Remaining (LLM emission + a multi-episode regen to activate end-to-end):**
+
+The deterministic spine of all five phases is landed, unit-tested, and gate-green.
+What's left is the LLM/regen handoff, which can only be validated against a live
+multi-episode run through the generator/worker:
+
+1. **Extend `SeasonPlannerAgent`** to emit the `SpinePlantMap` (each thread's plant
+   episode → payoff episode). This is the source of the `payoffEpisode` targets;
+   `applySpinePlantMap` is the ready deterministic consumer.
+2. **Wire the LLM extraction** of `KnowledgeClaim[]` / world-fact `EpisodeCanonDeltas`
+   from episode prose (reuse the ContinuityChecker knowledge bundle) so the
+   canon-consistency gate has real claims and canon freezes prose-mined facts.
+3. **Multi-episode regen** with `seasonCanonEnabled: true` to confirm: promises plant
+   in ep N and pay off at their `payoffEpisode`; ep N+k generates from snapshots
+   without re-running N; advisory gate findings are correct → then flip the gates
+   from advisory to blocking + add episode-scoped repair.
 
 ## What exists vs. new
 - **Exists:** `CallbackLedger` (hooks, windows, serialize), `SeasonPlannerAgent`

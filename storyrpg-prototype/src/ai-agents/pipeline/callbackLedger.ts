@@ -43,6 +43,13 @@ export interface CallbackHook {
   payoffEpisode?: number;
   payoffCount: number;
   resolved: boolean;
+  /**
+   * Season Canon (P5): a promise intentionally dropped (e.g. its path was never
+   * taken, or the spine cut it). The season-completion gate treats abandoned the
+   * same as paid — it just must not be silently left open.
+   */
+  abandoned?: boolean;
+  abandonReason?: string;
   createdAt: string;
 }
 
@@ -327,6 +334,23 @@ export class CallbackLedger {
   /** Hooks carrying an explicit payoffEpisode target (for plant-validity). */
   withExplicitTarget(): CallbackHook[] {
     return Array.from(this.hooks.values()).filter((hook) => hook.payoffEpisode != null);
+  }
+
+  /**
+   * Season Canon (P5): intentionally drop a promise so the completion gate doesn't
+   * flag it as silently-open. No-op if the hook is unknown.
+   */
+  abandon(hookId: string, reason: string): CallbackHook | undefined {
+    const hook = this.hooks.get(hookId);
+    if (!hook) return undefined;
+    hook.abandoned = true;
+    hook.abandonReason = reason;
+    return hook;
+  }
+
+  /** Hooks that are neither resolved nor abandoned (still owed). */
+  stillOpen(): CallbackHook[] {
+    return Array.from(this.hooks.values()).filter((hook) => !hook.resolved && !hook.abandoned);
   }
 
   serialize(): SerializedCallbackLedger {

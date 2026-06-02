@@ -92,6 +92,24 @@ export function assignChoiceTypes(
   if (n === 0) return [];
 
   const counts = allocateChoiceTypeCounts(n, target);
+
+  // Guarantee at least one DILEMMA in a reasonably-sized episode. Largest-
+  // remainder gives dilemma (the lowest target weight) 0 slots at small N, so
+  // episodes shipped with no high-stakes moral choice (the 0%-dilemma audit
+  // finding). The dilemma is the dramatic core, so reserve one slot — stealing
+  // from the largest non-dilemma category to stay closest to the target mix.
+  // The assignment loop below routes it to a branching/bottleneck choice point
+  // first (those are sorted ahead), landing it on the episode's pivotal choice.
+  const MIN_CHOICE_POINTS_FOR_DILEMMA = 3;
+  if (counts.dilemma === 0 && n >= MIN_CHOICE_POINTS_FOR_DILEMMA) {
+    const donor = (['strategic', 'relationship', 'expression'] as ChoiceType[])
+      .find((t) => counts[t] > 0);
+    if (donor) {
+      counts[donor] -= 1;
+      counts.dilemma += 1;
+    }
+  }
+
   // Build a slot pool in priority order.
   const pool: ChoiceType[] = [];
   for (const t of ORDER) for (let k = 0; k < counts[t]; k++) pool.push(t);

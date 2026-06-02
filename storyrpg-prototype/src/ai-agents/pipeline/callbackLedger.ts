@@ -33,6 +33,14 @@ export interface CallbackHook {
   consequenceTier?: ChoiceConsequenceTier;
   summary: string;
   payoffWindow: { minEpisode: number; maxEpisode: number };
+  /**
+   * Season Canon (P2): the SPECIFIC episode this promise is meant to pay off in,
+   * so it can be enforced exactly when that episode runs (the promise-due gate)
+   * rather than against a vague window. Populated from the season spine (P5);
+   * when set it is authoritative and `payoffWindow` is derived from it. Optional
+   * for back-compat with window-only hooks.
+   */
+  payoffEpisode?: number;
   payoffCount: number;
   resolved: boolean;
   createdAt: string;
@@ -88,8 +96,18 @@ export class CallbackLedger {
    */
   add(hook: CallbackHookInput): CallbackHook {
     const existing = this.hooks.get(hook.id);
+    // An explicit payoffEpisode (from the season spine) is authoritative: when
+    // present it pins the window's start to that exact episode and is never lost
+    // on a later merge that omits it.
+    const payoffEpisode = hook.payoffEpisode ?? existing?.payoffEpisode;
+    const payoffWindow =
+      payoffEpisode != null
+        ? { minEpisode: payoffEpisode, maxEpisode: Math.max(payoffEpisode, hook.payoffWindow.maxEpisode) }
+        : hook.payoffWindow;
     const merged: CallbackHook = {
       ...hook,
+      payoffEpisode,
+      payoffWindow,
       payoffCount: existing?.payoffCount ?? hook.payoffCount ?? 0,
       resolved: existing?.resolved ?? hook.resolved ?? false,
       createdAt: existing?.createdAt ?? hook.createdAt ?? new Date().toISOString(),
@@ -273,6 +291,42 @@ export class CallbackLedger {
 
   size(): number {
     return this.hooks.size;
+  }
+
+  /** Whether a hook id exists (for dangling-payoff detection). */
+  has(hookId: string): boolean {
+    return this.hooks.has(hookId);
+  }
+
+  /**
+   * Season Canon (P2): pin a hook's explicit payoff episode (from the season
+   * spine). Re-derives the window so `unresolvedFor` surfaces it at the right
+   * time. No-op if the hook is unknown. Returns the updated hook.
+   */
+  setPayoffEpisode(hookId: string, payoffEpisode: number, latestEpisode?: number): CallbackHook | undefined {
+    const hook = this.hooks.get(hookId);
+    if (!hook) return undefined;
+    hook.payoffEpisode = payoffEpisode;
+    hook.payoffWindow = {
+      minEpisode: payoffEpisode,
+      maxEpisode: Math.max(payoffEpisode, latestEpisode ?? hook.payoffWindow.maxEpisode),
+    };
+    return hook;
+  }
+
+  /**
+   * Promises explicitly targeted to pay off in `episode` that are still open
+   * (unresolved). The promise-due gate enforces these MUST be paid in `episode`.
+   */
+  dueAt(episode: number): CallbackHook[] {
+    return Array.from(this.hooks.values()).filter(
+      (hook) => hook.payoffEpisode === episode && !hook.resolved,
+    );
+  }
+
+  /** Hooks carrying an explicit payoffEpisode target (for plant-validity). */
+  withExplicitTarget(): CallbackHook[] {
+    return Array.from(this.hooks.values()).filter((hook) => hook.payoffEpisode != null);
   }
 
   serialize(): SerializedCallbackLedger {

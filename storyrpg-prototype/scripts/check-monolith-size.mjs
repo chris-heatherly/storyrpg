@@ -69,8 +69,13 @@ const projectRoot = path.resolve(__dirname, '..');
 // +1 (21241 -> 21242): raise SourceMaterialAnalyzer maxTokens 16384 -> 32000 so the
 // structure-analysis JSON for rich multi-episode treatments stops truncating at the
 // cap (unparseable mid-string). One-line comment.
+//
+// +6 (21242 -> 21248): Season Canon P1 — within-episode plant context. Accumulate
+// flags planted by earlier scenes and merge them into the unresolvedCallbacks fed to
+// later scenes so SceneWriter authors within-episode callback payoffs. Logic lives in
+// pipeline/episodePlantContext.ts; only the running list + two thin call sites here.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21242,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21248,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

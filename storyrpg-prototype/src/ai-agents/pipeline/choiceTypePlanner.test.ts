@@ -62,6 +62,32 @@ describe('assignChoiceTypes', () => {
   it('is a no-op shape when there are no choice points', () => {
     expect(assignChoiceTypes([{ id: 'x' }])).toEqual([]);
   });
+
+  it('guarantees at least one dilemma at >=3 choice points (fixes the 0%-dilemma finding)', () => {
+    const s = scenes(3); // largest-remainder alone would give 0 dilemma
+    assignChoiceTypes(s);
+    const types = s.map((x) => x.choicePoint!.type);
+    expect(types).toContain('dilemma');
+  });
+
+  it('routes the guaranteed dilemma onto a branching choice point when present', () => {
+    const s = [
+      { id: 'a', choicePoint: { type: 'strategic' as ChoiceType } },
+      { id: 'b', choicePoint: { type: 'strategic' as ChoiceType } },
+      { id: 'bottleneck', choicePoint: { type: 'strategic' as ChoiceType, branches: true } },
+    ];
+    assignChoiceTypes(s);
+    // dilemma exists and is not on an expression (branching can't be expression)
+    const all = s.map((x) => x.choicePoint!.type);
+    expect(all).toContain('dilemma');
+  });
+
+  it('does not force a dilemma for a tiny (<3) episode', () => {
+    const s = scenes(2);
+    assignChoiceTypes(s);
+    // 2 slots at 35/30/... → expression + relationship; dilemma not forced
+    expect(s.map((x) => x.choicePoint!.type)).not.toContain('dilemma');
+  });
 });
 
 describe('planSkillRotation', () => {

@@ -1,0 +1,100 @@
+/**
+ * Within-episode plant context (Season Canon, Phase 1).
+ *
+ * The CallbackLedger pays callbacks off ACROSS episodes (it harvests at episode
+ * end and windows by episode), so for a single episode a flag set in scene 1 is
+ * never surfaced to scene 4 of the SAME episode — and the "your earlier choice
+ * echoes here" payoff never gets authored (flagsReferenced stays near zero).
+ *
+ * This module closes that gap deterministically: as scenes generate in order, we
+ * accumulate the trackable flags each scene's choices set (with the choice's
+ * AUTHORED acknowledgment summary) and merge them into the `unresolvedCallbacks`
+ * list handed to LATER scenes' SceneWriter — which already knows how to author a
+ * flag-conditional textVariant acknowledging a callback. No new LLM call, no
+ * templated prose: the model writes the payoff in context, gated on the flag the
+ * earlier choice set.
+ *
+ * Pure + structurally typed so it's unit-testable and the pipeline keeps only a
+ * thin call site.
+ */
+
+import type { Choice } from '../../types/choice';
+import type { CallbackLedger } from './callbackLedger';
+import type { UnresolvedCallbackForPrompt } from './callbackOrchestration';
+
+export interface EpisodePlant {
+  flag: string;
+  summary: string;
+  sceneId: string;
+}
+
+interface PlantChoiceSet {
+  sceneId?: string;
+  choices?: Choice[];
+}
+
+/** Best available authored acknowledgment text for a choice (never templated). */
+function ackSummaryOf(choice: Choice): string | undefined {
+  return (
+    choice.feedbackCue?.echoSummary ||
+    choice.reminderPlan?.shortTerm ||
+    choice.reminderPlan?.immediate ||
+    choice.memorableMoment?.summary ||
+    undefined
+  );
+}
+
+/**
+ * Extract the plants a scene's choices set: each trackable flag (via the ledger's
+ * own rule) paired with the choice's authored acknowledgment summary.
+ */
+export function extractPlantsFromChoiceSet(
+  choiceSet: PlantChoiceSet,
+  ledger: CallbackLedger,
+): EpisodePlant[] {
+  const out: EpisodePlant[] = [];
+  for (const choice of choiceSet.choices ?? []) {
+    const summary = ackSummaryOf(choice);
+    if (!summary) continue;
+    for (const flag of ledger.trackableFlagsOf(choice)) {
+      out.push({ flag, summary, sceneId: choiceSet.sceneId ?? '' });
+    }
+  }
+  return out;
+}
+
+/** Shape accumulated within-episode plants as unresolved-callback prompt entries. */
+export function plantsToUnresolvedCallbacks(
+  plants: EpisodePlant[],
+  episodeNumber: number,
+): UnresolvedCallbackForPrompt[] {
+  const byFlag = new Map<string, EpisodePlant>();
+  for (const p of plants) if (!byFlag.has(p.flag)) byFlag.set(p.flag, p);
+  return [...byFlag.values()].map((p) => ({
+    id: `within-ep${episodeNumber}-${p.flag}`,
+    sourceEpisode: episodeNumber,
+    summary: p.summary,
+    flags: [p.flag],
+    conditionKeys: [p.flag],
+    consequenceTier: 'tint',
+  }));
+}
+
+/**
+ * Merge cross-episode unresolved callbacks with this-episode plants for the
+ * scene about to be written. Returns `undefined` when there's nothing to surface
+ * (so the prompt section is skipped). Dedupes within-episode plants by flag and
+ * drops any whose flag is already covered by a cross-episode hook.
+ */
+export function mergeUnresolvedForScene(
+  crossEpisode: UnresolvedCallbackForPrompt[] | undefined,
+  episodePlants: EpisodePlant[],
+  episodeNumber: number,
+): UnresolvedCallbackForPrompt[] | undefined {
+  const crossFlags = new Set((crossEpisode ?? []).flatMap((h) => h.flags ?? []));
+  const within = plantsToUnresolvedCallbacks(episodePlants, episodeNumber).filter(
+    (h) => !h.flags.some((f) => crossFlags.has(f)),
+  );
+  const merged = [...(crossEpisode ?? []), ...within];
+  return merged.length > 0 ? merged : undefined;
+}

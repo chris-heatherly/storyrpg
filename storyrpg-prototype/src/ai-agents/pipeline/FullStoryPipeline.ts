@@ -127,6 +127,7 @@ import {
   snapshotPlan,
 } from './generationPlan';
 import { assignChoiceTypes } from './choiceTypePlanner';
+import { extractPlantsFromChoiceSet, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { SavingPhase } from './phases/SavingPhase';
 import {
   createOutputDirectory,
@@ -6846,6 +6847,9 @@ export class FullStoryPipeline {
   ): Promise<{ sceneContents: SceneContent[]; choiceSets: ChoiceSet[]; encounters: Map<string, EncounterStructure> }> {
     const sceneContents: SceneContent[] = [];
     const choiceSets: ChoiceSet[] = [];
+    // Phase 1 (Season Canon): flags planted by EARLIER scenes this episode, fed
+    // to LATER scenes so SceneWriter can author within-episode callback payoffs.
+    const episodePlants: EpisodePlant[] = [];
     const encounters: Map<string, EncounterStructure> = new Map();
 
     // Initialize incremental validation
@@ -7233,7 +7237,7 @@ export class FullStoryPipeline {
           }),
           relevantFlags: blueprint.suggestedFlags,
           relevantScores: blueprint.suggestedScores,
-          unresolvedCallbacks: this.getUnresolvedCallbacksForPrompt(brief.episode?.number),
+          unresolvedCallbacks: mergeUnresolvedForScene(this.getUnresolvedCallbacksForPrompt(brief.episode?.number), episodePlants, brief.episode?.number ?? 1),
           targetBeatCount: this.getTargetBeatCountForScene(sceneBlueprint),
           dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
           previousSceneSummary: previousScene
@@ -7592,6 +7596,8 @@ export class FullStoryPipeline {
               this.emit({ type: 'warning', phase: 'choices', message: caFailMsg });
             } else {
             choiceSets.push({ ...choiceResult.data, sceneId: sceneBlueprint.id });
+            // Phase 1: record this scene's planted flags so later scenes can pay them off.
+            episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }, this.callbackLedger));
 
             this.emit({
               type: 'agent_complete',

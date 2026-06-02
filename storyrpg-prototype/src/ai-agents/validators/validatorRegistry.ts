@@ -86,6 +86,14 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'MicroEpisodeSeasonValidator', stage: 'final', tier: 'advisory', dispatchedFrom: 'FullStoryPipeline' },
   { validator: 'FinalStoryContractValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
   { validator: 'EncounterQualityValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
+  // Season Canon (P2) — state-scoped promise gate. Fires only when a promise is
+  // due/dangling/invalid for the episode being sealed (never a blanket alarm).
+  // Wired into the per-episode seal by the incremental runner (P4).
+  { validator: 'PromiseLedgerValidators', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (episode seal, P4)' },
+  // Season Canon (P3) — knowledge-state / impossible-knowledge gate. Checks the
+  // episode's structured knowledge claims against the frozen canon's
+  // who-knows-what-when ledger. Wired into the per-episode seal by the runner (P4).
+  { validator: 'CanonConsistencyValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (episode seal, P4)' },
 ];
 
 /** Validators that hard-block a run regardless of validation mode. */

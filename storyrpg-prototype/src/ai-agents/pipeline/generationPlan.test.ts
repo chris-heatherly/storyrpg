@@ -156,6 +156,24 @@ describe('accumulation + monotonicity', () => {
     expect(series[series.length - 1]).toBe(100);
   });
 
+  it('episode completion is derived from scenes — a pending encounter keeps it <100%', () => {
+    const plan = contentOnlyPlan(1);
+    setEpisodeScenes(plan, 1, [
+      { id: 's1', expectedBeatCount: 6 },
+      { id: 's2', expectedBeatCount: 6 },
+      { id: 's3', expectedBeatCount: 3, isEncounter: true }, // built later by EncounterArchitect
+    ]);
+    setSceneBeats(plan, 1, 's1', 6);
+    setSceneBeats(plan, 1, 's2', 6);
+    // Marking the EPISODE complete must NOT force 100% while the encounter is unbuilt.
+    markEpisode(plan, 1, 'complete');
+    expect(computeContentFraction(plan)).toBeLessThan(1);
+    expect(plan.episodes[0].scenes.find((s) => s.id === 's3')?.status).toBe('pending');
+    // Only once the encounter scene is actually built does the episode reach 1.0.
+    setSceneBeats(plan, 1, 's3', 3);
+    expect(computeContentFraction(plan)).toBe(1);
+  });
+
   it('markSceneActive sets activity, setSceneBeats clears it on complete', () => {
     const plan = contentOnlyPlan(1);
     setEpisodeScenes(plan, 1, [{ id: 's1', expectedBeatCount: 8, isEncounter: true }]);

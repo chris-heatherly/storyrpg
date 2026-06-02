@@ -142,6 +142,26 @@ const isSeasonEpisodeGenerated = (episode?: {
 const USE_SERVER_WORKER =
   Platform.OS === 'web' && process.env.EXPO_PUBLIC_USE_SERVER_WORKER !== 'false';
 
+// Distinguish "the proxy/worker is unreachable" (transport/infra) from a
+// worker-INTERNAL pipeline failure (a timeout, a validation abort, etc.). Only
+// the former should tell the user to start the proxy; the latter must surface
+// its real error so it isn't misdiagnosed as an infra problem.
+const PROXY_UNREACHABLE_PATTERNS = [
+  'failed to start worker job',
+  'worker start response missing',
+  'failed to fetch',
+  'fetch failed',
+  'network request failed',
+  'econnrefused',
+  'err_connection_reset',
+  'connection reset',
+  'worker job polling failed',
+];
+function isProxyUnreachableError(message: string): boolean {
+  const m = (message || '').toLowerCase();
+  return PROXY_UNREACHABLE_PATTERNS.some((p) => m.includes(p));
+}
+
 interface CheckpointData {
   phase: string;
   data: unknown;
@@ -1306,6 +1326,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         try {
           const saveRes = await fetch(`${PROXY_CONFIG.getProxyUrl()}/style-reference/save`, {
             method: 'POST',
+            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               storyId: buildStyleReferenceStoryId(customStoryTitle || 'untitled'),
@@ -1677,6 +1698,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       const storyId = buildStyleReferenceStoryId(customStoryTitle || 'untitled');
       const res = await fetch(`${PROXY_CONFIG.getProxyUrl()}/style-anchor/save`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storyId, role, data, mimeType }),
       });
@@ -1800,13 +1822,17 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
           setState('analysis_complete');
           return;
         } catch (workerErr) {
-          console.warn('[GeneratorScreen] Worker analysis failed, falling back to in-browser pipeline:', workerErr);
-          handleEvent({
-            type: 'warning',
-            phase: 'initialization',
-            message: 'Server worker unavailable; falling back to browser analysis path',
-            timestamp: new Date(),
-          });
+          // Analysis runs exclusively through the server worker/proxy on web —
+          // no silent fallback to the in-browser path (see generation catch).
+          const errMsg = workerErr instanceof Error ? workerErr.message : String(workerErr);
+          console.error('[GeneratorScreen] Worker analysis failed:', errMsg);
+          setError(
+            isProxyUnreachableError(errMsg)
+              ? `Analysis server unavailable — the proxy/worker isn't reachable (${errMsg}). Start it with "docker compose -f docker-compose.proxy.yml up -d" (or "npm run proxy"), wait for it to report healthy, then try again.`
+              : `Source analysis failed: ${errMsg}`,
+          );
+          setState('error');
+          return;
         }
       }
 
@@ -2074,32 +2100,20 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         setState('complete');
         return;
       } catch (err) {
+        // Generation runs exclusively through the server worker/proxy on web.
+        // We deliberately do NOT fall back to the fragile in-browser pipeline:
+        // a silent downgrade hides proxy outages and produces a degraded run
+        // (no episode plan, dies when the tab closes, no durable checkpoints).
+        // Surface a clear, actionable error instead.
         const errMsg = err instanceof Error ? err.message : String(err);
-        const isInfrastructureError = 
-          errMsg.includes('Failed to start worker job') ||
-          errMsg.includes('Worker start response missing') ||
-          errMsg.includes('Failed to fetch') ||
-          errMsg.includes('fetch failed') ||
-          errMsg.includes('Network request failed') ||
-          errMsg.includes('ECONNREFUSED') ||
-          errMsg.includes('ERR_CONNECTION_RESET') ||
-          errMsg.toLowerCase().includes('connection reset') ||
-          errMsg.includes('Worker job polling failed');
-        
-        if (isInfrastructureError) {
-          console.warn('[GeneratorScreen] Worker infrastructure unavailable, falling back to in-browser pipeline:', errMsg);
-          handleEvent({
-            type: 'warning',
-            phase: 'initialization',
-            message: 'Server worker unavailable; falling back to browser generation path',
-            timestamp: new Date(),
-          });
-        } else {
-          console.error('[GeneratorScreen] Worker generation pipeline failed:', errMsg);
-          setError(errMsg);
-          setState('error');
-          return;
-        }
+        console.error('[GeneratorScreen] Worker generation pipeline failed:', errMsg);
+        setError(
+          isProxyUnreachableError(errMsg)
+            ? `Generation server unavailable — the proxy/worker isn't reachable (${errMsg}). Start it with "docker compose -f docker-compose.proxy.yml up -d" (or "npm run proxy"), wait for it to report healthy, then try again.`
+            : errMsg,
+        );
+        setState('error');
+        return;
       }
     }
     
@@ -2409,6 +2423,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       const configPatch = createPipelineConfig();
       const response = await fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/resume`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           payloadPatch: {
@@ -2555,7 +2570,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     if (currentJobId) {
       if (USE_SERVER_WORKER) {
         try {
-          await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}/cancel`, { method: 'POST' });
+          await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}/cancel`, { method: 'POST', credentials: 'include' });
         } catch (cancelErr) {
           console.warn('[GeneratorScreen] Failed to cancel worker job:', cancelErr);
         }
@@ -2988,7 +3003,13 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
           <Text style={styles.headerButtonText}>BACK</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
-          {setupView === 'image' ? 'IMAGE SETUP' : setupView === 'video' ? 'VIDEO SETUP' : 'AI GENERATOR'}
+          {setupView === 'image'
+            ? 'IMAGE SETUP'
+            : setupView === 'video'
+              ? 'VIDEO SETUP'
+              : (state === 'running' || state === 'checkpoint') && !isViewingHistory
+                ? 'GENERATING STORY'
+                : 'AI GENERATOR'}
         </Text>
         {hasBackgroundJobs ? (
           <TouchableOpacity
@@ -3012,7 +3033,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         configuration step, and the indicator reads the existing `state`
         machine directly so we don't introduce a new source of truth.
       */}
-      {state !== 'idle' && !isViewingHistory && (
+      {state !== 'idle' && !isViewingHistory && state !== 'running' && state !== 'checkpoint' && (
         <StepIndicator
           currentStep={deriveWizardStep(state)}
           completed={state === 'complete'}
@@ -3020,13 +3041,17 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         />
       )}
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false} contentContainerStyle={styles.contentPadding}>
-        <View style={styles.statusBar}>
-          <Cpu size={14} color={TERMINAL.colors.muted} />
-          <Text style={styles.statusLabel}>PIPELINE STATUS:</Text>
-          <Text style={[styles.statusValue, isViewingHistory ? styles.status_history : styles[`status_${state}`]]}>
-            {isViewingHistory ? 'JOB HISTORY' : state.toUpperCase().replace('_', ' ')}
-          </Text>
-        </View>
+        {/* The status bar is redundant with the in-progress hero's worker/phase
+            state, so hide it while a generation is actively running. */}
+        {!((state === 'running' || state === 'checkpoint') && !isViewingHistory) && (
+          <View style={styles.statusBar}>
+            <Cpu size={14} color={TERMINAL.colors.muted} />
+            <Text style={styles.statusLabel}>PIPELINE STATUS:</Text>
+            <Text style={[styles.statusValue, isViewingHistory ? styles.status_history : styles[`status_${state}`]]}>
+              {isViewingHistory ? 'JOB HISTORY' : state.toUpperCase().replace('_', ' ')}
+            </Text>
+          </View>
+        )}
         {state === 'config' && (
           <View style={styles.section}>
             <View style={styles.sectionHeaderRow}>
@@ -4171,7 +4196,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         {state === 'analyzing' && (
           <View style={styles.section}>
             <View style={styles.sectionHeaderRow}><Search size={18} color={TERMINAL.colors.amber} /><Text style={[styles.sectionTitle, { color: TERMINAL.colors.amber }]}>SOURCE ANALYSIS IN PROGRESS</Text></View>
-            <View style={styles.progressPlaceholder}><PipelineProgress events={events} currentPhase="source_analysis" isRunning={true} progress={liveProgress} etaSeconds={etaSeconds} runtime={pipelineRuntime} /></View>
+            <View style={styles.progressPlaceholder}><PipelineProgress events={events} currentPhase="source_analysis" isRunning={true} progress={liveProgress} etaSeconds={etaSeconds} runtime={pipelineRuntime} storyTitle={customStoryTitle || undefined} /></View>
           </View>
         )}
         {state === 'analysis_complete' && (
@@ -4536,7 +4561,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         {(state === 'running' || state === 'checkpoint') && (
           <View style={styles.runningSection}>
             <ProgressStep>
-              <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} runtime={pipelineRuntime} />
+              <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} runtime={pipelineRuntime} storyTitle={customStoryTitle || undefined} />
               <View style={styles.runningActions}>
                 <TouchableOpacity style={styles.cancelButton} onPress={cancelGeneration}>
                   <StopCircle size={18} color={TERMINAL.colors.error} />
@@ -4693,7 +4718,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
             {/* Pipeline Progress / Event Log */}
             {events.length > 0 && (
               <View style={styles.historyProgressSection}>
-                <PipelineProgress events={events} currentPhase={currentPhase} isRunning={false} progress={historyJob.progress} etaSeconds={null} runtime={pipelineRuntime} />
+                <PipelineProgress events={events} currentPhase={currentPhase} isRunning={false} progress={historyJob.progress} etaSeconds={null} runtime={pipelineRuntime} storyTitle={historyJob.storyTitle} />
               </View>
             )}
 

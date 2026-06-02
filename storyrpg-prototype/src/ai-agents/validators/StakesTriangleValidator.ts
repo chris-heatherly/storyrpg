@@ -104,8 +104,12 @@ export class StakesTriangleValidator {
       }
     }
 
-    // If no LLM config, do basic structural check only
-    if (!this.agentConfig.apiKey) {
+    // The LLM analysis path below is Anthropic-only (hardcoded endpoint/headers).
+    // With no key, OR when the pipeline is configured for a non-Anthropic
+    // provider (gemini/openai), fall back to heuristic scoring instead of POSTing
+    // the wrong provider's key to Anthropic (which returns 401). See callLLM in
+    // BaseAgent for the provider-aware path the rest of the pipeline uses.
+    if (!this.agentConfig.apiKey || this.agentConfig.provider !== 'anthropic') {
       const basicScore = this.calculateBasicScore(input);
       return {
         passed: basicScore.overall >= (this.config.threshold || 60),

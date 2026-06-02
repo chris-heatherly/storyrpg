@@ -48,6 +48,21 @@ import {
   CHOICE_DENSITY_REQUIREMENTS,
 } from '../prompts/storytellingPrinciples';
 import { SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE } from '../prompts/examples/storyCraftExamples';
+import { mapOrderedWithConcurrency } from '../utils/concurrency';
+
+/**
+ * Minimum season length at which {@link SourceMaterialAnalyzer.createEpisodeBreakdown}
+ * fans the breakdown out into one focused call per episode. Below this, the
+ * single all-at-once call comfortably fits the maxTokens ceiling (~350 output
+ * tokens/episode against 4096), so we keep total LLM calls minimal ("avoid more
+ * calls where possible"). At/above it (the 10-episode-treatment case that was
+ * crowding the ceiling and truncating), the per-episode path buys each episode
+ * its own token headroom and parallelism. 6 ≈ where output starts pressuring the
+ * budget; tune if maxTokens changes.
+ */
+const PER_EPISODE_BREAKDOWN_MIN_EPISODES = 6;
+/** Bounded concurrency for the per-episode breakdown fan-out. */
+const PER_EPISODE_BREAKDOWN_CONCURRENCY = 3;
 
 /**
  * Render the default beat-to-episode distribution as a bulleted summary
@@ -214,30 +229,61 @@ function summarizeTreatmentSeasonGuidance(guidance?: TreatmentSeasonGuidance): s
   return `Treatment season guidance detected (${guidance.episodeStructureMode}): ${sections}`;
 }
 
+/**
+ * A single episode's outline as returned by either the all-at-once breakdown
+ * call (inside {@link EpisodeBreakdownResponse.episodes}) or a focused
+ * per-episode call (see {@link SingleEpisodeBreakdownResponse}).
+ */
+interface EpisodeBreakdownEntry {
+  episodeNumber: number;
+  title: string;
+  synopsis: string;
+  sourceChapters: string;
+  plotPoints: string[];
+  mainCharacters: string[];
+  locations: string[];
+  narrativeArc: {
+    setup: string;
+    conflict: string;
+    resolution: string;
+  };
+  /**
+   * LLM-assigned 7-point beat(s) this episode carries. Optional because
+   * older LLM responses predate the field; backfilled by
+   * {@link SourceMaterialAnalyzer.assembleAnalysis} from the default
+   * distribution table when absent.
+   */
+  structuralRole?: StructuralRole[];
+}
+
 interface EpisodeBreakdownResponse {
-  episodes: Array<{
-    episodeNumber: number;
-    title: string;
-    synopsis: string;
-    sourceChapters: string;
-    plotPoints: string[];
-    mainCharacters: string[];
-    locations: string[];
-    narrativeArc: {
-      setup: string;
-      conflict: string;
-      resolution: string;
-    };
-    /**
-     * LLM-assigned 7-point beat(s) this episode carries. Optional because
-     * older LLM responses predate the field; backfilled by
-     * {@link SourceMaterialAnalyzer.assembleAnalysis} from the default
-     * distribution table when absent.
-     */
-    structuralRole?: StructuralRole[];
-  }>;
+  episodes: EpisodeBreakdownEntry[];
   totalEpisodes: number;
   breakdownNotes: string;
+}
+
+/**
+ * Shape returned by a single per-episode breakdown call. The model is asked
+ * for exactly one episode's outline (no surrounding `episodes` array), which
+ * gives each call the full maxTokens ceiling and avoids the truncation risk
+ * of asking for all N at once. {@link createEpisodeBreakdown} normalizes the
+ * `episode`-wrapped and bare-object forms into a single {@link EpisodeBreakdownEntry}.
+ */
+interface SingleEpisodeBreakdownResponse {
+  episode?: Partial<EpisodeBreakdownEntry>;
+  episodeNumber?: number;
+  title?: string;
+  synopsis?: string;
+  sourceChapters?: string;
+  plotPoints?: string[];
+  mainCharacters?: string[];
+  locations?: string[];
+  narrativeArc?: {
+    setup?: string;
+    conflict?: string;
+    resolution?: string;
+  };
+  structuralRole?: StructuralRole[];
 }
 
 export class SourceMaterialAnalyzer extends BaseAgent {
@@ -317,8 +363,16 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
 `;
   }
 
-  async execute(input: SourceMaterialInput): Promise<AgentResponse<SourceMaterialAnalysis>> {
+  async execute(
+    input: SourceMaterialInput,
+    options?: { signal?: AbortSignal }
+  ): Promise<AgentResponse<SourceMaterialAnalysis>> {
     console.log(`[SourceMaterialAnalyzer] Starting analysis of source material...`);
+    // Scope the timeout/abort signal to this whole multi-call analysis. Every
+    // callLLM below falls back to this (see BaseAgent.activeAbortSignal), so a
+    // withTimeoutAbort timeout cancels the in-flight call and halts retries
+    // instead of leaving the work to run on in the background. Cleared in finally.
+    this.activeAbortSignal = options?.signal;
 
     const targetScenes = clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode);
     const targetChoices = input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode;
@@ -386,6 +440,8 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
         success: false,
         error: errorMsg,
       };
+    } finally {
+      this.activeAbortSignal = undefined;
     }
   }
 
@@ -689,9 +745,252 @@ Return ONLY valid JSON.
   }
 
   /**
-   * Second pass: Create detailed episode breakdown
+   * Second pass: Create detailed episode breakdown.
+   *
+   * For seasons of {@link PER_EPISODE_BREAKDOWN_MIN_EPISODES} or more episodes
+   * we fan the breakdown out into one focused call per episode, run at bounded
+   * concurrency ({@link PER_EPISODE_BREAKDOWN_CONCURRENCY}). Each per-episode
+   * call carries the SAME shared structure summary + season-level 7-point
+   * context (computed once and reused) so cross-episode consistency holds, but
+   * asks for only ONE episode's outline — giving each episode the full
+   * maxTokens ceiling and removing the truncation risk of cramming all N
+   * outlines into a single response.
+   *
+   * For 1-2 episodes (and as a safe fallback whenever the per-episode path
+   * yields nothing usable) we keep the original single all-at-once call.
    */
   private async createEpisodeBreakdown(
+    sourceText: string,
+    structure: StoryStructureAnalysis,
+    preferences: { targetScenes: number; targetChoices: number; pacing: string },
+    userPrompt?: string
+  ): Promise<EpisodeBreakdownResponse> {
+    const estimatedEpisodes = structure.estimatedScope.estimatedEpisodes;
+
+    // Only fan out when the episode count is large enough to matter. For tiny
+    // seasons the single call is both cheaper (one call vs N) and lower-risk.
+    if (
+      !Number.isFinite(estimatedEpisodes) ||
+      estimatedEpisodes < PER_EPISODE_BREAKDOWN_MIN_EPISODES
+    ) {
+      return this.createEpisodeBreakdownSingleCall(sourceText, structure, preferences, userPrompt);
+    }
+
+    // Shared context is identical across every per-episode call, so compute it
+    // ONCE and reuse it. This also keeps each prompt small + cacheable.
+    const sharedContext = this.buildSharedBreakdownContext(
+      sourceText,
+      structure,
+      preferences,
+      estimatedEpisodes,
+      userPrompt,
+    );
+
+    const episodeNumbers = Array.from({ length: estimatedEpisodes }, (_, i) => i + 1);
+    const defaultDistribution = distributeSevenPoints(estimatedEpisodes);
+
+    try {
+      const entries = await mapOrderedWithConcurrency(
+        episodeNumbers,
+        PER_EPISODE_BREAKDOWN_CONCURRENCY,
+        async (episodeNumber) => {
+          const suggestedRoles = defaultDistribution
+            .find((entry) => entry.episodeNumber === episodeNumber)?.structuralRole
+            ?? ['rising'];
+          const prompt = this.buildSingleEpisodePrompt(
+            sharedContext,
+            episodeNumber,
+            estimatedEpisodes,
+            suggestedRoles,
+          );
+          // callLLM falls back to this.activeAbortSignal (set in execute()), so
+          // a whole-analysis timeout/abort cancels in-flight per-episode calls.
+          const response = await this.callLLM([{ role: 'user', content: prompt }]);
+          const parsed = this.parseJSON<SingleEpisodeBreakdownResponse>(response);
+          return this.normalizeSingleEpisode(parsed, episodeNumber);
+        },
+      );
+
+      const assembled = entries.filter((entry): entry is EpisodeBreakdownEntry => entry !== null);
+      if (assembled.length === estimatedEpisodes) {
+        return {
+          episodes: assembled,
+          totalEpisodes: estimatedEpisodes,
+          breakdownNotes: `Per-episode breakdown: ${assembled.length} episodes generated in focused calls.`,
+        };
+      }
+
+      console.warn(
+        `[SourceMaterialAnalyzer] Per-episode breakdown produced ${assembled.length}/${estimatedEpisodes} ` +
+        `usable outlines; falling back to single-call breakdown.`,
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      // Re-throw aborts so the whole analysis halts instead of silently
+      // burning an extra single call after a timeout/cancellation.
+      if (this.activeAbortSignal?.aborted || /abort/i.test(msg)) {
+        throw error;
+      }
+      console.warn(
+        `[SourceMaterialAnalyzer] Per-episode breakdown failed (${msg}); falling back to single-call breakdown.`,
+      );
+    }
+
+    return this.createEpisodeBreakdownSingleCall(sourceText, structure, preferences, userPrompt);
+  }
+
+  /**
+   * Shared, episode-agnostic context block reused by every per-episode call.
+   * Computed once per analysis. Includes the structure summary, season-level
+   * 7-point distribution, the truncated source reference, and the treatment
+   * notice so each focused call still reasons about cross-episode consistency.
+   */
+  private buildSharedBreakdownContext(
+    sourceText: string,
+    structure: StoryStructureAnalysis,
+    preferences: { targetScenes: number; targetChoices: number; pacing: string },
+    estimatedEpisodes: number,
+    userPrompt?: string,
+  ): string {
+    const maxChars = 80000;
+    const truncatedText = sourceText.length > maxChars
+      ? sourceText.substring(0, maxChars) + '\n\n[... text truncated ...]'
+      : sourceText;
+
+    return `${userPrompt ? `**User Instructions/Prompt**:
+${userPrompt}
+
+` : ''}**Story Structure Summary**:
+- Genre: ${structure.genre}
+- Tone: ${structure.tone}
+- Protagonist: ${structure.protagonist.name} - ${structure.protagonist.arc}
+- Estimated Episodes: ${estimatedEpisodes}
+- Complexity: ${structure.estimatedScope.complexity}
+${structure.schemaAbstraction ? `- Archetype: ${structure.schemaAbstraction.archetype}
+- Reusable Pattern: ${structure.schemaAbstraction.reusablePatternSummary}
+- Generalization Guidance: ${structure.schemaAbstraction.generalizationGuidance.join('; ')}` : ''}
+
+**Story Arcs**:
+${structure.storyArcs.map(arc => `- ${arc.name}: ${arc.description}`).join('\n')}
+
+**Major Plot Points**:
+${structure.majorPlotPoints.map(pp => `- [${pp.type}] ${pp.description} (${pp.approximatePosition})`).join('\n')}
+
+**Episode Guidelines**:
+- Target ${preferences.targetScenes} scenes per episode
+- Target ${preferences.targetChoices} meaningful choices per episode
+- Pacing: ${preferences.pacing}
+- Each episode needs: setup, conflict, resolution
+- Major plot points should be episode climaxes
+- Leave room for player agency
+- Show escalating pressure from Inciting Incident through Climax, but use genre-appropriate pressure rather than defaulting to combat.
+- Plans should often go partly wrong, forcing character improvisation and meaningful player choices.
+- After the Climax, move quickly: first show what was saved or changed, then show future cost, identity change, or legacy.
+
+**Season-Level Default 7-Point Beat Distribution (HINT, override only when the source demands it):**
+${describeSuggestedDistribution(estimatedEpisodes)}
+Across the whole ${estimatedEpisodes}-episode season every canonical beat
+(hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution) MUST land on
+at least one episode and must appear in canonical order.
+
+${truncatedText ? `**Source Material Reference**:
+${truncatedText}` : ''}
+
+${buildTreatmentInputNotice(sourceText)}`;
+  }
+
+  /**
+   * Per-episode prompt: shared season context + this episode's slot/role, asking
+   * for exactly ONE episode's outline JSON (no surrounding array).
+   */
+  private buildSingleEpisodePrompt(
+    sharedContext: string,
+    episodeNumber: number,
+    totalEpisodes: number,
+    suggestedRoles: StructuralRole[],
+  ): string {
+    const positionNote = episodeNumber === 1
+      ? 'This is the FIRST episode: establish the world and protagonist; do not rush to action.'
+      : episodeNumber === totalEpisodes
+        ? 'This is the FINAL episode: it should feel like a satisfying conclusion (for now).'
+        : `This is the middle of the season; keep breathing room for character development.`;
+
+    return `
+Based on the story structure analysis below, write the detailed outline for a SINGLE episode of this ${totalEpisodes}-episode season.
+
+${sharedContext}
+
+**Episode To Outline Now**:
+- Episode number: ${episodeNumber} of ${totalEpisodes}
+- Suggested 7-point beat(s) for this slot (HINT, override only when the source demands it): ${suggestedRoles.join(', ')}
+- ${positionNote}
+- Keep this episode consistent with the season-level beat distribution and the surrounding episodes implied by it.
+
+Respond with JSON for ONLY this one episode (no surrounding array):
+
+{
+  "episodeNumber": ${episodeNumber},
+  "title": "<compelling episode title>",
+  "synopsis": "<2-3 sentence synopsis>",
+  "sourceChapters": "<which chapters/sections this covers>",
+  "plotPoints": ["<plot point 1>", "<plot point 2>", ...],
+  "mainCharacters": ["<character names appearing>"],
+  "locations": ["<locations used>"],
+  "narrativeArc": {
+    "setup": "<how episode begins>",
+    "conflict": "<central tension>",
+    "resolution": "<how episode ends - can be cliffhanger>"
+  },
+  "structuralRole": ["<which 7-point beat(s) this episode carries, choose from: hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution, rising, falling. Most episodes carry exactly one beat; very short seasons may fuse beats on one episode.>"]
+}
+
+Return ONLY valid JSON for this single episode.
+`;
+  }
+
+  /**
+   * Normalize a single per-episode LLM response into an {@link EpisodeBreakdownEntry}.
+   * Accepts both the bare-object form and the `{ episode: {...} }` wrapped form,
+   * and forces the episodeNumber to the slot we asked for so ordering/assembly
+   * stays correct even if the model echoes the wrong number. Returns null when
+   * the response has no usable title/synopsis to outline.
+   */
+  private normalizeSingleEpisode(
+    parsed: SingleEpisodeBreakdownResponse | null | undefined,
+    episodeNumber: number,
+  ): EpisodeBreakdownEntry | null {
+    if (!parsed) return null;
+    const src = parsed.episode ?? parsed;
+    const title = typeof src.title === 'string' ? src.title.trim() : '';
+    const synopsis = typeof src.synopsis === 'string' ? src.synopsis.trim() : '';
+    if (!title && !synopsis) return null;
+
+    const arc = src.narrativeArc || {};
+    const asStringArray = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+
+    return {
+      episodeNumber,
+      title: title || `Episode ${episodeNumber}`,
+      synopsis: synopsis || title,
+      sourceChapters: typeof src.sourceChapters === 'string' ? src.sourceChapters : '',
+      plotPoints: asStringArray(src.plotPoints),
+      mainCharacters: asStringArray(src.mainCharacters),
+      locations: asStringArray(src.locations),
+      narrativeArc: {
+        setup: typeof arc.setup === 'string' ? arc.setup : '',
+        conflict: typeof arc.conflict === 'string' ? arc.conflict : '',
+        resolution: typeof arc.resolution === 'string' ? arc.resolution : '',
+      },
+      structuralRole: Array.isArray(src.structuralRole) ? src.structuralRole : undefined,
+    };
+  }
+
+  /**
+   * Original single all-at-once breakdown call. Retained as the path for short
+   * seasons and as the fallback when the per-episode fan-out is not viable.
+   */
+  private async createEpisodeBreakdownSingleCall(
     sourceText: string,
     structure: StoryStructureAnalysis,
     preferences: { targetScenes: number; targetChoices: number; pacing: string },

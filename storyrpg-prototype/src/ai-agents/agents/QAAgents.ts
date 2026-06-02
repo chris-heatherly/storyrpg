@@ -93,6 +93,27 @@ export function recomputeContinuityIssueCount(issues: ContinuityIssue[]): Contin
   );
 }
 
+/**
+ * Derive a continuity overallScore from the report's own signal when the model
+ * omitted the numeric field. Returns null when the report carries no signal at
+ * all (issues, passed checks, recommendations) — a true non-response that should
+ * fail closed (C3) rather than be scored. Otherwise scores from issue severity.
+ */
+export function deriveContinuityScore(
+  report: Pick<ContinuityReport, 'issues' | 'passedChecks' | 'recommendations' | 'issueCount'>,
+): number | null {
+  const issues = Array.isArray(report.issues) ? report.issues : [];
+  const hasSignal =
+    issues.length > 0
+    || (Array.isArray(report.passedChecks) && report.passedChecks.length > 0)
+    || (Array.isArray(report.recommendations) && report.recommendations.length > 0);
+  if (!hasSignal) return null;
+  const counts = report.issueCount && typeof report.issueCount.errors === 'number'
+    ? report.issueCount
+    : recomputeContinuityIssueCount(issues);
+  return Math.max(0, Math.min(100, 100 - counts.errors * 25 - counts.warnings * 8 - counts.suggestions * 2));
+}
+
 export class ContinuityChecker extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Continuity Checker', config);
@@ -185,15 +206,6 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
   }
 
   private normalizeReport(report: ContinuityReport): ContinuityReport {
-    // Ensure overallScore is a number. Fail CLOSED (C3): an unparseable QA
-    // response must not masquerade as a neutral 50 "pass". Score it 0 so it
-    // fails the QA threshold and triggers a (bounded) repair pass instead of
-    // silently shipping unverified content. See docs/PROJECT_AUDIT_2026-05-28.md.
-    if (typeof report.overallScore !== 'number') {
-      console.warn(`[${this.name}] QA report had no numeric overallScore — failing closed (0), not defaulting to 50.`);
-      report.overallScore = 0;
-    }
-
     // Ensure arrays are arrays
     if (!report.issues) {
       report.issues = [];
@@ -216,6 +228,23 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
       report.recommendations = [];
     } else if (!Array.isArray(report.recommendations)) {
       report.recommendations = [report.recommendations as unknown as string];
+    }
+
+    // Derive overallScore when the model omitted the numeric field instead of
+    // blindly failing closed (C3). A parsed report that lists issues, passed
+    // checks, or recommendations is a real assessment that merely dropped the
+    // top-level number — score it from issue severity so a clean check isn't
+    // treated as a 0 "fail". Only fail closed (0) when the report carries no
+    // signal at all (a non-response). See docs/PROJECT_AUDIT_2026-05-28.md.
+    if (typeof report.overallScore !== 'number') {
+      const derived = deriveContinuityScore(report);
+      if (derived !== null) {
+        report.overallScore = derived;
+        console.warn(`[${this.name}] QA report missing overallScore — derived ${derived} from issue severity.`);
+      } else {
+        console.warn(`[${this.name}] QA report had no overallScore and no usable signal — failing closed (0).`);
+        report.overallScore = 0;
+      }
     }
 
     return report;
@@ -285,13 +314,28 @@ ${input.timelineEvents?.map(e => `- ${e.when}: ${e.event}`).join('\n') || 'No ti
 
 ${taskHeader}
 
-Provide a ContinuityReport with:
-- Overall consistency score (0-100)
-- All issues found with severity, location, and suggested fixes
-- List of passed checks (things you verified are consistent)
-- Recommendations for improving consistency
+Respond with ONLY a valid JSON object (no prose, no markdown fences) in EXACTLY this shape:
+{
+  "overallScore": 87,
+  "issueCount": { "errors": 0, "warnings": 0, "suggestions": 0 },
+  "issues": [
+    {
+      "severity": "error" | "warning" | "suggestion",
+      "type": "contradiction" | "impossible_knowledge" | "timeline_error" | "state_conflict" | "missing_setup",
+      "location": { "sceneId": "scene-id", "beatId": "optional-beat-id", "choiceId": "optional-choice-id" },
+      "description": "what is inconsistent",
+      "conflictsWith": "optional: what it conflicts with",
+      "suggestedFix": "a specific fix"
+    }
+  ],
+  "passedChecks": ["consistency checks you verified pass"],
+  "recommendations": ["how to improve consistency"]
+}
 
-Respond with valid JSON matching the ContinuityReport type.
+Rules:
+- "overallScore" is REQUIRED and must be a number 0-100 (higher = more consistent).
+- "issues" must be an array; use [] when the story is consistent.
+- Always include "issueCount", "passedChecks", and "recommendations" (use [] / zeros when empty).
 `;
   }
 }
@@ -338,6 +382,31 @@ export interface VoiceReport {
   issues: VoiceIssue[];
   distinctionScore: number; // How well can you tell characters apart?
   recommendations: string[];
+}
+
+/**
+ * Derive a voice overallScore from per-character scores (lightly blended with
+ * distinction) when the model omitted the numeric field; fall back to issue
+ * count. Returns null on a true non-response (no scores, issues, or recs) so it
+ * fails closed (C3) rather than being scored.
+ */
+export function deriveVoiceScore(
+  report: Pick<VoiceReport, 'characterScores' | 'issues' | 'recommendations' | 'distinctionScore'>,
+): number | null {
+  const scored = (Array.isArray(report.characterScores) ? report.characterScores : []).filter(
+    (c) => typeof c?.score === 'number',
+  );
+  if (scored.length > 0) {
+    const avg = scored.reduce((sum, c) => sum + c.score, 0) / scored.length;
+    const dist = typeof report.distinctionScore === 'number' ? report.distinctionScore : 50;
+    return Math.max(0, Math.min(100, Math.round(avg * 0.75 + dist * 0.25)));
+  }
+  const issues = Array.isArray(report.issues) ? report.issues : [];
+  const recs = Array.isArray(report.recommendations) ? report.recommendations : [];
+  if (issues.length > 0 || recs.length > 0) {
+    return Math.max(0, Math.min(100, 100 - issues.length * 8));
+  }
+  return null;
 }
 
 export class VoiceValidator extends BaseAgent {
@@ -426,15 +495,6 @@ You ensure every character sounds like themselves and nobody else. Distinct voic
   }
 
   private normalizeReport(report: VoiceReport): VoiceReport {
-    // Ensure overallScore is a number. Fail CLOSED (C3): an unparseable QA
-    // response must not masquerade as a neutral 50 "pass". Score it 0 so it
-    // fails the QA threshold and triggers a (bounded) repair pass instead of
-    // silently shipping unverified content. See docs/PROJECT_AUDIT_2026-05-28.md.
-    if (typeof report.overallScore !== 'number') {
-      console.warn(`[${this.name}] QA report had no numeric overallScore — failing closed (0), not defaulting to 50.`);
-      report.overallScore = 0;
-    }
-
     // Ensure distinctionScore is a number
     if (typeof report.distinctionScore !== 'number') {
       report.distinctionScore = 50;
@@ -457,6 +517,21 @@ You ensure every character sounds like themselves and nobody else. Distinct voic
       report.recommendations = [];
     } else if (!Array.isArray(report.recommendations)) {
       report.recommendations = [report.recommendations as unknown as string];
+    }
+
+    // Derive overallScore when the model omitted it (see ContinuityChecker). A
+    // voice report with per-character scores is a real assessment that dropped
+    // the top-level number — average them (lightly blended with distinction).
+    // Fall back to issue count, then fail closed (0) only on a true non-response.
+    if (typeof report.overallScore !== 'number') {
+      const derived = deriveVoiceScore(report);
+      if (derived !== null) {
+        report.overallScore = derived;
+        console.warn(`[${this.name}] QA report missing overallScore — derived ${derived} from character/issue signal.`);
+      } else {
+        console.warn(`[${this.name}] QA report had no overallScore and no usable signal — failing closed (0).`);
+        report.overallScore = 0;
+      }
     }
 
     return report;
@@ -524,14 +599,22 @@ Also evaluate:
 - Could you identify speakers without tags?
 - Are there any voice "collisions"?
 
-Provide a VoiceReport with:
-- Overall voice quality score
-- Per-character scores with strengths and weaknesses
-- Specific issues with suggested corrections
-- Voice distinction score
-- Recommendations for improvement
+Respond with ONLY a valid JSON object (no prose, no markdown fences) in EXACTLY this shape:
+{
+  "overallScore": 84,
+  "characterScores": [
+    { "characterId": "npc-id", "characterName": "Name", "score": 80, "strengths": ["..."], "weaknesses": ["..."] }
+  ],
+  "issues": [
+    { "location": { "sceneId": "scene-id", "beatId": "beat-id" }, "dialogueLine": "the line", "issue": "what's off", "suggestion": "fix", "exampleCorrection": "optional rewrite" }
+  ],
+  "distinctionScore": 75,
+  "recommendations": ["how to improve voice"]
+}
 
-Respond with valid JSON matching the VoiceReport type.
+Rules:
+- "overallScore" and "distinctionScore" are REQUIRED numbers 0-100.
+- "characterScores", "issues", and "recommendations" must be arrays (use [] when empty).
 `;
   }
 }

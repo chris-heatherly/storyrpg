@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getNextScene, processBeat, executeChoice, getResolutionTracker } from './storyEngine';
+import { getNextScene, processBeat, executeChoice, getResolutionTracker, isTerminalSceneTarget } from './storyEngine';
 import type { Episode, PlayerState, Story, EncounterBeat, Choice } from '../types';
 
 function createPlayer(): PlayerState {
@@ -352,5 +352,18 @@ describe('storyEngine.executeChoice', () => {
     const result = executeChoice(choice, createPlayer());
     expect(result.nextSceneId).toBe('scene-next');
     expect(result.nextBeatId).toBe('beat-next');
+  });
+});
+
+describe('isTerminalSceneTarget', () => {
+  it('recognizes terminal sentinels (so the reader finishes instead of loading a missing scene)', () => {
+    for (const t of ['episode-end', 'story-end', 'season-end', 'end', 'the-end', 'ending', 'EPISODE-END', 'episode-2']) {
+      expect(isTerminalSceneTarget(t)).toBe(true);
+    }
+  });
+  it('does not flag real scene ids or empty values', () => {
+    for (const s of ['scene-1', 'scene-2b', 'scene-3', '', undefined, null]) {
+      expect(isTerminalSceneTarget(s as any)).toBe(false);
+    }
   });
 });

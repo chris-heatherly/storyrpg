@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { StructuralValidator } from './StructuralValidator';
+import { findBeatIdCollisions } from './beatIdCollisions';
 import type { Story } from '../../types';
 
 function makeStory(overrides: Partial<Story> = {}): Story {
@@ -88,6 +89,30 @@ describe('StructuralValidator.autoFix', () => {
     expect(result.fixedCount).toBeGreaterThanOrEqual(1);
     expect((result.story.episodes[0].scenes[0] as any).beats[1].nextBeatId).toBe('beat-3');
     expect(result.fixes.some((f) => f.toLowerCase().includes('broken'))).toBe(true);
+  });
+
+  it('repairs a choice whose nextBeatId points to a non-existent (payoff) beat', () => {
+    // Reproduces the contract failure: the writer gave choices intra-scene
+    // payoff targets (beat-3-payoff-N) it never emitted, so the choices dangle.
+    const story = makeStory();
+    const beat3 = (story.episodes[0].scenes[0] as any).beats[2];
+    beat3.choices = [
+      { id: 'choice-1', text: 'Accept', choiceType: 'dilemma', nextBeatId: 'beat-3-payoff-1' },
+      { id: 'choice-2', text: 'Decline', choiceType: 'dilemma', nextBeatId: 'beat-3-payoff-2' },
+    ];
+
+    const validator = new StructuralValidator();
+    const result = validator.autoFix(story);
+
+    const fixedChoices = (result.story.episodes[0].scenes[0] as any).beats[2].choices;
+    // Dangling intra-scene targets cleared; routed to the scene's forward target.
+    expect(fixedChoices.every((c: any) => !c.nextBeatId)).toBe(true);
+    expect(fixedChoices.every((c: any) => c.nextSceneId === 'episode-end')).toBe(true);
+    expect(result.fixes.some((f) => f.toLowerCase().includes('dangling choice'))).toBe(true);
+
+    // And the result is clean on a second pass (idempotent).
+    const second = validator.autoFix(result.story);
+    expect(second.fixes.some((f) => f.toLowerCase().includes('dangling choice'))).toBe(false);
   });
 
   it('breaks a choice-payoff → choice-point navigation loop and routes payoffs forward', () => {
@@ -264,5 +289,158 @@ describe('StructuralValidator encounter consequence checks', () => {
         }),
       ])
     );
+  });
+});
+
+describe('StructuralValidator routing prefers leadsTo over array neighbour', () => {
+  // Two parallel branch scenes (scene-2a / scene-2b) are adjacent in the array
+  // but both reconverge to the scene-3 bottleneck. The old repair used the
+  // array neighbour (scene-2b) for scene-2a's forward target — replaying the
+  // wrong branch and corrupting mutually-exclusive flags.
+  function makeBranchStory(lastBeatOfA: any): Story {
+    return {
+      id: 'story-branch',
+      title: 'Branch Fixtures',
+      genre: 'test',
+      synopsis: 's',
+      coverImage: 'http://localhost:3001/cover.png',
+      initialState: { attributes: {} as any, skills: {} as any, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [
+        {
+          id: 'ep-1', number: 1, title: 'Ep 1', synopsis: 'e',
+          coverImage: 'http://localhost:3001/ep.png',
+          startingSceneId: 'scene-2a',
+          scenes: [
+            {
+              id: 'scene-2a', name: 'Cold path',
+              backgroundImage: 'http://localhost:3001/s.png',
+              leadsTo: ['scene-3'],
+              startingBeatId: 'beat-2a-1',
+              beats: [
+                { id: 'beat-2a-1', text: 'cold path beat', image: 'http://localhost:3001/b.png' },
+                lastBeatOfA,
+              ],
+            },
+            {
+              id: 'scene-2b', name: 'Respect path',
+              backgroundImage: 'http://localhost:3001/s.png',
+              leadsTo: ['scene-3'],
+              startingBeatId: 'beat-2b-1',
+              beats: [
+                { id: 'beat-2b-1', text: 'respect path beat', image: 'http://localhost:3001/b.png',
+                  choices: [{ id: 'continue', text: 'Continue', choiceType: 'expression', nextSceneId: 'scene-3' }] },
+              ],
+            },
+            {
+              id: 'scene-3', name: 'Bottleneck',
+              backgroundImage: 'http://localhost:3001/s.png',
+              leadsTo: ['episode-end'],
+              startingBeatId: 'beat-3-1',
+              beats: [
+                { id: 'beat-3-1', text: 'bottleneck beat', image: 'http://localhost:3001/b.png',
+                  choices: [{ id: 'continue', text: 'Continue', choiceType: 'expression', nextSceneId: 'episode-end' }] },
+              ],
+            },
+          ],
+        } as any,
+      ],
+    } as Story;
+  }
+
+  it('dead-end repair routes scene-2a to its leadsTo bottleneck (scene-3), not the array neighbour (scene-2b)', () => {
+    // last beat has NO navigation → dead-end repair fires
+    const story = makeBranchStory({ id: 'beat-2a-2', text: 'cold path end', image: 'http://localhost:3001/b.png' });
+    const result = new StructuralValidator().autoFix(story);
+    const sceneA = result.story.episodes[0].scenes.find((s: any) => s.id === 'scene-2a')!;
+    const lastBeat: any = sceneA.beats[sceneA.beats.length - 1];
+    expect(lastBeat.choices?.[0]?.nextSceneId).toBe('scene-3');
+    expect(lastBeat.choices?.[0]?.nextSceneId).not.toBe('scene-2b');
+  });
+
+  it('corrects a contradictory synthetic continue (scene-2b) to the leadsTo bottleneck (scene-3)', () => {
+    const story = makeBranchStory({
+      id: 'beat-2a-2', text: 'cold path end', image: 'http://localhost:3001/b.png',
+      choices: [{ id: 'continue', text: 'Continue', choiceType: 'expression', nextSceneId: 'scene-2b' }],
+    });
+    const result = new StructuralValidator().autoFix(story);
+    const sceneA = result.story.episodes[0].scenes.find((s: any) => s.id === 'scene-2a')!;
+    const lastBeat: any = sceneA.beats[sceneA.beats.length - 1];
+    expect(lastBeat.choices[0].nextSceneId).toBe('scene-3');
+  });
+
+  it('leaves a continue already pointing at a leadsTo target untouched', () => {
+    const story = makeBranchStory({
+      id: 'beat-2a-2', text: 'cold path end', image: 'http://localhost:3001/b.png',
+      choices: [{ id: 'continue', text: 'Continue', choiceType: 'expression', nextSceneId: 'scene-3' }],
+    });
+    const result = new StructuralValidator().autoFix(story);
+    const sceneA = result.story.episodes[0].scenes.find((s: any) => s.id === 'scene-2a')!;
+    const lastBeat: any = sceneA.beats[sceneA.beats.length - 1];
+    expect(lastBeat.choices[0].nextSceneId).toBe('scene-3');
+  });
+});
+
+describe('StructuralValidator namespaces colliding beat ids', () => {
+  function makeCollisionStory(): Story {
+    return {
+      id: 'story-collide', title: 'Collide', genre: 'test', synopsis: 's',
+      coverImage: 'http://localhost:3001/cover.png',
+      initialState: { attributes: {} as any, skills: {} as any, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [{
+        id: 'ep-1', number: 1, title: 'Ep 1', synopsis: 'e',
+        coverImage: 'http://localhost:3001/ep.png', startingSceneId: 'scene-1',
+        scenes: [
+          {
+            id: 'scene-1', name: 'S1', backgroundImage: 'http://localhost:3001/s.png',
+            leadsTo: ['scene-2b'], startingBeatId: 'beat-1',
+            beats: [
+              { id: 'beat-1', text: 'a', image: 'http://localhost:3001/b.png', nextBeatId: 'beat-2b' },
+              // collides by prefix with scene-2b's beat-2b-* ids
+              { id: 'beat-2b', text: 'b', image: 'http://localhost:3001/b.png',
+                choices: [{ id: 'continue', text: 'Continue', choiceType: 'expression', nextSceneId: 'scene-2b' }] },
+            ],
+          },
+          {
+            id: 'scene-2b', name: 'S2b', backgroundImage: 'http://localhost:3001/s.png',
+            leadsTo: ['episode-end'], startingBeatId: 'beat-2b-1',
+            beats: [
+              { id: 'beat-2b-1', text: 'c', image: 'http://localhost:3001/b.png',
+                choices: [{ id: 'continue', text: 'Continue', choiceType: 'expression', nextSceneId: 'episode-end' }] },
+            ],
+          },
+        ],
+      } as any],
+    } as Story;
+  }
+
+  it('eliminates the cross-scene prefix collision and keeps intra-scene refs consistent', () => {
+    const story = makeCollisionStory();
+    expect(findBeatIdCollisions(story.episodes[0] as any).length).toBeGreaterThan(0);
+
+    const result = new StructuralValidator().autoFix(story);
+    const ep: any = result.story.episodes[0];
+    // No collisions remain.
+    expect(findBeatIdCollisions(ep)).toEqual([]);
+
+    const s1 = ep.scenes.find((s: any) => s.id === 'scene-1');
+    expect(s1.beats.map((b: any) => b.id)).toEqual(['scene-1__beat-1', 'scene-1__beat-2b']);
+    // intra-scene nextBeatId remapped
+    expect(s1.beats[0].nextBeatId).toBe('scene-1__beat-2b');
+    // startingBeatId remapped
+    expect(s1.startingBeatId).toBe('scene-1__beat-1');
+    // cross-scene nextSceneId on the continue is a scene id — untouched (and the
+    // earlier leadsTo repair keeps it valid)
+    expect(s1.beats[1].choices[0].nextSceneId).toBeDefined();
+  });
+
+  it('is idempotent: a second autoFix renames nothing further', () => {
+    const validator = new StructuralValidator();
+    const first = validator.autoFix(makeCollisionStory());
+    const before = JSON.stringify(first.story);
+    const second = validator.autoFix(first.story);
+    expect(findBeatIdCollisions(second.story.episodes[0] as any)).toEqual([]);
+    expect(JSON.stringify(second.story)).toBe(before);
   });
 });

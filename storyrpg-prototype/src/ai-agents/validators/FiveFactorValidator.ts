@@ -171,8 +171,11 @@ export class FiveFactorValidator {
       };
     }
 
-    // If no factors found by heuristic, use LLM for deeper analysis
-    if (this.agentConfig.apiKey) {
+    // If no factors found by heuristic, use LLM for deeper analysis. This path is
+    // Anthropic-only (hardcoded endpoint), so skip it for any other configured
+    // provider (gemini/openai) — otherwise it POSTs the wrong provider's key to
+    // Anthropic (401) and falls back to this same heuristic result anyway.
+    if (this.agentConfig.apiKey && this.agentConfig.provider === 'anthropic') {
       try {
         const analysis = await this.analyzeFiveFactorsWithLLM(input);
 

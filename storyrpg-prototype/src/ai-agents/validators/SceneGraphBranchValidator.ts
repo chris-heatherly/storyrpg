@@ -1,5 +1,6 @@
 import type { Episode, Scene } from '../../types';
 import type { EpisodeBlueprint } from '../agents/StoryArchitect';
+import { isTerminalSceneTarget } from '../../engine/storyEngine';
 
 export type SceneGraphBranchIssueType =
   | 'missing_scene_graph_branch'
@@ -88,6 +89,12 @@ export class SceneGraphBranchValidator {
           regularChoiceCount += 1;
           const effectiveNextSceneId = choice.nextSceneId || resolveChoicePayoffSceneTarget(scene, choice.nextBeatId);
           if (!effectiveNextSceneId) continue;
+          // A choice routing to a terminal sentinel (episode-end / story-end / …)
+          // ENDS the story — it is not a scene-graph branch, and the target scene
+          // legitimately does not exist in this episode's index. Skip all
+          // branch-target checks (mirrors FinalStoryContractValidator + the reader
+          // engine, which both treat these as valid terminal targets).
+          if (isTerminalSceneTarget(effectiveNextSceneId)) continue;
           sceneGraphBranchChoiceCount += 1;
           branchTargets.add(effectiveNextSceneId);
 

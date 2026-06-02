@@ -317,6 +317,70 @@ describe('TreatmentFidelityValidator', () => {
     expect(result.issues).toEqual([]);
   });
 
+  it('matches an authored major choice pressure that appears only in inflected forms', () => {
+    // Regression: the episode manifests "Answer Radu honestly or deflect" but
+    // only via inflected words (answered / honesty / deflecting). Exact-token
+    // matching false-negatived this faithful episode and blocked the gate.
+    const story = {
+      id: 'bite-me',
+      title: 'Bite Me',
+      genre: 'Paranormal Romance',
+      synopsis: 'Kylie on the mountain.',
+      coverImage: '',
+      initialState: { attributes: {} as any, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [{
+        id: 'episode-4',
+        number: 4,
+        title: 'The Mountain',
+        synopsis: 'Kylie confronts Radu.',
+        coverImage: '',
+        startingSceneId: 'scene-1',
+        scenes: [{
+          id: 'scene-1',
+          name: 'The Confrontation',
+          startingBeatId: 'beat-1',
+          beats: [{
+            id: 'beat-1',
+            text: 'Kylie answered Radu plainly, weighing honesty against deflecting his question.',
+          }],
+        }],
+      }],
+    } satisfies Story;
+
+    const result = new TreatmentFidelityValidator().validateFinalStory({
+      story,
+      expectedEpisodeCount: 1,
+      isCompleteSeason: false,
+      analysis: {
+        sourceFormat: 'story_treatment',
+        totalEstimatedEpisodes: 4,
+        majorCharacters: [],
+        keyLocations: [],
+        adaptationGuidance: { elementsToPreserve: [] },
+        episodeBreakdown: [{
+          episodeNumber: 4,
+          title: 'The Mountain',
+          synopsis: '',
+          sourceChapters: [],
+          sourceSummary: '',
+          plotPoints: [],
+          mainCharacters: [],
+          supportingCharacters: [],
+          locations: [],
+          estimatedSceneCount: 1,
+          estimatedChoiceCount: 1,
+          narrativeFunction: { setup: '', conflict: '', resolution: '' },
+          treatmentGuidance: {
+            majorChoicePressures: ['Answer Radu honestly or deflect.'],
+          },
+        }],
+      } as any,
+    });
+
+    expect(result.issues.join('\n')).not.toContain('major choice pressure');
+  });
+
   it('fails the Bite Me drift pattern before SceneWriter can spend it into prose', () => {
     const blueprint = baseBlueprint({
       synopsis: 'Kylie meets new friends at a rooftop bar, walks home alone, is attacked by three men, and sees Victor reveal inhuman eyes.',

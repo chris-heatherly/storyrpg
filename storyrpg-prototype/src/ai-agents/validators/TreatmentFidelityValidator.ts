@@ -48,11 +48,26 @@ function tokens(value: string | undefined): string[] {
     .filter((token) => token.length >= 4 && !STOPWORDS.has(token));
 }
 
+// A needle token counts as present if a haystack token matches it exactly OR via
+// a shared stem (one is a prefix of the other; both are already ≥4 chars). This
+// makes authored anchors match the INFLECTED forms a story actually uses —
+// "deflect"~"deflecting", "answer"~"answered", "honestly"~"honest". Without it,
+// exact-token matching false-negatives faithful episodes and blocks them at the
+// treatment-fidelity gate (the Radu "Answer honestly or deflect" anchor).
+function tokenPresent(token: string, hayTokens: string[], haySet: Set<string>): boolean {
+  if (haySet.has(token)) return true;
+  for (const h of hayTokens) {
+    if (h.startsWith(token) || token.startsWith(h)) return true;
+  }
+  return false;
+}
+
 function tokenOverlapScore(needle: string, haystack: string): number {
   const needed = [...new Set(tokens(needle))];
   if (needed.length === 0) return 0;
-  const hay = new Set(tokens(haystack));
-  const hits = needed.filter((token) => hay.has(token)).length;
+  const hayTokens = [...new Set(tokens(haystack))];
+  const haySet = new Set(hayTokens);
+  const hits = needed.filter((token) => tokenPresent(token, hayTokens, haySet)).length;
   return hits / needed.length;
 }
 

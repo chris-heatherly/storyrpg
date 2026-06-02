@@ -18,7 +18,6 @@ import {
   AlertCircle,
   ChevronRight,
   Clock,
-  Zap,
   Image as ImageIcon,
 } from 'lucide-react-native';
 import { TERMINAL } from '../theme';
@@ -34,6 +33,8 @@ interface PipelineProgressProps {
   etaSeconds?: number | null;
   imageProgress?: { current: number; total: number } | null;
   runtime?: PipelineRuntimeSnapshot | null;
+  /** Story title shown as the hero headline. */
+  storyTitle?: string;
 }
 
 export interface PipelineRuntimeSnapshot {
@@ -142,6 +143,17 @@ const labelForPhase = (phase?: string): string => {
 
 type PhaseStatus = 'pending' | 'active' | 'complete' | 'error';
 
+// Episode status is DERIVED from its scenes — an episode is only "complete" when
+// every scene (regular, branch, encounter) is complete, never from a forced
+// flag. Falls back to the stored status before scenes are known (pre-architect).
+const deriveEpisodeStatus = (episode: EpisodeNode): PhaseStatus => {
+  if (episode.scenes.length === 0) return episode.status;
+  if (episode.scenes.some((s) => s.status === 'error')) return 'error';
+  if (episode.scenes.every((s) => s.status === 'complete')) return 'complete';
+  if (episode.scenes.some((s) => s.status !== 'pending')) return 'active';
+  return 'pending';
+};
+
 /** Plain-language label + accent for a scene's current activity chip. */
 const ACTIVITY_CHIP: Record<string, { label: string; color: string }> = {
   writing: { label: 'WRITING PROSE', color: TERMINAL.colors.amber },
@@ -159,6 +171,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   etaSeconds,
   imageProgress,
   runtime,
+  storyTitle,
 }) => {
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [expandedEpisodes, setExpandedEpisodes] = useState<Record<number, boolean>>({});
@@ -201,8 +214,6 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   const latestTelemetry = [...events].reverse().find((e) => !!e.telemetry)?.telemetry;
   const telemetryItemCurrent = runtime?.currentItem ?? runtime?.imageProgress?.current ?? latestTelemetry?.currentItem;
   const telemetryItemTotal = runtime?.totalItems ?? runtime?.imageProgress?.total ?? latestTelemetry?.totalItems;
-  const telemetrySubphase = runtime?.subphaseLabel ?? latestTelemetry?.subphaseLabel;
-  const remainingPercent = Math.max(0, 100 - normalizedProgress);
   const effectiveEta = runtime?.etaSeconds ?? etaSeconds;
   const effectiveImageProgress = runtime?.imageProgress || imageProgress;
   const imageJobs = runtime?.imageJobs || [];
@@ -310,7 +321,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
       }
     }
   }
-  const completedEpisodes = plan ? plan.episodes.filter((e) => e.status === 'complete').length : 0;
+  const completedEpisodes = plan ? plan.episodes.filter((e) => deriveEpisodeStatus(e) === 'complete').length : 0;
   const currentEpisodeNumber = activeEpisode?.number
     ?? (plan ? Math.min(plan.totalEpisodes, completedEpisodes + 1) : undefined);
 
@@ -347,8 +358,10 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   };
 
   const episodeProgressPct = (episode: EpisodeNode): number => {
-    if (episode.status === 'complete') return 100;
-    if (episode.scenes.length === 0) return 0;
+    // Drive % from the same scene counts as the "N / M SCENES" summary so the
+    // two can never disagree. Only fall back to status when scenes aren't known
+    // yet (e.g. before the architect runs, or a no-scene episode).
+    if (episode.scenes.length === 0) return episode.status === 'complete' ? 100 : 0;
     const done = episode.scenes.filter((s) => s.status === 'complete').length;
     return Math.round((done / episode.scenes.length) * 100);
   };
@@ -356,7 +369,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   const isEpisodeExpanded = (episode: EpisodeNode): boolean => {
     const override = expandedEpisodes[episode.number];
     if (override !== undefined) return override;
-    return episode.status === 'active'; // auto-expand the active episode
+    return deriveEpisodeStatus(episode) === 'active'; // auto-expand the active episode
   };
 
   const toggleEpisode = (episode: EpisodeNode) => {
@@ -368,6 +381,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
     return (
       <View style={styles.episodeList}>
         {plan.episodes.map((episode) => {
+          const epStatus = deriveEpisodeStatus(episode);
           const epPct = episodeProgressPct(episode);
           const expanded = isEpisodeExpanded(episode) && episode.scenes.length > 0;
           return (
@@ -375,8 +389,8 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
               key={episode.number}
               style={[
                 styles.epCard,
-                episode.status === 'active' && styles.epCardActive,
-                episode.status === 'complete' && styles.epCardDone,
+                epStatus === 'active' && styles.epCardActive,
+                epStatus === 'complete' && styles.epCardDone,
               ]}
             >
               <TouchableOpacity
@@ -385,13 +399,13 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
                 activeOpacity={0.7}
                 accessibilityRole="button"
               >
-                {renderStatusIcon(episode.status, 14)}
+                {renderStatusIcon(epStatus, 14)}
                 <Text style={styles.epName}>EP {episode.number}</Text>
                 {episode.title ? (
                   <Text style={styles.epTitle} numberOfLines={1}>{episode.title}</Text>
                 ) : <View style={{ flex: 1 }} />}
                 <Text style={styles.epMeta}>{episodeSceneSummary(episode)}</Text>
-                <Text style={[styles.epPct, episode.status === 'pending' && styles.epPctMuted]}>{epPct}%</Text>
+                <Text style={[styles.epPct, epStatus === 'pending' && styles.epPctMuted]}>{epPct}%</Text>
                 {episode.scenes.length > 0 && (
                   <ChevronRight
                     size={11}
@@ -405,7 +419,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
                   style={[
                     styles.epFill,
                     { width: `${epPct}%` },
-                    episode.status === 'active' && styles.epFillActive,
+                    epStatus === 'active' && styles.epFillActive,
                   ]}
                 />
               </View>
@@ -468,53 +482,34 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Zap size={14} color={TERMINAL.colors.cyan} />
-        <Text style={styles.headerTitle}>ACTIVE NEURAL PIPELINE</Text>
+      {/* Hero — story title leads, then the headline progress bar */}
+      <Text style={styles.storyTitle} numberOfLines={2}>{storyTitle || 'Generating story'}</Text>
+      <View style={styles.heroTrack}>
+        <View style={[styles.heroFill, { width: `${normalizedProgress}%` }]} />
       </View>
-
-      {(isRunning || normalizedProgress > 0) && (
-        <View style={styles.progressCard}>
-          <View style={styles.progressHeader}>
-            <Text style={styles.progressLabel}>COMPLETION</Text>
-            <Text style={styles.progressValue}>{normalizedProgress}%</Text>
-          </View>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${normalizedProgress}%` }]} />
-          </View>
-          <View style={styles.progressMetaRow}>
-            <Text style={styles.progressMeta}>{remainingPercent}% REMAINING</Text>
-            <Text style={styles.progressMeta}>ETA {formatEta(effectiveEta)}</Text>
-          </View>
-          <View style={styles.heroSubline}>
-            {currentEpisodeNumber && plan ? (
-              <>
-                <Text style={styles.heroSublineText}>EPISODE {currentEpisodeNumber} / {plan.totalEpisodes}</Text>
-                <Text style={styles.heroDot}>·</Text>
-              </>
-            ) : null}
-            <Text style={styles.heroSublineText}>ELAPSED {formatDuration(elapsedSeconds)}</Text>
+      <View style={styles.heroMeta}>
+        <Text style={styles.heroPct}>{normalizedProgress}%</Text>
+        <Text style={styles.heroEta}>ETA {formatEta(effectiveEta)}</Text>
+      </View>
+      <View style={styles.heroSubline}>
+        {currentEpisodeNumber && plan ? (
+          <>
+            <Text style={styles.heroSublineText}>EPISODE {currentEpisodeNumber} / {plan.totalEpisodes}</Text>
             <Text style={styles.heroDot}>·</Text>
-            <Text style={[styles.heroSublineText, workerHealthy ? styles.heroOk : styles.heroStale]}>
-              ● {workerHealthy ? 'WORKER HEALTHY' : 'WORKER STALE'}
-            </Text>
-          </View>
-          {effectiveImageProgress && effectiveImageProgress.total > 0 && normalizedCurrentPhase === 'images' && (
-            <View style={styles.imageProgressRow}>
-              <ImageIcon size={12} color={TERMINAL.colors.amber} />
-              <Text style={styles.imageProgressText}>
-                GENERATING IMAGE {effectiveImageProgress.current} OF {effectiveImageProgress.total}
-              </Text>
-            </View>
-          )}
-          {typeof telemetryItemCurrent === 'number' && typeof telemetryItemTotal === 'number' && telemetryItemTotal > 0 && (
-            <View style={styles.imageProgressRow}>
-              <Clock size={12} color={TERMINAL.colors.cyan} />
-              <Text style={styles.imageProgressText}>
-                {`${(telemetrySubphase || normalizedCurrentPhase || 'TASK').toUpperCase()} ${telemetryItemCurrent}/${telemetryItemTotal}`}
-              </Text>
-            </View>
-          )}
+          </>
+        ) : null}
+        <Text style={styles.heroSublineText}>ELAPSED {formatDuration(elapsedSeconds)}</Text>
+        <Text style={styles.heroDot}>·</Text>
+        <Text style={[styles.heroSublineText, workerHealthy ? styles.heroOk : styles.heroStale]}>
+          ● {workerHealthy ? 'WORKER HEALTHY' : 'WORKER STALE'}
+        </Text>
+      </View>
+      {effectiveImageProgress && effectiveImageProgress.total > 0 && normalizedCurrentPhase === 'images' && (
+        <View style={styles.imageProgressRow}>
+          <ImageIcon size={12} color={TERMINAL.colors.amber} />
+          <Text style={styles.imageProgressText}>
+            GENERATING IMAGE {effectiveImageProgress.current} OF {effectiveImageProgress.total}
+          </Text>
         </View>
       )}
 
@@ -580,12 +575,31 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
               <Text style={styles.opsMetricValue}>{formatDuration(elapsedSeconds)}</Text>
             </View>
             <View style={styles.opsMetric}>
-              <Text style={styles.opsMetricLabel}>ITEMS</Text>
-              <Text style={styles.opsMetricValue}>
-                {typeof telemetryItemCurrent === 'number' && typeof telemetryItemTotal === 'number'
-                  ? `${telemetryItemCurrent}/${telemetryItemTotal}`
-                  : 'N/A'}
-              </Text>
+              <View style={styles.opsMetricHeader}>
+                <Text style={styles.opsMetricLabel}>ITEMS</Text>
+                <Text style={styles.opsMetricValue}>
+                  {typeof telemetryItemCurrent === 'number' && typeof telemetryItemTotal === 'number'
+                    ? `${telemetryItemCurrent}/${telemetryItemTotal}`
+                    : 'N/A'}
+                </Text>
+              </View>
+              {typeof telemetryItemCurrent === 'number' &&
+                typeof telemetryItemTotal === 'number' &&
+                telemetryItemTotal > 0 && (
+                  <View style={styles.opsMetricTrack}>
+                    <View
+                      style={[
+                        styles.opsMetricFill,
+                        {
+                          width: `${Math.min(
+                            100,
+                            Math.round((telemetryItemCurrent / telemetryItemTotal) * 100),
+                          )}%`,
+                        },
+                      ]}
+                    />
+                  </View>
+                )}
             </View>
           </View>
 
@@ -632,11 +646,11 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
         style={styles.debugToggle}
         onPress={() => setShowDebugLog((prev) => !prev)}
         accessibilityRole="button"
-        accessibilityLabel={showDebugLog ? 'Hide debug log' : 'Show debug log'}
+        accessibilityLabel={showDebugLog ? 'Hide activity log' : 'Show activity log'}
       >
         <Clock size={12} color={TERMINAL.colors.muted} />
         <Text style={styles.debugToggleText}>
-          {showDebugLog ? 'HIDE DEBUG LOG' : 'SHOW DEBUG LOG'}
+          {showDebugLog ? 'HIDE ACTIVITY LOG' : 'SHOW ACTIVITY LOG'}
         </Text>
         <ChevronRight
           size={12}
@@ -692,60 +706,41 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.05)',
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginBottom: 20,
-  },
-  headerTitle: {
-    color: TERMINAL.colors.cyan,
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 2,
-  },
-  progressCard: {
-    backgroundColor: TERMINAL.colors.bg,
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(59, 130, 246, 0.2)',
-  },
-  progressHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  progressLabel: {
-    color: TERMINAL.colors.cyan,
-    fontSize: 8,
-    fontWeight: '900',
-    letterSpacing: 1,
-  },
-  progressValue: {
+  // Hero
+  storyTitle: {
     color: 'white',
-    fontSize: 12,
+    fontSize: 18,
     fontWeight: '900',
+    letterSpacing: 0,
+    marginBottom: 12,
   },
-  progressTrack: {
-    height: 8,
+  heroTrack: {
+    height: 12,
     borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.07)',
     overflow: 'hidden',
   },
-  progressFill: {
+  heroFill: {
     height: '100%',
     borderRadius: 999,
-    backgroundColor: TERMINAL.colors.primary,
+    backgroundColor: TERMINAL.colors.cyan,
   },
-  progressMetaRow: {
+  heroMeta: {
     marginTop: 8,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'baseline',
+  },
+  heroPct: {
+    color: 'white',
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  heroEta: {
+    color: TERMINAL.colors.cyan,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   imageProgressRow: {
     marginTop: 10,
@@ -961,6 +956,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.05)',
   },
+  opsMetricHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
   opsMetricLabel: {
     color: TERMINAL.colors.muted,
     fontSize: 7,
@@ -972,6 +973,18 @@ const styles = StyleSheet.create({
     color: TERMINAL.colors.cyan,
     fontSize: 10,
     fontWeight: '900',
+  },
+  opsMetricTrack: {
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    overflow: 'hidden',
+    marginTop: 6,
+  },
+  opsMetricFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: TERMINAL.colors.cyan,
   },
   opsQueue: {
     marginTop: 10,
@@ -1035,12 +1048,6 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontWeight: '800',
     letterSpacing: 0,
-  },
-  progressMeta: {
-    color: TERMINAL.colors.muted,
-    fontSize: 8,
-    fontWeight: '800',
-    letterSpacing: 0.7,
   },
   debugToggle: {
     flexDirection: 'row',

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -1022,5 +1022,201 @@ describe('SourceMaterialAnalyzer writing style helpers', () => {
     expect(analysis.adaptationGuidance.narrativeVoice).toBe('Hardboiled but intimate.');
     expect(analysis.protagonist.fashionStyle?.styleTags).toEqual(['noir detective']);
     expect(analysis.majorCharacters[0].fashionStyle?.signatureGarments).toEqual(['white suit']);
+  });
+});
+
+describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
+  const makeAnalyzer = () =>
+    new SourceMaterialAnalyzer({
+      provider: 'anthropic',
+      model: 'test',
+      apiKey: 'test',
+      maxTokens: 1000,
+      temperature: 0,
+    });
+
+  const makeStructure = (estimatedEpisodes: number): any => ({
+    genre: 'mystery',
+    tone: 'dry and tense',
+    themes: ['truth'],
+    setting: { timePeriod: 'now', location: 'Harbor City', worldDetails: 'rain and debt' },
+    protagonist: { name: 'Mara', description: 'A private investigator.', arc: 'Learns to trust again.' },
+    majorCharacters: [],
+    keyLocations: [],
+    directLanguageFragments: { dialogue: [], prose: [], terminology: [] },
+    storyArcs: [{ name: 'The Missing Ledger', description: 'Mara follows a debt trail.', chapters: 'all' }],
+    majorPlotPoints: [
+      { description: 'The ledger vanishes.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
+      { description: 'Mara confronts the harbor boss.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+    ],
+    estimatedScope: { complexity: 'moderate', estimatedEpisodes, reasoning: 'test' },
+    endingAnalysis: { detectedMode: 'single', reasoning: 'one mystery solution', explicitEndings: [] },
+  });
+
+  const preferences = { targetScenes: 6, targetChoices: 4, pacing: 'moderate' };
+
+  it('fans a >=6 episode season out into one call per episode and assembles in order', async () => {
+    const analyzer = makeAnalyzer();
+    const estimatedEpisodes = 6;
+
+    // Each call returns a single-episode object. We echo back the episodeNumber
+    // embedded in the prompt so we can assert order-preservation independently
+    // of the order the (concurrent) calls actually settle in.
+    const callSpy = vi
+      .spyOn(analyzer as any, 'callLLM')
+      .mockImplementation(async (...args: unknown[]) => {
+        const messages = args[0] as Array<{ content: string }>;
+        const prompt = messages[0].content;
+        const match = prompt.match(/Episode number: (\d+) of/);
+        const n = match ? Number(match[1]) : 0;
+        return JSON.stringify({
+          episodeNumber: n,
+          title: `Title ${n}`,
+          synopsis: `Synopsis ${n}`,
+          sourceChapters: `${n}`,
+          plotPoints: [`Plot ${n}`],
+          mainCharacters: ['Mara'],
+          locations: ['Harbor City'],
+          narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
+          structuralRole: ['rising'],
+        });
+      });
+
+    const breakdown = await (analyzer as any).createEpisodeBreakdown(
+      'Rain and ledgers.',
+      makeStructure(estimatedEpisodes),
+      preferences,
+    );
+
+    // N episodes -> N focused calls.
+    expect(callSpy).toHaveBeenCalledTimes(estimatedEpisodes);
+    expect(breakdown.totalEpisodes).toBe(estimatedEpisodes);
+    expect(breakdown.episodes).toHaveLength(estimatedEpisodes);
+    // Order preserved 1..N regardless of settle order.
+    expect(breakdown.episodes.map((ep: any) => ep.episodeNumber)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(breakdown.episodes.map((ep: any) => ep.title)).toEqual([
+      'Title 1', 'Title 2', 'Title 3', 'Title 4', 'Title 5', 'Title 6',
+    ]);
+  });
+
+  it('keeps the single all-at-once call for a 2-episode season', async () => {
+    const analyzer = makeAnalyzer();
+
+    const callSpy = vi
+      .spyOn(analyzer as any, 'callLLM')
+      .mockResolvedValue(
+        JSON.stringify({
+          episodes: [
+            {
+              episodeNumber: 1,
+              title: 'Title 1',
+              synopsis: 'Synopsis 1',
+              sourceChapters: '1',
+              plotPoints: ['Plot 1'],
+              mainCharacters: ['Mara'],
+              locations: ['Harbor City'],
+              narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
+              structuralRole: ['hook', 'plotTurn1'],
+            },
+            {
+              episodeNumber: 2,
+              title: 'Title 2',
+              synopsis: 'Synopsis 2',
+              sourceChapters: '2',
+              plotPoints: ['Plot 2'],
+              mainCharacters: ['Mara'],
+              locations: ['Harbor City'],
+              narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
+              structuralRole: ['climax', 'resolution'],
+            },
+          ],
+          totalEpisodes: 2,
+          breakdownNotes: 'two episodes',
+        }),
+      );
+
+    const breakdown = await (analyzer as any).createEpisodeBreakdown(
+      'Rain and ledgers.',
+      makeStructure(2),
+      preferences,
+    );
+
+    // Single call (not fanned out) for short seasons.
+    expect(callSpy).toHaveBeenCalledTimes(1);
+    expect(breakdown.episodes).toHaveLength(2);
+    expect(breakdown.episodes.map((ep: any) => ep.episodeNumber)).toEqual([1, 2]);
+  });
+
+  it('falls back to the single all-at-once call when per-episode output is unusable', async () => {
+    const analyzer = makeAnalyzer();
+    const estimatedEpisodes = 6;
+    let call = 0;
+
+    // First N per-episode calls return empty objects (no title/synopsis ->
+    // dropped by normalizeSingleEpisode). The fallback single call then returns
+    // a full breakdown.
+    const callSpy = vi
+      .spyOn(analyzer as any, 'callLLM')
+      .mockImplementation(async () => {
+        call++;
+        if (call <= estimatedEpisodes) {
+          return JSON.stringify({});
+        }
+        return JSON.stringify({
+          episodes: Array.from({ length: estimatedEpisodes }, (_, i) => ({
+            episodeNumber: i + 1,
+            title: `Fallback ${i + 1}`,
+            synopsis: `Synopsis ${i + 1}`,
+            sourceChapters: `${i + 1}`,
+            plotPoints: [`Plot ${i + 1}`],
+            mainCharacters: ['Mara'],
+            locations: ['Harbor City'],
+            narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
+            structuralRole: ['rising'],
+          })),
+          totalEpisodes: estimatedEpisodes,
+          breakdownNotes: 'fallback breakdown',
+        });
+      });
+
+    const breakdown = await (analyzer as any).createEpisodeBreakdown(
+      'Rain and ledgers.',
+      makeStructure(estimatedEpisodes),
+      preferences,
+    );
+
+    // N per-episode attempts + 1 fallback call.
+    expect(callSpy).toHaveBeenCalledTimes(estimatedEpisodes + 1);
+    expect(breakdown.episodes).toHaveLength(estimatedEpisodes);
+    expect(breakdown.episodes[0].title).toBe('Fallback 1');
+  });
+
+  it('accepts an {episode:{...}} wrapped per-episode response shape', async () => {
+    const analyzer = makeAnalyzer();
+    const estimatedEpisodes = 6;
+
+    vi.spyOn(analyzer as any, 'callLLM').mockImplementation(async (...args: unknown[]) => {
+      const messages = args[0] as Array<{ content: string }>;
+      const n = Number(messages[0].content.match(/Episode number: (\d+) of/)?.[1] ?? 0);
+      return JSON.stringify({
+        episode: {
+          episodeNumber: n,
+          title: `Wrapped ${n}`,
+          synopsis: `Synopsis ${n}`,
+          narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
+        },
+      });
+    });
+
+    const breakdown = await (analyzer as any).createEpisodeBreakdown(
+      'Rain and ledgers.',
+      makeStructure(estimatedEpisodes),
+      preferences,
+    );
+
+    expect(breakdown.episodes).toHaveLength(estimatedEpisodes);
+    expect(breakdown.episodes.map((ep: any) => ep.title)).toEqual([
+      'Wrapped 1', 'Wrapped 2', 'Wrapped 3', 'Wrapped 4', 'Wrapped 5', 'Wrapped 6',
+    ]);
   });
 });

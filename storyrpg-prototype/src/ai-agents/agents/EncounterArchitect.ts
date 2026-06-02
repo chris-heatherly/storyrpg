@@ -14,6 +14,46 @@
 
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentMessage, AgentResponse } from './BaseAgent';
+import { withTimeoutAbort, TimeoutError } from '../utils/withTimeout';
+import { shrinkClockToCoverage } from '../pipeline/encounterRemediation';
+
+/**
+ * Distinctive, non-interpolated fragments of the deterministic fallback prose
+ * (`buildDeterministicFallback`) and default storylets (`createDefaultStorylet`).
+ * When any of these appears in an encounter's PLAYER-FACING prose, the encounter
+ * shipped templated boilerplate instead of authored content (the Endsong climax
+ * bug). EncounterQualityValidator scans for these and BLOCKS.
+ *
+ * SINGLE SOURCE OF TRUTH: these mirror the literal strings in the fallback
+ * builders below. `EncounterArchitect.templateSignatures.test.ts` asserts a
+ * freshly-built deterministic fallback + default storylets actually contain
+ * these fragments, so they can't silently drift. If you change the fallback
+ * prose, update this list (the test will fail until you do).
+ */
+export const TEMPLATE_SIGNATURES: readonly string[] = Object.freeze([
+  // buildDeterministicFallback (beat-2 setup + choices + outcomes)
+  'This is the moment that decides everything',
+  'face the final test',
+  'Push for a decisive outcome',
+  'Stand firm and endure',
+  'Find a way out on your terms',
+  'An unexpected solution presents itself',
+  'It works, mostly',
+  // createDefaultStorylet (victory / defeat / partialVictory / escape)
+  'comes through the encounter with the pressure finally loosening',
+  'feels the moment slip away before anyone has to name it',
+  'But even in defeat, something has shifted',
+  "Resolve hardens. This isn't the end. It's a turning point",
+  'gets through the moment, but relief does not arrive alone',
+  'has escaped, but barely',
+  'The adrenaline is still coursing',
+]);
+
+/** Return the template signatures found in a blob of text (case-sensitive substring). */
+export function findTemplateSignatures(text: string): string[] {
+  if (!text) return [];
+  return TEMPLATE_SIGNATURES.filter((sig) => text.includes(sig));
+}
 import { 
   CinematicImageDescription, 
   EncounterCost,
@@ -317,6 +357,62 @@ export interface EncounterTelemetry {
    * `normalizeStructure` filled it with a default.
    */
   phase4DefaultCollisions: Array<'victory' | 'partialVictory' | 'defeat' | 'escape'>;
+  /**
+   * Per-attempt phase failures recorded during generation (timeouts, parse
+   * failures, empty responses). Previously these were swallowed by
+   * `.catch(() => null)`; recording them makes degraded encounters auditable
+   * (and feeds the EncounterQualityValidator / remediation decision).
+   */
+  phaseErrors?: EncounterPhaseError[];
+  /**
+   * True when any phase ultimately failed (gap) — i.e. the encounter shipped
+   * with fallback/templated content for at least one phase. Mirrors
+   * `mode === 'phased_with_gaps' | 'deterministic'`; surfaced explicitly so
+   * downstream gating doesn't have to string-match the mode.
+   */
+  degraded?: boolean;
+}
+
+/** A single recorded phase-generation failure (one attempt). */
+export interface EncounterPhaseError {
+  phase: string;
+  attempt: number;
+  reason: 'timeout' | 'parse' | 'empty' | 'other';
+  ms: number;
+}
+
+/** Classify a phase failure for telemetry. */
+export function classifyPhaseError(err: unknown): EncounterPhaseError['reason'] {
+  if (err instanceof TimeoutError) return 'timeout';
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (msg.includes('timed out') || msg.includes('abort')) return 'timeout';
+  if (msg.includes('json') || msg.includes('parse')) return 'parse';
+  if (msg.includes('empty') || msg.includes('no response')) return 'empty';
+  return 'other';
+}
+
+/**
+ * Run `items` through `fn` with bounded concurrency. Used for Phase 2 branch
+ * generation so the (up to 3) calls don't all contend at once — they reuse the
+ * warm keep-alive connection and a transient stall doesn't time out every
+ * branch simultaneously. Preserves input order in the result.
+ */
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = new Array(Math.min(Math.max(1, limit), items.length)).fill(0).map(async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 /** Phase 4 output: storylets */
@@ -1189,7 +1285,22 @@ Outcomes should include consequences that match the skill being tested:
 `;
   }
 
-  private static readonly PER_CALL_TIMEOUT_MS = 120_000; // 2 minutes per LLM call
+  // Per-phase LLM timeouts. The old flat 120s was too tight: a measured
+  // ~8000-token generation takes ~187s, and phase 2 (3 branch situations ×
+  // 3 choices × 3 outcomes) is the largest payload — these routinely blew 120s
+  // and aborted as "fetch failed", producing the silent phase2:[false,false,false]
+  // collapse. Sized generously above the heaviest legit generation but kept
+  // below PIPELINE_TIMEOUTS.encounterAgent (10min) and the 16min HTTP ceiling
+  // so a genuine hang still dies. Each phase additionally gets ONE retry with a
+  // fresh timeout window (runPhaseWithRetry).
+  private static readonly PHASE1_TIMEOUT_MS = 180_000;
+  private static readonly PHASE2_TIMEOUT_MS = 240_000; // largest payload
+  private static readonly PHASE3_TIMEOUT_MS = 180_000;
+  private static readonly PHASE4_TIMEOUT_MS = 180_000;
+  private static readonly PHASE_RETRY_ATTEMPTS = 2;
+  // Legacy lean/retry single-call path timeout (raised from 120s for the same
+  // reason — large structured generations exceed 120s).
+  private static readonly PER_CALL_TIMEOUT_MS = 180_000;
 
   async execute(
     input: EncounterArchitectInput,
@@ -1234,6 +1345,9 @@ Outcomes should include consequences that match the skill being tested:
       llmCallCount: llmCalls,
       msElapsed: Date.now() - execStart,
       phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+      // Lean path authored a full structure in one call; treat it as degraded
+      // only if outcome slots fell back to default storylet prose.
+      degraded: this.detectDefaultStoryletCollisions(structure, input).length > 0,
     });
 
     const leanResult = await this.tryLLMAttempt(input, 1, 'lean', minimumBeatCount, attemptSummaries, lastError, lastRawResponse);
@@ -1264,6 +1378,7 @@ Outcomes should include consequences that match the skill being tested:
         llmCallCount: 2, // Both lean attempts were made
         msElapsed: Date.now() - execStart,
         phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+        degraded: true,
       };
       return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
     } catch (fallbackError) {
@@ -1840,12 +1955,24 @@ RULES:
       structure.beats = [structure.beats as unknown as EncounterBeat];
     }
 
-    // F2: an encounter with fewer than 2 beats is unplayable and fails the
+    // F2: a FLAT encounter with fewer than 2 beats is unplayable and fails the
     // final story contract. Rather than only logging and hoping the retry loop
     // fixes it (it doesn't always), synthesize the missing beat(s) from the
     // known-good deterministic fallback so the encounter is always playable.
     // See docs/PROJECT_AUDIT_2026-05-28.md.
-    if (structure.beats.length < 2) {
+    //
+    // TREE-FORMAT GUARD: a phased encounter is a single top-level beat whose
+    // outcomes carry embedded `nextSituation` branches — that is fully playable
+    // with one beat, so the <2 check must NOT fire for it. It previously did,
+    // synthesizing a deterministic-fallback (template) resolution beat and
+    // routing every branch-less non-terminal outcome (e.g. a phase-3 conditional
+    // choice) into that template — shipping generic boilerplate as a branch.
+    const isTreeFormatEncounter = (structure.beats || []).some(b =>
+      (b.choices || []).some(c =>
+        c.outcomes && (['success', 'complicated', 'failure'] as const).some(t => (c.outcomes as any)?.[t]?.nextSituation)
+      )
+    );
+    if (structure.beats.length < 2 && !isTreeFormatEncounter) {
       console.warn(`[EncounterArchitect] Only ${structure.beats.length} beat(s) returned by LLM (minimum 2); synthesizing a resolution beat (F2).`);
       try {
         const fallbackBeats = this.buildDeterministicFallback(input).beats;
@@ -3672,10 +3799,13 @@ CRITICAL RULES:
     const dynamicsBrief = analyzeRelationshipDynamics(npcInfos, relSnapshot, allNpcs);
     console.log(`[EncounterArchitect] Relationship analysis: ${dynamicsBrief.npcDynamics.length} NPCs, ${dynamicsBrief.knockOnEffects.length} knock-on effects`);
 
+    // Collector for per-attempt phase failures (no longer swallowed silently).
+    const phaseErrors: EncounterPhaseError[] = [];
+
     // ---- Phase 1: Opening beat ----
     let phase1: Phase1Result;
     try {
-      phase1 = await this.runPhase1(input, dynamicsBrief);
+      phase1 = await this.runPhase1(input, dynamicsBrief, phaseErrors);
       console.log(`[EncounterArchitect] Phase 1 complete: ${phase1.openingBeat.choices.length} choices`);
     } catch (p1Error) {
       console.warn(`[EncounterArchitect] Phase 1 failed, using deterministic fallback: ${p1Error instanceof Error ? p1Error.message : p1Error}`);
@@ -3690,36 +3820,35 @@ CRITICAL RULES:
         phase3Ran: false,
         phase3Ok: false,
         phase4Ok: false,
-        llmCallCount: 1, // Phase 1 was attempted
+        llmCallCount: phaseErrors.length, // attempts actually issued
         msElapsed: Date.now() - phasedStart,
         phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+        phaseErrors,
+        degraded: true,
       };
       return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
     }
 
-    // ---- Phases 2, 3, 4 in parallel ----
-    const phase2Promises = phase1.openingBeat.choices.map(choice =>
-      this.runPhase2(input, dynamicsBrief, choice).catch(err => {
-        console.warn(`[EncounterArchitect] Phase 2 failed for choice ${choice.id}: ${err instanceof Error ? err.message : err}`);
-        return null;
-      })
+    // ---- Phases 2, 3, 4 ----
+    // Phase 2 runs at bounded concurrency (2) rather than full fan-out so the
+    // branch calls reuse the warm keep-alive connection and a transient stall
+    // doesn't time out every branch at once (the root of phase2:[F,F,F]).
+    const phase2Promise = mapWithConcurrency(
+      phase1.openingBeat.choices,
+      2,
+      (choice) =>
+        this.runPhase2(input, dynamicsBrief, choice, phaseErrors).catch(() => null),
     );
 
     const phase3Ran = !!input.priorStateContext;
     const phase3Promise = phase3Ran
-      ? this.runPhase3(input, phase1).catch(err => {
-          console.warn(`[EncounterArchitect] Phase 3 failed: ${err instanceof Error ? err.message : err}`);
-          return null;
-        })
+      ? this.runPhase3(input, phase1, phaseErrors).catch(() => null)
       : Promise.resolve(null);
 
-    const phase4Promise = this.runPhase4(input, dynamicsBrief).catch(err => {
-      console.warn(`[EncounterArchitect] Phase 4 failed: ${err instanceof Error ? err.message : err}`);
-      return null;
-    });
+    const phase4Promise = this.runPhase4(input, dynamicsBrief, phaseErrors).catch(() => null);
 
     const [phase2Results, phase3Result, phase4Result] = await Promise.all([
-      Promise.all(phase2Promises),
+      phase2Promise,
       phase3Promise,
       phase4Promise,
     ]);
@@ -3738,6 +3867,17 @@ CRITICAL RULES:
     const phase3Ok = phase3Result !== null;
     const phase4Ok = phase4Result !== null;
     const anyGap = phase2Ok.some(ok => !ok) || (phase3Ran && !phase3Ok) || !phase4Ok;
+
+    // If the build degraded (lost branching rounds), shrink the goal/threat
+    // clocks DOWN to the authored coverage so the encounter ships an honest
+    // clock instead of leaving segments the player can never fill. Only fires
+    // on a degraded + genuinely under-covered encounter; never raises a clock.
+    if (anyGap) {
+      const shrank = shrinkClockToCoverage(structure as any);
+      if (shrank) {
+        console.warn(`[EncounterArchitect] Encounter ${input.sceneId} degraded — shrank clocks to authored coverage (goal=${(structure as any).goalClock?.segments}, threat=${(structure as any).threatClock?.segments}).`);
+      }
+    }
     const telemetry: EncounterTelemetry = {
       sceneId: input.sceneId,
       mode: anyGap ? 'phased_with_gaps' : 'phased_success',
@@ -3747,12 +3887,15 @@ CRITICAL RULES:
       phase3Ok,
       phase4Ok,
       llmCallCount:
-        1 /* phase 1 */ +
-        phase2Promises.length /* one call per opening-beat choice */ +
+        1 /* phase 1 (min) */ +
+        phase1.openingBeat.choices.length /* one call per opening-beat choice */ +
         (phase3Ran ? 1 : 0) /* phase 3 only runs when priorStateContext */ +
-        1 /* phase 4 */,
+        1 /* phase 4 */ +
+        phaseErrors.length /* extra retry attempts that failed */,
       msElapsed: totalMs,
       phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
+      phaseErrors,
+      degraded: anyGap,
     };
 
     return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
@@ -3760,16 +3903,52 @@ CRITICAL RULES:
 
   // ---- Phase 1: Opening Beat ----
 
-  private async runPhase1(input: EncounterArchitectInput, brief: RelationshipDynamicsBrief): Promise<Phase1Result> {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), EncounterArchitect.PER_CALL_TIMEOUT_MS);
-    try {
-      const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase1Prompt(input, brief) }];
-      const response = await this.callLLM(messages, 1, { signal: ac.signal });
-      return this.parseJSON<Phase1Result>(response);
-    } finally {
-      clearTimeout(timer);
+  /**
+   * Run one encounter phase with a real timeout (withTimeoutAbort cancels the
+   * in-flight fetch and halts retries on timeout) plus a retry with a FRESH
+   * timeout window. Each attempt is recorded in `errorSink` on failure so
+   * degraded encounters are auditable instead of silently swallowed.
+   *
+   * Note: `callLLM` keeps its own internal retry (maxRetries 1) for fast,
+   * transient connection errors WITHIN one timeout window; this outer loop adds
+   * recovery from a whole-attempt timeout/parse failure. We deliberately do NOT
+   * also raise callLLM's retries — stacking 2×2 attempts under 180–240s windows
+   * could exceed the 10-min encounter budget.
+   */
+  private async runPhaseWithRetry<T>(
+    label: string,
+    timeoutMs: number,
+    errorSink: EncounterPhaseError[],
+    fn: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= EncounterArchitect.PHASE_RETRY_ATTEMPTS; attempt++) {
+      const started = Date.now();
+      try {
+        return await withTimeoutAbort((signal) => fn(signal), timeoutMs, `EncounterArchitect.${label}`);
+      } catch (err) {
+        lastErr = err;
+        errorSink.push({ phase: label, attempt, reason: classifyPhaseError(err), ms: Date.now() - started });
+        console.warn(`[EncounterArchitect] ${label} attempt ${attempt}/${EncounterArchitect.PHASE_RETRY_ATTEMPTS} failed: ${err instanceof Error ? err.message : err}`);
+        if (attempt < EncounterArchitect.PHASE_RETRY_ATTEMPTS) {
+          const backoff = 800 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 400);
+          await new Promise((r) => setTimeout(r, backoff));
+        }
+      }
     }
+    throw lastErr;
+  }
+
+  private async runPhase1(
+    input: EncounterArchitectInput,
+    brief: RelationshipDynamicsBrief,
+    errorSink: EncounterPhaseError[],
+  ): Promise<Phase1Result> {
+    return this.runPhaseWithRetry('phase1', EncounterArchitect.PHASE1_TIMEOUT_MS, errorSink, async (signal) => {
+      const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase1Prompt(input, brief) }];
+      const response = await this.callLLM(messages, 1, { signal });
+      return this.parseJSON<Phase1Result>(response);
+    });
   }
 
   private buildPhase1Prompt(input: EncounterArchitectInput, brief: RelationshipDynamicsBrief): string {
@@ -3869,16 +4048,13 @@ Replace ALL placeholders with actual narrative. Return ONLY the JSON object.`;
     input: EncounterArchitectInput,
     brief: RelationshipDynamicsBrief,
     choice: Phase1Result['openingBeat']['choices'][0],
+    errorSink: EncounterPhaseError[],
   ): Promise<Phase2Result> {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), EncounterArchitect.PER_CALL_TIMEOUT_MS);
-    try {
+    return this.runPhaseWithRetry(`phase2:${choice.id}`, EncounterArchitect.PHASE2_TIMEOUT_MS, errorSink, async (signal) => {
       const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase2Prompt(input, brief, choice) }];
-      const response = await this.callLLM(messages, 1, { signal: ac.signal });
+      const response = await this.callLLM(messages, 1, { signal });
       return this.parseJSON<Phase2Result>(response);
-    } finally {
-      clearTimeout(timer);
-    }
+    });
   }
 
   private buildPhase2Prompt(
@@ -3970,16 +4146,16 @@ Replace ALL placeholders. Return ONLY the JSON object.`;
 
   // ---- Phase 3: Prior State Enrichment ----
 
-  private async runPhase3(input: EncounterArchitectInput, phase1: Phase1Result): Promise<Phase3Result> {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 90_000);
-    try {
+  private async runPhase3(
+    input: EncounterArchitectInput,
+    phase1: Phase1Result,
+    errorSink: EncounterPhaseError[],
+  ): Promise<Phase3Result> {
+    return this.runPhaseWithRetry('phase3', EncounterArchitect.PHASE3_TIMEOUT_MS, errorSink, async (signal) => {
       const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase3Prompt(input, phase1) }];
-      const response = await this.callLLM(messages, 1, { signal: ac.signal });
+      const response = await this.callLLM(messages, 1, { signal });
       return this.parseJSON<Phase3Result>(response);
-    } finally {
-      clearTimeout(timer);
-    }
+    });
   }
 
   private buildPhase3Prompt(input: EncounterArchitectInput, phase1: Phase1Result): string {
@@ -4046,16 +4222,16 @@ Return ONLY the JSON object.`;
 
   // ---- Phase 4: Storylets ----
 
-  private async runPhase4(input: EncounterArchitectInput, brief: RelationshipDynamicsBrief): Promise<Phase4Result> {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 90_000);
-    try {
+  private async runPhase4(
+    input: EncounterArchitectInput,
+    brief: RelationshipDynamicsBrief,
+    errorSink: EncounterPhaseError[],
+  ): Promise<Phase4Result> {
+    return this.runPhaseWithRetry('phase4', EncounterArchitect.PHASE4_TIMEOUT_MS, errorSink, async (signal) => {
       const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase4Prompt(input, brief) }];
-      const response = await this.callLLM(messages, 1, { signal: ac.signal });
+      const response = await this.callLLM(messages, 1, { signal });
       return this.parseJSON<Phase4Result>(response);
-    } finally {
-      clearTimeout(timer);
-    }
+    });
   }
 
   private buildPhase4Prompt(input: EncounterArchitectInput, brief: RelationshipDynamicsBrief): string {
@@ -4336,6 +4512,14 @@ Return ONLY the JSON object.`;
 
     if (enrichment.conditionalChoices) {
       for (const cc of enrichment.conditionalChoices) {
+        // Phase 3 conditional choices arrive WITHOUT a `nextSituation` branch
+        // (Phase 2 already fanned out for the Phase 1 choices only). Mark their
+        // outcomes TERMINAL so they resolve the encounter directly instead of
+        // becoming branch-less non-terminal outcomes — which the min-2-beats
+        // synthesis would otherwise route into the generic deterministic-
+        // fallback template (shipping "This is the moment that decides
+        // everything…" as the branch). A state-unlocked bonus choice resolving
+        // the encounter is the intended payoff, and it costs no extra LLM call.
         choices.push(this.ensureEncounterChoiceFeedback({
           id: cc.id,
           text: cc.text,
@@ -4345,9 +4529,9 @@ Return ONLY the JSON object.`;
           showWhenLocked: cc.showWhenLocked,
           lockedText: cc.lockedText,
           outcomes: {
-            success: { tier: 'success', narrativeText: cc.outcomes.success.narrativeText, goalTicks: cc.outcomes.success.goalTicks, threatTicks: cc.outcomes.success.threatTicks },
-            complicated: { tier: 'complicated', narrativeText: cc.outcomes.complicated.narrativeText, goalTicks: cc.outcomes.complicated.goalTicks, threatTicks: cc.outcomes.complicated.threatTicks },
-            failure: { tier: 'failure', narrativeText: cc.outcomes.failure.narrativeText, goalTicks: cc.outcomes.failure.goalTicks, threatTicks: cc.outcomes.failure.threatTicks },
+            success: { tier: 'success', narrativeText: cc.outcomes.success.narrativeText, goalTicks: cc.outcomes.success.goalTicks, threatTicks: cc.outcomes.success.threatTicks, isTerminal: true, encounterOutcome: 'victory' },
+            complicated: { tier: 'complicated', narrativeText: cc.outcomes.complicated.narrativeText, goalTicks: cc.outcomes.complicated.goalTicks, threatTicks: cc.outcomes.complicated.threatTicks, isTerminal: true, encounterOutcome: 'partialVictory' },
+            failure: { tier: 'failure', narrativeText: cc.outcomes.failure.narrativeText, goalTicks: cc.outcomes.failure.goalTicks, threatTicks: cc.outcomes.failure.threatTicks, isTerminal: true, encounterOutcome: 'defeat' },
           },
         } as EncounterChoice, cc.outcomes.complicated.narrativeText || cc.outcomes.success.narrativeText));
       }

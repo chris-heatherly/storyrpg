@@ -640,8 +640,30 @@ function getFallbackScene(
 }
 
 /**
+ * Sentinel scene targets that mean "the story/episode ends here" rather than
+ * "navigate to a scene with this id". Generation (StructuralValidator.autoFix /
+ * FinalStoryContractValidator) routes a final scene's terminal beat to one of
+ * these — most commonly `episode-end`. The reader must recognize them and
+ * FINISH the episode instead of trying to load a non-existent scene (which
+ * silently dead-ends). Kept here in the engine so the reader (and anything else)
+ * shares one definition. Case-insensitive; also matches `episode-<n>` handoffs.
+ */
+const TERMINAL_SCENE_TARGETS = new Set([
+  'episode-end', 'story-end', 'season-end', 'end', 'the-end', 'ending',
+]);
+
+export function isTerminalSceneTarget(sceneId?: string | null): boolean {
+  if (!sceneId) return false;
+  const id = sceneId.trim().toLowerCase();
+  if (TERMINAL_SCENE_TARGETS.has(id)) return true;
+  // `episode-end` and any `episode-<n>` handoff are terminal for the currently
+  // loaded (single) episode — mirrors the existing storylet/encounter checks.
+  return id.startsWith('episode-');
+}
+
+/**
  * Get the next scene via conditional auto-routing.
- * 
+ *
  * This is NOT player-driven branching. Player-driven branching happens via
  * Choice.nextSceneId (on any non-expression choice), which bypasses this function.
  * This function handles the default "what's next" when no explicit routing exists.

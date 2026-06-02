@@ -10,6 +10,13 @@ import { AsyncSemaphore } from '../utils/concurrency';
 import { getMemoryStore, type MemoryCommand } from '../utils/memoryStore';
 import { PROXY_CONFIG } from '../../config/endpoints';
 import { createLogger } from '../../utils/logger';
+import {
+  shouldStreamLLM,
+  readSSEStream,
+  anthropicSseHandler,
+  openaiSseHandler,
+  geminiSseHandler,
+} from './streamLLM';
 
 const log = createLogger('BaseAgent');
 
@@ -112,6 +119,21 @@ export abstract class BaseAgent {
    * on it. See docs/PROJECT_AUDIT_2026-05-28.md, landmine L4.
    */
   protected lastResponseTruncated = false;
+
+  /**
+   * Optional abort signal that applies to ALL `callLLM` calls made for the
+   * duration of an `execute()`. Set this once at the top of an agent's
+   * `execute(input, { signal })` (and clear it in a `finally`) instead of
+   * threading `signal` through every private method down to each `callLLM`
+   * call site. `callLLM` falls back to this when no per-call signal is passed,
+   * so a timeout-driven abort (see `withTimeoutAbort`) cancels the in-flight
+   * fetch and halts the retry loop process-wide for that agent.
+   *
+   * Only safe when the agent instance runs ONE `execute()` at a time. Agents
+   * invoked concurrently on a shared instance (e.g. parallel-episode
+   * StoryArchitect) must thread a per-call `signal` explicitly instead.
+   */
+  protected activeAbortSignal?: AbortSignal;
 
   /** Whether the last parseJSON() dropped content during truncation recovery. */
   public wasLastResponseTruncated(): boolean {
@@ -252,7 +274,9 @@ Do not use markdown code blocks around the JSON.
       const usageCapture: { inputTokens?: number; outputTokens?: number } = {};
       try {
         let result: string;
-        const signal = options?.signal;
+        // Fall back to the agent-scoped signal (set by execute) when the caller
+        // didn't pass a per-call one, so a timeout abort reaches every call site.
+        const signal = options?.signal ?? this.activeAbortSignal;
         if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
         if (this.config.provider === 'anthropic' && options?.useMemory) {
           result = await this.callAnthropicWithMemory(fullMessages, usageCapture);
@@ -429,6 +453,14 @@ Do not use markdown code blocks around the JSON.
     const timeoutHintMs = this.config.maxTokens >= 32000 ? 900000 : (isHeavyPlanningStep ? 300000 : 180000);
     const connectTimeoutHintMs = this.config.maxTokens >= 32000 ? 180000 : (isHeavyPlanningStep ? 180000 : 120000);
 
+    // LEVER A: stream the response on the node/direct path. In web runtime the
+    // proxy buffers and returns plain JSON, so streaming there would break it.
+    const useStream = shouldStreamLLM(isWebRuntime());
+    if (useStream) {
+      body.stream = true;
+      return await this.callAnthropicStreaming(body, signal, usageOut);
+    }
+
     const response = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',
       headers: {
@@ -488,6 +520,81 @@ Do not use markdown code blocks around the JSON.
     } catch (parseError) {
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       throw new Error(`Failed to parse Anthropic response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
+    }
+  }
+
+  /**
+   * LEVER A: Anthropic streaming transport (node/direct path only). Reads the
+   * SSE response, accumulates content_block_delta text into the SAME final
+   * string the buffered path returned, and populates usageOut from the streamed
+   * message_start / message_delta usage events. parseJSON is unchanged.
+   */
+  private async callAnthropicStreaming(
+    body: any,
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
+    // Fast idle-timeout abort controller, chained to the per-call signal.
+    const controller = new AbortController();
+    const onOuterAbort = () => controller.abort((signal as { reason?: unknown })?.reason);
+    if (signal) {
+      if (signal.aborted) controller.abort((signal as { reason?: unknown }).reason);
+      else signal.addEventListener('abort', onOuterAbort, { once: true });
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(ANTHROPIC_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.config.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+      throw err;
+    }
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+      let errorMessage = `Anthropic API error: ${response.status} - ${text}`;
+      try {
+        const errorJson = JSON.parse(text);
+        if (errorJson.error && errorJson.error.message) {
+          errorMessage = `Anthropic API error: ${errorJson.error.message}`;
+        }
+      } catch {
+        /* not JSON */
+      }
+      console.error(`[${this.name}] Anthropic API returned HTTP ${response.status}: ${errorMessage}`);
+      throw new Error(errorMessage);
+    }
+
+    try {
+      const result = await readSSEStream(response.body as any, anthropicSseHandler, {
+        signal,
+        onIdleAbort: () => controller.abort(new Error('stream idle timeout')),
+      });
+      if (usageOut) {
+        if (typeof result.usage?.inputTokens === 'number') usageOut.inputTokens = result.usage.inputTokens;
+        if (typeof result.usage?.outputTokens === 'number') usageOut.outputTokens = result.usage.outputTokens;
+      }
+      const cacheNote = (result.cacheRead || result.cacheCreate)
+        ? `, cache_read: ${result.cacheRead ?? 0}, cache_created: ${result.cacheCreate ?? 0}`
+        : '';
+      log.debug(
+        `[${this.name}] Anthropic stream: ${result.usage?.inputTokens ?? '?'} input tokens, ` +
+          `${result.usage?.outputTokens ?? '?'} output tokens${cacheNote} ` +
+          `(first-byte ${result.firstByteMs}ms, total ${result.totalMs}ms)`,
+      );
+      return result.text;
+    } finally {
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
     }
   }
 
@@ -701,6 +808,14 @@ Do not use markdown code blocks around the JSON.
       body.temperature = this.config.temperature;
     }
 
+    // LEVER A: stream on the node/direct path; the web/proxy path stays buffered.
+    const useStream = shouldStreamLLM(isWebRuntime());
+    if (useStream) {
+      body.stream = true;
+      body.stream_options = { include_usage: true };
+      return await this.callOpenAIStreaming(body, model, isReasoningModel, signal, usageOut);
+    }
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -753,6 +868,81 @@ Do not use markdown code blocks around the JSON.
     }
   }
 
+  /**
+   * LEVER A: OpenAI streaming transport (node/direct path only). Accumulates
+   * choices[0].delta.content into the SAME final string and reads usage from the
+   * final include_usage chunk. parseJSON / empty-content handling preserved.
+   */
+  private async callOpenAIStreaming(
+    body: Record<string, unknown>,
+    model: string,
+    isReasoningModel: boolean,
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
+    const controller = new AbortController();
+    const onOuterAbort = () => controller.abort((signal as { reason?: unknown })?.reason);
+    if (signal) {
+      if (signal.aborted) controller.abort((signal as { reason?: unknown }).reason);
+      else signal.addEventListener('abort', onOuterAbort, { once: true });
+    }
+
+    let response: Response;
+    try {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.apiKey}`,
+        },
+        signal: controller.signal,
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+      throw err;
+    }
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+      throw new Error(`OpenAI API error: ${response.status} - ${text}`);
+    }
+
+    let result;
+    try {
+      result = await readSSEStream(response.body as any, openaiSseHandler, {
+        signal,
+        onIdleAbort: () => controller.abort(new Error('stream idle timeout')),
+      });
+    } finally {
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+    }
+
+    if (usageOut) {
+      if (typeof result.usage?.inputTokens === 'number') usageOut.inputTokens = result.usage.inputTokens;
+      if (typeof result.usage?.outputTokens === 'number') usageOut.outputTokens = result.usage.outputTokens;
+    }
+    log.debug(
+      `[${this.name}] OpenAI stream: ${result.usage?.inputTokens ?? '?'} input tokens, ` +
+        `${result.usage?.outputTokens ?? '?'} output tokens ` +
+        `(first-byte ${result.firstByteMs}ms, total ${result.totalMs}ms)`,
+    );
+
+    const content = result.text;
+    if (!content || content.trim().length === 0) {
+      if (isReasoningModel) {
+        throw new Error(
+          `OpenAI returned empty content (stream). The reasoning-class model "${model}" likely consumed the entire ` +
+            `max_completion_tokens budget (budget=${(body as any).max_completion_tokens}) on internal reasoning. ` +
+            `Lower REASONING EFFORT in the OPENAI ADVANCED panel, raise maxTokens, or switch to a non-reasoning model like gpt-4o / gpt-4.1.`,
+        );
+      }
+      throw new Error(`OpenAI returned empty content (stream). Model=${model}.`);
+    }
+    return content;
+  }
+
   private async callGemini(
     messages: AgentMessage[],
     signal?: AbortSignal,
@@ -797,19 +987,44 @@ Do not use markdown code blocks around the JSON.
       };
     }
 
-    const response = await fetch(
-      `${GEMINI_API_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(this.config.apiKey)}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-        ...(signal ? { signal } : {}),
-      }
-    );
+    // LEVER A: stream on the node/direct path via :streamGenerateContent?alt=sse.
+    // The web/proxy path keeps the buffered :generateContent call below.
+    if (shouldStreamLLM(isWebRuntime())) {
+      return await this.callGeminiStreaming(model, body, signal, usageOut);
+    }
 
-    const text = await response.text();
+    // Bound the request with a REAL client-side timeout. Direct provider calls
+    // (the worker path) have no proxy to honor a timeout header, so without this
+    // a stalled connection hangs indefinitely with no output and the worker gets
+    // killed as "stale". The timeout aborts the fetch so the retry loop can act.
+    const timeoutMs = this.config.maxTokens >= 32000 ? 900_000 : 300_000;
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error(`Gemini request exceeded ${timeoutMs}ms timeout`)),
+      timeoutMs,
+    );
+    if (signal) {
+      if (signal.aborted) controller.abort((signal as { reason?: unknown }).reason);
+      else signal.addEventListener('abort', () => controller.abort((signal as { reason?: unknown }).reason), { once: true });
+    }
+    let response: Response;
+    let text: string;
+    try {
+      response = await fetch(
+        `${GEMINI_API_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(this.config.apiKey)}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }
+      );
+      text = await response.text();
+    } finally {
+      clearTimeout(timer);
+    }
     if (!response.ok) {
       if (BaseAgent.isQuotaMessage(text)) {
         throw new LLMQuotaError(`Gemini API quota error: ${text}`, 'gemini');
@@ -848,6 +1063,95 @@ Do not use markdown code blocks around the JSON.
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       throw new Error(`Failed to parse Gemini response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
     }
+  }
+
+  /**
+   * LEVER A: Gemini streaming transport (node/direct path only). Uses the
+   * :streamGenerateContent?alt=sse endpoint, accumulates
+   * candidates[0].content.parts[].text into the SAME final string and reads
+   * usageMetadata from the final chunk. The overall timeout backstop and the
+   * fast idle-timeout both abort the underlying fetch.
+   */
+  private async callGeminiStreaming(
+    model: string,
+    body: any,
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
+    const timeoutMs = this.config.maxTokens >= 32000 ? 900_000 : 300_000;
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error(`Gemini request exceeded ${timeoutMs}ms timeout`)),
+      timeoutMs,
+    );
+    const onOuterAbort = () => controller.abort((signal as { reason?: unknown })?.reason);
+    if (signal) {
+      if (signal.aborted) controller.abort((signal as { reason?: unknown }).reason);
+      else signal.addEventListener('abort', onOuterAbort, { once: true });
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(
+        `${GEMINI_API_BASE}/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(this.config.apiKey)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        },
+      );
+    } catch (err) {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+      throw err;
+    }
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+      if (BaseAgent.isQuotaMessage(text)) {
+        throw new LLMQuotaError(`Gemini API quota error: ${text}`, 'gemini');
+      }
+      let message = `Gemini API error: ${response.status} - ${text}`;
+      try {
+        const parsed = JSON.parse(text);
+        const maybeMessage = parsed?.error?.message;
+        if (maybeMessage) message = `Gemini API error: ${maybeMessage}`;
+        if (BaseAgent.isQuotaMessage(maybeMessage || text)) {
+          throw new LLMQuotaError(message, 'gemini');
+        }
+      } catch (parseErr) {
+        if (parseErr instanceof LLMQuotaError) throw parseErr;
+      }
+      throw new Error(message);
+    }
+
+    let result;
+    try {
+      result = await readSSEStream(response.body as any, geminiSseHandler, {
+        signal,
+        onIdleAbort: () => controller.abort(new Error('stream idle timeout')),
+      });
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+    }
+
+    if (usageOut) {
+      if (typeof result.usage?.inputTokens === 'number') usageOut.inputTokens = result.usage.inputTokens;
+      if (typeof result.usage?.outputTokens === 'number') usageOut.outputTokens = result.usage.outputTokens;
+    }
+    log.debug(
+      `[${this.name}] Gemini stream: ${result.usage?.inputTokens ?? '?'} input tokens, ` +
+        `${result.usage?.outputTokens ?? '?'} output tokens ` +
+        `(first-byte ${result.firstByteMs}ms, total ${result.totalMs}ms)`,
+    );
+    if (!result.text) {
+      throw new Error('Gemini returned empty content');
+    }
+    return result.text;
   }
 
   /**
@@ -1104,6 +1408,20 @@ Do not use markdown code blocks around the JSON.
           }
         }
       }
+    }
+
+    // Fallback: the response was cut mid-string VALUE (not right after a
+    // `"prop":`) and no clean property/array cut point was found — e.g. a giant
+    // structure analysis truncated inside a "themes" array element at the
+    // max_tokens cap. The dangling open quote makes the whole parse fail
+    // ("Unterminated string …"). Close the string (dropping a trailing partial
+    // escape) so repairJSON's balanceBrackets can then close the open
+    // objects/arrays. Result: valid JSON with only the final value truncated —
+    // far better than discarding the entire response.
+    if (quoteCount % 2 === 1) {
+      this.lastResponseTruncated = true;
+      const safe = json.replace(/\\+$/, (m) => (m.length % 2 ? m.slice(1) : m));
+      return `${safe}"`;
     }
 
     return json;

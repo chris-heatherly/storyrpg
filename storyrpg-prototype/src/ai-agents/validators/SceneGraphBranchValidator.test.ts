@@ -323,4 +323,32 @@ describe('SceneGraphBranchValidator', () => {
 
     expect(result.issues.some(issue => issue.type === 'premature_npc_visual')).toBe(true);
   });
+
+  it('does not flag choices that route to the episode-end terminal sentinel', () => {
+    // The final scene's disclosure choices route to episode-end (story end), not
+    // to a scene — these must NOT be treated as "missing scene" branch targets.
+    const ep = episode([
+      scene('scene-1', ['scene-2'], [{ id: 'choice-go', nextSceneId: 'scene-2' }]),
+      {
+        ...scene('scene-2', []),
+        beats: [{
+          id: 'scene-2-beat',
+          text: 'the finale',
+          choices: [
+            { id: 'choice-share-full-weight', text: 'Share', nextSceneId: 'episode-end', consequences: [] },
+            { id: 'choice-manage-sentinel-burden', text: 'Manage', nextSceneId: 'episode-end', consequences: [] },
+          ],
+        }],
+      },
+    ]);
+    const bp = blueprint([
+      { id: 'scene-1', leadsTo: ['scene-2'] },
+      { id: 'scene-2', leadsTo: [] },
+    ]);
+
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, bp);
+
+    expect(result.issues.some(issue => issue.type === 'invalid_branch_target')).toBe(false);
+    expect(result.issues.some(issue => issue.message.includes('episode-end'))).toBe(false);
+  });
 });

@@ -13,8 +13,14 @@ import {
 } from '../codec/storyCodec';
 import { runImageGenerationBatch, runStoryAnalysis, runStoryGeneration } from '../services/storyGenerationService';
 import { WorkerPayload, assertValidWorkerPayload } from './workerPayload';
+import { installResilientHttp } from './resilientHttp';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { Story } from '../../types';
+
+// Make every outbound provider call (Gemini/Anthropic/OpenAI/ElevenLabs/blob/…)
+// reuse keep-alive connections and transparently retry transient connection
+// failures, so a flaky container egress stops surfacing as "fetch failed".
+installResilientHttp();
 
 let activeResultPath: string | undefined;
 
@@ -374,6 +380,15 @@ async function main() {
 main()
   .then(() => {
     clearInterval(heartbeatInterval);
+    // Exit explicitly once the job is done. main() has already written the
+    // result file and emitted 'worker_complete', so the proxy has what it needs.
+    // Without this, a stray un-awaited async task (e.g. a late LLM retry) can
+    // keep the FINISHED process alive with heartbeats already cleared — which
+    // left the proxy to kill the completed job as "stale". Flush stdout first so
+    // the final events reach the proxy, then force-exit (killing any straggler).
+    const exit = () => process.exit(0);
+    if (process.stdout.write('')) exit();
+    else process.stdout.once('drain', exit);
   })
   .catch(async (error) => {
     clearInterval(heartbeatInterval);

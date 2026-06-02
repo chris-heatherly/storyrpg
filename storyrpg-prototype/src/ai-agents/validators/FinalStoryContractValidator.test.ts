@@ -291,6 +291,118 @@ describe('FinalStoryContractValidator', () => {
     ]));
   });
 
+  it('flags a routing contradiction: a choice targets a real scene not in scene.leadsTo', async () => {
+    const mkScene = (id: string, leadsTo: string[], choiceTarget?: string) => ({
+      id,
+      name: id,
+      startingBeatId: `${id}-b1`,
+      leadsTo,
+      beats: [{
+        id: `${id}-b1`,
+        text: `Content for ${id} that is clearly not a placeholder beat.`,
+        choices: [{
+          id: `${id}-continue`,
+          text: 'Continue...',
+          choiceType: 'expression',
+          nextSceneId: choiceTarget ?? leadsTo[0],
+        }],
+      }],
+    } as any);
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 'scene-1',
+        scenes: [
+          // scene-1 leadsTo scene-2, but its continue points at scene-3 (a real
+          // scene NOT in leadsTo) — the scene-2a→scene-2b bug shape.
+          mkScene('scene-1', ['scene-2'], 'scene-3'),
+          mkScene('scene-2', ['episode-end']),
+          mkScene('scene-3', ['episode-end']),
+        ],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'routing_contradiction', sceneId: 'scene-1' }),
+    ]));
+  });
+
+  it('does not flag a choice that targets a scene listed in leadsTo', async () => {
+    const mkScene = (id: string, leadsTo: string[], choiceTarget?: string) => ({
+      id, name: id, startingBeatId: `${id}-b1`, leadsTo,
+      beats: [{
+        id: `${id}-b1`,
+        text: `Content for ${id} that is clearly not a placeholder beat.`,
+        choices: [{ id: `${id}-continue`, text: 'Continue...', choiceType: 'expression', nextSceneId: choiceTarget ?? leadsTo[0] }],
+      }],
+    } as any);
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 'scene-1',
+        scenes: [
+          mkScene('scene-1', ['scene-2']),
+          mkScene('scene-2', ['episode-end']),
+        ],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+    expect(report.blockingIssues.filter((i) => i.type === 'routing_contradiction')).toEqual([]);
+  });
+
+  it('blocks a cross-scene beat-id collision (exact and prefix)', async () => {
+    const mkScene = (id: string, beatIds: string[], leadsTo: string[]) => ({
+      id, name: id, startingBeatId: beatIds[0], leadsTo,
+      beats: beatIds.map((bid, i) => ({
+        id: bid,
+        text: `Real content for ${id}/${bid}, not a placeholder.`,
+        ...(i === beatIds.length - 1
+          ? { choices: [{ id: `${id}-c`, text: 'Continue...', choiceType: 'expression', nextSceneId: leadsTo[0] }] }
+          : { nextBeatId: beatIds[i + 1] }),
+      })),
+    } as any);
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 'scene-1',
+        scenes: [
+          mkScene('scene-1', ['beat-1', 'beat-2b'], ['scene-2b']),       // beat-2b
+          mkScene('scene-2b', ['beat-2b-1'], ['episode-end']),           // beat-2b-1 (prefix collision)
+        ],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'beat_id_collision' }),
+    ]));
+  });
+
+  it('treats a terminal sentinel (episode-end) as a valid ending, not broken navigation', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        scenes: [{
+          ...validStory().episodes[0].scenes[0],
+          beats: [{
+            id: 'beat-1',
+            text: 'The road ends at the cliff.',
+            choices: [{ id: 'continue', text: 'Continue...', choiceType: 'expression', nextSceneId: 'episode-end' }],
+          } as any],
+        }],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues.filter((i) => i.type === 'broken_navigation')).toEqual([]);
+  });
+
   it('passes a sparse encounter scene when the runtime encounter is valid', async () => {
     const story = validStory({
       episodes: [{

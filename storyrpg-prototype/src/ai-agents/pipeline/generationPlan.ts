@@ -239,7 +239,10 @@ export function markScene(
 ): GenerationPlan {
   const episode = findEpisode(plan, episodeNumber);
   const scene = episode?.scenes.find((s) => s.id === sceneId);
-  if (scene) scene.status = status;
+  if (scene) {
+    scene.status = status;
+    if (status === 'complete') scene.activity = undefined;
+  }
   return plan;
 }
 
@@ -251,6 +254,17 @@ export function markEpisode(
   const episode = findEpisode(plan, episodeNumber);
   if (episode) episode.status = status;
   return plan;
+}
+
+/**
+ * Is the episode genuinely finished? Derived from its scenes (every scene must
+ * be complete — regular, branch, AND encounter), not from a forced status flag.
+ * Falls back to the stored status only before scenes are known (pre-architect /
+ * single-episode resume with no scene nodes).
+ */
+export function isEpisodeComplete(episode: EpisodeNode): boolean {
+  if (episode.scenes.length > 0) return episode.scenes.every((s) => s.status === 'complete');
+  return episode.status === 'complete';
 }
 
 /** Update a non-content phase's unit counts (characters, images, audio, …). */
@@ -285,7 +299,8 @@ const sceneWeight = (scene: SceneNode): number =>
   Math.max(1, scene.expectedBeatCount ?? scene.beats.length ?? 1);
 
 const episodeFraction = (episode: EpisodeNode): number => {
-  if (episode.status === 'complete') return 1;
+  // Derive from scenes: the episode reaches 1.0 only when EVERY scene (regular,
+  // branch, and encounter) is complete — never from a forced episode status.
   if (episode.scenes.length > 0) {
     let wsum = 0;
     let acc = 0;
@@ -296,7 +311,8 @@ const episodeFraction = (episode: EpisodeNode): number => {
     }
     return wsum > 0 ? clamp01(acc / wsum) : 0;
   }
-  return 0;
+  // No scenes known yet (pre-architect / resume) — fall back to stored status.
+  return episode.status === 'complete' ? 1 : 0;
 };
 
 /**

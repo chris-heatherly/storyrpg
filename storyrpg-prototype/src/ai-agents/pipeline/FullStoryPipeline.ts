@@ -14,7 +14,7 @@
  * Includes human checkpoints for review at key stages.
  */
 
-import { PipelineConfig, loadConfig, defaultValidationConfig, type MemoryConfig, type PreapprovedAnchor } from '../config';
+import { PipelineConfig, loadConfig, defaultValidationConfig, clampTargetBeatCount, MAX_BEATS_PER_SCENE, type MemoryConfig, type PreapprovedAnchor } from '../config';
 import { getMemoryStore, NodeMemoryStore, type MemoryStore } from '../utils/memoryStore';
 import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
@@ -126,6 +126,7 @@ import {
   markSceneActive,
   snapshotPlan,
 } from './generationPlan';
+import { assignChoiceTypes } from './choiceTypePlanner';
 import { SavingPhase } from './phases/SavingPhase';
 import {
   createOutputDirectory,
@@ -251,6 +252,7 @@ import {
   MicroEpisodeSeasonValidator,
   FinalStoryContractValidator,
   type FinalStoryContractReport,
+  applyEncounterQualityGate,
   TreatmentFidelityValidator,
   type SceneGraphBranchValidationResult,
   runNarrativeDiagnostics,
@@ -280,7 +282,7 @@ import {
   JobCancelledError,
 } from '../utils/jobTracker';
 import { BaseAgent, isLlmQuotaError, LlmCallObservation, type AgentResponse } from '../agents/BaseAgent';
-import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
+import { withTimeout, withTimeoutAbort, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
 import { LocalWorkerQueue, mapWithConcurrency } from '../utils/concurrency';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../utils/dependencyGraph';
 import { PipelineTelemetry } from '../utils/pipelineTelemetry';
@@ -864,7 +866,8 @@ export class FullStoryPipeline {
     // C2/C3: QA grader uses its own config when provided (cheaper / decorrelated
     // from the author model); falls back to storyArchitect config otherwise.
     this.qaRunner = new QARunner(this.config.agents.qaRunner || this.config.agents.storyArchitect);
-    const sourceMaterialConfig = { ...this.config.agents.storyArchitect, maxTokens: 16384 };
+    // maxTokens 32000 (was 16384): the structure-analysis JSON for rich multi-episode treatments was hitting the 16384 cap mid-string (truncated → unparseable).
+    const sourceMaterialConfig = { ...this.config.agents.storyArchitect, maxTokens: 32000 };
     this.sourceMaterialAnalyzer = new SourceMaterialAnalyzer(sourceMaterialConfig);
     this.branchManager = new BranchManager(planningConfig);
     if (this.config.sceneCritic?.enabled) {
@@ -1085,6 +1088,16 @@ export class FullStoryPipeline {
       validSkills: Object.keys(input.story.initialState?.skills || {}),
       mode: this.config.validation.mode,
     });
+
+    // Encounter quality gate (blocking): catches encounters that shipped generic
+    // template prose or an unfillable clock. Logic lives in the validator module
+    // (applyEncounterQualityGate) to keep this monolith thin; it merges findings
+    // into the contract report in place.
+    try {
+      applyEncounterQualityGate(report, input.story, this.encounterTelemetry);
+    } catch (encErr) {
+      console.warn(`[Pipeline] EncounterQualityValidator failed (non-fatal): ${(encErr as Error).message}`);
+    }
 
     this.emit({
       type: report.passed ? 'checkpoint' : 'error',
@@ -1664,7 +1677,10 @@ export class FullStoryPipeline {
           isBranchPoint: true,
           expectedBranches: new Set(sceneBlueprint.leadsTo || []).size,
         },
-        consequenceBudgetTarget: { callback: 60, tint: 20, branchlet: 10, branch: 10 },
+        // Match ConsequenceBudgetValidator.TARGET_BUDGET (the other call site at
+        // ~7562 already did); the stale 20/10 split told ChoiceAuthor to aim for
+        // a mix the validator then flagged.
+        consequenceBudgetTarget: { callback: 60, tint: 25, branchlet: 10, branch: 5 },
         seasonAnchors: brief.seasonPlan?.anchors,
         seasonSevenPoint: brief.seasonPlan?.sevenPoint,
         episodeStructuralRole: brief.seasonPlan?.episodes.find(
@@ -6614,7 +6630,7 @@ export class FullStoryPipeline {
     for (let attempt = 1; attempt <= maxArchitectureAttempts; attempt += 1) {
       result = await withTimeout(
         this.storyArchitect.execute(architectureInput),
-        PIPELINE_TIMEOUTS.llmAgent,
+        PIPELINE_TIMEOUTS.storyArchitect,
         attempt === 1 ? 'StoryArchitect.execute' : `StoryArchitect.execute(branch-repair-${attempt})`
       );
 
@@ -6662,6 +6678,15 @@ export class FullStoryPipeline {
       message: `Created blueprint with ${result.data.scenes.length} scenes`,
     });
 
+    // Rebalance choice-point types to the target taxonomy (35/30/20/15) before
+    // ChoiceAuthor. StoryArchitect only prompts the mix; this makes it explicit
+    // so the episode can't ship 0% expression / 0% relationship. Pure + safe;
+    // respects encounters and branching constraints (see choiceTypePlanner).
+    const choiceTypeChanges = assignChoiceTypes(result.data.scenes as never).filter((r) => r.from !== r.to);
+    if (choiceTypeChanges.length > 0) {
+      this.emit({ type: 'debug', phase: 'episode_architecture', message: `Rebalanced ${choiceTypeChanges.length} choice-point type(s) toward target taxonomy` });
+    }
+
     // Fill this episode's scenes into the structure plan (estimate-then-fill:
     // each scene is pre-seeded with its target beat count until SceneWriter runs).
     if (this.generationPlan) {
@@ -6695,12 +6720,15 @@ export class FullStoryPipeline {
   }
 
   private getTargetBeatCountForScene(sceneBlueprint: SceneBlueprint): number {
+    // LEVER B3: clamp the computed target to a hard ceiling (default 10) so an
+    // outlier blueprint can't produce a pathologically large single scene call.
+    const cap = this.config.generation?.maxBeatsPerScene || MAX_BEATS_PER_SCENE;
     if (this.config.generation?.episodeStructureMode === 'sceneEpisodes' && !sceneBlueprint.isEncounter) {
-      return this.config.generation.sceneEpisodeNormalTargetBeats || 8;
+      return clampTargetBeatCount(this.config.generation.sceneEpisodeNormalTargetBeats || 8, cap);
     }
-    return sceneBlueprint.purpose === 'bottleneck'
+    return clampTargetBeatCount(sceneBlueprint.purpose === 'bottleneck'
       ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
-      : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount);
+      : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount), cap);
   }
 
   /**
@@ -7153,6 +7181,13 @@ export class FullStoryPipeline {
           settingContext: sceneSettingContext,
         };
         sceneContents.push(encounterSceneContent);
+        // Encounter scenes are built by EncounterArchitect later in this same
+        // iteration (setup + outcomes + storylets) — show "designing encounter"
+        // now; the scene is marked complete only once that finishes.
+        if (this.generationPlan) {
+          markSceneActive(this.generationPlan, episodeNumber ?? brief.episode.number, sceneBlueprint.id, 'encounter');
+          this.emitPlanUpdate(`Designing encounter ${sceneBlueprint.id}`);
+        }
         contentWorkCompleted += 1;
         this.emitPhaseProgress(
           'content',
@@ -7671,7 +7706,8 @@ export class FullStoryPipeline {
               );
 
               if (nonBranchingChoices.length > 0 && choicePointBeat) {
-                const nextSceneId = sceneBlueprint.leadsTo?.[0];
+                // Final scene (empty leadsTo) → episode-end sentinel so payoff beats route consistently (reader finishes on it) instead of dead-ending.
+                const nextSceneId = sceneBlueprint.leadsTo?.[0] || 'episode-end';
 
                 // The choice point is the scene's decision beat; navigation
                 // after a choice flows payoff → next scene, never back to the
@@ -8332,6 +8368,17 @@ export class FullStoryPipeline {
             agent: 'EncounterArchitect',
             message: `Designed ${encounterResult.data.beats.length}-beat ${sceneBlueprint.encounterDifficulty || 'moderate'} encounter with ${Object.keys(encounterResult.data.storylets || {}).length} storylets for ${sceneBlueprint.id}`,
           });
+          // Encounter (incl. outcomes + storylets) is fully built — only now is
+          // this scene genuinely complete in the progress plan.
+          if (this.generationPlan) {
+            setSceneBeats(
+              this.generationPlan,
+              episodeNumber ?? brief.episode.number,
+              sceneBlueprint.id,
+              encounterResult.data.beats.length,
+            );
+            this.emitPlanUpdate(`Encounter ${sceneBlueprint.id} complete`);
+          }
 
           // === FLAG CHRONOLOGY CHECK: validate encounter conditions BEFORE tracking flags ===
           if (this.incrementalValidator) {
@@ -9411,12 +9458,12 @@ export class FullStoryPipeline {
         : 'Phase 0: Analyzing story concept from prompt'
     });
 
-    const result = await withTimeout(this.sourceMaterialAnalyzer.execute({
+    const result = await withTimeoutAbort((signal) => this.sourceMaterialAnalyzer.execute({
       sourceText: sourceText || '',
       title,
       preferences,
       userPrompt,
-    }), PIPELINE_TIMEOUTS.llmAgent, 'SourceMaterialAnalyzer.execute');
+    }, { signal }), PIPELINE_TIMEOUTS.sourceAnalysis, 'SourceMaterialAnalyzer.execute');
 
     if (!result.success || !result.data) {
       throw new Error(`Source material analysis failed: ${result.error}`);
@@ -10015,6 +10062,29 @@ export class FullStoryPipeline {
         await this.saveDraftImageManifest(outputDirectory, story);
       } else if (this.config.imageGen?.enabled) {
         story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
+      }
+
+      // STRUCTURAL AUTO-FIX (parity with the single-episode path, which runs
+      // this before its contract): repair navigation/structure issues on the
+      // merged season — including dangling choice nextBeatId references — so the
+      // final contract doesn't abort on defects that are mechanically fixable.
+      try {
+        const autoFixResult = new StructuralValidator().autoFix(story);
+        story = autoFixResult.story;
+        if (autoFixResult.fixedCount > 0) {
+          this.emit({
+            type: 'debug',
+            phase: 'final_story',
+            message: `StructuralValidator.autoFix applied ${autoFixResult.fixedCount} repair(s) to the merged season`,
+            data: { fixes: autoFixResult.fixes.slice(0, 20) },
+          });
+        }
+      } catch (autoFixError) {
+        this.emit({
+          type: 'warning',
+          phase: 'final_story',
+          message: `StructuralValidator.autoFix failed (non-fatal): ${(autoFixError as Error).message}`,
+        });
       }
 
       // B2: never discard generated work. Snapshot the assembled story BEFORE

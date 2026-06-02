@@ -5,6 +5,22 @@ import type { SceneValidationResult } from './IncrementalValidators';
 import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
 import { IncrementalEncounterValidator } from './IncrementalValidators';
 import { MechanicsLeakageValidator, type MechanicsLeakageText } from './MechanicsLeakageValidator';
+import { findBeatIdCollisions } from './beatIdCollisions';
+
+/**
+ * Scene-target sentinels that mean "the episode/story ends here" rather than a
+ * real scene id. The deterministic engine treats an unresolved nextSceneId as
+ * the end of the episode (getNextScene / getSceneById return undefined), and
+ * StructuralValidator.autoFix routes terminal choices to 'episode-end'. The
+ * contract must recognize these as valid endings — not broken navigation to a
+ * missing scene. Matched case-insensitively.
+ */
+const TERMINAL_SCENE_TARGETS = new Set([
+  'episode-end', 'story-end', 'season-end', 'end', 'the-end', 'ending',
+]);
+function isTerminalSceneTarget(id: string | undefined): boolean {
+  return !!id && TERMINAL_SCENE_TARGETS.has(id.trim().toLowerCase());
+}
 
 export type FinalStoryContractIssueType =
   | 'empty_scene'
@@ -12,6 +28,10 @@ export type FinalStoryContractIssueType =
   | 'invalid_encounter'
   | 'missing_runtime_encounter'
   | 'broken_navigation'
+  | 'routing_contradiction'
+  | 'beat_id_collision'
+  | 'encounter_template_collapse'
+  | 'encounter_clock_coverage_gap'
   | 'missing_requested_episode'
   | 'failed_incremental_validation'
   | 'unrepaired_callback_debt'
@@ -107,6 +127,22 @@ export class FinalStoryContractValidator {
           message: `Episode startingSceneId "${episode.startingSceneId || '(missing)'}" does not point at a scene.`,
           episodeId: episode.id,
           episodeNumber: episode.number,
+        });
+      }
+
+      // Cross-scene beat-id collisions (exact or hierarchical-prefix). The
+      // StructuralValidator autofix namespaces these before the gate; anything
+      // reaching here is unrepaired and blocks (it corrupts any global/prefix
+      // beat-id resolution — saves, analytics, tooling).
+      for (const collision of findBeatIdCollisions(episode)) {
+        issues.push({
+          type: 'beat_id_collision',
+          severity: 'error',
+          message: `Beat id "${collision.beatId}" in scene "${collision.sceneId}" ${collision.kind === 'exact' ? 'duplicates' : 'is a prefix of'} "${collision.otherBeatId}" in scene "${collision.otherSceneId}". Beat ids must be unique across scenes.`,
+          episodeId: episode.id,
+          episodeNumber: episode.number,
+          sceneId: collision.sceneId,
+          suggestion: `Namespace beat ids per scene (e.g. "${collision.sceneId}__${collision.beatId}").`,
         });
       }
 
@@ -312,7 +348,7 @@ export class FinalStoryContractValidator {
           beatId: beat.id,
         });
       }
-      if (beat.nextSceneId && !sceneMap.has(beat.nextSceneId)) {
+      if (beat.nextSceneId && !sceneMap.has(beat.nextSceneId) && !isTerminalSceneTarget(beat.nextSceneId)) {
         issues.push({
           type: 'broken_navigation',
           severity: 'error',
@@ -335,7 +371,7 @@ export class FinalStoryContractValidator {
             beatId: beat.id,
           });
         }
-        if (choice.nextSceneId && !sceneMap.has(choice.nextSceneId)) {
+        if (choice.nextSceneId && !sceneMap.has(choice.nextSceneId) && !isTerminalSceneTarget(choice.nextSceneId)) {
           issues.push({
             type: 'broken_navigation',
             severity: 'error',
@@ -346,6 +382,54 @@ export class FinalStoryContractValidator {
             beatId: beat.id,
           });
         }
+      }
+    }
+
+    this.validateRoutingConsistency(episode, scene, sceneMap, issues);
+  }
+
+  /**
+   * A beat/choice `nextSceneId` that points at a REAL scene which is NOT in the
+   * scene's authored `leadsTo` is a routing contradiction: the scene graph and
+   * the navigation disagree. This is what let cold-path players replay the wrong
+   * parallel branch (scene-2a's `continue` pointed at scene-2b — the array
+   * neighbour — while `leadsTo` was [scene-3]), corrupting mutually-exclusive
+   * flag state. The engine honors the explicit target over `leadsTo`, so this
+   * must block. We only compare when `leadsTo` is populated (it enumerates the
+   * scene's real onward targets) and skip terminal sentinels + missing scenes
+   * (those are handled by `broken_navigation`).
+   */
+  private validateRoutingConsistency(
+    episode: Episode,
+    scene: Scene,
+    sceneMap: Map<string, Scene>,
+    issues: FinalStoryContractIssue[]
+  ): void {
+    const leadsTo = scene.leadsTo || [];
+    if (leadsTo.length === 0) return; // can't compare; last scene / open end
+    const allowed = new Set(leadsTo);
+
+    const flag = (targetSceneId: string, where: string, beatId: string) => {
+      if (!targetSceneId) return;
+      if (allowed.has(targetSceneId)) return;
+      if (isTerminalSceneTarget(targetSceneId)) return;
+      if (!sceneMap.has(targetSceneId)) return; // broken_navigation owns this
+      issues.push({
+        type: 'routing_contradiction',
+        severity: 'error',
+        message: `${where} routes to "${targetSceneId}", which is not in scene "${scene.id}".leadsTo [${leadsTo.join(', ')}]. The engine honors the explicit target over leadsTo, so this contradicts the scene graph (replays the wrong branch / corrupts flag state).`,
+        episodeId: episode.id,
+        episodeNumber: episode.number,
+        sceneId: scene.id,
+        beatId,
+        suggestion: `Set the target to a leadsTo entry (e.g. "${leadsTo[0]}") or add it to leadsTo if the branch is intentional.`,
+      });
+    };
+
+    for (const beat of scene.beats || []) {
+      if (beat.nextSceneId) flag(beat.nextSceneId, `Beat "${beat.id}"`, beat.id);
+      for (const choice of beat.choices || []) {
+        if (choice.nextSceneId) flag(choice.nextSceneId, `Choice "${choice.id}"`, beat.id);
       }
     }
   }

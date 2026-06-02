@@ -80,4 +80,34 @@ describe('BaseAgent truncation-loss signal (L4)', () => {
 
     expect(agent.wasLastResponseTruncated()).toBe(false);
   });
+
+  it('recovers a response cut mid-string VALUE inside a nested array (the analyzer overflow)', () => {
+    const agent = new TestAgent();
+
+    // Mimics the structure-analysis overflow: valid leading fields, then cut
+    // mid-string inside an array element with no closing quote/brackets. Used to
+    // throw "Unterminated string …"; now the string is closed + structures
+    // balanced so the leading data survives.
+    const parsed = agent.parse<{ genre: string; themes: string[] }>(
+      '{"genre":"Epic romantasy","themes":["Is a life measured by how long it lasts, or by what',
+    );
+
+    expect(parsed.genre).toBe('Epic romantasy');
+    expect(Array.isArray(parsed.themes)).toBe(true);
+    expect(parsed.themes[0]).toContain('Is a life measured by how long it lasts');
+    expect(agent.wasLastResponseTruncated()).toBe(true);
+  });
+
+  it('recovers an array-element string cut with a dangling escape', () => {
+    const agent = new TestAgent();
+    // Cut inside an ARRAY element string (preceded by `[`, not `"prop":`), ending
+    // on a lone backslash — exercises the close-the-string fallback + escape trim.
+    const parsed = agent.parse<{ a: string; themes: string[] }>(
+      '{"a":"ok","themes":["a complete one","a partial one ending in a dangling escape\\',
+    );
+    expect(parsed.a).toBe('ok');
+    expect(Array.isArray(parsed.themes)).toBe(true);
+    expect(parsed.themes[0]).toBe('a complete one');
+    expect(parsed.themes[1]).toContain('a partial one');
+  });
 });

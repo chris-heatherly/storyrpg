@@ -149,6 +149,8 @@ export type { ValidationIssue, ValidationResult } from './BaseValidator';
 // Structural validator (story-shape integrity + auto-fix)
 export { StructuralValidator } from './StructuralValidator';
 export type { StructuralIssue, StructuralReport } from './StructuralValidator';
+export { EncounterQualityValidator, applyEncounterQualityGate } from './EncounterQualityValidator';
+export type { EncounterQualityInput, EncounterQualityReport } from './EncounterQualityValidator';
 
 // These were mislabeled "not yet integrated" — all three are wired:
 // CliffhangerValidator in FullStoryPipeline, PhaseValidator in the

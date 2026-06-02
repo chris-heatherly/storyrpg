@@ -95,6 +95,9 @@ export function useGeneratorRunner() {
   ): Promise<{ jobId: string; result: T }> => {
     const startResp = await fetch(`${PROXY_CONFIG.workerJobs}/start`, {
       method: 'POST',
+      // Send the logged-in session cookie so an auth-gated proxy
+      // (PROXY_REQUIRE_AUTH=1) authorizes the request (req.user).
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });

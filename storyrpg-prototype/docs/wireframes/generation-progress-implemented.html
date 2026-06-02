@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Implemented — PipelineProgress component</title>
+<style>
+  :root{--bg:#070b12;--bg-light:#0d131d;--card:#0a1019;--line:rgba(255,255,255,0.06);
+    --primary:#3b82f6;--cyan:#22d3ee;--amber:#f59e0b;--green:#34d399;--error:#ef4444;--muted:#6b7686;--text:#e7ecf3;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:ui-monospace,"SF Mono",Menlo,monospace;padding:24px;display:flex;justify-content:center}
+  /* container = styles.container */
+  .container{width:460px;background:var(--bg-light);border:1px solid rgba(255,255,255,0.05);border-radius:24px;padding:20px}
+
+  /* hero */
+  .storyTitle{font-size:18px;font-weight:900;margin:0 0 12px}
+  .heroTrack{height:12px;border-radius:999px;background:rgba(255,255,255,0.07);overflow:hidden}
+  .heroFill{height:100%;border-radius:999px;background:var(--cyan)}
+  .heroMeta{display:flex;justify-content:space-between;align-items:baseline;margin-top:8px}
+  .heroPct{font-size:22px;font-weight:900}
+  .heroEta{font-size:10px;font-weight:800;color:var(--cyan);letter-spacing:.5px}
+  .heroSubline{margin-top:10px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  .heroSublineText{color:var(--muted);font-size:8.5px;font-weight:800;letter-spacing:.5px}
+  .heroDot{color:rgba(255,255,255,0.2);font-size:9px}
+  .ok{color:var(--green)}
+
+  /* stepper */
+  .stepper{display:flex;gap:6px;margin:18px 0}
+  .step{flex:1;align-items:center;text-align:center}
+  .stepGlyph{font-size:13px;height:16px}
+  .stepLabel{font-size:7.5px;font-weight:900;letter-spacing:.5px;color:var(--muted);margin:4px 0}
+  .step.done .stepGlyph,.step.done .stepLabel{color:var(--primary)}
+  .step.active .stepGlyph,.step.active .stepLabel{color:var(--amber)}
+  .step.todo .stepGlyph{color:var(--muted);opacity:.5}
+  .stepTrack{height:2px;border-radius:2px;background:rgba(255,255,255,0.08)}
+  .step.done .stepTrack{background:var(--primary)}
+  .step.active .stepTrack{background:var(--amber)}
+
+  .sectionLabel{font-size:8.5px;font-weight:900;letter-spacing:1.6px;color:var(--cyan);margin-bottom:10px}
+  .section{margin-bottom:18px}
+
+  /* episode cards */
+  .epCard{background:var(--bg);border:1px solid rgba(255,255,255,0.06);border-radius:14px;margin-bottom:10px;padding-bottom:12px;overflow:hidden}
+  .epCard.active{border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.03)}
+  .epCard.done{border-color:rgba(59,130,246,.22)}
+  .epHead{display:flex;align-items:center;gap:9px;padding:13px;cursor:pointer}
+  .glyph{font-size:14px;width:16px;text-align:center}
+  .done .glyph{color:var(--primary)} .active .glyph{color:var(--amber)} .todo .glyph{color:var(--muted);opacity:.55}
+  .epName{font-size:11px;font-weight:900;color:#fff;letter-spacing:.5px}
+  .epTitle{flex:1;font-size:10px;font-weight:700;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .epMeta{font-size:8px;font-weight:900;color:var(--cyan);letter-spacing:.5px}
+  .epPct{font-size:10px;font-weight:900;color:#fff;width:34px;text-align:right}
+  .epPct.muted{color:var(--muted)}
+  .chev{color:var(--muted);font-size:11px}
+  .epTrack{height:3px;margin:0 14px;border-radius:999px;background:rgba(255,255,255,0.06);overflow:hidden}
+  .epTrack>i{display:block;height:100%;background:var(--primary)}
+  .epCard.active .epTrack>i{background:var(--amber)}
+
+  .sceneList{padding:8px 14px 0 30px}
+  .sceneRow{display:flex;align-items:center;gap:8px;margin-top:7px}
+  .scGlyph{font-size:11px;width:13px;text-align:center}
+  .scene.done .scGlyph{color:var(--primary)} .scene.active .scGlyph{color:var(--amber)} .scene.todo .scGlyph{color:var(--muted);opacity:.5}
+  .scBody{flex:1;min-width:0}
+  .scName{font-size:9.5px;font-weight:800;color:rgba(255,255,255,.75);letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .scene.todo .scName{color:var(--muted)}
+  .scBeats{display:flex;align-items:center;gap:6px;margin-top:4px}
+  .beatBar{flex:1;max-width:120px;height:3px;border-radius:999px;background:rgba(255,255,255,0.06);overflow:hidden}
+  .beatBar>i{display:block;height:100%;background:var(--green)}
+  .beatBar.pending>i{background:var(--amber)}
+  .beatCount{font-size:7.5px;font-weight:900;color:var(--muted);letter-spacing:.4px}
+  .beatCount.done{color:var(--primary)}
+  .chip{font-size:7.5px;font-weight:900;letter-spacing:.5px;padding:3px 7px;border-radius:999px;white-space:nowrap}
+
+  /* NOW */
+  .now{background:rgba(59,130,246,0.06);border:1px solid rgba(34,211,238,.2);border-radius:16px;padding:14px;margin-bottom:18px}
+  .nowEyebrow{color:var(--amber);font-size:8px;font-weight:900;letter-spacing:1.5px}
+  .nowHeadline{color:#fff;font-size:13px;font-weight:900;margin-top:5px;line-height:18px}
+  .nowDetail{color:var(--muted);font-size:9.5px;font-weight:700;margin-top:5px;line-height:14px}
+  .nowAgent{color:var(--cyan);font-size:8.5px;font-weight:800;letter-spacing:.5px;margin-top:8px}
+  .opsGrid{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+  .opsMetric{flex-grow:1;flex-basis:30%;background:rgba(0,0,0,.22);border:1px solid rgba(255,255,255,.05);border-radius:10px;padding:8px 10px}
+  .opsMetricLabel{color:var(--muted);font-size:7px;font-weight:900;letter-spacing:1px}
+  .opsMetricValue{color:var(--cyan);font-size:10px;font-weight:900;margin-top:3px}
+  .opsMetricTrack{height:3px;border-radius:999px;background:rgba(255,255,255,.08);margin-top:6px;overflow:hidden}
+  .opsMetricTrack>i{display:block;height:100%;background:var(--cyan)}
+  .workPlan{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08)}
+  .workPlanHeader{display:flex;justify-content:space-between;align-items:center}
+  .workPlanTitle{color:var(--primary);font-size:8px;font-weight:900;letter-spacing:1px}
+  .workPlanValue{color:#fff;font-size:9px;font-weight:900}
+  .workPlanMeta{color:var(--muted);font-size:9px;font-weight:800;margin-top:6px}
+  .logToggle{margin-top:10px;color:var(--muted);font-size:9px;font-weight:900;letter-spacing:1px}
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- HERO -->
+  <div class="storyTitle">The Obsidian Pact</div>
+  <div class="heroTrack"><div class="heroFill" style="width:68%"></div></div>
+  <div class="heroMeta"><span class="heroPct">68%</span><span class="heroEta">ETA 12M 49S</span></div>
+  <div class="heroSubline">
+    <span class="heroSublineText">EPISODE 2 / 3</span><span class="heroDot">·</span>
+    <span class="heroSublineText">ELAPSED 58M 22S</span><span class="heroDot">·</span>
+    <span class="heroSublineText ok">● WORKER HEALTHY</span>
+  </div>
+
+  <!-- PHASE RAIL -->
+  <div class="stepper">
+    <div class="step done"><div class="stepGlyph">✓</div><div class="stepLabel">WORLD</div><div class="stepTrack"></div></div>
+    <div class="step done"><div class="stepGlyph">✓</div><div class="stepLabel">CHARACTERS</div><div class="stepTrack"></div></div>
+    <div class="step active"><div class="stepGlyph">◉</div><div class="stepLabel">EPISODES</div><div class="stepTrack"></div></div>
+    <div class="step todo"><div class="stepGlyph">○</div><div class="stepLabel">VISUALS</div><div class="stepTrack"></div></div>
+    <div class="step todo"><div class="stepGlyph">○</div><div class="stepLabel">PACKAGE</div><div class="stepTrack"></div></div>
+  </div>
+
+  <!-- EPISODES -->
+  <div class="section">
+    <div class="sectionLabel">EPISODES</div>
+
+    <div class="epCard done">
+      <div class="epHead"><span class="glyph">✓</span><span class="epName">EP 1</span><span class="epTitle">Arrival</span><span class="epMeta">6 / 6 SCENES</span><span class="epPct">100%</span><span class="chev">▸</span></div>
+      <div class="epTrack"><i style="width:100%"></i></div>
+    </div>
+
+    <div class="epCard active">
+      <div class="epHead"><span class="glyph">◉</span><span class="epName">EP 2</span><span class="epTitle">The Bargain</span><span class="epMeta">3 / 6 SCENES</span><span class="epPct">52%</span><span class="chev">▾</span></div>
+      <div class="epTrack"><i style="width:52%"></i></div>
+      <div class="sceneList">
+        <div class="sceneRow scene done"><span class="scGlyph">✓</span><div class="scBody"><div class="scName">SCENE 1 · THRESHOLD</div><div class="scBeats"><div class="beatBar"><i style="width:100%"></i></div><span class="beatCount done">8 BEATS</span></div></div><span class="chip" style="color:var(--primary);background:#3b82f622">DONE</span></div>
+        <div class="sceneRow scene done"><span class="scGlyph">✓</span><div class="scBody"><div class="scName">SCENE 2 · THE OFFER</div><div class="scBeats"><div class="beatBar"><i style="width:100%"></i></div><span class="beatCount done">6 BEATS</span></div></div><span class="chip" style="color:var(--primary);background:#3b82f622">DONE</span></div>
+        <div class="sceneRow scene done"><span class="scGlyph">✓</span><div class="scBody"><div class="scName">SCENE 3 · DOUBT</div><div class="scBeats"><div class="beatBar"><i style="width:100%"></i></div><span class="beatCount done">7 BEATS</span></div></div><span class="chip" style="color:var(--primary);background:#3b82f622">DONE</span></div>
+        <div class="sceneRow scene active"><span class="scGlyph">◉</span><div class="scBody"><div class="scName">SCENE 4 · CONFRONTATION</div><div class="scBeats"><div class="beatBar pending"><i style="width:62%"></i></div><span class="beatCount">~8 BEATS</span></div></div><span class="chip" style="color:var(--amber);background:#f59e0b22">WRITING PROSE</span></div>
+        <div class="sceneRow scene todo"><span class="scGlyph">○</span><div class="scBody"><div class="scName">SCENE 5 · FALLOUT</div><div class="scBeats"><div class="beatBar pending"><i style="width:0%"></i></div><span class="beatCount">~8 BEATS</span></div></div><span class="chip" style="color:var(--muted);background:#6b768622">QUEUED</span></div>
+        <div class="sceneRow scene todo"><span class="scGlyph">○</span><div class="scBody"><div class="scName">SCENE 6 · CLIFFHANGER</div><div class="scBeats"><div class="beatBar pending"><i style="width:0%"></i></div><span class="beatCount">~8 BEATS · ENCOUNTER</span></div></div><span class="chip" style="color:var(--muted);background:#6b768622">QUEUED</span></div>
+      </div>
+    </div>
+
+    <div class="epCard todo">
+      <div class="epHead"><span class="glyph">○</span><span class="epName">EP 3</span><span class="epTitle">Reckoning</span><span class="epMeta">~6 SCENES PLANNED</span><span class="epPct muted">0%</span><span class="chev">▸</span></div>
+      <div class="epTrack"><i style="width:0%"></i></div>
+    </div>
+  </div>
+
+  <!-- NOW -->
+  <div class="now">
+    <div class="nowEyebrow">NOW</div>
+    <div class="nowHeadline">Writing “Confrontation” — Scene 4 of Episode 2</div>
+    <div class="nowDetail">Wrote 5 beats for ep2_confrontation</div>
+    <div class="nowAgent">▸ SCENEWRITER · HEARTBEAT 6S AGO</div>
+    <div class="opsGrid">
+      <div class="opsMetric"><div class="opsMetricLabel">JOB</div><div class="opsMetricValue">worker-1780…40qy</div></div>
+      <div class="opsMetric"><div class="opsMetricLabel">ELAPSED</div><div class="opsMetricValue">58M 22S</div></div>
+      <div class="opsMetric"><div class="opsMetricLabel">ITEMS</div><div class="opsMetricValue">7/14</div><div class="opsMetricTrack"><i style="width:50%"></i></div></div>
+    </div>
+    <div class="logToggle">▸ SHOW ACTIVITY LOG</div>
+  </div>
+</div>
+</body>
+</html>

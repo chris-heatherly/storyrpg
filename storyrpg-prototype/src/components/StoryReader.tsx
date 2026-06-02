@@ -30,8 +30,10 @@ import {
   findChoice,
   getPlayableEpisodes,
   getNextScene,
+  isTerminalSceneTarget,
   ProcessedBeat,
 } from '../engine/storyEngine';
+import { sentenceFromChoiceText } from '../engine/choiceEcho';
 import { processTemplate } from '../engine/templateProcessor';
 import { NarrativeText } from './NarrativeText';
 import { ChoiceButton } from './ChoiceButton';
@@ -196,18 +198,8 @@ function choiceOutcomeColor(tier?: ChoiceOutcomeTier): string {
   return TERMINAL.colors.primary;
 }
 
-function lowercaseFirst(text: string): string {
-  return text.charAt(0).toLowerCase() + text.slice(1);
-}
-
-function sentenceFromChoiceText(choiceText?: string): string | undefined {
-  const cleaned = choiceText?.replace(/\s+/g, ' ').trim().replace(/[.!?]$/, '');
-  if (!cleaned) return undefined;
-  const dont = /^don't\s+(.+)$/i.exec(cleaned)?.[1];
-  if (dont) return `You chose not to ${lowercaseFirst(dont)}.`;
-  const action = /^(?:choose to|try to|attempt to|decide to)\s+(.+)$/i.exec(cleaned)?.[1] || cleaned;
-  return `You chose to ${lowercaseFirst(action)}.`;
-}
+// sentenceFromChoiceText / lowercaseFirst moved to ../engine/choiceEcho (pure,
+// unit-tested). Imported at the top of this file.
 
 function fallbackChoiceProgress(choice: Choice): string | undefined {
   switch (choice.consequenceDomain) {
@@ -1176,7 +1168,14 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         },
       ]);
       setRecentChoiceEcho({
+        // Prefer the authored, well-formed acknowledgment (feedbackCue.echoSummary,
+        // e.g. "You gave the honest answer. It cost you something visible.") over
+        // the "You chose to {text}" template — that template assumes a short
+        // imperative label and mangles dialogue / first-person choice text
+        // ("You chose to i knew less than I should have…").
         summary:
+          choice.feedbackCue?.echoSummary ||
+          choice.reminderPlan?.immediate ||
           sentenceFromChoiceText(processedChoiceText) ||
           'You made a choice.',
         progress: progressText,
@@ -1242,6 +1241,15 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   const navigateAfterChoice = (nextBeatId?: string, nextSceneId?: string, choiceId?: string) => {
     if (nextSceneId) {
+      // Terminal sentinel (episode-end / story-end / …): finish the episode
+      // instead of trying to loadScene() a scene that doesn't exist (which
+      // returns silently and leaves the reader stuck on the current beat). The
+      // storylet/encounter paths already did this; regular beats/choices did not.
+      if (isTerminalSceneTarget(nextSceneId)) {
+        if (currentScene) recordBranchChoice(currentScene.id, nextSceneId, choiceId);
+        finishEpisode();
+        return;
+      }
       if (currentEpisode) {
         const targetScene = currentEpisode.scenes.find(s => s.id === nextSceneId);
         const targetHasBeats = targetScene && targetScene.beats && targetScene.beats.length > 0;
@@ -1317,16 +1325,21 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     // Capture values to avoid non-null assertions
     const nextBeatId = processedBeat.nextBeatId;
     const nextSceneId = processedBeat.nextSceneId;
-    
+
     if (nextSceneId) {
+      // Terminal sentinel → finish, don't loadScene a non-existent scene (stuck).
+      if (isTerminalSceneTarget(nextSceneId)) {
+        finishEpisode();
+        return;
+      }
       transitionTo(() => loadScene(nextSceneId, undefined, nextBeatId));
     } else if (nextBeatId) {
       transitionToBeatSafely(nextBeatId);
     } else {
       advanceToNextScene();
     }
-  }, [processedBeat, setBeat, loadScene]);
-  
+  }, [processedBeat, setBeat, loadScene, finishEpisode]);
+
   // Debounced continue handler - prevents double-clicks
   const handleContinue = useClickDebounce(handleContinueBase, 500);
 

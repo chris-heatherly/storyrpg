@@ -48,6 +48,30 @@ export interface PreapprovedAnchor {
 
 export type StyleReferenceStrength = 'subtle' | 'balanced' | 'strong';
 
+/**
+ * LEVER B3: hard ceiling on the per-scene target beat count handed to
+ * SceneWriter. Typical scenes target 6-8 beats, so this default of 10 never
+ * touches normal scenes — it only clamps pathological outliers (12+) so a
+ * single scene generation can't balloon into an oversized LLM call. Override
+ * via `GenerationSettingsConfig.maxBeatsPerScene` when a story genuinely needs
+ * longer scenes.
+ */
+export const MAX_BEATS_PER_SCENE = 10;
+
+/**
+ * Pure clamp for the per-scene target beat count. Returns `computed` unchanged
+ * when it is at or below `cap`; otherwise returns `cap`. Non-finite or
+ * non-positive `computed` values fall through to `cap` as a defensive floor on
+ * the upper bound only (callers are expected to supply a sane positive target).
+ */
+export function clampTargetBeatCount(
+  computed: number,
+  cap: number = MAX_BEATS_PER_SCENE,
+): number {
+  if (!Number.isFinite(computed)) return cap;
+  return Math.min(computed, cap);
+}
+
 export type { ImageQaConfig, ImagePromptMode, ImageQaMode } from './config/imageQaConfig';
 export { DEFAULT_IMAGE_QA_CONFIG } from './config/imageQaConfig';
 export type { ArtStyleProfile } from './images/artStyleProfile';

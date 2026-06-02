@@ -3,7 +3,9 @@ import { createRequire } from 'node:module';
 
 // proxyGuards is a CommonJS module; load it via require for stable interop.
 const require = createRequire(import.meta.url);
-const { createCorsOptions, createExposureGuard, isLocalOrigin } = require('./proxyGuards.js');
+const { createCorsOptions, createExposureGuard, isLocalOrigin, isLocalRequest } = require('./proxyGuards.js');
+
+const LOCAL = { headers: { host: 'localhost:3001' } };
 
 function originDecision(env: Record<string, string>, origin: string | undefined): boolean {
   const opts = createCorsOptions(env);
@@ -98,5 +100,55 @@ describe('proxyGuards exposure auth gate', () => {
         { method: 'POST', path: '/x', headers: { authorization: 'Bearer nope' } },
       ).status,
     ).toBe(401);
+  });
+
+  it('exempts local requests (Host=localhost) even when enforced — no login needed locally', () => {
+    expect(
+      runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'POST', path: '/worker-jobs/start', ...LOCAL }).nexted,
+    ).toBe(true);
+  });
+
+  it('still enforces auth for tunneled/remote requests (forwarding headers present)', () => {
+    // ngrok / cloud LB always adds X-Forwarded-For — even with Host=localhost
+    // (and a Docker-internal peer), this must NOT be treated as local.
+    const r = runGuard(
+      { PROXY_REQUIRE_AUTH: '1' },
+      { method: 'POST', path: '/worker-jobs/start', headers: { host: 'localhost:3001', 'x-forwarded-for': '203.0.113.7' } },
+    );
+    expect(r.status).toBe(401);
+    expect(r.nexted).toBe(false);
+  });
+
+  it('enforces auth when the caller dialed a non-local host', () => {
+    const r = runGuard(
+      { PROXY_REQUIRE_AUTH: '1' },
+      { method: 'POST', path: '/worker-jobs/start', headers: { host: 'app.example.com' } },
+    );
+    expect(r.status).toBe(401);
+    expect(r.nexted).toBe(false);
+  });
+
+  it('always enforces auth in production, even for localhost', () => {
+    const r = runGuard(
+      { NODE_ENV: 'production' },
+      { method: 'POST', path: '/worker-jobs/start', ...LOCAL },
+    );
+    expect(r.status).toBe(401);
+    expect(r.nexted).toBe(false);
+  });
+});
+
+describe('isLocalRequest', () => {
+  it('treats localhost Host (any port, ipv6) as local', () => {
+    expect(isLocalRequest({ headers: { host: 'localhost:3001' } }, {})).toBe(true);
+    expect(isLocalRequest({ headers: { host: '127.0.0.1:3001' } }, {})).toBe(true);
+    expect(isLocalRequest({ headers: { host: '[::1]:3001' } }, {})).toBe(true);
+  });
+
+  it('treats forwarded, non-local-host, or production requests as remote', () => {
+    expect(isLocalRequest({ headers: { host: 'localhost:3001', 'x-forwarded-for': '1.2.3.4' } }, {})).toBe(false);
+    expect(isLocalRequest({ headers: { host: 'app.example.com' } }, {})).toBe(false);
+    expect(isLocalRequest({ headers: {} }, {})).toBe(false);
+    expect(isLocalRequest({ headers: { host: 'localhost:3001' } }, { NODE_ENV: 'production' })).toBe(false);
   });
 });

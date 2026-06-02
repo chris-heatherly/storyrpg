@@ -128,6 +128,9 @@ import {
 } from './generationPlan';
 import { assignChoiceTypes } from './choiceTypePlanner';
 import { extractPlantsFromChoiceSet, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
+import { SeasonCanon } from './seasonCanon';
+import { sealAndPersistEpisode } from './seasonSealOrchestration';
+import type { EpisodeStateSnapshot } from './episodeStateSnapshot';
 import { SavingPhase } from './phases/SavingPhase';
 import {
   createOutputDirectory,
@@ -794,6 +797,10 @@ export class FullStoryPipeline {
   // choices' `memorableMoment` fields and consumed as prompt context for
   // later episodes. Persisted to `09-callback-ledger.json`.
   private callbackLedger: CallbackLedger = new CallbackLedger();
+  // Season Canon (P4): durable frozen facts + the snapshot carried forward across
+  // sequentially-generated episodes. Only used when generation.seasonCanonEnabled.
+  private seasonCanon: SeasonCanon = new SeasonCanon();
+  private priorEpisodeSnapshot?: EpisodeStateSnapshot;
   private completedPhases = new Set<string>();
   private dependencySchedulerStats = {
     hasCycle: false,
@@ -9567,6 +9574,8 @@ export class FullStoryPipeline {
     };
     this.sceneValidationResults = [];
     this.allSceneValidationResults = [];
+    this.seasonCanon = new SeasonCanon({ storyId: idSlugify(baseBrief.story.title) });
+    this.priorEpisodeSnapshot = undefined;
     const startTime = Date.now();
 
     // Determine which episodes to generate
@@ -9666,6 +9675,17 @@ export class FullStoryPipeline {
       }
       this._currentOutputDirectory = outputDirectory; // F4: visible to the terminal catch
       this.addCheckpoint('Output Directory', { outputDirectory }, false);
+
+      // Season Canon (P4) resume: rehydrate sealed canon + ledger from disk so a
+      // later partial run skips re-sealing already-sealed episodes and reads prior
+      // facts. Best-effort — absent/corrupt artifacts just start fresh.
+      if (this.config.generation?.seasonCanonEnabled) {
+        const savedCanon = loadEarlyDiagnosticSync<any>(outputDirectory, 'season-canon.json');
+        if (savedCanon) { try { this.seasonCanon = SeasonCanon.deserialize(savedCanon); } catch { /* start fresh */ } }
+        const savedLedger = loadEarlyDiagnosticSync<any>(outputDirectory, 'season-ledger.json');
+        if (savedLedger) { try { this.callbackLedger = CallbackLedger.deserialize(savedLedger); } catch { /* start fresh */ } }
+        this.priorEpisodeSnapshot = loadEarlyDiagnosticSync<EpisodeStateSnapshot>(outputDirectory, 'episode-state-snapshot.json') ?? undefined;
+      }
 
       const savedStoryPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(outputDirectory, 'story.json');
       this.hydrateSeasonImageStyleFromStoryPackage(savedStoryPackage);
@@ -9832,6 +9852,23 @@ export class FullStoryPipeline {
           episodeResults.push(generated.result);
           if (generated.qaReport) episodeQAReports.push(generated.qaReport);
           if (generated.bestPracticesReport) episodeBPReports.push(generated.bestPracticesReport);
+          // Season Canon (P4): seal the validated episode into durable canon + ledger
+          // and carry state forward. Advisory — gate issues are surfaced, never block.
+          if (this.config.generation?.seasonCanonEnabled && generated.episode) {
+            const seal = await sealAndPersistEpisode({
+              episode: generated.episode as any,
+              episodeNumber: i,
+              seasonLength: analysis.totalEstimatedEpisodes || this.totalEpisodes,
+              ledger: this.callbackLedger,
+              canon: this.seasonCanon,
+              priorSnapshot: this.priorEpisodeSnapshot,
+              save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
+            });
+            this.priorEpisodeSnapshot = seal.snapshot;
+            for (const issue of seal.evaluation.issues) {
+              this.emit({ type: 'warning', phase: `season_canon_ep_${i}`, message: `[advisory] ${issue.message}` });
+            }
+          }
           completedEpisodeCount += 1;
           if (this.generationPlan) {
             markEpisode(this.generationPlan, i, 'complete');

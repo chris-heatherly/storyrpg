@@ -74,8 +74,15 @@ const projectRoot = path.resolve(__dirname, '..');
 // flags planted by earlier scenes and merge them into the unresolvedCallbacks fed to
 // later scenes so SceneWriter authors within-episode callback payoffs. Logic lives in
 // pipeline/episodePlantContext.ts; only the running list + two thin call sites here.
+//
+// +37 (21248 -> 21285): Season Canon P4 — incremental seal/resume runner wiring.
+// Per-run reset + disk-resume rehydration of the durable SeasonCanon/PromiseLedger/
+// snapshot, and the per-episode seal call in the sequential loop (advisory gate,
+// default-off via generation.seasonCanonEnabled). All logic lives in
+// pipeline/seasonSealOrchestration.ts / seasonCanon.ts / episodeStateSnapshot.ts;
+// these are the irreducible reset/resume/seal call sites + two new private fields.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21248,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21285,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

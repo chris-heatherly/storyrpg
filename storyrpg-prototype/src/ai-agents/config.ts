@@ -207,6 +207,14 @@ export interface GenerationSettingsConfig {
   tokenBudgetPerStory?: number;
   // Sequential mode preserves previous-episode summary dependency chain.
   episodeDependencyMode?: 'sequential' | 'independent';
+  /**
+   * Season Canon (P4): when true, each sequentially-generated episode is sealed
+   * into a durable SeasonCanon + PromiseLedger and carries an EpisodeStateSnapshot
+   * forward. The state-scoped promise/canon gates run in ADVISORY mode (issues are
+   * logged + persisted, never blocking) until a multi-episode regen validates them.
+   * Off by default. Only meaningful with episodeDependencyMode: 'sequential'.
+   */
+  seasonCanonEnabled?: boolean;
   // Optional cloud uplift (kept disabled by default for local-first rollout)
   cloudModeEnabled?: boolean;
   cloudQueueEndpoint?: string;

@@ -8930,8 +8930,22 @@ export class FullStoryPipeline {
   ): Promise<void> {
     const findings = (qaReport.continuity?.issues ?? []) as unknown as ContinuityFinding[];
     const scenes = scenesNeedingRepair(findings).slice(0, 3); // bound the repair work
-    this.emit({ type: 'debug', phase: 'continuity_repair', message: `Continuity repair: ${scenes.length} candidate scene(s).` });
-    if (scenes.length === 0) return;
+    this.emit({ type: 'debug', phase: 'continuity_repair', message: `Continuity repair: ${findings.length} continuity issue(s) seen, ${scenes.length} candidate scene(s).` });
+    if (scenes.length === 0) {
+      // ALWAYS persist the diagnostic — its absence was ambiguous ("0 to repair" vs
+      // "repair never ran"). This records what the repair actually received, which
+      // reveals when the in-memory qaReport.continuity is the skipped/default empty
+      // report while 06-qa-report.json (a different, fuller source) lists issues.
+      await saveEarlyDiagnostic(outputDirectory, 'continuity-repair.json', {
+        generatedAt: new Date().toISOString(),
+        continuityIssuesSeen: findings.length,
+        repairableFindings: scenesNeedingRepair(findings).length,
+        candidateScenes: [],
+        repaired: [],
+        note: findings.length === 0 ? 'qaReport.continuity had no issues at repair time' : 'no repairable findings (none had a scene-level prose contradiction)',
+      });
+      return;
+    }
     // The repair re-authors via SceneCritic. If the critic isn't enabled in config,
     // construct a one-off from the scene-writer config so the repair still runs
     // rather than silently no-opping (the bug this fix addresses).

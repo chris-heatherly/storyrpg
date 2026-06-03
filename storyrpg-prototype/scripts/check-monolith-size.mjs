@@ -132,8 +132,12 @@ const projectRoot = path.resolve(__dirname, '..');
 // into the validated consequences (so the budget classifier sees tint flags) and carries
 // scene.leadsTo (so BranchMechanicalDivergence sees routing forks). The validation input
 // previously stripped both, so the fixes never reached the metrics.
+//
+// +14 (21479 -> 21493): continuity-repair diagnostic — always persist continuity-repair.json
+// (even on 0 candidates) recording how many continuity issues the repair actually saw, so
+// the artifact's absence stops being ambiguous and reveals whether the repair runs/sees data.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21479,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21493,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

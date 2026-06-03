@@ -131,6 +131,7 @@ import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, mergeUnreso
 import { SeasonCanon } from './seasonCanon';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
+import { applySpinePlantMap, deriveSpinePlantMap } from './spinePlantMap';
 import { buildOutcomeTextVariants } from './outcomeVariants';
 import { buildSceneTimelineLabels } from './sceneNumbering';
 import { capabilityFactStrings, capabilityNoteForProfile, characterCapabilityWorldFacts } from './characterCanonFacts';
@@ -9910,8 +9911,14 @@ export class FullStoryPipeline {
           if (generated.qaReport) episodeQAReports.push(generated.qaReport);
           if (generated.bestPracticesReport) episodeBPReports.push(generated.bestPracticesReport);
           // Season Canon (P4): seal the validated episode into durable canon + ledger
-          // and carry state forward. Advisory — gate issues are surfaced, never block.
+          // and carry state forward. Gate issues advisory unless seasonCanonBlocking.
           if (this.config.generation?.seasonCanonEnabled && generated.episode) {
+            // Phase G: pin each promise's explicit payoffEpisode from the season spine
+            // (derived from seasonFlags) so the promise-due gate has real targets.
+            const spineResult = applySpinePlantMap(this.callbackLedger, deriveSpinePlantMap(baseBrief.seasonPlan));
+            if (spineResult.unmatched.length > 0) {
+              this.emit({ type: 'debug', phase: `season_canon_ep_${i}`, message: `Spine plant map: ${spineResult.applied} applied, ${spineResult.unmatched.length} not yet planted.` });
+            }
             const seal = await sealAndPersistEpisode({
               episode: generated.episode as any,
               episodeNumber: i,
@@ -9927,6 +9934,12 @@ export class FullStoryPipeline {
             this.priorEpisodeSnapshot = seal.snapshot;
             for (const issue of seal.evaluation.issues) {
               this.emit({ type: 'warning', phase: `season_canon_ep_${i}`, message: `[advisory] ${issue.message}` });
+            }
+            // Phase G.4: when blocking is enabled, an unmet promise/canon ERROR at its
+            // due episode hard-fails the run (default off until a regen validates).
+            const blockingIssues = seal.evaluation.issues.filter((x) => x.severity === 'error');
+            if (this.config.generation?.seasonCanonBlocking && blockingIssues.length > 0) {
+              throw new Error(`Season Canon gate failed for episode ${i}: ${blockingIssues.map((x) => x.message).join('; ')}`);
             }
           }
           completedEpisodeCount += 1;

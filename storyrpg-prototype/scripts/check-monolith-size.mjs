@@ -93,8 +93,13 @@ const projectRoot = path.resolve(__dirname, '..');
 // establishedFacts and SceneWriter NPC descriptions and the canon-seal extraDeltas;
 // pure logic is in pipeline/characterCanonFacts.ts + continuityRepair.ts. Phases
 // C/E/F net-shrank their call sites (sceneNumbering / outcomeVariants / tint plants).
+//
+// +13 (21358 -> 21371): Phase G — apply the derived spine plant→payoff map onto the
+// ledger before each seal (deriveSpinePlantMap from seasonFlags + applySpinePlantMap,
+// both in pipeline/spinePlantMap.ts) and the seasonCanonBlocking hard-fail branch;
+// only the thin apply + throw call sites are here.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21358,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21371,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

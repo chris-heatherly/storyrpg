@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CallbackLedger } from './callbackLedger';
-import { applySpinePlantMap } from './spinePlantMap';
+import { applySpinePlantMap, deriveSpinePlantMap } from './spinePlantMap';
 
 function ledgerWith(...ids: string[]): CallbackLedger {
   const ledger = new CallbackLedger();
@@ -37,5 +37,31 @@ describe('applySpinePlantMap', () => {
   it('handles an undefined map', () => {
     const ledger = ledgerWith('h1');
     expect(applySpinePlantMap(ledger, undefined)).toEqual({ applied: 0, unmatched: [] });
+  });
+});
+
+describe('deriveSpinePlantMap', () => {
+  it('maps seasonFlags to plant entries using the first/last forward check', () => {
+    const map = deriveSpinePlantMap({
+      seasonFlags: [
+        { flag: 'lysandra_trusted', setInEpisode: 1, checkedInEpisodes: [3, 5] },
+        { flag: 'no_forward', setInEpisode: 2, checkedInEpisodes: [2] },     // not forward → skipped
+        { flag: 'never_checked', setInEpisode: 1, checkedInEpisodes: [] },   // no check → skipped
+      ],
+    });
+    expect(map.entries).toEqual([
+      { flag: 'lysandra_trusted', payoffEpisode: 3, payoffEpisodeLatest: 5 },
+    ]);
+  });
+
+  it('returns an empty map for an undefined plan', () => {
+    expect(deriveSpinePlantMap(undefined)).toEqual({ entries: [] });
+  });
+
+  it('feeds applySpinePlantMap end-to-end', () => {
+    const ledger = ledgerWith('flag:lysandra_trusted');
+    const map = deriveSpinePlantMap({ seasonFlags: [{ flag: 'lysandra_trusted', setInEpisode: 1, checkedInEpisodes: [3] }] });
+    expect(applySpinePlantMap(ledger, map).applied).toBe(1);
+    expect(ledger.all()[0].payoffEpisode).toBe(3);
   });
 });

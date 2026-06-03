@@ -16,6 +16,7 @@ import { Episode, Scene, Beat, Choice } from '../../types';
 import { IntegratedBestPracticesValidator, ChoiceDistributionValidator } from '../validators';
 import { deriveStoryVerbs } from '../utils/storyVerbs';
 import { assembleChoiceForStory } from './choiceAssembly';
+import { buildOutcomeTextVariants } from './outcomeVariants';
 import type { ChoiceDistributionTargets } from '../validators';
 import {
   createOutputDirectory,
@@ -650,16 +651,8 @@ export class EpisodePipeline {
                 const basePayoffText = choice.outcomeTexts?.partial
                   || (choice.text.endsWith('.') ? choice.text : choice.text + '.');
 
-                const payoffTextVariants = choice.outcomeTexts ? [
-                  {
-                    condition: { type: 'flag' as const, flag: '_outcome_success', value: true },
-                    text: choice.outcomeTexts.success,
-                  },
-                  {
-                    condition: { type: 'flag' as const, flag: '_outcome_failure', value: true },
-                    text: choice.outcomeTexts.failure,
-                  },
-                ] : undefined;
+                // Drops variants identical to the base text (pure runtime no-ops).
+                const payoffTextVariants = buildOutcomeTextVariants(choice.outcomeTexts, basePayoffText);
 
                 const payoffBeat: GeneratedBeat & {
                   isChoicePayoff?: boolean;

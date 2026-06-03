@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractPlantsFromChoiceSet,
+  extractTintPlantsFromChoiceSet,
   plantsToUnresolvedCallbacks,
   mergeUnresolvedForScene,
   type EpisodePlant,
@@ -36,6 +37,23 @@ describe('extractPlantsFromChoiceSet', () => {
     const plants = extractPlantsFromChoiceSet(cs, ledger);
     expect(plants).toEqual([
       { flag: 'lysandra_trusted', summary: 'You chose her over the chain of command.', sceneId: 'scene-1' },
+    ]);
+  });
+});
+
+describe('extractTintPlantsFromChoiceSet (Phase F)', () => {
+  it('surfaces tint: flags with an ack summary, excluding route_/treatment_branch_', () => {
+    const cs = {
+      sceneId: 'scene-2',
+      choices: [
+        choice('c1', 'tint:sentinel_control', 'You sided with control.'),
+        choice('c2', 'tint:twilight_connection'),       // no ack summary → skipped
+        choice('c3', 'route_x', 'routing'),             // not a tint flag → skipped
+        choice('c4', 'treatment_branch_y', 'branch'),   // structural → skipped
+      ] as any,
+    };
+    expect(extractTintPlantsFromChoiceSet(cs)).toEqual([
+      { flag: 'tint:sentinel_control', summary: 'You sided with control.', sceneId: 'scene-2' },
     ]);
   });
 });

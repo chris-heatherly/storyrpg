@@ -323,6 +323,11 @@ export function buildPipelineConfig(
       generateCharacterRefs: input.generationSettings.generateCharacterRefs,
       generateExpressionSheets: input.generationSettings.generateExpressionSheets,
       generateBodyVocabulary: input.generationSettings.generateBodyVocabulary,
+      // Season Canon on by default; advisory gates unless explicitly set to block.
+      seasonCanonEnabled:
+        (input.generationSettings as { seasonCanonEnabled?: boolean }).seasonCanonEnabled ?? true,
+      seasonCanonBlocking:
+        (input.generationSettings as { seasonCanonBlocking?: boolean }).seasonCanonBlocking ?? false,
     },
     narration: {
       enabled: input.narrationSettings.enabled,

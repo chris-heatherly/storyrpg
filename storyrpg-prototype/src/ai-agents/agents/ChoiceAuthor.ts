@@ -483,9 +483,22 @@ Before finalizing:
     // The LLM might return a different beatId, but we need it to match the actual beat
     choiceSet.beatId = input.beatId;
     
-    if (!choiceSet.choiceType) {
-      // Use the blueprint's choice type if available
-      choiceSet.choiceType = input.sceneBlueprint.choicePoint?.type || 'expression';
+    // The planner's assigned type is AUTHORITATIVE. choiceTypePlanner.assignChoiceTypes
+    // allocates the season's target distribution (35/30/20/15) onto choicePoint.type;
+    // treating the LLM's set type as the source of truth lets that distribution drift
+    // (observed: strategic -> 0%, dilemma over-weighted). When the blueprint carries a
+    // planned type, force it; the LLM type is only a fallback when no plan exists.
+    const plannedChoiceType = input.sceneBlueprint.choicePoint?.type;
+    if (plannedChoiceType) {
+      if (choiceSet.choiceType && choiceSet.choiceType !== plannedChoiceType) {
+        console.warn(
+          `[ChoiceAuthor] Set "${choiceSet.beatId}" authored type "${choiceSet.choiceType}" ` +
+          `but the planner assigned "${plannedChoiceType}" — overriding to the planned type.`
+        );
+      }
+      choiceSet.choiceType = plannedChoiceType;
+    } else if (!choiceSet.choiceType) {
+      choiceSet.choiceType = 'expression';
     }
     if (!choiceSet.designNotes) {
       choiceSet.designNotes = '';
@@ -567,6 +580,15 @@ Before finalizing:
         if (!choice.outcomeTexts.success) choice.outcomeTexts.success = choice.text;
         if (!choice.outcomeTexts.partial) choice.outcomeTexts.partial = choice.text;
         if (!choice.outcomeTexts.failure) choice.outcomeTexts.failure = choice.text;
+      }
+      // Advisory: identical success/failure prose means the stat-check outcome makes
+      // no narrative difference — usually lazy authoring. Surface it; don't rewrite.
+      if (
+        choice.outcomeTexts.success &&
+        choice.outcomeTexts.success === choice.outcomeTexts.failure &&
+        choice.outcomeTexts.success !== choice.text
+      ) {
+        console.warn(`[ChoiceAuthor] Choice "${choice.id}" has identical success/failure outcome prose — the outcome reads the same either way.`);
       }
 
       const setsRouteFlag = choice.consequences?.some(

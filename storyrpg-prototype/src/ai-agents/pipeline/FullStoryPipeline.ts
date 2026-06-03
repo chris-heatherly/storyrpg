@@ -127,10 +127,12 @@ import {
   snapshotPlan,
 } from './generationPlan';
 import { assignChoiceTypes } from './choiceTypePlanner';
-import { extractPlantsFromChoiceSet, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
+import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { SeasonCanon } from './seasonCanon';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
+import { buildOutcomeTextVariants } from './outcomeVariants';
+import { buildSceneTimelineLabels } from './sceneNumbering';
 import type { EpisodeStateSnapshot } from './episodeStateSnapshot';
 import { SavingPhase } from './phases/SavingPhase';
 import {
@@ -286,11 +288,11 @@ import {
   generateJobId,
   JobCancelledError,
 } from '../utils/jobTracker';
-import { BaseAgent, isLlmQuotaError, LlmCallObservation, type AgentResponse } from '../agents/BaseAgent';
+import { BaseAgent, isLlmQuotaError, type AgentResponse } from '../agents/BaseAgent';
 import { withTimeout, withTimeoutAbort, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
 import { LocalWorkerQueue, mapWithConcurrency } from '../utils/concurrency';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../utils/dependencyGraph';
-import { PipelineTelemetry } from '../utils/pipelineTelemetry';
+import { PipelineTelemetry, buildLlmCallObserver } from '../utils/pipelineTelemetry';
 import { analyzeBranchTopology } from '../utils/branchTopology';
 import { buildBranchShadowDiff } from '../utils/branchShadowDiff';
 import { collectMissingEncounterImageKeys, getEncounterBeats } from '../utils/encounterImageCoverage';
@@ -816,22 +818,21 @@ export class FullStoryPipeline {
       maxPerProviderInFlight: this.config.generation?.llmMaxPerProviderInFlight ?? CONCURRENCY_DEFAULTS.maxPerProviderLlmInFlight,
       backoffJitterRatio: this.config.generation?.llmBackoffJitterRatio ?? CONCURRENCY_DEFAULTS.llmBackoffJitterRatio,
     });
-    BaseAgent.setLlmCallObserver((observation: LlmCallObservation) => {
-      this.telemetry.observeProviderCall({
-        agentName: observation.agentName,
-        provider: observation.provider,
-        success: observation.success,
-        durationMs: observation.durationMs,
-        queueWaitMs: observation.queueWaitMs,
-        attempt: observation.attempt,
-        error: observation.error,
-      });
-      // C4: accumulate total tokens so checkCancellation can enforce a per-story
-      // ceiling and abort runaway retry fan-out.
-      if (observation.usage) {
-        this._totalTokensUsed += (observation.usage.inputTokens || 0) + (observation.usage.outputTokens || 0);
-      }
-    });
+    // The observer forwards every provider call — INCLUDING its `usage` field —
+    // into telemetry so the LLM ledger (09-llm-ledger.json) can total tokens.
+    // C4: the onUsage callback accumulates total tokens so checkCancellation can
+    // enforce a per-story ceiling and abort runaway retry fan-out. See
+    // buildLlmCallObserver for why dropping `usage` here blinds cost tracking.
+    BaseAgent.setLlmCallObserver(
+      buildLlmCallObserver(
+        // Getter, not a snapshot: telemetry is reassigned between runs while the
+        // observer is registered only once here.
+        () => this.telemetry,
+        (totalTokens) => {
+          this._totalTokensUsed += totalTokens;
+        },
+      ),
+    );
     // A5: default image worker mode ON. The per-provider throttle in
     // ImageGenerationService now enforces its own rate limits per provider,
     // so running beat image work concurrently is safe and much faster.
@@ -7606,6 +7607,8 @@ export class FullStoryPipeline {
             choiceSets.push({ ...choiceResult.data, sceneId: sceneBlueprint.id });
             // Phase 1: record this scene's planted flags so later scenes can pay them off.
             episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }, this.callbackLedger));
+            // Phase F: also surface cosmetic tint: flags so later scenes acknowledge them (raises tint%).
+            episodePlants.push(...extractTintPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }));
 
             this.emit({
               type: 'agent_complete',
@@ -7771,16 +7774,8 @@ export class FullStoryPipeline {
                     id: payoffId,
                     text: narrativeText,
                     // textVariants: swap to success/failure outcome prose at runtime based on stat-check result
-                    textVariants: choice.outcomeTexts ? [
-                      {
-                        condition: { type: 'flag', flag: '_outcome_success', value: true },
-                        text: choice.outcomeTexts.success,
-                      },
-                      {
-                        condition: { type: 'flag', flag: '_outcome_failure', value: true },
-                        text: choice.outcomeTexts.failure,
-                      },
-                    ] : undefined,
+                    // (drops variants identical to the base text — pure runtime no-ops)
+                    textVariants: buildOutcomeTextVariants(choice.outcomeTexts, narrativeText),
                     isChoicePoint: false,
                     nextBeatId: choicePointSuccessor,
                     // When the choice point has no real onward beat, route the
@@ -8927,12 +8922,15 @@ export class FullStoryPipeline {
     const scenes = blueprint.scenes ?? [];
     if (scenes.length === 0) return [];
 
+    // Branch-aware numbering: mutually-exclusive alternatives (scene-3a/scene-3b)
+    // share a display number so the timeline doesn't read them as sequential.
+    const timelineLabels = buildSceneTimelineLabels(scenes.map((s) => s.id));
     return scenes.map((s, idx) => {
       const label = s.name || s.id;
       const details = [s.narrativeFunction, s.mood].filter(Boolean).join(' / ');
       return {
         event: details ? `${label} (${details})` : label,
-        when: `Scene ${idx + 1} (${s.id})`,
+        when: `${timelineLabels[idx].label} (${s.id})`,
       };
     });
   }

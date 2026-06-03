@@ -183,6 +183,29 @@ describe('ChoiceAuthor.normalizeChoiceSet', () => {
     expect(result.choices.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('forces the planner-assigned choicePoint.type over the LLM set type (Phase D)', () => {
+    const plannedInput = makeInput({
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'Test Scene',
+        choicePoint: {
+          type: 'strategic', // the planner's assignment
+          stakes: { want: 'win', cost: 'lose', identity: 'learn' },
+        },
+      },
+    });
+    // The LLM authored the set (and every choice) as 'expression'.
+    const choiceSet = makeChoiceSet({ choiceType: 'expression' });
+    const result = (author as any).normalizeChoiceSet(choiceSet, plannedInput);
+    expect(result.choiceType).toBe('strategic');
+    expect(result.choices.every((c: any) => c.choiceType === 'strategic')).toBe(true);
+  });
+
+  it('falls back to the LLM type when no plan exists', () => {
+    const result = (author as any).normalizeChoiceSet(makeChoiceSet({ choiceType: 'relationship' }), input);
+    expect(result.choiceType).toBe('relationship'); // makeInput's choicePoint has no `type`
+  });
+
   it('assigns retryableAfterChange when competenceArc with growthPath is present', () => {
     const inputWithArc = makeInput({
       sceneBlueprint: {

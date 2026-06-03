@@ -215,6 +215,13 @@ export interface GenerationSettingsConfig {
    * Off by default. Only meaningful with episodeDependencyMode: 'sequential'.
    */
   seasonCanonEnabled?: boolean;
+  /**
+   * Season Canon (P4/G): when true, the per-episode promise/canon gate ERRORS
+   * become blocking (merged into the pipeline-error path) instead of advisory
+   * warnings. Default false — flip on only after a multi-episode regen confirms the
+   * advisory findings are correct. Requires seasonCanonEnabled.
+   */
+  seasonCanonBlocking?: boolean;
   // Optional cloud uplift (kept disabled by default for local-first rollout)
   cloudModeEnabled?: boolean;
   cloudQueueEndpoint?: string;
@@ -1051,6 +1058,12 @@ export function loadConfig(): PipelineConfig {
         env.EXPO_PUBLIC_TOKEN_BUDGET_PER_STORY || env.TOKEN_BUDGET_PER_STORY || '0',
         10,
       ) || undefined,
+      // Season Canon: on by default (every sequential run seals canon + ledger +
+      // snapshot and runs the advisory promise/canon gates). Set SEASON_CANON_ENABLED=0
+      // to opt out. The gates stay advisory until seasonCanonBlocking is set.
+      seasonCanonEnabled: (env.EXPO_PUBLIC_SEASON_CANON_ENABLED ?? env.SEASON_CANON_ENABLED) !== '0',
+      seasonCanonBlocking:
+        env.EXPO_PUBLIC_SEASON_CANON_BLOCKING === 'true' || env.SEASON_CANON_BLOCKING === 'true',
     },
     memory: {
       enabled: env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' || env.CLAUDE_MEMORY === 'true' || defaultConfig.provider === 'anthropic',

@@ -63,6 +63,33 @@ export function extractPlantsFromChoiceSet(
   return out;
 }
 
+/**
+ * Extract `tint:` plants a scene's choices set. The trackable-flag extractor above
+ * deliberately excludes cosmetic `tint:` flags (the ledger's rule), so they were
+ * never surfaced to later scenes and shipped as unreferenced callback debt. This
+ * surfaces them as low-priority plants — same in-context authoring mechanism (the
+ * model writes a flag-conditional tint acknowledgment), no templating. Structural
+ * `treatment_branch_*` / `route_` flags are NOT tint debt and stay excluded.
+ */
+export function extractTintPlantsFromChoiceSet(choiceSet: PlantChoiceSet): EpisodePlant[] {
+  const out: EpisodePlant[] = [];
+  for (const choice of choiceSet.choices ?? []) {
+    const summary = ackSummaryOf(choice);
+    if (!summary) continue;
+    for (const consequence of choice.consequences ?? []) {
+      if (
+        consequence.type === 'setFlag' &&
+        typeof consequence.flag === 'string' &&
+        consequence.flag.startsWith('tint:') &&
+        consequence.value !== false
+      ) {
+        out.push({ flag: consequence.flag, summary, sceneId: choiceSet.sceneId ?? '' });
+      }
+    }
+  }
+  return out;
+}
+
 /** Shape accumulated within-episode plants as unresolved-callback prompt entries. */
 export function plantsToUnresolvedCallbacks(
   plants: EpisodePlant[],

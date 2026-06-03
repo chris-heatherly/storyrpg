@@ -217,3 +217,43 @@ export class PipelineTelemetry {
     };
   }
 }
+
+/**
+ * Build the BaseAgent LLM-call observer that records every provider call into a
+ * telemetry instance for the run-level LLM ledger (`09-llm-ledger.json`).
+ *
+ * Extracted so the wiring is unit-testable: the entire `usage` field MUST be
+ * forwarded into `observeProviderCall`, otherwise the ledger's token totals /
+ * `usageReported` stay 0 even when the provider reports usage. (A prior inline
+ * version dropped `usage` here, blinding cost/token tracking — see the
+ * pipelineTelemetry regression test.)
+ *
+ * @param telemetry  the run telemetry collector to record into, OR a getter
+ *                   returning the current one. The pipeline reassigns its
+ *                   telemetry between runs while the observer is registered only
+ *                   once, so it passes a getter to always hit the live instance.
+ * @param onUsage    optional callback fed the per-call total token count
+ *                   (input + output), used to enforce a per-story token ceiling.
+ */
+export function buildLlmCallObserver(
+  telemetry: PipelineTelemetry | (() => PipelineTelemetry),
+  onUsage?: (totalTokens: number) => void,
+): (observation: ProviderCallMetric) => void {
+  const resolve = typeof telemetry === 'function' ? telemetry : () => telemetry;
+  return (observation) => {
+    resolve().observeProviderCall({
+      agentName: observation.agentName,
+      provider: observation.provider,
+      success: observation.success,
+      durationMs: observation.durationMs,
+      queueWaitMs: observation.queueWaitMs,
+      attempt: observation.attempt,
+      error: observation.error,
+      // Forward provider-reported token usage so the ledger can total tokens.
+      usage: observation.usage,
+    });
+    if (observation.usage && onUsage) {
+      onUsage((observation.usage.inputTokens || 0) + (observation.usage.outputTokens || 0));
+    }
+  };
+}

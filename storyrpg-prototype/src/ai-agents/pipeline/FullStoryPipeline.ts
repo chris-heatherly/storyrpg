@@ -132,6 +132,7 @@ import { SeasonCanon } from './seasonCanon';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
 import { applySpinePlantMap, deriveSpinePlantMap } from './spinePlantMap';
+import { extractEpisodeKnowledge, collectReferencedFlags } from './knowledgeExtraction';
 import { buildOutcomeTextVariants } from './outcomeVariants';
 import { buildSceneTimelineLabels } from './sceneNumbering';
 import { capabilityFactStrings, capabilityNoteForProfile, characterCapabilityWorldFacts } from './characterCanonFacts';
@@ -9979,6 +9980,16 @@ export class FullStoryPipeline {
             if (spineResult.unmatched.length > 0) {
               this.emit({ type: 'debug', phase: `season_canon_ep_${i}`, message: `Spine plant map: ${spineResult.applied} applied, ${spineResult.unmatched.length} not yet planted.` });
             }
+            // B2: extract prose knowledge + claims so the canon holds who-knows-what
+            // (not just flags+capability) and the canon-consistency gate runs over real
+            // claims (it was a no-op). Deterministic seed from the QA character-knowledge
+            // bundle + the flags this episode gates on.
+            const episodeKnowledge = extractEpisodeKnowledge({
+              episodeNumber: i,
+              protagonistId: 'protagonist', // matches the flag-knowledge sealed by extractCanonDeltasFromEpisode
+              characterKnowledge: this.buildContinuityCharacterKnowledge(characterBible),
+              referencedFlags: collectReferencedFlags(generated.episode as any),
+            });
             const seal = await sealAndPersistEpisode({
               episode: generated.episode as any,
               episodeNumber: i,
@@ -9986,9 +9997,16 @@ export class FullStoryPipeline {
               ledger: this.callbackLedger,
               canon: this.seasonCanon,
               priorSnapshot: this.priorEpisodeSnapshot,
-              // Seal character-capability facts as canon (idempotent across episodes)
-              // so downstream prompts inherit who-can-do-what (Season Canon, Phase B).
-              extraDeltas: { worldFacts: characterCapabilityWorldFacts(characterBible.characters) },
+              claims: episodeKnowledge.claims,
+              // Seal capability facts (who-can-do-what) + extracted knowledge/worldFacts
+              // so downstream prompts inherit a richer canon (Season Canon, Phase B/B2).
+              extraDeltas: {
+                worldFacts: [
+                  ...characterCapabilityWorldFacts(characterBible.characters),
+                  ...(episodeKnowledge.deltas.worldFacts ?? []),
+                ],
+                knowledge: episodeKnowledge.deltas.knowledge,
+              },
               save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
             });
             this.priorEpisodeSnapshot = seal.snapshot;

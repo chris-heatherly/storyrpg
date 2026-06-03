@@ -118,8 +118,13 @@ const projectRoot = path.resolve(__dirname, '..');
 // establishedCanon field threaded into the SceneWriter + ChoiceAuthor inputs — the
 // read-side of the canon loop) and B3a (thread PipelineError phase/agent into the
 // failed-run quality-ledger row). Canon rendering lives in seasonCanon.canonForPrompt.
+//
+// +18 (21444 -> 21462): B2 — extract prose knowledge + flag claims at the seal site
+// (extractEpisodeKnowledge + collectReferencedFlags in pipeline/knowledgeExtraction.ts)
+// so the canon holds who-knows-what and the canon-consistency gate runs over real
+// claims instead of being a no-op. Only the seal-site call + merge are here.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21444,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21462,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

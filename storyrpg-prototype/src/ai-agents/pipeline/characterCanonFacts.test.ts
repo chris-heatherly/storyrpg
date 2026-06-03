@@ -11,6 +11,13 @@ const warriorBySkill = { id: 'kael', name: 'Kael', role: 'ally', traits: ['loyal
 const warriorByRole = { id: 'guard', name: 'Guard', role: 'city guard', traits: [], skills: [] } as any;
 const warriorByTrait = { id: 'mara', name: 'Mara', role: 'drifter', traits: ['battle-hardened warrior'], skills: [] } as any;
 
+// Real-shaped fixtures from the Endsong regen: empty skills/traits, archetype only
+// in the prose `overview`, generic role.
+const paladinByOverview = { id: 'aeth', name: 'Aethavyr', role: 'protagonist', traits: [], skills: [], overview: 'An immortal Lyri\'el paladin whose century of enforced detachment begins to fracture.' } as any;
+const warlordAntagonist = { id: 'vraxxan', name: 'Vraxxan', role: 'antagonist', traits: [], skills: [], overview: 'A renegade Xyn\'Taari warlord who engineered the entire war.' } as any;
+const scholarByOverview = { id: 'lys2', name: 'Lysandra', role: 'ally', traits: [], skills: [], overview: 'A mortal noblewoman-scholar whose bloodline makes her the Codex\'s living key.' } as any;
+const healerByOverview = { id: 'elara', name: 'Elara', role: 'ally', traits: [], skills: [], overview: 'A gentle younger sister — a healer whose captivity rites open the Codex.' } as any;
+
 describe('isCombatCapable', () => {
   it('is false for a scholar with no combat signal', () => {
     expect(isCombatCapable(scholar)).toBe(false);
@@ -26,6 +33,18 @@ describe('isCombatCapable', () => {
   });
   it('is false when the combat skill exists but is level 0', () => {
     expect(isCombatCapable({ id: 'x', name: 'X', role: 'clerk', traits: [], skills: [{ name: 'swordplay', level: 0 }] } as any)).toBe(false);
+  });
+
+  // Overview-driven discrimination (the audit's real data shape).
+  it('reads combat archetype from the overview when skills/traits are empty', () => {
+    expect(isCombatCapable(paladinByOverview)).toBe(true);   // "paladin"
+  });
+  it('treats an antagonist as combat-capable by default', () => {
+    expect(isCombatCapable(warlordAntagonist)).toBe(true);   // role antagonist + "warlord"
+  });
+  it('is false for a non-combatant whose archetype is only in the overview', () => {
+    expect(isCombatCapable(scholarByOverview)).toBe(false);  // "scholar"
+    expect(isCombatCapable(healerByOverview)).toBe(false);   // "healer"
   });
 });
 

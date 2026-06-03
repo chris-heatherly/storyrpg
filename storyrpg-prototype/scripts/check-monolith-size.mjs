@@ -103,8 +103,15 @@ const projectRoot = path.resolve(__dirname, '..');
 // getter — the seasonCanonEnabled flag is built client-side (GeneratorScreen), so an
 // older generator bundle would post it undefined and silently disable canon; treating
 // undefined as on makes "on for all generations" hold regardless of the client bundle.
+//
+// +33 (21381 -> 21414): audit-gap fixes 2 + 3. Fix 2 makes continuity repair run even
+// when SceneCritic is disabled (construct a one-off) and persists continuity-repair.json
+// so it's not invisibly inert. Fix 3 re-asserts the choice-type plan on the content-loop
+// blueprint + persists choice-type-plan.json to diagnose allocation-vs-propagation. Pure
+// logic stays in characterCanonFacts/continuityRepair/choiceTypePlanner; only the repair
+// method body + the re-assert/persist call site are here.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21381,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21414,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

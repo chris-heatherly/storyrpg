@@ -21,13 +21,32 @@
 import type { CharacterProfile } from '../agents/CharacterDesigner';
 
 const COMBAT_SIGNAL =
-  /\b(combat|blade|sword|fight(?:er|ing)?|martial|melee|brawl|weapon|warrior|soldier|knight|guard(?:sman)?|mercenary|assassin|duel|archer|archery|marksman|gun|spear|axe)\b/i;
+  /\b(combat|blade|sword|swordsm[ae]n|fight(?:er|ing)?|martial|melee|brawl|weapon|warrior|soldier|knight|guard(?:sman)?|mercenary|assassin|duel|archer|archery|marksman|gun|spear|axe|paladin|warlord|hunter|huntress|ranger|gladiator|captain|champion|slayer|reaver|berserker|swordmaster|battle|war-?forged)\b/i;
 
-/** Whether anything in the profile signals the character can physically fight. */
+/** Antagonist-ish roles default to combat-capable: a threat character can fight. */
+const ANTAGONIST_ROLE = /\b(antagonist|villain|enemy|warlord|tyrant|overlord|nemesis)\b/i;
+
+/**
+ * Whether anything in the profile signals the character can physically fight.
+ * In practice `skills`/`traits` are often empty, so the discriminating signal
+ * lives in the prose `overview`/`fullBackground` (e.g. "an immortal paladin",
+ * "a renegade warlord"); we scan those too. Antagonists are assumed combat-capable
+ * unless their text is purely non-combat.
+ */
 export function isCombatCapable(profile: CharacterProfile): boolean {
   if ((profile.skills ?? []).some((s) => COMBAT_SIGNAL.test(s?.name ?? '') && (s?.level ?? 0) > 0)) return true;
   if ((profile.traits ?? []).some((t) => COMBAT_SIGNAL.test(t ?? ''))) return true;
   if (COMBAT_SIGNAL.test(profile.role ?? '')) return true;
+  if (ANTAGONIST_ROLE.test(profile.role ?? '')) return true;
+  // The archetype usually lives in the prose description, not structured fields.
+  const prose = [
+    profile.overview,
+    (profile as { fullBackground?: string }).fullBackground,
+    profile.physicalDescription,
+  ]
+    .filter((s): s is string => typeof s === 'string')
+    .join(' ');
+  if (COMBAT_SIGNAL.test(prose)) return true;
   return false;
 }
 

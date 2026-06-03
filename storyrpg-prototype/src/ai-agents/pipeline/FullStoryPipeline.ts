@@ -6880,6 +6880,25 @@ export class FullStoryPipeline {
     const episodePlants: EpisodePlant[] = [];
     const encounters: Map<string, EncounterStructure> = new Map();
 
+    // Fix 3: re-assert the choice-type plan on the blueprint THIS loop iterates.
+    // assignChoiceTypes also runs right after StoryArchitect, but choicePoint.type
+    // can be lost before here (clone / checkpoint reload), leaving ChoiceAuthor with
+    // no planned type to honor (observed: relationship 0 / strategic 0). Re-running on
+    // the loop's own blueprint guarantees the type is on the objects ChoiceAuthor reads
+    // (Phase D then forces it). Persist the plan so we can tell allocation- from
+    // propagation-failures at a glance.
+    const choiceTypePlan = assignChoiceTypes(blueprint.scenes as never);
+    if (outputDirectory) {
+      await saveEarlyDiagnostic(outputDirectory, 'choice-type-plan.json', {
+        generatedAt: new Date().toISOString(),
+        episodeNumber,
+        assignments: choiceTypePlan,
+        finalTypes: blueprint.scenes
+          .filter((s) => s.choicePoint)
+          .map((s) => ({ sceneId: s.id, isEncounter: !!s.isEncounter, branches: !!s.choicePoint?.branches, type: s.choicePoint?.type })),
+      });
+    }
+
     // Initialize incremental validation
     const incrementalConfig = {
       ...INCREMENTAL_VALIDATION_DEFAULTS,
@@ -8879,12 +8898,17 @@ export class FullStoryPipeline {
     sceneContents: SceneContent[],
     characterBible: CharacterBible,
     qaReport: QAReport,
+    outputDirectory: string,
   ): Promise<void> {
-    if (!this.sceneCritic) return;
     const findings = (qaReport.continuity?.issues ?? []) as unknown as ContinuityFinding[];
     const scenes = scenesNeedingRepair(findings).slice(0, 3); // bound the repair work
     if (scenes.length === 0) return;
+    // The repair re-authors via SceneCritic. If the critic isn't enabled in config,
+    // construct a one-off from the scene-writer config so the repair still runs
+    // rather than silently no-opping (the bug this fix addresses).
+    const critic = this.sceneCritic ?? new SceneCritic(this.config.agents.sceneWriter);
     const capabilityFacts = capabilityFactStrings(characterBible.characters);
+    const repaired: Array<{ sceneId: string; beatIds: string[]; merged: number }> = [];
     for (const sceneId of scenes) {
       const scene = sceneContents.find((sc) => sc.sceneId === sceneId);
       if (!scene) continue;
@@ -8895,13 +8919,14 @@ export class FullStoryPipeline {
         .map((f) => f.location!.beatId!);
       try {
         const critique = await withTimeout(
-          this.sceneCritic.execute({ scene, characterBible, directorNotes: guidance, flaggedBeatIds }),
+          critic.execute({ scene, characterBible, directorNotes: guidance, flaggedBeatIds }),
           PIPELINE_TIMEOUTS.llmAgent,
           `SceneCritic.continuityRepair(${sceneId})`,
         );
         if (critique.success && critique.data) {
           const merged = mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never);
           if (merged > 0) {
+            repaired.push({ sceneId, beatIds: flaggedBeatIds, merged });
             this.emit({ type: 'debug', phase: 'continuity_repair', message: `Repaired ${merged} beat(s) in ${sceneId} for character-consistency continuity.` });
           }
         }
@@ -8909,6 +8934,14 @@ export class FullStoryPipeline {
         this.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity repair for ${sceneId} failed (keeping original): ${err instanceof Error ? err.message : String(err)}` });
       }
     }
+    // Persist a summary so "did repair fire?" is answerable from artifacts — the
+    // 06-qa-report.json is PRE-repair and will still list the original findings.
+    await saveEarlyDiagnostic(outputDirectory, 'continuity-repair.json', {
+      generatedAt: new Date().toISOString(),
+      candidateScenes: scenes,
+      repaired,
+      criticWasInjected: !!this.sceneCritic,
+    });
   }
 
   /**
@@ -10760,7 +10793,7 @@ export class FullStoryPipeline {
           });
           // Phase B: targeted, advisory continuity repair grounded in capability canon.
           if (this.seasonCanonOn && qaReport) {
-            await this.repairContinuityFindings(story, sceneContents, characterBible, qaReport);
+            await this.repairContinuityFindings(story, sceneContents, characterBible, qaReport, outputDirectory);
           }
         } catch (qaError) {
           const qaMsg = qaError instanceof Error ? qaError.message : String(qaError);

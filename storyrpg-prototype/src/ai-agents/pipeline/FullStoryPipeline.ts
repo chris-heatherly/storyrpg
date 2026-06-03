@@ -317,7 +317,7 @@ import {
   getLocationInfoForScene,
 } from './planningHelpers';
 import { mergeSeasonEpisodes } from './seasonStoryMerge';
-import { assembleChoiceForStory, normalizeConsequences } from './choiceAssembly';
+import { assembleChoiceForStory, foldTintFlagIntoConsequences, normalizeConsequences } from './choiceAssembly';
 import { repairLostSceneGraphBranches } from './branchRepair';
 
 // Re-export types for consumers
@@ -9414,6 +9414,9 @@ export class FullStoryPipeline {
     const scenes = sceneContents.map(sc => ({
       id: sc.sceneId,
       charactersInvolved: sc.charactersInvolved || [],
+      // D3: carry leadsTo so BranchMechanicalDivergenceValidator can see routing forks
+      // (without it, leadsTo-routed branches scored branchChoices: 0).
+      leadsTo: (sc as { leadsTo?: string[] }).leadsTo,
       beats: sc.beats.map(b => ({
         id: b.id,
         text: b.text,
@@ -9459,7 +9462,10 @@ export class FullStoryPipeline {
         id: choice.id,
         text: choice.text,
         choiceType: choice.choiceType || cs.choiceType,
-        consequences: choice.consequences || [],
+        // D1: fold tintFlag into consequences so the budget classifier counts cosmetic
+        // tint flags as the tint tier (validation runs on raw choiceSets, BEFORE story
+        // assembly does the same fold — so without this the metric showed tint 0%).
+        consequences: foldTintFlagIntoConsequences(choice.consequences || [], choice.tintFlag) || [],
         stakesAnnotation: choice.stakesAnnotation || cs.overallStakes,
         sceneContext: cs.designNotes,
         nextSceneId: choice.nextSceneId,

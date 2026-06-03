@@ -110,6 +110,16 @@ export class ConsequenceBudgetValidator {
     choiceType: string,
     hasBranching?: boolean
   ): ConsequenceBudgetCategory {
+    // Flag semantics OVERRIDE the choice-type heuristic: a `tint:` flag is cosmetic
+    // and a `route_`/`treatment_branch_` flag is structural regardless of which choice
+    // type set it. Without this, tint flags on expression choices fell into `callback`
+    // (the `allocation` metric the regen showed at tint 0%). This is the method the
+    // budget allocation actually uses (not classifyConsequence).
+    if (consequence.type === 'setFlag' && typeof consequence.flag === 'string') {
+      if (consequence.flag.startsWith('tint:')) return 'tint';
+      if (consequence.flag.startsWith('route_') || consequence.flag.startsWith('treatment_branch_')) return 'branch';
+    }
+
     // Expression choices should only produce callbacks
     if (choiceType === 'expression') {
       return 'callback';

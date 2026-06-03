@@ -21,6 +21,17 @@ describe('ConsequenceBudgetValidator', () => {
       expect(validator.classifyConsequence({ type: 'setFlag', flag: 'treatment_branch_trust' })).toBe('branch');
     });
 
+    it('end-to-end: a tint: consequence yields tint allocation > 0 (the metric the regen showed at 0)', () => {
+      const { allocation } = validator.calculateAllocation({
+        choices: [
+          { id: 'c1', choiceType: 'expression', consequences: [{ type: 'setFlag', flag: 'tint:honest' }] },
+          { id: 'c2', choiceType: 'strategic', consequences: [{ type: 'setFlag', flag: 'met_npc' }] },
+        ],
+      } as any);
+      expect(allocation.tint).toBeGreaterThan(0);
+      expect(allocation.callback).toBeGreaterThan(0);
+    });
+
     it('classifies small relationship changes as callback', () => {
       expect(
         validator.classifyConsequence({ type: 'relationship', change: 5 })

@@ -1,9 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import {
   assembleChoiceForStory,
+  foldTintFlagIntoConsequences,
   normalizeConsequence,
   normalizeConsequences,
 } from './choiceAssembly';
+
+describe('foldTintFlagIntoConsequences (D1)', () => {
+  it('adds the tintFlag as a setFlag consequence', () => {
+    const out = foldTintFlagIntoConsequences([], 'tint:honest')!;
+    expect(out).toEqual([{ type: 'setFlag', flag: 'tint:honest', value: true }]);
+  });
+  it('does not duplicate an already-present flag', () => {
+    const out = foldTintFlagIntoConsequences([{ type: 'setFlag', flag: 'tint:honest', value: true } as any], 'tint:honest')!;
+    expect(out).toHaveLength(1);
+  });
+  it('is a no-op without a tintFlag', () => {
+    expect(foldTintFlagIntoConsequences(undefined, undefined)).toBeUndefined();
+  });
+  it('assembleChoiceForStory folds tintFlag into consequences', () => {
+    const assembled = assembleChoiceForStory({ id: 'c', text: 't', choiceType: 'expression', consequences: [], tintFlag: 'tint:control' } as any);
+    expect(assembled.consequences).toContainEqual({ type: 'setFlag', flag: 'tint:control', value: true });
+  });
+});
 
 describe('choice assembly preservation', () => {
   it('normalizes relationshipType and aspect relationship aliases to dimension', () => {

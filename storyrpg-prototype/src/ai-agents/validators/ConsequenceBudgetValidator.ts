@@ -46,6 +46,18 @@ export class ConsequenceBudgetValidator {
   classifyConsequence(consequence: { type: string; [key: string]: unknown }): ConsequenceBudgetCategory {
     const type = consequence.type;
 
+    // Flag-semantics first: the pipeline encodes the budget tier in the flag PREFIX
+    // (see trackableFlagsOf / episodePlantContext / the ledger's tiering). Without
+    // this, every setFlag fell into `callback`, so cosmetic `tint:` flags never
+    // counted as tint (stuck at 0%) and structural routing flags never counted as
+    // branch. Honor the prefix so the budget reflects authored intent.
+    if (type === 'setFlag' && typeof consequence.flag === 'string') {
+      const flag = consequence.flag;
+      if (flag.startsWith('tint:')) return 'tint';
+      if (flag.startsWith('route_') || flag.startsWith('treatment_branch_')) return 'branch';
+      // plain story flag → falls through to the callback bucket below
+    }
+
     // Callback Lines: Small state changes, relationship tweaks, flags
     if (
       type === 'setFlag' ||

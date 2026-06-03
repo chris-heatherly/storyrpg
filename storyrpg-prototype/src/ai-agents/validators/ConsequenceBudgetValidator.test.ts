@@ -5,10 +5,20 @@ describe('ConsequenceBudgetValidator', () => {
   describe('classifyConsequence', () => {
     const validator = new ConsequenceBudgetValidator();
 
-    it('classifies setFlag as callback', () => {
+    it('classifies a plain setFlag as callback', () => {
       expect(validator.classifyConsequence({ type: 'setFlag', flag: 'met_npc' })).toBe(
         'callback'
       );
+    });
+
+    // D1: honor the flag prefix so the budget reflects the pipeline's flag semantics.
+    it('classifies a tint: setFlag as tint (was wrongly callback)', () => {
+      expect(validator.classifyConsequence({ type: 'setFlag', flag: 'tint:warmth' })).toBe('tint');
+    });
+
+    it('classifies route_/treatment_branch_ setFlags as branch', () => {
+      expect(validator.classifyConsequence({ type: 'setFlag', flag: 'route_north' })).toBe('branch');
+      expect(validator.classifyConsequence({ type: 'setFlag', flag: 'treatment_branch_trust' })).toBe('branch');
     });
 
     it('classifies small relationship changes as callback', () => {

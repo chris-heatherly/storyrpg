@@ -33,6 +33,25 @@ function normalizeDelayedConsequences(delayedConsequences: Choice['delayedConseq
   }));
 }
 
+/**
+ * Fold a choice's `tintFlag` into its consequences as a real `setFlag`. Previously
+ * the tintFlag was dead metadata — never applied at runtime, never counted in the
+ * consequence budget (tint stuck at 0%), and never surfaced for tint callbacks.
+ * Making it a real consequence fixes all three (the engine sets it, the budget
+ * classifies a `tint:` setFlag as the tint tier, and episodePlantContext can surface
+ * it). Deduped so a choice that already sets the flag isn't doubled.
+ */
+export function foldTintFlagIntoConsequences(
+  consequences: Consequence[] | undefined,
+  tintFlag: string | undefined,
+): Consequence[] | undefined {
+  if (!tintFlag) return consequences;
+  const list = Array.isArray(consequences) ? [...consequences] : [];
+  const already = list.some((c) => c.type === 'setFlag' && (c as { flag?: string }).flag === tintFlag);
+  if (!already) list.push({ type: 'setFlag', flag: tintFlag, value: true } as Consequence);
+  return list;
+}
+
 export function assembleChoiceForStory(
   choice: Choice,
   nextSceneId: string | undefined = choice.nextSceneId,
@@ -59,7 +78,7 @@ export function assembleChoiceForStory(
     witnessReactions: choice.witnessReactions,
     failureResidue: choice.failureResidue,
     visualResidueHint: choice.visualResidueHint,
-    consequences: normalizeConsequences(choice.consequences),
+    consequences: foldTintFlagIntoConsequences(normalizeConsequences(choice.consequences), choice.tintFlag),
     delayedConsequences: normalizeDelayedConsequences(choice.delayedConsequences),
     routeContext: choice.routeContext,
     nextSceneId,

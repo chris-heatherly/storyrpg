@@ -904,7 +904,11 @@ function runNameFromDir(outputDir: string): string {
  * Append a 'failed' row to the cross-run quality ledger at a genuine terminal
  * abort (F4). Best-effort; never throws.
  */
-export async function appendFailedRunLedger(outputDir: string, errorCount = 1): Promise<void> {
+export async function appendFailedRunLedger(
+  outputDir: string,
+  errorCount = 1,
+  details?: { blocked?: boolean; failureKind?: string; validatorId?: string },
+): Promise<void> {
   if (!outputDir) return;
   try {
     await appendQualityLedger(ledgerBaseDir(outputDir), {
@@ -912,6 +916,9 @@ export async function appendFailedRunLedger(outputDir: string, errorCount = 1): 
       runDir: runNameFromDir(outputDir),
       outcome: 'failed',
       errorCount,
+      blocked: details?.blocked,
+      failureKind: details?.failureKind,
+      validatorId: details?.validatorId,
     });
   } catch { /* ledger is best-effort */ }
 }

@@ -46,6 +46,12 @@ export interface QualityLedgerEntry {
   advisoryWarningCount?: number;
   episodeCount?: number;
   durationMs?: number;
+  /** True when the run was hard-blocked (failed a blocking gate / PipelineError). */
+  blocked?: boolean;
+  /** Coarse failure category for cross-run triage, e.g. the PipelineError `phase`. */
+  failureKind?: string;
+  /** The validator/agent that produced the blocking failure, when known. */
+  validatorId?: string;
 }
 
 const LEDGER_FILENAME = 'quality-ledger.jsonl';

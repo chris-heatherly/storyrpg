@@ -823,6 +823,17 @@ export class FullStoryPipeline {
   private get seasonCanonOn(): boolean {
     return this.config.generation?.seasonCanonEnabled !== false;
   }
+
+  /**
+   * B1: the sealed canon rendered as the read-only "ESTABLISHED CANON — do not
+   * contradict" block for SceneWriter/ChoiceAuthor prompts (the read-back path).
+   * Returns undefined when canon is off or empty so the prompt section is skipped.
+   */
+  private establishedCanonForPrompt(episodeNumber?: number): string | undefined {
+    if (!this.seasonCanonOn) return undefined;
+    const block = this.seasonCanon.canonForPrompt(episodeNumber);
+    return block && block.trim() ? block : undefined;
+  }
   private completedPhases = new Set<string>();
   private dependencySchedulerStats = {
     hasCycle: false,
@@ -7287,6 +7298,9 @@ export class FullStoryPipeline {
           }),
           relevantFlags: blueprint.suggestedFlags,
           relevantScores: blueprint.suggestedScores,
+          // B1 (Season Canon read-back): serve the sealed canon as authoritative
+          // "do not contradict" context so prior-episode facts constrain this prose.
+          establishedCanon: this.establishedCanonForPrompt(brief.episode?.number),
           unresolvedCallbacks: mergeUnresolvedForScene(this.getUnresolvedCallbacksForPrompt(brief.episode?.number), episodePlants, brief.episode?.number ?? 1),
           targetBeatCount: this.getTargetBeatCountForScene(sceneBlueprint),
           dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
@@ -7593,6 +7607,8 @@ export class FullStoryPipeline {
               availableFlags: blueprint.suggestedFlags,
               availableScores: blueprint.suggestedScores,
               availableTags: blueprint.suggestedTags,
+              // B1: sealed canon as authoritative "do not contradict" context.
+              establishedCanon: this.establishedCanonForPrompt(brief.episode?.number),
               unresolvedCallbacks: this.getUnresolvedCallbacksForPrompt(brief.episode?.number),
               possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
                 const scene = blueprint.scenes.find(s => s.id === id);
@@ -10425,7 +10441,13 @@ export class FullStoryPipeline {
             stack: error instanceof Error ? error.stack : undefined,
             ...(details ? { details } : {}),
           }]);
-          await appendFailedRunLedger(this._currentOutputDirectory);
+          // B3a: record the failure kind for cross-run triage. PipelineError carries
+          // the phase (failureKind) + agent/validator (validatorId).
+          await appendFailedRunLedger(this._currentOutputDirectory, 1, {
+            blocked: true,
+            failureKind: error instanceof PipelineError ? error.phase : (error instanceof Error ? error.name : 'unknown'),
+            validatorId: error instanceof PipelineError ? error.agent : undefined,
+          });
         }
       }
 

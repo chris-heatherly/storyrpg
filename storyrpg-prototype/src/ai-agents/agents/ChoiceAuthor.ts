@@ -63,6 +63,10 @@ export interface ChoiceAuthorInput {
   beatText: string; // The beat text leading up to this choice
   beatId: string;
 
+  // B1 (Season Canon): sealed read-only facts to honor ("ESTABLISHED CANON — do not
+  // contradict"); pre-formatted by SeasonCanon.canonForPrompt.
+  establishedCanon?: string;
+
   // Story context
   storyContext: {
     title: string;
@@ -1012,7 +1016,7 @@ ${structuralContext}
 - **Title**: ${input.storyContext.title}
 - **Genre**: ${input.storyContext.genre}
 - **Tone**: ${input.storyContext.tone}
-${input.storyContext.worldContext ? `- **World**: ${input.storyContext.worldContext}\n` : ''}${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}${input.memoryContext ? `\n## Pipeline Memory (Insights from Prior Generations)\n${input.memoryContext}\n` : ''}
+${input.storyContext.worldContext ? `- **World**: ${input.storyContext.worldContext}\n` : ''}${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}${input.memoryContext ? `\n## Pipeline Memory (Insights from Prior Generations)\n${input.memoryContext}\n` : ''}${input.establishedCanon ? `\n## ${input.establishedCanon}\n(Treat the above as fixed truth — choices and their consequences must not contradict it.)\n` : ''}
 ## Scene Context
 - **Scene**: ${input.sceneBlueprint.name}
 - **Location**: ${input.sceneBlueprint.location}

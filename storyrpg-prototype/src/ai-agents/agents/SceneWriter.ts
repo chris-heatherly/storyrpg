@@ -226,6 +226,10 @@ export interface SceneWriterInput {
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
 
+  // B1 (Season Canon): sealed, read-only facts to honor verbatim ("ESTABLISHED
+  // CANON — do not contradict"). Pre-formatted by SeasonCanon.canonForPrompt.
+  establishedCanon?: string;
+
   // Branch topology context from BranchManager (Phase 1.1).
   // When provided, SceneWriter knows whether this scene is a bottleneck,
   // a branch-only scene, or a reconvergence point, and what state differences
@@ -1321,7 +1325,7 @@ ${structuralContext}
 - **Genre**: ${input.storyContext.genre}
 - **Tone**: ${input.storyContext.tone}
 - **World**: ${input.storyContext.worldContext}
-${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}${input.memoryContext ? `\n## Pipeline Memory (Insights from Prior Generations)\n${input.memoryContext}\n` : ''}
+${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}${input.memoryContext ? `\n## Pipeline Memory (Insights from Prior Generations)\n${input.memoryContext}\n` : ''}${input.establishedCanon ? `\n## ${input.establishedCanon}\n(Treat the above as fixed truth — your prose must not contradict it.)\n` : ''}
 ## Scene Blueprint
 - **Scene ID**: ${input.sceneBlueprint.id}
 - **Name**: ${input.sceneBlueprint.name}

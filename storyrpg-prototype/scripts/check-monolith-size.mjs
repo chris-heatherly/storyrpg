@@ -113,8 +113,13 @@ const projectRoot = path.resolve(__dirname, '..');
 //
 // +8 (21414 -> 21422): audit-gap A1 — relocate the continuity-repair call into its own
 // try/catch after the QA block (a QA-phase throw no longer skips repair) + an entry log.
+//
+// +22 (21422 -> 21444): B1 canon read-back (establishedCanonForPrompt getter + the
+// establishedCanon field threaded into the SceneWriter + ChoiceAuthor inputs — the
+// read-side of the canon loop) and B3a (thread PipelineError phase/agent into the
+// failed-run quality-ledger row). Canon rendering lives in seasonCanon.canonForPrompt.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21422,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21444,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

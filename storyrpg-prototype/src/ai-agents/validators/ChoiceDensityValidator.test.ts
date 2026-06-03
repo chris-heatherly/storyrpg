@@ -76,3 +76,17 @@ describe('ChoiceDensityValidator', () => {
     expect(result.issues.filter((i) => i.level === 'error')).toHaveLength(0);
   });
 });
+
+describe('ChoiceDensityValidator structural density (D4)', () => {
+  const mk = (id: string, choice: boolean) => ({ id, beats: [{ id: `${id}-b`, text: 'word '.repeat(20), isChoicePoint: choice }] });
+  it('warns when <50% of scenes have a choice point', async () => {
+    const v = new ChoiceDensityValidator();
+    const r = await v.validate({ scenes: [mk('s1', true), mk('s2', false), mk('s3', false), mk('s4', false)] } as any);
+    expect(r.issues.some((i) => i.message.includes('<50%'))).toBe(true);
+  });
+  it('passes a well-distributed episode', async () => {
+    const v = new ChoiceDensityValidator();
+    const r = await v.validate({ scenes: [mk('s1', true), mk('s2', true), mk('s3', false), mk('s4', true)] } as any);
+    expect(r.issues.some((i) => i.message.includes('<50%') || i.message.includes('consecutive') || i.message.includes('first scene'))).toBe(false);
+  });
+});

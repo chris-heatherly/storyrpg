@@ -175,6 +175,49 @@ export class ChoiceDensityValidator {
       })),
     };
 
+    // D4: structural choice-density — timing density can pass while choices cluster in
+    // a couple of scenes (the lumpy-distribution root). Require choice points spread
+    // across the scene graph: >=50% of scenes carry one, the first scene has one, and
+    // no run of >2 scenes without one.
+    const sceneHasChoice = scenesWithTiming.map((s) => s.beats.some((b) => b.isChoicePoint));
+    const totalScenes = sceneHasChoice.length;
+    const scenesWithChoiceCount = sceneHasChoice.filter(Boolean).length;
+    if (totalScenes >= 3) {
+      if (scenesWithChoiceCount / totalScenes < 0.5) {
+        issues.push({
+          category: 'choice_density',
+          level: this.config.level,
+          message: `Only ${scenesWithChoiceCount}/${totalScenes} scenes have a choice point (<50%) — choices are too clustered.`,
+          location: {},
+          suggestion: 'Distribute choice points so at least half the scenes have one (raises the type budget so the 35/30/20/15 mix can land).',
+        });
+      }
+      if (!sceneHasChoice[0]) {
+        issues.push({
+          category: 'choice_density',
+          level: this.config.level,
+          message: 'The first scene has no choice point.',
+          location: {},
+          suggestion: 'Open with an early choice to establish player agency.',
+        });
+      }
+      let consecutive = 0;
+      let maxConsecutive = 0;
+      for (const has of sceneHasChoice) {
+        consecutive = has ? 0 : consecutive + 1;
+        maxConsecutive = Math.max(maxConsecutive, consecutive);
+      }
+      if (maxConsecutive > 2) {
+        issues.push({
+          category: 'choice_density',
+          level: this.config.level,
+          message: `${maxConsecutive} consecutive scenes without a choice point (max 2).`,
+          location: {},
+          suggestion: 'Break up long choiceless stretches with an interim decision.',
+        });
+      }
+    }
+
     // Check first choice timing (cap)
     if (firstChoiceSeconds > this.config.firstChoiceMaxSeconds) {
       issues.push({

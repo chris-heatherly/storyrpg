@@ -86,8 +86,15 @@ const projectRoot = path.resolve(__dirname, '..');
 // season has sealed, advisory-check that every promise is paid or abandoned. Gate
 // lives in validators/promiseLedgerValidators.ts (validateSeasonCompletion) +
 // pipeline/spinePlantMap.ts; only the thin season-end call site + import are here.
+//
+// +63 (21295 -> 21358): audit-fix phases B/C/E/F net. Phase B (character-consistency)
+// adds the repairContinuityFindings orchestration method (SceneCritic re-author +
+// merge — needs `this`, so it lives here) plus grounding of ContinuityChecker
+// establishedFacts and SceneWriter NPC descriptions and the canon-seal extraDeltas;
+// pure logic is in pipeline/characterCanonFacts.ts + continuityRepair.ts. Phases
+// C/E/F net-shrank their call sites (sceneNumbering / outcomeVariants / tint plants).
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21295,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21358,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

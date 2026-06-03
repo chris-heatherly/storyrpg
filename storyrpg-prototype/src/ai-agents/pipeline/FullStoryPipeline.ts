@@ -133,6 +133,14 @@ import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
 import { buildOutcomeTextVariants } from './outcomeVariants';
 import { buildSceneTimelineLabels } from './sceneNumbering';
+import { capabilityFactStrings, capabilityNoteForProfile, characterCapabilityWorldFacts } from './characterCanonFacts';
+import {
+  scenesNeedingRepair,
+  selectRepairableContinuityFindings,
+  buildContinuityRepairGuidance,
+  mergeRewrittenBeatsIntoStory,
+  type ContinuityFinding,
+} from './continuityRepair';
 import type { EpisodeStateSnapshot } from './episodeStateSnapshot';
 import { SavingPhase } from './phases/SavingPhase';
 import {
@@ -7234,11 +7242,14 @@ export class FullStoryPipeline {
           },
           npcs: sceneBlueprint.npcsPresent.map(npcId => {
             const profile = characterBible.characters.find(c => c.id === npcId);
+            // Prevention: append the capability constraint so the writer never
+            // depicts a non-combatant fighting (Season Canon, Phase B).
+            const capabilityNote = profile ? capabilityNoteForProfile(profile) : '';
             return {
               id: npcId,
               name: profile?.name || npcId,
               pronouns: profile?.pronouns || 'he/him',
-              description: profile?.overview || '',
+              description: [profile?.overview || '', capabilityNote].filter(Boolean).join(' '),
               physicalDescription: profile?.physicalDescription,
               voiceNotes: profile?.voiceProfile?.writingGuidance || '',
               currentMood: profile?.voiceProfile?.whenNervous,
@@ -8814,7 +8825,9 @@ export class FullStoryPipeline {
       })),
       knownFlags: blueprint.suggestedFlags,
       knownScores: blueprint.suggestedScores,
-      establishedFacts: [],
+      // Ground continuity in character-capability canon so it reliably flags
+      // "character does something they can't" (the scholar-doing-blade-work bug).
+      establishedFacts: capabilityFactStrings(characterBible.characters),
       storyThemes: brief.story.themes,
       targetTone: brief.story.tone,
       sceneContexts: blueprint.scenes.map(s => ({
@@ -8840,6 +8853,51 @@ export class FullStoryPipeline {
     this.emitPhaseProgress('qa', 3, qaStepTotal, 'qa:steps', 'QA report finalized');
 
     return report;
+  }
+
+  /**
+   * Phase B (Season Canon): targeted, advisory continuity repair. For scenes the
+   * ContinuityChecker flagged with a character-consistency contradiction
+   * (state_conflict / impossible_knowledge / contradiction), re-author the flagged
+   * beats via SceneCritic — grounded in the capability canon — and merge the
+   * rewritten PROSE back into the already-assembled story (ids/nav/choices
+   * untouched). Bounded + advisory: never blocks; keeps the original on any failure.
+   */
+  private async repairContinuityFindings(
+    story: Story,
+    sceneContents: SceneContent[],
+    characterBible: CharacterBible,
+    qaReport: QAReport,
+  ): Promise<void> {
+    if (!this.sceneCritic) return;
+    const findings = (qaReport.continuity?.issues ?? []) as unknown as ContinuityFinding[];
+    const scenes = scenesNeedingRepair(findings).slice(0, 3); // bound the repair work
+    if (scenes.length === 0) return;
+    const capabilityFacts = capabilityFactStrings(characterBible.characters);
+    for (const sceneId of scenes) {
+      const scene = sceneContents.find((sc) => sc.sceneId === sceneId);
+      if (!scene) continue;
+      const guidance = buildContinuityRepairGuidance(sceneId, findings, capabilityFacts);
+      if (!guidance) continue;
+      const flaggedBeatIds = selectRepairableContinuityFindings(findings)
+        .filter((f) => f.location?.sceneId === sceneId && f.location?.beatId)
+        .map((f) => f.location!.beatId!);
+      try {
+        const critique = await withTimeout(
+          this.sceneCritic.execute({ scene, characterBible, directorNotes: guidance, flaggedBeatIds }),
+          PIPELINE_TIMEOUTS.llmAgent,
+          `SceneCritic.continuityRepair(${sceneId})`,
+        );
+        if (critique.success && critique.data) {
+          const merged = mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never);
+          if (merged > 0) {
+            this.emit({ type: 'debug', phase: 'continuity_repair', message: `Repaired ${merged} beat(s) in ${sceneId} for character-consistency continuity.` });
+          }
+        }
+      } catch (err) {
+        this.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity repair for ${sceneId} failed (keeping original): ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
   }
 
   /**
@@ -9861,6 +9919,9 @@ export class FullStoryPipeline {
               ledger: this.callbackLedger,
               canon: this.seasonCanon,
               priorSnapshot: this.priorEpisodeSnapshot,
+              // Seal character-capability facts as canon (idempotent across episodes)
+              // so downstream prompts inherit who-can-do-what (Season Canon, Phase B).
+              extraDeltas: { worldFacts: characterCapabilityWorldFacts(characterBible.characters) },
               save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
             });
             this.priorEpisodeSnapshot = seal.snapshot;
@@ -10674,6 +10735,10 @@ export class FullStoryPipeline {
             phase: `qa_ep_${i}`,
             message: `Episode ${i} QA Score: ${qaReport.overallScore}/100 - ${qaReport.passesQA ? 'PASSED' : 'NEEDS REVISION'}`,
           });
+          // Phase B: targeted, advisory continuity repair grounded in capability canon.
+          if (this.config.generation?.seasonCanonEnabled && qaReport) {
+            await this.repairContinuityFindings(story, sceneContents, characterBible, qaReport);
+          }
         } catch (qaError) {
           const qaMsg = qaError instanceof Error ? qaError.message : String(qaError);
           console.error(`[Pipeline] Episode ${i} QA failed (non-fatal): ${qaMsg}`);

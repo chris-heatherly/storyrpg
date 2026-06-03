@@ -63,7 +63,14 @@ export function buildSceneWriterCallbackSection(
     'Payoffs do not need to be branches. The player should feel remembered',
     'without seeing the machinery.',
     '',
-    'Max 2 callback variants per scene. Do NOT invent new hook ids.',
+    'REQUIRED — branch/path residue: if a condition key above names a path the',
+    'player just took (e.g. held vs broke formation, sided-with vs defied an NPC),',
+    'this scene reconverges those paths — author a short flag-gated TextVariant for',
+    'EACH such flag so the chosen path leaves visible aftermath (a glance, a line of',
+    'dialogue, an altered description). Two players on different paths must not read',
+    'identical prose here.',
+    '',
+    'Up to 3 callback variants per scene. Do NOT invent new hook ids.',
     '',
   );
   return lines.join('\n');

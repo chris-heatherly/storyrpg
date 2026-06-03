@@ -810,9 +810,19 @@ export class FullStoryPipeline {
   // later episodes. Persisted to `09-callback-ledger.json`.
   private callbackLedger: CallbackLedger = new CallbackLedger();
   // Season Canon (P4): durable frozen facts + the snapshot carried forward across
-  // sequentially-generated episodes. Only used when generation.seasonCanonEnabled.
+  // sequentially-generated episodes.
   private seasonCanon: SeasonCanon = new SeasonCanon();
   private priorEpisodeSnapshot?: EpisodeStateSnapshot;
+  /**
+   * Season Canon is ON by default (opt-out, not opt-in): it activates unless the
+   * config EXPLICITLY sets seasonCanonEnabled === false. The flag is built client-
+   * side (GeneratorScreen -> buildPipelineConfig) and may be absent/undefined when an
+   * older generator bundle posts the job; treating undefined as ON makes "on for all
+   * generations" hold regardless of the client bundle. Disable with seasonCanonEnabled:false.
+   */
+  private get seasonCanonOn(): boolean {
+    return this.config.generation?.seasonCanonEnabled !== false;
+  }
   private completedPhases = new Set<string>();
   private dependencySchedulerStats = {
     hasCycle: false,
@@ -9737,7 +9747,7 @@ export class FullStoryPipeline {
       // Season Canon (P4) resume: rehydrate sealed canon + ledger from disk so a
       // later partial run skips re-sealing already-sealed episodes and reads prior
       // facts. Best-effort — absent/corrupt artifacts just start fresh.
-      if (this.config.generation?.seasonCanonEnabled) {
+      if (this.seasonCanonOn) {
         const savedCanon = loadEarlyDiagnosticSync<any>(outputDirectory, 'season-canon.json');
         if (savedCanon) { try { this.seasonCanon = SeasonCanon.deserialize(savedCanon); } catch { /* start fresh */ } }
         const savedLedger = loadEarlyDiagnosticSync<any>(outputDirectory, 'season-ledger.json');
@@ -9912,7 +9922,7 @@ export class FullStoryPipeline {
           if (generated.bestPracticesReport) episodeBPReports.push(generated.bestPracticesReport);
           // Season Canon (P4): seal the validated episode into durable canon + ledger
           // and carry state forward. Gate issues advisory unless seasonCanonBlocking.
-          if (this.config.generation?.seasonCanonEnabled && generated.episode) {
+          if (this.seasonCanonOn && generated.episode) {
             // Phase G: pin each promise's explicit payoffEpisode from the season spine
             // (derived from seasonFlags) so the promise-due gate has real targets.
             const spineResult = applySpinePlantMap(this.callbackLedger, deriveSpinePlantMap(baseBrief.seasonPlan));
@@ -9973,7 +9983,7 @@ export class FullStoryPipeline {
 
       // Season Canon (P5): when the whole season has been sealed, run the
       // completion gate — every promise must be paid or abandoned. Advisory.
-      if (this.config.generation?.seasonCanonEnabled &&
+      if (this.seasonCanonOn &&
           this.seasonCanon.sealedEpisodeNumbers().length >= (analysis.totalEstimatedEpisodes || this.totalEpisodes)) {
         for (const issue of validateSeasonCompletion(this.callbackLedger)) {
           this.emit({ type: 'warning', phase: 'season_canon_completion', message: `[advisory] ${issue.message}` });
@@ -10749,7 +10759,7 @@ export class FullStoryPipeline {
             message: `Episode ${i} QA Score: ${qaReport.overallScore}/100 - ${qaReport.passesQA ? 'PASSED' : 'NEEDS REVISION'}`,
           });
           // Phase B: targeted, advisory continuity repair grounded in capability canon.
-          if (this.config.generation?.seasonCanonEnabled && qaReport) {
+          if (this.seasonCanonOn && qaReport) {
             await this.repairContinuityFindings(story, sceneContents, characterBible, qaReport);
           }
         } catch (qaError) {

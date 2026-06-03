@@ -98,8 +98,13 @@ const projectRoot = path.resolve(__dirname, '..');
 // ledger before each seal (deriveSpinePlantMap from seasonFlags + applySpinePlantMap,
 // both in pipeline/spinePlantMap.ts) and the seasonCanonBlocking hard-fail branch;
 // only the thin apply + throw call sites are here.
+//
+// +10 (21371 -> 21381): Season Canon defaults ON (opt-out) via a `seasonCanonOn`
+// getter — the seasonCanonEnabled flag is built client-side (GeneratorScreen), so an
+// older generator bundle would post it undefined and silently disable canon; treating
+// undefined as on makes "on for all generations" hold regardless of the client bundle.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21371,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21381,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

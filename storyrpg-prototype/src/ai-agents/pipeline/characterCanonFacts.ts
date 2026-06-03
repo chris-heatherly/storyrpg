@@ -31,10 +31,17 @@ export function isCombatCapable(profile: CharacterProfile): boolean {
   return false;
 }
 
-/** A one-line capability constraint for a profile, or '' when combat-capable. */
+/**
+ * A one-line capability constraint for a profile, or '' when combat-capable. The
+ * constraint targets SKILLED/trained combat (martial prowess, expert weapon use,
+ * winning fights) — not any physical act — so a desperate or clumsy move under
+ * duress (shoving, interposing, a panicked grab) stays in-bounds. This keeps the
+ * real bug (a scholar competently delivering "blade-work") flagged without
+ * false-flagging ordinary heroics.
+ */
 export function capabilityNoteForProfile(profile: CharacterProfile): string {
   if (isCombatCapable(profile)) return '';
-  return `${profile.name} has no established combat training — do not depict ${profile.name} fighting, wielding weapons, or performing physical-combat feats.`;
+  return `${profile.name} has no formal combat training — do not depict ${profile.name} as a skilled fighter, winning fights through martial prowess, or wielding weapons with expertise. A desperate, clumsy, or instinctive physical act under duress is acceptable.`;
 }
 
 export interface CapabilityWorldFact {

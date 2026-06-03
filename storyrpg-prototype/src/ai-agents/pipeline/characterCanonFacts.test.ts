@@ -31,7 +31,7 @@ describe('isCombatCapable', () => {
 
 describe('capability facts', () => {
   it('emits a no-combat constraint only for non-combatants', () => {
-    expect(capabilityNoteForProfile(scholar)).toContain('no established combat training');
+    expect(capabilityNoteForProfile(scholar)).toContain('no formal combat training');
     expect(capabilityNoteForProfile(warriorBySkill)).toBe('');
   });
   it('builds keyed canon world-facts for non-combatants', () => {

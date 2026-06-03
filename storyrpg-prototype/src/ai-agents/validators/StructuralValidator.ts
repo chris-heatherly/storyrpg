@@ -13,6 +13,7 @@
 
 import { Story, Episode, Scene, Beat, Encounter } from '../../types';
 import { collidingSceneIds } from './beatIdCollisions';
+import { isTerminalSceneTarget } from '../../engine/storyEngine';
 
 export interface StructuralIssue {
   severity: 'error' | 'warning';
@@ -25,7 +26,8 @@ export interface StructuralIssue {
     | 'empty_content'
     | 'malformed_data'
     | 'invalid_sequence'
-    | 'navigation_loop';
+    | 'navigation_loop'
+    | 'dead_end_scene';
   location: {
     episodeId?: string;
     sceneId?: string;
@@ -114,7 +116,7 @@ export class StructuralValidator {
       if (scene.leadsTo) {
         for (const targetId of scene.leadsTo) {
           if (!sceneIds.has(targetId) && !targetId.startsWith('episode-')) {
-            issues.push(this.createIssue('error', 'broken_reference', 
+            issues.push(this.createIssue('error', 'broken_reference',
               { ...loc, sceneId: scene.id },
               `Scene ${scene.id} leadsTo non-existent scene: ${targetId}`,
               'leadsTo', 'valid scene ID', targetId, true,
@@ -123,7 +125,30 @@ export class StructuralValidator {
         }
       }
     }
-    
+
+    // C3: dead-end-scene gate. A non-terminal scene must route somewhere — empty
+    // `leadsTo` AND no onward `nextSceneId` on any beat/choice (and not a terminal
+    // sentinel) strands the player. The existing dead-end check is per-BEAT; this is
+    // the per-SCENE backstop the audit found missing.
+    for (const scene of episode.scenes || []) {
+      if (isTerminalSceneTarget(scene.id)) continue;
+      if (Array.isArray(scene.leadsTo) && scene.leadsTo.length > 0) continue;
+      const routesOnward = (scene.beats || []).some((b) => {
+        const beatRoutes = !!b.nextSceneId && (isTerminalSceneTarget(b.nextSceneId) || b.nextSceneId !== scene.id);
+        const choiceRoutes = (b.choices || []).some(
+          (c) => !!c.nextSceneId && (isTerminalSceneTarget(c.nextSceneId) || c.nextSceneId !== scene.id),
+        );
+        return beatRoutes || choiceRoutes;
+      });
+      if (!routesOnward) {
+        issues.push(this.createIssue('error', 'dead_end_scene',
+          { ...loc, sceneId: scene.id },
+          `Scene ${scene.id} is non-terminal but has no onward route (empty leadsTo; no beat/choice nextSceneId; not a terminal sentinel)`,
+          'leadsTo', 'a next scene or terminal sentinel', '(none)', false,
+          `Set leadsTo, route a choice/beat onward, or end with a terminal sentinel (episode-end)`));
+      }
+    }
+
     return issues;
   }
   

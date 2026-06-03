@@ -444,3 +444,31 @@ describe('StructuralValidator namespaces colliding beat ids', () => {
     expect(JSON.stringify(second.story)).toBe(before);
   });
 });
+
+describe('StructuralValidator dead-end-scene gate (C3)', () => {
+  const validator = new StructuralValidator();
+
+  it('flags a non-terminal scene with empty leadsTo and no onward route', () => {
+    const story = makeStory();
+    // Strip the only onward route (the choice nextSceneId) → dead end.
+    (story.episodes[0].scenes[0] as any).beats[2].choices = [
+      { id: 'c1', text: 'Linger', choiceType: 'expression' },
+    ];
+    const issues = (validator as any).validateEpisode(story.episodes[0], story);
+    expect(issues.some((i: any) => i.type === 'dead_end_scene' && i.location.sceneId === 'scene-1')).toBe(true);
+  });
+
+  it('does NOT flag a scene that routes onward via a terminal sentinel', () => {
+    const story = makeStory(); // beat-3 choice routes to episode-end
+    const issues = (validator as any).validateEpisode(story.episodes[0], story);
+    expect(issues.some((i: any) => i.type === 'dead_end_scene')).toBe(false);
+  });
+
+  it('does NOT flag a scene that routes onward via leadsTo', () => {
+    const story = makeStory();
+    (story.episodes[0].scenes[0] as any).beats[2].choices = [];
+    (story.episodes[0].scenes[0] as any).leadsTo = ['episode-end'];
+    const issues = (validator as any).validateEpisode(story.episodes[0], story);
+    expect(issues.some((i: any) => i.type === 'dead_end_scene')).toBe(false);
+  });
+});

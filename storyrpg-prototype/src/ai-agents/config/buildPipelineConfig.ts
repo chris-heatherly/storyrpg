@@ -327,7 +327,7 @@ export function buildPipelineConfig(
       seasonCanonEnabled:
         (input.generationSettings as { seasonCanonEnabled?: boolean }).seasonCanonEnabled ?? true,
       seasonCanonBlocking:
-        (input.generationSettings as { seasonCanonBlocking?: boolean }).seasonCanonBlocking ?? false,
+        (input.generationSettings as { seasonCanonBlocking?: boolean }).seasonCanonBlocking ?? true,
     },
     narration: {
       enabled: input.narrationSettings.enabled,

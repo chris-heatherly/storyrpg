@@ -1062,8 +1062,8 @@ export function loadConfig(): PipelineConfig {
       // snapshot and runs the advisory promise/canon gates). Set SEASON_CANON_ENABLED=0
       // to opt out. The gates stay advisory until seasonCanonBlocking is set.
       seasonCanonEnabled: (env.EXPO_PUBLIC_SEASON_CANON_ENABLED ?? env.SEASON_CANON_ENABLED) !== '0',
-      seasonCanonBlocking:
-        env.EXPO_PUBLIC_SEASON_CANON_BLOCKING === 'true' || env.SEASON_CANON_BLOCKING === 'true',
+      // D2: blocking on by default (opt-out) — set SEASON_CANON_BLOCKING=0 to disable.
+      seasonCanonBlocking: (env.EXPO_PUBLIC_SEASON_CANON_BLOCKING ?? env.SEASON_CANON_BLOCKING) !== '0',
     },
     memory: {
       enabled: env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' || env.CLAUDE_MEMORY === 'true' || defaultConfig.provider === 'anthropic',

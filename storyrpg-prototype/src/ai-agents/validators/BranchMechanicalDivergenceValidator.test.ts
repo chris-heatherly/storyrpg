@@ -53,3 +53,41 @@ describe('BranchMechanicalDivergenceValidator', () => {
     expect(result.metrics.branchesWithoutResidue).toBe(0);
   });
 });
+
+describe('BranchMechanicalDivergenceValidator routing-fork detection (D3)', () => {
+  it('counts choices in a leadsTo-routing-fork scene even without per-choice nextSceneId', () => {
+    const validator = new BranchMechanicalDivergenceValidator();
+    const result = validator.validate({
+      scenes: [
+        {
+          id: 'scene-2',
+          name: 'Hold or break formation',
+          leadsTo: ['scene-3a', 'scene-3b'], // routing fork
+          beats: [
+            {
+              id: 'beat-1',
+              text: 'Decide.',
+              choices: [
+                // no nextSceneId / branching intent — routes via a flag
+                { id: 'c1', text: 'Hold', consequences: [] },
+                { id: 'c2', text: 'Break', consequences: [] },
+              ],
+            },
+          ],
+        } as any,
+      ],
+    });
+    expect(result.metrics.branchChoices).toBe(2); // was 0 before D3
+    expect(result.metrics.branchesWithoutResidue).toBe(2); // no residue → warnings
+  });
+
+  it('does not treat a single-target scene as a fork', () => {
+    const validator = new BranchMechanicalDivergenceValidator();
+    const result = validator.validate({
+      scenes: [
+        { id: 's', name: 'Linear', leadsTo: ['scene-2'], beats: [{ id: 'b', text: 't', choices: [{ id: 'c', text: 'go', consequences: [] }] }] } as any,
+      ],
+    });
+    expect(result.metrics.branchChoices).toBe(0);
+  });
+});

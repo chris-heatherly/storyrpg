@@ -30,7 +30,13 @@ export class BranchMechanicalDivergenceValidator extends BaseValidator {
       const choices = scene.beats.flatMap((beat) =>
         (beat.choices ?? []).map((choice) => ({ choice, beatId: beat.id }))
       );
-      const branching = choices.filter(({ choice }) => isBranchingChoice(choice));
+      // D3: a scene whose leadsTo forks to >1 onward target IS a routing branch even
+      // when its choices carry no per-choice nextSceneId (they route via a flag). Such
+      // choices were invisible to isBranchingChoice → branchChoices stuck at 0.
+      const routingFork = new Set(
+        (scene.leadsTo ?? []).filter((t) => t && !t.startsWith('episode-')),
+      ).size > 1;
+      const branching = choices.filter(({ choice }) => isBranchingChoice(choice) || routingFork);
       if (branching.length === 0) continue;
 
       for (const { choice, beatId } of branching) {

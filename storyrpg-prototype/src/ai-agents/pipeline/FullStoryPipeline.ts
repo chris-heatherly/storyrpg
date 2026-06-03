@@ -826,6 +826,17 @@ export class FullStoryPipeline {
   }
 
   /**
+   * D2: Season Canon gate ENFORCEMENT. On by default (opt-out) now that B1/B2 are
+   * validated against a clean regen (the promise/canon gates ran with real claims and
+   * produced 0 false-positives). When on, a promise-due/dangling/plant-validity/
+   * impossible-knowledge ERROR hard-fails the offending episode (regenerate it) rather
+   * than shipping the incoherence. Disable with seasonCanonBlocking: false.
+   */
+  private get seasonCanonBlockingOn(): boolean {
+    return this.seasonCanonOn && this.config.generation?.seasonCanonBlocking !== false;
+  }
+
+  /**
    * B1: the sealed canon rendered as the read-only "ESTABLISHED CANON — do not
    * contradict" block for SceneWriter/ChoiceAuthor prompts (the read-back path).
    * Returns undefined when canon is off or empty so the prompt section is skipped.
@@ -10016,7 +10027,7 @@ export class FullStoryPipeline {
             // Phase G.4: when blocking is enabled, an unmet promise/canon ERROR at its
             // due episode hard-fails the run (default off until a regen validates).
             const blockingIssues = seal.evaluation.issues.filter((x) => x.severity === 'error');
-            if (this.config.generation?.seasonCanonBlocking && blockingIssues.length > 0) {
+            if (this.seasonCanonBlockingOn && blockingIssues.length > 0) {
               throw new Error(`Season Canon gate failed for episode ${i}: ${blockingIssues.map((x) => x.message).join('; ')}`);
             }
           }

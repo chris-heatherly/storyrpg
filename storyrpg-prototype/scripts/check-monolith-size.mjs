@@ -123,8 +123,12 @@ const projectRoot = path.resolve(__dirname, '..');
 // (extractEpisodeKnowledge + collectReferencedFlags in pipeline/knowledgeExtraction.ts)
 // so the canon holds who-knows-what and the canon-consistency gate runs over real
 // claims instead of being a no-op. Only the seal-site call + merge are here.
+//
+// +11 (21462 -> 21473): D2 — seasonCanonBlockingOn getter (blocking on by default,
+// opt-out) so a promise/canon ERROR hard-fails the offending episode; the seal block
+// now consults the getter. Config defaults flipped to opt-out in config.ts.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21462,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21473,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

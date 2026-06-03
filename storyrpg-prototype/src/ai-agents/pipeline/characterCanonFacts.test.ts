@@ -46,6 +46,18 @@ describe('isCombatCapable', () => {
     expect(isCombatCapable(scholarByOverview)).toBe(false);  // "scholar"
     expect(isCombatCapable(healerByOverview)).toBe(false);   // "healer"
   });
+
+  // A2 strengthening (audit gaps): protagonist exemption, vocab, weapon-in-attire.
+  it('exempts the protagonist even with a non-combat-sounding overview', () => {
+    expect(isCombatCapable({ id: 'p', name: 'P', role: 'protagonist', traits: [], skills: [], overview: 'A wandering poet.' } as any)).toBe(true);
+  });
+  it('reads "Divine Sentinel" archetype (the regen false-positive)', () => {
+    expect(isCombatCapable({ id: 'a', name: 'Aethavyr', role: 'ally', traits: [], skills: [], overview: 'An immortal Divine Sentinel.' } as any)).toBe(true);
+  });
+  it('detects combat vocab in typicalAttire / distinctiveFeatures (fields the scan now reads)', () => {
+    expect(isCombatCapable({ id: 's', name: 'Sylvanor', role: 'ally', traits: [], skills: [], overview: 'An elder.', typicalAttire: 'ceremonial robes and a sword at his hip' } as any)).toBe(true);
+    expect(isCombatCapable({ id: 's2', name: 'S2', role: 'ally', traits: [], skills: [], overview: 'An elder.', distinctiveFeatures: ['a sworn knight\'s scar', 'silver hair'] } as any)).toBe(true);
+  });
 });
 
 describe('capability facts', () => {

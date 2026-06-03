@@ -70,6 +70,14 @@ describe('assignChoiceTypes', () => {
     expect(types).toContain('dilemma');
   });
 
+  it('A3: the dilemma guarantee does NOT zero strategic at small N (steals from the largest type)', () => {
+    const s = scenes(3); // allocation → expr1/rel1/strat1/dilemma0; guarantee must not take strategic
+    assignChoiceTypes(s);
+    const types = s.map((x) => x.choicePoint!.type);
+    expect(types).toContain('dilemma');
+    expect(types).toContain('strategic'); // preserved — donor was expression/relationship, not strategic
+  });
+
   it('routes the guaranteed dilemma onto a branching choice point when present', () => {
     const s = [
       { id: 'a', choicePoint: { type: 'strategic' as ChoiceType } },

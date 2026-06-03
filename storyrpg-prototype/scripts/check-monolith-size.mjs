@@ -110,8 +110,11 @@ const projectRoot = path.resolve(__dirname, '..');
 // blueprint + persists choice-type-plan.json to diagnose allocation-vs-propagation. Pure
 // logic stays in characterCanonFacts/continuityRepair/choiceTypePlanner; only the repair
 // method body + the re-assert/persist call site are here.
+//
+// +8 (21414 -> 21422): audit-gap A1 — relocate the continuity-repair call into its own
+// try/catch after the QA block (a QA-phase throw no longer skips repair) + an entry log.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21414,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21422,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

@@ -21,28 +21,36 @@
 import type { CharacterProfile } from '../agents/CharacterDesigner';
 
 const COMBAT_SIGNAL =
-  /\b(combat|blade|sword|swordsm[ae]n|fight(?:er|ing)?|martial|melee|brawl|weapon|warrior|soldier|knight|guard(?:sman)?|mercenary|assassin|duel|archer|archery|marksman|gun|spear|axe|paladin|warlord|hunter|huntress|ranger|gladiator|captain|champion|slayer|reaver|berserker|swordmaster|battle|war-?forged)\b/i;
+  /\b(combat|blade(?:master)?|sword|swordsm[ae]n|swordmaster|fight(?:er|ing)?|martial|melee|brawl|weapon|warrior|soldier|knight|guard(?:sman)?|mercenary|assassin|duel|archer|archery|marksman|gun|spear|axe|paladin|warlord|hunter|huntress|ranger|gladiator|captain|champion|slayer|reaver|berserker|battle|war-?forged|sentinel|templar|vanguard|sworn|legionn?aire|sellsword|bladesinger)\b/i;
 
 /** Antagonist-ish roles default to combat-capable: a threat character can fight. */
 const ANTAGONIST_ROLE = /\b(antagonist|villain|enemy|warlord|tyrant|overlord|nemesis)\b/i;
 
+/** Protagonists/leads act physically — never assume the player character can't fight. */
+const PROTAGONIST_ROLE = /\b(protagonist|hero(?:ine)?|player|lead|player-?character)\b/i;
+
 /**
  * Whether anything in the profile signals the character can physically fight.
  * In practice `skills`/`traits` are often empty, so the discriminating signal
- * lives in the prose `overview`/`fullBackground` (e.g. "an immortal paladin",
- * "a renegade warlord"); we scan those too. Antagonists are assumed combat-capable
- * unless their text is purely non-combat.
+ * lives in the prose (`overview`/`fullBackground`/`typicalAttire`/
+ * `distinctiveFeatures` — the last two name weapons like "the Sunblade"); we scan
+ * all of those. Protagonists and antagonists are assumed combat-capable so the
+ * constraint only lands on clearly non-combatant supporting cast.
  */
 export function isCombatCapable(profile: CharacterProfile): boolean {
+  if (PROTAGONIST_ROLE.test(profile.role ?? '')) return true;
+  if (ANTAGONIST_ROLE.test(profile.role ?? '')) return true;
+  if (COMBAT_SIGNAL.test(profile.role ?? '')) return true;
   if ((profile.skills ?? []).some((s) => COMBAT_SIGNAL.test(s?.name ?? '') && (s?.level ?? 0) > 0)) return true;
   if ((profile.traits ?? []).some((t) => COMBAT_SIGNAL.test(t ?? ''))) return true;
-  if (COMBAT_SIGNAL.test(profile.role ?? '')) return true;
-  if (ANTAGONIST_ROLE.test(profile.role ?? '')) return true;
-  // The archetype usually lives in the prose description, not structured fields.
+  // The archetype + weapon mentions usually live in the prose/appearance fields.
+  const p = profile as {
+    overview?: string; fullBackground?: string; physicalDescription?: string;
+    typicalAttire?: string; distinctiveFeatures?: string[] | string;
+  };
   const prose = [
-    profile.overview,
-    (profile as { fullBackground?: string }).fullBackground,
-    profile.physicalDescription,
+    p.overview, p.fullBackground, p.physicalDescription, p.typicalAttire,
+    ...(Array.isArray(p.distinctiveFeatures) ? p.distinctiveFeatures : [p.distinctiveFeatures]),
   ]
     .filter((s): s is string => typeof s === 'string')
     .join(' ');

@@ -8902,6 +8902,7 @@ export class FullStoryPipeline {
   ): Promise<void> {
     const findings = (qaReport.continuity?.issues ?? []) as unknown as ContinuityFinding[];
     const scenes = scenesNeedingRepair(findings).slice(0, 3); // bound the repair work
+    this.emit({ type: 'debug', phase: 'continuity_repair', message: `Continuity repair: ${scenes.length} candidate scene(s).` });
     if (scenes.length === 0) return;
     // The repair re-authors via SceneCritic. If the critic isn't enabled in config,
     // construct a one-off from the scene-writer config so the repair still runs
@@ -10791,14 +10792,21 @@ export class FullStoryPipeline {
             phase: `qa_ep_${i}`,
             message: `Episode ${i} QA Score: ${qaReport.overallScore}/100 - ${qaReport.passesQA ? 'PASSED' : 'NEEDS REVISION'}`,
           });
-          // Phase B: targeted, advisory continuity repair grounded in capability canon.
-          if (this.seasonCanonOn && qaReport) {
-            await this.repairContinuityFindings(story, sceneContents, characterBible, qaReport, outputDirectory);
-          }
         } catch (qaError) {
           const qaMsg = qaError instanceof Error ? qaError.message : String(qaError);
           console.error(`[Pipeline] Episode ${i} QA failed (non-fatal): ${qaMsg}`);
           this.emit({ type: 'warning', phase: `qa_ep_${i}`, message: `QA for Episode ${i} failed (continuing): ${qaMsg}` });
+        }
+      }
+
+      // A1: targeted, advisory continuity repair — in its OWN try so a QA-phase throw
+      // (e.g. Gemini continuity-parse fragility) can no longer skip it. Runs whenever a
+      // qaReport was produced, even if QA later threw.
+      if (this.seasonCanonOn && qaReport) {
+        try {
+          await this.repairContinuityFindings(story, sceneContents, characterBible, qaReport, outputDirectory);
+        } catch (repairErr) {
+          this.emit({ type: 'warning', phase: `continuity_repair_ep_${i}`, message: `Continuity repair failed (non-fatal): ${repairErr instanceof Error ? repairErr.message : String(repairErr)}` });
         }
       }
 

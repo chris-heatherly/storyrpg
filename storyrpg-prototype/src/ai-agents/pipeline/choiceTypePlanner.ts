@@ -102,8 +102,14 @@ export function assignChoiceTypes(
   // first (those are sorted ahead), landing it on the episode's pivotal choice.
   const MIN_CHOICE_POINTS_FOR_DILEMMA = 3;
   if (counts.dilemma === 0 && n >= MIN_CHOICE_POINTS_FOR_DILEMMA) {
-    const donor = (['strategic', 'relationship', 'expression'] as ChoiceType[])
-      .find((t) => counts[t] > 0);
+    // Steal from the OVER-represented type (largest count), not always 'strategic'.
+    // The old code took from strategic first, which zeroed the (already rarest)
+    // strategic slot at small N — the audit's `strategic 0%` finding. On ties,
+    // prefer the highest-target type (expression > relationship > strategic) so the
+    // rarer types survive. 'strategic' is the last resort, only if it's the lone donor.
+    const donor = (['expression', 'relationship', 'strategic'] as ChoiceType[])
+      .filter((t) => counts[t] > 0)
+      .sort((a, b) => counts[b] - counts[a])[0];
     if (donor) {
       counts[donor] -= 1;
       counts.dilemma += 1;

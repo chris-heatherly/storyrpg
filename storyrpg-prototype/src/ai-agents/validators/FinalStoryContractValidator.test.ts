@@ -200,6 +200,23 @@ describe('FinalStoryContractValidator', () => {
     ]));
   });
 
+  it('does NOT hard-block an incremental failure when no regeneration was requested (advisory)', async () => {
+    const story = validStory();
+    const report = await new FinalStoryContractValidator().validate({
+      story,
+      incrementalValidationResults: [{
+        sceneId: 'scene-1',
+        sceneName: 'Opening Choice',
+        overallPassed: false,
+        regenerationRequested: 'none', // soft/heuristic fail — the runner didn't want a regen
+        validationTimeMs: 0,
+      }],
+    });
+    // The finding is recorded but as a warning, not a blocking error — no contract abort.
+    expect(report.blockingIssues.some((i) => i.type === 'failed_incremental_validation')).toBe(false);
+    expect(report.metrics.failedIncrementalResults).toBe(1);
+  });
+
   it('scopes incremental encounter failures by episode when scene ids repeat', async () => {
     const base = validStory();
     const story = validStory({

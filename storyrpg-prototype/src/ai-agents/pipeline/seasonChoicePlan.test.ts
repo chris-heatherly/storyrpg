@@ -45,6 +45,26 @@ describe('assignSeasonChoiceTypes', () => {
   it('handles an empty moment list', () => {
     expect(assignSeasonChoiceTypes([]).moments).toEqual([]);
   });
+
+  it('spreads types ACROSS episodes — no episode is single-type when the season is mixed (regression guard)', () => {
+    // 10 episodes, 4 moments each (the season-plan shape that block-allocated before).
+    const moments = [];
+    for (let ep = 1; ep <= 10; ep++) {
+      for (let k = 0; k < 4; k++) moments.push(moment(`e${ep}-${k}`, ep, 'immediate'));
+    }
+    const plan = assignSeasonChoiceTypes(moments);
+    // Each episode's 4 moments must NOT all be the same type (the old block-monotonic bug).
+    for (let ep = 1; ep <= 10; ep++) {
+      const types = new Set(momentsForEpisode(plan, ep).map((m) => m.choiceType));
+      expect(types.size).toBeGreaterThan(1);
+    }
+    // And every episode should include the dominant 'expression' type at least once.
+    for (let ep = 1; ep <= 10; ep++) {
+      expect(momentsForEpisode(plan, ep).some((m) => m.choiceType === 'expression')).toBe(true);
+    }
+    // Season totals still hit the budget.
+    expect(plan.counts).toEqual({ expression: 14, relationship: 12, strategic: 8, dilemma: 6 });
+  });
 });
 
 describe('momentsForEpisode', () => {

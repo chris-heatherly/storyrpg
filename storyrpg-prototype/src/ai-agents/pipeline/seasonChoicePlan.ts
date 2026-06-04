@@ -49,9 +49,17 @@ function isLaterPayoff(p: ChoicePayoff): p is { payoffEpisode: number } {
 }
 
 /**
- * Assign a `choiceType` to every moment to hit the budget ACROSS the whole season.
- * Later-payoff moments (which carry cross-episode weight) are filled first from the
- * non-expression slots, so the rare high-stakes types land on consequential choices.
+ * Assign a `choiceType` to every moment to hit the budget ACROSS the whole season —
+ * while keeping each EPISODE's slice balanced. A naive type-ordered pool drain front-loads
+ * all expression into the early episodes and all dilemma into the last (so a partial or
+ * early-read run ships a single-type mix — strictly worse than per-episode 35/30/20/15).
+ *
+ * Instead we process moments in EPISODE order and, at each step, pick the type that is most
+ * "behind schedule" relative to its season target (deficit round-robin / Bresenham spread).
+ * That interleaves the four types evenly across the sequence, so each episode's contiguous
+ * moments get a proportional mix and the season totals still equal `counts`. Later-payoff
+ * moments (cross-episode weight) avoid 'expression' so the rare high-stakes types land on
+ * the consequential choices.
  */
 export function assignSeasonChoiceTypes(
   moments: SeasonChoiceMoment[],
@@ -59,27 +67,40 @@ export function assignSeasonChoiceTypes(
 ): SeasonChoicePlan {
   const n = moments.length;
   const counts = allocateChoiceTypeCounts(n, target);
+  const remaining: Record<ChoiceType, number> = { ...counts };
+  const assigned: Record<ChoiceType, number> = { expression: 0, relationship: 0, strategic: 0, dilemma: 0 };
 
-  // Build the slot pool in type order.
-  const pool: ChoiceType[] = [];
-  for (const t of ORDER) for (let k = 0; k < counts[t]; k++) pool.push(t);
-
-  const takeSlot = (predicate: (t: ChoiceType) => boolean): ChoiceType | undefined => {
-    const idx = pool.findIndex(predicate);
-    return idx === -1 ? undefined : pool.splice(idx, 1)[0];
-  };
-
-  // Later-payoff moments first (they're the consequential ones); stable by episode.
+  // Episode order (stable) so the even spread tracks the season's progression.
   const order = [...moments]
     .map((m, i) => ({ m, i }))
-    .sort((a, b) => Number(isLaterPayoff(b.m.payoff)) - Number(isLaterPayoff(a.m.payoff)) || a.m.episode - b.m.episode || a.i - b.i);
+    .sort((a, b) => a.m.episode - b.m.episode || a.i - b.i);
 
   const assignedById = new Map<string, ChoiceType>();
+  let placed = 0;
   for (const { m } of order) {
+    placed++;
     const wantNonExpression = isLaterPayoff(m.payoff);
-    let slot = wantNonExpression ? takeSlot((t) => t !== 'expression') : takeSlot(() => true);
-    if (!slot) slot = takeSlot(() => true) ?? (wantNonExpression ? 'strategic' : 'expression');
-    assignedById.set(m.id, slot);
+    const allowed = (t: ChoiceType) => remaining[t] > 0 && (!wantNonExpression || t !== 'expression');
+
+    // Pick the allowed type with the largest target-vs-assigned deficit at this position.
+    let best: ChoiceType | undefined;
+    let bestDeficit = -Infinity;
+    for (const t of ORDER) {
+      if (!allowed(t)) continue;
+      const deficit = counts[t] * (placed / n) - assigned[t];
+      if (deficit > bestDeficit) {
+        bestDeficit = deficit;
+        best = t;
+      }
+    }
+    // Fallbacks if the constrained pool was empty (e.g. only expression slots left for a
+    // later-payoff moment): take any remaining slot, then a last-resort default.
+    if (!best) for (const t of ORDER) if (remaining[t] > 0) { best = t; break; }
+    if (!best) best = wantNonExpression ? 'strategic' : 'expression';
+
+    remaining[best] = Math.max(0, remaining[best] - 1);
+    assigned[best] += 1;
+    assignedById.set(m.id, best);
   }
 
   return {

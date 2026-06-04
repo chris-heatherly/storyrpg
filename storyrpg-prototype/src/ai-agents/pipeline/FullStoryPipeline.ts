@@ -5206,10 +5206,12 @@ export class FullStoryPipeline {
               hasBranching: cs.choices.some(c => c.nextSceneId),
             })),
             targets: {
+              // Defaults match the canonical 35/30/20/15 taxonomy (was 25/10 here — the lone
+              // divergent site; every other caller uses 20/15).
               expression: this.config.generation?.choiceDistExpression ?? 35,
               relationship: this.config.generation?.choiceDistRelationship ?? 30,
-              strategic: this.config.generation?.choiceDistStrategic ?? 25,
-              dilemma: this.config.generation?.choiceDistDilemma ?? 10,
+              strategic: this.config.generation?.choiceDistStrategic ?? 20,
+              dilemma: this.config.generation?.choiceDistDilemma ?? 15,
             },
             maxBranchingChoicesPerEpisode: this.config.generation?.maxBranchingChoicesPerEpisode ?? 3,
           };
@@ -10889,8 +10891,12 @@ export class FullStoryPipeline {
           sceneContents,
           episode,
           callbackLedger: this.callbackLedger.serialize(),
-          // #26C: declared cast/prop ids so prop-introduction can spot invented references.
-          knownEntityIds: (characterBible.characters ?? []).map((c) => c.id).filter(Boolean),
+          // #26C: declared cast so prop-introduction can spot invented references. Include
+          // BOTH ids and display names — scene.charactersInvolved mixes the two forms, so an
+          // id-only known-set produced false positives on every name-form reference.
+          knownEntityIds: (characterBible.characters ?? [])
+            .flatMap((c) => [c.id, c.name])
+            .filter(Boolean),
           // D4: planned (blueprint) choice scenes vs scenes that actually authored a choice.
           choicePlannedSceneIds: (blueprint.scenes ?? [])
             .filter((s) => !s.isEncounter && s.choicePoint)

@@ -550,14 +550,21 @@ export class FinalStoryContractValidator {
     for (const result of results) {
       if (result.overallPassed) continue;
       metrics.failedIncrementalResults++;
+      // Only HARD-BLOCK when the regeneration loop actually tried and still failed
+      // (regenerationRequested !== 'none'): that's genuinely unrepaired bad output, and the
+      // fix belongs in generation. A failure where the runner requested NO regeneration is a
+      // SOFT/heuristic finding (continuity / POV / voice that the runner itself didn't deem
+      // regenerate-worthy, or sensitivity) — blocking the whole contract on it created the
+      // unrepairable dead-end the sensitivity bug exposed (one heuristic keyword aborting a
+      // multi-episode run with no recourse). Those are advisory; the per-validator reasons are
+      // persisted to the run diagnostics so generation can still be improved.
+      const blocking = result.regenerationRequested !== 'none';
       issues.push({
-        // A scene the regeneration loop could not repair is bad output and must
-        // block — the fix belongs in generation, not in relaxing this gate.
-        // The specific per-validator reasons are persisted to the run diagnostics
-        // (see worker error logging) so the generator can be fixed.
         type: 'failed_incremental_validation',
-        severity: 'error',
-        message: `Scene "${result.sceneName || result.sceneId}" still has unrepaired incremental validation failures.`,
+        severity: blocking ? 'error' : 'warning',
+        message: blocking
+          ? `Scene "${result.sceneName || result.sceneId}" still has unrepaired incremental validation failures.`
+          : `Scene "${result.sceneName || result.sceneId}" has advisory incremental findings (no regeneration was requested).`,
         episodeNumber: result.episodeNumber,
         sceneId: result.sceneId,
         validator: 'IncrementalValidationRunner',

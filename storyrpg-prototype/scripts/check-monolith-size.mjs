@@ -158,7 +158,11 @@ const baselines = {
   // runNarrativeDiagnostics call site (known cast ids, planned-vs-authored choice scene ids),
   // and accumulate C1/C2 branch-residue plants (extractBranchResidueFromChoiceSet) alongside
   // the existing tint plants. All validator/extractor logic lives in their own modules.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21576,
+  //
+  // +6 (21576 -> 21582): audit follow-ups — pass both cast ids AND display names to the
+  // prop-introduction check (charactersInvolved mixes the two forms; id-only caused false
+  // positives) + correct the lone divergent ChoiceDistribution reporting default (25/10 -> 20/15).
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21582,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

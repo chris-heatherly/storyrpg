@@ -152,7 +152,13 @@ const baselines = {
   // (a "pays off later" choice is a promise). Allocation/derivation live in
   // pipeline/seasonChoicePlan.ts + choiceTypePlanner.ts; only the build/slice/persist/feed
   // call sites are here.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21564,
+  //
+  // +12 (21564 -> 21576): remaining-feature batch — feed the new advisory diagnostics
+  // (IntensityDistribution / PropIntroduction / ChoiceCoverage) their inputs at the
+  // runNarrativeDiagnostics call site (known cast ids, planned-vs-authored choice scene ids),
+  // and accumulate C1/C2 branch-residue plants (extractBranchResidueFromChoiceSet) alongside
+  // the existing tint plants. All validator/extractor logic lives in their own modules.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21576,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

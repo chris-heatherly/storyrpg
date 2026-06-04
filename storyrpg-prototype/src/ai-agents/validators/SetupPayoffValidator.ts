@@ -138,6 +138,11 @@ export class SetupPayoffValidator extends BaseValidator {
       return thread;
     });
 
+    // E5: thread-hygiene pre-pass — too many live threads overloads the reader's
+    // working memory, and near-duplicate threads (same kind + near-identical label)
+    // are usually an accidental split that should be merged. Advisory only.
+    this.checkThreadHygiene(threads, issues);
+
     const errors = issues.filter(i => i.severity === 'error').length;
     const warnings = issues.filter(i => i.severity === 'warning').length;
     const score = Math.max(
@@ -154,5 +159,52 @@ export class SetupPayoffValidator extends BaseValidator {
       metrics,
       threads,
     };
+  }
+
+  /** Max simultaneously-open (unpaid) threads before the reader is overloaded. */
+  private static readonly MAX_OPEN_THREADS = 7;
+
+  /**
+   * E5: warn when too many threads are open at once, and when two threads look like
+   * an accidental duplicate (same kind + near-identical normalized label). Advisory.
+   */
+  private checkThreadHygiene(threads: NarrativeThread[], issues: ValidationIssue[]): void {
+    const open = threads.filter(t => t.status !== 'paid_off');
+    if (open.length > SetupPayoffValidator.MAX_OPEN_THREADS) {
+      issues.push({
+        severity: 'warning',
+        message: `${open.length} open narrative threads exceed the cap of ${SetupPayoffValidator.MAX_OPEN_THREADS} — the reader can't track this many at once.`,
+        suggestion: 'Merge near-duplicate threads, pay some off, or demote minor ones.',
+      });
+    }
+
+    const norm = (s: string) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const seen: Array<{ id: string; kind: string; label: string }> = [];
+    for (const t of threads) {
+      const label = norm(t.label);
+      if (!label) continue;
+      const dup = seen.find(s => s.kind === t.kind && this.labelsAreNearDuplicate(s.label, label));
+      if (dup) {
+        issues.push({
+          severity: 'warning',
+          message: `Threads "${dup.id}" and "${t.id}" look like duplicates (same kind, near-identical label).`,
+          suggestion: `Merge thread \`${t.id}\` into \`${dup.id}\` (or differentiate their labels).`,
+        });
+      } else {
+        seen.push({ id: t.id, kind: t.kind, label });
+      }
+    }
+  }
+
+  /** Near-duplicate if identical, or one label's token set contains the other's. */
+  private labelsAreNearDuplicate(a: string, b: string): boolean {
+    if (a === b) return true;
+    const ta = new Set(a.split(' ').filter(Boolean));
+    const tb = new Set(b.split(' ').filter(Boolean));
+    if (ta.size === 0 || tb.size === 0) return false;
+    const [small, large] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+    let overlap = 0;
+    for (const tok of small) if (large.has(tok)) overlap++;
+    return overlap / small.size >= 0.8;
   }
 }

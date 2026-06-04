@@ -133,7 +133,7 @@ import {
   spineEntriesFromChoicePlan,
   type SeasonChoicePlan,
 } from './seasonChoicePlan';
-import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
+import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { SeasonCanon } from './seasonCanon';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
@@ -7714,6 +7714,9 @@ export class FullStoryPipeline {
             episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }, this.callbackLedger));
             // Phase F: also surface cosmetic tint: flags so later scenes acknowledge them (raises tint%).
             episodePlants.push(...extractTintPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }));
+            // C1/C2: surface branch residue (route_/treatment_branch_ flags) so the
+            // reconvergence scene authors path-aware residue instead of generic prose.
+            episodePlants.push(...extractBranchResidueFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }));
 
             this.emit({
               type: 'agent_complete',
@@ -10886,6 +10889,15 @@ export class FullStoryPipeline {
           sceneContents,
           episode,
           callbackLedger: this.callbackLedger.serialize(),
+          // #26C: declared cast/prop ids so prop-introduction can spot invented references.
+          knownEntityIds: (characterBible.characters ?? []).map((c) => c.id).filter(Boolean),
+          // D4: planned (blueprint) choice scenes vs scenes that actually authored a choice.
+          choicePlannedSceneIds: (blueprint.scenes ?? [])
+            .filter((s) => !s.isEncounter && s.choicePoint)
+            .map((s) => s.id),
+          choiceAuthoredSceneIds: sceneContents
+            .filter((sc) => (sc.beats ?? []).some((b) => (b.choices?.length ?? 0) > 0))
+            .map((sc) => sc.sceneId),
         });
         await saveEarlyDiagnostic(outputDirectory, `episode-${i}-narrative-diagnostics.json`, narrativeDiagnostics);
 

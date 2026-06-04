@@ -28,7 +28,8 @@ export interface StructuralIssue {
     | 'invalid_sequence'
     | 'navigation_loop'
     | 'dead_end_scene'
-    | 'empty_scene';
+    | 'empty_scene'
+    | 'unreachable_scene';
   location: {
     episodeId?: string;
     sceneId?: string;
@@ -165,9 +166,34 @@ export class StructuralValidator {
       }
     }
 
+    // C3: unreachable-scene gate. Beyond the first (entry) scene, every scene should be
+    // a target of some leadsTo or a beat/choice nextSceneId. A scene nothing routes to is
+    // dead content — authored but never reachable in play. Advisory (warning): the safe fix
+    // is to wire a route in, not to auto-delete authored prose.
+    const scenes = episode.scenes || [];
+    if (scenes.length > 1) {
+      const reachable = new Set<string>([scenes[0].id]);
+      for (const scene of scenes) {
+        for (const t of scene.leadsTo || []) reachable.add(t);
+        for (const b of scene.beats || []) {
+          if (b.nextSceneId) reachable.add(b.nextSceneId);
+          for (const c of b.choices || []) if (c.nextSceneId) reachable.add(c.nextSceneId);
+        }
+      }
+      for (const scene of scenes) {
+        if (!reachable.has(scene.id) && !isTerminalSceneTarget(scene.id)) {
+          issues.push(this.createIssue('warning', 'unreachable_scene',
+            { ...loc, sceneId: scene.id },
+            `Scene ${scene.id} is unreachable — no leadsTo or beat/choice nextSceneId targets it.`,
+            'leadsTo', 'an inbound route from another scene', '(none)', false,
+            `Route a prior scene/choice to ${scene.id}, or remove the orphaned scene`));
+        }
+      }
+    }
+
     return issues;
   }
-  
+
   /**
    * Validate a scene structure
    */

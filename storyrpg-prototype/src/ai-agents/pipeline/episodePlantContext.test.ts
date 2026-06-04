@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractPlantsFromChoiceSet,
   extractTintPlantsFromChoiceSet,
+  extractBranchResidueFromChoiceSet,
   plantsToUnresolvedCallbacks,
   mergeUnresolvedForScene,
   type EpisodePlant,
@@ -55,6 +56,32 @@ describe('extractTintPlantsFromChoiceSet (Phase F)', () => {
     expect(extractTintPlantsFromChoiceSet(cs)).toEqual([
       { flag: 'tint:sentinel_control', summary: 'You sided with control.', sceneId: 'scene-2' },
     ]);
+  });
+});
+
+describe('extractBranchResidueFromChoiceSet (C1/C2)', () => {
+  it('surfaces route_/treatment_branch_ flags as branch-tier plants, excluding tint/plain', () => {
+    const cs = {
+      sceneId: 'scene-3',
+      choices: [
+        choice('c1', 'route_betrayal', 'You took the betrayal road.'),
+        choice('c2', 'treatment_branch_siege', 'You held the siege line.'),
+        choice('c3', 'tint:mood', 'tint'),               // tint → excluded (tint extractor owns it)
+        choice('c4', 'lysandra_trusted', 'plain'),       // plain callback flag → excluded
+        choice('c5', 'route_quiet'),                     // no ack summary → skipped
+      ] as any,
+    };
+    expect(extractBranchResidueFromChoiceSet(cs)).toEqual([
+      { flag: 'route_betrayal', summary: 'You took the betrayal road.', sceneId: 'scene-3', tier: 'branch' },
+      { flag: 'treatment_branch_siege', summary: 'You held the siege line.', sceneId: 'scene-3', tier: 'branch' },
+    ]);
+  });
+
+  it('branch plants carry consequenceTier "branch" through plantsToUnresolvedCallbacks', () => {
+    const plants = extractBranchResidueFromChoiceSet({
+      sceneId: 's', choices: [choice('c', 'route_x', 'residue')] as any,
+    });
+    expect(plantsToUnresolvedCallbacks(plants, 2)[0].consequenceTier).toBe('branch');
   });
 });
 

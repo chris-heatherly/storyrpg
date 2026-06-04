@@ -64,6 +64,9 @@ describe('runNarrativeDiagnostics', () => {
       'divergence',
       'callback_coverage',
       'failure_modes',
+      'intensity_distribution',
+      'prop_introduction',
+      'choice_coverage',
     ]);
     expect(report.checks.find((check) => check.name === 'setup_payoff')?.status).toBe('passed');
     expect(report.checks.find((check) => check.name === 'arc_delta')?.status).toBe('skipped');

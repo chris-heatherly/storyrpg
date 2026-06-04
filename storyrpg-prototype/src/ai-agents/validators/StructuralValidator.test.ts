@@ -505,3 +505,33 @@ describe('StructuralValidator empty-scene gate + isChoicePoint backfill (E4)', (
     expect((fixed as any).isChoicePoint).toBe(true);
   });
 });
+
+describe('StructuralValidator unreachable-scene gate (C3)', () => {
+  function makeStoryWithScenes(scenes: any[]): Story {
+    return makeStory({
+      episodes: [
+        { id: 'ep-1', number: 1, title: 'Ep 1', synopsis: 'Ep 1', coverImage: 'http://localhost:3001/ep.png', scenes, startingSceneId: 'scene-1' } as any,
+      ],
+    });
+  }
+
+  it('flags a scene nothing routes to', () => {
+    const story = makeStoryWithScenes([
+      { id: 'scene-1', name: 'S1', beats: [{ id: 'b1', text: 'x' }], startingBeatId: 'b1', leadsTo: ['scene-2'] },
+      { id: 'scene-2', name: 'S2', beats: [{ id: 'b2', text: 'y' }], startingBeatId: 'b2', leadsTo: ['episode-end'] },
+      { id: 'orphan', name: 'Orphan', beats: [{ id: 'b3', text: 'z' }], startingBeatId: 'b3', leadsTo: ['episode-end'] },
+    ]);
+    const report = new StructuralValidator().validateStory(story);
+    expect(report.issues.some((i) => i.type === 'unreachable_scene' && i.location.sceneId === 'orphan')).toBe(true);
+  });
+
+  it('does not flag a fully-wired branch-and-bottleneck', () => {
+    const story = makeStoryWithScenes([
+      { id: 'scene-1', name: 'S1', beats: [{ id: 'b1', text: 'x' }], startingBeatId: 'b1', leadsTo: ['scene-2', 'scene-3'] },
+      { id: 'scene-2', name: 'S2', beats: [{ id: 'b2', text: 'y' }], startingBeatId: 'b2', leadsTo: ['scene-3'] },
+      { id: 'scene-3', name: 'S3', beats: [{ id: 'b3', text: 'z' }], startingBeatId: 'b3', leadsTo: ['episode-end'] },
+    ]);
+    const report = new StructuralValidator().validateStory(story);
+    expect(report.issues.some((i) => i.type === 'unreachable_scene')).toBe(false);
+  });
+});

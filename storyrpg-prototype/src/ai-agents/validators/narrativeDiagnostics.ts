@@ -11,6 +11,9 @@ import { ArcDeltaValidator } from './ArcDeltaValidator';
 import { DivergenceValidator } from './DivergenceValidator';
 import { CallbackCoverageValidator } from './CallbackCoverageValidator';
 import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
+import { IntensityDistributionValidator } from './IntensityDistributionValidator';
+import { PropIntroductionValidator } from './PropIntroductionValidator';
+import { ChoiceCoverageValidator } from './ChoiceCoverageValidator';
 
 export type NarrativeDiagnosticStatus = 'passed' | 'warning' | 'failed' | 'skipped';
 
@@ -24,7 +27,16 @@ export interface NarrativeDiagnosticIssue {
 }
 
 export interface NarrativeDiagnosticCheck {
-  name: 'setup_payoff' | 'twist_quality' | 'arc_delta' | 'divergence' | 'callback_coverage' | 'failure_modes';
+  name:
+    | 'setup_payoff'
+    | 'twist_quality'
+    | 'arc_delta'
+    | 'divergence'
+    | 'callback_coverage'
+    | 'failure_modes'
+    | 'intensity_distribution'
+    | 'prop_introduction'
+    | 'choice_coverage';
   status: NarrativeDiagnosticStatus;
   score?: number;
   advisory: boolean;
@@ -61,6 +73,12 @@ export interface NarrativeDiagnosticsInput {
     suggestion?: string;
     source?: string;
   }>;
+  /** #26C: all declared entity ids (cast bible + props) for the prop-introduction check. */
+  knownEntityIds?: string[];
+  /** D4: scene ids the blueprint planned with a choice point. */
+  choicePlannedSceneIds?: string[];
+  /** D4: scene ids that authored at least one choice. */
+  choiceAuthoredSceneIds?: string[];
 }
 
 export function runNarrativeDiagnostics(input: NarrativeDiagnosticsInput): NarrativeDiagnosticsReport {
@@ -140,6 +158,46 @@ export function runNarrativeDiagnostics(input: NarrativeDiagnosticsInput): Narra
     ));
   } else {
     checks.push(skipped('failure_modes', 'No scene contents or prior validation issues were available.'));
+  }
+
+  // E5: intensity-tier distribution (needs only scene beats).
+  if (sceneContents.length > 0) {
+    checks.push(fromBaseResult(
+      'intensity_distribution',
+      new IntensityDistributionValidator().validate({ sceneContents }),
+    ));
+  } else {
+    checks.push(skipped('intensity_distribution', 'No generated scene contents were available.'));
+  }
+
+  // #26C: prop/cast-introduction (needs the declared entity set + per-scene references).
+  if (input.knownEntityIds && input.knownEntityIds.length > 0 && sceneContents.length > 0) {
+    checks.push(fromBaseResult(
+      'prop_introduction',
+      new PropIntroductionValidator().validate({
+        knownEntityIds: input.knownEntityIds,
+        sceneContents: sceneContents.map((sc) => ({
+          sceneId: sc.sceneId,
+          sceneName: sc.sceneName,
+          referencedEntityIds: sc.charactersInvolved ?? [],
+        })),
+      }),
+    ));
+  } else {
+    checks.push(skipped('prop_introduction', 'No declared entity set (cast/prop bible) was available.'));
+  }
+
+  // D4: choice coverage (planned choice scenes vs authored).
+  if (input.choicePlannedSceneIds && input.choicePlannedSceneIds.length > 0) {
+    checks.push(fromBaseResult(
+      'choice_coverage',
+      new ChoiceCoverageValidator().validate({
+        plannedChoiceSceneIds: input.choicePlannedSceneIds,
+        authoredChoiceSceneIds: input.choiceAuthoredSceneIds ?? [],
+      }),
+    ));
+  } else {
+    checks.push(skipped('choice_coverage', 'No blueprint choice-point plan was available.'));
   }
 
   const active = checks.filter((check) => check.status !== 'skipped');

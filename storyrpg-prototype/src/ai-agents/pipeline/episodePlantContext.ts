@@ -26,6 +26,8 @@ export interface EpisodePlant {
   flag: string;
   summary: string;
   sceneId: string;
+  /** Consequence tier surfaced to the later scene (defaults to 'tint'). */
+  tier?: 'tint' | 'branch';
 }
 
 interface PlantChoiceSet {
@@ -90,6 +92,37 @@ export function extractTintPlantsFromChoiceSet(choiceSet: PlantChoiceSet): Episo
   return out;
 }
 
+/**
+ * C1/C2: surface the BRANCH residue a scene's choices set — the `route_` /
+ * `treatment_branch_` flags that record which divergent path the player took. The
+ * tint/callback extractors deliberately exclude these structural flags, so when
+ * branches reconverge at a bottleneck the later scene had no signal of which path
+ * led here and authored generic, path-blind prose (no reconvergence residue).
+ *
+ * Surfacing them as `tier: 'branch'` plants flows them to later scenes through the
+ * same in-context authoring mechanism (the model writes a flag-conditional residue
+ * line — "the road you took still shows on you"), no templating. Cosmetic `tint:`
+ * flags stay with the tint extractor.
+ */
+export function extractBranchResidueFromChoiceSet(choiceSet: PlantChoiceSet): EpisodePlant[] {
+  const out: EpisodePlant[] = [];
+  for (const choice of choiceSet.choices ?? []) {
+    const summary = ackSummaryOf(choice);
+    if (!summary) continue;
+    for (const consequence of choice.consequences ?? []) {
+      if (
+        consequence.type === 'setFlag' &&
+        typeof consequence.flag === 'string' &&
+        (consequence.flag.startsWith('route_') || consequence.flag.startsWith('treatment_branch_')) &&
+        consequence.value !== false
+      ) {
+        out.push({ flag: consequence.flag, summary, sceneId: choiceSet.sceneId ?? '', tier: 'branch' });
+      }
+    }
+  }
+  return out;
+}
+
 /** Shape accumulated within-episode plants as unresolved-callback prompt entries. */
 export function plantsToUnresolvedCallbacks(
   plants: EpisodePlant[],
@@ -103,7 +136,7 @@ export function plantsToUnresolvedCallbacks(
     summary: p.summary,
     flags: [p.flag],
     conditionKeys: [p.flag],
-    consequenceTier: 'tint',
+    consequenceTier: p.tier ?? 'tint',
   }));
 }
 

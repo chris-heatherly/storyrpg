@@ -164,6 +164,12 @@ export { PixarPrinciplesValidator } from './PixarPrinciplesValidator';
 // Setup/payoff + twist + arc + divergence validators (Phases 5–8)
 export { SetupPayoffValidator } from './SetupPayoffValidator';
 export type { SetupPayoffInput, SetupPayoffMetrics, SetupPayoffResult } from './SetupPayoffValidator';
+export { IntensityDistributionValidator } from './IntensityDistributionValidator';
+export type { IntensityDistributionInput, IntensityDistributionMetrics } from './IntensityDistributionValidator';
+export { ChoiceCoverageValidator } from './ChoiceCoverageValidator';
+export type { ChoiceCoverageInput, ChoiceCoverageMetrics } from './ChoiceCoverageValidator';
+export { PropIntroductionValidator } from './PropIntroductionValidator';
+export type { PropIntroductionInput, PropIntroductionMetrics } from './PropIntroductionValidator';
 export { TwistQualityValidator } from './TwistQualityValidator';
 export type { TwistQualityInput, TwistQualityMetrics, TwistQualityResult } from './TwistQualityValidator';
 export { ArcDeltaValidator } from './ArcDeltaValidator';

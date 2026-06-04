@@ -140,3 +140,34 @@ describe('SetupPayoffValidator', () => {
     expect(result.score).toBe(92); // 100 - 1 warning * 8
   });
 });
+
+describe('SetupPayoffValidator — thread hygiene (E5)', () => {
+  const validator = new SetupPayoffValidator();
+  const minimalScene: SceneContent[] = [scene({ beats: [beat({})] })];
+
+  it('warns when more than 7 threads are open at once', () => {
+    const threads: NarrativeThread[] = Array.from({ length: 9 }, (_, i) =>
+      thread({ id: `t-${i}`, label: `Thread ${i}`, status: 'planted', priority: 'minor' }),
+    );
+    const result = validator.validate({ ledger: { threads }, sceneContents: minimalScene });
+    expect(result.issues.some((i) => /open narrative threads exceed the cap/.test(i.message))).toBe(true);
+  });
+
+  it('warns on near-duplicate threads (same kind, near-identical label)', () => {
+    const threads: NarrativeThread[] = [
+      thread({ id: 't-a', kind: 'clue', label: 'The missing envoy', status: 'planted' }),
+      thread({ id: 't-b', kind: 'clue', label: 'the missing envoy mystery', status: 'planted' }),
+    ];
+    const result = validator.validate({ ledger: { threads }, sceneContents: minimalScene });
+    expect(result.issues.some((i) => /look like duplicates/.test(i.message))).toBe(true);
+  });
+
+  it('does not warn on a small, distinct thread set', () => {
+    const threads: NarrativeThread[] = [
+      thread({ id: 't-a', kind: 'clue', label: 'The missing envoy', status: 'planted' }),
+      thread({ id: 't-b', kind: 'seed', label: "Marta's limp", status: 'planted' }),
+    ];
+    const result = validator.validate({ ledger: { threads }, sceneContents: minimalScene });
+    expect(result.issues.some((i) => /duplicates|exceed the cap/.test(i.message))).toBe(false);
+  });
+});

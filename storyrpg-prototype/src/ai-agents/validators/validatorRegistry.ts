@@ -28,11 +28,31 @@ export type ValidatorStage =
 
 export type ValidatorTier = 'blocking' | 'advisory' | 'autofix';
 
+/**
+ * Where a failed validator's repair lands (S1 gating plan). 'plan-time' fixes the
+ * season/episode plan before generation; 'regen-*' re-runs a bounded scope;
+ * 'autofix' mutates in place; 'none' means there is no automated remedy (hard gate).
+ */
+export type ValidatorRemediation =
+  | 'autofix'
+  | 'regen-scene'
+  | 'regen-choices'
+  | 'regen-encounter'
+  | 'regen-episode'
+  | 'plan-time'
+  | 'none';
+
 export interface ValidatorRegistryEntry {
   validator: string;
   stage: ValidatorStage;
   tier: ValidatorTier;
   dispatchedFrom: string;
+  /** How a failure of this validator is repaired when remediation is wired up (S1). */
+  remediation?: ValidatorRemediation;
+  /** Rollout flag gating the remediation path; absent ⇒ not behind a flag. */
+  rolloutFlag?: string;
+  /** Max remediation attempts before the failure is surfaced/escalated. */
+  maxRemediationAttempts?: number;
 }
 
 export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
@@ -107,4 +127,9 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
 /** Validators that hard-block a run regardless of validation mode. */
 export function blockingValidators(): string[] {
   return VALIDATOR_REGISTRY.filter((e) => e.tier === 'blocking').map((e) => e.validator);
+}
+
+/** Remediation route declared for a validator (by name), or undefined if none/unknown. */
+export function remediationRoute(validator: string): ValidatorRemediation | undefined {
+  return VALIDATOR_REGISTRY.find((e) => e.validator === validator)?.remediation;
 }

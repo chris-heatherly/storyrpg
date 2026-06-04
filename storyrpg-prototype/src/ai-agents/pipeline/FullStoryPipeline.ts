@@ -281,6 +281,7 @@ import {
   runNarrativeDiagnostics,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
+import { classifyArchitectGateWarnings } from '../remediation/architectGatePolicy';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
@@ -6692,7 +6693,7 @@ export class FullStoryPipeline {
     };
 
     let result: AgentResponse<EpisodeBlueprint> | undefined;
-    const maxArchitectureAttempts = 2;
+    const maxArchitectureAttempts = 3;
     for (let attempt = 1; attempt <= maxArchitectureAttempts; attempt += 1) {
       result = await withTimeout(
         this.storyArchitect.execute(architectureInput),
@@ -6784,11 +6785,31 @@ export class FullStoryPipeline {
     // as warnings and record them so the story still ships with the issues
     // visible (rather than producing zero output).
     if (result.warnings && result.warnings.length > 0) {
-      this.architectAdvisoryWarnings.push(...result.warnings);
+      // B0: a craft warning becomes blocking only when its per-rule GATE_* flag
+      // is set. With no flags set, `blocking` is always empty and `advisory`
+      // equals `result.warnings`, so the advisory behavior below is byte-for-byte
+      // unchanged from before B0.
+      const { blocking, advisory } = classifyArchitectGateWarnings(
+        result.warnings,
+        (flag) => process.env[flag] === '1',
+      );
+      if (blocking.length > 0) {
+        throw new PipelineError(
+          `Architecture craft gate(s) failed after retries: ${blocking.slice(0, 3).join(' | ')}`,
+          'episode_architecture',
+          {
+            context: {
+              failureKind: 'architecture_craft_gate',
+              blockingWarnings: blocking.slice(0, 10),
+            },
+          }
+        );
+      }
+      this.architectAdvisoryWarnings.push(...advisory);
       this.emit({
         type: 'warning',
         phase: 'episode_architecture',
-        message: `StoryArchitect proceeded with ${result.warnings.length} unresolved advisory issue(s) (story still generated): ${result.warnings.slice(0, 3).join(' | ')}${result.warnings.length > 3 ? ' …' : ''}`,
+        message: `StoryArchitect proceeded with ${advisory.length} unresolved advisory issue(s) (story still generated): ${advisory.slice(0, 3).join(' | ')}${advisory.length > 3 ? ' …' : ''}`,
       });
     }
 
@@ -10734,6 +10755,46 @@ export class FullStoryPipeline {
         phase: `episode_${i}_micro_episode_validation`,
       });
 
+      // Narrative diagnostics (SetupPayoff / Twist / ArcDelta / Divergence / Callback /
+      // FailureMode + E5 intensity / #26C prop-intro / D4 choice-coverage). RELOCATED here
+      // — BEFORE image generation — because the image-gen block below can short-circuit the
+      // rest of this method, which silently dropped ALL narrative diagnostics (and
+      // 08-registry-state) in EVERY multi-episode run, going back months: the branch-metrics
+      // write just above lands, but nothing after the image block did. This point is
+      // guaranteed reached, and `branchValidationEpisode` is a full assembled episode (sans
+      // images — all the divergence check needs). The unconditional marker confirms reach.
+      this.emit({ type: 'debug', phase: `episode_${i}_narrative_diagnostics`, message: 'Narrative diagnostics: reached (pre-image-gen).' });
+      try {
+        const narrativeDiagnostics = runNarrativeDiagnostics({
+          episodeNumber: i,
+          totalEpisodes: brief.seasonPlan?.episodes?.length ?? i,
+          sceneContents,
+          episode: branchValidationEpisode,
+          callbackLedger: this.callbackLedger.serialize(),
+          // #26C: declared cast (ids AND display names — charactersInvolved mixes both forms).
+          knownEntityIds: (characterBible.characters ?? []).flatMap((c) => [c.id, c.name]).filter(Boolean),
+          // D4: planned (blueprint) choice scenes vs scenes that actually authored a choice.
+          choicePlannedSceneIds: (blueprint.scenes ?? []).filter((s) => !s.isEncounter && s.choicePoint).map((s) => s.id),
+          choiceAuthoredSceneIds: sceneContents.filter((sc) => (sc.beats ?? []).some((b) => (b.choices?.length ?? 0) > 0)).map((sc) => sc.sceneId),
+        });
+        await saveEarlyDiagnostic(outputDirectory, `episode-${i}-narrative-diagnostics.json`, narrativeDiagnostics);
+        const activeChecks = narrativeDiagnostics.checks
+          .map((check) => `${check.name}:${check.status}${typeof check.score === 'number' ? `(${check.score})` : ''}`)
+          .join(', ');
+        this.emit({
+          type: narrativeDiagnostics.overallStatus === 'passed' ? 'debug' : 'warning',
+          phase: `episode_${i}_narrative_diagnostics`,
+          message: `Narrative diagnostics ${narrativeDiagnostics.overallStatus}: ${activeChecks}`,
+          data: narrativeDiagnostics,
+        });
+      } catch (diagErr) {
+        this.emit({
+          type: 'warning',
+          phase: `episode_${i}_narrative_diagnostics`,
+          message: `Narrative diagnostics failed (non-fatal): ${diagErr instanceof Error ? diagErr.message : String(diagErr)}`,
+        });
+      }
+
       let imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> } | undefined;
       let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
       let encounterImageDiagnostics: EncounterImageRunDiagnostic[] = [];
@@ -10884,45 +10945,9 @@ export class FullStoryPipeline {
         phase: `episode_${i}_micro_episode_final_validation`,
       });
 
-      try {
-        const narrativeDiagnostics = runNarrativeDiagnostics({
-          episodeNumber: i,
-          totalEpisodes: brief.seasonPlan?.episodes?.length ?? i,
-          sceneContents,
-          episode,
-          callbackLedger: this.callbackLedger.serialize(),
-          // #26C: declared cast so prop-introduction can spot invented references. Include
-          // BOTH ids and display names — scene.charactersInvolved mixes the two forms, so an
-          // id-only known-set produced false positives on every name-form reference.
-          knownEntityIds: (characterBible.characters ?? [])
-            .flatMap((c) => [c.id, c.name])
-            .filter(Boolean),
-          // D4: planned (blueprint) choice scenes vs scenes that actually authored a choice.
-          choicePlannedSceneIds: (blueprint.scenes ?? [])
-            .filter((s) => !s.isEncounter && s.choicePoint)
-            .map((s) => s.id),
-          choiceAuthoredSceneIds: sceneContents
-            .filter((sc) => (sc.beats ?? []).some((b) => (b.choices?.length ?? 0) > 0))
-            .map((sc) => sc.sceneId),
-        });
-        await saveEarlyDiagnostic(outputDirectory, `episode-${i}-narrative-diagnostics.json`, narrativeDiagnostics);
-
-        const activeChecks = narrativeDiagnostics.checks
-          .map((check) => `${check.name}:${check.status}${typeof check.score === 'number' ? `(${check.score})` : ''}`)
-          .join(', ');
-        this.emit({
-          type: narrativeDiagnostics.overallStatus === 'passed' ? 'debug' : 'warning',
-          phase: `episode_${i}_narrative_diagnostics`,
-          message: `Narrative diagnostics ${narrativeDiagnostics.overallStatus}: ${activeChecks}`,
-          data: narrativeDiagnostics,
-        });
-      } catch (diagErr) {
-        this.emit({
-          type: 'warning',
-          phase: `episode_${i}_narrative_diagnostics`,
-          message: `Narrative diagnostics failed (non-fatal): ${diagErr instanceof Error ? diagErr.message : String(diagErr)}`,
-        });
-      }
+      // (Narrative diagnostics moved earlier — see the pre-image-gen block above. They used
+      // to run here, after image generation, where an image-gen short-circuit silently
+      // dropped them in every multi-episode run.)
 
       // Per-episode QA pass (mirrors Phase 5 from single-episode generate())
       let qaReport: QAReport | undefined;

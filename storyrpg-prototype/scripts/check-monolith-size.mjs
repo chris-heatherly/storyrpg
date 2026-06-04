@@ -162,7 +162,13 @@ const baselines = {
   // +6 (21576 -> 21582): audit follow-ups — pass both cast ids AND display names to the
   // prop-introduction check (charactersInvolved mixes the two forms; id-only caused false
   // positives) + correct the lone divergent ChoiceDistribution reporting default (25/10 -> 20/15).
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21582,
+  //
+  // +25 (21582 -> 21607): relocate the per-episode narrative-diagnostics emission to BEFORE
+  // image generation (using branchValidationEpisode). The image-gen block short-circuited the
+  // rest of generateEpisodeFromOutline, silently dropping ALL narrative diagnostics (+ 08-registry-
+  // state) in every multi-episode run for months. Now emitted at a guaranteed-reached point with
+  // an unconditional reach marker. Net of removing the old post-image-gen block.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21607,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

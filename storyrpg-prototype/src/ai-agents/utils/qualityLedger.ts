@@ -67,10 +67,12 @@ async function getNodeFs(): Promise<typeof import('fs/promises') | null> {
 }
 
 /**
- * Append one entry to the quality ledger under `baseDir`
- * (e.g. "generated-stories/"). Best-effort: never throws.
+ * Append one JSONL row to `{baseDir}/{filename}`. Shared by the quality ledger
+ * and sibling append-only ledgers (e.g. the remediation ledger) so the
+ * file-writing logic lives in exactly one place. Best-effort: never throws,
+ * no-ops on a non-node runtime or empty `baseDir`.
  */
-export async function appendQualityLedger(baseDir: string, entry: QualityLedgerEntry): Promise<void> {
+export async function appendJsonlRow(baseDir: string, filename: string, row: unknown): Promise<void> {
   if (!baseDir) return;
   const fsp = await getNodeFs();
   if (!fsp) return; // non-node runtime — skip silently
@@ -78,11 +80,19 @@ export async function appendQualityLedger(baseDir: string, entry: QualityLedgerE
   try {
     await fsp.mkdir(baseDir, { recursive: true });
     const sep = baseDir.endsWith('/') ? '' : '/';
-    const line = JSON.stringify(withBand(entry)) + '\n';
-    await fsp.appendFile(`${baseDir}${sep}${LEDGER_FILENAME}`, line, 'utf8');
+    const line = JSON.stringify(row) + '\n';
+    await fsp.appendFile(`${baseDir}${sep}${filename}`, line, 'utf8');
   } catch (e) {
-    console.warn('[QualityLedger] Failed to append ledger entry:', e instanceof Error ? e.message : String(e));
+    console.warn(`[QualityLedger] Failed to append ${filename} row:`, e instanceof Error ? e.message : String(e));
   }
+}
+
+/**
+ * Append one entry to the quality ledger under `baseDir`
+ * (e.g. "generated-stories/"). Best-effort: never throws.
+ */
+export async function appendQualityLedger(baseDir: string, entry: QualityLedgerEntry): Promise<void> {
+  await appendJsonlRow(baseDir, LEDGER_FILENAME, withBand(entry));
 }
 
 /** Attach the derived band so the JSONL is self-describing for dashboards. */

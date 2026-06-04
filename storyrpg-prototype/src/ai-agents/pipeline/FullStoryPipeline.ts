@@ -5758,9 +5758,6 @@ export class FullStoryPipeline {
               fixedCount: craftFix.fixedCount,
               records: craftFix.records,
             } as any);
-            console.log(
-              `[Pipeline] applyCraftAutofix applied ${craftFix.fixedCount} repairs`
-            );
           }
         } catch (craftFixError) {
           console.warn(

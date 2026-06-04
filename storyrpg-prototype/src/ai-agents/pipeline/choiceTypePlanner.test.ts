@@ -63,6 +63,23 @@ describe('assignChoiceTypes', () => {
     expect(assignChoiceTypes([{ id: 'x' }])).toEqual([]);
   });
 
+  it('honors the season slice when seasonCounts is given (E1)', () => {
+    // Season plan allocated this episode 3 strategic + 1 relationship — no expression.
+    const s = scenes(4);
+    assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, { expression: 0, relationship: 1, strategic: 3, dilemma: 0 });
+    const counts = s.reduce((a, x) => { a[x.choicePoint!.type] = (a[x.choicePoint!.type] ?? 0) + 1; return a; }, {} as Record<string, number>);
+    expect(counts.expression ?? 0).toBe(0);
+    expect(counts.strategic).toBe(3);
+    expect(counts.relationship).toBe(1);
+  });
+
+  it('falls back to the default mix when seasonCounts is all-zero', () => {
+    const s = scenes(4);
+    assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, { expression: 0, relationship: 0, strategic: 0, dilemma: 0 });
+    const types = s.map((x) => x.choicePoint!.type);
+    expect(types).toContain('expression'); // default 35/30/20/15 still applies
+  });
+
   it('guarantees at least one dilemma at >=3 choice points (fixes the 0%-dilemma finding)', () => {
     const s = scenes(3); // largest-remainder alone would give 0 dilemma
     assignChoiceTypes(s);

@@ -78,6 +78,22 @@ export interface ChoiceTypeAssignment {
 }
 
 /**
+ * Convert season-plan per-episode counts into a proportion target. Returns undefined when
+ * no counts are given or they're all zero (so callers fall back to the default mix).
+ */
+function countsToTarget(counts?: Record<ChoiceType, number>): ChoiceTypeTarget | undefined {
+  if (!counts) return undefined;
+  const total = ORDER.reduce((s, t) => s + Math.max(0, counts[t] ?? 0), 0);
+  if (total <= 0) return undefined;
+  return {
+    expression: (Math.max(0, counts.expression ?? 0) / total) * 100,
+    relationship: (Math.max(0, counts.relationship ?? 0) / total) * 100,
+    strategic: (Math.max(0, counts.strategic ?? 0) / total) * 100,
+    dilemma: (Math.max(0, counts.dilemma ?? 0) / total) * 100,
+  };
+}
+
+/**
  * Assign an explicit `choicePoint.type` to every non-encounter scene that has a
  * choice point, hitting the target distribution. Branching choice points are
  * never assigned 'expression'. Mutates the scenes in place and returns the
@@ -86,12 +102,20 @@ export interface ChoiceTypeAssignment {
 export function assignChoiceTypes(
   scenes: PlannableScene[],
   target: ChoiceTypeTarget = DEFAULT_CHOICE_TYPE_TARGET,
+  /**
+   * E1: when the season choice plan has already allocated this episode's type mix
+   * (`episodeTypeCounts`), pass it here so the per-episode allocation honors the SEASON
+   * budget instead of re-deriving 35/30/20/15 locally. Treated as a proportion target and
+   * re-allocated to the actual choice-point count, so a count mismatch degrades gracefully.
+   */
+  seasonCounts?: Record<ChoiceType, number>,
 ): ChoiceTypeAssignment[] {
   const choicePoints = (scenes || []).filter((s) => !s.isEncounter && s.choicePoint);
   const n = choicePoints.length;
   if (n === 0) return [];
 
-  const counts = allocateChoiceTypeCounts(n, target);
+  const effectiveTarget = countsToTarget(seasonCounts) ?? target;
+  const counts = allocateChoiceTypeCounts(n, effectiveTarget);
 
   // Guarantee at least one DILEMMA in a reasonably-sized episode. Largest-
   // remainder gives dilemma (the lowest target weight) 0 slots at small N, so
@@ -100,8 +124,10 @@ export function assignChoiceTypes(
   // from the largest non-dilemma category to stay closest to the target mix.
   // The assignment loop below routes it to a branching/bottleneck choice point
   // first (those are sorted ahead), landing it on the episode's pivotal choice.
+  // Skip the local guarantee when the SEASON plan owns the mix (E1) — it may deliberately
+  // place this episode's dilemmas in other episodes; forcing one here breaks the budget.
   const MIN_CHOICE_POINTS_FOR_DILEMMA = 3;
-  if (counts.dilemma === 0 && n >= MIN_CHOICE_POINTS_FOR_DILEMMA) {
+  if (!seasonCounts && counts.dilemma === 0 && n >= MIN_CHOICE_POINTS_FOR_DILEMMA) {
     // Steal from the OVER-represented type (largest count), not always 'strategic'.
     // The old code took from strategic first, which zeroed the (already rarest)
     // strategic slot at small N — the audit's `strategic 0%` finding. On ties,

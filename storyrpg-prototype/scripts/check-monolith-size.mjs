@@ -144,7 +144,15 @@ const baselines = {
   // +13 (21509 -> 21522): D3 leadsTo source fix (read leadsTo from the blueprint scene by id
   // in prepareValidationInput, not from SceneContent which lacks it) + a repair-reach skip
   // diagnostic (write continuity-repair.json with a reason when the repair guard is false).
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21522,
+  //
+  // +42 (21522 -> 21564): E1 — season-level choice-type plan. Build the SeasonChoicePlan once
+  // from the season plan (35/30/20/15 is a SEASON budget); each episode's assignChoiceTypes
+  // draws its season-assigned slice (episodeTypeCounts) instead of forcing the full mix
+  // locally; persist season-choice-plan.json; feed later-payoff moments into the SpinePlantMap
+  // (a "pays off later" choice is a promise). Allocation/derivation live in
+  // pipeline/seasonChoicePlan.ts + choiceTypePlanner.ts; only the build/slice/persist/feed
+  // call sites are here.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21564,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

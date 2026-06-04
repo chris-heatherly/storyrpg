@@ -127,6 +127,12 @@ import {
   snapshotPlan,
 } from './generationPlan';
 import { assignChoiceTypes } from './choiceTypePlanner';
+import {
+  episodeTypeCounts,
+  seasonChoicePlanFromSeasonPlan,
+  spineEntriesFromChoicePlan,
+  type SeasonChoicePlan,
+} from './seasonChoicePlan';
 import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { SeasonCanon } from './seasonCanon';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
@@ -814,6 +820,12 @@ export class FullStoryPipeline {
   // sequentially-generated episodes.
   private seasonCanon: SeasonCanon = new SeasonCanon();
   private priorEpisodeSnapshot?: EpisodeStateSnapshot;
+  /**
+   * E1: the season-level choice-type plan, allocated ONCE across the season's moments
+   * (35/30/20/15 is a SEASON budget, not per-episode). Built in runEpisodeArchitecture
+   * from the season plan; each episode draws its type slice via episodeTypeCounts.
+   */
+  private seasonChoicePlan?: SeasonChoicePlan;
   /**
    * Season Canon is ON by default (opt-out, not opt-in): it activates unless the
    * config EXPLICITLY sets seasonCanonEnabled === false. The flag is built client-
@@ -6730,11 +6742,21 @@ export class FullStoryPipeline {
       message: `Created blueprint with ${result.data.scenes.length} scenes`,
     });
 
-    // Rebalance choice-point types to the target taxonomy (35/30/20/15) before
-    // ChoiceAuthor. StoryArchitect only prompts the mix; this makes it explicit
-    // so the episode can't ship 0% expression / 0% relationship. Pure + safe;
-    // respects encounters and branching constraints (see choiceTypePlanner).
-    const choiceTypeChanges = assignChoiceTypes(result.data.scenes as never).filter((r) => r.from !== r.to);
+    // Rebalance choice-point types before ChoiceAuthor. The 35/30/20/15 mix is a SEASON
+    // budget (E1): build the season choice plan once from the season plan, then allocate
+    // THIS episode against its season-assigned slice (episodeTypeCounts) rather than forcing
+    // the full mix locally — so a lopsided-but-on-plan episode is correct, not a defect.
+    // Falls back to the default mix when the slice is empty (no season plan).
+    this.seasonChoicePlan = seasonChoicePlanFromSeasonPlan(brief.seasonPlan, {
+      episode: brief.episode.number,
+      choicesPerEpisode:
+        brief.multiEpisode?.preferences?.targetChoicesPerEpisode ||
+        this.config.generation?.majorChoiceCount ||
+        brief.options?.majorChoiceCount ||
+        2,
+    });
+    const episodeSlice = episodeTypeCounts(this.seasonChoicePlan, brief.episode.number);
+    const choiceTypeChanges = assignChoiceTypes(result.data.scenes as never, undefined, episodeSlice).filter((r) => r.from !== r.to);
     if (choiceTypeChanges.length > 0) {
       this.emit({ type: 'debug', phase: 'episode_architecture', message: `Rebalanced ${choiceTypeChanges.length} choice-point type(s) toward target taxonomy` });
     }
@@ -6910,16 +6932,30 @@ export class FullStoryPipeline {
     // the loop's own blueprint guarantees the type is on the objects ChoiceAuthor reads
     // (Phase D then forces it). Persist the plan so we can tell allocation- from
     // propagation-failures at a glance.
-    const choiceTypePlan = assignChoiceTypes(blueprint.scenes as never);
+    // E1: re-assert against THIS episode's season-assigned slice (same plan built in
+    // runEpisodeArchitecture; the lookup is by episode number so the slice survives a
+    // clone/checkpoint reload). Empty slice → default mix.
+    const episodeSlice = episodeTypeCounts(this.seasonChoicePlan, episodeNumber ?? 1);
+    const choiceTypePlan = assignChoiceTypes(blueprint.scenes as never, undefined, episodeSlice);
     if (outputDirectory) {
       await saveEarlyDiagnostic(outputDirectory, 'choice-type-plan.json', {
         generatedAt: new Date().toISOString(),
         episodeNumber,
         assignments: choiceTypePlan,
+        seasonSlice: episodeSlice,
         finalTypes: blueprint.scenes
           .filter((s) => s.choicePoint)
           .map((s) => ({ sceneId: s.id, isEncounter: !!s.isEncounter, branches: !!s.choicePoint?.branches, type: s.choicePoint?.type })),
       });
+      // E1: persist the whole season choice plan so the "plan up front" is inspectable
+      // (which episode owns which typed moments, and which pay off later).
+      if (this.seasonChoicePlan) {
+        await saveEarlyDiagnostic(outputDirectory, 'season-choice-plan.json', {
+          generatedAt: new Date().toISOString(),
+          counts: this.seasonChoicePlan.counts,
+          moments: this.seasonChoicePlan.moments,
+        }).catch(() => undefined);
+      }
     }
 
     // Initialize incremental validation
@@ -10028,7 +10064,13 @@ export class FullStoryPipeline {
           if (this.seasonCanonOn && generated.episode) {
             // Phase G: pin each promise's explicit payoffEpisode from the season spine
             // (derived from seasonFlags) so the promise-due gate has real targets.
-            const spineResult = applySpinePlantMap(this.callbackLedger, deriveSpinePlantMap(baseBrief.seasonPlan));
+            // E1: also pin the later-payoff choice moments (a "pays off later" choice IS a
+            // promise with an explicit payoffEpisode) so the same gate enforces them.
+            const spineEntries = [
+              ...deriveSpinePlantMap(baseBrief.seasonPlan).entries,
+              ...spineEntriesFromChoicePlan(this.seasonChoicePlan),
+            ];
+            const spineResult = applySpinePlantMap(this.callbackLedger, { entries: spineEntries });
             if (spineResult.unmatched.length > 0) {
               this.emit({ type: 'debug', phase: `season_canon_ep_${i}`, message: `Spine plant map: ${spineResult.applied} applied, ${spineResult.unmatched.length} not yet planted.` });
             }

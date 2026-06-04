@@ -93,6 +93,95 @@ export function momentsForEpisode(plan: SeasonChoicePlan | undefined, episode: n
   return (plan?.moments ?? []).filter((m) => m.episode === episode);
 }
 
+export interface SeasonChoiceStructureInput {
+  /** Episode numbers in season order. */
+  episodes: number[];
+  /** Expected choice points per episode (from the season plan's targetChoicesPerEpisode). */
+  choicesPerEpisode: number;
+  /** Cross-episode branches → later-payoff moments anchored at their setup episode. */
+  crossEpisode?: Array<{ flag?: string; setupEpisode: number; payoffEpisode: number; anchor?: string }>;
+}
+
+/**
+ * Build the season choice plan from the season structure (deterministic backbone — the
+ * SeasonPlanner LLM can later supply richer `anchor`s, but the type allocation works from
+ * the structure alone). Cross-episode branches become later-payoff (consequential) moments;
+ * the rest are filled in as immediate per-episode decisions up to `choicesPerEpisode`.
+ */
+export function buildSeasonChoicePlan(
+  input: SeasonChoiceStructureInput,
+  target: ChoiceTypeTarget = DEFAULT_CHOICE_TYPE_TARGET,
+): SeasonChoicePlan {
+  const moments: SeasonChoiceMoment[] = [];
+  for (const [idx, c] of (input.crossEpisode ?? []).entries()) {
+    moments.push({
+      id: `cross-${c.setupEpisode}-${idx}`,
+      episode: c.setupEpisode,
+      anchor: c.anchor ?? `cross-episode decision (pays off ep ${c.payoffEpisode})`,
+      payoff: { payoffEpisode: c.payoffEpisode },
+      flag: c.flag,
+    });
+  }
+  const perEpisode = Math.max(0, Math.floor(input.choicesPerEpisode));
+  for (const ep of input.episodes) {
+    const already = moments.filter((m) => m.episode === ep).length;
+    for (let k = already; k < perEpisode; k++) {
+      moments.push({ id: `ep${ep}-c${k}`, episode: ep, anchor: 'episode decision', payoff: 'immediate' });
+    }
+  }
+  return assignSeasonChoiceTypes(moments, target);
+}
+
+/** Minimal SeasonPlan shape (avoids importing the full type into pure code). */
+interface SeasonPlanLike {
+  episodes?: Array<{ episodeNumber: number }>;
+  crossEpisodeBranches?: Array<{ originEpisode: number; name?: string; reconvergence?: { episodeNumber?: number } }>;
+  preferences?: { targetChoicesPerEpisode?: number };
+}
+
+/**
+ * Build the season choice plan from a SeasonPlan (the pipeline entry point). Falls back to
+ * a single-episode plan when no season plan exists (the Endsong case — its one episode is
+ * the whole "season"). Cross-episode branches become later-payoff moments at their origin.
+ */
+export function seasonChoicePlanFromSeasonPlan(
+  seasonPlan: SeasonPlanLike | undefined,
+  fallback: { episode: number; choicesPerEpisode: number },
+  target: ChoiceTypeTarget = DEFAULT_CHOICE_TYPE_TARGET,
+): SeasonChoicePlan {
+  const episodes = (seasonPlan?.episodes ?? [])
+    .map((e) => e.episodeNumber)
+    .filter((n): n is number => typeof n === 'number');
+  const choicesPerEpisode = seasonPlan?.preferences?.targetChoicesPerEpisode ?? fallback.choicesPerEpisode;
+  const crossEpisode = (seasonPlan?.crossEpisodeBranches ?? [])
+    .filter((b) => typeof b?.originEpisode === 'number')
+    .map((b) => ({
+      setupEpisode: b.originEpisode,
+      payoffEpisode: b.reconvergence?.episodeNumber ?? b.originEpisode,
+      anchor: b.name,
+    }));
+  return buildSeasonChoicePlan(
+    {
+      episodes: episodes.length ? episodes : [fallback.episode],
+      choicesPerEpisode: Math.max(1, Math.floor(choicesPerEpisode)),
+      crossEpisode,
+    },
+    target,
+  );
+}
+
+/** Per-type counts the season plan assigned to one episode (drives its per-episode allocation). */
+export function episodeTypeCounts(
+  plan: SeasonChoicePlan | undefined,
+  episode: number,
+): Record<ChoiceType, number> {
+  const counts: Record<ChoiceType, number> = { expression: 0, relationship: 0, strategic: 0, dilemma: 0 };
+  for (const m of momentsForEpisode(plan, episode)) {
+    if (m.choiceType) counts[m.choiceType] += 1;
+  }
+  return counts;
+}
+
 /**
  * Spine plant→payoff entries for the later-payoff moments, so the promise-due gate
  * enforces them at the right episode. Shape matches `SpinePlantEntry` (spinePlantMap.ts).

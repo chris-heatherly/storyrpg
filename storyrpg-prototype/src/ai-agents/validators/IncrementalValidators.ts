@@ -566,7 +566,11 @@ export class IncrementalSensitivityChecker extends BaseValidator {
     trauma: {
       mild: /\b(worried|scared|afraid|anxious|nightmare)\b/gi,
       moderate: /\b(panic|terror|flashback|trigger|trauma|abuse)\b/gi,
-      strong: /\b(suicide|self-harm|assault|rape|molest)\b/gi,
+      // The strong trauma tier is PERSONAL/sexual trauma (grouped with suicide/self-harm/
+      // rape/molest). Bare "assault" was matching military assault ("the assault resumes",
+      // "assault waves") in war/siege fiction, forcing an M rating that exceeds the default
+      // T target and HARD-BLOCKING the contract. Require the sexual qualifier instead.
+      strong: /\b(suicide|self-harm|sexual assault|rape|molest)\b/gi,
     },
   };
 
@@ -1386,13 +1390,14 @@ export class IncrementalValidationRunner {
       }
     }
 
-    // Sensitivity check
+    // Sensitivity check — ADVISORY. This is a crude keyword scan ("quick content scan...
+    // flags potential rating issues early") with no regeneration path, so letting it set
+    // overallPassed=false made a single ambiguous word (e.g. military "assault") silently
+    // HARD-BLOCK the whole multi-episode contract with "Regeneration requested: none" and no
+    // recourse. Record the flags so nothing is hidden, but do not block on them — rating
+    // enforcement, if wanted, belongs in a deliberate context-aware gate, not this regex.
     if (this.config.sensitivityCheck) {
       results.sensitivity = this.sensitivityChecker.checkScene(sceneContent);
-      if (!results.sensitivity.passed) {
-        // Don't auto-regenerate for sensitivity, just flag
-        results.overallPassed = false;
-      }
     }
 
     // Continuity check

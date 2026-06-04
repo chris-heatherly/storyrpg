@@ -78,17 +78,22 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'PhaseValidator', stage: 'phase', tier: 'advisory', dispatchedFrom: 'FullStoryPipeline' },
 
   // --- Quick validation (IntegratedBestPracticesValidator.runQuickValidation) ---
-  { validator: 'NPCDepthValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
-  { validator: 'ChoiceImpactValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
+  // tier stays 'advisory' (not 'blocking'): runtime enforcement is a guaranteed
+  // deterministic autofix in applyCraftAutofix, not a hard throw.
+  { validator: 'NPCDepthValidator', stage: 'quick', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_NPC_DEPTH', dispatchedFrom: 'IntegratedBestPracticesValidator' },
+  { validator: 'ChoiceImpactValidator', stage: 'quick', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_CHOICE_IMPACT', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'MechanicalStorytellingValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
-  { validator: 'StatCheckBalanceValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
+  // tier stays 'advisory' (not 'blocking'): enforced via guaranteed autofix.
+  { validator: 'StatCheckBalanceValidator', stage: 'quick', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_STAT_CHECK_BALANCE', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'StakesTriangleValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'FiveFactorValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'ChoiceDensityValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'ChoiceDistributionValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'ConsequenceBudgetValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'CallbackOpportunitiesValidator', stage: 'quick', tier: 'autofix', dispatchedFrom: 'IntegratedBestPracticesValidator' },
-  { validator: 'MechanicsLeakageValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
+  // tier stays 'advisory' (not 'blocking'): the safe isolated-token class is
+  // enforced via autofix; in-prose leaks defer to B1 regen.
+  { validator: 'MechanicsLeakageValidator', stage: 'quick', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_MECHANICS_LEAKAGE', dispatchedFrom: 'IntegratedBestPracticesValidator' },
 
   // --- Full validation (IntegratedBestPracticesValidator.runFullValidation adds these) ---
   { validator: 'SkillCoverageValidator', stage: 'full', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
@@ -100,7 +105,8 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // --- Narrative diagnostics (narrativeDiagnostics.runNarrativeDiagnostics) ---
   { validator: 'SetupPayoffValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'TwistQualityValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
-  { validator: 'ArcDeltaValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
+  // tier stays 'advisory' (not 'blocking'): enforced via guaranteed autofix.
+  { validator: 'ArcDeltaValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_ARC_DELTA', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'DivergenceValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'CallbackCoverageValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'NarrativeFailureModeValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },

@@ -282,6 +282,7 @@ import {
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import { classifyArchitectGateWarnings } from '../remediation/architectGatePolicy';
+import { applyCraftAutofix } from '../remediation/applyCraftAutofix';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
@@ -5731,6 +5732,36 @@ export class FullStoryPipeline {
         } catch (autoFixError) {
           console.warn(
             `[Pipeline] StructuralValidator.autoFix failed (non-fatal): ${(autoFixError as Error).message}`
+          );
+        }
+      }
+
+      // === CRAFT AUTO-FIX ===
+      // Deterministic, gated craft repairs (stat-check balance, choice impact,
+      // NPC depth, arc endpoints, mechanics leakage). Each is individually
+      // gated behind a GATE_* env flag; with no flags set this is a no-op, so
+      // default pipeline behavior is unchanged.
+      if (story) {
+        try {
+          const craftFix = applyCraftAutofix(story, (f) => process.env[f] === '1');
+          if (craftFix.fixedCount > 0) {
+            this.addCheckpoint('craft_autofix', {
+              fixedCount: craftFix.fixedCount,
+              records: craftFix.records,
+            });
+            this.emit({
+              type: 'pipeline_event',
+              event: 'craft_autofix_applied',
+              fixedCount: craftFix.fixedCount,
+              records: craftFix.records,
+            } as any);
+            console.log(
+              `[Pipeline] applyCraftAutofix applied ${craftFix.fixedCount} repairs`
+            );
+          }
+        } catch (craftFixError) {
+          console.warn(
+            `[Pipeline] applyCraftAutofix failed (non-fatal): ${(craftFixError as Error).message}`
           );
         }
       }

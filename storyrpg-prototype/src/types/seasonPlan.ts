@@ -231,6 +231,24 @@ export interface InformationLedgerEntry {
   opensQuestionIds?: string[];
 }
 
+/**
+ * A season-level choice moment seed (E1 slice 4) — the planner's creative identification
+ * of a decision point in the master narrative. Deterministic type-allocation + payoff
+ * wiring happen downstream (seasonChoicePlan); this is just the LLM-authored seed.
+ */
+export interface SeasonChoiceMomentSeed {
+  /** Stable id (slug-like). */
+  id: string;
+  /** Episode the decision is made in. */
+  episode: number;
+  /** What the decision is, tied to an arc / seven-point beat. */
+  anchor: string;
+  /** Episode the choice pays off. Omitted or === episode means it pays off immediately. */
+  paysOffEpisode?: number;
+  /** Optional flag the choice sets (seeds the promise / SpinePlantMap for later payoffs). */
+  flag?: string;
+}
+
 export interface SeasonPlan {
   // Unique identifier
   id: string;
@@ -284,6 +302,16 @@ export interface SeasonPlan {
    * early reveals, unsupported surprises, and unresolved question sprawl.
    */
   informationLedger?: InformationLedgerEntry[];
+
+  /**
+   * E1 slice 4: the season's CHOICE MOMENTS, identified up front by the planner
+   * across the master narrative — each is a decision tied to an arc/seven-point beat,
+   * with when it pays off (now or a later episode). Consumed by `seasonChoicePlan` to
+   * allocate the 35/30/20/15 choice-type budget across the whole season (and later
+   * payoffs seed promises / the SpinePlantMap). Optional — the consumer falls back to
+   * a deterministic derivation when absent.
+   */
+  choiceMoments?: SeasonChoiceMomentSeed[];
 
   // Ending targets the season is steering toward
   endingMode: EndingMode;

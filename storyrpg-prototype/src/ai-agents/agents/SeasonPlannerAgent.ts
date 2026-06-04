@@ -39,6 +39,7 @@ import {
   EpisodeRecommendation,
   EpisodeSelectionState,
   CliffhangerPlan,
+  SeasonChoiceMomentSeed,
 } from '../../types/seasonPlan';
 import {
   distributeSevenPoints,
@@ -408,6 +409,16 @@ Growth should follow the difficulty curve:
 - Use \`crossEpisodeBranches.paths[].targetEndingIds\` to show which ending routes a branch serves.
 - Use \`episodeEndingRoutes\` to mark whether each episode opens, reinforces, threatens, or locks a route.
 
+### 6. CHOICE MOMENTS (season-level)
+Identify the key DECISIONS across the master narrative as \`choiceMoments\` — not every minor pick,
+but the moments that define the season's interactivity. For each:
+- **anchor**: what the decision is, in fiction (tie it to an arc beat or seven-point turn). Never expose stats/mechanics.
+- **episode**: where the player makes it.
+- **paysOffEpisode**: when its consequence lands — the SAME episode for an immediate payoff, or a LATER episode for a decision that echoes across the season. Omit for immediate.
+- **flag** (only for later-payoff moments): a snake_case flag the choice sets, so the payoff can be enforced.
+Spread them across episodes; a few should pay off later (those are the season's connective tissue).
+Do NOT assign a choice "type" — that is allocated downstream across the whole season.
+
 Return this JSON:
 {
   "seasonTitle": "Compelling season title",
@@ -620,6 +631,11 @@ Return this JSON:
       "setInEpisode": 1,
       "checkedInEpisodes": [3, 5]
     }
+  ],
+  "choiceMoments": [
+    { "id": "cm-1", "episode": 1, "anchor": "Confront the captain or hold your tongue", "paysOffEpisode": 1 },
+    { "id": "cm-2", "episode": 1, "anchor": "Spare the envoy or take the prisoner", "paysOffEpisode": 4, "flag": "spared_envoy" },
+    { "id": "cm-3", "episode": 2, "anchor": "Trust Lysandra's plan or override it" }
   ],
   "characterIntroductions": [
     { "characterId": "char-1", "characterName": "Name", "introducedInEpisode": 1, "role": "protagonist" }
@@ -1334,6 +1350,12 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       isSceneEpisodes,
     );
 
+    // E1 slice 4: normalize the planner's season-level choice moments.
+    const choiceMoments = this.normalizeChoiceMoments(
+      (planData as any).choiceMoments,
+      routedEpisodes.length,
+    );
+
     // Build character introductions
     const characterIntroductions = (planData as any).characterIntroductions || 
       analysis.majorCharacters.map(c => ({
@@ -1370,6 +1392,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       sevenPoint: analysis.sevenPoint,
       seasonPromiseArchitecture,
       informationLedger,
+      choiceMoments,
       endingMode: preferences?.endingMode || analysis.resolvedEndingMode || analysis.detectedEndingMode || 'single',
       resolvedEndings: analysis.resolvedEndings || [],
       episodes: routedEpisodes,
@@ -1452,6 +1475,41 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     }
 
     return plan;
+  }
+
+  /**
+   * E1 slice 4: normalize planner-emitted choice moments. Drops malformed entries,
+   * clamps episodes to the valid range, de-dupes ids, drops a later-payoff target that
+   * isn't actually later (→ immediate), and only keeps a snake_case flag. Returns
+   * undefined when nothing valid remains (consumer falls back to deterministic derivation).
+   */
+  private normalizeChoiceMoments(
+    raw: unknown,
+    totalEpisodes: number,
+  ): SeasonChoiceMomentSeed[] | undefined {
+    if (!Array.isArray(raw) || raw.length === 0) return undefined;
+    const maxEp = Math.max(1, totalEpisodes);
+    const clamp = (n: number) => Math.min(maxEp, Math.max(1, Math.floor(n)));
+    const seen = new Set<string>();
+    const out: SeasonChoiceMomentSeed[] = [];
+    for (const [idx, entry] of raw.entries()) {
+      if (!entry || typeof entry !== 'object') continue;
+      const e = entry as Record<string, unknown>;
+      const anchor = typeof e.anchor === 'string' ? e.anchor.trim() : '';
+      if (!anchor || typeof e.episode !== 'number') continue;
+      const episode = clamp(e.episode);
+      let id = typeof e.id === 'string' && e.id.trim() ? e.id.trim() : `cm-${episode}-${idx}`;
+      while (seen.has(id)) id = `${id}-${idx}`;
+      seen.add(id);
+      const moment: SeasonChoiceMomentSeed = { id, episode, anchor };
+      if (typeof e.paysOffEpisode === 'number') {
+        const payoff = clamp(e.paysOffEpisode);
+        if (payoff > episode) moment.paysOffEpisode = payoff; // only keep genuine later payoffs
+      }
+      if (typeof e.flag === 'string' && /^[a-z0-9_]+$/.test(e.flag)) moment.flag = e.flag;
+      out.push(moment);
+    }
+    return out.length > 0 ? out : undefined;
   }
 
   private normalizeInformationLedger(

@@ -132,11 +132,44 @@ export function buildSeasonChoicePlan(
   return assignSeasonChoiceTypes(moments, target);
 }
 
+/** A planner-emitted choice-moment seed (E1 slice 4 — SeasonChoiceMomentSeed shape). */
+export interface ChoiceMomentSeed {
+  id: string;
+  episode: number;
+  anchor: string;
+  paysOffEpisode?: number;
+  flag?: string;
+}
+
 /** Minimal SeasonPlan shape (avoids importing the full type into pure code). */
 interface SeasonPlanLike {
   episodes?: Array<{ episodeNumber: number }>;
   crossEpisodeBranches?: Array<{ originEpisode: number; name?: string; reconvergence?: { episodeNumber?: number } }>;
   preferences?: { targetChoicesPerEpisode?: number };
+  choiceMoments?: ChoiceMomentSeed[];
+}
+
+/**
+ * Build the season choice plan directly from planner-emitted moment seeds (E1 slice 4).
+ * A seed that pays off in a later episode becomes a later-payoff (promise) moment; the
+ * type allocation runs over the full season list. Used in preference to the deterministic
+ * derivation when the planner identified the moments creatively.
+ */
+export function seasonChoicePlanFromMoments(
+  seeds: ChoiceMomentSeed[],
+  target: ChoiceTypeTarget = DEFAULT_CHOICE_TYPE_TARGET,
+): SeasonChoicePlan {
+  const moments: SeasonChoiceMoment[] = seeds.map((s) => {
+    const laterPayoff = typeof s.paysOffEpisode === 'number' && s.paysOffEpisode > s.episode;
+    return {
+      id: s.id,
+      episode: s.episode,
+      anchor: s.anchor,
+      payoff: laterPayoff ? { payoffEpisode: s.paysOffEpisode as number } : ('immediate' as const),
+      flag: s.flag,
+    };
+  });
+  return assignSeasonChoiceTypes(moments, target);
 }
 
 /**
@@ -149,6 +182,14 @@ export function seasonChoicePlanFromSeasonPlan(
   fallback: { episode: number; choicesPerEpisode: number },
   target: ChoiceTypeTarget = DEFAULT_CHOICE_TYPE_TARGET,
 ): SeasonChoicePlan {
+  // E1 slice 4: prefer the planner's creatively-identified choice moments when present.
+  const seeds = (seasonPlan?.choiceMoments ?? []).filter(
+    (m): m is ChoiceMomentSeed => !!m && typeof m.episode === 'number' && typeof m.anchor === 'string' && !!m.id,
+  );
+  if (seeds.length > 0) {
+    return seasonChoicePlanFromMoments(seeds, target);
+  }
+
   const episodes = (seasonPlan?.episodes ?? [])
     .map((e) => e.episodeNumber)
     .filter((n): n is number => typeof n === 'number');

@@ -320,3 +320,43 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     expect(plan.episodes[0].plannedEncounters[0].isBranchPoint).toBe(true);
   });
 });
+
+describe('SeasonPlannerAgent.normalizeChoiceMoments (E1 slice 4)', () => {
+  const norm = (raw: unknown, total = 6) => (makePlanner() as any).normalizeChoiceMoments(raw, total);
+
+  it('keeps valid moments, clamps episodes, and only keeps genuine later payoffs', () => {
+    const out = norm([
+      { id: 'a', episode: 1, anchor: 'Confront the captain', paysOffEpisode: 1 }, // not later → dropped payoff
+      { id: 'b', episode: 2, anchor: 'Spare the envoy', paysOffEpisode: 4, flag: 'spared_envoy' },
+      { id: 'c', episode: 99, anchor: 'Late call' }, // episode clamped to total (6)
+    ]);
+    expect(out).toEqual([
+      { id: 'a', episode: 1, anchor: 'Confront the captain' },
+      { id: 'b', episode: 2, anchor: 'Spare the envoy', paysOffEpisode: 4, flag: 'spared_envoy' },
+      { id: 'c', episode: 6, anchor: 'Late call' },
+    ]);
+  });
+
+  it('drops malformed entries and a non-snake_case flag', () => {
+    const out = norm([
+      { episode: 1 },                                   // no anchor → dropped
+      { id: 'x', anchor: 'No episode' },                // no episode → dropped
+      { id: 'y', episode: 1, anchor: 'Bad flag', flag: 'Not A Flag' }, // flag dropped, moment kept
+    ]);
+    expect(out).toEqual([{ id: 'y', episode: 1, anchor: 'Bad flag' }]);
+  });
+
+  it('returns undefined for an empty or non-array input', () => {
+    expect(norm([])).toBeUndefined();
+    expect(norm(undefined)).toBeUndefined();
+  });
+
+  it('de-dupes repeated ids', () => {
+    const out = norm([
+      { id: 'dup', episode: 1, anchor: 'First' },
+      { id: 'dup', episode: 2, anchor: 'Second' },
+    ]);
+    expect(out).toHaveLength(2);
+    expect(new Set(out.map((m: any) => m.id)).size).toBe(2);
+  });
+});

@@ -4,6 +4,8 @@ import {
   buildSeasonChoicePlan,
   episodeTypeCounts,
   momentsForEpisode,
+  seasonChoicePlanFromMoments,
+  seasonChoicePlanFromSeasonPlan,
   spineEntriesFromChoicePlan,
   type SeasonChoiceMoment,
 } from './seasonChoicePlan';
@@ -91,6 +93,49 @@ describe('episodeTypeCounts', () => {
   it('returns all-zero for an episode with no moments', () => {
     const plan = buildSeasonChoicePlan({ episodes: [1], choicesPerEpisode: 2 });
     expect(episodeTypeCounts(plan, 99)).toEqual({ expression: 0, relationship: 0, strategic: 0, dilemma: 0 });
+  });
+});
+
+describe('seasonChoicePlanFromMoments (E1 slice 4)', () => {
+  it('maps a later-payoff seed to a promise moment and types it season-wide', () => {
+    const plan = seasonChoicePlanFromMoments([
+      { id: 'a', episode: 1, anchor: 'Confront or hold', paysOffEpisode: 1 }, // same ep → immediate
+      { id: 'b', episode: 1, anchor: 'Spare the envoy', paysOffEpisode: 4, flag: 'spared_envoy' },
+      { id: 'c', episode: 2, anchor: 'Trust the plan' },
+    ]);
+    expect(plan.moments).toHaveLength(3);
+    expect(plan.moments.every((m) => !!m.choiceType)).toBe(true);
+    const b = plan.moments.find((m) => m.id === 'b')!;
+    expect(b.payoff).toEqual({ payoffEpisode: 4 });
+    expect(b.choiceType).not.toBe('expression');
+    // It seeds a SpinePlantMap entry.
+    expect(spineEntriesFromChoicePlan(plan)).toEqual([{ flag: 'spared_envoy', payoffEpisode: 4, payoffEpisodeLatest: undefined }]);
+  });
+});
+
+describe('seasonChoicePlanFromSeasonPlan — prefers LLM moments (E1 slice 4)', () => {
+  it('uses choiceMoments when present, not the deterministic derivation', () => {
+    const plan = seasonChoicePlanFromSeasonPlan(
+      {
+        episodes: [{ episodeNumber: 1 }, { episodeNumber: 2 }],
+        preferences: { targetChoicesPerEpisode: 5 },
+        choiceMoments: [
+          { id: 'm1', episode: 1, anchor: 'A' },
+          { id: 'm2', episode: 2, anchor: 'B', paysOffEpisode: 2 },
+        ],
+      },
+      { episode: 1, choicesPerEpisode: 2 },
+    );
+    // Exactly the 2 LLM moments — not 10 (5/ep × 2) from the deterministic path.
+    expect(plan.moments.map((m) => m.id).sort()).toEqual(['m1', 'm2']);
+  });
+
+  it('falls back to the deterministic derivation when no choiceMoments', () => {
+    const plan = seasonChoicePlanFromSeasonPlan(
+      { episodes: [{ episodeNumber: 1 }], preferences: { targetChoicesPerEpisode: 4 } },
+      { episode: 1, choicesPerEpisode: 2 },
+    );
+    expect(momentsForEpisode(plan, 1)).toHaveLength(4);
   });
 });
 

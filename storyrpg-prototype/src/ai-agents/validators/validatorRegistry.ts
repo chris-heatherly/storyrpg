@@ -62,7 +62,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // blueprint must realize its assigned beats — is an inline validateBlueprint throw in
   // StoryArchitect, like the scene-count/branching checks, so it has no separate registry row.)
   { validator: 'SevenPointCoverageValidator', stage: 'season', tier: 'blocking', dispatchedFrom: 'SeasonPlannerAgent (execute)' },
-  { validator: 'ArcPressureArchitectureValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
+  { validator: 'ArcPressureArchitectureValidator', stage: 'season', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_ARC_PRESSURE', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'CharacterArchitectureValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'SeasonPromiseValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'InformationLedgerValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
@@ -88,7 +88,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'StakesTriangleValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'FiveFactorValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'ChoiceDensityValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
-  { validator: 'ChoiceDistributionValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
+  { validator: 'ChoiceDistributionValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CHOICE_DISTRIBUTION', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'ConsequenceBudgetValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'CallbackOpportunitiesValidator', stage: 'quick', tier: 'autofix', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   // tier stays 'advisory' (not 'blocking'): the safe isolated-token class is
@@ -103,12 +103,12 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'CliffhangerValidator', stage: 'full', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
 
   // --- Narrative diagnostics (narrativeDiagnostics.runNarrativeDiagnostics) ---
-  { validator: 'SetupPayoffValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
+  { validator: 'SetupPayoffValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_SETUP_PAYOFF', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'TwistQualityValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   // tier stays 'advisory' (not 'blocking'): enforced via guaranteed autofix.
   { validator: 'ArcDeltaValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_ARC_DELTA', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'DivergenceValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
-  { validator: 'CallbackCoverageValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
+  { validator: 'CallbackCoverageValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CALLBACK_COVERAGE', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'NarrativeFailureModeValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   // E5 / #26C / D4 — advisory diagnostics added 2026-06.
   { validator: 'IntensityDistributionValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },

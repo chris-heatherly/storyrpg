@@ -279,9 +279,11 @@ import {
   TreatmentFidelityValidator,
   type SceneGraphBranchValidationResult,
   runNarrativeDiagnostics,
+  type NarrativeDiagnosticsReport,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import { classifyArchitectGateWarnings } from '../remediation/architectGatePolicy';
+import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { applyCraftAutofix } from '../remediation/applyCraftAutofix';
 import {
   ComprehensiveValidationReport,
@@ -10795,6 +10797,7 @@ export class FullStoryPipeline {
       // guaranteed reached, and `branchValidationEpisode` is a full assembled episode (sans
       // images — all the divergence check needs). The unconditional marker confirms reach.
       this.emit({ type: 'debug', phase: `episode_${i}_narrative_diagnostics`, message: 'Narrative diagnostics: reached (pre-image-gen).' });
+      let narrativeDiagnosticsReport: NarrativeDiagnosticsReport | undefined;
       try {
         const narrativeDiagnostics = runNarrativeDiagnostics({
           episodeNumber: i,
@@ -10808,6 +10811,7 @@ export class FullStoryPipeline {
           choicePlannedSceneIds: (blueprint.scenes ?? []).filter((s) => !s.isEncounter && s.choicePoint).map((s) => s.id),
           choiceAuthoredSceneIds: sceneContents.filter((sc) => (sc.beats ?? []).some((b) => (b.choices?.length ?? 0) > 0)).map((sc) => sc.sceneId),
         });
+        narrativeDiagnosticsReport = narrativeDiagnostics;
         await saveEarlyDiagnostic(outputDirectory, `episode-${i}-narrative-diagnostics.json`, narrativeDiagnostics);
         const activeChecks = narrativeDiagnostics.checks
           .map((check) => `${check.name}:${check.status}${typeof check.score === 'number' ? `(${check.score})` : ''}`)
@@ -10824,6 +10828,42 @@ export class FullStoryPipeline {
           phase: `episode_${i}_narrative_diagnostics`,
           message: `Narrative diagnostics failed (non-fatal): ${diagErr instanceof Error ? diagErr.message : String(diagErr)}`,
         });
+      }
+
+      // Bucket D: plan-time craft gates (opt-in, default OFF). The validators ran
+      // advisory inside runNarrativeDiagnostics above (report unchanged); these only
+      // HARD-BLOCK on error-severity findings when the per-rule flag is set. The gate
+      // checks run OUTSIDE the diagnostics try/catch so a real gate failure propagates
+      // as a PipelineError instead of being swallowed as a non-fatal warning. With the
+      // flags unset, shouldGate returns gate:false → behavior is unchanged.
+      if (narrativeDiagnosticsReport) {
+        const isEnabled = (flag: string) => process.env[flag] === '1';
+        const checkIssues = (name: NarrativeDiagnosticsReport['checks'][number]['name']) =>
+          narrativeDiagnosticsReport.checks.find((c) => c.name === name)?.issues ?? [];
+
+        const setupPayoffGate = shouldGate(PLAN_GATE_FLAGS.setupPayoff, checkIssues('setup_payoff'), isEnabled);
+        if (setupPayoffGate.gate) {
+          const errs = checkIssues('setup_payoff').filter((iss) => iss.severity === 'error');
+          throw new PipelineError(
+            `[SetupPayoffGate] Setup/payoff failed the blocking gate (${setupPayoffGate.blockingCount} issue(s)): ` +
+              errs.map((iss) => iss.message).join('; ') +
+              '. Unset GATE_SETUP_PAYOFF to downgrade to advisory.',
+            `episode_${i}_setup_payoff_gate`,
+            { context: { episode: i, blockingCount: setupPayoffGate.blockingCount } },
+          );
+        }
+
+        const callbackGate = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, checkIssues('callback_coverage'), isEnabled);
+        if (callbackGate.gate) {
+          const errs = checkIssues('callback_coverage').filter((iss) => iss.severity === 'error');
+          throw new PipelineError(
+            `[CallbackCoverageGate] Callback coverage failed the blocking gate (${callbackGate.blockingCount} issue(s)): ` +
+              errs.map((iss) => iss.message).join('; ') +
+              '. Unset GATE_CALLBACK_COVERAGE to downgrade to advisory.',
+            `episode_${i}_callback_coverage_gate`,
+            { context: { episode: i, blockingCount: callbackGate.blockingCount } },
+          );
+        }
       }
 
       let imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> } | undefined;

@@ -52,6 +52,7 @@ import {
   seasonPlanToCoverageInput,
 } from '../validators/SevenPointCoverageValidator';
 import { ArcPressureArchitectureValidator } from '../validators/ArcPressureArchitectureValidator';
+import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { CharacterArchitectureValidator } from '../validators/CharacterArchitectureValidator';
 import { SeasonPromiseValidator } from '../validators/SeasonPromiseValidator';
 import { InformationLedgerValidator } from '../validators/InformationLedgerValidator';
@@ -210,6 +211,31 @@ Your plans must define:
           `[SevenPointGate] Season 7-point spine failed the blocking gate (${blockingIssues.length} issue(s)): ` +
             blockingIssues.map((i) => i.message).join('; ') +
             '. Set SEVEN_POINT_BLOCKING=0 to downgrade to advisory.',
+        );
+      }
+    }
+
+    // Bucket D: ArcPressure architecture gate (opt-in, default OFF). The validator
+    // already ran advisory inside buildSeasonPlan (findings collected into
+    // plan.warnings); this only HARD-BLOCKS on error-severity findings when
+    // GATE_ARC_PRESSURE=1. The validator is re-run here ONLY when the flag is set,
+    // so with the flag unset there is no added cost and behavior is unchanged.
+    if (process.env[PLAN_GATE_FLAGS.arcPressure] === '1') {
+      const arcPressureGateResult = new ArcPressureArchitectureValidator().validate(seasonPlan, {
+        episodeStructureMode:
+          preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard',
+      });
+      const arcPressureGate = shouldGate(
+        PLAN_GATE_FLAGS.arcPressure,
+        arcPressureGateResult.issues,
+        (flag) => process.env[flag] === '1',
+      );
+      if (arcPressureGate.gate) {
+        const arcErrors = arcPressureGateResult.issues.filter((i) => i.severity === 'error');
+        throw new Error(
+          `[ArcPressureGate] Season arc architecture failed the blocking gate (${arcPressureGate.blockingCount} issue(s)): ` +
+            arcErrors.map((i) => i.message).join('; ') +
+            '. Unset GATE_ARC_PRESSURE to downgrade to advisory.',
         );
       }
     }

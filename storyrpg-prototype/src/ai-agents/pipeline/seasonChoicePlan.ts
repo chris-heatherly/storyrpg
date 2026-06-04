@@ -20,6 +20,8 @@
 
 import type { ChoiceType, ChoiceTypeTarget } from './choiceTypePlanner';
 import { allocateChoiceTypeCounts, DEFAULT_CHOICE_TYPE_TARGET } from './choiceTypePlanner';
+import { ChoiceDistributionValidator } from '../validators/ChoiceDistributionValidator';
+import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 
 const ORDER: ChoiceType[] = ['expression', 'relationship', 'strategic', 'dilemma'];
 
@@ -103,10 +105,43 @@ export function assignSeasonChoiceTypes(
     assignedById.set(m.id, best);
   }
 
-  return {
+  const plan: SeasonChoicePlan = {
     moments: moments.map((m) => ({ ...m, choiceType: assignedById.get(m.id) })),
     counts,
   };
+
+  // Bucket D: ChoiceDistribution gate (opt-in, default OFF). Plan-emit time is the
+  // earliest reliable seam — the season type-mix is fixed here, before any episode
+  // authors against its slice. The validator runs ONLY when GATE_CHOICE_DISTRIBUTION=1
+  // (zero added cost / unchanged behavior when unset), and HARD-BLOCKS only on
+  // error-severity findings.
+  if (process.env[PLAN_GATE_FLAGS.choiceDistribution] === '1') {
+    const distResult = new ChoiceDistributionValidator().validate({
+      choiceSets: plan.moments.map((m) => ({
+        beatId: m.id,
+        choiceType: m.choiceType ?? 'expression',
+        sceneId: undefined,
+        hasBranching: isLaterPayoff(m.payoff),
+      })),
+      targets: target,
+      maxBranchingChoicesPerEpisode: Number.MAX_SAFE_INTEGER,
+    });
+    const distGate = shouldGate(
+      PLAN_GATE_FLAGS.choiceDistribution,
+      distResult.issues,
+      (flag) => process.env[flag] === '1',
+    );
+    if (distGate.gate) {
+      const distErrors = distResult.issues.filter((i) => i.severity === 'error');
+      throw new Error(
+        `[ChoiceDistributionGate] Season choice-type distribution failed the blocking gate (${distGate.blockingCount} issue(s)): ` +
+          distErrors.map((i) => i.message).join('; ') +
+          '. Unset GATE_CHOICE_DISTRIBUTION to downgrade to advisory.',
+      );
+    }
+  }
+
+  return plan;
 }
 
 /** The choice moments assigned to a given episode (for StoryArchitect to author). */

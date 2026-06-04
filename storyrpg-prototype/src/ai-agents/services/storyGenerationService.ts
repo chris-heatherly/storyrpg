@@ -138,6 +138,7 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
     : await seasonPlanner.execute({
         sourceAnalysis: analysisResult.analysis,
         preferences,
+        sevenPointBlocking: request.config?.generation?.sevenPointBlocking,
       });
 
   return {

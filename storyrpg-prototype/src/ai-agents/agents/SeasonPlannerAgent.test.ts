@@ -360,3 +360,61 @@ describe('SeasonPlannerAgent.normalizeChoiceMoments (E1 slice 4)', () => {
     expect(new Set(out.map((m: any) => m.id)).size).toBe(2);
   });
 });
+
+describe('SeasonPlannerAgent 7-point spine gate (tier 1)', () => {
+  // A plan with no anchors/sevenPoint fails SevenPointCoverageValidator with errors.
+  const brokenPlan = () => ({
+    totalEpisodes: 1, arcs: [], encounterPlan: { totalEncounters: 0 }, crossEpisodeBranches: [],
+    anchors: undefined, sevenPoint: undefined, episodes: [], resolvedEndings: [],
+  });
+
+  it('throws (blocks) when the season spine is incomplete', async () => {
+    const planner = makePlanner();
+    (planner as any).callLLM = async () => '{}';
+    (planner as any).buildSeasonPlan = () => brokenPlan();
+    await expect(
+      planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, sevenPointBlocking: true }),
+    ).rejects.toThrow(/SevenPointGate/);
+  });
+
+  it('does NOT throw when sevenPointBlocking is off (advisory)', async () => {
+    const planner = makePlanner();
+    (planner as any).callLLM = async () => '{}';
+    (planner as any).buildSeasonPlan = () => brokenPlan();
+    const result = await planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, sevenPointBlocking: false });
+    expect(result.success).toBe(true);
+  });
+
+  it('does NOT throw on a complete spine even with blocking on', async () => {
+    const planner = makePlanner();
+    (planner as any).callLLM = async () => '{}';
+    // A minimally-complete plan: anchors + sevenPoint present, episodes cover all 7 beats in order.
+    (planner as any).buildSeasonPlan = () => ({
+      totalEpisodes: 7, arcs: [], encounterPlan: { totalEncounters: 0 }, crossEpisodeBranches: [],
+      anchors: {
+        stakes: 'The fort falls and the valley with it if the line breaks.',
+        goal: 'Hold the eastern wall until the relief column arrives.',
+        incitingIncident: 'The first assault wave breaches the outer gate at dawn.',
+        climax: 'The commander chooses between the wall and the wounded.',
+      },
+      sevenPoint: {
+        hook: 'A soldier wakes to the horns of a siege already underway.',
+        plotTurn1: 'The relief column is days late and the captain is dead.',
+        pinch1: 'Supplies run out and the healers start triaging the living.',
+        midpoint: 'A traitor inside the fort is unmasked on the battlement.',
+        pinch2: 'The eastern wall cracks and the reserve is already spent.',
+        climax: 'The commander chooses between the wall and the wounded.',
+        resolution: 'What remains of the garrison counts its faces at dusk.',
+      },
+      episodes: [
+        { episodeNumber: 1, structuralRole: ['hook'] }, { episodeNumber: 2, structuralRole: ['plotTurn1'] },
+        { episodeNumber: 3, structuralRole: ['pinch1'] }, { episodeNumber: 4, structuralRole: ['midpoint'] },
+        { episodeNumber: 5, structuralRole: ['pinch2'] }, { episodeNumber: 6, structuralRole: ['climax'] },
+        { episodeNumber: 7, structuralRole: ['resolution'] },
+      ],
+      resolvedEndings: [],
+    });
+    const result = await planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, sevenPointBlocking: true });
+    expect(result.success).toBe(true);
+  });
+});

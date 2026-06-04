@@ -37,7 +37,11 @@ export interface ValidatorRegistryEntry {
 
 export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // --- Season planning (SeasonPlannerAgent.finalizePlan) ---
-  { validator: 'SevenPointCoverageValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
+  // 7-point spine GATE (tier 1, blocking): SeasonPlanner.execute throws when the season's
+  // 3-act/7-point spine is incomplete or out of canonical order. (Tier 2 — each episode's
+  // blueprint must realize its assigned beats — is an inline validateBlueprint throw in
+  // StoryArchitect, like the scene-count/branching checks, so it has no separate registry row.)
+  { validator: 'SevenPointCoverageValidator', stage: 'season', tier: 'blocking', dispatchedFrom: 'SeasonPlannerAgent (execute)' },
   { validator: 'ArcPressureArchitectureValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'CharacterArchitectureValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'SeasonPromiseValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },

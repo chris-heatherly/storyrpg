@@ -508,10 +508,13 @@ export class StoryArchitect extends BaseAgent {
     allowLinearBottleneckEpisodes: boolean;
   };
   private lastStructuralFeedback: string[] = [];
+  /** 7-point spine gate (tier 2): block when an assigned beat-role isn't realized. Default ON. */
+  private sevenPointBlocking: boolean;
 
   constructor(config: AgentConfig, generationConfig?: GenerationSettingsConfig) {
     super('Story Architect', config);
     this.includeSystemPrompt = true;
+    this.sevenPointBlocking = generationConfig?.sevenPointBlocking !== false;
     this.episodeStructureMode = generationConfig?.episodeStructureMode || 'standard';
     this.sceneEpisodeConfig = {
       minScenes: generationConfig?.sceneEpisodeMinScenes ?? 1,
@@ -3335,6 +3338,27 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
   }
 
   private validateBlueprint(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    // 7-point spine VERIFICATION (tier 2). The season plan assigned this episode certain
+    // spine beats (structuralRole); the blueprint must REALIZE each assigned canonical beat
+    // with non-empty arc.<beat> content. An empty assigned beat means the episode silently
+    // dropped a structural beat the season's spine depends on. Buffer roles (rising/falling)
+    // have no arc field and are skipped. Blocks by default; opt out with SEVEN_POINT_BLOCKING=0.
+    const assignedRoles = blueprint.structuralRole ?? input.episodeStructuralRole ?? [];
+    const arc = blueprint.arc;
+    if (arc && assignedRoles.length > 0) {
+      const CANONICAL = ['hook', 'plotTurn1', 'pinch1', 'midpoint', 'pinch2', 'climax', 'resolution'] as const;
+      const missingBeats = assignedRoles
+        .filter((r): r is (typeof CANONICAL)[number] => (CANONICAL as readonly string[]).includes(r))
+        .filter((beat) => !String((arc as Record<string, unknown>)[beat] ?? '').trim());
+      if (missingBeats.length > 0) {
+        const msg = `[SevenPointGate] Episode ${input.episodeNumber} was assigned spine beat(s) [${missingBeats.join(', ')}] but its blueprint left them unrealized (empty arc.<beat>).`;
+        if (this.sevenPointBlocking) {
+          throw new Error(`${msg} Set SEVEN_POINT_BLOCKING=0 to downgrade to advisory.`);
+        }
+        console.warn(msg);
+      }
+    }
+
     // Check scene count
     if (this.episodeStructureMode === 'sceneEpisodes') {
       if (blueprint.scenes.length !== this.sceneEpisodeConfig.maxScenes) {

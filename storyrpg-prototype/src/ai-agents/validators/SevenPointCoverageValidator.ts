@@ -19,10 +19,12 @@
  *  6. Ending targets should link to `anchors.stakes` (the season's core
  *     stakes) in at least one ending's stateDrivers / themePayoff.
  *
- * This validator runs in the SeasonPlanner → StoryArchitect Karpathy retry
- * loop: if it fails, the season plan is re-prompted with the issues as
- * feedback. Downstream StoryArchitect invocations trust the plan once
- * the validator passes.
+ * This validator is the TIER-1 blocking gate (default on, opt-out via
+ * SEVEN_POINT_BLOCKING=0): `SeasonPlannerAgent.execute` runs it and THROWS when any
+ * error-severity issue remains, so a season without a complete, in-order spine never
+ * generates. Tier 2 (each episode realizing its assigned beats) is enforced inline in
+ * `StoryArchitect.validateBlueprint`. Downstream StoryArchitect invocations trust the
+ * plan once this gate passes.
  */
 
 import {

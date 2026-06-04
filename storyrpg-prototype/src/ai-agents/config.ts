@@ -222,6 +222,14 @@ export interface GenerationSettingsConfig {
    * advisory findings are correct. Requires seasonCanonEnabled.
    */
   seasonCanonBlocking?: boolean;
+  /**
+   * 7-point spine gate (two-tier, default ON / opt-out). When true: (tier 1) the
+   * SeasonPlanner BLOCKS if the season's 3-act/7-point spine is incomplete or out of
+   * canonical order; (tier 2) each episode's StoryArchitect blueprint BLOCKS if it
+   * fails to realize the spine beat(s) it was assigned (empty arc.<beat>). Set
+   * SEVEN_POINT_BLOCKING=0 to downgrade both to advisory.
+   */
+  sevenPointBlocking?: boolean;
   // Optional cloud uplift (kept disabled by default for local-first rollout)
   cloudModeEnabled?: boolean;
   cloudQueueEndpoint?: string;
@@ -1064,6 +1072,8 @@ export function loadConfig(): PipelineConfig {
       seasonCanonEnabled: (env.EXPO_PUBLIC_SEASON_CANON_ENABLED ?? env.SEASON_CANON_ENABLED) !== '0',
       // D2: blocking on by default (opt-out) — set SEASON_CANON_BLOCKING=0 to disable.
       seasonCanonBlocking: (env.EXPO_PUBLIC_SEASON_CANON_BLOCKING ?? env.SEASON_CANON_BLOCKING) !== '0',
+      // 7-point spine gate: blocking on by default (opt-out) — set SEVEN_POINT_BLOCKING=0 to disable.
+      sevenPointBlocking: (env.EXPO_PUBLIC_SEVEN_POINT_BLOCKING ?? env.SEVEN_POINT_BLOCKING) !== '0',
     },
     memory: {
       enabled: env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' || env.CLAUDE_MEMORY === 'true' || defaultConfig.provider === 'anthropic',

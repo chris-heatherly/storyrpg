@@ -1499,3 +1499,39 @@ describe('StoryArchitect.classifyBlueprintFailure (validator tiering, B1)', () =
     expect(c.advisoryOnly).toBe(false);
   });
 });
+
+describe('StoryArchitect 7-point spine verification (tier 2)', () => {
+  const arc = (overrides: Record<string, string> = {}) => ({
+    hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '', ...overrides,
+  });
+  const validScenes = [
+    { id: 's1', leadsTo: ['s2'] }, { id: 's2', leadsTo: ['s3'] }, { id: 's3', leadsTo: [] },
+  ];
+  const blueprint = (a: Record<string, string>, structuralRole: string[]): any => ({
+    arc: arc(a), structuralRole, scenes: validScenes, startingSceneId: 's1', bottleneckScenes: [],
+  });
+
+  it('blocks when an assigned spine beat is left unrealized (empty arc.<beat>)', () => {
+    const architect = new StoryArchitect(config, { sevenPointBlocking: true });
+    const bp = blueprint({}, ['midpoint']); // arc.midpoint is ''
+    expect(() => (architect as any).validateBlueprint(bp, makeInput())).toThrow(/SevenPointGate.*midpoint/);
+  });
+
+  it('passes when the assigned spine beat is realized', () => {
+    const architect = new StoryArchitect(config, { sevenPointBlocking: true });
+    const bp = blueprint({ midpoint: 'The truth about the captain lands.' }, ['midpoint']);
+    expect(() => (architect as any).validateBlueprint(bp, makeInput())).not.toThrow(/SevenPointGate/);
+  });
+
+  it('skips buffer roles (rising/falling) which have no arc beat', () => {
+    const architect = new StoryArchitect(config, { sevenPointBlocking: true });
+    const bp = blueprint({}, ['rising']); // no canonical beat assigned → nothing to realize
+    expect(() => (architect as any).validateBlueprint(bp, makeInput())).not.toThrow(/SevenPointGate/);
+  });
+
+  it('does not block when sevenPointBlocking is off (advisory)', () => {
+    const architect = new StoryArchitect(config, { sevenPointBlocking: false });
+    const bp = blueprint({}, ['climax']); // empty climax, but gate off
+    expect(() => (architect as any).validateBlueprint(bp, makeInput())).not.toThrow(/SevenPointGate/);
+  });
+});

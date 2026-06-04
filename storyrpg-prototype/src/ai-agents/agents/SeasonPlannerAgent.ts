@@ -102,6 +102,13 @@ export interface SeasonPlannerInput {
   
   // Optional: existing plan to update
   existingPlanId?: string;
+
+  /**
+   * 7-point spine gate (tier 1). When not explicitly false, a season plan whose 3-act/
+   * 7-point spine is incomplete or out of canonical order is REJECTED (execute throws)
+   * rather than shipped — a season without a complete spine should not generate. Default ON.
+   */
+  sevenPointBlocking?: boolean;
 }
 
 // ========================================
@@ -189,6 +196,23 @@ Your plans must define:
     const seasonPlan = this.buildSeasonPlan(sourceAnalysis, planData, preferences);
 
     console.log(`[SeasonPlanner] Created plan with ${seasonPlan.totalEpisodes} episodes, ${seasonPlan.arcs.length} arcs, ${seasonPlan.encounterPlan.totalEncounters} encounters, ${seasonPlan.crossEpisodeBranches.length} cross-episode branches`);
+
+    // 7-point spine GATE (tier 1, default ON / opt-out). A season whose 3-act/7-point
+    // spine is incomplete or out of canonical order must not generate — the spine is the
+    // structural contract every downstream episode is authored against. Coverage is
+    // engineered to pass (the structuralRole distribution is built for full coverage), so
+    // this fires only on a genuine structural failure.
+    if (input.sevenPointBlocking !== false) {
+      const coverage = new SevenPointCoverageValidator().validate(seasonPlanToCoverageInput(seasonPlan));
+      const blockingIssues = coverage.issues.filter((i) => i.severity === 'error');
+      if (blockingIssues.length > 0) {
+        throw new Error(
+          `[SevenPointGate] Season 7-point spine failed the blocking gate (${blockingIssues.length} issue(s)): ` +
+            blockingIssues.map((i) => i.message).join('; ') +
+            '. Set SEVEN_POINT_BLOCKING=0 to downgrade to advisory.',
+        );
+      }
+    }
 
     return {
       success: true,
@@ -1436,11 +1460,11 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       notes: [],
     };
 
-    // Run the 7-point coverage validator as a DIAGNOSTIC gate. Errors are
-    // surfaced as plan.warnings so the pipeline's Karpathy retry layer can
-    // re-prompt; warnings are accumulated silently. We deliberately do NOT
-    // throw here because the pipeline already has a plan-level fallback
-    // path that should remain callable even when the validator is unhappy.
+    // Run the 7-point coverage validator. Issues are accumulated into plan.warnings here
+    // for the diagnostics trail; the actual BLOCKING enforcement (tier 1) happens in
+    // execute() after the plan is built (it throws on error-severity coverage issues unless
+    // sevenPointBlocking is opted out). Keeping the warning-collection here means the trail
+    // is populated even when the gate is disabled.
     const coverageResult = new SevenPointCoverageValidator().validate(
       seasonPlanToCoverageInput(plan),
     );

@@ -1326,6 +1326,9 @@ ${structuralContext}
 - **Tone**: ${input.storyContext.tone}
 - **World**: ${input.storyContext.worldContext}
 ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}${input.memoryContext ? `\n## Pipeline Memory (Insights from Prior Generations)\n${input.memoryContext}\n` : ''}${input.establishedCanon ? `\n## ${input.establishedCanon}\n(Treat the above as fixed truth — your prose must not contradict it.)\n` : ''}
+> Continuity (#26C): only name characters, factions, and props already established in this
+> story. Do not invent a named character or object the reader hasn't met; reference the
+> existing cast/world instead.
 ## Scene Blueprint
 - **Scene ID**: ${input.sceneBlueprint.id}
 - **Name**: ${input.sceneBlueprint.name}

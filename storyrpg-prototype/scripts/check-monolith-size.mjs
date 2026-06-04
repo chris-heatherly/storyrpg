@@ -140,7 +140,11 @@ const baselines = {
   // +16 (21493 -> 21509): E2 — guard the SceneCritic construction in repairContinuityFindings
   // so a failure there writes the diagnostic + emits instead of vanishing into the outer
   // catch (the likely cause of the missing artifact). Diagnostic now records issues seen.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21509,
+  //
+  // +13 (21509 -> 21522): D3 leadsTo source fix (read leadsTo from the blueprint scene by id
+  // in prepareValidationInput, not from SceneContent which lacks it) + a repair-reach skip
+  // diagnostic (write continuity-repair.json with a reason when the repair guard is false).
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21522,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

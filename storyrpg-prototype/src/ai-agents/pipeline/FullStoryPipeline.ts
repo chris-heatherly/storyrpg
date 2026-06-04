@@ -9438,15 +9438,20 @@ export class FullStoryPipeline {
     sceneContents: SceneContent[],
     choiceSets: ChoiceSet[],
     characterBible: CharacterBible,
-    encounters?: Map<string, EncounterStructure>
+    encounters?: Map<string, EncounterStructure>,
+    blueprint?: EpisodeBlueprint
   ) {
+    // D3: leadsTo lives on the blueprint scene, NOT on SceneContent — read it from the
+    // blueprint by id so BranchMechanicalDivergenceValidator can see routing forks
+    // (reading sc.leadsTo got `undefined`, so leadsTo-routed branches scored 0).
+    const leadsToById = new Map<string, string[] | undefined>(
+      (blueprint?.scenes ?? []).map((s) => [s.id, s.leadsTo]),
+    );
     // Prepare scenes for validation
     const scenes = sceneContents.map(sc => ({
       id: sc.sceneId,
       charactersInvolved: sc.charactersInvolved || [],
-      // D3: carry leadsTo so BranchMechanicalDivergenceValidator can see routing forks
-      // (without it, leadsTo-routed branches scored branchChoices: 0).
-      leadsTo: (sc as { leadsTo?: string[] }).leadsTo,
+      leadsTo: leadsToById.get(sc.sceneId) ?? (sc as { leadsTo?: string[] }).leadsTo,
       beats: sc.beats.map(b => ({
         id: b.id,
         text: b.text,
@@ -10865,7 +10870,7 @@ export class FullStoryPipeline {
       if (episodeBrief.options?.runQA !== false) {
         try {
           this.emit({ type: 'phase_start', phase: `qa_ep_${i}`, message: `Running QA for Episode ${i}...` });
-          const validationInput = this.prepareValidationInput(sceneContents, choiceSets, characterBible, encounters);
+          const validationInput = this.prepareValidationInput(sceneContents, choiceSets, characterBible, encounters, blueprint);
           const [qaResult, bpResult] = await this.measurePhase(`episode_${i}_qa`, () => Promise.all([
             this.runQualityAssurance(episodeBrief, sceneContents, choiceSets, characterBible, blueprint),
             this.config.validation.enabled
@@ -10889,12 +10894,20 @@ export class FullStoryPipeline {
       // A1: targeted, advisory continuity repair — in its OWN try so a QA-phase throw
       // (e.g. Gemini continuity-parse fragility) can no longer skip it. Runs whenever a
       // qaReport was produced, even if QA later threw.
+      this.emit({ type: 'debug', phase: `continuity_repair_ep_${i}`, message: `Continuity repair gate: seasonCanonOn=${this.seasonCanonOn} hasQaReport=${!!qaReport}` });
       if (this.seasonCanonOn && qaReport) {
         try {
           await this.repairContinuityFindings(story, sceneContents, characterBible, qaReport, outputDirectory);
         } catch (repairErr) {
           this.emit({ type: 'warning', phase: `continuity_repair_ep_${i}`, message: `Continuity repair failed (non-fatal): ${repairErr instanceof Error ? repairErr.message : String(repairErr)}` });
         }
+      } else {
+        // Reveal why the artifact never appears: write a skip diagnostic.
+        await saveEarlyDiagnostic(outputDirectory, 'continuity-repair.json', {
+          generatedAt: new Date().toISOString(),
+          skipped: true,
+          reason: !this.seasonCanonOn ? 'seasonCanon off' : 'no qaReport at repair site',
+        }).catch(() => undefined);
       }
 
       this.emit({

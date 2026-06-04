@@ -70,4 +70,79 @@ describe('MechanicsLeakageValidator', () => {
     expect(result.valid).toBe(false);
     expect(result.metrics.leaksFound).toBeGreaterThanOrEqual(3);
   });
+
+  describe('strict mode (opt-in escalation)', () => {
+    // INVARIANT: default (strict omitted / false) keeps every leak a 'warning'.
+    it('keeps an isolated stat delta a warning by default', () => {
+      const result = new MechanicsLeakageValidator().validate({
+        texts: [{ id: 'b1', text: 'Trust +10' }],
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.issues.every((i) => i.severity === 'warning')).toBe(true);
+      expect(result.issues.some((i) => i.severity === 'error')).toBe(false);
+    });
+
+    it('escalates only the safe isolated stat-delta class to error', () => {
+      // Both fixtures are bare, isolated deltas with NO narrative-frame verb, so
+      // both are autofix-safe and must escalate under strict mode.
+      const result = new MechanicsLeakageValidator().validate({
+        texts: [
+          { id: 'b1', text: 'Trust +10' },
+          { id: 'b2', text: 'Reputation +5' },
+        ],
+        strict: true,
+      });
+
+      expect(result.valid).toBe(false);
+      const deltaIssues = result.issues.filter((i) =>
+        i.message.includes('numeric stat delta'),
+      );
+      expect(deltaIssues.length).toBeGreaterThanOrEqual(2);
+      expect(deltaIssues.every((i) => i.severity === 'error')).toBe(true);
+    });
+
+    it('leaves narrative-framed stat deltas a warning even in strict mode', () => {
+      // A frame verb ("appears") means this delta needs regen, not redaction —
+      // so it is NOT in the safe class and must stay a warning.
+      const result = new MechanicsLeakageValidator().validate({
+        texts: [{ id: 'b1', text: 'Trust +10 appears beside her name.' }],
+        strict: true,
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.issues.some((i) => i.severity === 'error')).toBe(false);
+      expect(result.issues.every((i) => i.severity === 'warning')).toBe(true);
+    });
+
+    it('keeps non-delta leak classes (dice, thresholds, probability) a warning in strict mode', () => {
+      const result = new MechanicsLeakageValidator().validate({
+        texts: [
+          { id: 'b1', text: 'You roll a d20 and succeed.' },
+          { id: 'b2', text: 'Your skill must be 12 or above.' },
+          { id: 'b3', text: 'You have a 65% chance of success.' },
+        ],
+        strict: true,
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.issues.some((i) => i.severity === 'error')).toBe(false);
+      expect(result.issues.every((i) => i.severity === 'warning')).toBe(true);
+    });
+
+    it('escalates the delta but not co-located non-delta leaks in the same text', () => {
+      // "Trust +10" is an isolated safe delta, but the dice phrase in the same
+      // beat is not safe — only the delta issue escalates.
+      const result = new MechanicsLeakageValidator().validate({
+        texts: [{ id: 'b1', text: 'Trust +10\nYou roll a d20 and succeed.' }],
+        strict: true,
+      });
+
+      const errors = result.issues.filter((i) => i.severity === 'error');
+      const warnings = result.issues.filter((i) => i.severity === 'warning');
+      expect(errors.length).toBe(1);
+      expect(errors[0]!.message).toContain('numeric stat delta');
+      expect(warnings.some((i) => i.message.includes('dice language'))).toBe(true);
+    });
+  });
 });

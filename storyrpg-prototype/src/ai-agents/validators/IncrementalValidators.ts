@@ -1512,7 +1512,11 @@ export class IncrementalValidationRunner {
           },
         ],
       };
-      const r = this.intensityDistributionValidator.validate(input);
+      // Gated path only (env flag set): run strict so the all-dominant
+      // structural failure emits 'error' and trips the escalate-to-scene logic
+      // below. The default (flag-unset) path never reaches here, so behavior is
+      // unchanged when the gate is off.
+      const r = this.intensityDistributionValidator.validate(input, { strict: true });
       results.intensityDistribution = {
         passed: r.valid,
         score: r.score,
@@ -1526,6 +1530,11 @@ export class IncrementalValidationRunner {
 
     // Mechanics leakage: pure single-scene scan over rendered beat text.
     if (this.config.mechanicsLeakageSceneCheck && process.env.GATE_MECHANICS_LEAKAGE_REGEN === '1') {
+      // Gated path only (env flag set): run strict so the safe isolated
+      // stat-delta leak class emits 'error' and trips escalate-to-scene below.
+      // The `strict` flag lives on this local input only — the final-contract
+      // path builds its own MechanicsLeakageInput (without strict), so what it
+      // sees is unaffected by this scene-detector escalation.
       const input: MechanicsLeakageInput = {
         texts: sceneContent.beats.map(b => ({
           id: b.id,
@@ -1533,6 +1542,7 @@ export class IncrementalValidationRunner {
           sceneId: sceneContent.sceneId,
           beatId: b.id,
         })),
+        strict: true,
       };
       const r = this.mechanicsLeakageValidator.validate(input);
       results.mechanicsLeakage = {

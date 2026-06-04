@@ -41,6 +41,23 @@ export interface IntensityDistributionInput {
   sceneContents: IntensityScene[];
 }
 
+/**
+ * Options for {@link IntensityDistributionValidator.validate}.
+ *
+ * `strict` is OFF by default. When OFF, every severity this validator emits is
+ * byte-for-byte identical to the historical advisory behavior (warning/info,
+ * never error). When ON, the single genuine structural failure — an
+ * **all-dominant** scene (every beat marked `dominant`, so there is zero
+ * modulation) — is escalated from `warning` to `error`. All-dominant is always
+ * an authoring mistake (unlike "no dominant", which a setup scene may choose
+ * intentionally), which makes it the only conservative escalation candidate.
+ * The "no dominant" warning and "missing rest" info severities are unchanged in
+ * strict mode.
+ */
+export interface IntensityDistributionOptions {
+  strict?: boolean;
+}
+
 export interface IntensityDistributionMetrics {
   scenesChecked: number;
   scenesWithoutDominant: number;
@@ -58,7 +75,11 @@ export class IntensityDistributionValidator extends BaseValidator {
     super('IntensityDistributionValidator');
   }
 
-  validate(input: IntensityDistributionInput): ValidationResult & { metrics: IntensityDistributionMetrics } {
+  validate(
+    input: IntensityDistributionInput,
+    options?: IntensityDistributionOptions,
+  ): ValidationResult & { metrics: IntensityDistributionMetrics } {
+    const strict = options?.strict === true;
     const issues: ValidationIssue[] = [];
     const metrics: IntensityDistributionMetrics = {
       scenesChecked: 0,
@@ -90,12 +111,15 @@ export class IntensityDistributionValidator extends BaseValidator {
         );
       } else if (dominant === beats.length) {
         metrics.scenesAllDominant++;
+        // All-dominant is the one always-wrong distribution: zero modulation.
+        // Strict mode escalates it from advisory warning to a blocking error;
+        // default (strict off) keeps the historical warning severity.
+        const message = `Scene "${label}" is all-dominant (${beats.length}/${beats.length}) — no modulation, reads as flat-loud.`;
+        const suggestion = 'Demote some beats to supporting/rest so the dominant beat lands.';
         issues.push(
-          this.warning(
-            `Scene "${label}" is all-dominant (${beats.length}/${beats.length}) — no modulation, reads as flat-loud.`,
-            where,
-            'Demote some beats to supporting/rest so the dominant beat lands.',
-          ),
+          strict
+            ? this.error(message, where, suggestion)
+            : this.warning(message, where, suggestion),
         );
       }
 

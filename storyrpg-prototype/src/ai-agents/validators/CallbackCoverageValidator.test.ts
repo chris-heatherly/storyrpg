@@ -117,3 +117,125 @@ describe('CallbackCoverageValidator', () => {
     expect(result.score).toBeLessThan(100);
   });
 });
+
+describe('CallbackCoverageValidator strict mode', () => {
+  it('escalates a genuine coverage failure to error when strict=true', () => {
+    const ledger = makeLedger([
+      // Unresolved, eligible in the current episode's window, never paid off:
+      // this is the genuine "episode was due but referenced nothing" failure.
+      makeHook({
+        id: 'hook-eligible',
+        sourceEpisode: 1,
+        payoffCount: 0,
+        resolved: false,
+        payoffWindow: { minEpisode: 2, maxEpisode: 5 },
+        summary: 'The player betrayed the smuggler at the docks.',
+      }),
+    ]);
+
+    const result = new CallbackCoverageValidator().validate(
+      { ledger, currentEpisode: 3, totalEpisodes: 6 },
+      { strict: true },
+    );
+
+    const errors = result.issues.filter((i) => i.level === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain('no scene in this episode referenced any of them');
+    // An error now exists, so the result fails structurally under strict mode.
+    expect(result.passed).toBe(false);
+    // No 'warning'-level copy of the coverage-failure issue remains.
+    expect(
+      result.issues.filter(
+        (i) => i.level === 'warning' && i.message.includes('no scene in this episode referenced any of them'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('emits no error in strict mode when a prior hook paid off this episode', () => {
+    const ledger = makeLedger([
+      makeHook({
+        id: 'hook-river',
+        sourceEpisode: 1,
+        payoffCount: 1,
+        payoffWindow: { minEpisode: 2, maxEpisode: 4 },
+        summary: 'The player spared the deserter at the river crossing.',
+      }),
+    ]);
+
+    const result = new CallbackCoverageValidator().validate(
+      { ledger, currentEpisode: 2, totalEpisodes: 5 },
+      { strict: true },
+    );
+
+    expect(result.issues.filter((i) => i.level === 'error')).toHaveLength(0);
+    expect(result.passed).toBe(true);
+  });
+
+  it('emits no error in strict mode at episode 1 (no payoff can be due yet)', () => {
+    const ledger = makeLedger([
+      makeHook({
+        id: 'hook-new',
+        sourceEpisode: 1,
+        payoffCount: 0,
+        resolved: false,
+        payoffWindow: { minEpisode: 2, maxEpisode: 4 },
+        summary: 'The player swore an oath to protect the village elder.',
+      }),
+    ]);
+
+    const result = new CallbackCoverageValidator().validate(
+      { ledger, currentEpisode: 1, totalEpisodes: 5 },
+      { strict: true },
+    );
+
+    expect(result.issues.filter((i) => i.level === 'error')).toHaveLength(0);
+    expect(result.passed).toBe(true);
+  });
+
+  it('default mode (no options) is unchanged on a coverage-failure ledger', () => {
+    const ledger = makeLedger([
+      makeHook({
+        id: 'hook-eligible',
+        sourceEpisode: 1,
+        payoffCount: 0,
+        resolved: false,
+        payoffWindow: { minEpisode: 2, maxEpisode: 5 },
+        summary: 'The player betrayed the smuggler at the docks.',
+      }),
+    ]);
+
+    const result = new CallbackCoverageValidator().validate({
+      ledger,
+      currentEpisode: 3,
+      totalEpisodes: 6,
+    });
+
+    // Same ledger that errors under strict produces only a warning by default.
+    expect(result.issues.filter((i) => i.level === 'error')).toHaveLength(0);
+    expect(
+      result.issues.filter(
+        (i) => i.level === 'warning' && i.message.includes('no scene in this episode referenced any of them'),
+      ),
+    ).toHaveLength(1);
+    expect(result.passed).toBe(true);
+  });
+
+  it('strict=false behaves identically to default (byte-for-byte) on a coverage-failure ledger', () => {
+    const ledger = makeLedger([
+      makeHook({
+        id: 'hook-eligible',
+        sourceEpisode: 1,
+        payoffCount: 0,
+        resolved: false,
+        payoffWindow: { minEpisode: 2, maxEpisode: 5 },
+        summary: 'The player betrayed the smuggler at the docks.',
+      }),
+    ]);
+    const input = { ledger, currentEpisode: 3, totalEpisodes: 6 } as const;
+
+    const def = new CallbackCoverageValidator().validate(input);
+    const explicit = new CallbackCoverageValidator().validate(input, { strict: false });
+
+    expect(explicit).toEqual(def);
+  });
+});

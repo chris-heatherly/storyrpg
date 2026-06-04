@@ -284,6 +284,7 @@ import {
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import { classifyArchitectGateWarnings } from '../remediation/architectGatePolicy';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
+import { CallbackCoverageValidator } from '../validators/CallbackCoverageValidator';
 import { applyCraftAutofix } from '../remediation/applyCraftAutofix';
 import { shouldRegenChoices, isChoiceRegenImprovement } from '../remediation/regenChoicesPolicy';
 import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
@@ -11069,9 +11070,30 @@ export class FullStoryPipeline {
           );
         }
 
-        const callbackGate = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, checkIssues('callback_coverage'), isEnabled);
+        // CallbackCoverage strict seam: the advisory diagnostics run emits only
+        // warning/suggestion levels, so the gate would never fire on the report
+        // issues. When the rollout flag is on, re-run the validator in STRICT
+        // mode (a pure, deterministic, idempotent re-evaluation of the same
+        // serialized ledger + episode) so a genuine coverage failure surfaces as
+        // an 'error' that shouldGate can block on. The diagnostics report itself
+        // stays advisory/unchanged — only the gate sees the strict issues. With
+        // the flag OFF this branch is skipped and the historical report issues
+        // are used, so default behavior is byte-for-byte unchanged.
+        let callbackGateIssues: Array<{ severity: string; message?: string }> = checkIssues('callback_coverage');
+        if (isEnabled(PLAN_GATE_FLAGS.callbackCoverage)) {
+          const strictResult = new CallbackCoverageValidator().validate(
+            {
+              ledger: this.callbackLedger.serialize(),
+              currentEpisode: i,
+              totalEpisodes: brief.seasonPlan?.episodes?.length ?? i,
+            },
+            { strict: true },
+          );
+          callbackGateIssues = strictResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
+        }
+        const callbackGate = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, callbackGateIssues, isEnabled);
         if (callbackGate.gate) {
-          const errs = checkIssues('callback_coverage').filter((iss) => iss.severity === 'error');
+          const errs = callbackGateIssues.filter((iss) => iss.severity === 'error');
           // S3: record the hard block before throwing (best-effort).
           await this.recordRemediationSafe({
             rule: 'callback_coverage_gate', scope: 'episode', attempted: 1,

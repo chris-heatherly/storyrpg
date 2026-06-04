@@ -73,6 +73,21 @@ function intensityViolatingScene(): SceneContent {
   });
 }
 
+// An ALL-dominant scene: every beat marked 'dominant', the one always-wrong
+// distribution. The B1 seam runs the validator in strict mode, so this is
+// escalated to an 'error' severity issue (not a warning) — which is what the
+// escalate-to-'scene' logic acts on.
+function intensityAllDominantScene(): SceneContent {
+  return makeScene({
+    beats: [
+      beat({ id: 'b1', text: 'A loud opening.', intensityTier: 'dominant' }),
+      beat({ id: 'b2', text: 'Still loud.', intensityTier: 'dominant' }),
+      beat({ id: 'b3', text: 'No modulation at all.', intensityTier: 'dominant' }),
+    ],
+    startingBeatId: 'b1',
+  });
+}
+
 // A well-modulated scene: has a dominant and a rest beat — no intensity issues.
 function intensityCleanScene(): SceneContent {
   return makeScene({
@@ -96,6 +111,16 @@ function leakageViolatingScene(): SceneContent {
 function leakageCleanScene(): SceneContent {
   return makeScene({
     beats: [beat({ id: 'b1', text: 'You steady your breath and force the lock until it yields.' })],
+  });
+}
+
+// A scene whose prose exposes a bare, isolated numeric stat delta with no
+// narrative-frame verb — the single autofix-safe leak class. The B1 seam runs
+// the validator in strict mode, so this delta is escalated to an 'error'
+// (dice/threshold/etc. leaks would stay warnings even in strict).
+function leakageIsolatedDeltaScene(): SceneContent {
+  return makeScene({
+    beats: [beat({ id: 'b1', text: 'Trust +10' })],
   });
 }
 
@@ -145,6 +170,28 @@ describe('validateScene — IntensityDistribution detector (Bucket B1)', () => {
     expect(result.intensityDistribution!.issues.length).toBe(0);
     expect(result.regenerationRequested).toBe('none');
   });
+
+  // Strict seam: the detector runs the validator in strict mode (the env flag
+  // is the gate), so the all-dominant genuine violation emits an 'error' that
+  // forces scene regen.
+  it('flag ON + env ON + all-dominant scene: strict seam emits error and forces scene regen', async () => {
+    process.env[ENV] = '1';
+    const runner = new IncrementalValidationRunner([], [], [], { ...ISOLATE_BASE, intensityDistributionCheck: true });
+    const result = await runner.validateScene(intensityAllDominantScene(), undefined, []);
+    expect(result.intensityDistribution).toBeDefined();
+    expect(result.intensityDistribution!.issues.some(i => i.severity === 'error')).toBe(true);
+    expect(result.regenerationRequested).toBe('scene');
+  });
+
+  // Default-off invariant: with the env flag unset the detector never runs, so
+  // even the all-dominant scene produces no result and no regen.
+  it('env OFF + all-dominant scene: detector does not run (default behavior unchanged)', async () => {
+    delete process.env[ENV];
+    const runner = new IncrementalValidationRunner([], [], [], { ...ISOLATE_BASE, intensityDistributionCheck: true });
+    const result = await runner.validateScene(intensityAllDominantScene(), undefined, []);
+    expect(result.intensityDistribution).toBeUndefined();
+    expect(result.regenerationRequested).toBe('none');
+  });
 });
 
 describe('validateScene — MechanicsLeakage detector (Bucket B1)', () => {
@@ -191,6 +238,40 @@ describe('validateScene — MechanicsLeakage detector (Bucket B1)', () => {
     expect(result.mechanicsLeakage).toBeDefined();
     expect(result.mechanicsLeakage!.issues.length).toBe(0);
     expect(result.mechanicsLeakage!.metrics.leaksFound).toBe(0);
+    expect(result.regenerationRequested).toBe('none');
+  });
+
+  // Strict seam: the detector runs the validator in strict mode (the env flag
+  // is the gate), so the safe isolated stat-delta leak class is escalated to
+  // an 'error' that forces scene regen.
+  it('flag ON + env ON + isolated stat-delta scene: strict seam emits error and forces scene regen', async () => {
+    process.env[ENV] = '1';
+    const runner = new IncrementalValidationRunner([], [], [], { ...ISOLATE_BASE, mechanicsLeakageSceneCheck: true });
+    const result = await runner.validateScene(leakageIsolatedDeltaScene(), undefined, []);
+    expect(result.mechanicsLeakage).toBeDefined();
+    expect(result.mechanicsLeakage!.issues.some(i => i.severity === 'error')).toBe(true);
+    expect(result.regenerationRequested).toBe('scene');
+  });
+
+  // Strict scope: a dice/DC leak is NOT the autofix-safe class, so even with
+  // the strict seam active it stays a warning and does not force regen.
+  it('flag ON + env ON + dice/DC scene: strict leaves non-delta leaks as warnings, no regen', async () => {
+    process.env[ENV] = '1';
+    const runner = new IncrementalValidationRunner([], [], [], { ...ISOLATE_BASE, mechanicsLeakageSceneCheck: true });
+    const result = await runner.validateScene(leakageViolatingScene(), undefined, []);
+    expect(result.mechanicsLeakage).toBeDefined();
+    expect(result.mechanicsLeakage!.issues.length).toBeGreaterThan(0);
+    expect(result.mechanicsLeakage!.issues.some(i => i.severity === 'error')).toBe(false);
+    expect(result.regenerationRequested).toBe('none');
+  });
+
+  // Default-off invariant: with the env flag unset the detector never runs, so
+  // even the isolated stat-delta scene produces no result and no regen.
+  it('env OFF + isolated stat-delta scene: detector does not run (default behavior unchanged)', async () => {
+    delete process.env[ENV];
+    const runner = new IncrementalValidationRunner([], [], [], { ...ISOLATE_BASE, mechanicsLeakageSceneCheck: true });
+    const result = await runner.validateScene(leakageIsolatedDeltaScene(), undefined, []);
+    expect(result.mechanicsLeakage).toBeUndefined();
     expect(result.regenerationRequested).toBe('none');
   });
 });

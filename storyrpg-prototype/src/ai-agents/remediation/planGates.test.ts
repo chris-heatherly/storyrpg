@@ -192,5 +192,63 @@ describe('Bucket D plan-gate wiring', () => {
       expect(on1.gate).toBe(true);
       expect(on1.gate ? '[CallbackCoverageGate]' : '').toBe('[CallbackCoverageGate]');
     });
+
+    // --- Strict seam ------------------------------------------------------
+    // The FullStoryPipeline gate re-runs the validator in STRICT mode when the
+    // flag is enabled (the diagnostics-report path stays advisory). These tests
+    // exercise that exact composition over the REAL validator output: a genuine
+    // coverage violation in strict mode produces an 'error' the gate blocks on,
+    // while the same ledger in default mode stays a 'warning' (flag-off path
+    // unchanged).
+    //
+    // Genuine violation: episode 2, one unresolved hook from episode 1 whose
+    // payoff window covers episode 2, but zero hooks paid off this episode.
+    const violatingLedger: SerializedCallbackLedger = {
+      version: 1,
+      hooks: [
+        {
+          id: 'hook-unpaid',
+          sourceEpisode: 1,
+          sourceSceneId: 's1',
+          sourceChoiceId: 'c1',
+          flags: [],
+          summary: 'The protagonist swore to return for the captured scout.',
+          payoffWindow: { minEpisode: 1, maxEpisode: 3 },
+          payoffCount: 0,
+          resolved: false,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      config: DEFAULT_LEDGER_CONFIG,
+    };
+
+    const runStrict = (strict: boolean) =>
+      new CallbackCoverageValidator().validate(
+        { ledger: violatingLedger, currentEpisode: 2, totalEpisodes: 5 },
+        { strict },
+      );
+
+    it('strict seam: genuine violation emits an error and the gate blocks when the flag is on', () => {
+      const result = runStrict(true);
+      expect(result.issues.filter((i) => i.level === 'error').length).toBe(1);
+      const asDiagnostic = result.issues.map((i) => ({ severity: i.level }));
+      // Flag off => no gate even though an error exists; flag on => gate fires.
+      expect(shouldGate(PLAN_GATE_FLAGS.callbackCoverage, asDiagnostic, off).gate).toBe(false);
+      const decision = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, asDiagnostic, on(PLAN_GATE_FLAGS.callbackCoverage));
+      expect(decision.gate).toBe(true);
+      expect(decision.blockingCount).toBe(1);
+    });
+
+    it('default (non-strict) seam: same violation stays a warning and never gates (flag-off path unchanged)', () => {
+      const result = runStrict(false);
+      expect(result.issues.filter((i) => i.level === 'error').length).toBe(0);
+      expect(result.issues.some((i) => i.level === 'warning')).toBe(true);
+      const asDiagnostic = result.issues.map((i) => ({ severity: i.level }));
+      // Even with the flag on, the default-mode output yields no gate — this is
+      // the path the pipeline uses when GATE_CALLBACK_COVERAGE is unset.
+      expect(
+        shouldGate(PLAN_GATE_FLAGS.callbackCoverage, asDiagnostic, on(PLAN_GATE_FLAGS.callbackCoverage)).gate,
+      ).toBe(false);
+    });
   });
 });

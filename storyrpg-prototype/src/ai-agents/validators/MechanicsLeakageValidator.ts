@@ -17,6 +17,22 @@ export interface MechanicsLeakageText {
 
 export interface MechanicsLeakageInput {
   texts: MechanicsLeakageText[];
+  /**
+   * Opt-in strict escalation. Default (false / undefined) is byte-for-byte
+   * identical to the historical behavior: every leak is a 'warning'. When
+   * `true`, the SINGLE safe, deterministically-remediable leak class — bare
+   * numeric stat deltas sitting in an isolated HUD/label/bullet fragment with
+   * no narrative-frame verb (e.g. "Trust +10", "+5 reputation") — is escalated
+   * to 'error'. Every other leak class (die-roll phrasing, embedded checks,
+   * thresholds, probability framing, and stat deltas woven into a sentence)
+   * stays 'warning' even in strict mode, because those require SceneWriter
+   * regen rather than a clean string redaction.
+   *
+   * This validator already feeds a blocking final-contract path, so strict
+   * escalation must be explicitly requested by the caller — it is never on by
+   * default.
+   */
+  strict?: boolean;
 }
 
 export interface MechanicsLeakageResult extends ValidationResult {
@@ -88,6 +104,41 @@ const LEAK_PATTERNS: Array<{ pattern: RegExp; label: string; suggestion: string 
   },
 ];
 
+/**
+ * Strict-mode escalation criterion — the SINGLE safe, deterministically
+ * remediable leak class. These mirror the autofix layer
+ * ({@link file:../remediation/repairs/mechanicsLeakageRepair.ts}) one-for-one so
+ * "what strict mode hard-blocks" and "what the autofix can cleanly scrub" stay
+ * the exact same set: a bare numeric stat delta sitting at a fragment boundary
+ * with NO narrative-frame verb anywhere in the text. Anything narrative-framed
+ * is left as a 'warning' for the SceneWriter regen path.
+ */
+const STAT_WORD =
+  '(?:XP|experience\\s*points?|hp|health|trust|affection|respect|fear|reputation|score|points?|stat|skill)';
+
+const ISOLATED_DELTA_PATTERN = new RegExp(
+  '(?:^|[.,:;\\n\\u2022\\-]\\s*)' +
+    '(?:' +
+    `${STAT_WORD}\\s*[+\\-]\\s*\\d+` +
+    '|' +
+    `[+\\-]\\s*\\d+\\s*${STAT_WORD}` +
+    ')' +
+    '(?=\\s*(?:[.,:;\\n\\u2022]|$))',
+  'i',
+);
+
+const NARRATIVE_FRAME =
+  /\b(?:increase[ds]?|increasing|decrease[ds]?|decreasing|gain(?:ed|s|ing)?|earn(?:ed|s|ing)?|lost|lose[ds]?|losing|appear(?:ed|s|ing)?|spark(?:ed|s|ing)?|gr(?:ew|ows?|owing)|rose|rises?|rising|fell|falls?|falling|drop(?:ped|s|ping)?)\b/i;
+
+/**
+ * True when `text` contains a safe, isolated stat-delta fragment that strict
+ * mode should escalate to 'error'. Narrative-framed text is never escalated.
+ */
+function hasSafeIsolatedDelta(text: string): boolean {
+  if (NARRATIVE_FRAME.test(text)) return false;
+  return ISOLATED_DELTA_PATTERN.test(text);
+}
+
 export class MechanicsLeakageValidator extends BaseValidator {
   constructor() {
     super('MechanicsLeakageValidator');
@@ -95,16 +146,22 @@ export class MechanicsLeakageValidator extends BaseValidator {
 
   validate(input: MechanicsLeakageInput): MechanicsLeakageResult {
     const issues: ValidationIssue[] = [];
+    const strict = input.strict === true;
 
     for (const item of input.texts) {
+      const escalate = strict && hasSafeIsolatedDelta(item.text);
       for (const check of LEAK_PATTERNS) {
         if (!check.pattern.test(item.text)) continue;
         const location = [item.sceneId, item.beatId, item.id].filter(Boolean).join(':') || item.id;
-        issues.push(this.warning(
-          `Player-facing text "${item.id}" exposes ${check.label}.`,
-          location,
-          check.suggestion,
-        ));
+        const message = `Player-facing text "${item.id}" exposes ${check.label}.`;
+        // Default / non-strict: always 'warning' (byte-for-byte unchanged).
+        // Strict: escalate ONLY the safe isolated-stat-delta class to 'error';
+        // every other leak class in this text stays a 'warning'.
+        issues.push(
+          escalate && check.label === 'numeric stat delta'
+            ? this.error(message, location, check.suggestion)
+            : this.warning(message, location, check.suggestion),
+        );
       }
     }
 

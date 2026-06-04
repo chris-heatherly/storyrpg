@@ -26,6 +26,21 @@ export interface CallbackCoverageInput {
   totalEpisodes: number;
 }
 
+export interface CallbackCoverageOptions {
+  /**
+   * Flag-gated strict escalation. When `true`, the genuine coverage-failure
+   * check — an episode (2+) that has unresolved hooks eligible for payoff in
+   * its window but referenced *zero* of them — is emitted at `'error'` instead
+   * of `'warning'`. This is the only behavioral difference from default mode.
+   *
+   * Default (`false`/`undefined`) leaves every issue's severity and the
+   * overall `passed`/`score` results byte-for-byte unchanged. Strict mode is
+   * intended to be enabled only behind the `GATE_CALLBACK_COVERAGE` rollout
+   * flag at the pipeline gate seam; consumers are wired separately.
+   */
+  strict?: boolean;
+}
+
 export interface CallbackCoverageResult {
   passed: boolean;
   score: number; // 0-100
@@ -40,7 +55,8 @@ export interface CallbackCoverageResult {
 }
 
 export class CallbackCoverageValidator {
-  validate(input: CallbackCoverageInput): CallbackCoverageResult {
+  validate(input: CallbackCoverageInput, options?: CallbackCoverageOptions): CallbackCoverageResult {
+    const strict = options?.strict === true;
     const hooks = input.ledger?.hooks ?? [];
     const issues: ValidationIssue[] = [];
 
@@ -62,7 +78,10 @@ export class CallbackCoverageValidator {
     if (input.currentEpisode > 1 && hasEligibleHooks(hooks, input.currentEpisode) && hooksPaidOffThisEpisode === 0) {
       issues.push({
         category: 'callback_opportunities',
-        level: 'warning',
+        // Genuine coverage failure: an episode that was *due* to acknowledge a
+        // promise referenced none. In strict mode this escalates to a blocking
+        // 'error'; default mode keeps the historical 'warning' severity.
+        level: strict ? 'error' : 'warning',
         location: {},
         message:
           `Episode ${input.currentEpisode}: ${unresolvedHooks} unresolved callback hook(s) exist from prior ` +

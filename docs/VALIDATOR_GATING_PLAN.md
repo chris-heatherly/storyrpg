@@ -1,6 +1,6 @@
 # Validator Gating — Comprehensive Plan
 
-**Status:** v6 — ALL BUCKETS IMPLEMENTED & green (default-off); lint ratchet clean
+**Status:** v7 — ALL BUCKETS + follow-ups 1–3 implemented & green (default-off); lint ratchet clean
 **Date:** 2026-06-04
 **Companion to:** `docs/PROJECT_AUDIT_2026-05-28.md` (validator tiering section)
 **Scope:** story, branching, and gameplay rules in the generation pipeline
@@ -58,6 +58,9 @@ until a flag is enabled. Each phase shipped green (typecheck + lint ratchet + te
 | C | judgeStabilizer + stakes-score hysteresis soft-gate | `8d92f4a` |
 | B1 | regen-choices consumer loop + 2 scene-local detectors | `c914591` |
 | A fix | drop stray console.log (ratchet 432→431) | `084c0dc` |
+| FU-1 | wire RemediationBudget + remediation ledger into pipeline seams | `ccc3014` |
+| FU-2 | flag-gated strict escalation makes CallbackCoverage/Intensity/MechLeak gates fire | `4da319b` |
+| FU-3 | gate ChoiceDensity + ConsequenceBudget + Cliffhanger soft-gate + PropIntroduction | `18e29e6`, `+ closer` |
 
 ### Rollout flags (all default-OFF; set `=1` to enable)
 
@@ -68,24 +71,38 @@ until a flag is enabled. Each phase shipped green (typecheck + lint ratchet + te
 | `GATE_ARC_PRESSURE` / `GATE_CHOICE_DISTRIBUTION` / `GATE_SETUP_PAYOFF` / `GATE_CALLBACK_COVERAGE` | D: plan-time/ledger gate throws on error-severity | plan-time (re-plan/regen) |
 | `GATE_JUDGE_STABILIZATION` | C: hysteresis on the stakes-score regen trigger (cut false positives) | regen-choices (soft) |
 | `GATE_REGEN_CHOICES` | B1: enable the regen-choices consumer loop | regen-choices |
-| `GATE_INTENSITY_DISTRIBUTION` / `GATE_MECHANICS_LEAKAGE_REGEN` | B1: scene-local detectors escalate to scene regen | regen-scene |
+| `GATE_INTENSITY_DISTRIBUTION` / `GATE_MECHANICS_LEAKAGE_REGEN` | B1: scene-local detectors escalate to scene regen (strict mode, FU-2) | regen-scene |
+| `GATE_CALLBACK_COVERAGE` | FU-2: callback-coverage gate (now fires via strict mode) | plan-time |
+| `GATE_CHOICE_DENSITY` / `GATE_CONSEQUENCE_BUDGET` | FU-3: episode-aggregate gates (strict mode) | plan-time |
+| `GATE_CLIFFHANGER` | FU-3: soft-gate — hysteresis decides whether to invoke improveCliffhanger (never blocks) | regen-scene (soft) |
+| `GATE_PROP_INTRODUCTION` | FU-3: episode-level cross-scene entity gate (strict mode) | plan-time |
+| `REMEDIATION_BUDGET_TOTAL` | FU-1: per-run cap on regen/repair calls (default 1000 ≈ unlimited) | — |
 
 Note these are env opt-IN (`=1`), distinct from the codebase's `SEVEN_POINT_BLOCKING` / `SEASON_CANON_BLOCKING`
 opt-OUT convention. Suggested rollout: enable one flag, run N seasons, read the quality/remediation
-ledger, keep or revert.
+ledger (`remediation-ledger.jsonl` + the new `remediationsAttempted/Succeeded/Degraded` fields in
+`quality-ledger.jsonl`), keep or revert.
 
-### Known caveats / deferrals (verify-confirmed)
-- **`GATE_CALLBACK_COVERAGE`** is a wired no-op: `CallbackCoverageValidator` emits no error-severity
-  issues today — gate fires only once it's upgraded to emit errors.
-- **B1 scene detectors** (`IntensityDistribution`, `MechanicsLeakage`) are wired and gated, but both
-  emit warning-severity only today, so escalation-to-regen is forward-compatible but inert until they
-  emit errors. **PropIntroduction was not wired** — it needs a cross-scene known-entity set a single
-  scene can't supply without fabricating false positives.
-- **Bucket C** narrowed to `stakes_triangle` only (the one rule with a real score-gated regen seam);
-  the other 4 LLM-judged rules lack a judge-score regen path today.
-- **Remediation-ledger wiring** (S3 `recordRemediation`) is built and tested but not yet called from
-  the agent seams that lack an audit `baseDir` (e.g. ChoiceAuthor) — a follow-up.
-- **SevenPoint** is already gated by a concurrent session (commit `0292467`), not by this plan.
+### Follow-ups 1–3 (done 2026-06-04) — what changed
+- **FU-1:** `RemediationBudget` is instantiated per-run and consulted by the scene/encounter/regen-choices
+  loops (default 1000 → no behavior change); `recordRemediation` is called best-effort at all 5 seams;
+  quality-ledger gained remediation-summary fields. `runGatedRemediation` documented as the canonical
+  driver for future gates (existing loops left as-is). **→ rollout is now observable.**
+- **FU-2:** `CallbackCoverage`, `IntensityDistribution`, `MechanicsLeakage` gained opt-in *strict mode*
+  (error-severity only when their gate flag is on). **→ those three gates now fire instead of being no-ops.**
+- **FU-3:** `ChoiceDensity` + `ConsequenceBudget` gated (the two plan omissions); `Cliffhanger` soft-gate
+  via `improveCliffhanger`; `PropIntroduction` episode-level gate (cross-scene entity set built by a pure
+  helper, fires in strict mode). **→ all previously-ungated rules now have a gate.**
+
+### Remaining (judgment calls, not code gaps)
+- **Bucket C** still covers `stakes_triangle` only — `five_factor`/`choice_impact`/`twist_quality` lack a
+  judge-score regen seam (would need new repair paths to be soft-gateable).
+- **SeasonPlanner-stage gates** (ArcPressure/ChoiceDistribution) don't record to the remediation ledger
+  (no baseDir in scope) — the `PipelineError` is still observable.
+- **Rollout itself**: every flag is still default-off; none have been exercised on a real generation, and
+  the "observe ledger → flip default-on" loop + a CI success-rate regression guard are still to be run.
+- **Skill docs** (`.claude`/`.cursor`/`codex` skill sets) still describe these validators as advisory.
+- **SevenPoint** is gated by a concurrent session (commit `0292467`), not by this plan.
 
 ## 1. Executive summary
 

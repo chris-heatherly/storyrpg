@@ -1,6 +1,6 @@
 # Validator Gating — Comprehensive Plan
 
-**Status:** Draft v5 — S1–S4 + B0 implemented & green; Bucket A in progress
+**Status:** v6 — ALL BUCKETS IMPLEMENTED & green (default-off); lint ratchet clean
 **Date:** 2026-06-04
 **Companion to:** `docs/PROJECT_AUDIT_2026-05-28.md` (validator tiering section)
 **Scope:** story, branching, and gameplay rules in the generation pipeline
@@ -43,6 +43,49 @@
 - [Appendix B — per-rule master table](#appendix-b--per-rule-master-table)
 
 ---
+
+## 0. Implementation status (2026-06-04) — COMPLETE
+
+All buckets are implemented behind **default-off** flags, so the merge is zero-behavior-change
+until a flag is enabled. Each phase shipped green (typecheck + lint ratchet + tests). Commits on
+`chris/story-playthrough-qa-system-sdeviants`:
+
+| Phase | What landed | Commit |
+|---|---|---|
+| S1–S4 + B0 | scaffolding (registry fields, RemediationBudget, remediationLedger, runGatedRemediation) + architecture craft gates | `d00e07d` (bundled by a concurrent commit) |
+| A | 5 craft auto-repairs + applyCraftAutofix, wired after structural autofix | `17e0745` |
+| D | 4 plan-time/ledger gates via planGatePolicy | `444825b` |
+| C | judgeStabilizer + stakes-score hysteresis soft-gate | `8d92f4a` |
+| B1 | regen-choices consumer loop + 2 scene-local detectors | `c914591` |
+| A fix | drop stray console.log (ratchet 432→431) | `084c0dc` |
+
+### Rollout flags (all default-OFF; set `=1` to enable)
+
+| Flag | Effect | Remediation |
+|---|---|---|
+| `GATE_TREATMENT_FIDELITY` / `GATE_DRAMATIC_STRUCTURE` / `GATE_THEME_PRESSURE` / `GATE_SCENE_TURN_CONTRACT` / `GATE_EPISODE_PRESSURE` | B0: architecture craft validator blocks on retry exhaustion | regen-episode (retry 3×) |
+| `GATE_STAT_CHECK_BALANCE` / `GATE_CHOICE_IMPACT` / `GATE_NPC_DEPTH` / `GATE_ARC_DELTA` / `GATE_MECHANICS_LEAKAGE` | A: deterministic auto-repair runs after structural autofix | autofix |
+| `GATE_ARC_PRESSURE` / `GATE_CHOICE_DISTRIBUTION` / `GATE_SETUP_PAYOFF` / `GATE_CALLBACK_COVERAGE` | D: plan-time/ledger gate throws on error-severity | plan-time (re-plan/regen) |
+| `GATE_JUDGE_STABILIZATION` | C: hysteresis on the stakes-score regen trigger (cut false positives) | regen-choices (soft) |
+| `GATE_REGEN_CHOICES` | B1: enable the regen-choices consumer loop | regen-choices |
+| `GATE_INTENSITY_DISTRIBUTION` / `GATE_MECHANICS_LEAKAGE_REGEN` | B1: scene-local detectors escalate to scene regen | regen-scene |
+
+Note these are env opt-IN (`=1`), distinct from the codebase's `SEVEN_POINT_BLOCKING` / `SEASON_CANON_BLOCKING`
+opt-OUT convention. Suggested rollout: enable one flag, run N seasons, read the quality/remediation
+ledger, keep or revert.
+
+### Known caveats / deferrals (verify-confirmed)
+- **`GATE_CALLBACK_COVERAGE`** is a wired no-op: `CallbackCoverageValidator` emits no error-severity
+  issues today — gate fires only once it's upgraded to emit errors.
+- **B1 scene detectors** (`IntensityDistribution`, `MechanicsLeakage`) are wired and gated, but both
+  emit warning-severity only today, so escalation-to-regen is forward-compatible but inert until they
+  emit errors. **PropIntroduction was not wired** — it needs a cross-scene known-entity set a single
+  scene can't supply without fabricating false positives.
+- **Bucket C** narrowed to `stakes_triangle` only (the one rule with a real score-gated regen seam);
+  the other 4 LLM-judged rules lack a judge-score regen path today.
+- **Remediation-ledger wiring** (S3 `recordRemediation`) is built and tested but not yet called from
+  the agent seams that lack an audit `baseDir` (e.g. ChoiceAuthor) — a follow-up.
+- **SevenPoint** is already gated by a concurrent session (commit `0292467`), not by this plan.
 
 ## 1. Executive summary
 
@@ -281,7 +324,16 @@ from "push advisory warning" to "throw if `blockingFlag` set." That's the whole 
 **Riskiest** (these caused the original mass aborts) → roll out one at a time behind
 individual flags with ledger watching.
 
-### Bucket B1 — scene/choice regen (~6 rules, 5–7 d) — owns the only new infra
+### Bucket B1 — scene/choice regen — ✅ IMPLEMENTED 2026-06-04 (green, default-off)
+
+Landed (commit `c914591`) the missing **regen-choices consumer loop**: `remediation/regenChoicesPolicy.ts`
+(`shouldRegenChoices` + `isChoiceRegenImprovement`, pure/tested) + a loop in `FullStoryPipeline` at the
+scene-regen→encounter seam that re-invokes `ChoiceAuthor`, re-validates stakes, accepts on improvement,
+swaps the set back, degrades on exhaustion (never throws), behind `GATE_REGEN_CHOICES`. Also wired
+`IntensityDistribution` + `MechanicsLeakage` into `validateScene` (double-gated by config flag +
+`GATE_INTENSITY_DISTRIBUTION`/`GATE_MECHANICS_LEAKAGE_REGEN`), escalating to `'scene'` regen only on
+error-severity. **PropIntroduction skipped** (needs cross-scene entity set). 19 new tests; 177 pipeline +
+408 validator tests green default-off. Original spec below.
 
 Add the detector into `IncrementalValidator.validateScene()` (`IncrementalValidators.ts:1342`)
 so it sets `regenerationRequested` and contributes issue text to the augmented prompt.

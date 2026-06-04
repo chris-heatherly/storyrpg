@@ -368,6 +368,10 @@ export interface FiveFactorInput {
   choiceText: string;
   consequences: Consequence[];
   context: string;
+  /** E3: factors the AUTHOR declared this choice touches (outcome/process/
+   * information/relationship/identity). Counted directly when present — the
+   * consequence heuristic underreads them (audit: declared factors ignored). */
+  impactFactors?: Array<'outcome' | 'process' | 'information' | 'relationship' | 'identity'>;
 }
 
 // ========================================

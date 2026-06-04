@@ -145,8 +145,14 @@ export class FiveFactorValidator {
       };
     }
 
-    // First do heuristic analysis based on consequences
+    // First do heuristic analysis based on consequences, then UNION in the factors the
+    // author explicitly declared (E3 — the heuristic underreads, e.g. an INFORMATION or
+    // IDENTITY beat with no mechanical consequence). Declared factors are authoritative
+    // additions, not replacements.
     let impact = this.analyzeConsequencesHeuristic(input.consequences);
+    for (const f of input.impactFactors ?? []) {
+      if (f in impact) impact[f as keyof FiveFactorImpact] = true;
+    }
     let factorCount = this.countFactors(impact);
 
     // If heuristic finds factors, we're likely good

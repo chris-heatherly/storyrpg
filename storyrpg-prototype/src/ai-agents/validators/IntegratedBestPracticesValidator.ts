@@ -633,6 +633,7 @@ export class IntegratedBestPracticesValidator {
           choiceText: c.text,
           consequences: c.consequences,
           context: c.sceneContext || '',
+          impactFactors: (c as { impactFactors?: FiveFactorInput['impactFactors'] }).impactFactors,
         }));
 
         const fiveFactorResults = await this.fiveFactorValidator.validateBatch(fiveFactorInputs);

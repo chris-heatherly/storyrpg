@@ -126,4 +126,23 @@ describe('FiveFactorValidator', () => {
       })
     ).toBe(2);
   });
+
+  it('E3: counts the AUTHOR-declared impactFactors the consequence heuristic misses', () => {
+    const validator = new FiveFactorValidator(agentConfig);
+    return validator
+      .validate(
+        makeInput({
+          choiceId: 'reveal',
+          consequences: [], // no mechanical consequence → heuristic would find 0
+          impactFactors: ['information', 'identity', 'relationship'],
+        })
+      )
+      .then((result) => {
+        expect(result.factorCount).toBeGreaterThanOrEqual(3);
+        expect(result.impact.information).toBe(true);
+        expect(result.impact.identity).toBe(true);
+        expect(result.impact.relationship).toBe(true);
+      });
+  });
+
 });

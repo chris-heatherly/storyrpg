@@ -13,7 +13,10 @@
  * ordering ("used before introduced") needs per-entity intro metadata we don't have,
  * so we deliberately don't guess at it.
  *
- * Advisory — surfaces the gap and feeds the light-continuity prompt; never blocks.
+ * Advisory by default — surfaces the gap and feeds the light-continuity prompt; never
+ * blocks. Pass `{ strict: true }` (wired from the GATE_PROP_INTRODUCTION flag at the
+ * episode gate seam) to escalate unresolved references to error-severity so the gate can
+ * fire; with strict off, behavior is unchanged (warning-severity, advisory).
  * Pure + unit-testable.
  */
 
@@ -51,7 +54,11 @@ export class PropIntroductionValidator extends BaseValidator {
     super('PropIntroductionValidator');
   }
 
-  validate(input: PropIntroductionInput): ValidationResult & { metrics: PropIntroductionMetrics } {
+  validate(
+    input: PropIntroductionInput,
+    options?: { strict?: boolean },
+  ): ValidationResult & { metrics: PropIntroductionMetrics } {
+    const strict = options?.strict === true;
     const issues: ValidationIssue[] = [];
     const known = new Set((input.knownEntityIds ?? []).filter(Boolean));
     // A scene may declare it introduces an entity (e.g. a newly-revealed NPC); fold those in.
@@ -71,12 +78,13 @@ export class PropIntroductionValidator extends BaseValidator {
         unresolved.push({ sceneId, entityId });
         if (flagged.has(entityId)) continue;
         flagged.add(entityId);
+        const message = `Scene "${scene.sceneName || sceneId}" references "${entityId}", which is not a declared character/prop.`;
+        const location = `scene:${sceneId}`;
+        const suggestion = 'Add the entity to the cast/prop bible, introduce it earlier, or correct the reference.';
         issues.push(
-          this.warning(
-            `Scene "${scene.sceneName || sceneId}" references "${entityId}", which is not a declared character/prop.`,
-            `scene:${sceneId}`,
-            'Add the entity to the cast/prop bible, introduce it earlier, or correct the reference.',
-          ),
+          strict
+            ? this.error(message, location, suggestion)
+            : this.warning(message, location, suggestion),
         );
       }
     }

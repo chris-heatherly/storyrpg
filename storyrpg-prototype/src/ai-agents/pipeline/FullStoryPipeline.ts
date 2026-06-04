@@ -11220,7 +11220,9 @@ export class FullStoryPipeline {
               referencedEntityIds: sc.charactersInvolved ?? [],
             })),
           );
-          const propResult = new PropIntroductionValidator().validate(propInput);
+          // strict: this block only runs when GATE_PROP_INTRODUCTION is set, so escalate
+          // unresolved references to error-severity here so the gate can actually fire.
+          const propResult = new PropIntroductionValidator().validate(propInput, { strict: true });
           const propIssues = propResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message }));
           const propGate = shouldGate(PLAN_GATE_FLAGS.propIntroduction, propIssues, isEnabled);
           if (propGate.gate) {

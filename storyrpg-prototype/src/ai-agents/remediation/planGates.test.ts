@@ -352,14 +352,14 @@ describe('Bucket D plan-gate wiring', () => {
     });
   });
 
-  // --- PropIntroduction (all-scenes seam, PARTIAL) -------------------------
-  // PARTIAL gate (cast-reference subset; see propIntroductionGate.ts SCOPE
-  // NOTE). The validator emits only WARNING-severity findings today, so the gate
-  // is a wired no-op even when GATE_PROP_INTRODUCTION=1 — this documents that the
-  // flag never blocks on the validator's current output (behavior unchanged). It
-  // still wires the helper so a future error-severity finding would block.
-  describe('PropIntroduction gate (partial)', () => {
-    // Scene references an undeclared entity → an unresolved (warning) finding.
+  // --- PropIntroduction (all-scenes seam) ----------------------------------
+  // PARTIAL in scope (cast-reference subset; see propIntroductionGate.ts SCOPE
+  // NOTE), but the gate now FIRES: the pipeline seam runs the validator in strict
+  // mode (only inside the GATE_PROP_INTRODUCTION=1 branch), escalating unresolved
+  // references to error-severity. Default (non-strict) stays warning-only and never
+  // blocks, so behavior with the flag off is unchanged.
+  describe('PropIntroduction gate', () => {
+    // Scene references an undeclared entity → an unresolved finding.
     const propInput = buildPropIntroductionInput(
       ['protagonist', 'Mara'],
       [
@@ -368,28 +368,37 @@ describe('Bucket D plan-gate wiring', () => {
       ],
     );
 
-    it('flags the undeclared reference as a warning (validator runs)', () => {
+    it('default mode: flags the undeclared reference as a warning and never blocks', () => {
       const result = new PropIntroductionValidator().validate(propInput);
       expect(result.valid).toBe(false);
       expect(result.issues.some((i) => i.severity === 'warning')).toBe(true);
-    });
-
-    it('is a no-op gate today: only warnings, so it never blocks even when the flag is on', () => {
-      const result = new PropIntroductionValidator().validate(propInput);
       expect(result.issues.filter((i) => i.severity === 'error').length).toBe(0);
       const asDiagnostic = result.issues.map((i) => ({ severity: i.severity }));
-      expect(shouldGate(PLAN_GATE_FLAGS.propIntroduction, asDiagnostic, off).gate).toBe(false);
+      // Even with the flag on, a warning-only result cannot gate (default path unchanged).
       expect(
         shouldGate(PLAN_GATE_FLAGS.propIntroduction, asDiagnostic, on(PLAN_GATE_FLAGS.propIntroduction)).gate,
       ).toBe(false);
     });
 
-    it('would block if an error-severity finding ever appears (gate composition is wired)', () => {
-      const issues = [{ severity: 'error' as const }];
-      expect(shouldGate(PLAN_GATE_FLAGS.propIntroduction, issues, off).gate).toBe(false);
+    it('strict mode (flag-on seam): escalates to error and the gate fires', () => {
+      const result = new PropIntroductionValidator().validate(propInput, { strict: true });
+      const errs = result.issues.filter((i) => i.severity === 'error');
+      expect(errs.length).toBeGreaterThan(0);
+      const asDiagnostic = result.issues.map((i) => ({ severity: i.severity }));
+      // flag off → no gate even with errors; flag on → gate fires.
+      expect(shouldGate(PLAN_GATE_FLAGS.propIntroduction, asDiagnostic, off).gate).toBe(false);
       expect(
-        shouldGate(PLAN_GATE_FLAGS.propIntroduction, issues, on(PLAN_GATE_FLAGS.propIntroduction)).gate,
+        shouldGate(PLAN_GATE_FLAGS.propIntroduction, asDiagnostic, on(PLAN_GATE_FLAGS.propIntroduction)).gate,
       ).toBe(true);
+    });
+
+    it('strict mode: a clean reference set produces no error and does not gate', () => {
+      const clean = buildPropIntroductionInput(
+        ['protagonist', 'Mara'],
+        [{ sceneId: 's1', sceneName: 'Open', referencedEntityIds: ['protagonist', 'Mara'] }],
+      );
+      const result = new PropIntroductionValidator().validate(clean, { strict: true });
+      expect(result.issues.filter((i) => i.severity === 'error').length).toBe(0);
     });
   });
 

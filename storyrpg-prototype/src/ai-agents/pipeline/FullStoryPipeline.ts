@@ -280,11 +280,16 @@ import {
   type SceneGraphBranchValidationResult,
   runNarrativeDiagnostics,
   type NarrativeDiagnosticsReport,
+  ChoiceDensityValidator,
+  ConsequenceBudgetValidator,
+  PropIntroductionValidator,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import { classifyArchitectGateWarnings } from '../remediation/architectGatePolicy';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { CallbackCoverageValidator } from '../validators/CallbackCoverageValidator';
+import { buildPropIntroductionInput } from '../remediation/propIntroductionGate';
+import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
 import { applyCraftAutofix } from '../remediation/applyCraftAutofix';
 import { shouldRegenChoices, isChoiceRegenImprovement } from '../remediation/regenChoicesPolicy';
 import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
@@ -11108,6 +11113,132 @@ export class FullStoryPipeline {
             { context: { episode: i, blockingCount: callbackGate.blockingCount } },
           );
         }
+
+        // ChoiceDensity gate (default OFF; GATE_CHOICE_DENSITY=1). The validator
+        // emits 'error' only for the "zero choices" case; all genuine structural
+        // (D4) and timing-cap violations are warning-level by default, so the
+        // gate would never fire on them. When the flag is on we re-run the
+        // validator in STRICT mode (a pure, deterministic re-eval of the same
+        // beats/scenes) so those violations surface as 'error' for shouldGate.
+        // With the flag OFF this branch is skipped entirely → behavior unchanged.
+        if (isEnabled(PLAN_GATE_FLAGS.choiceDensity)) {
+          const densityResult = await new ChoiceDensityValidator().validate(
+            {
+              beats: sceneContents.flatMap((sc) =>
+                (sc.beats ?? []).map((b) => ({
+                  id: b.id,
+                  text: b.text ?? b.content ?? '',
+                  isChoicePoint: (b.choices?.length ?? 0) > 0 || b.isChoicePoint,
+                })),
+              ),
+              scenes: sceneContents.map((sc) => ({
+                id: sc.sceneId,
+                beats: (sc.beats ?? []).map((b) => ({
+                  id: b.id,
+                  text: b.text ?? b.content ?? '',
+                  isChoicePoint: (b.choices?.length ?? 0) > 0 || b.isChoicePoint,
+                })),
+              })),
+            },
+            { strict: true },
+          );
+          const densityIssues = densityResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
+          const densityGate = shouldGate(PLAN_GATE_FLAGS.choiceDensity, densityIssues, isEnabled);
+          if (densityGate.gate) {
+            const errs = densityIssues.filter((iss) => iss.severity === 'error');
+            await this.recordRemediationSafe({
+              rule: 'choice_density_gate', scope: 'episode', attempted: 1,
+              succeeded: false, degraded: false, blocked: true, attempts: 1,
+              storyId: story?.id, details: `Choice density gate blocked episode ${i}: ${densityGate.blockingCount} issue(s)`,
+            });
+            throw new PipelineError(
+              `[ChoiceDensityGate] Choice density failed the blocking gate (${densityGate.blockingCount} issue(s)): ` +
+                errs.map((iss) => iss.message).join('; ') +
+                '. Unset GATE_CHOICE_DENSITY to downgrade to advisory.',
+              `episode_${i}_choice_density_gate`,
+              { context: { episode: i, blockingCount: densityGate.blockingCount } },
+            );
+          }
+        }
+
+        // ConsequenceBudget gate (default OFF; GATE_CONSEQUENCE_BUDGET=1). The
+        // validator is advisory-only by default (suggestions/warnings); its
+        // strictMode promotes extreme-deviation warnings to 'error'. We pass the
+        // flag through explicitly so the gate sees those errors and shouldGate
+        // can block. Choices carry their set's choiceType (it is per-set, not
+        // per-choice). With the flag OFF this branch is skipped → behavior
+        // unchanged.
+        if (isEnabled(PLAN_GATE_FLAGS.consequenceBudget)) {
+          const budgetResult = await new ConsequenceBudgetValidator().validate(
+            {
+              choices: choiceSets.flatMap((cs) =>
+                (cs.choices ?? []).map((c) => ({
+                  id: c.id,
+                  choiceType: cs.choiceType,
+                  consequences: c.consequences ?? [],
+                })),
+              ),
+            },
+            { strictMode: true },
+          );
+          const budgetIssues = budgetResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
+          const budgetGate = shouldGate(PLAN_GATE_FLAGS.consequenceBudget, budgetIssues, isEnabled);
+          if (budgetGate.gate) {
+            const errs = budgetIssues.filter((iss) => iss.severity === 'error');
+            await this.recordRemediationSafe({
+              rule: 'consequence_budget_gate', scope: 'episode', attempted: 1,
+              succeeded: false, degraded: false, blocked: true, attempts: 1,
+              storyId: story?.id, details: `Consequence budget gate blocked episode ${i}: ${budgetGate.blockingCount} issue(s)`,
+            });
+            throw new PipelineError(
+              `[ConsequenceBudgetGate] Consequence budget failed the blocking gate (${budgetGate.blockingCount} issue(s)): ` +
+                errs.map((iss) => iss.message).join('; ') +
+                '. Unset GATE_CONSEQUENCE_BUDGET to downgrade to advisory.',
+              `episode_${i}_consequence_budget_gate`,
+              { context: { episode: i, blockingCount: budgetGate.blockingCount } },
+            );
+          }
+        }
+
+        // PropIntroduction gate (default OFF; GATE_PROP_INTRODUCTION=1). PARTIAL
+        // gate (see propIntroductionGate.ts SCOPE NOTE): the deterministic
+        // episode-level subset. Known entities = declared cast (ids + display
+        // names) folded with every scene's declared introductions; references
+        // come from each scene's charactersInvolved (the only per-scene entity
+        // signal available at this seam — props are not yet a tracked field, so
+        // unresolved-prop detection is deferred to a future SceneContent
+        // .referencedEntityIds/.introducesEntityIds population). The validator
+        // emits only warning-level issues today, so the gate fires only if it
+        // begins emitting 'error' (shouldGate counts error-severity); with the
+        // flag OFF this branch is skipped → behavior unchanged.
+        if (isEnabled(PLAN_GATE_FLAGS.propIntroduction)) {
+          const propInput = buildPropIntroductionInput(
+            (characterBible.characters ?? []).flatMap((c) => [c.id, c.name]),
+            sceneContents.map((sc) => ({
+              sceneId: sc.sceneId,
+              sceneName: sc.sceneName,
+              referencedEntityIds: sc.charactersInvolved ?? [],
+            })),
+          );
+          const propResult = new PropIntroductionValidator().validate(propInput);
+          const propIssues = propResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message }));
+          const propGate = shouldGate(PLAN_GATE_FLAGS.propIntroduction, propIssues, isEnabled);
+          if (propGate.gate) {
+            const errs = propIssues.filter((iss) => iss.severity === 'error');
+            await this.recordRemediationSafe({
+              rule: 'prop_introduction_gate', scope: 'episode', attempted: 1,
+              succeeded: false, degraded: false, blocked: true, attempts: 1,
+              storyId: story?.id, details: `Prop introduction gate blocked episode ${i}: ${propGate.blockingCount} issue(s)`,
+            });
+            throw new PipelineError(
+              `[PropIntroductionGate] Prop introduction failed the blocking gate (${propGate.blockingCount} unresolved reference(s)): ` +
+                errs.map((iss) => iss.message).join('; ') +
+                '. Unset GATE_PROP_INTRODUCTION to downgrade to advisory.',
+              `episode_${i}_prop_introduction_gate`,
+              { context: { episode: i, blockingCount: propGate.blockingCount } },
+            );
+          }
+        }
       }
 
       let imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> } | undefined;
@@ -20563,11 +20694,24 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
 
     const validator = new CliffhangerValidator(this.config.agents.sceneWriter);
     const analysis = validator.quickAnalyze(episode, cliffhangerPlan);
-    if (analysis.quality === 'good' || analysis.quality === 'excellent') {
+
+    // Cliffhanger soft-gate (default OFF; GATE_CLIFFHANGER=1). This is a NON-
+    // blocking soft-gate: it only decides whether to invoke the (already
+    // non-throwing) improveCliffhanger repair. Default path is unchanged —
+    // repair whenever quality is not 'good'/'excellent' (heuristic score < 62).
+    // With the flag ON, the score boundary is hysteresis-stabilized so a
+    // borderline draw in [57, 62) is treated as a pass and NO repair fires,
+    // trading a slightly more permissive gate for fewer noise-triggered LLM
+    // repairs. 62 is the 'good' threshold; 5 is the hysteresis margin.
+    const stabilizationOn = process.env.GATE_CLIFFHANGER === '1';
+    const needsRepair = stabilizationOn
+      ? stabilizeByHysteresis(analysis.score, 62, 5)
+      : analysis.quality !== 'good' && analysis.quality !== 'excellent';
+    if (!needsRepair) {
       this.emit({
         type: 'debug',
         phase: 'cliffhanger_validation',
-        message: `Cliffhanger passed (${analysis.quality}, ${analysis.score}/100)`,
+        message: `Cliffhanger passed (${analysis.quality}, ${analysis.score}/100${stabilizationOn ? ', hysteresis-stabilized' : ''})`,
       });
       return;
     }
@@ -20590,6 +20734,16 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         phase: 'cliffhanger_repair',
         message: `Cliffhanger repair failed: ${improvement.error || 'no improved text returned'}`,
       });
+      // Soft-gate observability: record the (failed) repair attempt best-effort
+      // when stabilization is active. Never blocks; recordRemediationSafe swallows.
+      if (stabilizationOn) {
+        await this.recordRemediationSafe({
+          rule: 'cliffhanger_stabilized', scope: 'episode', attempted: 1,
+          succeeded: false, degraded: false, blocked: false, attempts: 1,
+          storyId: brief.story?.id,
+          details: `Cliffhanger repair failed for episode ${brief.episode.number} (score ${analysis.score}/100, quality ${analysis.quality})`,
+        });
+      }
       return;
     }
 
@@ -20618,6 +20772,16 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       message: `Cliffhanger repair result: ${repairedAnalysis.quality} (${repairedAnalysis.score}/100)`,
       data: { before: analysis, after: repairedAnalysis },
     });
+    // Soft-gate observability: record the (successful) repair attempt best-effort
+    // when stabilization is active. Never blocks; recordRemediationSafe swallows.
+    if (stabilizationOn) {
+      await this.recordRemediationSafe({
+        rule: 'cliffhanger_stabilized', scope: 'episode', attempted: 1,
+        succeeded: true, degraded: false, blocked: false, attempts: 1,
+        storyId: brief.story?.id,
+        details: `Cliffhanger repaired for episode ${brief.episode.number}: ${analysis.score}/100 → ${repairedAnalysis.score}/100`,
+      });
+    }
   }
 
   private isEpisodeFinalScene(scene: SceneBlueprint, blueprint: EpisodeBlueprint): boolean {

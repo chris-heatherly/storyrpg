@@ -95,9 +95,9 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // ChoiceAuthor paths gate on binary error-level issues (0 factors / no
   // consequences), not a numeric judge score, so hysteresis is a no-op here.
   { validator: 'FiveFactorValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
-  { validator: 'ChoiceDensityValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
+  { validator: 'ChoiceDensityValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CHOICE_DENSITY', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
   { validator: 'ChoiceDistributionValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CHOICE_DISTRIBUTION', dispatchedFrom: 'IntegratedBestPracticesValidator' },
-  { validator: 'ConsequenceBudgetValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
+  { validator: 'ConsequenceBudgetValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CONSEQUENCE_BUDGET', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
   { validator: 'CallbackOpportunitiesValidator', stage: 'quick', tier: 'autofix', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   // tier stays 'advisory' (not 'blocking'): the safe isolated-token class is
   // enforced via autofix; in-prose leaks defer to B1 regen.
@@ -108,7 +108,12 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'SkillSurfaceValidator', stage: 'full', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'BranchMechanicalDivergenceValidator', stage: 'full', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'PixarPrinciplesValidator', stage: 'full', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
-  { validator: 'CliffhangerValidator', stage: 'full', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
+  // Cliffhanger soft-gate (Bucket C): FullStoryPipeline.repairWeakCliffhangerBeforeImages
+  // rewrites the weak final beat via improveCliffhanger (regen-scene). The repair
+  // is non-blocking; GATE_CLIFFHANGER hysteresis-stabilizes the score boundary so a
+  // borderline draw degrades to advisory (keep original beat) instead of triggering
+  // a noisy LLM repair. Default-off keeps the prior < 'good' repair behavior.
+  { validator: 'CliffhangerValidator', stage: 'full', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_CLIFFHANGER', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
 
   // --- Narrative diagnostics (narrativeDiagnostics.runNarrativeDiagnostics) ---
   { validator: 'SetupPayoffValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_SETUP_PAYOFF', dispatchedFrom: 'narrativeDiagnostics' },
@@ -120,7 +125,10 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'NarrativeFailureModeValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   // E5 / #26C / D4 — advisory diagnostics added 2026-06.
   { validator: 'IntensityDistributionValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
-  { validator: 'PropIntroductionValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
+  // PARTIAL gate (cast-reference subset; see propIntroductionGate.ts SCOPE NOTE):
+  // the all-scenes seam in FullStoryPipeline hard-blocks on error-severity
+  // unresolved references when GATE_PROP_INTRODUCTION=1. Default-off, advisory.
+  { validator: 'PropIntroductionValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_PROP_INTRODUCTION', dispatchedFrom: 'narrativeDiagnostics / FullStoryPipeline' },
   { validator: 'ChoiceCoverageValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
 
   // --- Final assembly gate ---

@@ -10,12 +10,15 @@ const enable =
 const FLAG = PLAN_GATE_FLAGS.setupPayoff;
 
 describe('planGatePolicy', () => {
-  it('exposes the four Bucket D plan-gate flags', () => {
+  it('exposes the Bucket D plan-gate flags', () => {
     expect(PLAN_GATE_FLAGS).toEqual({
       setupPayoff: 'GATE_SETUP_PAYOFF',
       callbackCoverage: 'GATE_CALLBACK_COVERAGE',
       choiceDistribution: 'GATE_CHOICE_DISTRIBUTION',
       arcPressure: 'GATE_ARC_PRESSURE',
+      consequenceBudget: 'GATE_CONSEQUENCE_BUDGET',
+      choiceDensity: 'GATE_CHOICE_DENSITY',
+      propIntroduction: 'GATE_PROP_INTRODUCTION',
     });
   });
 

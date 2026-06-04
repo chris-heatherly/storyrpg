@@ -108,6 +108,65 @@ describe('ConsequenceBudgetValidator', () => {
         )
       ).toBe(true);
     });
+
+    // Strict-mode gate (GATE_CONSEQUENCE_BUDGET, default-off).
+    const extremeChoices = Array.from({ length: 10 }, (_, i) => ({
+      id: `c${i}`,
+      choiceType: 'expression',
+      consequences: [{ type: 'setFlag', flag: `f${i}` }],
+    }));
+
+    it('default-off: extreme deviation stays warning and does not block', async () => {
+      const validator = new ConsequenceBudgetValidator({ budgetTolerance: 10 });
+      const result = await validator.validate({ choices: extremeChoices });
+
+      const overAlloc = result.issues.find(
+        (i) => i.message.includes('CALLBACK') && i.message.includes('over-allocated')
+      );
+      expect(overAlloc?.level).toBe('warning');
+      expect(result.issues.some((i) => i.level === 'error')).toBe(false);
+      // level === 'warning' config → a warning fails `passed`, but never blocks.
+      expect(result.passed).toBe(false);
+    });
+
+    it('strict mode promotes extreme-deviation warnings to error (blocking)', async () => {
+      const validator = new ConsequenceBudgetValidator({ budgetTolerance: 10 });
+      const result = await validator.validate(
+        { choices: extremeChoices },
+        { strictMode: true }
+      );
+
+      const overAlloc = result.issues.find(
+        (i) => i.message.includes('CALLBACK') && i.message.includes('over-allocated')
+      );
+      expect(overAlloc?.level).toBe('error');
+      expect(result.issues.some((i) => i.level === 'error')).toBe(true);
+      expect(result.passed).toBe(false);
+    });
+
+    it('strict mode does NOT promote non-extreme (suggestion) deviations', async () => {
+      // 7 callbacks + 3 tints with tolerance 5: callback ~70% (target 60, dev 10,
+      // > tol but <= tol*2 → suggestion), so strict mode leaves it untouched.
+      const validator = new ConsequenceBudgetValidator({ budgetTolerance: 5 });
+      const choices = [
+        ...Array.from({ length: 7 }, (_, i) => ({
+          id: `cb${i}`,
+          choiceType: 'expression',
+          consequences: [{ type: 'setFlag', flag: `f${i}` }],
+        })),
+        ...Array.from({ length: 3 }, (_, i) => ({
+          id: `t${i}`,
+          choiceType: 'expression',
+          consequences: [{ type: 'setFlag', flag: `tint:t${i}` }],
+        })),
+      ];
+
+      const result = await validator.validate({ choices }, { strictMode: true });
+      const callbackIssue = result.issues.find(
+        (i) => i.message.includes('CALLBACK') && i.message.includes('over-allocated')
+      );
+      expect(callbackIssue?.level).toBe('suggestion');
+    });
   });
 
   describe('suggestCategory', () => {

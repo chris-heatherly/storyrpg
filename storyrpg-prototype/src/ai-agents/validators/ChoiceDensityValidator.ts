@@ -33,6 +33,16 @@ export interface SceneWithTiming {
   beats: BeatWithTiming[];
 }
 
+export interface ChoiceDensityValidateOptions {
+  /**
+   * When true, clear structural (D4) and timing-cap violations are emitted at
+   * 'error' level instead of the configured default (normally 'warning'). This
+   * is opt-in so a gate can block on genuine choice-density failures; the
+   * default (strict=false) leaves severity byte-for-byte unchanged.
+   */
+  strict?: boolean;
+}
+
 export class ChoiceDensityValidator {
   private config: ValidationConfig['rules']['choiceDensity'];
 
@@ -118,8 +128,16 @@ export class ChoiceDensityValidator {
   /**
    * Validate choice density across scenes
    */
-  async validate(input: ChoiceDensityInput): Promise<ChoiceDensityValidationResult> {
+  async validate(
+    input: ChoiceDensityInput,
+    options?: ChoiceDensityValidateOptions,
+  ): Promise<ChoiceDensityValidationResult> {
     const issues: ValidationIssue[] = [];
+
+    // Severity for clear structural (D4) / timing-cap violations. Default is the
+    // configured level (normally 'warning'); strict mode escalates these clear
+    // violations to 'error' so a gate can block on them. Opt-in only.
+    const violationLevel: ValidationIssue['level'] = options?.strict ? 'error' : this.config.level;
 
     // Annotate all scenes with timing
     const scenesWithTiming = this.annotateScenesWithTiming(input.scenes);
@@ -186,7 +204,7 @@ export class ChoiceDensityValidator {
       if (scenesWithChoiceCount / totalScenes < 0.5) {
         issues.push({
           category: 'choice_density',
-          level: this.config.level,
+          level: violationLevel,
           message: `Only ${scenesWithChoiceCount}/${totalScenes} scenes have a choice point (<50%) — choices are too clustered.`,
           location: {},
           suggestion: 'Distribute choice points so at least half the scenes have one (raises the type budget so the 35/30/20/15 mix can land).',
@@ -195,7 +213,7 @@ export class ChoiceDensityValidator {
       if (!sceneHasChoice[0]) {
         issues.push({
           category: 'choice_density',
-          level: this.config.level,
+          level: violationLevel,
           message: 'The first scene has no choice point.',
           location: {},
           suggestion: 'Open with an early choice to establish player agency.',
@@ -210,7 +228,7 @@ export class ChoiceDensityValidator {
       if (maxConsecutive > 2) {
         issues.push({
           category: 'choice_density',
-          level: this.config.level,
+          level: violationLevel,
           message: `${maxConsecutive} consecutive scenes without a choice point (max 2).`,
           location: {},
           suggestion: 'Break up long choiceless stretches with an interim decision.',
@@ -222,7 +240,7 @@ export class ChoiceDensityValidator {
     if (firstChoiceSeconds > this.config.firstChoiceMaxSeconds) {
       issues.push({
         category: 'choice_density',
-        level: this.config.level,
+        level: violationLevel,
         message: `First choice appears at ${Math.round(firstChoiceSeconds)}s, exceeds ${this.config.firstChoiceMaxSeconds}s cap`,
         location: {
           beatId: choicePoints[0]?.id,
@@ -235,7 +253,7 @@ export class ChoiceDensityValidator {
     if (averageGapSeconds > this.config.averageGapMaxSeconds) {
       issues.push({
         category: 'choice_density',
-        level: this.config.level,
+        level: violationLevel,
         message: `Average gap between choices is ${Math.round(averageGapSeconds)}s, exceeds ${this.config.averageGapMaxSeconds}s cap`,
         location: {},
         suggestion: `Consider adding more choice points—cap is ${this.config.averageGapMaxSeconds}s`,

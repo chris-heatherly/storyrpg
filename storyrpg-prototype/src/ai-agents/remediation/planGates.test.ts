@@ -15,9 +15,14 @@
 
 import { describe, expect, it } from 'vitest';
 import { PLAN_GATE_FLAGS, shouldGate } from './planGatePolicy';
+import { stabilizeByHysteresis } from './judgeStabilizer';
+import { buildPropIntroductionInput } from './propIntroductionGate';
 import { ArcPressureArchitectureValidator } from '../validators/ArcPressureArchitectureValidator';
 import { CallbackCoverageValidator } from '../validators/CallbackCoverageValidator';
 import { ChoiceDistributionValidator } from '../validators/ChoiceDistributionValidator';
+import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
+import { ConsequenceBudgetValidator } from '../validators/ConsequenceBudgetValidator';
+import { PropIntroductionValidator } from '../validators/PropIntroductionValidator';
 import { SetupPayoffValidator } from '../validators/SetupPayoffValidator';
 import { assignSeasonChoiceTypes, type SeasonChoiceMoment } from '../pipeline/seasonChoicePlan';
 import { DEFAULT_LEDGER_CONFIG, type SerializedCallbackLedger } from '../pipeline/callbackLedger';
@@ -249,6 +254,173 @@ describe('Bucket D plan-gate wiring', () => {
       expect(
         shouldGate(PLAN_GATE_FLAGS.callbackCoverage, asDiagnostic, on(PLAN_GATE_FLAGS.callbackCoverage)).gate,
       ).toBe(false);
+    });
+  });
+
+  // --- ChoiceDensity (all-scenes seam, strict) -----------------------------
+  // The FullStoryPipeline gate re-runs the validator in STRICT mode only when
+  // GATE_CHOICE_DENSITY=1 (default-off path uses the advisory IBPV run). Strict
+  // mode promotes structural (D4) violations from warning to error so shouldGate
+  // can block. Fixture: 4 scenes, only the LAST carries a choice point → <50%
+  // coverage AND first scene has no choice → two clear structural violations.
+  describe('ChoiceDensity gate', () => {
+    const beat = (id: string, isChoicePoint = false) => ({ id, text: 'A short beat of prose.', isChoicePoint });
+    const scenesInput = {
+      beats: [beat('s1b1'), beat('s2b1'), beat('s3b1'), beat('s4b1', true)],
+      scenes: [
+        { id: 's1', beats: [beat('s1b1')] },
+        { id: 's2', beats: [beat('s2b1')] },
+        { id: 's3', beats: [beat('s3b1')] },
+        { id: 's4', beats: [beat('s4b1', true)] },
+      ],
+    };
+
+    const runValidator = (strict: boolean) =>
+      new ChoiceDensityValidator().validate(scenesInput, { strict });
+
+    it('default (non-strict): structural violations stay warning and never gate (flag-off path unchanged)', async () => {
+      const result = await runValidator(false);
+      expect(result.issues.filter((i) => i.level === 'error').length).toBe(0);
+      expect(result.issues.some((i) => i.level === 'warning')).toBe(true);
+      const asDiagnostic = result.issues.map((i) => ({ severity: i.level }));
+      // Even with the flag on, default-mode output yields no gate.
+      expect(
+        shouldGate(PLAN_GATE_FLAGS.choiceDensity, asDiagnostic, on(PLAN_GATE_FLAGS.choiceDensity)).gate,
+      ).toBe(false);
+    });
+
+    it('strict: structural violations become errors; gates only when the flag is on', async () => {
+      const result = await runValidator(true);
+      expect(result.issues.filter((i) => i.level === 'error').length).toBeGreaterThan(0);
+      const asDiagnostic = result.issues.map((i) => ({ severity: i.level }));
+      expect(shouldGate(PLAN_GATE_FLAGS.choiceDensity, asDiagnostic, off).gate).toBe(false);
+      const decision = shouldGate(
+        PLAN_GATE_FLAGS.choiceDensity,
+        asDiagnostic,
+        on(PLAN_GATE_FLAGS.choiceDensity),
+      );
+      expect(decision.gate).toBe(true);
+      expect(decision.blockingCount).toBeGreaterThan(0);
+    });
+  });
+
+  // --- ConsequenceBudget (all-scenes seam, strict) -------------------------
+  // The seam passes { strictMode: true } only when GATE_CONSEQUENCE_BUDGET=1.
+  // Strict mode promotes extreme-deviation (|dev| > tolerance*2) budget findings
+  // from warning to error. Fixture: every consequence is an explicit 'branch'
+  // category → branch 100% (target 5%) and callback 0% (target 60%), both
+  // extreme deviations.
+  describe('ConsequenceBudget gate', () => {
+    const budgetInput = {
+      choices: [
+        {
+          id: 'c1',
+          choiceType: 'strategic',
+          consequences: [
+            { type: 'skill', budgetCategory: 'branch' as const },
+            { type: 'skill', budgetCategory: 'branch' as const },
+          ],
+        },
+      ],
+    };
+
+    const runValidator = (strictMode: boolean) =>
+      new ConsequenceBudgetValidator().validate(budgetInput, { strictMode });
+
+    it('default (non-strict): extreme deviations stay warning and never gate (flag-off path unchanged)', async () => {
+      const result = await runValidator(false);
+      expect(result.issues.filter((i) => i.level === 'error').length).toBe(0);
+      expect(result.issues.some((i) => i.level === 'warning')).toBe(true);
+      const asDiagnostic = result.issues.map((i) => ({ severity: i.level }));
+      expect(
+        shouldGate(PLAN_GATE_FLAGS.consequenceBudget, asDiagnostic, on(PLAN_GATE_FLAGS.consequenceBudget)).gate,
+      ).toBe(false);
+    });
+
+    it('strict: extreme deviations become errors; gates only when the flag is on', async () => {
+      const result = await runValidator(true);
+      expect(result.issues.filter((i) => i.level === 'error').length).toBeGreaterThan(0);
+      const asDiagnostic = result.issues.map((i) => ({ severity: i.level }));
+      expect(shouldGate(PLAN_GATE_FLAGS.consequenceBudget, asDiagnostic, off).gate).toBe(false);
+      const decision = shouldGate(
+        PLAN_GATE_FLAGS.consequenceBudget,
+        asDiagnostic,
+        on(PLAN_GATE_FLAGS.consequenceBudget),
+      );
+      expect(decision.gate).toBe(true);
+      expect(decision.blockingCount).toBeGreaterThan(0);
+    });
+  });
+
+  // --- PropIntroduction (all-scenes seam, PARTIAL) -------------------------
+  // PARTIAL gate (cast-reference subset; see propIntroductionGate.ts SCOPE
+  // NOTE). The validator emits only WARNING-severity findings today, so the gate
+  // is a wired no-op even when GATE_PROP_INTRODUCTION=1 — this documents that the
+  // flag never blocks on the validator's current output (behavior unchanged). It
+  // still wires the helper so a future error-severity finding would block.
+  describe('PropIntroduction gate (partial)', () => {
+    // Scene references an undeclared entity → an unresolved (warning) finding.
+    const propInput = buildPropIntroductionInput(
+      ['protagonist', 'Mara'],
+      [
+        { sceneId: 's1', sceneName: 'Open', referencedEntityIds: ['protagonist'] },
+        { sceneId: 's2', sceneName: 'Reveal', referencedEntityIds: ['ghost-of-the-keep'] },
+      ],
+    );
+
+    it('flags the undeclared reference as a warning (validator runs)', () => {
+      const result = new PropIntroductionValidator().validate(propInput);
+      expect(result.valid).toBe(false);
+      expect(result.issues.some((i) => i.severity === 'warning')).toBe(true);
+    });
+
+    it('is a no-op gate today: only warnings, so it never blocks even when the flag is on', () => {
+      const result = new PropIntroductionValidator().validate(propInput);
+      expect(result.issues.filter((i) => i.severity === 'error').length).toBe(0);
+      const asDiagnostic = result.issues.map((i) => ({ severity: i.severity }));
+      expect(shouldGate(PLAN_GATE_FLAGS.propIntroduction, asDiagnostic, off).gate).toBe(false);
+      expect(
+        shouldGate(PLAN_GATE_FLAGS.propIntroduction, asDiagnostic, on(PLAN_GATE_FLAGS.propIntroduction)).gate,
+      ).toBe(false);
+    });
+
+    it('would block if an error-severity finding ever appears (gate composition is wired)', () => {
+      const issues = [{ severity: 'error' as const }];
+      expect(shouldGate(PLAN_GATE_FLAGS.propIntroduction, issues, off).gate).toBe(false);
+      expect(
+        shouldGate(PLAN_GATE_FLAGS.propIntroduction, issues, on(PLAN_GATE_FLAGS.propIntroduction)).gate,
+      ).toBe(true);
+    });
+  });
+
+  // --- Cliffhanger soft-gate (hysteresis decision) -------------------------
+  // The FullStoryPipeline cliffhanger soft-gate NEVER throws; the flag only
+  // changes the repair DECISION. Default-off path: repair when quality is not
+  // good/excellent (heuristic score < 62). Flag-on path: hysteresis-stabilized
+  // so a borderline draw in [57, 62) is treated as a pass (NO repair). 62 is the
+  // 'good' threshold; 5 is the margin used at the seam.
+  describe('Cliffhanger soft-gate (hysteresis decision)', () => {
+    const THRESHOLD = 62;
+    const MARGIN = 5;
+    // The default-off decision the seam uses (quality !== good/excellent).
+    const defaultNeedsRepair = (score: number) => score < THRESHOLD;
+    const stabilizedNeedsRepair = (score: number) => stabilizeByHysteresis(score, THRESHOLD, MARGIN);
+
+    it('default-off: a borderline score (59) still triggers repair', () => {
+      expect(defaultNeedsRepair(59)).toBe(true);
+    });
+
+    it('flag-on: a borderline score (59) in the hysteresis band does NOT trigger repair', () => {
+      expect(stabilizedNeedsRepair(59)).toBe(false);
+    });
+
+    it('flag-on: a clearly low score (40) still triggers repair', () => {
+      expect(stabilizedNeedsRepair(40)).toBe(true);
+    });
+
+    it('both paths agree a passing score (75) never triggers repair', () => {
+      expect(defaultNeedsRepair(75)).toBe(false);
+      expect(stabilizedNeedsRepair(75)).toBe(false);
     });
   });
 });

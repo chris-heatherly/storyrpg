@@ -25,6 +25,18 @@ export const PLAN_GATE_FLAGS = {
   callbackCoverage: 'GATE_CALLBACK_COVERAGE',
   choiceDistribution: 'GATE_CHOICE_DISTRIBUTION',
   arcPressure: 'GATE_ARC_PRESSURE',
+  // ConsequenceBudgetValidator strict mode: promotes extreme-deviation budget
+  // warnings to errors (which hard-block downstream). Default-off; the seam
+  // lives in the validator itself, see ConsequenceBudgetValidator.validate.
+  consequenceBudget: 'GATE_CONSEQUENCE_BUDGET',
+  // ChoiceDensityValidator strict mode: promotes structural (D4) + timing-cap
+  // density violations from warning to error so the all-scenes seam gate can
+  // hard-block on them. Default-off; the seam lives in FullStoryPipeline.
+  choiceDensity: 'GATE_CHOICE_DENSITY',
+  // PropIntroductionValidator episode-level gate (PARTIAL — cast-reference
+  // subset; see propIntroductionGate.ts SCOPE NOTE). Hard-blocks on
+  // error-severity unresolved references at the all-scenes seam. Default-off.
+  propIntroduction: 'GATE_PROP_INTRODUCTION',
 } as const;
 
 /**

@@ -90,3 +90,70 @@ describe('ChoiceDensityValidator structural density (D4)', () => {
     expect(r.issues.some((i) => i.message.includes('<50%') || i.message.includes('consecutive') || i.message.includes('first scene'))).toBe(false);
   });
 });
+
+describe('ChoiceDensityValidator strict mode', () => {
+  const mk = (id: string, choice: boolean) => ({ id, beats: [{ id: `${id}-b`, text: 'word '.repeat(20), isChoicePoint: choice }] });
+
+  it('emits the <50% structural violation as warning by default', async () => {
+    const v = new ChoiceDensityValidator();
+    const r = await v.validate({ scenes: [mk('s1', true), mk('s2', false), mk('s3', false), mk('s4', false)] } as any);
+    const issue = r.issues.find((i) => i.message.includes('<50%'));
+    expect(issue?.level).toBe('warning');
+  });
+
+  it('escalates clear structural violations to error when strict=true', async () => {
+    const v = new ChoiceDensityValidator();
+    const r = await v.validate(
+      { scenes: [mk('s1', true), mk('s2', false), mk('s3', false), mk('s4', false)] } as any,
+      { strict: true },
+    );
+    const issue = r.issues.find((i) => i.message.includes('<50%'));
+    expect(issue?.level).toBe('error');
+    expect(r.passed).toBe(false);
+  });
+
+  it('escalates the first-choice timing-cap violation to error when strict=true', async () => {
+    const v = new ChoiceDensityValidator({ firstChoiceMaxSeconds: 60 });
+    const r = await v.validate(
+      {
+        beats: [],
+        scenes: [
+          { id: 's1', beats: [makeBeat('long-intro', 400), makeBeat('choice', 10, true)] },
+        ],
+      },
+      { strict: true },
+    );
+    const issue = r.issues.find((i) => i.message.includes('First choice appears'));
+    expect(issue?.level).toBe('error');
+  });
+
+  it('leaves first-choice timing-cap violation at warning by default', async () => {
+    const v = new ChoiceDensityValidator({ firstChoiceMaxSeconds: 60 });
+    const r = await v.validate({
+      beats: [],
+      scenes: [
+        { id: 's1', beats: [makeBeat('long-intro', 400), makeBeat('choice', 10, true)] },
+      ],
+    });
+    const issue = r.issues.find((i) => i.message.includes('First choice appears'));
+    expect(issue?.level).toBe('warning');
+  });
+
+  it('keeps soft long-gap items at suggestion level even in strict mode', async () => {
+    const v = new ChoiceDensityValidator({ firstChoiceMaxSeconds: 600, averageGapMaxSeconds: 90 });
+    const r = await v.validate(
+      {
+        beats: [],
+        scenes: [
+          {
+            id: 's1',
+            beats: [makeBeat('c1', 10, true), makeBeat('filler', 600), makeBeat('c2', 10, true)],
+          },
+        ],
+      },
+      { strict: true },
+    );
+    const longGap = r.issues.find((i) => i.message.includes('Long gap'));
+    expect(longGap?.level).toBe('suggestion');
+  });
+});

@@ -225,6 +225,10 @@ export interface Beat {
   onShow?: Consequence[];
 
   isChoiceBridge?: boolean;
+  /** Whether this beat is the scene's choice point (the reader + choice-density gate
+   * key off this). Set by the pipeline; backfilled in StructuralValidator.autoFix when
+   * a beat carries choices but wasn't flagged. */
+  isChoicePoint?: boolean;
   routeContext?: ChoiceRouteContext;
 
   outcomeSequences?: {

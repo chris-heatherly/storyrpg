@@ -27,7 +27,8 @@ export interface StructuralIssue {
     | 'malformed_data'
     | 'invalid_sequence'
     | 'navigation_loop'
-    | 'dead_end_scene';
+    | 'dead_end_scene'
+    | 'empty_scene';
   location: {
     episodeId?: string;
     sceneId?: string;
@@ -146,6 +147,21 @@ export class StructuralValidator {
           `Scene ${scene.id} is non-terminal but has no onward route (empty leadsTo; no beat/choice nextSceneId; not a terminal sentinel)`,
           'leadsTo', 'a next scene or terminal sentinel', '(none)', false,
           `Set leadsTo, route a choice/beat onward, or end with a terminal sentinel (episode-end)`));
+      }
+    }
+
+    // E4: empty-scene gate. A non-encounter scene with no beats is unplayable — the
+    // reader has nothing to render. Encounter scenes are exempt: their content lives in
+    // `scene.encounter` (situation + storylets), not in `beats`.
+    for (const scene of episode.scenes || []) {
+      const isEncounter = !!(scene as { encounter?: unknown }).encounter || !!(scene as { isEncounter?: boolean }).isEncounter;
+      if (isEncounter) continue;
+      if ((scene.beats?.length ?? 0) === 0) {
+        issues.push(this.createIssue('error', 'empty_scene',
+          { ...loc, sceneId: scene.id },
+          `Scene ${scene.id} has no beats and is not an encounter — unplayable (nothing to render).`,
+          'beats', 'at least one beat (or an encounter)', '0 beats', false,
+          `Author beats for this scene, or make it an encounter scene with storylets`));
       }
     }
 
@@ -629,7 +645,18 @@ export class StructuralValidator {
             fixedCount++;
           }
         }
-        
+
+        // E4: backfill isChoicePoint on beats that carry choices but weren't flagged.
+        // The reader + the choice-density gate key off isChoicePoint; an authored choice
+        // on an unflagged beat is invisible to both.
+        for (const beat of scene.beats || []) {
+          if ((beat.choices?.length ?? 0) > 0 && beat.isChoicePoint !== true) {
+            beat.isChoicePoint = true;
+            fixes.push(`Flagged beat ${beat.id} as isChoicePoint (it carries choices)`);
+            fixedCount++;
+          }
+        }
+
         // Fix beat navigation
         for (let i = 0; i < (scene.beats?.length || 0); i++) {
           const beat = scene.beats![i];

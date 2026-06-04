@@ -31,6 +31,7 @@ function makeStory(overrides: Partial<Story> = {}): Story {
                 id: 'beat-3',
                 text: 'Closing text',
                 image: 'http://localhost:3001/b3.png',
+                isChoicePoint: true,
                 choices: [
                   {
                     id: 'continue',
@@ -470,5 +471,37 @@ describe('StructuralValidator dead-end-scene gate (C3)', () => {
     (story.episodes[0].scenes[0] as any).leadsTo = ['episode-end'];
     const issues = (validator as any).validateEpisode(story.episodes[0], story);
     expect(issues.some((i: any) => i.type === 'dead_end_scene')).toBe(false);
+  });
+});
+
+describe('StructuralValidator empty-scene gate + isChoicePoint backfill (E4)', () => {
+  const validator = new StructuralValidator();
+
+  it('flags a non-encounter scene with 0 beats as empty_scene', () => {
+    const story = makeStory();
+    (story.episodes[0].scenes[0] as any).beats = [];
+    // give it a valid onward route so it isn't a dead_end too
+    (story.episodes[0].scenes[0] as any).leadsTo = ['episode-end'];
+    const issues = (validator as any).validateEpisode(story.episodes[0], story);
+    expect(issues.some((i: any) => i.type === 'empty_scene' && i.location.sceneId === 'scene-1')).toBe(true);
+  });
+
+  it('exempts an encounter scene with 0 beats', () => {
+    const story = makeStory();
+    (story.episodes[0].scenes[0] as any).beats = [];
+    (story.episodes[0].scenes[0] as any).leadsTo = ['episode-end'];
+    (story.episodes[0].scenes[0] as any).encounter = { situation: 'ambush', storylets: [] };
+    const issues = (validator as any).validateEpisode(story.episodes[0], story);
+    expect(issues.some((i: any) => i.type === 'empty_scene')).toBe(false);
+  });
+
+  it('autoFix backfills isChoicePoint on a choice-bearing beat', () => {
+    const story = makeStory();
+    // beat-3 has a choice but no isChoicePoint flag
+    const beat3 = (story.episodes[0].scenes[0] as any).beats[2];
+    delete beat3.isChoicePoint;
+    const res = validator.autoFix(story);
+    const fixed = res.story.episodes[0].scenes[0].beats.find((b: any) => b.id === 'beat-3');
+    expect((fixed as any).isChoicePoint).toBe(true);
   });
 });

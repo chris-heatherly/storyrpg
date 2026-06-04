@@ -137,7 +137,10 @@ const projectRoot = path.resolve(__dirname, '..');
 // (even on 0 candidates) recording how many continuity issues the repair actually saw, so
 // the artifact's absence stops being ambiguous and reveals whether the repair runs/sees data.
 const baselines = {
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21493,
+  // +16 (21493 -> 21509): E2 — guard the SceneCritic construction in repairContinuityFindings
+  // so a failure there writes the diagnostic + emits instead of vanishing into the outer
+  // catch (the likely cause of the missing artifact). Diagnostic now records issues seen.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21509,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

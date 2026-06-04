@@ -8947,9 +8947,24 @@ export class FullStoryPipeline {
       return;
     }
     // The repair re-authors via SceneCritic. If the critic isn't enabled in config,
-    // construct a one-off from the scene-writer config so the repair still runs
-    // rather than silently no-opping (the bug this fix addresses).
-    const critic = this.sceneCritic ?? new SceneCritic(this.config.agents.sceneWriter);
+    // construct a one-off from the scene-writer config so the repair still runs rather
+    // than silently no-opping. E2: guard the construction so a failure here writes the
+    // diagnostic + emits instead of vanishing into the outer catch (the likely cause of
+    // the missing artifact for a run that HAD a repairable finding).
+    let critic: SceneCritic;
+    try {
+      critic = this.sceneCritic ?? new SceneCritic(this.config.agents.sceneWriter);
+    } catch (err) {
+      this.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity repair skipped: could not construct SceneCritic — ${err instanceof Error ? err.message : String(err)}` });
+      await saveEarlyDiagnostic(outputDirectory, 'continuity-repair.json', {
+        generatedAt: new Date().toISOString(),
+        continuityIssuesSeen: findings.length,
+        candidateScenes: scenes,
+        repaired: [],
+        error: `SceneCritic construction failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
     const capabilityFacts = capabilityFactStrings(characterBible.characters);
     const repaired: Array<{ sceneId: string; beatIds: string[]; merged: number }> = [];
     for (const sceneId of scenes) {
@@ -8981,6 +8996,7 @@ export class FullStoryPipeline {
     // 06-qa-report.json is PRE-repair and will still list the original findings.
     await saveEarlyDiagnostic(outputDirectory, 'continuity-repair.json', {
       generatedAt: new Date().toISOString(),
+      continuityIssuesSeen: findings.length,
       candidateScenes: scenes,
       repaired,
       criticWasInjected: !!this.sceneCritic,

@@ -500,6 +500,16 @@ export interface PipelineOutputs {
     requiresApproval: boolean;
   }>;
   generator?: Record<string, unknown>;
+  /**
+   * S3: per-run remediation summary (scene/encounter/choice regeneration + autofix).
+   * When present, the counts are folded into the success quality-ledger row so
+   * remediation frequency / success / degradation is trackable cross-run.
+   */
+  remediationSummary?: {
+    attempted: number;
+    succeeded: number;
+    degraded: number;
+  };
 }
 
 export interface OutputManifest {
@@ -2081,6 +2091,9 @@ export async function savePipelineOutputs(
       qaScore: manifest.summary?.qaScore,
       validationPassed: manifest.summary?.validationPassed,
       finalStoryContractPassed: manifest.summary?.finalStoryContractPassed,
+      remediationsAttempted: outputs.remediationSummary?.attempted,
+      remediationsSucceeded: outputs.remediationSummary?.succeeded,
+      remediationsDegraded: outputs.remediationSummary?.degraded,
     });
   } catch { /* ledger is best-effort */ }
 

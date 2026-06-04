@@ -10,6 +10,21 @@
  * The module is pure: it reads no wall-clock and uses no randomness. All
  * non-determinism is delegated to the injected `detect`/`remediate`/`canSpend`
  * callbacks supplied by the caller.
+ *
+ * CANONICAL DRIVER (S4): this is the canonical detect->remediate driver for any
+ * NEW regen-style gate (e.g. future prose/image regeneration loops). New gates
+ * should route through `runGatedRemediation` and feed its `canSpend` from the
+ * per-run RemediationBudget so budget/degrade/blocking semantics stay uniform.
+ *
+ * The existing hand-written loops in FullStoryPipeline.ts (scene regen, encounter
+ * regen, regen-choices) PREDATE this module and were intentionally NOT refactored
+ * onto it: their acceptance logic is stateful and bespoke (e.g. regen-choices
+ * keeps trying on "improved-but-not-passed" and mutates choiceSets/validation
+ * results in place), which does not map cleanly onto the simpler
+ * "passed OR exhausted" contract here. Forcing that refactor carried real
+ * behavioral-regression risk for no functional gain, so they remain hand-written
+ * and were wired to the RemediationBudget + remediation ledger directly. Treat
+ * this module as the pattern of record going forward, not a mandate to retrofit.
  */
 
 /**

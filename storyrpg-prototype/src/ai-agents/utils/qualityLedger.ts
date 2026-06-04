@@ -52,6 +52,12 @@ export interface QualityLedgerEntry {
   failureKind?: string;
   /** The validator/agent that produced the blocking failure, when known. */
   validatorId?: string;
+  /** S3: total remediation attempts (scene/encounter/choice regen, autofix) this run. */
+  remediationsAttempted?: number;
+  /** S3: how many of those remediations resolved their gate. */
+  remediationsSucceeded?: number;
+  /** S3: how many degraded gracefully (accepted imperfect output / budget exhausted). */
+  remediationsDegraded?: number;
 }
 
 const LEDGER_FILENAME = 'quality-ledger.jsonl';

@@ -231,6 +231,10 @@ Your plans must define:
         (flag) => process.env[flag] === '1',
       );
       if (arcPressureGate.gate) {
+        // S3: remediation-ledger recording is DEFERRED for plan-stage gates — the
+        // SeasonPlanner scope has no run output directory / ledger baseDir to write
+        // to. This throw is already observable upstream (caught in
+        // storyGenerationService and folded into the failed-run quality ledger).
         const arcErrors = arcPressureGateResult.issues.filter((i) => i.severity === 'error');
         throw new Error(
           `[ArcPressureGate] Season arc architecture failed the blocking gate (${arcPressureGate.blockingCount} issue(s)): ` +

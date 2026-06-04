@@ -68,3 +68,14 @@ export class RemediationBudget {
 export function createRemediationBudget(total = 12): RemediationBudget {
   return new RemediationBudget(total);
 }
+
+/**
+ * Budget-aware guard for a regeneration loop's entry/continuation. Returns true
+ * when another remediation attempt should be made. A `null`/`undefined` budget
+ * means "unbudgeted" (always allow) so call sites can wire the guard before a
+ * budget is provisioned without changing behavior. Pure + null-safe so the
+ * monolith's loop guards can be unit-tested without the loops themselves.
+ */
+export function shouldAttemptRemediation(budget: RemediationBudget | null | undefined, n = 1): boolean {
+  return !budget || budget.canSpend(n);
+}

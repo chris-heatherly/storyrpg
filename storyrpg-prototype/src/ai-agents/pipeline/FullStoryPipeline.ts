@@ -286,6 +286,8 @@ import { classifyArchitectGateWarnings } from '../remediation/architectGatePolic
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { applyCraftAutofix } from '../remediation/applyCraftAutofix';
 import { shouldRegenChoices, isChoiceRegenImprovement } from '../remediation/regenChoicesPolicy';
+import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
+import { recordRemediation, type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
@@ -718,6 +720,16 @@ export class FullStoryPipeline {
   // response metadata. Persisted via pipelineOutputWriter so we can later
   // analyze per-phase success rates and LLM cost (I2 instrumentation).
   private encounterTelemetry: EncounterTelemetry[] = [];
+
+  // S3: per-run remediation budget — a hard cap on total corrective re-work
+  // (scene/encounter/choice regeneration). Created per run/episode with a HIGH
+  // ceiling (config.remediationBudgetTotal, default 1000) so default behavior is
+  // unchanged; when exhausted, seams degrade gracefully instead of blocking.
+  private remediationBudget: RemediationBudget | null = null;
+  // Per-run remediation counters, summarized into the quality ledger row.
+  private remediationsAttempted = 0;
+  private remediationsSucceeded = 0;
+  private remediationsDegraded = 0;
 
   // Shadow-mode diffs between the LLM `BranchManager` and the deterministic
   // `analyzeBranchTopology` pass. Populated only when
@@ -3252,6 +3264,7 @@ export class FullStoryPipeline {
       visualPlanning: this.getCollectedVisualPlanningForSave(),
       encounterImageDiagnostics,
       llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+      remediationSummary: this.getRemediationSummary(),
     }, Date.now() - startTime);
 
     this.emit({
@@ -3753,6 +3766,7 @@ export class FullStoryPipeline {
         visualPlanning: visualPlanningOutputs,
         encounterImageDiagnostics: allEncounterDiagnostics,
         llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+        remediationSummary: this.getRemediationSummary(),
       }, Date.now() - startTime);
 
       this.emit({ type: 'phase_complete', phase: 'images', message: 'Image batch complete and bound into final story.' });
@@ -4420,6 +4434,7 @@ export class FullStoryPipeline {
     };
     this.sceneValidationResults = [];
     this.allSceneValidationResults = [];
+    this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
     this.resetCollectedVisualPlanning(); // Reset visual planning collection for new run
     const startTime = Date.now();
 
@@ -5758,6 +5773,19 @@ export class FullStoryPipeline {
               fixedCount: craftFix.fixedCount,
               records: craftFix.records,
             } as any);
+            // S3: craft autofix is deterministic (no LLM cost) so it does NOT
+            // debit the remediation budget; we still record it for observability.
+            await this.recordRemediationSafe({
+              rule: 'craft_autofix',
+              scope: 'autofix',
+              attempted: craftFix.fixedCount,
+              succeeded: true,
+              degraded: false,
+              blocked: false,
+              attempts: 1,
+              storyId: idSlugify(brief.story.title),
+              details: `Applied craft autofix to ${craftFix.fixedCount} element(s)`,
+            });
           }
         } catch (craftFixError) {
           console.warn(
@@ -8058,11 +8086,26 @@ export class FullStoryPipeline {
             sceneValidation.regenerationRequested === 'scene' &&
             (incrementalConfig.povClarityValidation || incrementalConfig.voiceValidation)
           ) {
+            // S3: degrade gracefully when the per-run remediation budget is spent
+            // (default 1000 ceiling => never trips in normal operation).
+            if (!shouldAttemptRemediation(this.remediationBudget)) {
+              this.emit({
+                type: 'warning',
+                phase: 'scenes',
+                message: `Remediation budget exhausted; accepting scene ${sceneBlueprint.id} as-is`,
+              });
+              await this.recordRemediationSafe({
+                rule: 'scene_regeneration', scope: 'scene', attempted: 0,
+                succeeded: false, degraded: true, blocked: false, attempts: 0,
+                storyId: idSlugify(brief.story.title), details: `Scene ${sceneBlueprint.id} not regenerated — budget exhausted`,
+              });
+            } else {
             let sceneRegenAttempt = 0;
             const maxSceneRegenAttempts = incrementalConfig.maxRegenerationAttempts;
 
             while (sceneRegenAttempt < maxSceneRegenAttempts) {
               sceneRegenAttempt++;
+              this.remediationBudget?.spend(1); // S3: debit one regeneration attempt
               const issueDescriptions: string[] = [];
               if (sceneValidation.povClarity && sceneValidation.povClarity.issues.length > 0) {
                 issueDescriptions.push(
@@ -8171,11 +8214,26 @@ export class FullStoryPipeline {
                   phase: 'scenes',
                   message: `Scene ${sceneBlueprint.id} regenerated successfully (pov: ${sceneValidation.povClarity?.score ?? '?'} -> ${revisedValidation.povClarity?.score ?? '?'}, voice: ${sceneValidation.voice?.score ?? '?'} -> ${revisedValidation.voice?.score ?? '?'})`,
                 });
+                await this.recordRemediationSafe({
+                  rule: 'scene_regeneration', scope: 'scene', attempted: 1,
+                  succeeded: true, degraded: false, blocked: false, attempts: sceneRegenAttempt,
+                  storyId: idSlugify(brief.story.title), details: `Scene ${sceneBlueprint.id} regenerated for POV/voice/continuity`,
+                });
                 break;
               }
 
               // Update references for next loop iteration
               Object.assign(sceneValidation, revisedValidation);
+
+              // S3: loop exhausted without acceptance — record a degrade.
+              if (sceneRegenAttempt >= maxSceneRegenAttempts) {
+                await this.recordRemediationSafe({
+                  rule: 'scene_regeneration', scope: 'scene', attempted: sceneRegenAttempt,
+                  succeeded: false, degraded: true, blocked: false, attempts: sceneRegenAttempt,
+                  storyId: idSlugify(brief.story.title), details: `Scene ${sceneBlueprint.id} regeneration exhausted; kept best available`,
+                });
+              }
+            }
             }
           }
 
@@ -8196,14 +8254,17 @@ export class FullStoryPipeline {
               ? choiceSets.findIndex(cs => cs === sceneChoiceSet)
               : -1;
 
-            if (regenChoicePointBeat && sceneChoiceSet && choiceSetIdx !== -1 && sceneValidation.stakes) {
+            if (regenChoicePointBeat && sceneChoiceSet && choiceSetIdx !== -1 && sceneValidation.stakes &&
+                shouldAttemptRemediation(this.remediationBudget)) {
               let choicesRegenAttempt = 0;
               const maxChoicesRegenAttempts = incrementalConfig.maxRegenerationAttempts;
               let currentStakes = sceneValidation.stakes;
               let currentChoiceSet = sceneChoiceSet;
+              let choicesAccepted = false;
 
-              while (choicesRegenAttempt < maxChoicesRegenAttempts) {
+              while (choicesRegenAttempt < maxChoicesRegenAttempts && shouldAttemptRemediation(this.remediationBudget)) {
                 choicesRegenAttempt++;
+                this.remediationBudget?.spend(1); // S3: debit one regeneration attempt
                 const stakesIssueDescriptions = currentStakes.issues
                   .map(i => `- [${i.severity}] ${i.issue}${i.suggestion ? ` (${i.suggestion})` : ''}`)
                   .join('\n');
@@ -8283,7 +8344,7 @@ export class FullStoryPipeline {
                       message: `Choices for ${sceneBlueprint.id} regenerated (stakes issues: ${currentStakes.issues.length} -> ${revisedStakes.issues.length}, passed: ${revisedStakes.passed})`,
                     });
                     currentStakes = revisedStakes;
-                    if (revisedStakes.passed) break;
+                    if (revisedStakes.passed) { choicesAccepted = true; break; }
                   } else {
                     this.emit({
                       type: 'debug',
@@ -8304,6 +8365,15 @@ export class FullStoryPipeline {
               // later same-scope reads see the regenerated choices (degrades to the
               // last accepted set on exhaustion).
               void currentChoiceSet;
+              // S3: record the terminal outcome (passed => succeeded; otherwise degraded).
+              await this.recordRemediationSafe({
+                rule: 'choice_regeneration', scope: 'choices', attempted: choicesRegenAttempt,
+                succeeded: choicesAccepted, degraded: !choicesAccepted, blocked: false, attempts: choicesRegenAttempt,
+                storyId: idSlugify(brief.story.title),
+                details: choicesAccepted
+                  ? `Choices for ${sceneBlueprint.id} regenerated; stakes passed`
+                  : `Choices for ${sceneBlueprint.id} regen exhausted; kept best available`,
+              });
             }
           }
         }
@@ -8753,13 +8823,16 @@ export class FullStoryPipeline {
               // === KARPATHY LOOP: regenerate on a real failure OR a collision. ===
               if (
                 (sceneValidation.regenerationRequested === 'encounter' || phase4Collisions.length > 0) &&
-                incrementalConfig.encounterValidation
+                incrementalConfig.encounterValidation &&
+                shouldAttemptRemediation(this.remediationBudget)
               ) {
                 let encounterRegenAttempt = 0;
                 const maxEncounterRegenAttempts = incrementalConfig.maxRegenerationAttempts;
+                let encounterAccepted = false;
 
-                while (encounterRegenAttempt < maxEncounterRegenAttempts) {
+                while (encounterRegenAttempt < maxEncounterRegenAttempts && shouldAttemptRemediation(this.remediationBudget)) {
                   encounterRegenAttempt++;
+                  this.remediationBudget?.spend(1); // S3: debit one regeneration attempt
                   const issueDescriptions = encounterValidation.issues
                     .map(i => `- [${i.severity}] ${i.type}: ${i.detail}`)
                     .join('\n');
@@ -8831,7 +8904,7 @@ export class FullStoryPipeline {
                       });
                       phase4Collisions = regenCollisions;
                       // Stop only once it both passes and is collision-free.
-                      if (regenValidation.passed && phase4Collisions.length === 0) break;
+                      if (regenValidation.passed && phase4Collisions.length === 0) { encounterAccepted = true; break; }
                       Object.assign(encounterValidation, regenValidation);
                     } else {
                       this.emit({
@@ -8849,6 +8922,15 @@ export class FullStoryPipeline {
                     break;
                   }
                 }
+                // S3: record terminal outcome (passed+collision-free => succeeded).
+                await this.recordRemediationSafe({
+                  rule: 'encounter_regeneration', scope: 'encounter', attempted: encounterRegenAttempt,
+                  succeeded: encounterAccepted, degraded: !encounterAccepted, blocked: false, attempts: encounterRegenAttempt,
+                  storyId: idSlugify(brief.story.title),
+                  details: encounterAccepted
+                    ? `Encounter ${sceneBlueprint.id} regenerated; passed`
+                    : `Encounter ${sceneBlueprint.id} regen exhausted; kept best available`,
+                });
               }
             }
           }
@@ -9966,6 +10048,7 @@ export class FullStoryPipeline {
     };
     this.sceneValidationResults = [];
     this.allSceneValidationResults = [];
+    this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
     this.seasonCanon = new SeasonCanon({ storyId: idSlugify(baseBrief.story.title) });
     this.priorEpisodeSnapshot = undefined;
     const startTime = Date.now();
@@ -10626,6 +10709,7 @@ export class FullStoryPipeline {
         bestPracticesReport: aggregatedBPReport,
         finalStoryContractReport,
         encounterImageDiagnostics: allEncounterImageDiagnostics,
+        remediationSummary: this.getRemediationSummary(),
       }, Date.now() - startTime);
       const multiEpTimeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Multi-episode save timed out')), 120_000)
@@ -10970,6 +11054,12 @@ export class FullStoryPipeline {
         const setupPayoffGate = shouldGate(PLAN_GATE_FLAGS.setupPayoff, checkIssues('setup_payoff'), isEnabled);
         if (setupPayoffGate.gate) {
           const errs = checkIssues('setup_payoff').filter((iss) => iss.severity === 'error');
+          // S3: record the hard block before throwing (best-effort).
+          await this.recordRemediationSafe({
+            rule: 'setup_payoff_gate', scope: 'episode', attempted: 1,
+            succeeded: false, degraded: false, blocked: true, attempts: 1,
+            storyId: story?.id, details: `Setup/payoff gate blocked episode ${i}: ${setupPayoffGate.blockingCount} issue(s)`,
+          });
           throw new PipelineError(
             `[SetupPayoffGate] Setup/payoff failed the blocking gate (${setupPayoffGate.blockingCount} issue(s)): ` +
               errs.map((iss) => iss.message).join('; ') +
@@ -10982,6 +11072,12 @@ export class FullStoryPipeline {
         const callbackGate = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, checkIssues('callback_coverage'), isEnabled);
         if (callbackGate.gate) {
           const errs = checkIssues('callback_coverage').filter((iss) => iss.severity === 'error');
+          // S3: record the hard block before throwing (best-effort).
+          await this.recordRemediationSafe({
+            rule: 'callback_coverage_gate', scope: 'episode', attempted: 1,
+            succeeded: false, degraded: false, blocked: true, attempts: 1,
+            storyId: story?.id, details: `Callback coverage gate blocked episode ${i}: ${callbackGate.blockingCount} issue(s)`,
+          });
           throw new PipelineError(
             `[CallbackCoverageGate] Callback coverage failed the blocking gate (${callbackGate.blockingCount} issue(s)): ` +
               errs.map((iss) => iss.message).join('; ') +
@@ -21423,6 +21519,75 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       characterReferences: new Map(),
       visualPlans: []
     };
+  }
+
+  // ── S3: remediation budget + ledger plumbing ──────────────────────
+
+  /**
+   * (Re)create the per-run remediation budget and zero the per-run counters.
+   * Called at each run entry point alongside the other per-run state resets.
+   * The ceiling defaults HIGH (config.remediationBudgetTotal, default 1000) so
+   * existing always-on scene/encounter/choice regeneration is never constrained.
+   */
+  private resetRemediationBudget(): void {
+    this.remediationBudget = createRemediationBudget(this.config.generation?.remediationBudgetTotal ?? 1000);
+    this.remediationsAttempted = 0;
+    this.remediationsSucceeded = 0;
+    this.remediationsDegraded = 0;
+  }
+
+  /**
+   * Cross-run ledgers live in the PARENT of a run's output dir
+   * (e.g. generated-stories/). Mirrors pipelineOutputWriter's ledgerBaseDir.
+   * Returns '' when no output dir is known — callers skip recording in that case.
+   */
+  private getLedgerBaseDir(): string {
+    if (!this._currentOutputDirectory) return '';
+    const trimmed = this._currentOutputDirectory.replace(/\/+$/, '');
+    const slash = trimmed.lastIndexOf('/');
+    return slash >= 0 ? trimmed.slice(0, slash + 1) : './';
+  }
+
+  /** S3: per-run remediation counters for the success quality-ledger row. */
+  private getRemediationSummary(): { attempted: number; succeeded: number; degraded: number } {
+    return {
+      attempted: this.remediationsAttempted,
+      succeeded: this.remediationsSucceeded,
+      degraded: this.remediationsDegraded,
+    };
+  }
+
+  /** Run-dir basename for ledger rows (e.g. "my-story_2026-05-28T12-34-56"). */
+  private getRunName(): string {
+    if (!this._currentOutputDirectory) return '';
+    const trimmed = this._currentOutputDirectory.replace(/\/+$/, '');
+    return trimmed.slice(trimmed.lastIndexOf('/') + 1);
+  }
+
+  /**
+   * Best-effort remediation-ledger append. Never throws and no-ops when no
+   * baseDir is available (e.g. non-node runtime or output dir not yet set).
+   * Also bumps the per-run summary counters from the record's honest fields.
+   */
+  private async recordRemediationSafe(
+    record: Omit<RemediationLedgerRecord, 'timestamp' | 'runDir'> & { timestamp?: string; runDir?: string },
+  ): Promise<void> {
+    // Counters are best-effort telemetry; update them regardless of baseDir.
+    this.remediationsAttempted += 1;
+    if (record.succeeded) this.remediationsSucceeded += 1;
+    if (record.degraded) this.remediationsDegraded += 1;
+
+    const baseDir = this.getLedgerBaseDir();
+    if (!baseDir) return; // no output dir — skip ledger write (counters still tracked)
+    try {
+      await recordRemediation(baseDir, {
+        ...record,
+        timestamp: record.timestamp ?? new Date().toISOString(),
+        runDir: record.runDir ?? this.getRunName(),
+      });
+    } catch {
+      /* ledger is analytics-only, never load-bearing */
+    }
   }
 
   // ── Memory persistence (Claude memory tool) ───────────────────────

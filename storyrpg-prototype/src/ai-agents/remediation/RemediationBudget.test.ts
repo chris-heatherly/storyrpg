@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RemediationBudget, createRemediationBudget } from './RemediationBudget';
+import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } from './RemediationBudget';
 
 describe('RemediationBudget', () => {
   it('starts with the full budget available', () => {
@@ -66,5 +66,38 @@ describe('RemediationBudget', () => {
   it('createRemediationBudget honors an explicit total', () => {
     const budget = createRemediationBudget(3);
     expect(budget.remaining()).toBe(3);
+  });
+});
+
+describe('shouldAttemptRemediation', () => {
+  it('treats a null/undefined budget as unbudgeted (always allow)', () => {
+    expect(shouldAttemptRemediation(null)).toBe(true);
+    expect(shouldAttemptRemediation(undefined)).toBe(true);
+    expect(shouldAttemptRemediation(null, 999)).toBe(true);
+  });
+
+  it('allows attempts while budget remains and denies once exhausted', () => {
+    const budget = new RemediationBudget(2);
+    expect(shouldAttemptRemediation(budget)).toBe(true);
+    budget.spend(1);
+    expect(shouldAttemptRemediation(budget)).toBe(true);
+    budget.spend(1);
+    expect(shouldAttemptRemediation(budget)).toBe(false);
+  });
+
+  it('respects a multi-unit requested cost', () => {
+    const budget = new RemediationBudget(2);
+    expect(shouldAttemptRemediation(budget, 2)).toBe(true);
+    expect(shouldAttemptRemediation(budget, 3)).toBe(false);
+  });
+
+  it('a HIGH default ceiling never denies a realistic number of attempts', () => {
+    // Mirrors the pipeline default (1000): existing always-on regen is never gated.
+    const budget = createRemediationBudget(1000);
+    for (let i = 0; i < 50; i++) {
+      expect(shouldAttemptRemediation(budget)).toBe(true);
+      budget.spend(1);
+    }
+    expect(budget.remaining()).toBe(950);
   });
 });

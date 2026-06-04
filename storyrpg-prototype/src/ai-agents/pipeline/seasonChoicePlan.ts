@@ -132,6 +132,10 @@ export function assignSeasonChoiceTypes(
       (flag) => process.env[flag] === '1',
     );
     if (distGate.gate) {
+      // S3: remediation-ledger recording is DEFERRED for this plan-stage gate —
+      // assignSeasonChoiceTypes is a pure function with no run output directory /
+      // ledger baseDir to write to. The throw is observable upstream and folded
+      // into the failed-run quality ledger.
       const distErrors = distResult.issues.filter((i) => i.severity === 'error');
       throw new Error(
         `[ChoiceDistributionGate] Season choice-type distribution failed the blocking gate (${distGate.blockingCount} issue(s)): ` +

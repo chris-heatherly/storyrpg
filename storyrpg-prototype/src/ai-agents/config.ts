@@ -205,6 +205,16 @@ export interface GenerationSettingsConfig {
    * no ceiling (default). Enforced at cancellation checkpoints.
    */
   tokenBudgetPerStory?: number;
+  /**
+   * S3: hard ceiling on the TOTAL number of remediation attempts (scene/encounter/
+   * choice regenerations and validator-driven repair passes) a single run may spend.
+   * Prevents a pathological run from looping on repairs and burning unbounded
+   * tokens/time. When the budget is exhausted, remediation seams DEGRADE GRACEFULLY
+   * (accept the current output) rather than block or throw. Defaults to a HIGH value
+   * (1000) so existing always-on scene/encounter/choice regeneration is never
+   * constrained — lower it (REMEDIATION_BUDGET_TOTAL) only to cap cost explicitly.
+   */
+  remediationBudgetTotal?: number;
   // Sequential mode preserves previous-episode summary dependency chain.
   episodeDependencyMode?: 'sequential' | 'independent';
   /**
@@ -1066,6 +1076,12 @@ export function loadConfig(): PipelineConfig {
         env.EXPO_PUBLIC_TOKEN_BUDGET_PER_STORY || env.TOKEN_BUDGET_PER_STORY || '0',
         10,
       ) || undefined,
+      // S3: total per-run remediation cap. HIGH default (1000) so existing always-on
+      // regeneration is never constrained; lower REMEDIATION_BUDGET_TOTAL to cap cost.
+      remediationBudgetTotal: Number.parseInt(
+        env.EXPO_PUBLIC_REMEDIATION_BUDGET_TOTAL || env.REMEDIATION_BUDGET_TOTAL || '1000',
+        10,
+      ) || 1000,
       // Season Canon: on by default (every sequential run seals canon + ledger +
       // snapshot and runs the advisory promise/canon gates). Set SEASON_CANON_ENABLED=0
       // to opt out. The gates stay advisory until seasonCanonBlocking is set.

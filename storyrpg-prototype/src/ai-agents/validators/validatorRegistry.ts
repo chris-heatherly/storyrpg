@@ -85,7 +85,15 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'MechanicalStorytellingValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   // tier stays 'advisory' (not 'blocking'): enforced via guaranteed autofix.
   { validator: 'StatCheckBalanceValidator', stage: 'quick', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_STAT_CHECK_BALANCE', dispatchedFrom: 'IntegratedBestPracticesValidator' },
-  { validator: 'StakesTriangleValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
+  // Bucket C judge-stabilization: ChoiceAuthor.validateChoiceQuality runs this LLM
+  // judge and, on a sub-threshold overall score, regenerates the choice set via
+  // executeRevision (regen-choices). The score boundary is hysteresis-stabilized
+  // behind GATE_JUDGE_STABILIZATION so a borderline draw degrades to advisory
+  // (uses the original choices) instead of triggering a noisy revision.
+  { validator: 'StakesTriangleValidator', stage: 'quick', tier: 'advisory', remediation: 'regen-choices', rolloutFlag: 'GATE_JUDGE_STABILIZATION', dispatchedFrom: 'IntegratedBestPracticesValidator / ChoiceAuthor' },
+  // FiveFactorValidator is a pure diagnostic for Bucket C: its quick-val and
+  // ChoiceAuthor paths gate on binary error-level issues (0 factors / no
+  // consequences), not a numeric judge score, so hysteresis is a no-op here.
   { validator: 'FiveFactorValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'ChoiceDensityValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'ChoiceDistributionValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CHOICE_DISTRIBUTION', dispatchedFrom: 'IntegratedBestPracticesValidator' },

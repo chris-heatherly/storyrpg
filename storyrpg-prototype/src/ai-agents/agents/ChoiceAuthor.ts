@@ -38,10 +38,36 @@ import {
 // longer re-embedded here, to eliminate token duplication and drift risk.
 import { FiveFactorValidator } from '../validators/FiveFactorValidator';
 import { StakesTriangleValidator } from '../validators/StakesTriangleValidator';
+import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
 import { buildChoiceAuthorCallbackSection } from '../prompts/callbackPromptSection';
 import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 import { CHOICE_AUTHOR_RESIDUE_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
+
+/**
+ * Bucket C soft-gate decision for the LLM-judged stakes score.
+ *
+ * Pure + deterministic (no LLM, no env read inside) so it can be unit-tested at
+ * the threshold seam. When `stabilizationEnabled` is false this reduces to the
+ * historical hard gate (`score < failThreshold`). When enabled, a borderline
+ * score in `[failThreshold - margin, failThreshold)` is treated as a pass, so it
+ * does NOT trigger a revision — avoiding noise-driven regeneration churn.
+ *
+ * @returns true when the score should be treated as a stakes-quality FAILURE
+ *          (i.e. the regeneration/revision path should run).
+ */
+export function shouldFailStakesScore(
+  score: number,
+  failThreshold: number,
+  hysteresisMargin: number,
+  stabilizationEnabled: boolean,
+): boolean {
+  return stabilizeByHysteresis(
+    score,
+    failThreshold,
+    stabilizationEnabled ? hysteresisMargin : 0,
+  );
+}
 
 function flattenDirectLanguageFragments(sourceAnalysis?: SourceMaterialAnalysis): string[] {
   const fragments = sourceAnalysis?.directLanguageFragments;
@@ -223,6 +249,11 @@ export class ChoiceAuthor extends BaseAgent {
   private fiveFactorValidator: FiveFactorValidator;
   private stakesValidator: StakesTriangleValidator;
   private minStakesScore = 60; // Minimum quality score for stakes
+  // Bucket C judge-stabilization: how far below minStakesScore an LLM-judged
+  // stakes score must fall before we trust the failure and trigger a revision.
+  // Only applied when GATE_JUDGE_STABILIZATION === '1'; default-off keeps the
+  // prior hard `< minStakesScore` behavior. See remediation/judgeStabilizer.ts.
+  private stakesHysteresisMargin = 5;
   private choiceLimits: {
     maxChoiceWords: number;
     minChoices: number;
@@ -1686,9 +1717,23 @@ CRITICAL REQUIREMENTS:
       context: `Scene: ${input.sceneBlueprint.name}. ${input.sceneBlueprint.description}`,
     });
 
-    // Collect stakes validation issues
+    // Collect stakes validation issues.
+    // Bucket C soft-gate: apply hysteresis to the overall-score boundary so a
+    // borderline LLM-judged draw does not trigger a (noisy) revision. The
+    // `!stakesResult.passed` arm still fires on genuine component failures
+    // (error-level want/cost/identity), which are not borderline. Default-off
+    // via GATE_JUDGE_STABILIZATION keeps the prior hard `< minStakesScore` gate.
     const overallScore = stakesResult.score?.overall;
-    if (!stakesResult.passed || (overallScore !== undefined && overallScore < this.minStakesScore)) {
+    const stabilizationEnabled = process.env.GATE_JUDGE_STABILIZATION === '1';
+    const overallScoreFails =
+      overallScore !== undefined &&
+      shouldFailStakesScore(
+        overallScore,
+        this.minStakesScore,
+        this.stakesHysteresisMargin,
+        stabilizationEnabled,
+      );
+    if (!stakesResult.passed || overallScoreFails) {
       const score = overallScore ?? 'N/A';
       console.warn(
         `[ChoiceAuthor] Stakes quality issue: score ${score}/${this.minStakesScore}. ` +
@@ -1700,7 +1745,24 @@ CRITICAL REQUIREMENTS:
         issues.push(`STAKES: ${issue.message}${suggestion}`);
       }
     } else {
-      console.log(`[ChoiceAuthor] Stakes validation passed (score: ${overallScore})`);
+      // Advisory checkpoint: if stakes passed only because hysteresis absorbed a
+      // borderline-band score, record it so the soft-gate degrade is observable.
+      // (No audit baseDir is plumbed into ChoiceAuthor; remediation-ledger
+      // wiring is deferred rather than threading new params through the agent.)
+      if (
+        stabilizationEnabled &&
+        overallScore !== undefined &&
+        overallScore < this.minStakesScore &&
+        stakesResult.passed
+      ) {
+        console.warn(
+          `[ChoiceAuthor] Stakes soft-gate degraded (score ${overallScore} in ` +
+          `[${this.minStakesScore - this.stakesHysteresisMargin}, ${this.minStakesScore}) ` +
+          `band) - skipping revision (GATE_JUDGE_STABILIZATION). Ledger wiring deferred.`
+        );
+      } else {
+        console.log(`[ChoiceAuthor] Stakes validation passed (score: ${overallScore})`);
+      }
     }
 
     // 2. Five-Factor LLM Validation for each choice

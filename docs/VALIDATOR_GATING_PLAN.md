@@ -302,7 +302,21 @@ New `regen-choices` loop spec:
 - `ChoiceAuthorInput` needs: `sceneBlueprint`, `beatText`, `beatId`, `storyContext`,
   `protagonistInfo`, `npcsInScene`, `possibleNextScenes`, `optionCount` (`ChoiceAuthor.ts:407`).
 
-### Bucket C — soft-gate only (~5 rules, 3–4 d) — never block
+### Bucket C — soft-gate only (~5 rules) — ✅ IMPLEMENTED 2026-06-04 (green, default-off; scope narrowed)
+
+Landed `remediation/judgeStabilizer.ts` (`stabilizeByHysteresis` + `stabilizeBySampling`, the
+reusable primitive) + wired **only `stakes_triangle`** — the one LLM-judged rule with a real
+score-gated regeneration seam (`ChoiceAuthor.executeRevision`). Applied a hysteresis margin (5,
+behind default-off `GATE_JUDGE_STABILIZATION`) via an extracted pure `shouldFailStakesScore` so a
+borderline `[55,60)` score no longer triggers choice regeneration. The path already degrades
+(falls back to the original choices, never throws). 15 new tests; 177 pipeline + 25 ChoiceAuthor +
+19 validator tests green default-off.
+
+**Scope reality (verify-corrected):** the other four are N/A at current seams — `five_factor` and
+`choice_impact` gate on *binary* heuristics (no numeric judge score → hysteresis is a no-op),
+`twist_quality` is report-only, and `cliffhanger`'s `improveCliffhanger` is a separate in-place QA
+repair, not a score-hysteresis decision. They'd only become stabilizable if/when wired to a
+judge-score regen. Ledger wiring deferred (ChoiceAuthor has no audit baseDir plumbed). Original spec below.
 
 LLM-judged; hard-gating re-creates false-positive aborts. **Explicit non-goal: never `blocking`.**
 Rules: StakesTriangle (quality), FiveFactor, TwistQuality, Cliffhanger, ChoiceImpact (quality).
@@ -313,7 +327,18 @@ Work: (1) ensure each runs in retry-then-degrade; (2) stabilize the judge (2-of-
 vote or threshold hysteresis) so one noisy score doesn't trigger regen; (3) always degrade,
 always ledger, never throw.
 
-### Bucket D — plan-time gate (~4 rules, 4–6 d) — best ROI
+### Bucket D — plan-time gate (~4 rules) — ✅ IMPLEMENTED 2026-06-04 (green, default-off)
+
+Landed (commit `444825b`) as `remediation/planGatePolicy.ts` (`shouldGate` + `PLAN_GATE_FLAGS`)
+wiring 4 existing advisory validators as flag-gated throws at their real seam:
+`ArcPressureArchitecture`→SeasonPlanner (`GATE_ARC_PRESSURE`), `ChoiceDistribution`→`seasonChoicePlan`
+plan-emit (`GATE_CHOICE_DISTRIBUTION`), `SetupPayoff`/`CallbackCoverage`→diagnostics seam, placed
+*outside* the try/catch so throws propagate as real `PipelineError`s (`GATE_SETUP_PAYOFF`/
+`GATE_CALLBACK_COVERAGE`). All default-off; registry annotated `remediation:'plan-time'` + rolloutFlag.
+17 new tests; 237 regression tests green default-off. **Caveat:** `CallbackCoverageValidator` emits no
+error-severity issues today, so its gate is a wired no-op until that validator is upgraded to emit
+errors. (Refinement vs original spec: gated the existing validators in place rather than folding
+thread/callback logic into the promise ledger — less duplication.) Original spec below.
 
 Validate the plan/ledger before any prose. Fix = plan edit or re-plan, zero scene-authoring cost.
 Mirrors the SevenPoint season gate (`SeasonPlannerAgent.ts:206`) and the blocking promise ledger.

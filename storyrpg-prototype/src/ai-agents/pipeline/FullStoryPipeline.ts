@@ -285,6 +285,7 @@ import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import { classifyArchitectGateWarnings } from '../remediation/architectGatePolicy';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { applyCraftAutofix } from '../remediation/applyCraftAutofix';
+import { shouldRegenChoices, isChoiceRegenImprovement } from '../remediation/regenChoicesPolicy';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
@@ -8178,6 +8179,134 @@ export class FullStoryPipeline {
 
               // Update references for next loop iteration
               Object.assign(sceneValidation, revisedValidation);
+            }
+          }
+
+          // === KARPATHY LOOP (B1): regenerate the choice set on a stakes failure. ===
+          // Pure default-off gate: with GATE_REGEN_CHOICES unset shouldRegenChoices
+          // is always false, so this loop never runs and behavior is unchanged.
+          if (
+            shouldRegenChoices(
+              sceneValidation.regenerationRequested,
+              incrementalConfig.stakesValidation,
+              (f) => process.env[f] === '1',
+            ) &&
+            this.incrementalValidator
+          ) {
+            const regenChoicePointBeat = sceneContent.beats.find(b => b.isChoicePoint);
+            // Locate the choice set holder for this scene (matched by beatId).
+            const choiceSetIdx = sceneChoiceSet
+              ? choiceSets.findIndex(cs => cs === sceneChoiceSet)
+              : -1;
+
+            if (regenChoicePointBeat && sceneChoiceSet && choiceSetIdx !== -1 && sceneValidation.stakes) {
+              let choicesRegenAttempt = 0;
+              const maxChoicesRegenAttempts = incrementalConfig.maxRegenerationAttempts;
+              let currentStakes = sceneValidation.stakes;
+              let currentChoiceSet = sceneChoiceSet;
+
+              while (choicesRegenAttempt < maxChoicesRegenAttempts) {
+                choicesRegenAttempt++;
+                const stakesIssueDescriptions = currentStakes.issues
+                  .map(i => `- [${i.severity}] ${i.issue}${i.suggestion ? ` (${i.suggestion})` : ''}`)
+                  .join('\n');
+
+                this.emit({
+                  type: 'regeneration_triggered',
+                  phase: 'choices',
+                  message: `Regenerating choices for ${sceneBlueprint.id} for stakes (attempt ${choicesRegenAttempt}/${maxChoicesRegenAttempts}): ${currentStakes.issues.length} issue(s)`,
+                  data: { issues: currentStakes.issues },
+                });
+
+                try {
+                  const revisedChoiceResult = await withTimeout(this.choiceAuthor.execute({
+                    sceneBlueprint,
+                    beatText: regenChoicePointBeat.text,
+                    beatId: regenChoicePointBeat.id,
+                    storyContext: {
+                      title: brief.story.title,
+                      genre: brief.story.genre,
+                      tone: brief.story.tone,
+                      userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL CHOICE FIXES REQUIRED — the choice set failed stakes validation. Fix these issues:\n${stakesIssueDescriptions}`,
+                      worldContext: this.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneBlueprint.location)?.fullDescription),
+                    },
+                    protagonistInfo: {
+                      name: brief.protagonist.name,
+                      pronouns: brief.protagonist.pronouns,
+                    },
+                    npcsInScene: this.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
+                    availableFlags: blueprint.suggestedFlags,
+                    availableScores: blueprint.suggestedScores,
+                    availableTags: blueprint.suggestedTags,
+                    possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
+                      const scene = blueprint.scenes.find(s => s.id === id);
+                      return { id, name: scene?.name || id, description: scene?.description || '' };
+                    }),
+                    optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
+                    sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
+                    memoryContext: this.cachedPipelineMemory || undefined,
+                    storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
+                  }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} regen-choices-${choicesRegenAttempt})`);
+
+                  if (!revisedChoiceResult.success || !revisedChoiceResult.data) {
+                    this.emit({
+                      type: 'warning',
+                      phase: 'choices',
+                      message: `Choice regeneration failed for ${sceneBlueprint.id}, keeping previous choices`,
+                    });
+                    break;
+                  }
+
+                  const revisedChoiceSet = { ...revisedChoiceResult.data, sceneId: sceneBlueprint.id };
+                  const revisedStakes = this.incrementalValidator.validateStakes(revisedChoiceSet);
+
+                  if (isChoiceRegenImprovement(currentStakes.issues.length, revisedStakes.issues.length, revisedStakes.passed)) {
+                    // Accept the rewrite: swap it into the choiceSets holder and
+                    // refresh the recorded scene validation result.
+                    choiceSets[choiceSetIdx] = revisedChoiceSet;
+                    currentChoiceSet = revisedChoiceSet;
+                    const valIdx = this.sceneValidationResults.findIndex(v =>
+                      v.sceneId === sceneBlueprint.id && (v.episodeNumber === undefined || v.episodeNumber === brief.episode.number)
+                    );
+                    if (valIdx !== -1) {
+                      const updated = {
+                        ...this.sceneValidationResults[valIdx],
+                        stakes: revisedStakes,
+                        overallPassed: this.sceneValidationResults[valIdx].overallPassed && revisedStakes.passed,
+                        regenerationRequested: revisedStakes.passed
+                          ? ('none' as const)
+                          : ('choices' as const),
+                      };
+                      this.sceneValidationResults[valIdx] = updated;
+                      this.recordSceneValidationResult(updated);
+                    }
+                    this.emit({
+                      type: 'debug',
+                      phase: 'choices',
+                      message: `Choices for ${sceneBlueprint.id} regenerated (stakes issues: ${currentStakes.issues.length} -> ${revisedStakes.issues.length}, passed: ${revisedStakes.passed})`,
+                    });
+                    currentStakes = revisedStakes;
+                    if (revisedStakes.passed) break;
+                  } else {
+                    this.emit({
+                      type: 'debug',
+                      phase: 'choices',
+                      message: `Choice regen attempt ${choicesRegenAttempt} for ${sceneBlueprint.id} did not improve, keeping previous`,
+                    });
+                  }
+                } catch (regenChoicesErr) {
+                  this.emit({
+                    type: 'warning',
+                    phase: 'choices',
+                    message: `Choice regeneration threw for ${sceneBlueprint.id}: ${regenChoicesErr instanceof Error ? regenChoicesErr.message : String(regenChoicesErr)}`,
+                  });
+                  break;
+                }
+              }
+              // Keep `sceneChoiceSet` consistent with the accepted rewrite so any
+              // later same-scope reads see the regenerated choices (degrades to the
+              // last accepted set on exhaustion).
+              void currentChoiceSet;
             }
           }
         }

@@ -22,6 +22,15 @@ import { EncounterStructure } from '../agents/EncounterArchitect';
 import { getEncounterBeats } from '../utils/encounterImageCoverage';
 import { PovClarityValidator, PovClarityResult } from './PovClarityValidator';
 import { SceneCraftValidator, SceneCraftResult } from './SceneCraftValidator';
+import {
+  IntensityDistributionValidator,
+  IntensityDistributionInput,
+  IntensityDistributionMetrics,
+} from './IntensityDistributionValidator';
+import {
+  MechanicsLeakageValidator,
+  MechanicsLeakageInput,
+} from './MechanicsLeakageValidator';
 
 // ============================================
 // TYPES AND INTERFACES
@@ -111,6 +120,21 @@ export interface IncrementalValidationConfig {
   continuityCheck: boolean;
   encounterValidation: boolean;
   craftValidation: boolean;
+  /**
+   * Opt-in scene-local detectors (Bucket B1). Each is additionally gated by an
+   * env var (see validateScene) so the config flag alone is not enough to run
+   * them — both the flag and the env gate must be set. Default off.
+   */
+  intensityDistributionCheck: boolean;
+  mechanicsLeakageSceneCheck: boolean;
+  /**
+   * PropIntroduction is intentionally NOT wired into per-scene validation: it
+   * needs the cross-scene known-entity set (cast bible + seeded props) and
+   * per-scene structured entity references, neither of which a single
+   * SceneContent carries. Flag retained for config-shape symmetry / future
+   * season-level wiring, but validateScene does not consume it.
+   */
+  propIntroductionCheck: boolean;
   voiceRegenerationThreshold: number;
   stakesRegenerationThreshold: number;
   maxRegenerationAttempts: number;
@@ -125,6 +149,10 @@ export const DEFAULT_INCREMENTAL_CONFIG: IncrementalValidationConfig = {
   continuityCheck: true,
   encounterValidation: true,
   craftValidation: true,
+  // Scene-local detectors (Bucket B1) — opt-in, default off.
+  intensityDistributionCheck: false,
+  mechanicsLeakageSceneCheck: false,
+  propIntroductionCheck: false,
   voiceRegenerationThreshold: 50,
   stakesRegenerationThreshold: 60,
   maxRegenerationAttempts: 2,
@@ -135,6 +163,18 @@ export interface CharacterVoiceProfile {
   id: string;
   name: string;
   voiceProfile: VoiceProfile;
+}
+
+/**
+ * Result shape recorded on SceneValidationResult for the opt-in scene-local
+ * detectors (Bucket B1). `passed`/`score`/`issues` come straight from the
+ * underlying standalone validator; `metrics` is the validator-specific metric
+ * block. Only error-severity issues escalate regenerationRequested to 'scene'.
+ */
+export interface SceneDetectorResult {
+  passed: boolean;
+  score: number;
+  issues: ValidationIssue[];
 }
 
 export interface SceneValidationResult {
@@ -148,6 +188,10 @@ export interface SceneValidationResult {
   continuity?: IncrementalContinuityResult;
   encounter?: IncrementalEncounterResult;
   craft?: SceneCraftResult;
+  /** Scene-local intensity-distribution detector (Bucket B1, opt-in). */
+  intensityDistribution?: SceneDetectorResult & { metrics: IntensityDistributionMetrics };
+  /** Scene-local mechanics-leakage detector (Bucket B1, opt-in). */
+  mechanicsLeakage?: SceneDetectorResult & { metrics: { textsChecked: number; leaksFound: number } };
   /** True when the scene had no authored beats and no runtime encounter (unplayable). */
   emptyScene?: boolean;
   overallPassed: boolean;
@@ -1308,6 +1352,8 @@ export class IncrementalValidationRunner {
   private encounterValidator: IncrementalEncounterValidator;
   private povClarityValidator: PovClarityValidator;
   private craftValidator: SceneCraftValidator;
+  private intensityDistributionValidator: IntensityDistributionValidator;
+  private mechanicsLeakageValidator: MechanicsLeakageValidator;
   private config: IncrementalValidationConfig;
 
   constructor(
@@ -1320,6 +1366,8 @@ export class IncrementalValidationRunner {
 
     this.povClarityValidator = new PovClarityValidator();
     this.craftValidator = new SceneCraftValidator();
+    this.intensityDistributionValidator = new IntensityDistributionValidator();
+    this.mechanicsLeakageValidator = new MechanicsLeakageValidator();
     this.voiceValidator = new IncrementalVoiceValidator(
       this.config.voiceRegenerationThreshold
     );
@@ -1436,6 +1484,73 @@ export class IncrementalValidationRunner {
     if (this.config.craftValidation) {
       results.craft = this.craftValidator.validateScene(sceneContent);
     }
+
+    // ===== Scene-local detectors (Bucket B1) — opt-in =====
+    // Each runs ONLY when both (a) its config flag is set AND (b) its env gate
+    // is '1'. They are advisory backstops: they record their issues on the
+    // result, and escalate regenerationRequested to 'scene' ONLY if they emit
+    // an error-severity issue. With flags/env unset, none run and validateScene
+    // behavior is unchanged.
+    //
+    // Escalate-only: 'scene' is the strongest regen request, so promoting to it
+    // from any of 'none' | 'choices' | 'encounter' never downgrades a stronger
+    // request (there is none stronger than 'scene').
+    const escalateToSceneRegen = () => {
+      results.regenerationRequested = 'scene';
+      results.overallPassed = false;
+    };
+
+    // Intensity distribution: pure single-scene check over beats[].intensityTier.
+    if (this.config.intensityDistributionCheck && process.env.GATE_INTENSITY_DISTRIBUTION === '1') {
+      const input: IntensityDistributionInput = {
+        sceneContents: [
+          {
+            sceneId: sceneContent.sceneId,
+            sceneName: sceneContent.sceneName,
+            isEncounter: Boolean(encounter),
+            beats: sceneContent.beats.map(b => ({ id: b.id, intensityTier: b.intensityTier })),
+          },
+        ],
+      };
+      const r = this.intensityDistributionValidator.validate(input);
+      results.intensityDistribution = {
+        passed: r.valid,
+        score: r.score,
+        issues: r.issues,
+        metrics: r.metrics,
+      };
+      if (r.issues.some(i => i.severity === 'error')) {
+        escalateToSceneRegen();
+      }
+    }
+
+    // Mechanics leakage: pure single-scene scan over rendered beat text.
+    if (this.config.mechanicsLeakageSceneCheck && process.env.GATE_MECHANICS_LEAKAGE_REGEN === '1') {
+      const input: MechanicsLeakageInput = {
+        texts: sceneContent.beats.map(b => ({
+          id: b.id,
+          text: b.text || b.content || '',
+          sceneId: sceneContent.sceneId,
+          beatId: b.id,
+        })),
+      };
+      const r = this.mechanicsLeakageValidator.validate(input);
+      results.mechanicsLeakage = {
+        passed: r.valid,
+        score: r.score,
+        issues: r.issues,
+        metrics: r.metrics,
+      };
+      if (r.issues.some(i => i.severity === 'error')) {
+        escalateToSceneRegen();
+      }
+    }
+
+    // NOTE: PropIntroduction (propIntroductionCheck) is deliberately NOT run
+    // here. It requires the cross-scene known-entity set and per-scene
+    // structured entity references, which a single SceneContent does not carry.
+    // Wiring it would mean fabricating inputs, so it is left for season-level
+    // validation. See the interface comment on propIntroductionCheck.
 
     results.validationTimeMs = Date.now() - startTime;
     return results;

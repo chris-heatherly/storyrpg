@@ -5,6 +5,7 @@ import type { FullCreativeBrief, SourceAnalysisResult } from './FullStoryPipelin
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
 import { resolveSceneSettingContext } from '../utils/styleAdaptation';
+import { edgesForEpisode } from './seasonScenePlanBuilder';
 
 export function buildSeasonPlanDirectives(
   brief: FullCreativeBrief,
@@ -125,6 +126,13 @@ export function buildSeasonPlanDirectives(
     characterArchitecture: plan.characterArchitecture,
     seasonPromiseArchitecture: plan.seasonPromiseArchitecture,
     informationLedgerEntries: informationLedgerEntries.length > 0 ? informationLedgerEntries : undefined,
+    // Scene-first planning: this episode's scenes + the setup/payoff edges that
+    // touch it. When present, StoryArchitect elaborates these instead of
+    // inventing a scene graph. Read from the season-level scene plan slice.
+    plannedScenes: seasonEp.plannedScenes?.length ? seasonEp.plannedScenes : undefined,
+    setupPayoffEdges: plan.scenePlan
+      ? edgesForEpisode(plan.scenePlan, epNum)
+      : undefined,
   };
 }
 

@@ -26,6 +26,7 @@ import {
 import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType, NarrativeSequenceIntent, StakesLayers } from '../../types';
 import type { ArcEpisodeTurnout, CliffhangerPlan, InformationLedgerEntry, SeasonPromiseArchitecture } from '../../types/seasonPlan';
+import type { PlannedScene, SetupPayoffEdge, SceneNarrativeRole } from '../../types/scenePlan';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
 import { DramaticStructureValidator } from '../validators/DramaticStructureValidator';
@@ -184,6 +185,15 @@ export interface StoryArchitectInput {
     characterArchitecture?: CharacterArchitecture;
     seasonPromiseArchitecture?: SeasonPromiseArchitecture;
     informationLedgerEntries?: InformationLedgerEntry[];
+    /**
+     * Scene-first planning: this episode's scenes, enumerated at the season
+     * level (encounters included as `kind: 'encounter'`). When present,
+     * StoryArchitect ELABORATES these into the scene graph instead of inventing
+     * scenes from the episode's beat. The setup/payoff edges that touch this
+     * episode are provided so the graph can honor cross-scene relationships.
+     */
+    plannedScenes?: PlannedScene[];
+    setupPayoffEdges?: SetupPayoffEdge[];
   };
 
   // Pipeline memory context (optimization hints from prior runs, Claude only)
@@ -356,6 +366,18 @@ export interface SceneBlueprint {
 
   // Narrative function
   narrativeFunction: string;
+
+  // === SCENE-FIRST PLANNING ===
+  // Populated when the scene came from the season-level scene plan (elaborate
+  // mode) rather than being invented here. These let SceneWriter author beats
+  // that serve the scene's planned purpose and discharge the right setups.
+  // The scene's dramatic function within its episode's arc.
+  narrativeRole?: SceneNarrativeRole;
+  // Planning-only statement of what story this scene tells (the brief beats serve).
+  dramaticPurpose?: string;
+  // Scene ids (this season) this scene plants for / discharges.
+  setsUp?: string[];
+  paysOff?: string[];
 
   // Key beats to hit
   keyBeats: string[];
@@ -1761,8 +1783,150 @@ ${sceneEpisodeMode}
 `
   }
 
+  /**
+   * Map a planned scene's narrative role onto the SceneBlueprint purpose. The
+   * hinge roles (turn/payoff) become bottlenecks; setup/development/release are
+   * transitions until the branch-coverage repair promotes one to a branch.
+   */
+  private purposeForRole(role: SceneNarrativeRole | undefined, isEncounter: boolean): SceneBlueprint['purpose'] {
+    if (isEncounter) return 'bottleneck';
+    if (role === 'turn' || role === 'payoff') return 'bottleneck';
+    return 'transition';
+  }
+
+  /** Reconstruct an encounter directive from a `kind: 'encounter'` planned scene. */
+  private plannedSceneToEncounterDirective(scene: PlannedScene): PlannedEncounterDirective | undefined {
+    const enc = scene.encounter;
+    if (!enc) return undefined;
+    return {
+      id: scene.id,
+      type: enc.type,
+      description: scene.title || scene.dramaticPurpose,
+      difficulty: enc.difficulty,
+      npcsInvolved: scene.npcsInvolved ?? [],
+      stakes: scene.stakes ?? '',
+      centralConflict: enc.centralConflict,
+      aftermathConsequence: enc.aftermathConsequence,
+      relevantSkills: enc.relevantSkills ?? [],
+      isBranchPoint: enc.isBranchPoint,
+      branchOutcomes: enc.branchOutcomes
+        ? { victory: enc.branchOutcomes.victory, defeat: enc.branchOutcomes.defeat, escape: enc.branchOutcomes.escape }
+        : undefined,
+    };
+  }
+
+  /**
+   * Elaborate-mode blueprint construction. Builds an {@link EpisodeBlueprint}
+   * deterministically from the season-level planned scenes instead of inventing
+   * a scene graph via the LLM. The result is routed through the SAME repair
+   * pipeline as the invented path, so choice density, branch coverage, scene
+   * transitions, and dramatic-audit minimums are all enforced identically.
+   */
+  private buildBlueprintFromPlannedScenes(input: StoryArchitectInput): EpisodeBlueprint {
+    const planned = (input.seasonPlanDirectives?.plannedScenes ?? [])
+      .slice()
+      .sort((a, b) => a.order - b.order);
+
+    const sceneIds = planned.map((s) => s.id);
+    const scenes: SceneBlueprint[] = planned.map((p, idx) => {
+      const isEncounter = p.kind === 'encounter';
+      const nextId = sceneIds[idx + 1];
+      const scene: SceneBlueprint = {
+        id: p.id,
+        name: p.title || `Scene ${idx + 1}`,
+        description: p.dramaticPurpose,
+        location: p.locations?.[0] || input.currentLocation,
+        mood: p.narrativeRole === 'release' ? 'reflective' : isEncounter ? 'tense' : 'charged',
+        purpose: this.purposeForRole(p.narrativeRole, isEncounter),
+        dramaticQuestion: p.dramaticPurpose,
+        wantVsNeed: p.stakes || p.dramaticPurpose,
+        conflictEngine: p.stakes || 'The scene applies pressure toward the episode goal.',
+        npcsPresent: p.npcsInvolved ?? [],
+        narrativeFunction: p.dramaticPurpose,
+        narrativeRole: p.narrativeRole,
+        dramaticPurpose: p.dramaticPurpose,
+        setsUp: p.setsUp,
+        paysOff: p.paysOff,
+        keyBeats: [p.dramaticPurpose],
+        leadsTo: nextId ? [nextId] : [],
+      };
+      // Standard scenes get a placeholder choice point; choiceTypePlanner
+      // reassigns the type downstream. Encounters carry their choices internally.
+      if (!isEncounter) {
+        scene.choicePoint = {
+          type: 'strategic',
+          stakes: {
+            want: `Advance the goal of ${scene.name}`,
+            cost: 'Each option forfeits a different advantage.',
+            identity: 'The choice reveals the protagonist under pressure.',
+          },
+          description: `Decide how to handle ${scene.name}.`,
+          optionHints: [],
+        };
+      }
+      return scene;
+    });
+
+    // Apply encounter detail via the shared mapping used by the invented path.
+    for (let i = 0; i < planned.length; i += 1) {
+      if (planned[i].kind !== 'encounter') continue;
+      const directive = this.plannedSceneToEncounterDirective(planned[i]);
+      if (directive) this.applyPlannedEncounterToScene(scenes[i], directive);
+    }
+
+    // Arc block: fill the beats this episode owns from the season sevenPoint.
+    const emptyArc = { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' };
+    const arc = { ...emptyArc };
+    const sevenPoint = input.seasonSevenPoint;
+    for (const role of input.episodeStructuralRole ?? []) {
+      if (role === 'rising' || role === 'falling') continue;
+      if (sevenPoint && sevenPoint[role]) arc[role] = sevenPoint[role];
+    }
+
+    const bottleneckScenes = scenes.filter((s) => s.purpose === 'bottleneck' || s.isEncounter).map((s) => s.id);
+
+    return {
+      episodeId: input.episodeNumber != null ? `episode-${input.episodeNumber}` : 'episode',
+      number: input.episodeNumber,
+      title: input.episodeTitle,
+      synopsis: input.episodeSynopsis,
+      arc,
+      structuralRole: input.episodeStructuralRole,
+      themes: [],
+      scenes,
+      startingSceneId: sceneIds[0] ?? '',
+      bottleneckScenes,
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+  }
+
   async execute(input: StoryArchitectInput, retryCount: number = 0): Promise<AgentResponse<EpisodeBlueprint>> {
     const maxRetries = 2;
+
+    // Scene-first (elaborate) mode: when the season plan provides this episode's
+    // scenes, build the blueprint from them deterministically and route through
+    // the standard repair pipeline. No LLM call. Falls through to invention when
+    // no planned scenes are present (default / flag-off path).
+    const plannedScenes = input.seasonPlanDirectives?.plannedScenes;
+    if (plannedScenes && plannedScenes.length > 0) {
+      console.info(`[StoryArchitect] Elaborate-mode: building blueprint from ${plannedScenes.length} planned scene(s)`);
+      const blueprint = this.buildBlueprintFromPlannedScenes(input);
+      this.repairChoiceDensity(blueprint, input);
+      this.repairPlannedEncounterCoverage(blueprint, input);
+      this.repairSceneGraphBranchCoverage(blueprint);
+      this.repairTreatmentDramaticAudit(blueprint, input);
+      this.repairTreatmentMajorChoicePressure(blueprint, input);
+      this.repairTreatmentForwardPressure(blueprint, input.seasonPlanDirectives?.treatmentGuidance);
+      this.repairTreatmentResidue(blueprint, input);
+      this.ensureDramaticAuditMinimums(blueprint, input);
+      this.repairSceneTransitions(blueprint);
+      this.repairSceneTurnContracts(blueprint);
+      return { success: true, data: blueprint, rawResponse: '' };
+    }
+
     const prompt = this.buildPrompt(input);
 
     console.log(`[StoryArchitect] Building episode blueprint...${retryCount > 0 ? ` (retry ${retryCount}/${maxRetries})` : ''}`);

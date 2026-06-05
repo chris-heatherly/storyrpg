@@ -23,6 +23,7 @@ import {
 import type { CliffhangerType } from './story';
 import type { EpisodeRouteMeta, EpisodeStructureMode } from './story';
 import type { ConditionExpression } from './conditions';
+import type { PlannedScene, SeasonScenePlan } from './scenePlan';
 
 // ========================================
 // SEASON PLAN CORE TYPES
@@ -87,6 +88,16 @@ export interface SeasonEpisode extends EpisodeOutline {
    * episode tension enough to satisfy, then open sharper next-episode pressure.
    */
   cliffhangerPlan?: CliffhangerPlan;
+
+  /**
+   * Scene-first plan: the scenes that make up this episode, enumerated at the
+   * SEASON level (not invented per-episode in StoryArchitect). This is this
+   * episode's slice of {@link SeasonPlan.scenePlan}. Encounters appear here as
+   * scenes with `kind: 'encounter'` — they are not a separate list. Optional so
+   * legacy plans that predate scene-first planning still deserialize; when
+   * absent, downstream falls back to per-episode scene invention.
+   */
+  plannedScenes?: PlannedScene[];
 }
 
 export type ArcEpisodeTurnoutType =
@@ -359,8 +370,22 @@ export interface SeasonPlan {
     introducedInEpisode: number;
   }>;
   
+  /**
+   * Scene-first season plan: every scene across the season, in order, with the
+   * resolved setup/payoff graph. Episodes and their scenes are planned together
+   * at the season level; each {@link SeasonEpisode.plannedScenes} is a slice of
+   * this. Encounters live here as `kind: 'encounter'` scenes — the
+   * {@link SeasonPlan.encounterPlan} below becomes a derived view over them and
+   * is retired once the scene-first wiring lands. Optional so legacy plans
+   * deserialize; absence signals the pre-scene-first (beat-first) path.
+   */
+  scenePlan?: SeasonScenePlan;
+
   // === ENCOUNTER MASTER PLAN ===
-  // All encounters across the season, planned at the season level
+  // All encounters across the season, planned at the season level.
+  // NOTE: superseded by scene-first planning — encounters are now `kind:
+  // 'encounter'` scenes in `scenePlan`. Retained additively until the agent +
+  // StoryArchitect wiring migrates onto the scene spine.
   encounterPlan: {
     // Total encounter count across the season
     totalEncounters: number;

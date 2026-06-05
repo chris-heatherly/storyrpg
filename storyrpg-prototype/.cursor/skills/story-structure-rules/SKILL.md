@@ -106,6 +106,51 @@ interface SceneBlueprint {
 }
 ```
 
+## Scene-First Planning (season level, opt-in)
+
+The default flow is **beat-first**: `SeasonPlannerAgent` assigns each episode one 7-point role, and
+`StoryArchitect` *invents* that episode's scenes in the per-episode loop (scenes don't exist until
+then). **Scene-first planning** (env flag `SCENE_FIRST_PLANNING=1`; auto-on for authored
+`sceneEpisodes` treatments) inverts this so episodes **and their scenes** are planned together at the
+season level.
+
+### Altitude cascade
+
+```
+SEASON   → owns the 7-point structure (meta-concept) + the episode/scene plan
+EPISODE  → maps to exactly ONE of the 7 points (its structuralRole)
+SCENE    → serves the purpose its episode's role names (PlannedScene.dramaticPurpose)
+BEAT     → serves its scene (still generated later, in the per-episode loop)
+```
+
+Scenes do **not** carry a 7-point label; they inherit their dramatic brief from their episode's role.
+
+### The artifacts
+
+- **`SeasonScenePlan`** (`src/types/scenePlan.ts`) on `SeasonPlan.scenePlan`; per-episode slice on
+  `SeasonEpisode.plannedScenes`. Built deterministically by `seasonScenePlanBuilder.ts` (v1) from
+  data the season plan already carries (`structuralRole`, `plannedEncounters`, synopsis,
+  `treatmentGuidance`, plus consequence chains / choice moments / information ledger).
+- **`PlannedScene`**: `kind: 'standard' | 'encounter'`, `narrativeRole`
+  (`setup | development | turn | payoff | release`), `dramaticPurpose`, `setsUp[]`, `paysOff[]`.
+- **Encounters are a kind of scene**: `kind: 'encounter'` with a `PlannedSceneEncounter` sub-object;
+  the scene id **is** the encounter id. No separate encounter list — pacing and the
+  consequence/branch budget see encounters by construction.
+- **Setup/payoff graph**: `setsUp`/`paysOff` + `SeasonScenePlan.setupPayoffEdges` make cross-scene
+  relationships explicit and **must point forward in time**. `SceneSpineValidator` checks coverage,
+  reference integrity, agreement, and forward-direction.
+
+### How it flows downstream
+
+- `planningHelpers.buildSeasonPlanDirectives` passes the episode's `plannedScenes` + the edges that
+  touch it into `StoryArchitectInput.seasonPlanDirectives`.
+- **StoryArchitect elaborate-mode**: when `plannedScenes` are present, `execute()` builds the
+  blueprint from them (no LLM call) and routes through the SAME repair pipeline as invention; encounter
+  scenes are mapped via `applyPlannedEncounterToScene` so the existing `isEncounter`/`encounterType`
+  per-kind dispatch (SceneWriter vs EncounterArchitect) is unchanged.
+- From-scratch runs get treatment-shaped guidance synthesized (`synthesizeTreatmentGuidance.ts`), so
+  there is a single uniform downstream path.
+
 ## Branch-and-Bottleneck Pattern
 
 ### Bottleneck Scenes
@@ -230,6 +275,54 @@ delayedConsequences: [{
 ```
 
 Use sparingly: 1-2 delayed consequences per episode.
+
+## Season Choice/Consequence Budgets (scene-first, opt-in)
+
+When scene-first planning is enabled, the season layers a **weighted "dramatic diet"** over its scene
+plan *before episodes generate*. The governing idea is **"budget the spine, not the texture"**: the
+budgeted unit is ONE central choice per choice-bearing scene OR per encounter. Tactical choices inside
+an encounter still matter and produce consequences, but they are NOT individually budgeted.
+
+### Weighting
+
+- A standard scene choice has `budgetWeight = SCENE_BUDGET_WEIGHT` (1).
+- An encounter has `budgetWeight = ENCOUNTER_BUDGET_WEIGHT` (3) — a concentrated, intense serving of
+  ONE role.
+- All budget mixes are measured on **weighted** totals, never raw counts.
+
+### Choice-type budget
+
+Weighted target across budgeted units: **expression 35 / relationship 30 / strategic 20 / dilemma 15**
+(`CHOICE_TYPE_TARGET`).
+
+- An encounter carries exactly ONE non-expression role drawn from
+  `{ relationship, strategic, dilemma }` — encounters are **never `expression`** (expression is
+  voice / no-stakes; encounters are stakes-driven).
+- Standard choice-scenes may be any of the four types.
+
+### Consequence-tier budget
+
+Recalibrated **unified** target (encounters included): **callback 50 / tint 25 / branchlet 17 /
+branch 8** (`CONSEQUENCE_TARGET`). Branch/branchlet rise vs the old scenes-only mix because encounters
+legitimately branch. Hard invariants:
+
+- an `expression` unit ⇒ `callback`;
+- a `dilemma` unit ⇒ at least `branchlet`;
+- **ANY encounter ⇒ at least `branchlet`** (never a bare `callback`, branch-point or not); branch-point
+  encounters get their `branch`/`branchlet` slots allocated first.
+
+### Allocation + validation
+
+- **Allocation** runs at season-planning time over the scene plan, consequential-first: encounters take
+  their non-expression / branch-heavy slots FIRST, then standard scenes fill the remainder (so scenes
+  auto-absorb expression and relationship and lighter tiers). Authored `choiceType` / `consequenceTier`
+  preferences are respected where they don't violate an invariant; reconciliation toward target is one
+  GENTLE pass (authored-drama-wins). See `seasonBudgetAllocator.ts`: `buildBudgetUnits`,
+  `allocateChoiceTypes`, `allocateConsequenceTiers`, `weightedChoiceMix`, `weightedConsequenceMix`.
+- **Validation** (`SeasonBudgetValidator`) runs after allocation and before the plan is finalized. It
+  checks both weighted mixes against target within `BUDGET_TOLERANCE` (warn 15 / error 25 pts per
+  type/tier) plus the hard invariants. Advisory by default; hard-gates only under
+  `GATE_SEASON_BUDGETS=1` (**default-off**).
 
 ## Encounter Design
 

@@ -67,6 +67,20 @@ import {
   buildGenreAwareJeopardyGuidance,
 } from '../prompts/storytellingPrinciples';
 import { clampSceneCount } from '../../constants/pipeline';
+import { isSceneFirstPlanningEnabled } from '../config/sceneFirstPlanning';
+import { buildSeasonScenePlan, scenesForEpisode } from '../pipeline/seasonScenePlanBuilder';
+import { buildScenePlanPrompt, normalizeAuthoredScenePlan } from '../pipeline/authorScenePlan';
+import { synthesizeTreatmentGuidance } from '../pipeline/synthesizeTreatmentGuidance';
+import { SceneSpineValidator } from '../validators/SceneSpineValidator';
+import { SeasonBudgetValidator } from '../validators/SeasonBudgetValidator';
+import {
+  buildBudgetUnits,
+  allocateChoiceTypes,
+  allocateConsequenceTiers,
+  weightedChoiceMix,
+  weightedConsequenceMix,
+} from '../pipeline/seasonBudgetAllocator';
+import type { SeasonScenePlan } from '../../types/scenePlan';
 
 type MutablePlanData = Partial<SeasonPlan> & {
   encounterPlan?: any;
@@ -198,6 +212,76 @@ Your plans must define:
 
     console.log(`[SeasonPlanner] Created plan with ${seasonPlan.totalEpisodes} episodes, ${seasonPlan.arcs.length} arcs, ${seasonPlan.encounterPlan.totalEncounters} encounters, ${seasonPlan.crossEpisodeBranches.length} cross-episode branches`);
 
+    // Scene-first planning: buildSeasonPlan attaches a DETERMINISTIC spine as a
+    // guaranteed fallback. Here we attempt to UPGRADE it to an LLM-authored
+    // spine (scenes planned with real dramatic content + setup/payoff logic).
+    // On any failure the deterministic spine is kept.
+    if (
+      isSceneFirstPlanningEnabled(preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard') &&
+      seasonPlan.scenePlan
+    ) {
+      const authored = await this.authorScenePlanLLM(seasonPlan);
+      if (authored) {
+        seasonPlan.scenePlan = authored;
+        for (const ep of seasonPlan.episodes) {
+          ep.plannedScenes = scenesForEpisode(authored, ep.episodeNumber);
+        }
+        seasonPlan.notes.push(
+          `Scene-first planning: LLM-authored spine (${authored.scenes.length} scenes, ${authored.setupPayoffEdges.length} setup/payoff edges).`,
+        );
+      }
+    }
+
+    // Season choice/consequence BUDGET layer. Runs AFTER the scene plan is built
+    // and (optionally) LLM-upgraded, and BEFORE the plan is finalized/returned —
+    // budgets are allocated over the spine, then validated, while the spine can
+    // still be rejected by the gate below. Scene-first only; no-op otherwise.
+    if (
+      isSceneFirstPlanningEnabled(preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard') &&
+      seasonPlan.scenePlan
+    ) {
+      // Allocate choiceType/consequenceTier/budgetWeight onto the PlannedScenes
+      // in plan.scenePlan, then re-slice each episode so ep.plannedScenes carry
+      // the same budgeted fields.
+      const units = buildBudgetUnits(seasonPlan.scenePlan);
+      allocateChoiceTypes(units);
+      allocateConsequenceTiers(units);
+      for (const ep of seasonPlan.episodes) {
+        ep.plannedScenes = scenesForEpisode(seasonPlan.scenePlan, ep.episodeNumber);
+      }
+
+      // Validate the realized dramatic diet (advisory into plan.warnings).
+      const budgetResult = new SeasonBudgetValidator().validate(seasonPlan.scenePlan);
+      for (const issue of budgetResult.issues) {
+        seasonPlan.warnings.push(`[SeasonBudget:${issue.severity}] ${issue.message}`);
+      }
+
+      // Summarize the realized weighted mix for the diagnostics trail.
+      const choiceMix = weightedChoiceMix(units);
+      const consequenceMix = weightedConsequenceMix(units);
+      const pct = (mix: { percentages: Record<string, number> }, keys: string[]): string =>
+        keys.map((k) => `${k} ${Math.round(mix.percentages[k] ?? 0)}%`).join(' / ');
+      seasonPlan.notes.push(
+        `Season budget: ${units.length} budgeted units (weighted ${choiceMix.total}). ` +
+          `Choice mix ${pct(choiceMix, ['expression', 'relationship', 'strategic', 'dilemma'])}; ` +
+          `consequence mix ${pct(consequenceMix, ['callback', 'tint', 'branchlet', 'branch'])}.`,
+      );
+
+      // HARD GATE (opt-in, default OFF). Only when GATE_SEASON_BUDGETS=1 do
+      // error-severity budget findings block the plan. Mirrors the arcPressure
+      // gate below.
+      if (process.env.GATE_SEASON_BUDGETS === '1') {
+        const budgetErrors = budgetResult.issues.filter((i) => i.severity === 'error');
+        if (budgetErrors.length > 0) {
+          throw new Error(
+            `[SeasonBudgetGate] Season choice/consequence budget failed the blocking gate (${budgetErrors.length} issue(s)): ` +
+              budgetErrors.map((i) => i.message).join('; ') +
+              '. Unset GATE_SEASON_BUDGETS to downgrade to advisory.',
+          );
+        }
+      }
+    }
+
     // 7-point spine GATE (tier 1, default ON / opt-out). A season whose 3-act/7-point
     // spine is incomplete or out of canonical order must not generate — the spine is the
     // structural contract every downstream episode is authored against. Coverage is
@@ -248,6 +332,27 @@ Your plans must define:
       success: true,
       data: seasonPlan,
     };
+  }
+
+  /**
+   * Author the season scene plan via the LLM, normalized + validated. Returns
+   * null on any failure (truncated/invalid JSON, spine validation errors) so the
+   * caller keeps the deterministic spine. See {@link normalizeAuthoredScenePlan}.
+   */
+  private async authorScenePlanLLM(plan: SeasonPlan): Promise<SeasonScenePlan | null> {
+    try {
+      const prompt = buildScenePlanPrompt(plan);
+      const response = await this.callLLM([{ role: 'user', content: prompt }]);
+      const raw = this.parseJSON(response);
+      const normalized = normalizeAuthoredScenePlan(raw, plan);
+      if (!normalized) {
+        console.warn('[SeasonPlanner] Authored scene plan failed normalization/validation; keeping deterministic spine.');
+      }
+      return normalized;
+    } catch (error) {
+      console.warn('[SeasonPlanner] Scene-plan authoring failed; keeping deterministic spine:', error);
+      return null;
+    }
   }
 
   private buildPlanningPrompt(
@@ -1526,6 +1631,28 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     });
     for (const issue of informationResult.issues) {
       plan.warnings.push(`[InformationLedger:${issue.severity}] ${issue.message}`);
+    }
+
+    // Scene-first planning: enumerate scenes (encounters included) at the season
+    // level and attach the spine to the plan + each episode's slice. Default-off;
+    // auto-on for authored sceneEpisodes treatments. When off, downstream falls
+    // back to per-episode scene invention in StoryArchitect.
+    if (isSceneFirstPlanningEnabled(isSceneEpisodes ? 'sceneEpisodes' : 'standard')) {
+      // Unify the downstream input: from-scratch episodes get treatment-shaped
+      // guidance synthesized so the scene builder sees one shape on both paths.
+      synthesizeTreatmentGuidance(plan);
+      const scenePlan = buildSeasonScenePlan(plan);
+      plan.scenePlan = scenePlan;
+      for (const ep of plan.episodes) {
+        ep.plannedScenes = scenesForEpisode(scenePlan, ep.episodeNumber);
+      }
+      const spineResult = new SceneSpineValidator().validate(scenePlan);
+      for (const issue of spineResult.issues) {
+        plan.warnings.push(`[SceneSpine:${issue.severity}] ${issue.message}`);
+      }
+      plan.notes.push(
+        `Scene-first planning: ${scenePlan.scenes.length} scenes across ${plan.episodes.length} episodes, ${scenePlan.setupPayoffEdges.length} setup/payoff edges.`,
+      );
     }
 
     return plan;

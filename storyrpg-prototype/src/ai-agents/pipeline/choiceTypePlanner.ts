@@ -41,6 +41,15 @@ interface PlannableScene {
   id: string;
   isEncounter?: boolean;
   choicePoint?: PlannableChoicePoint;
+  /**
+   * Scene-first authoring: when the season scene plan has already decided this
+   * scene's choice type (`PlannedScene.choiceType`), thread it here so it wins
+   * over the local re-derivation. The authored type is AUTHORITATIVE — its slot
+   * is pinned and excluded from the target allocation, and only the remaining
+   * (un-authored) choice points fill the rest of the distribution. Absent on the
+   * default / flag-off path, so behavior there is unchanged.
+   */
+  authoredChoiceType?: ChoiceType;
 }
 
 const ORDER: ChoiceType[] = ['expression', 'relationship', 'strategic', 'dilemma'];
@@ -111,8 +120,31 @@ export function assignChoiceTypes(
   seasonCounts?: Record<ChoiceType, number>,
 ): ChoiceTypeAssignment[] {
   const choicePoints = (scenes || []).filter((s) => !s.isEncounter && s.choicePoint);
-  const n = choicePoints.length;
-  if (n === 0) return [];
+  if (choicePoints.length === 0) return [];
+
+  // Scene-first: honor any AUTHORED per-scene choiceType from the season scene
+  // plan. Pin those choice points up front (they win), then allocate the target
+  // distribution over only the REMAINING un-authored points. A branching CP can
+  // never be 'expression'; if an authored type would violate that, drop the
+  // authoring and let allocation place it (conservative — invariants outrank
+  // authoring). With no authored types (default / flag-off path) this is a no-op
+  // and the original allocation runs over the full set unchanged.
+  const assignments: ChoiceTypeAssignment[] = [];
+  const unAuthored: PlannableScene[] = [];
+  for (const scene of choicePoints) {
+    const cp = scene.choicePoint!;
+    const authored = scene.authoredChoiceType;
+    const authoredValid = !!authored && !(cp.branches && authored === 'expression') && ORDER.includes(authored);
+    if (authoredValid) {
+      if (cp.type !== authored) assignments.push({ sceneId: scene.id, from: cp.type, to: authored! });
+      cp.type = authored!;
+    } else {
+      unAuthored.push(scene);
+    }
+  }
+
+  const n = unAuthored.length;
+  if (n === 0) return assignments;
 
   const effectiveTarget = countsToTarget(seasonCounts) ?? target;
   const counts = allocateChoiceTypeCounts(n, effectiveTarget);
@@ -148,14 +180,13 @@ export function assignChoiceTypes(
 
   // Assign branching choice points first from the non-expression slots, so we
   // never leave a branching CP needing an 'expression' slot.
-  const assignments: ChoiceTypeAssignment[] = [];
   const takeSlot = (predicate: (t: ChoiceType) => boolean): ChoiceType | undefined => {
     const idx = pool.findIndex(predicate);
     if (idx === -1) return undefined;
     return pool.splice(idx, 1)[0];
   };
 
-  const ordered = [...choicePoints].sort((a, b) => Number(!!b.choicePoint?.branches) - Number(!!a.choicePoint?.branches));
+  const ordered = [...unAuthored].sort((a, b) => Number(!!b.choicePoint?.branches) - Number(!!a.choicePoint?.branches));
   for (const scene of ordered) {
     const cp = scene.choicePoint!;
     const wantsNonExpression = !!cp.branches;

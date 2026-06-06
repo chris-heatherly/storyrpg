@@ -179,6 +179,38 @@ describe('buildSeasonScenePlan', () => {
     }
   });
 
+  it('falls back to majorChoicePressures + encounterAnchors when the treatment has no episodeTurns', () => {
+    // The bite-me treatment schema authors per-episode beats via "Major choice
+    // pressure" + "Encounter anchor" and carries no "Episode turns" section, so
+    // episodeTurns/visualAnchor parse empty. The binding must still engage.
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 4,
+      treatmentGuidance: {
+        episodeTurns: [],
+        majorChoicePressures: [
+          'Accept Andrei\'s invitation to dinner, or politely deflect',
+          'Follow Mika to the back room, or stay at the booth',
+          'Cut through the park, or take the long way home',
+        ],
+        encounterAnchors: ['The first night at Vâlcescu — meeting Andrei across a candlelit booth'],
+      },
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const scenes = scenesForEpisode(sp, 1);
+    const allBeats = scenes.flatMap((s) => s.requiredBeats ?? []);
+    // The choice-pressure beats are bound as authored required beats (none dropped).
+    const authored = allBeats.filter((b) => b.tier === 'authored');
+    expect(authored.map((b) => b.sourceTurn).sort()).toEqual([
+      'Accept Andrei\'s invitation to dinner, or politely deflect',
+      'Cut through the park, or take the long way home',
+      'Follow Mika to the back room, or stay at the booth',
+    ]);
+    // The encounter anchor becomes the signature device, even with no visualAnchor.
+    const sig = allBeats.find((b) => b.tier === 'signature');
+    expect(sig?.mustDepict).toContain('candlelit booth');
+    expect(scenes.some((s) => s.signatureMoment?.includes('candlelit booth'))).toBe(true);
+  });
+
   it('budgets enough scenes to carry more authored turns than the estimate', () => {
     const ep = episode(1, ['hook'], {
       estimatedSceneCount: 3,

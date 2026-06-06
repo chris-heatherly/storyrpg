@@ -150,14 +150,17 @@ function appendRequiredBeats(scene: PlannedScene, beats: RequiredBeat[]): void {
  * and the LLM-authored path ({@link normalizeAuthoredScenePlan}). Given the scenes
  * already built for an episode (in play order), this:
  *
- *  1. Distributes the authored `episodeTurns` positionally across the episode's
+ *  1. Distributes the authored episode beats positionally across the episode's
  *     CONTENT scenes (every scene except a trailing `release`) in authored order,
- *     one turn per content scene, piling any leftover turns onto the last content
- *     scene so none is dropped. Each turn becomes a `tier:'authored'`
+ *     one beat per content scene, piling any leftover beats onto the last content
+ *     scene so none is dropped. The beat source is `episodeTurns` when present,
+ *     else `majorChoicePressures` (treatments that omit an "Episode turns" section
+ *     still author choice-pressure beats). Each becomes a `tier:'authored'`
  *     {@link RequiredBeat}. This is positional-index binding, not narrative-role
  *     matching — authored turns carry no per-turn role, so we distribute across
  *     content slots in order (see §3.2 over-constraining mitigation).
- *  2. Produces the SIGNATURE device from `treatmentGuidance.visualAnchor`: it
+ *  2. Produces the SIGNATURE device from `treatmentGuidance.visualAnchor` (else the
+ *     first `encounterAnchors` entry): it
  *     tags the encounter/anchor scene (the episode's hinge — prefer the encounter
  *     scene, else the first `turn`-role scene, else the last content scene) with a
  *     `tier:'signature'` {@link RequiredBeat} AND sets {@link PlannedScene.signatureMoment}.
@@ -169,8 +172,18 @@ function appendRequiredBeats(scene: PlannedScene, beats: RequiredBeat[]): void {
  */
 export function bindAuthoredTurnsToScenes(ep: SeasonEpisode, scenes: PlannedScene[]): void {
   if (scenes.length === 0) return;
-  const turns = ep.treatmentGuidance?.episodeTurns ?? [];
-  const visualAnchor = ep.treatmentGuidance?.visualAnchor?.trim();
+  const guidance = ep.treatmentGuidance;
+  // Primary source is the authored `episodeTurns` list (ENDSONG-style treatments).
+  // Many treatments express per-episode beats through other sections instead — e.g.
+  // the bite-me schema authors no "Episode turns" bullet but does author "Major choice
+  // pressure" beats — so fall back to those when `episodeTurns` is empty. Without this
+  // fallback the expand-not-rewrite binding would silently no-op on those formats,
+  // leaving requiredBeats empty even though the episode is fully authored.
+  const turns = (guidance?.episodeTurns?.length ? guidance.episodeTurns : guidance?.majorChoicePressures) ?? [];
+  // Signature device: the explicit `Visual anchor` if authored, else the episode's
+  // first `Encounter anchor` (its staged hinge), which well-formed treatments carry
+  // even when they omit a dedicated visual-anchor line.
+  const visualAnchor = guidance?.visualAnchor?.trim() || guidance?.encounterAnchors?.[0]?.trim();
 
   // Content scenes are everything except a trailing release breather (release is
   // aftermath, not authored content). Fall back to ALL scenes if every scene is a

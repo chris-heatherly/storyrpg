@@ -186,8 +186,12 @@ describe('FullStoryPipeline sceneEpisode playable contract repair', () => {
       description: 'The hidden chamber opens beneath the storm shelter.',
     });
 
+    // The choice residue (immediate) half is reader-safe and preserved.
     expect(bridgeText).toContain('The proper order is maintained');
-    expect(bridgeText).toContain('The hidden chamber opens beneath the storm shelter.');
+    // Destination is built from the SANITIZED scene NAME only — never the planning
+    // `description` field (which is agent-facing and may carry meta-narration).
+    expect(bridgeText).toContain('The Hidden Chamber waits ahead.');
+    expect(bridgeText).not.toContain('The hidden chamber opens beneath the storm shelter.');
     expect(bridgeText).not.toContain('You chose');
     expect(bridgeText).not.toContain('Protocol wins');
     expect(bridgeText).not.toContain('The decision carries you');

@@ -32,14 +32,20 @@ import {
   BUDGET_TOLERANCE,
   CHOICE_TYPE_TARGET,
   CONSEQUENCE_TARGET,
+  SCENE_CONSEQUENCE_TARGET,
   type ConsequenceTier,
+  type PlannedScene,
   type SeasonScenePlan,
 } from '../../types/scenePlan';
 import {
   buildBudgetUnits,
   weightedChoiceMix,
   weightedConsequenceMix,
+  encounterSpineTier,
+  spineDerivedHeavyPercent,
+  type BudgetContext,
 } from '../pipeline/seasonBudgetAllocator';
+import { consequenceFlags } from '../pipeline/consequenceFlags';
 
 type ChoiceTypeKey = 'expression' | 'relationship' | 'strategic' | 'dilemma';
 
@@ -48,7 +54,13 @@ export class SeasonBudgetValidator extends BaseValidator {
     super('SeasonBudgetValidator');
   }
 
-  validate(plan: SeasonScenePlan): ValidationResult {
+  /**
+   * @param ctx Optional consequence-intelligence context (Plan Parts 2–6).
+   *   Foundation phase: UNUSED — present so later phases (two-population mix,
+   *   charge-coverage) can read it without changing this signature. Behavior is
+   *   identical whether or not it is passed.
+   */
+  validate(plan: SeasonScenePlan, ctx?: BudgetContext): ValidationResult {
     const issues: ValidationIssue[] = [];
 
     const units = buildBudgetUnits(plan);
@@ -73,15 +85,25 @@ export class SeasonBudgetValidator extends BaseValidator {
       );
     }
 
-    const consequenceMix = weightedConsequenceMix(units);
-    for (const tier of Object.keys(CONSEQUENCE_TARGET) as ConsequenceTier[]) {
-      this.pushDeviation(
-        issues,
-        `consequence-tier "${tier}"`,
-        consequenceMix.percentages[tier] ?? 0,
-        CONSEQUENCE_TARGET[tier],
-        `consequenceMix:${tier}`,
-      );
+    // Phase 2 (Plan Part 3, Layer D): two-population consequence checks. When
+    // CONSEQUENCE_TWO_POP is on, each population is checked against its OWN target
+    // — encounters against their invariant, standard scenes against
+    // SCENE_CONSEQUENCE_TARGET — and total heavy mass against a spine-derived band
+    // instead of the fixed unified 25%. With the flag off, the unified check below
+    // runs unchanged (byte-identical).
+    if (consequenceFlags().twoPop) {
+      this.checkTwoPopulation(issues, units, ctx);
+    } else {
+      const consequenceMix = weightedConsequenceMix(units);
+      for (const tier of Object.keys(CONSEQUENCE_TARGET) as ConsequenceTier[]) {
+        this.pushDeviation(
+          issues,
+          `consequence-tier "${tier}"`,
+          consequenceMix.percentages[tier] ?? 0,
+          CONSEQUENCE_TARGET[tier],
+          `consequenceMix:${tier}`,
+        );
+      }
     }
 
     // --- Hard invariants -----------------------------------------------------
@@ -114,6 +136,66 @@ export class SeasonBudgetValidator extends BaseValidator {
     }
 
     return finalize(issues);
+  }
+
+  /**
+   * Phase 2 two-population consequence check (Plan Part 3, Layer D), gated by
+   * `CONSEQUENCE_TWO_POP`. Encounters and standard scenes are budgeted by two
+   * different policies, so we check each against its OWN target:
+   *
+   *  - **Encounter spine** (invariant): every encounter must match its
+   *    {@link encounterSpineTier} — branch-point → `branch`; others → `branchlet`
+   *    (→ `branch` at pinch2/climax). A mismatch is an error. Encounters are NOT
+   *    measured against any scene-texture %.
+   *  - **Standard-scene texture**: the scene-only weighted mix vs
+   *    {@link SCENE_CONSEQUENCE_TARGET}, within {@link BUDGET_TOLERANCE}.
+   *  - **Total heavy mass**: the season-wide heavy-tier (branchlet+branch) % vs a
+   *    SPINE-DERIVED band ({@link spineDerivedHeavyPercent}) instead of the fixed
+   *    unified 25% — so heavy encounters do not look "out of band" by design.
+   */
+  private checkTwoPopulation(
+    issues: ValidationIssue[],
+    units: PlannedScene[],
+    ctx?: BudgetContext,
+  ): void {
+    const encounters = units.filter((u) => u.kind === 'encounter');
+    const scenes = units.filter((u) => u.kind !== 'encounter');
+
+    // 1) Encounter spine: each encounter matches its invariant tier.
+    for (const enc of encounters) {
+      const roles = ctx?.roleByEpisode?.[enc.episodeNumber];
+      const expected = encounterSpineTier(enc, roles);
+      if (enc.consequenceTier && enc.consequenceTier !== expected) {
+        issues.push(this.warning(
+          `Encounter "${enc.id}" consequenceTier '${enc.consequenceTier}' does not match its spine invariant '${expected}' (branch-point → branch; others → branchlet, escalating at pinch2/climax).`,
+          `encounterSpine:${enc.id}`,
+          `Set this encounter's consequence to '${expected}'.`,
+        ));
+      }
+    }
+
+    // 2) Standard-scene texture vs SCENE_CONSEQUENCE_TARGET (scene-only weight).
+    const sceneMix = weightedConsequenceMix(scenes);
+    for (const tier of Object.keys(SCENE_CONSEQUENCE_TARGET) as ConsequenceTier[]) {
+      this.pushDeviation(
+        issues,
+        `scene consequence-tier "${tier}"`,
+        sceneMix.percentages[tier] ?? 0,
+        SCENE_CONSEQUENCE_TARGET[tier],
+        `sceneConsequenceMix:${tier}`,
+      );
+    }
+
+    // 3) Total heavy-tier mass vs the spine-derived band.
+    const fullMix = weightedConsequenceMix(units);
+    const heavyPct = (fullMix.percentages.branchlet ?? 0) + (fullMix.percentages.branch ?? 0);
+    this.pushDeviation(
+      issues,
+      'total heavy-tier mass',
+      heavyPct,
+      spineDerivedHeavyPercent(units),
+      'consequenceMix:heavy',
+    );
   }
 
   /**

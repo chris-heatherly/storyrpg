@@ -20,6 +20,7 @@ import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type {
   PlannedScene,
   PlannedSceneEncounter,
+  RequiredBeat,
   SceneNarrativeRole,
   SeasonScenePlan,
   SetupPayoffEdge,
@@ -29,6 +30,12 @@ import { SCENE_BUDGET_WEIGHT, ENCOUNTER_BUDGET_WEIGHT } from '../../types/sceneP
 
 const MIN_SCENES_PER_EPISODE = 3;
 const MAX_SCENES_PER_EPISODE = 8;
+/**
+ * When an episode carries more authored turns than the normal scene cap, we let
+ * the spine grow to fit them rather than starve turns (§6 over-constraining
+ * mitigation). This is the hard ceiling even then, so pacing can't explode.
+ */
+const MAX_SCENES_WITH_AUTHORED_TURNS = 12;
 
 /**
  * Which standard-scene narrative roles bear a budgeted central choice on the
@@ -44,10 +51,21 @@ const CHOICE_BEARING_ROLES: ReadonlySet<SceneNarrativeRole> = new Set([
   'payoff',
 ]);
 
-/** Clamp a desired scene count into the allowed range. */
-function clampSceneCount(n: number): number {
-  if (!Number.isFinite(n)) return 5;
-  return Math.max(MIN_SCENES_PER_EPISODE, Math.min(MAX_SCENES_PER_EPISODE, Math.round(n)));
+/**
+ * Clamp a desired scene count into the allowed range. When `authoredTurnCount`
+ * is supplied, the budget is `max(estimatedSceneCount, authoredTurnCount)` so an
+ * episode with more authored turns than its estimate is NOT starved — every
+ * authored turn can land as a required beat (multiple beats per scene are still
+ * allowed; this only guarantees enough scenes to carry them). The hard ceiling
+ * relaxes from MAX_SCENES_PER_EPISODE to MAX_SCENES_WITH_AUTHORED_TURNS in that case.
+ */
+function clampSceneCount(n: number, authoredTurnCount = 0): number {
+  const base = Number.isFinite(n) ? Math.round(n) : 5;
+  const desired = Math.max(base, authoredTurnCount);
+  const ceiling = authoredTurnCount > MAX_SCENES_PER_EPISODE
+    ? MAX_SCENES_WITH_AUTHORED_TURNS
+    : MAX_SCENES_PER_EPISODE;
+  return Math.max(MIN_SCENES_PER_EPISODE, Math.min(ceiling, desired));
 }
 
 /** Human-readable label for an episode's structural role(s). */
@@ -71,32 +89,125 @@ export function toSceneEncounter(enc: NonNullable<SeasonEpisode['plannedEncounte
 }
 
 /**
- * Compose a planning-only dramatic purpose for a scene from the signals the
- * season plan carries. Not player-facing.
+ * Compose a planning-only dramatic purpose for a scene FRAMING (role + the
+ * episode's 7-point beat). It no longer folds the authored episode turns into a
+ * single string — authored turns are now first-class {@link RequiredBeat}s bound
+ * to the scene that lands them (see {@link buildEpisodeScenes}). Not player-facing.
  */
 function composeDramaticPurpose(
   role: SceneNarrativeRole,
   ep: SeasonEpisode,
   sevenPointText: string | undefined,
-  turnText: string | undefined,
 ): string {
   const serves = sevenPointText
     ? `serves the ${roleLabel(ep.structuralRole)} beat ("${sevenPointText}")`
     : `serves the ${roleLabel(ep.structuralRole)} purpose of the episode`;
-  const turn = turnText ? ` Turn: ${turnText}.` : '';
   switch (role) {
     case 'setup':
-      return `Open the episode and plant its question; ${serves}.${turn}`;
+      return `Open the episode and plant its question; ${serves}.`;
     case 'development':
-      return `Escalate the episode's pressure; ${serves}.${turn}`;
+      return `Escalate the episode's pressure; ${serves}.`;
     case 'turn':
-      return `The scene's hinge — reverse or reveal; ${serves}.${turn}`;
+      return `The scene's hinge — reverse or reveal; ${serves}.`;
     case 'payoff':
-      return `Discharge a setup planted earlier; ${serves}.${turn}`;
+      return `Discharge a setup planted earlier; ${serves}.`;
     case 'release':
-      return `Aftermath that resettles stakes; ${serves}.${turn}`;
+      return `Aftermath that resettles stakes; ${serves}.`;
     default:
       return serves;
+  }
+}
+
+/**
+ * Build a {@link RequiredBeat} from an authored episode turn. Turns are
+ * `authored`-tier (must occur, in order); the season planner can later promote a
+ * staged device to `signature` via {@link PlannedScene.signatureMoment}.
+ */
+function requiredBeatFromTurn(sceneId: string, beatIndex: number, turnText: string): RequiredBeat {
+  return {
+    id: `${sceneId}-rb${beatIndex + 1}`,
+    sourceTurn: turnText,
+    mustDepict: turnText,
+    tier: 'authored',
+  };
+}
+
+/**
+ * Append a list of required beats to a scene without dropping any it already
+ * carries (the LLM path may have parsed model-provided beats; the deterministic
+ * binding below is authoritative and additive). Keeps ids unique within the scene
+ * by re-deriving the index from the running count.
+ */
+function appendRequiredBeats(scene: PlannedScene, beats: RequiredBeat[]): void {
+  if (beats.length === 0) return;
+  const existing = scene.requiredBeats ?? [];
+  scene.requiredBeats = [...existing, ...beats];
+}
+
+/**
+ * Deterministically bind an episode's authored content to its scenes — the single
+ * source of truth shared by both the deterministic builder ({@link buildEpisodeScenes})
+ * and the LLM-authored path ({@link normalizeAuthoredScenePlan}). Given the scenes
+ * already built for an episode (in play order), this:
+ *
+ *  1. Distributes the authored `episodeTurns` positionally across the episode's
+ *     CONTENT scenes (every scene except a trailing `release`) in authored order,
+ *     one turn per content scene, piling any leftover turns onto the last content
+ *     scene so none is dropped. Each turn becomes a `tier:'authored'`
+ *     {@link RequiredBeat}. This is positional-index binding, not narrative-role
+ *     matching — authored turns carry no per-turn role, so we distribute across
+ *     content slots in order (see §3.2 over-constraining mitigation).
+ *  2. Produces the SIGNATURE device from `treatmentGuidance.visualAnchor`: it
+ *     tags the encounter/anchor scene (the episode's hinge — prefer the encounter
+ *     scene, else the first `turn`-role scene, else the last content scene) with a
+ *     `tier:'signature'` {@link RequiredBeat} AND sets {@link PlannedScene.signatureMoment}.
+ *     This is the input §4.4 SignatureDevicePresenceValidator asserts in the prose.
+ *
+ * Mutates the scenes in place. Idempotent enough for the deterministic path (which
+ * passes freshly-built scenes) and additive for the LLM path (which may carry
+ * model-authored beats already). No-op when the episode is not treatment-sourced.
+ */
+export function bindAuthoredTurnsToScenes(ep: SeasonEpisode, scenes: PlannedScene[]): void {
+  if (scenes.length === 0) return;
+  const turns = ep.treatmentGuidance?.episodeTurns ?? [];
+  const visualAnchor = ep.treatmentGuidance?.visualAnchor?.trim();
+
+  // Content scenes are everything except a trailing release breather (release is
+  // aftermath, not authored content). Fall back to ALL scenes if every scene is a
+  // release (degenerate) so turns are never dropped.
+  const contentScenes = scenes.filter((s) => s.narrativeRole !== 'release');
+  const targets = contentScenes.length > 0 ? contentScenes : scenes;
+
+  // 1. Positional turn → content-scene binding (one per slot; leftovers pile last).
+  if (turns.length > 0) {
+    const perScene: RequiredBeat[][] = targets.map(() => []);
+    for (let t = 0; t < turns.length; t += 1) {
+      const slot = Math.min(t, targets.length - 1);
+      const scene = targets[slot];
+      const beatIndex = (scene.requiredBeats?.length ?? 0) + perScene[slot].length;
+      perScene[slot].push(requiredBeatFromTurn(scene.id, beatIndex, turns[t]));
+    }
+    targets.forEach((scene, i) => appendRequiredBeats(scene, perScene[i]));
+  }
+
+  // 2. Signature device → the episode's anchor scene.
+  if (visualAnchor) {
+    const anchor =
+      scenes.find((s) => s.kind === 'encounter')
+      || scenes.find((s) => s.narrativeRole === 'turn')
+      || targets[targets.length - 1];
+    if (anchor) {
+      anchor.signatureMoment = visualAnchor;
+      const beatIndex = anchor.requiredBeats?.length ?? 0;
+      appendRequiredBeats(anchor, [
+        {
+          id: `${anchor.id}-sig${beatIndex + 1}`,
+          sourceTurn: visualAnchor,
+          mustDepict: visualAnchor,
+          tier: 'signature',
+        },
+      ]);
+    }
   }
 }
 
@@ -120,13 +231,18 @@ export function buildEpisodeScenes(ep: SeasonEpisode, sevenPointText: string | u
   // We honor that by emitting a minimal spine (the encounter if present, else a
   // single standard scene) — the "1" is a soft target, so multiple encounters
   // still each get a scene.
-  const desired = clampSceneCount(ep.estimatedSceneCount || 5);
+  //
+  // Budget the scene count from max(estimatedSceneCount, authoredTurnCount) so an
+  // episode that authored more turns than its estimate gets enough scenes to land
+  // every turn as a required beat instead of starving turns (§3.2, §6).
+  const turnCount = turns.length;
+  const desired = clampSceneCount(ep.estimatedSceneCount || 5, turnCount);
   const encounterCount = encounters.length;
 
   const scenes: PlannedScene[] = [];
   let order = 0;
 
-  const pushStandard = (role: SceneNarrativeRole, turnIdx?: number): void => {
+  const pushStandard = (role: SceneNarrativeRole): void => {
     const id = `s${ep.episodeNumber}-${order + 1}`;
     scenes.push({
       id,
@@ -134,7 +250,7 @@ export function buildEpisodeScenes(ep: SeasonEpisode, sevenPointText: string | u
       order,
       kind: 'standard',
       title: `${role} scene ${order + 1}`,
-      dramaticPurpose: composeDramaticPurpose(role, ep, sevenPointText, turnIdx != null ? turns[turnIdx] : undefined),
+      dramaticPurpose: composeDramaticPurpose(role, ep, sevenPointText),
       narrativeRole: role,
       locations: locations.slice(0, 1),
       npcsInvolved: npcs.slice(0, 3),
@@ -153,13 +269,14 @@ export function buildEpisodeScenes(ep: SeasonEpisode, sevenPointText: string | u
   };
 
   const pushEncounter = (enc: NonNullable<SeasonEpisode['plannedEncounters']>[number]): void => {
+    const encounter = toSceneEncounter(enc);
     scenes.push({
       id: enc.id,
       episodeNumber: ep.episodeNumber,
       order,
       kind: 'encounter',
       title: enc.description?.slice(0, 60) || `encounter ${enc.id}`,
-      dramaticPurpose: composeDramaticPurpose('turn', ep, sevenPointText, undefined),
+      dramaticPurpose: composeDramaticPurpose('turn', ep, sevenPointText),
       narrativeRole: 'turn',
       locations: locations.slice(0, 1),
       npcsInvolved: enc.npcsInvolved ?? npcs.slice(0, 3),
@@ -168,7 +285,7 @@ export function buildEpisodeScenes(ep: SeasonEpisode, sevenPointText: string | u
       stakes: enc.stakes,
       actLabel,
       arcLabel,
-      encounter: toSceneEncounter(enc),
+      encounter,
       // Budget seed: every encounter is a budgeted unit at encounter weight.
       hasChoice: true,
       budgetWeight: ENCOUNTER_BUDGET_WEIGHT,
@@ -184,19 +301,23 @@ export function buildEpisodeScenes(ep: SeasonEpisode, sevenPointText: string | u
   const developmentCount = Math.max(0, standardSlots - openingCount - closingCount);
 
   // Opening setup
-  pushStandard('setup', 0);
+  pushStandard('setup');
   // Development
   for (let i = 0; i < developmentCount; i += 1) {
-    pushStandard('development', i + 1);
+    pushStandard('development');
   }
   // Encounters (the episode's turn/climax)
   for (const enc of encounters) {
     pushEncounter(enc);
   }
-  // Closing release
+  // Closing release (kept free of authored turns when possible — see binder).
   if (hasRelease) {
     pushStandard('release');
   }
+
+  // Bind authored turns + the signature device deterministically (shared with the
+  // LLM-authored path). This is the single source of truth for turn→scene binding.
+  bindAuthoredTurnsToScenes(ep, scenes);
 
   return scenes;
 }

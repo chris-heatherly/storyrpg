@@ -104,6 +104,62 @@ describe('normalizeAuthoredScenePlan', () => {
     expect(encScenes[0].encounter?.type).toBe('social');
   });
 
+  it('binds authored turns + the signature device onto the LLM-authored scenes', () => {
+    const ep = episode(1, ['climax'], {
+      estimatedSceneCount: 4,
+      treatmentGuidance: {
+        episodeTurns: [
+          'Darian assaults the battlement',
+          'Aethavyr leaps to the rescue on instinct',
+          'Lysandra names him Aethavyr',
+        ],
+        visualAnchor: 'Aethavyr leaps from the battlement to catch the falling soldier',
+      },
+      plannedEncounters: [
+        { id: 'enc-1', type: 'combat', description: 'wall breach', difficulty: 'hard', npcsInvolved: ['darian'], stakes: 'the wall', relevantSkills: ['combat'], isBranchPoint: true },
+      ],
+    });
+    // A normal LLM response that does NOT echo the authored turns/signature back.
+    const raw = {
+      episodes: [
+        {
+          episodeNumber: 1,
+          scenes: [
+            { id: 's1-1', kind: 'standard', title: 'Open', dramaticPurpose: 'establish the calm', narrativeRole: 'setup' },
+            { id: 's1-2', kind: 'standard', title: 'Build', dramaticPurpose: 'pressure rises', narrativeRole: 'development' },
+            { id: 'enc-1', kind: 'encounter', encounterId: 'enc-1', title: 'Breach', dramaticPurpose: 'the wall falls', narrativeRole: 'turn' },
+            { id: 's1-4', kind: 'standard', title: 'Aftermath', dramaticPurpose: 'settle', narrativeRole: 'release' },
+          ],
+        },
+      ],
+    };
+    const sp = normalizeAuthoredScenePlan(raw, plan([ep]))!;
+    expect(sp).not.toBeNull();
+    const scenes = sp.scenes.filter((s) => s.episodeNumber === 1).sort((a, b) => a.order - b.order);
+
+    // Every authored turn lands as exactly one tier:'authored' required beat,
+    // derived deterministically from the treatment (not from the LLM response).
+    const authoredBeats = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'authored'));
+    expect(authoredBeats.map((b) => b.sourceTurn).sort()).toEqual([
+      'Aethavyr leaps to the rescue on instinct',
+      'Darian assaults the battlement',
+      'Lysandra names him Aethavyr',
+    ]);
+    for (const b of authoredBeats) {
+      expect(b.mustDepict.length).toBeGreaterThan(0);
+    }
+
+    // The signature device lands on the encounter anchor as signatureMoment + a
+    // tier:'signature' required beat.
+    const anchor = scenes.find((s) => s.kind === 'encounter')!;
+    expect(anchor.signatureMoment).toBe('Aethavyr leaps from the battlement to catch the falling soldier');
+    expect((anchor.requiredBeats ?? []).some((b) => b.tier === 'signature')).toBe(true);
+
+    // The release scene stays free of authored content turns.
+    const release = scenes.find((s) => s.narrativeRole === 'release')!;
+    expect((release.requiredBeats ?? []).filter((b) => b.tier === 'authored')).toHaveLength(0);
+  });
+
   it('gap-fills an episode the model omitted with deterministic scenes', () => {
     const p = plan([episode(1, ['hook']), episode(2, ['climax'])]);
     const raw = { episodes: [{ episodeNumber: 1, scenes: [{ id: 's1-1', title: 'A', narrativeRole: 'setup' }] }] };

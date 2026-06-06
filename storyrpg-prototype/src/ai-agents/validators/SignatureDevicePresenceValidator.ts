@@ -1,0 +1,315 @@
+/**
+ * Signature Device Presence Validator (Treatment-Fidelity Remediation §4.4, RC5).
+ *
+ * The "expand, do not rewrite" contract (Phase 3 / §5) binds each authored
+ * SIGNATURE staged moment to the scene that must depict it — a
+ * {@link RequiredBeat} with `tier === 'signature'`, plus the convenience
+ * {@link PlannedScene.signatureMoment} surface. A signature device is a staged
+ * image the prose MUST show (the Ep1 joined-blood archive floor; the Ep2 naming +
+ * instinctive rescue leap) and must NEVER be inverted/negated ("he didn't").
+ *
+ * The downstream beat-author stage is responsible for realizing every signature
+ * `mustDepict`; THIS validator is the backstop (§4.4, §5 #4). It is a pure,
+ * deterministic, structurally-blind check over (plan, generated story):
+ *
+ *  1. Collect every signature beat from the plan: each scene's `signatureMoment`
+ *     and any `requiredBeats[tier === 'signature']` (scene-level and encounter-level).
+ *  2. For each, gather the generated prose for the SAME scene (matched by id, since
+ *     a generated `Scene.id === plannedScene.id`), falling back to the whole
+ *     episode's prose when the scene id was split/renamed downstream.
+ *  3. Assert the signature's content words appear in that prose (keyword overlap +
+ *     a light verbatim-substring semantic check). A signature that does not land at
+ *     all is a blocking error.
+ *  4. Assert the signature is NOT inverted — its content words must not co-occur in
+ *     close proximity with a negation cue ("didn't", "never", "failed to", "no
+ *     longer", …). An inverted signature is a blocking error even if its keywords
+ *     are technically present (the Ep2 "He didn't" failure mode, RC5).
+ *
+ * Severity: BLOCKING (errors) for both absence and inversion of a signature beat —
+ * these are authored devices the story exists to deliver. Non-signature tiers
+ * (`authored`/`connective`) are intentionally OUT of scope here; the broader
+ * {@link TreatmentFidelityValidator} and the per-turn fidelity gates cover those.
+ *
+ * Fiction-first: this is generator-internal quality machinery; nothing it reads or
+ * emits reaches the player (`docs/STORY_QUALITY_CONTRACT.md`).
+ *
+ * Registration is DEFAULT-OFF behind a gate flag, wired by the Wiring phase
+ * (validatorRegistry/architectGatePolicy are NOT edited here) — consistent with how
+ * recent fidelity validators landed.
+ */
+
+import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
+import type { PlannedScene, RequiredBeat, SeasonScenePlan } from '../../types/scenePlan';
+import type { Beat } from '../../types/content';
+import type { Episode, Scene, Story } from '../../types/story';
+
+/** Stopwords stripped before keyword overlap (mirrors TreatmentFidelityValidator). */
+const STOPWORDS = new Set([
+  'about', 'after', 'again', 'against', 'also', 'and', 'because', 'become', 'before', 'being', 'between',
+  'choice', 'chooses', 'could', 'during', 'episode', 'every', 'from', 'have', 'into', 'keeps', 'later',
+  'leave', 'leaves', 'major', 'make', 'makes', 'must', 'opens', 'paths', 'player', 'pressure', 'scene',
+  'should', 'that', 'their', 'them', 'then', 'there', 'this', 'through', 'when', 'where', 'with', 'without',
+  'staged', 'moment', 'signature', 'device', 'image', 'show', 'shows', 'depict', 'depicts',
+]);
+
+/** Negation cues that, near a signature's content words, mean it was inverted. */
+const NEGATION_CUES = [
+  "didn't", 'did not', 'does not', "doesn't", 'do not', "don't",
+  'never', 'no longer', 'not', 'without', 'failed to', 'fails to', 'fail to',
+  'refused to', 'refuses to', 'unable to', "couldn't", 'could not', "wouldn't",
+  'would not', 'cannot', "can't", 'instead of', 'rather than', 'avoided', 'avoids',
+];
+
+/** How many normalized tokens around a content-word hit to scan for a negation cue. */
+const INVERSION_WINDOW_TOKENS = 6;
+
+/** Minimum content-word overlap for a signature to count as "present". */
+const PRESENCE_MIN_SCORE = 0.5;
+
+function normalize(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Content tokens (≥4 chars, not a stopword) used for keyword overlap. */
+function contentTokens(value: string | undefined): string[] {
+  if (!value) return [];
+  return normalize(value)
+    .split(' ')
+    .filter((token) => token.length >= 4 && !STOPWORDS.has(token));
+}
+
+/**
+ * A needle token counts as present if a haystack token matches it exactly OR via a
+ * shared stem (one is a prefix of the other; both ≥4 chars). Lets authored anchors
+ * match the inflected forms the prose actually uses ("leap"~"leaping").
+ */
+function tokenPresent(token: string, hayTokens: string[], haySet: Set<string>): boolean {
+  if (haySet.has(token)) return true;
+  for (const h of hayTokens) {
+    if (h.startsWith(token) || token.startsWith(h)) return true;
+  }
+  return false;
+}
+
+function overlapScore(needle: string, haystack: string): number {
+  const needed = [...new Set(contentTokens(needle))];
+  if (needed.length === 0) return 1; // nothing to assert → trivially present
+  const hayTokens = [...new Set(contentTokens(haystack))];
+  const haySet = new Set(hayTokens);
+  const hits = needed.filter((token) => tokenPresent(token, hayTokens, haySet)).length;
+  return hits / needed.length;
+}
+
+/** Verbatim substring (normalized) OR sufficient content-word overlap. */
+function signaturePresent(signature: string, prose: string): boolean {
+  const normalizedSig = normalize(signature);
+  if (normalizedSig.length === 0) return true;
+  if (normalize(prose).includes(normalizedSig)) return true;
+  return overlapScore(signature, prose) >= PRESENCE_MIN_SCORE;
+}
+
+/**
+ * True iff the signature appears NEGATED in the prose: at least one of its content
+ * words sits within {@link INVERSION_WINDOW_TOKENS} tokens of a negation cue. This
+ * catches the RC5 "He didn't <do the signature>" inversion the symptom run showed.
+ */
+function signatureInverted(signature: string, prose: string): boolean {
+  const sigTokens = new Set(contentTokens(signature));
+  if (sigTokens.size === 0) return false;
+
+  const normalizedProse = normalize(prose);
+  // Multi-word cues are checked on the normalized string; single-word cues are
+  // checked positionally against signature content tokens.
+  const proseTokens = normalizedProse.split(' ').filter(Boolean);
+
+  // Index every position where a signature content token (or its stem) appears.
+  const sigHitPositions: number[] = [];
+  proseTokens.forEach((tok, idx) => {
+    for (const sigTok of sigTokens) {
+      if (tok === sigTok || tok.startsWith(sigTok) || sigTok.startsWith(tok)) {
+        sigHitPositions.push(idx);
+        break;
+      }
+    }
+  });
+  if (sigHitPositions.length === 0) return false;
+
+  // Pre-normalize the cues so multi-word cues match the normalized prose.
+  const normalizedCues = NEGATION_CUES.map((c) => normalize(c)).filter(Boolean);
+
+  for (const pos of sigHitPositions) {
+    const start = Math.max(0, pos - INVERSION_WINDOW_TOKENS);
+    const end = Math.min(proseTokens.length, pos + INVERSION_WINDOW_TOKENS + 1);
+    const window = proseTokens.slice(start, end).join(' ');
+    for (const cue of normalizedCues) {
+      // Word-boundary-ish: cue surrounded by spaces or at window edges.
+      if (window === cue || window.includes(` ${cue} `) || window.startsWith(`${cue} `) || window.endsWith(` ${cue}`)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** All reader-facing prose on a single beat (text + variant texts). */
+function beatProse(beat: Beat): string {
+  return [beat.text, ...((beat.textVariants || []).map((variant) => variant.text))]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** All reader-facing prose for one generated scene. */
+function sceneProse(scene: Scene): string {
+  return [scene.name, ...(scene.beats || []).map(beatProse)].filter(Boolean).join(' ');
+}
+
+/** All reader-facing prose for one generated episode. */
+function episodeProse(episode: Episode): string {
+  return [episode.title, episode.synopsis, ...(episode.scenes || []).map(sceneProse)]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** One signature the prose must land. */
+interface SignatureExpectation {
+  episodeNumber: number;
+  sceneId: string;
+  /** Where it came from, for the diagnostic message. */
+  origin: 'signatureMoment' | 'requiredBeat' | 'encounterRequiredBeat';
+  /** The signature text the prose must depict. */
+  text: string;
+  /** Beat id, when the signature came from a RequiredBeat. */
+  beatId?: string;
+}
+
+function isSignatureBeat(beat: RequiredBeat): boolean {
+  return beat.tier === 'signature';
+}
+
+/** Collect every signature expectation a plan carries. */
+function collectSignatures(plan: SeasonScenePlan): SignatureExpectation[] {
+  const out: SignatureExpectation[] = [];
+  for (const scene of plan.scenes) {
+    if (scene.signatureMoment?.trim()) {
+      out.push({
+        episodeNumber: scene.episodeNumber,
+        sceneId: scene.id,
+        origin: 'signatureMoment',
+        text: scene.signatureMoment.trim(),
+      });
+    }
+    for (const beat of scene.requiredBeats || []) {
+      if (isSignatureBeat(beat) && beat.mustDepict.trim()) {
+        out.push({
+          episodeNumber: scene.episodeNumber,
+          sceneId: scene.id,
+          origin: 'requiredBeat',
+          text: beat.mustDepict.trim(),
+          beatId: beat.id,
+        });
+      }
+    }
+    for (const beat of scene.encounter?.requiredBeats || []) {
+      if (isSignatureBeat(beat) && beat.mustDepict.trim()) {
+        out.push({
+          episodeNumber: scene.episodeNumber,
+          sceneId: scene.id,
+          origin: 'encounterRequiredBeat',
+          text: beat.mustDepict.trim(),
+          beatId: beat.id,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** Context for {@link SignatureDevicePresenceValidator.validate}. */
+export interface SignatureDevicePresenceInput {
+  /** The season scene plan carrying signature moments / signature required beats. */
+  plan: SeasonScenePlan;
+  /** The generated story whose prose must land each signature. */
+  story: Story;
+}
+
+export class SignatureDevicePresenceValidator extends BaseValidator {
+  constructor() {
+    super('SignatureDevicePresenceValidator');
+  }
+
+  /**
+   * Assert each authored signature device lands in the generated prose for its
+   * scene (keyword + light-semantic) and is not inverted/negated. Pure and
+   * deterministic — the same (plan, story) always yields the same result.
+   */
+  validate(input: SignatureDevicePresenceInput): ValidationResult {
+    const issues: ValidationIssue[] = [];
+    const signatures = collectSignatures(input.plan);
+
+    // No signature beats authored → nothing to enforce (from-scratch / silent
+    // treatment runs). Trivially valid.
+    if (signatures.length === 0) {
+      return { valid: true, score: 100, issues: [], suggestions: [] };
+    }
+
+    // Index generated prose by scene id and by episode number.
+    const sceneProseById = new Map<string, string>();
+    const episodeProseByNumber = new Map<number, string>();
+    for (const episode of input.story.episodes || []) {
+      episodeProseByNumber.set(episode.number, episodeProse(episode));
+      for (const scene of episode.scenes || []) {
+        sceneProseById.set(scene.id, sceneProse(scene));
+      }
+    }
+
+    for (const sig of signatures) {
+      // Prefer the exact scene's prose; fall back to the whole episode if the
+      // scene id was split/renamed downstream (still scene-local, not whole-story).
+      const sceneText = sceneProseById.get(sig.sceneId);
+      const haystack = sceneText ?? episodeProseByNumber.get(sig.episodeNumber) ?? '';
+      const where = `${sig.origin}:ep${sig.episodeNumber}:${sig.sceneId}${sig.beatId ? `:${sig.beatId}` : ''}`;
+
+      if (haystack.length === 0) {
+        issues.push(this.error(
+          `Signature device for episode ${sig.episodeNumber} scene "${sig.sceneId}" cannot be checked: no generated prose found for that scene or episode. Signature: "${sig.text}".`,
+          where,
+          'Ensure the planned scene carrying this signature beat actually produced a generated scene with reader-facing prose.',
+        ));
+        continue;
+      }
+
+      if (!signaturePresent(sig.text, haystack)) {
+        issues.push(this.error(
+          `Signature device is missing from the final prose of episode ${sig.episodeNumber} scene "${sig.sceneId}": "${sig.text}". The staged signature moment must be depicted, not summarized away.`,
+          where,
+          'Dramatize the signature device on-page in this scene — show the staged image/action the treatment fixed; do not drop or paraphrase it out.',
+        ));
+        continue;
+      }
+
+      if (signatureInverted(sig.text, haystack)) {
+        issues.push(this.error(
+          `Signature device appears INVERTED/negated in episode ${sig.episodeNumber} scene "${sig.sceneId}": "${sig.text}". The prose negates the staged moment (e.g. "he didn't ...") instead of depicting it.`,
+          where,
+          'Depict the signature device as it happens — remove the negation. The authored signature is a fixed staged beat and must occur, not be averted.',
+        ));
+      }
+    }
+
+    const errors = issues.filter((i) => i.severity === 'error').length;
+    const nonErrors = issues.length - errors;
+    const score = Math.max(0, 100 - errors * 10 - nonErrors * 2);
+    return {
+      valid: errors === 0,
+      score,
+      issues,
+      suggestions: issues.map((i) => i.suggestion).filter((s): s is string => Boolean(s)),
+    };
+  }
+}

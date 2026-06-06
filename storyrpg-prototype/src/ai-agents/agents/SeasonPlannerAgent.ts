@@ -69,18 +69,33 @@ import {
 import { clampSceneCount } from '../../constants/pipeline';
 import { isSceneFirstPlanningEnabled } from '../config/sceneFirstPlanning';
 import { buildSeasonScenePlan, scenesForEpisode } from '../pipeline/seasonScenePlanBuilder';
+import { reconcileBeatAnchors } from '../pipeline/beatAnchorReconciliation';
 import { buildScenePlanPrompt, normalizeAuthoredScenePlan } from '../pipeline/authorScenePlan';
 import { synthesizeTreatmentGuidance } from '../pipeline/synthesizeTreatmentGuidance';
 import { SceneSpineValidator } from '../validators/SceneSpineValidator';
 import { SeasonBudgetValidator } from '../validators/SeasonBudgetValidator';
+import { ConvergenceLedgerValidator } from '../validators/ConvergenceLedgerValidator';
+import {
+  CompetenceReachabilityValidator,
+  type FailForwardArm,
+} from '../validators/CompetenceReachabilityValidator';
 import {
   buildBudgetUnits,
   allocateChoiceTypes,
   allocateConsequenceTiers,
   weightedChoiceMix,
   weightedConsequenceMix,
+  computeChargeMap,
+  type BudgetContext,
 } from '../pipeline/seasonBudgetAllocator';
+import {
+  buildConvergenceLedger,
+  type SkillRoadblock,
+} from '../pipeline/convergenceLedgerBuilder';
+import type { SkillGrowthStep } from '../pipeline/expectedSkillCurve';
+import { consequenceFlags } from '../pipeline/consequenceFlags';
 import type { SeasonScenePlan } from '../../types/scenePlan';
+import type { ThreadLedger } from '../../types/narrativeThread';
 
 type MutablePlanData = Partial<SeasonPlan> & {
   encounterPlan?: any;
@@ -113,6 +128,13 @@ export interface SeasonPlannerInput {
     sceneEpisodeBranchMaxEpisodes?: number;
     pacing?: 'tight' | 'moderate' | 'expansive';
     endingMode?: EndingMode;
+    /**
+     * Treatment-fidelity strict mode (Phase 1, Step 1.2). When true, a conflict
+     * between an authored Section-7 beat→episode anchor and the per-episode
+     * structuralRole assignment throws instead of being repaired+logged. Default
+     * OFF (opt-in per run), consistent with the validator-gating pattern.
+     */
+    strictTreatmentValidation?: boolean;
   };
   
   // Optional: existing plan to update
@@ -240,20 +262,104 @@ Your plans must define:
       isSceneFirstPlanningEnabled(preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard') &&
       seasonPlan.scenePlan
     ) {
+      // Build the positional-axis context (Plan Part 3, Layers A–C): map each
+      // episode number to its structuralRole(s). The allocator/validator read it
+      // only when CONSEQUENCE_POSITIONAL is on; otherwise behavior is unchanged.
+      const roleByEpisode: Record<number, StructuralRole[]> = {};
+      for (const ep of seasonPlan.episodes) {
+        roleByEpisode[ep.episodeNumber] = ep.structuralRole ?? [];
+      }
+      const budgetCtx: BudgetContext = { roleByEpisode };
+
+      // Phase 4 (Plan Part 6 + Part 9): Convergence Ledger. Active ONLY when the
+      // CONVERGENCE_LEDGER flag is on. We project the season plan's setup/payoff
+      // edges and any available ThreadLedger onto ONE ledger, derive the dramatic
+      // charge map from it, and thread both into the allocator/validator via
+      // budgetCtx. With the flag off, no ledger is built and budgetCtx carries no
+      // charge — behavior is byte-identical to before.
+      let convergenceLedger:
+        | import('../../types/convergenceLedger').ConvergenceLedger
+        | undefined;
+      // The ThreadLedger is not yet a canonical SeasonPlan field at this stage;
+      // read it defensively so an upstream contributor can supply it, and tolerate
+      // its absence (Plan Part 6: many contributors, one read path).
+      const seasonThreadLedger = (seasonPlan as { threadLedger?: ThreadLedger })
+        .threadLedger;
+      // Phase 5b (CHARGE_COMPETENCE): competence roadblocks / growth / fail-forward
+      // arms are not yet canonical SeasonPlan fields at this stage — read them
+      // defensively so an upstream contributor (EncounterArchitect / arc tracker)
+      // can supply them, and tolerate their absence.
+      const competenceInput = seasonPlan as {
+        skillRoadblocks?: SkillRoadblock[];
+        skillGrowth?: SkillGrowthStep[];
+        skillBaselines?: { skill: string; level: number }[];
+        failForwardArms?: FailForwardArm[];
+      };
+      if (consequenceFlags().ledger) {
+        convergenceLedger = buildConvergenceLedger(seasonPlan.scenePlan, {
+          threadLedger: seasonThreadLedger,
+          // Roadblocks only project when CHARGE_COMPETENCE is on (builder-gated).
+          roadblocks: competenceInput.skillRoadblocks,
+        });
+        budgetCtx.ledger = convergenceLedger;
+        budgetCtx.chargeMap = computeChargeMap(
+          seasonPlan.scenePlan,
+          convergenceLedger,
+        ).charge;
+      }
+
       // Allocate choiceType/consequenceTier/budgetWeight onto the PlannedScenes
       // in plan.scenePlan, then re-slice each episode so ep.plannedScenes carry
       // the same budgeted fields.
       const units = buildBudgetUnits(seasonPlan.scenePlan);
-      allocateChoiceTypes(units);
-      allocateConsequenceTiers(units);
+      allocateChoiceTypes(units, budgetCtx);
+      allocateConsequenceTiers(units, budgetCtx);
       for (const ep of seasonPlan.episodes) {
         ep.plannedScenes = scenesForEpisode(seasonPlan.scenePlan, ep.episodeNumber);
       }
 
       // Validate the realized dramatic diet (advisory into plan.warnings).
-      const budgetResult = new SeasonBudgetValidator().validate(seasonPlan.scenePlan);
+      const budgetResult = new SeasonBudgetValidator().validate(seasonPlan.scenePlan, budgetCtx);
       for (const issue of budgetResult.issues) {
         seasonPlan.warnings.push(`[SeasonBudget:${issue.severity}] ${issue.message}`);
+      }
+
+      // Phase 4: run the ConvergenceLedgerValidator ADVISORY (not hard-gated here)
+      // when the ledger was built — forward-only edges, no anchorless heavy charge,
+      // charge-coverage on heavy tiers, and major-promise detonation. Findings go
+      // into plan.warnings for the diagnostics trail.
+      if (convergenceLedger) {
+        const ledgerResult = new ConvergenceLedgerValidator().validate(
+          seasonPlan.scenePlan,
+          convergenceLedger,
+          { threadLedger: seasonThreadLedger },
+        );
+        for (const issue of ledgerResult.issues) {
+          seasonPlan.warnings.push(`[ConvergenceLedger:${issue.severity}] ${issue.message}`);
+        }
+      }
+
+      // Phase 5b (CHARGE_COMPETENCE): the no-dead-wall / dangling-growth /
+      // fail-forward-gap guard, ADVISORY into plan.warnings. Active ONLY when the
+      // competence flag is on AND roadblock/growth/arm data was supplied; with the
+      // flag off (or no competence data) nothing runs and behavior is unchanged.
+      if (
+        consequenceFlags().competence &&
+        ((competenceInput.skillRoadblocks?.length ?? 0) > 0 ||
+          (competenceInput.failForwardArms?.length ?? 0) > 0)
+      ) {
+        const competenceResult = new CompetenceReachabilityValidator().validate(
+          seasonPlan.scenePlan,
+          {
+            roadblocks: competenceInput.skillRoadblocks ?? [],
+            growth: competenceInput.skillGrowth,
+            baselines: competenceInput.skillBaselines,
+            failForwardArms: competenceInput.failForwardArms,
+          },
+        );
+        for (const issue of competenceResult.issues) {
+          seasonPlan.warnings.push(`[CompetenceReachability:${issue.severity}] ${issue.message}`);
+        }
       }
 
       // Summarize the realized weighted mix for the diagnostics trail.
@@ -1361,6 +1467,26 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     // missing canonical beat onto the episode the default distribution assigns
     // it — feeding the result back into the map instead of discarding it.
     backfillMissingBeats(structuralRoleByEpisode, defaultDistribution);
+
+    // Step 1.2 (defensive second pass): the LLM planner output can re-introduce
+    // beat drift via per-episode structuralRole. Reconcile the assembled map
+    // against the authored Section-7 anchors — the anchor wins, conflicts are
+    // logged, and in strict mode a conflict throws. Mirrors the reconciliation
+    // SourceMaterialAnalyzer already ran on the analysis upstream.
+    const beatAnchors = analysis.treatmentSeasonGuidance?.beatEpisodeAnchors;
+    if (beatAnchors) {
+      const reconcilable = [...structuralRoleByEpisode.entries()].map(([episodeNumber, structuralRole]) => ({
+        episodeNumber,
+        structuralRole,
+      }));
+      reconcileBeatAnchors(reconcilable, beatAnchors, {
+        strict: preferences?.strictTreatmentValidation ?? false,
+        log: (message) => console.warn(`[SeasonPlannerAgent] Beat-anchor reconciliation: ${message}`),
+      });
+      for (const entry of reconcilable) {
+        structuralRoleByEpisode.set(entry.episodeNumber, entry.structuralRole ?? []);
+      }
+    }
 
     // Build SeasonEpisode objects with encounter data
     const episodes: SeasonEpisode[] = analysis.episodeBreakdown.map(ep => {

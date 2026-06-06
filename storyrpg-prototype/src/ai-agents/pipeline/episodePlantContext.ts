@@ -19,6 +19,7 @@
  */
 
 import type { Choice } from '../../types/choice';
+import type { Consequence, SetFlag } from '../../types/consequences';
 import type { CallbackLedger } from './callbackLedger';
 import type { UnresolvedCallbackForPrompt } from './callbackOrchestration';
 
@@ -157,4 +158,137 @@ export function mergeUnresolvedForScene(
   );
   const merged = [...(crossEpisode ?? []), ...within];
   return merged.length > 0 ? merged : undefined;
+}
+
+// ========================================
+// CONSEQUENCE-SEED EMITTERS (Treatment fidelity, §3.3)
+// ========================================
+//
+// Authored consequence seeds (Section 9 of a treatment) are encoded by the
+// SeasonPlannerAgent into a scene's `encounterSetupContext` as directives of the
+// form `flag:treatment_seed_ep<N>_<idx> — <description>`. Until now those flags
+// only ever appeared in READ/CHECK positions (preconditions surfaced to the
+// encounter), so a downstream `treatment_seed_*` precondition could never be
+// true — nothing on-page SET it. That broke authored cause→effect chains (e.g.
+// "Darian's poison set" in Ep3 → the Ep4 trap precondition).
+//
+// These helpers close the loop deterministically: they read the `flag:` seed
+// directives off the origin scene and emit a `setFlag` consequence so the seed is
+// SET on-page, not only read. No LLM call, no templated prose.
+
+const TREATMENT_SEED_PREFIX = 'treatment_seed_';
+
+/**
+ * Parse the authored consequence-seed flag NAMES out of a scene's
+ * `encounterSetupContext` directives. Only `flag:treatment_seed_* — ...`
+ * directives qualify; relationship/other directives are ignored. Returns unique,
+ * order-preserving flag names.
+ */
+export function treatmentSeedFlagsFromSetupContext(setupContext: readonly string[] | undefined): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const directive of setupContext ?? []) {
+    if (typeof directive !== 'string') continue;
+    if (!directive.startsWith('flag:')) continue;
+    const rest = directive.slice('flag:'.length);
+    const dashIdx = rest.indexOf(' — ');
+    const flagName = (dashIdx !== -1 ? rest.slice(0, dashIdx) : rest).trim();
+    if (!flagName.startsWith(TREATMENT_SEED_PREFIX)) continue;
+    if (seen.has(flagName)) continue;
+    seen.add(flagName);
+    out.push(flagName);
+  }
+  return out;
+}
+
+/**
+ * Build the deterministic `setFlag` consequences for a set of authored seed
+ * flags. Each becomes `{ type: 'setFlag', flag, value: true }`. Pure.
+ */
+export function buildTreatmentSeedConsequences(seedFlags: readonly string[]): SetFlag[] {
+  return seedFlags.map((flag) => ({ type: 'setFlag', flag, value: true }));
+}
+
+/**
+ * Emit the authored consequence seeds for the origin scene by ATTACHING a
+ * deterministic `setFlag` consequence to a choice, so the seed is set on-page and
+ * a later authored precondition referencing it can be satisfied (§3.3). Mutates
+ * and returns the choices array.
+ *
+ * Placement rule (deterministic, no LLM): the seed is attached to the choice that
+ * already carries the most consequences (the scene's "load-bearing" choice) — or
+ * the first choice if none stand out. A seed flag already present on ANY choice is
+ * not duplicated. Choices with no consequences array get one created.
+ *
+ * Call this once per origin scene after its choices are authored, passing the
+ * seed flags resolved from the scene's `encounterSetupContext` (via
+ * {@link treatmentSeedFlagsFromSetupContext}).
+ */
+/**
+ * Resolve the authored treatment-seed flags a scene must SET, from both the
+ * StoryArchitect-recorded sources: the choicePoint's `setsTreatmentSeeds` (the
+ * explicit "this scene sets these seeds" list) and any `flag:treatment_seed_* — ...`
+ * directive on the scene's `encounterSetupContext`. Order-preserving, deduped.
+ */
+export function resolveSceneTreatmentSeeds(scene: {
+  choicePoint?: { setsTreatmentSeeds?: string[] };
+  encounterSetupContext?: string[];
+}): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (flag: string): void => {
+    if (!flag.startsWith(TREATMENT_SEED_PREFIX) || seen.has(flag)) return;
+    seen.add(flag);
+    out.push(flag);
+  };
+  for (const flag of scene.choicePoint?.setsTreatmentSeeds ?? []) {
+    if (typeof flag === 'string') push(flag);
+  }
+  for (const flag of treatmentSeedFlagsFromSetupContext(scene.encounterSetupContext)) {
+    push(flag);
+  }
+  return out;
+}
+
+/**
+ * Pipeline seam (§3.3 / GAP-C): given a freshly-authored scene's choice set and the
+ * scene blueprint that declares its authored consequence seeds, deterministically
+ * emit a `setFlag` for each seed onto a choice so the seed is SET on-page. One-line
+ * call site in {@link FullStoryPipeline}. Returns the (mutated) choices; a no-op when
+ * the scene declares no treatment seeds, so non-treatment runs are unaffected.
+ */
+export function emitSceneTreatmentSeeds(
+  scene: { choicePoint?: { setsTreatmentSeeds?: string[] }; encounterSetupContext?: string[] },
+  choices: Choice[],
+): Choice[] {
+  return emitTreatmentSeedConsequences(choices, resolveSceneTreatmentSeeds(scene));
+}
+
+export function emitTreatmentSeedConsequences(choices: Choice[], seedFlags: readonly string[]): Choice[] {
+  if (!choices.length || !seedFlags.length) return choices;
+
+  const alreadySet = new Set<string>();
+  for (const choice of choices) {
+    for (const c of choice.consequences ?? []) {
+      if (c.type === 'setFlag' && typeof c.flag === 'string') alreadySet.add(c.flag);
+    }
+  }
+
+  const pending = seedFlags.filter((f) => !alreadySet.has(f));
+  if (!pending.length) return choices;
+
+  // Pick the load-bearing choice: most existing consequences, else the first.
+  let target = choices[0];
+  let best = target.consequences?.length ?? 0;
+  for (const choice of choices) {
+    const n = choice.consequences?.length ?? 0;
+    if (n > best) {
+      best = n;
+      target = choice;
+    }
+  }
+
+  const next: Consequence[] = [...(target.consequences ?? []), ...buildTreatmentSeedConsequences(pending)];
+  target.consequences = next;
+  return choices;
 }

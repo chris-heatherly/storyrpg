@@ -32,6 +32,7 @@ import {
   buildStructuralContextSection,
 } from '../prompts/storytellingPrinciples';
 import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
+import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
 import { SCENE_WRITER_BEAT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
@@ -1405,6 +1406,7 @@ ${input.sceneBlueprint.keyBeats
   .filter((beat) => !isAgentFacingPressureNote(beat))
   .map((beat) => `- ${stripAgentFacingPressureLabel(beat)}`)
   .join('\n')}
+${buildRequiredBeatsSection(input.sceneBlueprint)}
 
 ${input.sceneBlueprint.choicePoint ? `
 ### Choice Point

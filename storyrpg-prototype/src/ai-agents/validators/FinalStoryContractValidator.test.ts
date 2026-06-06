@@ -420,15 +420,62 @@ describe('FinalStoryContractValidator', () => {
     expect(report.blockingIssues.filter((i) => i.type === 'broken_navigation')).toEqual([]);
   });
 
-  it('passes a sparse encounter scene when the runtime encounter is valid', async () => {
+  // §4.2 (Treatment-Fidelity Remediation): on a TREATMENT-SOURCED run, an encounter
+  // scene with ZERO reader-facing beats is empty — even when its runtime encounter is
+  // valid. This closes the wall-breach-is-empty → poisoning-never-administered hole
+  // where an authored encounter anchor materialized as a 0-beat placeholder and passed.
+  it('fails a 0-beat valid-encounter scene on a treatment-sourced run', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        scenes: [{
+          id: 'scene-1',
+          name: 'Empty Encounter',
+          startingBeatId: '',
+          beats: [],
+          encounter: validEncounter() as any,
+        }],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story, treatmentSourced: true });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues.some((i) => i.type === 'empty_scene')).toBe(true);
+  });
+
+  // Regression guard: a 0-beat scene whose content legitimately lives in its runtime
+  // encounter (storylets) must NOT be failed on a non-treatment run — that would
+  // contradict StructuralValidator's deliberate encounter exemption and break the
+  // broad existing corpus. The §4.2 tightening is scoped to treatment-sourced runs.
+  it('does NOT fail a 0-beat valid-encounter scene on a non-treatment run', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        scenes: [{
+          id: 'scene-1',
+          name: 'Storylet Encounter',
+          startingBeatId: '',
+          beats: [],
+          encounter: validEncounter() as any,
+        }],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues.some((i) => i.type === 'empty_scene')).toBe(false);
+  });
+
+  it('passes an encounter scene that carries at least one reader-facing beat', async () => {
     const story = validStory({
       episodes: [{
         ...validStory().episodes[0],
         scenes: [{
           id: 'scene-1',
           name: 'Good Encounter',
-          startingBeatId: '',
-          beats: [],
+          startingBeatId: 'beat-1',
+          beats: [{ id: 'beat-1', text: 'Steel rings against the breach as the wall gives way.' } as any],
           encounter: validEncounter() as any,
         }],
       }],
@@ -464,5 +511,46 @@ describe('FinalStoryContractValidator', () => {
     // ...with the QA failure recorded as a warning, not a blocking issue.
     expect(report.warnings.some((i) => i.type === 'qa_blocker_present')).toBe(true);
     expect(report.blockingIssues.some((i) => i.type === 'qa_blocker_present')).toBe(false);
+  });
+
+  // §4.6 — treatment-fidelity findings (4.1–4.5) hard-fail when the source is an
+  // authored treatment; QA-prose downgrades are unaffected.
+  it('hard-fails a treatment-fidelity finding when the source is an authored treatment', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      fidelityFindings: [{
+        validator: 'AuthoredEpisodeConformanceValidator',
+        severity: 'error',
+        message: 'Episode 2 title drifted from the authored treatment.',
+      }],
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues.some((i) => i.type === 'treatment_fidelity_violation')).toBe(true);
+  });
+
+  it('downgrades a fidelity finding to advisory when the source is NOT a treatment', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: false,
+      fidelityFindings: [{
+        validator: 'SignatureDevicePresenceValidator',
+        severity: 'error',
+        message: 'Signature device not found in prose.',
+      }],
+    });
+
+    expect(report.passed).toBe(true);
+    expect(report.warnings.some((i) => i.type === 'treatment_fidelity_violation')).toBe(true);
+  });
+
+  it('does not block on fidelity findings at all when none are dispatched (default-off)', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+    });
+
+    expect(report.blockingIssues.some((i) => i.type === 'treatment_fidelity_violation')).toBe(false);
   });
 });

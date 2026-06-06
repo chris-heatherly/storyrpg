@@ -168,7 +168,65 @@ const baselines = {
   // rest of generateEpisodeFromOutline, silently dropping ALL narrative diagnostics (+ 08-registry-
   // state) in every multi-episode run for months. Now emitted at a guaranteed-reached point with
   // an unconditional reach marker. Net of removing the old post-image-gen block.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21607,
+  //
+  // +550 (21607 -> 22157): consequence-intelligence rollout commits (Plan Parts 1-9) that grew the
+  // per-episode loop in place without re-baselining. Captured here as a single catch-up entry.
+  //
+  // +12 (22157 -> 22169): Phase 6 charge-materialization gate WIRING — minimal call site only
+  // (import + runEpisodeChargeMaterializationForSeason call after the blueprint persist). All
+  // logic lives in pipeline/episodeChargeMaterialization.ts (extracted, not added to this file).
+  //
+  // +3 (22169 -> 22172): treatment-fidelity Phase 2 (RC6) bible-forwarding WIRING — pass already-
+  // existing brief.seasonPlan fields (locationIntroductions -> WorldBuilder; characterArchitecture
+  // + informationLedger -> CharacterDesigner) into their agent calls so authored content reaches
+  // the bibles. Pure forwarding of existing data; all consuming logic lives in the agents.
+  //
+  // +12 (22172 -> 22184): treatment-fidelity end-to-end WIRING (GAP-C + GAP-D). GAP-C: one
+  // emitSceneTreatmentSeeds() call at the ChoiceAuthor seam so authored consequence seeds are
+  // SET on-page (setFlag treatment_seed_*) — logic in pipeline/episodePlantContext.ts. GAP-D:
+  // one runFidelityValidators() dispatch + import feeding fidelityFindings/treatmentSourced into
+  // the final contract (so the 5 §4 validators stop being inert) — logic in
+  // validators/runFidelityValidators.ts. Both are thin call sites; all real logic is extracted.
+  //
+  // +7 (22184 -> 22191): witness-id canonicalization WIRING — one import + one
+  // canonicalizeWitnessReactions() call in prepareValidationInput so per-episode
+  // best-practices reports (and the assembled story) carry canonical witness npcIds
+  // instead of raw NPC labels, letting GATE_WITNESS_ID_INTEGRITY be enforced without
+  // false hard-aborts. All resolver logic lives in utils/witnessNpcResolver.ts.
+  //
+  // +37 (22191 -> 22228): validator-gating Wave 0 SHADOW telemetry at the gate
+  // seams — two thin recorder methods (recordGateShadowSafe / recordPlanGateShadow)
+  // plus five one-line shadow calls and `|| shadow` guards so each plan-time gate
+  // runs in shadow mode and logs would-gate/would-repair data even while its flag is
+  // off. Record-building is extracted to remediation/gateShadowLedger.ts
+  // (buildGateShadowRecord); only the `this`-bound plumbing remains here. The data
+  // (gate-shadow-ledger.jsonl) is what promotes a gate off->on.
+  //
+  // +25 (22228 -> 22253): final-contract repair loop (Wave 4 keystone). The
+  // validate+encounter-gate body is refactored into a `runValidation(story)` closure
+  // (most lines moved, not added) so a failing contract can attempt bounded repair +
+  // re-validation BEFORE the hard-abort throw, instead of throwing on first failure.
+  // Loop driver + deterministic handlers live in remediation/finalContractRepair.ts;
+  // only the gated invocation is here. Default-off (GATE_FINAL_CONTRACT_REPAIR).
+  //
+  // +14 (22253 -> 22267): PropIntroduction repair loop at its gate seam — resolve
+  // raw label->canonical-id references (the witness-bug class) and re-validate before
+  // aborting; genuine unknowns still block. Loop logic lives in
+  // remediation/repairs/propIntroductionRepair.ts (repairAndRevalidatePropIntroduction);
+  // only the gated seam invocation is here. Default-off (GATE_PROP_INTRODUCTION).
+  //
+  // +44 (22267 -> 22311): Wave-0 shadow telemetry for the final-contract-class gates —
+  // a recordFinalContractShadow() method (design-note + the 5 treatment-fidelity
+  // validators, run ungated via runFidelityValidatorsShadow) and a micro-episode-season
+  // shadow record. Records would-gate counts regardless of flag so those gates can be
+  // promoted off->on on data. Default-on shadow (STORYRPG_GATE_SHADOW).
+  //
+  // +10 (22311 -> 22321): witness-scene-presence repair — after canonicalizing witness
+  // npcIds in prepareValidationInput, add each canonical/known witness NPC to its scene's
+  // charactersInvolved so the "not listed in scene" presence warning clears (additive,
+  // deterministic). Logic in utils/witnessNpcResolver.ts (ensureWitnessNpcsInScenes);
+  // only the gated call is here. Default-on, reversible (GATE_WITNESS_SCENE_PRESENCE).
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 22321,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

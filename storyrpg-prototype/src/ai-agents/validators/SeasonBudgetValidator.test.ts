@@ -13,7 +13,7 @@
  * weights and forces encounters to `hasChoice`.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { SeasonBudgetValidator } from './SeasonBudgetValidator';
 import type { ValidationIssue } from './BaseValidator';
 import type {
@@ -23,6 +23,11 @@ import type {
   SeasonScenePlan,
 } from '../../types/scenePlan';
 import type { ChoiceType } from '../../types/choice';
+import {
+  buildBudgetUnits,
+  allocateChoiceTypes,
+  allocateConsequenceTiers,
+} from '../pipeline/seasonBudgetAllocator';
 
 // ----------------------------------------------------------------------------
 // Builders
@@ -273,5 +278,119 @@ describe('SeasonBudgetValidator', () => {
 
     expect(result.issues.some((i) => i.severity === 'warning' && /no budgeted units/.test(i.message))).toBe(true);
     expect(errors(result.issues)).toHaveLength(0);
+  });
+});
+
+// ----------------------------------------------------------------------------
+// PHASE 2 — TWO-POPULATION VALIDATION (Plan Part 3, Layer D)
+// ----------------------------------------------------------------------------
+
+/** A choiceless standard scene the allocator will populate. */
+function blankScene(id: string): PlannedScene {
+  return {
+    id,
+    episodeNumber: 1,
+    order: nextId++,
+    kind: 'standard',
+    title: 'scene',
+    dramaticPurpose: 'purpose',
+    narrativeRole: 'development',
+    locations: [],
+    npcsInvolved: [],
+    setsUp: [],
+    paysOff: [],
+    hasChoice: true,
+  };
+}
+
+/** A blank encounter the allocator will populate. */
+function blankEncounter(id: string, isBranchPoint = false): PlannedScene {
+  return {
+    id,
+    episodeNumber: 1,
+    order: nextId++,
+    kind: 'encounter',
+    title: 'encounter',
+    dramaticPurpose: 'purpose',
+    narrativeRole: 'turn',
+    locations: [],
+    npcsInvolved: [],
+    setsUp: [],
+    paysOff: [],
+    encounter: { type: 'combat', difficulty: 'moderate', relevantSkills: [], isBranchPoint },
+  };
+}
+
+describe('SeasonBudgetValidator — two-population (Phase 2)', () => {
+  afterEach(() => {
+    delete process.env.CONSEQUENCE_TWO_POP;
+  });
+
+  /** Build + fully allocate an 8-encounter / 40-scene season plan. */
+  function allocatedEightAndForty(): SeasonScenePlan {
+    const scenes: PlannedScene[] = [];
+    for (let i = 0; i < 8; i++) scenes.push(blankEncounter(`enc-${i}`, i < 3));
+    for (let i = 0; i < 40; i++) scenes.push(blankScene(`scn-${i}`));
+    const plan = planOf(scenes);
+    const units = buildBudgetUnits(plan);
+    allocateChoiceTypes(units);
+    allocateConsequenceTiers(units);
+    return plan;
+  }
+
+  it('flag ON: an allocator-produced 8-enc/40-scene plan validates clean', () => {
+    process.env.CONSEQUENCE_TWO_POP = '1';
+    const plan = allocatedEightAndForty();
+
+    const result = new SeasonBudgetValidator().validate(plan);
+
+    expect(errors(result.issues)).toHaveLength(0);
+    expect(result.valid).toBe(true);
+    // No total-heavy-mass drift: the spine-derived band absorbs the heavy encounters.
+    expect(result.issues.find((i) => i.location === 'consequenceMix:heavy')).toBeUndefined();
+  });
+
+  it('flag OFF (default): the SAME heavy plan trips the unified consequence band', () => {
+    delete process.env.CONSEQUENCE_TWO_POP;
+    const plan = allocatedEightAndForty();
+
+    const result = new SeasonBudgetValidator().validate(plan);
+
+    // The unified check measures encounters against the scene-texture %, so the
+    // heavy encounter load overshoots branchlet/branch — at least one unified
+    // consequence-tier drift fires (and none of the Phase-2 scene-only / heavy
+    // locations exist).
+    const unifiedDrift = result.issues.filter((i) => /^consequenceMix:(callback|tint|branchlet|branch)$/.test(i.location ?? ''));
+    expect(unifiedDrift.length).toBeGreaterThan(0);
+    expect(result.issues.find((i) => i.location === 'consequenceMix:heavy')).toBeUndefined();
+    expect(result.issues.find((i) => (i.location ?? '').startsWith('sceneConsequenceMix:'))).toBeUndefined();
+  });
+
+  it('flag ON: warns when an encounter violates its spine invariant', () => {
+    process.env.CONSEQUENCE_TWO_POP = '1';
+    // A branch-point encounter mis-tiered to branchlet (should be branch).
+    const scenes: PlannedScene[] = [
+      encounterUnit('strategic', 'branchlet', { isBranchPoint: true }),
+      ...repeat(20, () => sceneUnit('expression', 'callback')),
+      ...repeat(8, () => sceneUnit('relationship', 'tint')),
+    ];
+
+    const result = new SeasonBudgetValidator().validate(planOf(scenes));
+
+    const spineIssue = result.issues.find((i) => (i.location ?? '').startsWith('encounterSpine:'));
+    expect(spineIssue).toBeDefined();
+    expect(spineIssue?.message).toMatch(/spine invariant 'branch'/);
+  });
+
+  it('flag ON: a scene-only mix far from 60/30/8/2 trips the scene texture check', () => {
+    process.env.CONSEQUENCE_TWO_POP = '1';
+    // All scenes are heavy branchlet dilemmas → scene branchlet % ~100 vs target 8.
+    const scenes: PlannedScene[] = repeat(20, () => sceneUnit('dilemma', 'branchlet'));
+
+    const result = new SeasonBudgetValidator().validate(planOf(scenes));
+
+    const sceneBranchlet = result.issues.find((i) => i.location === 'sceneConsequenceMix:branchlet');
+    expect(sceneBranchlet).toBeDefined();
+    expect(sceneBranchlet?.severity).toBe('error');
   });
 });

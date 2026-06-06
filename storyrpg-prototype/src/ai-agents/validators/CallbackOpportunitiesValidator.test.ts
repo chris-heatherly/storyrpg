@@ -88,3 +88,28 @@ describe('CallbackOpportunitiesValidator', () => {
     ).toBe(true);
   });
 });
+
+describe('CallbackOpportunitiesValidator referential-flag filter (Fix 3i)', () => {
+  it('excludes one-shot tint/expr/moment flags from callback-debt accounting', async () => {
+    const validator = new CallbackOpportunitiesValidator();
+    const result = await validator.validate({
+      scenes: [makeScene('s1', [{ id: 'b1', text: 'plain' }])],
+      choices: [
+        {
+          id: 'c1',
+          sceneId: 's1',
+          text: 'react',
+          consequences: [
+            { type: 'setFlag', flag: 'tint:distant' },
+            { type: 'setFlag', flag: 'expr:wry' },
+            { type: 'setFlag', flag: 'moment:held' },
+            { type: 'setFlag', flag: 'route_spared_the_guard' },
+          ] as any,
+        },
+      ],
+    });
+
+    // Only the referential route_* flag counts toward "should be referenced".
+    expect(result.metrics.flagsSet).toBe(1);
+  });
+});

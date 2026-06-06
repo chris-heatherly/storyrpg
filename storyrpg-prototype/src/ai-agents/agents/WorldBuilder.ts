@@ -10,6 +10,7 @@
 
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
+import { resolveAuthoredContext } from '../utils/documentSectionSlice';
 
 // Input types
 export interface WorldBuilderInput {
@@ -47,6 +48,18 @@ export interface WorldBuilderInput {
 
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
+
+  /**
+   * Authored per-location introduction order (treatment Section 4), forwarded
+   * from `seasonPlan.locationIntroductions`. When present, every authored
+   * location must get its own world-bible location (no hard 3-location cap);
+   * when absent, the agent falls back to the prior 3-5 location behavior.
+   */
+  locationIntroductions?: Array<{
+    locationId: string;
+    locationName: string;
+    introducedInEpisode: number;
+  }>;
 }
 
 // Output types
@@ -447,6 +460,21 @@ IMPORTANT: Return EXACTLY ${missingLocations.length} locations with IDs matching
       ? `Each location in the "locations" array MUST have "id" set to EXACTLY one of: ${locationIds}`
       : `You MUST create 3-5 locations appropriate for this ${input.storyContext.genre} story. Use IDs: "location-1", "location-2", "location-3", etc. The first location ("location-1") will be where the story begins.`;
 
+    // Authored location count (treatment Section 4). When present it drives the
+    // location cap (one per authored brief) instead of the old "exactly 3" cap.
+    const authoredLocationCount = input.locationIntroductions?.length ?? 0;
+    const countInstruction =
+      authoredLocationCount > 0
+        ? `Create one location per authored location brief — exactly ${authoredLocationCount} location${authoredLocationCount === 1 ? '' : 's'} — and one faction per authored faction. Do not drop or merge authored locations.`
+        : `Create 3-5 locations and 2-3 factions appropriate to the story (no more than needed).`;
+
+    // Section-aware source slice (Section 4 world + location brief), not a lossy
+    // first-3000-chars cut. Falls back to the full doc when no headings match.
+    const authoredContext = resolveAuthoredContext(input.rawDocument, [
+      ['world + location brief', 'world and location brief', 'world + location', 'location brief'],
+      ['world architecture', 'setting'],
+    ]);
+
     return `
 Create a comprehensive world bible for the following story:
 
@@ -468,11 +496,11 @@ ${locationList}
 
 ## Established Lore (Must Maintain Consistency)
 ${existingLore}
-${input.rawDocument ? `
+${authoredContext.text ? `
 ## Original Source Document (Reference for Additional Context)
 Use this document to extract any additional world details, locations, characters, or lore that might be helpful:
 
-${input.rawDocument.substring(0, 3000)}${input.rawDocument.length > 3000 ? '\n... (truncated)' : ''}
+${authoredContext.text}${authoredContext.truncated ? '\n... (truncated)' : ''}
 ` : ''}${input.memoryContext ? `
 ## Pipeline Memory (Insights from Prior Generations)
 ${input.memoryContext}
@@ -536,7 +564,7 @@ CRITICAL REQUIREMENTS:
 1. ${locationInstructions}
 2. Each location "fullDescription" must be 80-200 characters (2-3 sentences, NOT paragraphs)
 3. Each location needs "sensoryDetails" with all 5 senses
-4. Create exactly 3 locations and 2 factions (no more)
+4. ${countInstruction}
 5. Keep ALL text concise - quality over quantity
 6. IDs must be strings: "location-1", "faction-1", etc.
 

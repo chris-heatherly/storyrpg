@@ -6,6 +6,7 @@ import type {
   TreatmentEpisodeGuidance,
   TreatmentSeasonGuidance,
 } from '../../types/sourceAnalysis';
+import { extractBeatEpisodeAnchors } from './treatmentFingerprint';
 
 export interface ExtractedTreatment {
   isTreatment: boolean;
@@ -500,10 +501,17 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
     endings: getFlexibleSection(markdown, ['alternate endings']),
     failureModeAudit: getFlexibleSection(markdown, ['failure mode audit']),
   };
+  // Step 1.1: decompose the Section-7 free-text spine (e.g. `Plot turn 1 (Ep3)`)
+  // into a structured beat→episode anchor map. Reuses the Phase-0 parser so the
+  // map and the version fingerprint stay in lockstep.
+  const beatEpisodeAnchors = extractBeatEpisodeAnchors(sections.seasonSpine);
+  if (Object.keys(beatEpisodeAnchors).length > 0) {
+    sections.beatEpisodeAnchors = beatEpisodeAnchors;
+  }
   sections.rawSectionSummary = Object.entries(sections)
     .filter(([key, value]) => key !== 'episodeStructureMode' && key !== 'rawSectionSummary' && typeof value === 'string' && value.trim().length > 0)
     .map(([key]) => key);
-  return sections.rawSectionSummary.length > 0 ? sections : undefined;
+  return sections.rawSectionSummary.length > 0 || Object.keys(beatEpisodeAnchors).length > 0 ? sections : undefined;
 }
 
 function getEpisodeHeadingNumbers(section: string): number[] {
@@ -513,10 +521,24 @@ function getEpisodeHeadingNumbers(section: string): number[] {
     .filter(Number.isFinite);
 }
 
+/**
+ * Thrown by {@link validateExtractedTreatment} when `strict` is enabled and a
+ * structural episode-integrity warning (non-contiguous numbering;
+ * heading-count > parsed-count) is detected. Default behavior (strict off) is
+ * unchanged — these surface as warnings only.
+ */
+export class TreatmentValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TreatmentValidationError';
+  }
+}
+
 export function validateExtractedTreatment(
   markdown: string,
   treatment: Pick<ExtractedTreatment, 'episodes' | 'branches' | 'endings' | 'seasonGuidance'>,
   sections?: { episodeSection?: string; branchSection?: string; endingSection?: string },
+  strict = false,
 ): string[] {
   const warnings: string[] = [];
   const episodeNumbers = Object.keys(treatment.episodes || {})
@@ -530,7 +552,9 @@ export function validateExtractedTreatment(
       if (!episodeNumbers.includes(episodeNumber)) missing.push(episodeNumber);
     }
     if (missing.length > 0) {
-      warnings.push(`Treatment episode numbering is not contiguous; missing episode(s): ${missing.join(', ')}.`);
+      const message = `Treatment episode numbering is not contiguous; missing episode(s): ${missing.join(', ')}.`;
+      if (strict) throw new TreatmentValidationError(message);
+      warnings.push(message);
     }
   }
 
@@ -538,7 +562,9 @@ export function validateExtractedTreatment(
   const headedEpisodeNumbers = episodeSection ? getEpisodeHeadingNumbers(episodeSection) : [];
   const uniqueHeadedEpisodeCount = new Set(headedEpisodeNumbers).size;
   if (uniqueHeadedEpisodeCount > episodeNumbers.length) {
-    warnings.push(`Treatment appears to contain ${uniqueHeadedEpisodeCount} episode heading(s), but only ${episodeNumbers.length} parsed.`);
+    const message = `Treatment appears to contain ${uniqueHeadedEpisodeCount} episode heading(s), but only ${episodeNumbers.length} parsed.`;
+    if (strict) throw new TreatmentValidationError(message);
+    warnings.push(message);
   }
 
   const branchSection = sections?.branchSection || getFlexibleSection(markdown, ['cross-sceneepisode branches', 'cross-sceneepisode branches and consequence chains', 'cross-episode branches', 'cross-episode branches and consequence chains', 'consequence chains', 'branch']);
@@ -578,7 +604,21 @@ export function validateExtractedTreatment(
   return warnings;
 }
 
-export function extractTreatmentFromMarkdown(markdown: string): ExtractedTreatment {
+/** Options for {@link extractTreatmentFromMarkdown}. */
+export interface ExtractTreatmentOptions {
+  /**
+   * When true, structural episode-integrity warnings (non-contiguous numbering;
+   * heading-count > parsed-count) throw a {@link TreatmentValidationError}
+   * instead of being recorded as warnings. Default OFF (opt-in per run),
+   * consistent with the validator-gating pattern.
+   */
+  strictValidation?: boolean;
+}
+
+export function extractTreatmentFromMarkdown(
+  markdown: string,
+  options?: ExtractTreatmentOptions,
+): ExtractedTreatment {
   if (isPromptGuideMarkdown(markdown)) {
     return {
       isTreatment: false,
@@ -605,7 +645,7 @@ export function extractTreatmentFromMarkdown(markdown: string): ExtractedTreatme
   const warnings: string[] = [];
   if (looksLikeTreatment && Object.keys(episodes).length === 0) warnings.push('No episode guidance could be parsed from the treatment.');
   if (looksLikeTreatment && endings.length === 0) warnings.push('No ending targets could be parsed from the treatment.');
-  warnings.push(...validateExtractedTreatment(markdown, { episodes, branches, endings, seasonGuidance }, { episodeSection, branchSection, endingSection }));
+  warnings.push(...validateExtractedTreatment(markdown, { episodes, branches, endings, seasonGuidance }, { episodeSection, branchSection, endingSection }, options?.strictValidation ?? false));
   const promptGuideWithoutEpisodes = isPromptGuideMarkdown(markdown) && Object.keys(episodes).length === 0;
   const markerCount = TREATMENT_MARKERS.reduce((count, marker) => count + (marker.test(markdown) ? 1 : 0), 0);
   const formatVersion = /storyrpg structure model|episode turns?|sceneepisode|central conflict|episode endings|information ledger/i.test(markdown)

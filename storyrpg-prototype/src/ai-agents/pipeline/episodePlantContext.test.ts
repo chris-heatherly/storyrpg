@@ -5,8 +5,14 @@ import {
   extractBranchResidueFromChoiceSet,
   plantsToUnresolvedCallbacks,
   mergeUnresolvedForScene,
+  treatmentSeedFlagsFromSetupContext,
+  buildTreatmentSeedConsequences,
+  emitTreatmentSeedConsequences,
+  resolveSceneTreatmentSeeds,
+  emitSceneTreatmentSeeds,
   type EpisodePlant,
 } from './episodePlantContext';
+import type { Choice } from '../../types/choice';
 import type { CallbackLedger } from './callbackLedger';
 
 // Stub ledger exposing only the method the module uses.
@@ -116,5 +122,117 @@ describe('mergeUnresolvedForScene', () => {
 
   it('returns undefined when nothing to surface', () => {
     expect(mergeUnresolvedForScene(undefined, [], 1)).toBeUndefined();
+  });
+});
+
+describe('treatment consequence-seed emitters', () => {
+  it('parses only treatment_seed_* flag directives from setup context', () => {
+    const setupContext = [
+      'flag:treatment_seed_ep3_1 — Darian poisons the well',
+      'flag:treatment_seed_ep3_1 — duplicate, deduped',
+      'flag:some_other_flag — not a seed',
+      'relationship:lysandra.trust > 20 — warms the reunion',
+      'flag:treatment_seed_ep3_2 — the key is hidden',
+    ];
+    expect(treatmentSeedFlagsFromSetupContext(setupContext)).toEqual([
+      'treatment_seed_ep3_1',
+      'treatment_seed_ep3_2',
+    ]);
+    expect(treatmentSeedFlagsFromSetupContext(undefined)).toEqual([]);
+  });
+
+  it('builds setFlag consequences for each seed flag', () => {
+    expect(buildTreatmentSeedConsequences(['treatment_seed_ep3_1'])).toEqual([
+      { type: 'setFlag', flag: 'treatment_seed_ep3_1', value: true },
+    ]);
+  });
+
+  it('emits the seed setFlag on-page onto the load-bearing choice', () => {
+    const choices: Choice[] = [
+      { id: 'c1', text: 'minor', consequences: [] } as unknown as Choice,
+      {
+        id: 'c2',
+        text: 'load-bearing',
+        consequences: [{ type: 'setFlag', flag: 'other', value: true }],
+      } as unknown as Choice,
+    ];
+    emitTreatmentSeedConsequences(choices, ['treatment_seed_ep3_1']);
+    // Attached to c2 (most existing consequences), not duplicated on c1.
+    const c2Flags = (choices[1].consequences ?? []).filter(
+      (c) => c.type === 'setFlag' && c.flag === 'treatment_seed_ep3_1',
+    );
+    expect(c2Flags).toHaveLength(1);
+    expect((choices[0].consequences ?? []).length).toBe(0);
+  });
+
+  it('does not duplicate a seed flag already set by any choice', () => {
+    const choices: Choice[] = [
+      {
+        id: 'c1',
+        text: 'already sets it',
+        consequences: [{ type: 'setFlag', flag: 'treatment_seed_ep3_1', value: true }],
+      } as unknown as Choice,
+    ];
+    emitTreatmentSeedConsequences(choices, ['treatment_seed_ep3_1']);
+    const matching = (choices[0].consequences ?? []).filter(
+      (c) => c.type === 'setFlag' && c.flag === 'treatment_seed_ep3_1',
+    );
+    expect(matching).toHaveLength(1);
+  });
+
+  it('no-ops on empty choices or empty seeds', () => {
+    expect(emitTreatmentSeedConsequences([], ['treatment_seed_ep3_1'])).toEqual([]);
+    const choices: Choice[] = [{ id: 'c1', text: 't', consequences: [] } as unknown as Choice];
+    emitTreatmentSeedConsequences(choices, []);
+    expect((choices[0].consequences ?? []).length).toBe(0);
+  });
+});
+
+// GAP-C end-to-end seam: the pipeline calls emitSceneTreatmentSeeds(blueprint, choices)
+// at the ChoiceAuthor seam. The seed flags are resolved from BOTH choicePoint.
+// setsTreatmentSeeds (the StoryArchitect-recorded list) and the encounterSetupContext
+// flag directives, so an episode whose origin is an encounter still emits seeds.
+describe('resolveSceneTreatmentSeeds + emitSceneTreatmentSeeds (GAP-C wiring)', () => {
+  it('resolves seeds from choicePoint.setsTreatmentSeeds and encounterSetupContext, deduped + filtered', () => {
+    const scene = {
+      choicePoint: { setsTreatmentSeeds: ['treatment_seed_ep3_1', 'not_a_seed', 'treatment_seed_ep3_1'] },
+      encounterSetupContext: [
+        'flag:treatment_seed_ep3_2 — the key is hidden',
+        'flag:treatment_seed_ep3_1 — duplicate across sources',
+        'flag:plain_flag — ignored',
+      ],
+    };
+    expect(resolveSceneTreatmentSeeds(scene)).toEqual([
+      'treatment_seed_ep3_1',
+      'treatment_seed_ep3_2',
+    ]);
+  });
+
+  it('resolves seeds from encounterSetupContext alone when there is no choicePoint (encounter origin)', () => {
+    const encounterScene = {
+      encounterSetupContext: ['flag:treatment_seed_ep4_1 — Darian springs the trap'],
+    };
+    expect(resolveSceneTreatmentSeeds(encounterScene)).toEqual(['treatment_seed_ep4_1']);
+  });
+
+  it('deterministically emits the seed setFlag on-page for a scene that declares seeds', () => {
+    const scene = { choicePoint: { setsTreatmentSeeds: ['treatment_seed_ep3_1'] } };
+    const choices: Choice[] = [
+      { id: 'c1', text: 'minor', consequences: [] } as unknown as Choice,
+      { id: 'c2', text: 'load-bearing', consequences: [{ type: 'setFlag', flag: 'x', value: true }] } as unknown as Choice,
+    ];
+    emitSceneTreatmentSeeds(scene, choices);
+    const allSet = choices.flatMap((c) => c.consequences ?? []).filter(
+      (c) => c.type === 'setFlag' && c.flag === 'treatment_seed_ep3_1',
+    );
+    // Guaranteed by code: exactly one emitter for the declared seed (acceptance §7.6 count > 0).
+    expect(allSet).toHaveLength(1);
+  });
+
+  it('no-ops for a scene that declares no treatment seeds (non-treatment runs unaffected)', () => {
+    const scene = { choicePoint: { setsTreatmentSeeds: [] }, encounterSetupContext: ['relationship:npc.trust > 20 — warms'] };
+    const choices: Choice[] = [{ id: 'c1', text: 't', consequences: [] } as unknown as Choice];
+    emitSceneTreatmentSeeds(scene, choices);
+    expect((choices[0].consequences ?? []).length).toBe(0);
   });
 });

@@ -52,6 +52,13 @@ export interface SevenPointStructure {
 }
 
 /**
+ * The names of the seven structural beats in {@link SevenPointStructure}. Used
+ * to key the authored Section-7 beat→episode anchor map
+ * ({@link TreatmentSeasonGuidance.beatEpisodeAnchors}).
+ */
+export type SevenPointBeat = keyof SevenPointStructure;
+
+/**
  * Optional reusable-story abstraction metadata inferred from a known story or
  * source prompt. This is analysis/planning data only: it helps agents learn
  * transferable structure without introducing a second runtime story format.
@@ -317,6 +324,13 @@ export interface TreatmentSeasonGuidance {
   stakesArchitecture?: string;
   informationLedger?: string;
   seasonSpine?: string;
+  /**
+   * Section-7 per-beat episode anchors parsed from the season-spine free text
+   * (e.g. `Plot turn 1 (Ep3)` → `{ plotTurn1: 3 }`). Authored beat→episode
+   * mapping of record; reconciled against the per-episode `structuralRole`
+   * bullets downstream (SourceMaterialAnalyzer / SeasonPlannerAgent).
+   */
+  beatEpisodeAnchors?: Partial<Record<SevenPointBeat, number>>;
   arcPlan?: string;
   scenePlanningNotes?: string;
   branchAndConsequenceChains?: string;

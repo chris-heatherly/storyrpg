@@ -94,3 +94,24 @@ describe('StakesTriangleValidator', () => {
     expect(result.score.overall).toBeGreaterThanOrEqual(60);
   });
 });
+
+  // Fix 4: placeholder stakes sentinels must fail basic (offline) scoring so the
+  // choice is regenerated, instead of passing on length alone.
+  it('forces a 0 score on un-authored placeholder cost/identity sentinels', async () => {
+    const input: StakesTriangleInput = {
+      choiceId: 'placeholder',
+      choiceType: 'strategic',
+      choiceText: 'Decide how to handle the standoff.',
+      context: 'A tense negotiation.',
+      want: 'Advance the goal of The Standoff',
+      cost: 'Each option forfeits a different advantage.',
+      identity: 'The choice reveals the protagonist under pressure.',
+    };
+
+    const result = await new StakesTriangleValidator(offlineConfig).validate(input);
+
+    expect(result.score.cost).toBe(0);
+    expect(result.score.identity).toBe(0);
+    expect(result.score.want).toBe(0);
+    expect(result.passed).toBe(false);
+  });

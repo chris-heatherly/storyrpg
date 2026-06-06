@@ -92,6 +92,7 @@ import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingCon
 import { deriveStoryVerbs } from '../utils/storyVerbs';
 import { buildFashionPrimaryClothing, buildFashionStyleSummary } from '../images/characterFashionStyle';
 import { resolvePlayerTemplatesInObject } from '../utils/playerTemplateResolver';
+import { canonicalizeWitnessReactions, ensureWitnessNpcsInScenes } from '../utils/witnessNpcResolver';
 import { applyPromptContract, sanitizeStyleContaminationText } from '../images/imagePromptContracts';
 import {
   attachStoryboardPlanToVisualPlan,
@@ -133,13 +134,14 @@ import {
   spineEntriesFromChoicePlan,
   type SeasonChoicePlan,
 } from './seasonChoicePlan';
-import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
+import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, emitSceneTreatmentSeeds, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { SeasonCanon } from './seasonCanon';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
 import { applySpinePlantMap, deriveSpinePlantMap } from './spinePlantMap';
 import { extractEpisodeKnowledge, collectReferencedFlags } from './knowledgeExtraction';
 import { buildOutcomeTextVariants } from './outcomeVariants';
+import { runEpisodeChargeMaterializationForSeason } from './episodeChargeMaterialization';
 import { buildSceneTimelineLabels } from './sceneNumbering';
 import { capabilityFactStrings, capabilityNoteForProfile, characterCapabilityWorldFacts } from './characterCanonFacts';
 import {
@@ -285,6 +287,7 @@ import {
   PropIntroductionValidator,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
+import { runFidelityValidators, runFidelityValidatorsShadow, FIDELITY_VALIDATOR_FLAGS } from '../validators/runFidelityValidators';
 import { classifyArchitectGateWarnings } from '../remediation/architectGatePolicy';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { CallbackCoverageValidator } from '../validators/CallbackCoverageValidator';
@@ -294,6 +297,10 @@ import { applyCraftAutofix } from '../remediation/applyCraftAutofix';
 import { shouldRegenChoices, isChoiceRegenImprovement } from '../remediation/regenChoicesPolicy';
 import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
 import { recordRemediation, type RemediationLedgerRecord } from '../remediation/remediationLedger';
+import { recordGateShadow, buildGateShadowRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
+import { isGateEnabled, gateEnabledPredicate, isShadowLoggingEnabled } from '../remediation/gateDefaults';
+import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairReport } from '../remediation/finalContractRepair';
+import { repairAndRevalidatePropIntroduction } from '../remediation/repairs/propIntroductionRepair';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
@@ -1163,27 +1170,64 @@ export class FullStoryPipeline {
       return undefined;
     }
 
-    const report = await new FinalStoryContractValidator().validate({
-      story: input.story,
-      requestedEpisodeNumbers: input.requestedEpisodeNumbers,
-      sourceSeasonPlan: input.brief.seasonPlan,
-      incrementalValidationResults: this.allSceneValidationResults.length > 0
-        ? this.allSceneValidationResults
-        : this.sceneValidationResults,
-      qaReport: input.qaReport,
-      bestPracticesReport: input.bestPracticesReport,
-      validSkills: Object.keys(input.story.initialState?.skills || {}),
-      mode: this.config.validation.mode,
-    });
+    // §4/GAP-D: dispatch the five treatment-fidelity validators (default-off per gate
+    // flag) so §4.6 can keep authored-fidelity errors blocking. Logic is in the sibling
+    // validators/runFidelityValidators.ts; this is one delegating call.
+    const fidelity = runFidelityValidators({ story: input.story, seasonPlan: input.brief.seasonPlan, sourceAnalysis: input.brief.multiEpisode?.sourceAnalysis });
 
-    // Encounter quality gate (blocking): catches encounters that shipped generic
-    // template prose or an unfillable clock. Logic lives in the validator module
-    // (applyEncounterQualityGate) to keep this monolith thin; it merges findings
-    // into the contract report in place.
-    try {
-      applyEncounterQualityGate(report, input.story, this.encounterTelemetry);
-    } catch (encErr) {
-      console.warn(`[Pipeline] EncounterQualityValidator failed (non-fatal): ${(encErr as Error).message}`);
+    // One validation pass = FinalStoryContractValidator + the encounter-quality
+    // gate (merged in place). Factored into a closure so the Wave-4 repair loop can
+    // re-validate a repaired story with identical inputs.
+    const runValidation = async (story: Story): Promise<FinalStoryContractReport> => {
+      const r = await new FinalStoryContractValidator().validate({
+        story,
+        requestedEpisodeNumbers: input.requestedEpisodeNumbers,
+        sourceSeasonPlan: input.brief.seasonPlan,
+        incrementalValidationResults: this.allSceneValidationResults.length > 0
+          ? this.allSceneValidationResults
+          : this.sceneValidationResults,
+        qaReport: input.qaReport,
+        bestPracticesReport: input.bestPracticesReport,
+        validSkills: Object.keys(story.initialState?.skills || {}),
+        mode: this.config.validation.mode,
+        fidelityFindings: fidelity.fidelityFindings,
+        treatmentSourced: fidelity.treatmentSourced,
+      });
+      try {
+        applyEncounterQualityGate(r, story, this.encounterTelemetry);
+      } catch (encErr) {
+        console.warn(`[Pipeline] EncounterQualityValidator failed (non-fatal): ${(encErr as Error).message}`);
+      }
+      return r;
+    };
+
+    let report = await runValidation(input.story);
+
+    // Wave-0 shadow telemetry for the final-contract-class gates (design-note +
+    // treatment-fidelity), recorded regardless of flag so off→on has data.
+    if (isShadowLoggingEnabled()) {
+      await this.recordFinalContractShadow(input, fidelity.treatmentSourced, report.metrics.designNoteLeaks ?? 0);
+    }
+
+    // Wave 4 keystone: attempt bounded repair + re-validation BEFORE the hard abort,
+    // instead of throwing on first failure. Default-off (GATE_FINAL_CONTRACT_REPAIR);
+    // deterministic handlers today, LLM-regen handlers plug in here next.
+    if (!report.passed && isGateEnabled('GATE_FINAL_CONTRACT_REPAIR')) {
+      const outcome = await runFinalContractRepair({
+        story: input.story,
+        initialReport: report as ContractRepairReport,
+        handlers: buildDeterministicContractHandlers(),
+        revalidate: async (s) => (await runValidation(s)) as ContractRepairReport,
+        maxAttempts: 2,
+        canSpend: () => shouldAttemptRemediation(this.remediationBudget),
+      });
+      report = outcome.report as FinalStoryContractReport;
+      for (const rec of outcome.records) await this.recordRemediationSafe(rec);
+      this.emit({
+        type: 'checkpoint',
+        phase: input.phase,
+        message: `Final contract repair ran ${outcome.attempts} round(s); now ${report.passed ? 'passing' : 'still failing'}`,
+      } as any);
     }
 
     this.emit({
@@ -1266,6 +1310,15 @@ export class FullStoryPipeline {
       message: `MicroEpisodeSeasonValidator: ${result.summary}`,
       data: result,
     });
+
+    // Wave-0 shadow: firing data for the Wave-2 "micro-episode → hard gate" decision.
+    if (isShadowLoggingEnabled()) {
+      void this.recordGateShadowSafe(buildGateShadowRecord({
+        gate: 'GATE_MICRO_EPISODE_SEASON', validator: 'MicroEpisodeSeasonValidator', scope: 'season',
+        enabled: false, blockingCount: result.issues.filter((i) => i.severity === 'error').length,
+        storyId: story.id, issues: result.issues.map((i) => ({ severity: i.severity, message: i.message })),
+      }));
+    }
 
     if (!result.valid) {
       const errors = result.issues.filter(issue => issue.severity === 'error');
@@ -5484,6 +5537,17 @@ export class FullStoryPipeline {
         this.resetAssetRegistry(idSlugify(brief.story.title));
         await saveEarlyDiagnostic(outputDirectory, `episode-${brief.episode.number}-blueprint.json`, episodeBlueprint);
 
+        // Phase 6 (Plan Part 9 + Part 10): episode-time charge-materialization gate.
+        // All logic lives in episodeChargeMaterialization (monolith ratchet). Default-off:
+        // no-op unless CONVERGENCE_LEDGER is on; only throws under GATE_CHARGE_MATERIALIZATION.
+        await runEpisodeChargeMaterializationForSeason(
+          brief.seasonPlan,
+          brief.episode.number,
+          choiceSets,
+          (ledger) =>
+            saveEarlyDiagnostic(outputDirectory, `episode-${brief.episode.number}-charge-materialization.json`, ledger),
+        );
+
         await this.repairSceneGraphBranchingChoices(
           brief,
           worldBible,
@@ -5767,7 +5831,7 @@ export class FullStoryPipeline {
       // default pipeline behavior is unchanged.
       if (story) {
         try {
-          const craftFix = applyCraftAutofix(story, (f) => process.env[f] === '1');
+          const craftFix = applyCraftAutofix(story, gateEnabledPredicate);
           if (craftFix.fixedCount > 0) {
             this.addCheckpoint('craft_autofix', {
               fixedCount: craftFix.fixedCount,
@@ -6588,6 +6652,7 @@ export class FullStoryPipeline {
       })),
       rawDocument: brief.rawDocument,
       memoryContext: this.cachedPipelineMemory || undefined,
+      locationIntroductions: brief.seasonPlan?.locationIntroductions,
     }), PIPELINE_TIMEOUTS.llmAgent, 'WorldBuilder.execute');
 
     if (!result || !result.success || !result.data) {
@@ -6660,6 +6725,8 @@ export class FullStoryPipeline {
       memoryContext: this.cachedPipelineMemory || undefined,
       seasonAnchors: brief.seasonPlan?.anchors,
       seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+      characterArchitecture: brief.seasonPlan?.characterArchitecture,
+      informationLedger: brief.seasonPlan?.informationLedger,
     }), PIPELINE_TIMEOUTS.llmAgent, 'CharacterDesigner.execute');
 
     if (!result.success || !result.data) {
@@ -6856,7 +6923,7 @@ export class FullStoryPipeline {
       // unchanged from before B0.
       const { blocking, advisory } = classifyArchitectGateWarnings(
         result.warnings,
-        (flag) => process.env[flag] === '1',
+        gateEnabledPredicate,
       );
       if (blocking.length > 0) {
         throw new PipelineError(
@@ -7797,6 +7864,10 @@ export class FullStoryPipeline {
               console.error(`[Pipeline] ❌ ${caFailMsg}`);
               this.emit({ type: 'warning', phase: 'choices', message: caFailMsg });
             } else {
+            // §3.3/GAP-C: deterministically SET authored consequence seeds on-page —
+            // attach a setFlag(treatment_seed_*) to a choice so a later authored
+            // precondition reading the seed can be true. No-op off treatment runs.
+            emitSceneTreatmentSeeds(sceneBlueprint, choiceResult.data.choices);
             choiceSets.push({ ...choiceResult.data, sceneId: sceneBlueprint.id });
             // Phase 1: record this scene's planted flags so later scenes can pay them off.
             episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }, this.callbackLedger));
@@ -8250,7 +8321,7 @@ export class FullStoryPipeline {
             shouldRegenChoices(
               sceneValidation.regenerationRequested,
               incrementalConfig.stakesValidation,
-              (f) => process.env[f] === '1',
+              gateEnabledPredicate,
             ) &&
             this.incrementalValidator
           ) {
@@ -9756,6 +9827,22 @@ export class FullStoryPipeline {
     const leadsToById = new Map<string, string[] | undefined>(
       (blueprint?.scenes ?? []).map((s) => [s.id, s.leadsTo]),
     );
+    // Canonicalize witnessReaction npcIds against the canonical character roster
+    // BEFORE validation. Upstream authoring uses raw per-scene NPC labels, so without
+    // this the per-episode best-practices report (and thus the aggregate + final-gate)
+    // carries "unknown NPC" witness errors. Mutates the shared choiceSet refs in place,
+    // so the assembled story is corrected too. Lets GATE_WITNESS_ID_INTEGRITY enforce safely.
+    canonicalizeWitnessReactions(choiceSets, characterBible.characters.map((c) => ({ id: c.id, name: c.name })));
+    // Then add each canonical witness NPC to its scene's roster (deterministic repair
+    // for the "not listed in scene" presence warning). Additive-only; mutates the
+    // shared sceneContents refs so both validation and the assembled story see it.
+    if (isGateEnabled('GATE_WITNESS_SCENE_PRESENCE')) {
+      ensureWitnessNpcsInScenes(
+        sceneContents as Array<{ sceneId: string; beats?: Array<{ id?: string }>; charactersInvolved?: string[] }>,
+        choiceSets,
+        new Set(characterBible.characters.map((c) => c.id)),
+      );
+    }
     // Prepare scenes for validation
     const scenes = sceneContents.map(sc => ({
       id: sc.sceneId,
@@ -11053,11 +11140,13 @@ export class FullStoryPipeline {
       // as a PipelineError instead of being swallowed as a non-fatal warning. With the
       // flags unset, shouldGate returns gate:false → behavior is unchanged.
       if (narrativeDiagnosticsReport) {
-        const isEnabled = (flag: string) => process.env[flag] === '1';
+        const isEnabled = isGateEnabled;
+        const shadow = isShadowLoggingEnabled();
         const checkIssues = (name: NarrativeDiagnosticsReport['checks'][number]['name']) =>
           narrativeDiagnosticsReport.checks.find((c) => c.name === name)?.issues ?? [];
 
         const setupPayoffGate = shouldGate(PLAN_GATE_FLAGS.setupPayoff, checkIssues('setup_payoff'), isEnabled);
+        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.setupPayoff, 'SetupPayoffValidator', setupPayoffGate.blockingCount, checkIssues('setup_payoff'), story?.id);
         if (setupPayoffGate.gate) {
           const errs = checkIssues('setup_payoff').filter((iss) => iss.severity === 'error');
           // S3: record the hard block before throwing (best-effort).
@@ -11085,7 +11174,9 @@ export class FullStoryPipeline {
         // the flag OFF this branch is skipped and the historical report issues
         // are used, so default behavior is byte-for-byte unchanged.
         let callbackGateIssues: Array<{ severity: string; message?: string }> = checkIssues('callback_coverage');
-        if (isEnabled(PLAN_GATE_FLAGS.callbackCoverage)) {
+        // Run the strict re-eval when the gate is on OR when shadow logging wants
+        // the would-gate data. Pure/deterministic/idempotent — no LLM.
+        if (isEnabled(PLAN_GATE_FLAGS.callbackCoverage) || shadow) {
           const strictResult = new CallbackCoverageValidator().validate(
             {
               ledger: this.callbackLedger.serialize(),
@@ -11097,6 +11188,7 @@ export class FullStoryPipeline {
           callbackGateIssues = strictResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
         }
         const callbackGate = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, callbackGateIssues, isEnabled);
+        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.callbackCoverage, 'CallbackCoverageValidator', callbackGate.blockingCount, callbackGateIssues, story?.id);
         if (callbackGate.gate) {
           const errs = callbackGateIssues.filter((iss) => iss.severity === 'error');
           // S3: record the hard block before throwing (best-effort).
@@ -11121,7 +11213,7 @@ export class FullStoryPipeline {
         // validator in STRICT mode (a pure, deterministic re-eval of the same
         // beats/scenes) so those violations surface as 'error' for shouldGate.
         // With the flag OFF this branch is skipped entirely → behavior unchanged.
-        if (isEnabled(PLAN_GATE_FLAGS.choiceDensity)) {
+        if (isEnabled(PLAN_GATE_FLAGS.choiceDensity) || shadow) {
           const densityResult = await new ChoiceDensityValidator().validate(
             {
               beats: sceneContents.flatMap((sc) =>
@@ -11144,6 +11236,7 @@ export class FullStoryPipeline {
           );
           const densityIssues = densityResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
           const densityGate = shouldGate(PLAN_GATE_FLAGS.choiceDensity, densityIssues, isEnabled);
+          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.choiceDensity, 'ChoiceDensityValidator', densityGate.blockingCount, densityIssues, story?.id);
           if (densityGate.gate) {
             const errs = densityIssues.filter((iss) => iss.severity === 'error');
             await this.recordRemediationSafe({
@@ -11168,7 +11261,7 @@ export class FullStoryPipeline {
         // can block. Choices carry their set's choiceType (it is per-set, not
         // per-choice). With the flag OFF this branch is skipped → behavior
         // unchanged.
-        if (isEnabled(PLAN_GATE_FLAGS.consequenceBudget)) {
+        if (isEnabled(PLAN_GATE_FLAGS.consequenceBudget) || shadow) {
           const budgetResult = await new ConsequenceBudgetValidator().validate(
             {
               choices: choiceSets.flatMap((cs) =>
@@ -11183,6 +11276,7 @@ export class FullStoryPipeline {
           );
           const budgetIssues = budgetResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
           const budgetGate = shouldGate(PLAN_GATE_FLAGS.consequenceBudget, budgetIssues, isEnabled);
+          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.consequenceBudget, 'ConsequenceBudgetValidator', budgetGate.blockingCount, budgetIssues, story?.id);
           if (budgetGate.gate) {
             const errs = budgetIssues.filter((iss) => iss.severity === 'error');
             await this.recordRemediationSafe({
@@ -11211,7 +11305,7 @@ export class FullStoryPipeline {
         // emits only warning-level issues today, so the gate fires only if it
         // begins emitting 'error' (shouldGate counts error-severity); with the
         // flag OFF this branch is skipped → behavior unchanged.
-        if (isEnabled(PLAN_GATE_FLAGS.propIntroduction)) {
+        if (isEnabled(PLAN_GATE_FLAGS.propIntroduction) || shadow) {
           const propInput = buildPropIntroductionInput(
             (characterBible.characters ?? []).flatMap((c) => [c.id, c.name]),
             sceneContents.map((sc) => ({
@@ -11225,20 +11319,34 @@ export class FullStoryPipeline {
           const propResult = new PropIntroductionValidator().validate(propInput, { strict: true });
           const propIssues = propResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message }));
           const propGate = shouldGate(PLAN_GATE_FLAGS.propIntroduction, propIssues, isEnabled);
+          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.propIntroduction, 'PropIntroductionValidator', propGate.blockingCount, propIssues, story?.id);
           if (propGate.gate) {
-            const errs = propIssues.filter((iss) => iss.severity === 'error');
-            await this.recordRemediationSafe({
-              rule: 'prop_introduction_gate', scope: 'episode', attempted: 1,
-              succeeded: false, degraded: false, blocked: true, attempts: 1,
-              storyId: story?.id, details: `Prop introduction gate blocked episode ${i}: ${propGate.blockingCount} issue(s)`,
+            // Wave 4 repair loop: resolve raw label->canonical-id references (the
+            // witness-bug class) and re-validate before aborting. Genuinely-unknown
+            // references are NOT rewritten, so a real dangling reference still blocks.
+            const propRoster = (characterBible.characters ?? []).map((c) => ({ id: c.id, name: c.name }));
+            const propRepairScenes = sceneContents
+              .filter((sc) => Array.isArray(sc.charactersInvolved))
+              .map((sc) => ({ sceneId: sc.sceneId, sceneName: sc.sceneName, referencedEntityIds: sc.charactersInvolved as string[] }));
+            const propRepair = await repairAndRevalidatePropIntroduction(propRepairScenes, propRoster, {
+              canSpend: () => shouldAttemptRemediation(this.remediationBudget),
             });
-            throw new PipelineError(
-              `[PropIntroductionGate] Prop introduction failed the blocking gate (${propGate.blockingCount} unresolved reference(s)): ` +
-                errs.map((iss) => iss.message).join('; ') +
-                '. Unset GATE_PROP_INTRODUCTION to downgrade to advisory.',
-              `episode_${i}_prop_introduction_gate`,
-              { context: { episode: i, blockingCount: propGate.blockingCount } },
-            );
+            for (const rec of propRepair.records) await this.recordRemediationSafe(rec);
+            if (!propRepair.passed) {
+              const errs = propIssues.filter((iss) => iss.severity === 'error');
+              await this.recordRemediationSafe({
+                rule: 'prop_introduction_gate', scope: 'episode', attempted: 1,
+                succeeded: false, degraded: false, blocked: true, attempts: 1,
+                storyId: story?.id, details: `Prop introduction gate blocked episode ${i}: ${propGate.blockingCount} issue(s)`,
+              });
+              throw new PipelineError(
+                `[PropIntroductionGate] Prop introduction failed the blocking gate (${propGate.blockingCount} unresolved reference(s)): ` +
+                  errs.map((iss) => iss.message).join('; ') +
+                  '. Unset GATE_PROP_INTRODUCTION to downgrade to advisory.',
+                `episode_${i}_prop_introduction_gate`,
+                { context: { episode: i, blockingCount: propGate.blockingCount } },
+              );
+            }
           }
         }
       }
@@ -20407,8 +20515,8 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
   private buildChoiceBridgeBeatText(choice: ChoiceSet['choices'][number], targetScene?: SceneBlueprint): string {
     const immediate = this.cleanChoiceBridgeFragment(choice.feedbackCue?.progressSummary || choice.reminderPlan?.immediate);
     const targetName = this.sanitizeReaderFacingSceneName(targetScene?.name, '');
-    const destination = this.cleanChoiceBridgeFragment(targetScene?.description)
-      || (targetName ? `${targetName} waits ahead.` : 'The next threshold waits ahead.');
+    // Destination from the sanitized scene NAME only — never the agent-facing `description` (it leaks planning meta-narration).
+    const destination = targetName ? `${targetName} waits ahead.` : 'The next threshold waits ahead.';
     return [immediate || 'The choice changes the air around you.', destination]
       .filter(Boolean)
       .map(part => String(part).trim())
@@ -20705,7 +20813,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     // borderline draw in [57, 62) is treated as a pass and NO repair fires,
     // trading a slightly more permissive gate for fewer noise-triggered LLM
     // repairs. 62 is the 'good' threshold; 5 is the hysteresis margin.
-    const stabilizationOn = process.env.GATE_CLIFFHANGER === '1';
+    const stabilizationOn = isGateEnabled('GATE_CLIFFHANGER');
     const needsRepair = stabilizationOn
       ? stabilizeByHysteresis(analysis.score, 62, 5)
       : analysis.quality !== 'good' && analysis.quality !== 'excellent';
@@ -21776,6 +21884,62 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     } catch {
       /* ledger is analytics-only, never load-bearing */
     }
+  }
+
+  /** Wave-0 shadow telemetry: record what a gate WOULD do, regardless of flag state. Best-effort. */
+  private async recordGateShadowSafe(
+    record: Omit<GateShadowRecord, 'timestamp' | 'runDir'> & { timestamp?: string; runDir?: string },
+  ): Promise<void> {
+    const baseDir = this.getLedgerBaseDir();
+    if (!baseDir) return;
+    try {
+      await recordGateShadow(baseDir, {
+        ...record,
+        timestamp: record.timestamp ?? new Date().toISOString(),
+        runDir: record.runDir ?? this.getRunName(),
+      });
+    } catch {
+      /* shadow ledger is analytics-only, never load-bearing */
+    }
+  }
+
+  /** Wave-0 shadow telemetry for the final-contract-class gates (design-note + treatment-fidelity). */
+  private async recordFinalContractShadow(
+    input: { story: Story; brief: FullCreativeBrief },
+    treatmentSourced: boolean,
+    designNoteLeaks: number,
+  ): Promise<void> {
+    await this.recordGateShadowSafe(buildGateShadowRecord({
+      gate: 'GATE_DESIGN_NOTE_LEAK', validator: 'MechanicsLeakageValidator (design-note class)',
+      scope: 'scene', enabled: isGateEnabled('GATE_DESIGN_NOTE_LEAK'), blockingCount: designNoteLeaks, storyId: input.story.id,
+    }));
+    try {
+      const shadow = runFidelityValidatorsShadow({
+        story: input.story,
+        seasonPlan: input.brief.seasonPlan,
+        sourceAnalysis: input.brief.multiEpisode?.sourceAnalysis,
+      });
+      const counts = new Map<string, number>();
+      for (const f of shadow) if (f.severity === 'error') counts.set(f.validator, (counts.get(f.validator) ?? 0) + 1);
+      for (const [validator, flag] of Object.entries(FIDELITY_VALIDATOR_FLAGS)) {
+        await this.recordGateShadowSafe(buildGateShadowRecord({
+          gate: flag, validator, scope: 'episode',
+          enabled: isGateEnabled(flag) && treatmentSourced, blockingCount: counts.get(validator) ?? 0, storyId: input.story.id,
+        }));
+      }
+    } catch {
+      /* shadow only — never load-bearing */
+    }
+  }
+
+  /** One-line shadow helper for the plan-time gate seams (episode scope). */
+  private async recordPlanGateShadow(
+    gate: string, validator: string, blockingCount: number,
+    issues: Array<{ severity: string; message?: string }>, storyId?: string,
+  ): Promise<void> {
+    await this.recordGateShadowSafe(
+      buildGateShadowRecord({ gate, validator, scope: 'episode', enabled: isGateEnabled(gate), blockingCount, issues, storyId }),
+    );
   }
 
   // ── Memory persistence (Claude memory tool) ───────────────────────

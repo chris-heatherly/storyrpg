@@ -24,9 +24,10 @@ import {
   buildGenreAwareJeopardyGuidance,
 } from '../prompts/storytellingPrinciples';
 import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
+import { PLACEHOLDER_STAKES } from '../constants/placeholderStakes';
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType, NarrativeSequenceIntent, StakesLayers } from '../../types';
 import type { ArcEpisodeTurnout, CliffhangerPlan, InformationLedgerEntry, SeasonPromiseArchitecture } from '../../types/seasonPlan';
-import type { PlannedScene, SetupPayoffEdge, SceneNarrativeRole } from '../../types/scenePlan';
+import type { PlannedScene, SetupPayoffEdge, SceneNarrativeRole, RequiredBeat } from '../../types/scenePlan';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
 import { DramaticStructureValidator } from '../validators/DramaticStructureValidator';
@@ -379,6 +380,14 @@ export interface SceneBlueprint {
   setsUp?: string[];
   paysOff?: string[];
 
+  // === AUTHORED-TREATMENT FIDELITY ("expand, do not rewrite") ===
+  // Carried verbatim from PlannedScene when the run is treatment-sourced so
+  // SceneWriter can render an explicit "depict each, in order" required-beats
+  // checklist (plan §5.4 / GAP-B). Undefined/empty for from-scratch runs and
+  // scenes the treatment is silent on — the SceneWriter prompt is then unchanged.
+  requiredBeats?: RequiredBeat[];
+  signatureMoment?: string;
+
   // Key beats to hit
   keyBeats: string[];
   sequenceIntent?: NarrativeSequenceIntent;
@@ -411,6 +420,15 @@ export interface SceneBlueprint {
       growthPath?: string;
     };
     failureBranchPurpose?: 'recovery' | 'training' | 'leverage' | 'alliance' | 'investigation' | 'regrouping';
+    /**
+     * Authored consequence-seed flag names this choice MUST set on-page (§3.3).
+     * Populated deterministically from the treatment's consequence seeds so a
+     * later `treatment_seed_*` precondition can be satisfied. The choice author
+     * (and the {@link emitTreatmentSeedConsequences} backstop) emits a `setFlag`
+     * for each. Names match the SeasonPlannerAgent convention
+     * (`treatment_seed_ep<N>_<idx>`).
+     */
+    setsTreatmentSeeds?: string[];
   };
 
   // Scene connections
@@ -1565,6 +1583,98 @@ export class StoryArchitect extends BaseAgent {
         ? { later: choiceScene.choicePoint.reminderPlan.later }
         : { later: `Future scenes should remember: ${authoredResidue[0]}` }),
     };
+
+    this.registerConsequenceSeedEmitters(blueprint, input, guidance);
+  }
+
+  /**
+   * Treatment fidelity §3.3 — make authored consequence seeds SET on-page, not
+   * only read. The SeasonPlannerAgent encodes each authored seed as a
+   * `flag:treatment_seed_ep<N>_<idx> — <seed>` directive on the encounter's
+   * `encounterSetupContext` (a READ/precondition position), and as a
+   * cross-episode consequence chain — but nothing ever SET the flag, so any later
+   * `treatment_seed_*` precondition could never be true.
+   *
+   * This deterministically:
+   *   (a) registers each seed flag in `suggestedFlags` so the pipeline tracks it
+   *       as a known flag the episode establishes; and
+   *   (b) records the seed on the origin scene's `choicePoint.setsTreatmentSeeds`
+   *       so the choice author / downstream emitter attaches a `setFlag`.
+   *
+   * The flag id matches the SeasonPlannerAgent convention exactly
+   * (`treatment_seed_ep<episodeNumber>_<index+1>`) so the emitted flag is the same
+   * name the encounter's precondition reads.
+   */
+  private registerConsequenceSeedEmitters(
+    blueprint: EpisodeBlueprint,
+    input: StoryArchitectInput,
+    guidance: TreatmentEpisodeGuidance | undefined,
+  ): void {
+    const seeds = guidance?.consequenceSeeds || [];
+    if (seeds.length === 0) return;
+
+    const parsedFromId = Number((blueprint.episodeId || '').match(/(\d+)/)?.[1]);
+    const episodeNumber = input.episodeNumber
+      ?? blueprint.number
+      ?? (Number.isFinite(parsedFromId) ? parsedFromId : undefined);
+    if (episodeNumber == null) return;
+
+    // Choose the origin scene that should SET the seed: prefer the planned
+    // encounter (the episode's hinge), else the last choice-bearing scene, else
+    // the last scene. This mirrors the season scene plan's origin-scene rule.
+    const scenes = blueprint.scenes || [];
+    if (scenes.length === 0) return;
+    const originScene =
+      scenes.find((s) => s.isEncounter)
+      || [...scenes].reverse().find((s) => s.choicePoint)
+      || scenes[scenes.length - 1];
+
+    blueprint.suggestedFlags = Array.isArray(blueprint.suggestedFlags) ? blueprint.suggestedFlags : [];
+    const knownFlagNames = new Set(blueprint.suggestedFlags.map((f) => f.name));
+    const emittedFlags: string[] = [];
+
+    seeds.slice(0, 4).forEach((seed, index) => {
+      const flagName = `treatment_seed_ep${episodeNumber}_${index + 1}`;
+      emittedFlags.push(flagName);
+      if (!knownFlagNames.has(flagName)) {
+        knownFlagNames.add(flagName);
+        blueprint.suggestedFlags.push({
+          name: flagName,
+          description: `Authored consequence seed set on-page in episode ${episodeNumber}: ${seed}`,
+        });
+      }
+      // Record the seed directive on the origin scene's setup context so the
+      // encounter that READS this precondition also has a matching SET on-page.
+      // The `flag:<name> — <desc>` form is the same shape the planner emits.
+      const directive = `flag:${flagName} — ${seed}`;
+      originScene.encounterSetupContext = Array.from(new Set([
+        ...(originScene.encounterSetupContext || []),
+        directive,
+      ]));
+    });
+
+    // Carry the flag names on a CHOICE-BEARING scene's choicePoint so the
+    // deterministic emitter (emitTreatmentSeedConsequences) attaches a real `setFlag`
+    // to one of that scene's authored choices. The origin scene is often the
+    // encounter (the episode's hinge), which has NO choicePoint and never reaches
+    // ChoiceAuthor — so depending on `originScene.choicePoint` silently dropped the
+    // seed for those episodes (the choicePoint-guard skip). Route through the
+    // nearest choice-bearing scene at/before the origin instead, so an episode that
+    // authored consequenceSeeds always emits them on-page even when its origin is an
+    // encounter. The encounter still READS the flag via its encounterSetupContext.
+    if (emittedFlags.length > 0) {
+      const originIndex = scenes.indexOf(originScene);
+      const seedHost =
+        (originScene.choicePoint ? originScene : undefined)
+        || [...scenes.slice(0, originIndex + 1)].reverse().find((s) => s.choicePoint)
+        || [...scenes].reverse().find((s) => s.choicePoint);
+      if (seedHost?.choicePoint) {
+        seedHost.choicePoint.setsTreatmentSeeds = Array.from(new Set([
+          ...(seedHost.choicePoint.setsTreatmentSeeds || []),
+          ...emittedFlags,
+        ]));
+      }
+    }
   }
 
   private validatePlannedEncounterCoverage(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
@@ -1847,6 +1957,10 @@ ${sceneEpisodeMode}
         dramaticPurpose: p.dramaticPurpose,
         setsUp: p.setsUp,
         paysOff: p.paysOff,
+        // Carry authored required beats (scene-level + any encounter-level staged
+        // beats) and the signature moment so SceneWriter can depict them in order.
+        requiredBeats: [...(p.requiredBeats ?? []), ...(p.encounter?.requiredBeats ?? [])],
+        signatureMoment: p.signatureMoment,
         keyBeats: [p.dramaticPurpose],
         leadsTo: nextId ? [nextId] : [],
       };
@@ -1856,9 +1970,9 @@ ${sceneEpisodeMode}
         scene.choicePoint = {
           type: 'strategic',
           stakes: {
-            want: `Advance the goal of ${scene.name}`,
-            cost: 'Each option forfeits a different advantage.',
-            identity: 'The choice reveals the protagonist under pressure.',
+            want: PLACEHOLDER_STAKES.want(scene.name),
+            cost: PLACEHOLDER_STAKES.cost,
+            identity: PLACEHOLDER_STAKES.identity,
           },
           description: `Decide how to handle ${scene.name}.`,
           optionHints: [],
@@ -3184,10 +3298,10 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         section += `- Opening situation: ${guidance.openingSituation}\n`;
       }
       if (guidance.episodeTurns?.length) {
-        section += 'Episode turns that should shape scene purposes, keyBeats, sequenceIntent, encounter buildup, choices, and aftermath. Do not create a new schema layer; express these through existing blueprint fields:\n';
-        for (const turn of guidance.episodeTurns) {
-          section += `- ${turn}\n`;
-        }
+        section += 'AUTHORED EPISODE TURNS — these are FIXED required beats, not flavor. You are dramatizing an already-authored episode: each turn below MUST occur, in order, and must NOT be dropped, merged, re-ordered, or re-interpreted. Realize each as a concrete scene beat (scene purpose, keyBeats, sequenceIntent, encounter buildup, choice, or aftermath). Invent only the connective tissue between them:\n';
+        guidance.episodeTurns.forEach((turn, idx) => {
+          section += `${idx + 1}. ${turn}\n`;
+        });
       }
       if (guidance.entryGoal || guidance.obstacle || guidance.forcedChoice || guidance.exitShift) {
         section += 'Scene/sceneEpisode contract that must be expressed through generated scenes:\n';
@@ -3247,10 +3361,10 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         }
       }
       if (guidance.consequenceSeeds?.length) {
-        section += 'Consequence seeds that should become flags, callbacks, scene tints, or later route pressure:\n';
-        for (const seed of guidance.consequenceSeeds) {
-          section += `- ${seed}\n`;
-        }
+        section += 'Authored consequence seeds. Each MUST be SET on-page as a `setFlag` consequence on a choice in the scene that plants it (use the flag name `treatment_seed_ep<thisEpisodeNumber>_<index>`, e.g. the first seed sets `treatment_seed_ep' + (input.episodeNumber ?? '<N>') + '_1`). A later episode reads this flag as a precondition, so it cannot be a callback-only note — it must actually fire. Set it on the choice that causes the seed:\n';
+        guidance.consequenceSeeds.forEach((seed, idx) => {
+          section += `${idx + 1}. ${seed} → setFlag treatment_seed_ep${input.episodeNumber ?? 'N'}_${idx + 1}\n`;
+        });
       }
       if (guidance.consequenceResidue) {
         section += `- Consequence residue: ${guidance.consequenceResidue}\n`;

@@ -39,6 +39,7 @@ import {
 import { FiveFactorValidator } from '../validators/FiveFactorValidator';
 import { StakesTriangleValidator } from '../validators/StakesTriangleValidator';
 import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
+import { isGateEnabled } from '../remediation/gateDefaults';
 import { buildChoiceAuthorCallbackSection } from '../prompts/callbackPromptSection';
 import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 import { CHOICE_AUTHOR_RESIDUE_EXAMPLE } from '../prompts/examples/storyCraftExamples';
@@ -711,6 +712,11 @@ Before finalizing:
       if (choice.witnessReactions && !Array.isArray(choice.witnessReactions)) {
         choice.witnessReactions = [choice.witnessReactions as unknown as NonNullable<GeneratedChoice['witnessReactions']>[number]];
       }
+      // Witness npcId canonicalization happens authoritatively at final assembly
+      // (FinalStoryContractValidator -> canonicalizeStoryWitnessReactions) against
+      // story.npcs. We deliberately do NOT normalize here: the per-scene NPC list is
+      // built from raw blueprint labels, so resolving against it would mis-validate
+      // or erroneously drop valid cross-scene witnesses.
 
       if (!choice.storyVerb && input.storyVerbs?.length && choiceSet.choiceType !== 'expression') {
         const matchedVerb = this.inferStoryVerb(choice, input.storyVerbs);
@@ -1724,7 +1730,7 @@ CRITICAL REQUIREMENTS:
     // (error-level want/cost/identity), which are not borderline. Default-off
     // via GATE_JUDGE_STABILIZATION keeps the prior hard `< minStakesScore` gate.
     const overallScore = stakesResult.score?.overall;
-    const stabilizationEnabled = process.env.GATE_JUDGE_STABILIZATION === '1';
+    const stabilizationEnabled = isGateEnabled('GATE_JUDGE_STABILIZATION');
     const overallScoreFails =
       overallScore !== undefined &&
       shouldFailStakesScore(

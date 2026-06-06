@@ -33,6 +33,16 @@ export interface MechanicsLeakageInput {
    * default.
    */
   strict?: boolean;
+  /**
+   * Opt-in design-note / meta-narration scan. Default (false / undefined) is
+   * byte-for-byte identical to the historical behavior (only LEAK_PATTERNS run).
+   * When `true`, also flag prose that leaks agent-facing PLANNING language —
+   * "the player", episode references, "<relationship> level is set", direct
+   * flag/score/stat-variable mentions, and cross-episode setup/payoff narration.
+   * These are emitted as 'warning' here; the caller (FinalStoryContractValidator)
+   * decides blocking via its own gating flag.
+   */
+  scanDesignNotes?: boolean;
 }
 
 export interface MechanicsLeakageResult extends ValidationResult {
@@ -139,6 +149,39 @@ function hasSafeIsolatedDelta(text: string): boolean {
   return ISOLATED_DELTA_PATTERN.test(text);
 }
 
+/**
+ * Agent-facing PLANNING / meta-narration that must never reach reader prose.
+ * Kept SEPARATE from LEAK_PATTERNS so the carefully-tuned mechanics patterns are
+ * untouched and these only run when the caller opts in via `scanDesignNotes`.
+ */
+const DESIGN_NOTE_PATTERNS: Array<{ pattern: RegExp; label: string; suggestion: string }> = [
+  {
+    pattern: /\bthe\s+player\b/i,
+    label: 'meta-narration (addresses "the player")',
+    suggestion: 'Write to the protagonist in-fiction; never reference "the player".',
+  },
+  {
+    pattern: /\bEpisode\s+\d+\b/i,
+    label: 'planning reference to an episode number',
+    suggestion: 'Remove cross-episode planning notes from reader prose.',
+  },
+  {
+    pattern: /\b(?:loyalty|trust|affection|respect|fear|reputation|relationship)\s+level\s+is\s+set\b/i,
+    label: 'design-note system-variable narration',
+    suggestion: 'Show the relationship shift in fiction; do not narrate a variable being set.',
+  },
+  {
+    pattern: /\b(?:this|the)\s+(?:flag|score|stat|variable)\s+is\s+(?:set|used|referenced)\b/i,
+    label: 'direct system-variable mention',
+    suggestion: 'Remove system-variable mentions from reader prose.',
+  },
+  {
+    pattern: /\b(?:shaping|sets?\s+up|pays?\s+off|foreshadow(?:s|ing|es)?)\b[^.]*\bEpisode\s+\d+/i,
+    label: 'cross-episode planning narration',
+    suggestion: 'Keep setup/payoff planning out of reader prose.',
+  },
+];
+
 export class MechanicsLeakageValidator extends BaseValidator {
   constructor() {
     super('MechanicsLeakageValidator');
@@ -147,12 +190,13 @@ export class MechanicsLeakageValidator extends BaseValidator {
   validate(input: MechanicsLeakageInput): MechanicsLeakageResult {
     const issues: ValidationIssue[] = [];
     const strict = input.strict === true;
+    const scanDesignNotes = input.scanDesignNotes === true;
 
     for (const item of input.texts) {
       const escalate = strict && hasSafeIsolatedDelta(item.text);
+      const location = [item.sceneId, item.beatId, item.id].filter(Boolean).join(':') || item.id;
       for (const check of LEAK_PATTERNS) {
         if (!check.pattern.test(item.text)) continue;
-        const location = [item.sceneId, item.beatId, item.id].filter(Boolean).join(':') || item.id;
         const message = `Player-facing text "${item.id}" exposes ${check.label}.`;
         // Default / non-strict: always 'warning' (byte-for-byte unchanged).
         // Strict: escalate ONLY the safe isolated-stat-delta class to 'error';
@@ -162,6 +206,13 @@ export class MechanicsLeakageValidator extends BaseValidator {
             ? this.error(message, location, check.suggestion)
             : this.warning(message, location, check.suggestion),
         );
+      }
+      if (scanDesignNotes) {
+        for (const check of DESIGN_NOTE_PATTERNS) {
+          if (!check.pattern.test(item.text)) continue;
+          const message = `Player-facing text "${item.id}" leaks ${check.label}.`;
+          issues.push(this.warning(message, location, check.suggestion));
+        }
       }
     }
 

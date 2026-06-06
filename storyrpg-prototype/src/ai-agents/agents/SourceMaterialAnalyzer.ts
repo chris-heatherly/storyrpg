@@ -42,6 +42,7 @@ import {
   normalizeEndingTargets,
 } from '../utils/endingResolver';
 import { extractTreatmentFromMarkdown, looksLikeTreatmentMarkdown } from '../utils/treatmentExtraction';
+import { reconcileBeatAnchors } from '../pipeline/beatAnchorReconciliation';
 import {
   BRANCH_AND_BOTTLENECK,
   STAKES_TRIANGLE,
@@ -125,6 +126,10 @@ export interface SourceMaterialInput {
     pacing?: 'tight' | 'moderate' | 'expansive';
     // Optional override for how the pipeline should target endings downstream
     endingMode?: EndingMode;
+    // When true, structural treatment-integrity warnings (non-contiguous episode
+    // numbering; heading-count > parsed-count) become a thrown error instead of a
+    // warning. Default OFF (opt-in per run). Phase 0 / Step 0.2.
+    strictTreatmentValidation?: boolean;
   };
 }
 
@@ -1094,7 +1099,9 @@ Return ONLY valid JSON.
     breakdown: EpisodeBreakdownResponse
   ): SourceMaterialAnalysis {
     const sourceText = input.sourceText || '';
-    const treatment = extractTreatmentFromMarkdown(sourceText);
+    const treatment = extractTreatmentFromMarkdown(sourceText, {
+      strictValidation: input.preferences?.strictTreatmentValidation ?? false,
+    });
     const treatmentSeasonGuidance = treatment.seasonGuidance;
     if (looksLikeTreatmentMarkdown(sourceText) && Object.keys(treatment.episodes).length === 0) {
       throw new Error(
@@ -1208,6 +1215,17 @@ Return ONLY valid JSON.
           ? [...new Set([...(outline.structuralRole || []), ...fallbackRoles])]
           : fallbackRoles;
       }
+    }
+
+    // Step 1.2: reconcile the authored Section-7 beat→episode anchors against
+    // the per-episode structuralRole assignments. The Section-7 anchor is the
+    // spine of record — on conflict we move the beat onto the anchored episode
+    // and log; in strict mode the conflict throws.
+    if (treatment.isTreatment && treatmentSeasonGuidance?.beatEpisodeAnchors) {
+      reconcileBeatAnchors(episodeOutlines, treatmentSeasonGuidance.beatEpisodeAnchors, {
+        strict: input.preferences?.strictTreatmentValidation ?? false,
+        log: (message) => console.warn(`[SourceMaterialAnalyzer] Beat-anchor reconciliation: ${message}`),
+      });
     }
 
     // Anchors + sevenPoint: prefer the LLM's, fall back to plot-point

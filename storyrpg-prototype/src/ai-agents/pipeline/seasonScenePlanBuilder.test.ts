@@ -110,6 +110,91 @@ describe('buildSeasonScenePlan', () => {
     expect(to.paysOff).toContain(from.id);
   });
 
+  it('binds each authored episode turn to a scene as a required beat (no single-string fold)', () => {
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 4,
+      treatmentGuidance: {
+        episodeTurns: [
+          'Darian assaults the battlement',
+          'Aethavyr leaps to the rescue on instinct',
+          'Lysandra names him Aethavyr',
+        ],
+      },
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const scenes = scenesForEpisode(sp, 1);
+    const allBeats = scenes.flatMap((s) => s.requiredBeats ?? []);
+    // Every authored turn lands as exactly one required beat.
+    expect(allBeats.map((b) => b.sourceTurn).sort()).toEqual(
+      [
+        'Aethavyr leaps to the rescue on instinct',
+        'Darian assaults the battlement',
+        'Lysandra names him Aethavyr',
+      ],
+    );
+    // Beats are authored-tier and carry mustDepict text.
+    for (const beat of allBeats) {
+      expect(beat.tier).toBe('authored');
+      expect(beat.mustDepict.length).toBeGreaterThan(0);
+      expect(beat.id).toMatch(/-rb\d+$/);
+    }
+    // The dramaticPurpose no longer folds the turn text in.
+    for (const s of scenes) {
+      expect(s.dramaticPurpose).not.toContain('Darian assaults the battlement');
+    }
+  });
+
+  it('produces a signature device on the anchor scene from the visual anchor', () => {
+    const ep = episode(1, ['climax'], {
+      estimatedSceneCount: 4,
+      treatmentGuidance: {
+        episodeTurns: ['The duel begins'],
+        visualAnchor: 'The joined-blood archive floor lights up',
+      },
+      plannedEncounters: [
+        {
+          id: 'enc-duel',
+          type: 'combat',
+          description: 'rooftop duel',
+          difficulty: 'hard',
+          npcsInvolved: ['rival'],
+          stakes: 'survival',
+          relevantSkills: ['combat'],
+          isBranchPoint: true,
+        },
+      ],
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const scenes = scenesForEpisode(sp, 1);
+    // The signature lands on the encounter (the episode's hinge/anchor).
+    const anchor = scenes.find((s) => s.kind === 'encounter')!;
+    expect(anchor.signatureMoment).toBe('The joined-blood archive floor lights up');
+    // And it is also a discrete tier:'signature' required beat for the validator.
+    const sigBeats = (anchor.requiredBeats ?? []).filter((b) => b.tier === 'signature');
+    expect(sigBeats).toHaveLength(1);
+    expect(sigBeats[0].mustDepict).toBe('The joined-blood archive floor lights up');
+    // No other scene carries the signature.
+    for (const s of scenes.filter((x) => x.id !== anchor.id)) {
+      expect(s.signatureMoment).toBeUndefined();
+    }
+  });
+
+  it('budgets enough scenes to carry more authored turns than the estimate', () => {
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 3,
+      treatmentGuidance: {
+        episodeTurns: Array.from({ length: 9 }, (_, i) => `Turn ${i + 1}`),
+      },
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const scenes = scenesForEpisode(sp, 1);
+    // All 9 turns are bound, none dropped.
+    const allBeats = scenes.flatMap((s) => s.requiredBeats ?? []);
+    expect(allBeats).toHaveLength(9);
+    // Scene count grew beyond the estimate (and the normal 8 cap) to fit them.
+    expect(scenes.length).toBeGreaterThan(3);
+  });
+
   it('slices edges that touch a given episode', () => {
     const p = plan([episode(1, ['hook']), episode(2, ['climax'])], {
       consequenceChains: [

@@ -15,7 +15,10 @@ import type {
   CharacterFashionStyle,
   StoryAnchors,
   SevenPointStructure,
+  CharacterArchitecture,
 } from '../../types/sourceAnalysis';
+import type { InformationLedgerEntry } from '../../types/seasonPlan';
+import { resolveAuthoredContext } from '../utils/documentSectionSlice';
 
 // Input types
 export interface CharacterDesignerInput {
@@ -61,6 +64,21 @@ export interface CharacterDesignerInput {
 
   /** Season-level 7-point beat map (for long-arc character planning). */
   seasonSevenPoint?: SevenPointStructure;
+
+  /**
+   * Authored character architecture (treatment Section 3): the protagonist's
+   * Lie/Need/Truth/Want plus supporting micro-arcs. Forwarded so the bible can
+   * carry the authored 5-axis identity model instead of re-deriving a lossy
+   * Want/Fear/Flaw from prose.
+   */
+  characterArchitecture?: CharacterArchitecture;
+
+  /**
+   * Authored information ledger (treatment Section 6). Forwarded as context so
+   * character design respects what each character knows / withholds and when
+   * reveals are scheduled.
+   */
+  informationLedger?: InformationLedgerEntry[];
 }
 
 // Output types
@@ -97,6 +115,21 @@ export interface CharacterProfile {
   want: string; // What they're actively pursuing
   fear: string; // What they're running from
   flaw: string; // What holds them back
+
+  /**
+   * Authored 5-axis identity model (treatment Section 3). Carried from
+   * `seasonPlan.characterArchitecture` so the bible preserves the authored
+   * Lie/Need/Truth/Wound rather than collapsing to Want/Fear/Flaw. All
+   * optional for back-compat with bibles produced before this field existed
+   * and for stories with no authored character architecture.
+   *
+   * Agent-facing only — never surfaced to the player as a label; scenes
+   * express these through behavior and choices (fiction-first).
+   */
+  need?: string; // Dramatic necessity underneath the conscious want
+  truth?: string; // What they must recognize (or refuse, in a tragic arc)
+  wound?: string; // Formative pressure that made the protective Lie useful
+  microLies?: string[]; // Smaller protective beliefs the character carries
 
   // Personality
   traits: string[]; // 3-5 defining traits
@@ -300,6 +333,16 @@ Every significant character MUST have:
 
 The best characters have wants, fears, and flaws that conflict with each other.
 
+### Authored 5-Axis Model (when provided)
+If an "Authored Character Architecture" section appears above, it is AUTHORITATIVE
+for the matching character. Carry the authored axes onto the structured fields:
+- authored **Need** → \`need\`
+- authored **Truth** → \`truth\`
+- authored **Wound** / origin pressure → \`wound\`
+- authored **Lie** and supporting **micro-lies** → \`microLies\` (an array)
+Keep Want/Fear/Flaw consistent with these. These are agent-facing drivers — never
+expose them to the player as labels; express them through behavior and choices.
+
 ### Voice Distinction
 - Every character must sound DIFFERENT
 - Use vocabulary, rhythm, and verbal tics to distinguish
@@ -460,6 +503,59 @@ Before finalizing:
       ? input.existingCharacters.map(c => `- ${c.name}: ${c.overview}`).join('\n')
       : 'None yet';
 
+    // Section-aware source slice (Section 3 character architecture + Section 6
+    // information ledger), not a lossy first-3000-chars cut. Falls back to the
+    // full doc when no headings match.
+    const authoredContext = resolveAuthoredContext(input.rawDocument, [
+      ['character architecture', 'protagonist brief'],
+      ['information ledger'],
+    ]);
+
+    const arch = input.characterArchitecture;
+    const architectureBlock = arch
+      ? `
+## Authored Character Architecture (Section 3 — AUTHORITATIVE, agent-facing only)
+These are the authored 5-axis identity drivers. Carry them onto the matching
+characters' "need", "truth", "wound", and "microLies" fields. Never expose these
+as labels to the player; express them through behavior and choices.
+
+### Protagonist
+- **Lie (false/protective belief)**: ${arch.protagonist.lie}
+- **Wound (origin pressure)**: ${arch.protagonist.originPressure}
+- **Truth (must recognize or refuse)**: ${arch.protagonist.truth}
+- **Want (conscious goal)**: ${arch.protagonist.want}
+- **Need (dramatic necessity)**: ${arch.protagonist.need}
+${
+  arch.supportingCharacters?.length
+    ? `\n### Supporting micro-arcs\n${arch.supportingCharacters
+        .map(
+          (s) =>
+            `- ${s.characterName} (${s.characterId}): micro-lie "${s.microLie}"; counter-pressure "${s.truthOrCounterPressure}"`
+        )
+        .join('\n')}`
+    : ''
+}
+`
+      : '';
+
+    const ledger = input.informationLedger;
+    const ledgerBlock = ledger?.length
+      ? `
+## Authored Information Ledger (Section 6 — context for what each character knows)
+Respect who knows / withholds each beat and when it is scheduled to surface.
+${ledger
+  .map(
+    (e) =>
+      `- ${e.id} "${e.label}": known by ${e.knownBy.join(', ') || 'unspecified'}${
+        e.withheldFrom?.length ? `; withheld from ${e.withheldFrom.join(', ')}` : ''
+      } (introduced Ep${e.introducedEpisode}${
+        e.plannedRevealEpisode ? `, reveal Ep${e.plannedRevealEpisode}` : ''
+      })`
+  )
+  .join('\n')}
+`
+      : '';
+
     return `
 Create character profiles for this story. Keep descriptions CONCISE (1-2 sentences each).
 
@@ -472,11 +568,11 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 
 ## World Context
 ${input.worldContext}
-${input.rawDocument ? `
+${architectureBlock}${ledgerBlock}${authoredContext.text ? `
 ## Original Source Document (Reference for Additional Context)
 Use this to extract character details, personalities, relationships, or backstory mentioned in the original document:
 
-${input.rawDocument.substring(0, 3000)}${input.rawDocument.length > 3000 ? '\n... (truncated)' : ''}
+${authoredContext.text}${authoredContext.truncated ? '\n... (truncated)' : ''}
 ` : ''}${input.memoryContext ? `
 ## Pipeline Memory (Insights from Prior Generations)
 ${input.memoryContext}
@@ -511,6 +607,10 @@ ${characterList}
       "want": "What they desire most",
       "fear": "What they're afraid of",
       "flaw": "Their key weakness",
+      "need": "OPTIONAL — dramatic necessity underneath the want (map from authored Need if provided)",
+      "truth": "OPTIONAL — what they must recognize or refuse (map from authored Truth if provided)",
+      "wound": "OPTIONAL — formative pressure behind their protective Lie (map from authored Wound/origin pressure if provided)",
+      "microLies": ["OPTIONAL — smaller protective beliefs (map from authored micro-lies if provided)"],
       "voiceProfile": {
         "vocabularyLevel": "simple/moderate/sophisticated",
         "speechPattern": "How they talk",
@@ -590,6 +690,11 @@ CRITICAL REQUIREMENTS:
         character.quirks = [];
       } else if (!Array.isArray(character.quirks)) {
         character.quirks = [character.quirks as unknown as string];
+      }
+
+      // microLies is optional; only coerce when the LLM returned a bare string.
+      if (character.microLies !== undefined && !Array.isArray(character.microLies)) {
+        character.microLies = [character.microLies as unknown as string];
       }
 
       if (!character.distinctiveFeatures) {

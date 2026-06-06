@@ -144,6 +144,31 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // episode's structured knowledge claims against the frozen canon's
   // who-knows-what-when ledger. Wired into the per-episode seal by the runner (P4).
   { validator: 'CanonConsistencyValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (episode seal, P4)' },
+  // --- Per-issue-class escalation (issueEscalation.ts) ---
+  // Two correctness classes that ship as advisory warnings by default can be
+  // promoted to hard blockers via their rollout flag, WITHOUT making every
+  // best-practices finding blocking. Default-off ⇒ behavior unchanged.
+  // (a) Design-note / meta-narration leak: GATE_DESIGN_NOTE_LEAK also turns on the
+  //     MechanicsLeakageValidator design-note scan; flagged prose then blocks the
+  //     final contract (remediation = SceneWriter regen of the leaking beat).
+  { validator: 'MechanicsLeakageValidator (design-note class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_DESIGN_NOTE_LEAK', dispatchedFrom: 'IntegratedBestPracticesValidator / FinalStoryContractValidator' },
+  // (b) Witness-id integrity: unknown-NPC witness references (already errors from
+  //     MechanicalStorytellingValidator) become blocking instead of downgraded.
+  { validator: 'MechanicalStorytellingValidator (witness-id class)', stage: 'final', tier: 'advisory', remediation: 'regen-choices', rolloutFlag: 'GATE_WITNESS_ID_INTEGRITY', dispatchedFrom: 'IntegratedBestPracticesValidator / FinalStoryContractValidator' },
+
+  // --- Treatment-fidelity guardrails (Remediation §4.1–§4.5) ---
+  // The five NEW validators that assert the generated story is a faithful EXPANSION
+  // of the authored treatment (episode identity, encounter-anchor content, INFO
+  // schedule, signature devices, 7-point anchoring) rather than a re-cut. All are
+  // tiered 'blocking' (§4 calls them blocking) but ship DEFAULT-OFF behind a per-rule
+  // rollout flag (treatmentFidelityGate.ts); with every flag unset they never gate.
+  // §4.6: when the source is an authored treatment, FinalStoryContractValidator does
+  // NOT downgrade these findings to warnings (validateFidelityFindings).
+  { validator: 'AuthoredEpisodeConformanceValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_AUTHORED_EPISODE_CONFORMANCE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
+  { validator: 'EncounterAnchorContentValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_ENCOUNTER_ANCHOR_CONTENT', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
+  { validator: 'InformationLedgerScheduleValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_INFORMATION_LEDGER_SCHEDULE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
+  { validator: 'SignatureDevicePresenceValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_SIGNATURE_DEVICE_PRESENCE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
+  { validator: 'SevenPointAnchorConformanceValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
 ];
 
 /** Validators that hard-block a run regardless of validation mode. */

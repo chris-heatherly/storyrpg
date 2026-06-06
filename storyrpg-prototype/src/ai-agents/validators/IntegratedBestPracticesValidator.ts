@@ -26,6 +26,7 @@ import { CliffhangerValidator } from './CliffhangerValidator';
 import { ChoiceImpactValidator } from './ChoiceImpactValidator';
 import { MechanicalStorytellingValidator } from './MechanicalStorytellingValidator';
 import { MechanicsLeakageValidator } from './MechanicsLeakageValidator';
+import { gateDesignNoteLeak, isEscalatedIssue } from './issueEscalation';
 import { StatCheckBalanceValidator } from './StatCheckBalanceValidator';
 import { SkillSurfaceValidator } from './SkillSurfaceValidator';
 import { SkillCoverageValidator } from './SkillCoverageValidator';
@@ -405,6 +406,7 @@ export class IntegratedBestPracticesValidator {
     // 7. Fiction-first mechanics leakage — block raw mechanics in prose
     const leakageResult = this.mechanicsLeakageValidator.validate({
       texts: collectPlayerFacingTexts(input),
+      scanDesignNotes: gateDesignNoteLeak(),
     });
     for (const issue of leakageResult.issues) {
       const mapped = toValidationIssue('mechanics_leakage', issue);
@@ -550,6 +552,7 @@ export class IntegratedBestPracticesValidator {
     // 1.6 Mechanics Leakage Validation
     const leakageResult = this.mechanicsLeakageValidator.validate({
       texts: collectPlayerFacingTexts(input),
+      scanDesignNotes: gateDesignNoteLeak(),
     });
     allIssues.push(...leakageResult.issues.map((issue) => toValidationIssue('mechanics_leakage', issue)));
     metrics.mechanicsLeakage = leakageResult.metrics;
@@ -767,17 +770,26 @@ export class IntegratedBestPracticesValidator {
       }
     }
 
-    // Categorize issues
-    const blockingIssues = allIssues.filter(i => i.level === 'error');
-    const warnings = allIssues.filter(i => i.level === 'warning');
+    // Categorize issues. Escalated correctness classes (witness-id integrity,
+    // design-note leak) are promoted into the blocking set when their rollout flag
+    // is on — see issueEscalation. Default-off ⇒ `escalatedAdvisory` is empty and
+    // every line below is byte-identical to the historical behavior.
+    const errorIssues = allIssues.filter(i => i.level === 'error');
+    const escalatedAdvisory = allIssues.filter(i => i.level !== 'error' && isEscalatedIssue(i));
+    const blockingIssues = escalatedAdvisory.length ? [...errorIssues, ...escalatedAdvisory] : errorIssues;
+    const warnings = allIssues.filter(i => i.level === 'warning' && !isEscalatedIssue(i));
     const suggestions = allIssues.filter(i => i.level === 'suggestion');
 
     // Calculate overall score
     const overallScore = this.calculateOverallScore(metrics, blockingIssues.length, warnings.length);
 
-    // Determine if validation passed
-    const overallPassed = this.config.mode === 'advisory' ||
-      (blockingIssues.length === 0 && (this.config.mode !== 'strict' || warnings.length === 0));
+    // Determine if validation passed. Advisory mode normally passes regardless,
+    // but an escalated correctness class hard-gates even in advisory mode.
+    const hasEscalatedBlocker = blockingIssues.some(isEscalatedIssue);
+    const overallPassed = hasEscalatedBlocker
+      ? false
+      : this.config.mode === 'advisory' ||
+        (blockingIssues.length === 0 && (this.config.mode !== 'strict' || warnings.length === 0));
 
     return {
       overallPassed,

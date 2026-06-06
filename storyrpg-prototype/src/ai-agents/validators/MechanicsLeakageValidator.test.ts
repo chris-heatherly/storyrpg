@@ -146,3 +146,30 @@ describe('MechanicsLeakageValidator', () => {
     });
   });
 });
+
+describe('MechanicsLeakageValidator design-note scan (opt-in, Fix 5a)', () => {
+  const leaky = [{ id: 'bridge', text: 'The player chooses how to respond. Thorne\'s loyalty level is set here, shaping Episode 4.' }];
+
+  it('ignores design-note prose by default (scanDesignNotes unset)', () => {
+    const result = new MechanicsLeakageValidator().validate({ texts: leaky });
+    expect(result.issues).toEqual([]);
+    expect(result.metrics.leaksFound).toBe(0);
+  });
+
+  it('flags meta-narration / episode refs / variable-setting when scanDesignNotes=true', () => {
+    const result = new MechanicsLeakageValidator().validate({ texts: leaky, scanDesignNotes: true });
+    const messages = result.issues.map((i) => i.message).join(' | ');
+    expect(messages).toContain('meta-narration');
+    expect(messages).toContain('episode number');
+    expect(messages).toContain('system-variable');
+    expect(result.issues.every((i) => i.severity === 'warning')).toBe(true);
+  });
+
+  it('leaves clean reader prose untouched even with the scan on', () => {
+    const result = new MechanicsLeakageValidator().validate({
+      texts: [{ id: 'b1', text: 'The courtyard should hold a hundred soldiers. You count thirty-four.' }],
+      scanDesignNotes: true,
+    });
+    expect(result.issues).toEqual([]);
+  });
+});

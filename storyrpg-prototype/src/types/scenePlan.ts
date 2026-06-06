@@ -67,6 +67,32 @@ export type SceneNarrativeRole =
   | 'release';     // aftermath / breather that resettles stakes after a turn or payoff
 
 /**
+ * A single authored unit the scene MUST depict (the "expand, do not rewrite"
+ * contract). When a story is generated from an authored treatment, each authored
+ * episode turn, signature staged moment, and encounter anchor becomes a discrete
+ * required beat bound to the scene that lands it — not a free-text prompt hint.
+ * The downstream beat-author stage must realize every `mustDepict`; the
+ * SignatureDevicePresenceValidator is the backstop.
+ *
+ * Tiers grade how fixed the beat is:
+ *  - `signature`  — a staged device/image the prose MUST show (e.g. the joined-
+ *                   blood archive floor); never invented away, never inverted.
+ *  - `authored`   — an authored episode turn that must occur, in order, undropped.
+ *  - `connective` — tissue the model may freely author around the fixed beats
+ *                   (the band that preserves legitimate inference).
+ */
+export interface RequiredBeat {
+  /** Stable id, unique within the scene (e.g. `s2-3-rb1`). */
+  id: string;
+  /** The authored source text this beat dramatizes (verbatim authored turn). */
+  sourceTurn: string;
+  /** What the generated prose must depict to honor this beat. */
+  mustDepict: string;
+  /** How fixed this beat is — see {@link RequiredBeat}. */
+  tier: 'signature' | 'authored' | 'connective';
+}
+
+/**
  * Encounter detail carried by a `kind: 'encounter'` scene. Absorbs the fields
  * of the legacy season-level PlannedEncounter so encounters no longer need a
  * parallel list — the scene id IS the encounter id.
@@ -93,6 +119,14 @@ export interface PlannedSceneEncounter {
     defeat: string;
     escape?: string;
   };
+  /**
+   * Authored required beats this encounter must stage — typically the central
+   * staged image/device the encounter exists to depict. Distinct from the
+   * scene-level {@link PlannedScene.requiredBeats}: these are anchored to the
+   * encounter's play, not its surrounding scene prose. Empty/undefined for
+   * inferred encounters.
+   */
+  requiredBeats?: RequiredBeat[];
 }
 
 /**
@@ -155,6 +189,24 @@ export interface PlannedScene {
    */
   encounter?: PlannedSceneEncounter;
 
+  // --- Authored-treatment fidelity ("expand, do not rewrite") ---
+
+  /**
+   * Authored units this scene MUST depict, bound here from the treatment's
+   * episode turns / signature moments (Phase 3 / §5). Beats generated downstream
+   * must realize every entry; the model invents only the connective tissue
+   * around them. Undefined/empty for from-scratch runs and scenes the treatment
+   * is silent on (inference is allowed and expected there).
+   */
+  requiredBeats?: RequiredBeat[];
+  /**
+   * A single staged signature device/image the prose MUST show in this scene
+   * (e.g. the Ep1 joined-blood archive floor). Convenience surface for the most
+   * important `tier: 'signature'` beat; the SignatureDevicePresenceValidator
+   * asserts it lands in final prose and is not inverted.
+   */
+  signatureMoment?: string;
+
   // --- Season choice/consequence budget (allocated at plan time) ---
 
   /**
@@ -181,6 +233,21 @@ export interface PlannedScene {
    * weighted totals.
    */
   budgetWeight?: number;
+
+  // --- Consequence-intelligence diagnostics (default-off; Plan Part 4/9) ---
+
+  /**
+   * Diagnostics only: the aggregated inbound dramatic charge at this scene
+   * (`charge(scene)` from the Convergence Ledger). Populated by later phases when
+   * `CONSEQUENCE_CHARGE`/`CONVERGENCE_LEDGER` are on; never read by the player.
+   */
+  chargeScore?: number;
+  /**
+   * Diagnostics only: a short human-readable explanation of WHY this unit's
+   * consequence tier was chosen (e.g. "elevated by major promise payoff" or
+   * "demoted: under-charged"). For the diagnostics trail, not behavior.
+   */
+  tierRationale?: string;
 }
 
 /**
@@ -252,6 +319,28 @@ export const CONSEQUENCE_TARGET: Record<ConsequenceTier, number> = {
   tint: 25,
   branchlet: 17,
   branch: 8,
+};
+
+/**
+ * Scene-ONLY consequence texture target (Plan Part 3, Layer D — the
+ * two-population calibration fix). The legacy {@link CONSEQUENCE_TARGET} above is
+ * a *unified* target measured across scenes AND encounters together; it
+ * mis-calibrates under encounter load because heavy encounters alone can exceed
+ * the unified heavy-tier %. This target governs the STANDARD-SCENE texture
+ * population only — encounters are budgeted by their own invariant (branch-point
+ * → `branch`; others → `branchlet`, escalating at pinch2/climax), not against a
+ * scene-texture %. It reserves a small, deliberate number of non-encounter
+ * majors (branchlet 8 / branch 2).
+ *
+ * Consumed by the two-population allocator/validator under `CONSEQUENCE_TWO_POP`
+ * (default-off). With the flag unset, {@link CONSEQUENCE_TARGET} remains the only
+ * target in effect.
+ */
+export const SCENE_CONSEQUENCE_TARGET: Record<ConsequenceTier, number> = {
+  callback: 60,
+  tint: 30,
+  branchlet: 8,
+  branch: 2,
 };
 
 /** Weighted budget share of a standard choice-bearing scene. */

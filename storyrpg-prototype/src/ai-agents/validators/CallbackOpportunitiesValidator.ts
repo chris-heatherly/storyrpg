@@ -18,6 +18,17 @@ import {
 } from '../../types/validation';
 import { Consequence, ReminderPlan } from '../../types';
 
+/**
+ * One-shot / expressive flags (`tint:*`, `expr:*`/`expression:*`, `moment:*`) are
+ * auto-generated per choice to color the immediate beat; they are NOT promises that
+ * imply a future callback. Excluding them from the "should be referenced" set keeps
+ * callback-debt detection focused on flags that genuinely set up a later payoff
+ * (route_*, relationship/story flags), instead of inflating false positives.
+ */
+function isReferentialFlag(flag: string): boolean {
+  return !/^(?:tint|expr|expression|moment):/i.test(flag);
+}
+
 export interface CallbackInput {
   // Scenes with their beats
   scenes: Array<{
@@ -90,7 +101,7 @@ export class CallbackOpportunitiesValidator {
     for (const choice of input.choices) {
       if (choice.consequences) {
         for (const consequence of choice.consequences) {
-          if (consequence.type === 'setFlag') {
+          if (consequence.type === 'setFlag' && isReferentialFlag(consequence.flag)) {
             flagsSet.add(consequence.flag);
           }
           if (consequence.type === 'changeScore') {
@@ -111,7 +122,7 @@ export class CallbackOpportunitiesValidator {
 
     // Add known flags/scores
     if (input.knownFlags) {
-      input.knownFlags.forEach(f => flagsSet.add(f));
+      input.knownFlags.filter(isReferentialFlag).forEach(f => flagsSet.add(f));
     }
     if (input.knownScores) {
       input.knownScores.forEach(s => scoresSet.add(s));

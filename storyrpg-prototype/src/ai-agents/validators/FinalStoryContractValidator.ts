@@ -5,6 +5,9 @@ import type { SceneValidationResult } from './IncrementalValidators';
 import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
 import { IncrementalEncounterValidator } from './IncrementalValidators';
 import { MechanicsLeakageValidator, type MechanicsLeakageText } from './MechanicsLeakageValidator';
+import { gateDesignNoteLeak, isEscalatedIssue } from './issueEscalation';
+import { canonicalizeStoryWitnessReactions } from '../utils/witnessNpcResolver';
+import { isTreatmentFidelityFinding } from './treatmentFidelityGate';
 import { findBeatIdCollisions } from './beatIdCollisions';
 
 /**
@@ -36,6 +39,7 @@ export type FinalStoryContractIssueType =
   | 'failed_incremental_validation'
   | 'unrepaired_callback_debt'
   | 'source_role_mismatch'
+  | 'treatment_fidelity_violation'
   | 'qa_blocker_present';
 
 export interface FinalStoryContractIssue {
@@ -64,6 +68,8 @@ export interface FinalStoryContractReport {
     failedIncrementalResults: number;
     callbackIssues: number;
     mechanicsLeaks: number;
+    /** Shadow metric: design-note/meta-narration leaks found, regardless of GATE_DESIGN_NOTE_LEAK. */
+    designNoteLeaks?: number;
   };
   generatedAt: string;
 }
@@ -84,6 +90,27 @@ export interface FinalStoryContractInput {
   bestPracticesReport?: ComprehensiveValidationReport;
   validSkills?: string[];
   mode?: 'strict' | 'advisory' | 'disabled';
+  /**
+   * True when the run's source-of-record is an authored treatment. §4.6: when set,
+   * treatment-fidelity findings (4.1–4.5) are NOT downgraded to advisory — they
+   * hard-fail. Populated by the stage that dispatches the §4 fidelity validators.
+   */
+  treatmentSourced?: boolean;
+  /**
+   * Findings emitted by the five §4 treatment-fidelity validators
+   * (AuthoredEpisodeConformance / EncounterAnchorContent /
+   * InformationLedgerSchedule / SignatureDevicePresence /
+   * SevenPointAnchorConformance). Each carries the emitting `validator` name so
+   * §4.6 can keep them blocking. Empty/absent ⇒ no fidelity dispatch this run.
+   */
+  fidelityFindings?: Array<{
+    validator: string;
+    severity: 'error' | 'warning';
+    message: string;
+    suggestion?: string;
+    episodeNumber?: number;
+    sceneId?: string;
+  }>;
 }
 
 const PLACEHOLDER_TEXT_PATTERN = /\b(what happened in|scene content was not generated|branch reconvergence|route chosen before this moment|the path here still matters|changes how everyone enters|tbd|placeholder|fill later)\b/i;
@@ -106,6 +133,18 @@ export class FinalStoryContractValidator {
 
     if (mode === 'disabled') {
       return this.buildReport([], metrics);
+    }
+
+    // Normalize witnessReaction npcIds to canonical `story.npcs` ids before any
+    // checks. Upstream authoring uses raw per-scene NPC labels (names/slugs), so
+    // witness ids otherwise fail the unknown-NPC check. This is the single
+    // authoritative chokepoint every final story passes through; it mutates the
+    // story object in place so the shipped story.json is corrected too.
+    const witnessFix = canonicalizeStoryWitnessReactions(input.story);
+    if (witnessFix.remapped || witnessFix.dropped) {
+      console.info(
+        `[FinalStoryContract] witness npcIds canonicalized: remapped ${witnessFix.remapped}, dropped ${witnessFix.dropped} of ${witnessFix.total}`,
+      );
     }
 
     this.validateRequestedEpisodes(input, issues, metrics);
@@ -201,11 +240,23 @@ export class FinalStoryContractValidator {
           });
         }
 
-        if (!scene.encounter && (!scene.beats || scene.beats.length === 0)) {
+        // §4.2 (Treatment-Fidelity Remediation): a non-encounter scene with zero
+        // reader-facing beats is always unplayable. Encounter scenes remain exempt in
+        // general — their content can legitimately live in `scene.encounter`
+        // (situation + storylets) rather than `beats`, per StructuralValidator's E4
+        // exemption, and a non-playable encounter is already caught by the
+        // `invalid_encounter` check above. The ONE exception is a treatment-sourced
+        // run: under the "expand, don't rewrite" contract every authored encounter
+        // anchor must be dramatized into prose, so a 0-beat encounter placeholder
+        // (wall-breach-is-empty → poisoning-never-administered) must fail there.
+        const sceneHasNoBeats = !scene.beats || scene.beats.length === 0;
+        if (sceneHasNoBeats && (!scene.encounter || input.treatmentSourced)) {
           issues.push({
             type: 'empty_scene',
             severity: 'error',
-            message: `Non-encounter scene "${scene.name || scene.id}" has no reader-facing beats.`,
+            message: scene.encounter
+              ? `Encounter scene "${scene.name || scene.id}" has no reader-facing beats — the encounter anchor was not dramatized.`
+              : `Non-encounter scene "${scene.name || scene.id}" has no reader-facing beats.`,
             episodeId: episode.id,
             episodeNumber: episode.number,
             sceneId: scene.id,
@@ -232,6 +283,7 @@ export class FinalStoryContractValidator {
     this.validateMechanicsLeakage(storyTexts, issues, metrics);
     this.validateIncrementalResults(input.incrementalValidationResults || [], issues, metrics);
     this.validateQAReports(input.qaReport, input.bestPracticesReport, issues, metrics);
+    this.validateFidelityFindings(input, issues);
 
     return this.buildReport(issues, metrics);
   }
@@ -529,7 +581,11 @@ export class FinalStoryContractValidator {
     issues: FinalStoryContractIssue[],
     metrics: FinalStoryContractReport['metrics']
   ): void {
-    const result = new MechanicsLeakageValidator().validate({ texts: storyTexts });
+    const blockOn = gateDesignNoteLeak();
+    const result = new MechanicsLeakageValidator().validate({
+      texts: storyTexts,
+      scanDesignNotes: blockOn,
+    });
     metrics.mechanicsLeaks = result.metrics.leaksFound;
     for (const issue of result.issues) {
       issues.push({
@@ -539,6 +595,17 @@ export class FinalStoryContractValidator {
         validator: 'MechanicsLeakageValidator',
         suggestion: issue.suggestion,
       });
+    }
+    // Shadow metric: count design-note-class leaks REGARDLESS of the gate flag, so the
+    // off→on promotion decision has data. When the gate is on, the design-note findings
+    // are already in `result`; when off, a second (pure) scan isolates their count. No
+    // blocking issues are added from the shadow scan.
+    if (blockOn) {
+      const mechanicsOnly = new MechanicsLeakageValidator().validate({ texts: storyTexts, scanDesignNotes: false });
+      metrics.designNoteLeaks = result.metrics.leaksFound - mechanicsOnly.metrics.leaksFound;
+    } else {
+      const withDesignNotes = new MechanicsLeakageValidator().validate({ texts: storyTexts, scanDesignNotes: true });
+      metrics.designNoteLeaks = withDesignNotes.metrics.leaksFound - result.metrics.leaksFound;
     }
   }
 
@@ -596,13 +663,54 @@ export class FinalStoryContractValidator {
         ? 'unrepaired_callback_debt'
         : 'qa_blocker_present';
       if (type === 'unrepaired_callback_debt') metrics.callbackIssues++;
+      // F3: best-practices craft findings are advisory at the final gate — EXCEPT
+      // escalated correctness classes (witness-id integrity) when their rollout
+      // flag is on, which stay blocking. Default-off ⇒ unchanged ('warning').
+      const escalated = isEscalatedIssue(issue);
       issues.push({
-        // F3: best-practices craft findings are advisory at the final gate.
         type,
-        severity: 'warning',
+        severity: escalated ? 'error' : 'warning',
         message: issue.message,
         validator: 'IntegratedBestPracticesValidator',
         suggestion: issue.suggestion,
+      });
+    }
+  }
+
+  /**
+   * §4.6 — treatment-fidelity findings (4.1–4.5) at the final gate.
+   *
+   * QA-prose findings (validateQAReports above) are LLM craft self-assessments and
+   * stay advisory so a story still ships. Treatment-fidelity findings are a
+   * different class: when the run's source-of-record is an authored treatment
+   * (`input.treatmentSourced`), a fidelity error means the pipeline re-cut /
+   * dropped / inverted authored content — that must HARD-FAIL, not downgrade.
+   *
+   * When NOT treatment-sourced (no authored spine to conform to), the findings are
+   * recorded as advisory warnings. Default-off ⇒ with no `fidelityFindings` passed
+   * (the validators not yet dispatched), this is a no-op.
+   */
+  private validateFidelityFindings(
+    input: FinalStoryContractInput,
+    issues: FinalStoryContractIssue[]
+  ): void {
+    for (const finding of input.fidelityFindings || []) {
+      // Defensive: only treat known §4 validators as a fidelity class.
+      const isFidelity = isTreatmentFidelityFinding(finding);
+      const severity: 'error' | 'warning' =
+        finding.severity === 'error' && isFidelity && input.treatmentSourced
+          ? 'error'
+          : finding.severity === 'error' && !input.treatmentSourced
+          ? 'warning'
+          : finding.severity;
+      issues.push({
+        type: 'treatment_fidelity_violation',
+        severity,
+        message: finding.message,
+        validator: finding.validator,
+        suggestion: finding.suggestion,
+        episodeNumber: finding.episodeNumber,
+        sceneId: finding.sceneId,
       });
     }
   }

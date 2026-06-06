@@ -270,6 +270,42 @@ describe('StoryArchitect treatment fidelity validation', () => {
     ]));
   });
 
+  it('records consequence-seed emitters on a choice-bearing scene even when the origin is an encounter (no choicePoint)', () => {
+    // GAP-C: the origin scene the seed is "set on" is preferentially the encounter
+    // (the episode hinge), which has NO choicePoint and never reaches ChoiceAuthor.
+    // The old guard (`if (originScene.choicePoint)`) silently dropped the seed for
+    // such episodes. The fix routes setsTreatmentSeeds to the nearest choice-bearing
+    // scene so the deterministic emitter always has a choice to attach the setFlag to.
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const input = makeInput({ episodeNumber: 3 });
+    const guidance = { consequenceSeeds: ["Darian's poison is set in the well."] } as any;
+    const blueprint: any = {
+      episodeId: 'episode-3',
+      number: 3,
+      suggestedFlags: [],
+      scenes: [
+        {
+          id: 's3-1',
+          isEncounter: false,
+          choicePoint: { type: 'strategic', stakes: {}, description: 'A real decision.', optionHints: [] },
+          encounterSetupContext: [],
+        },
+        // The origin: an encounter (no choicePoint) — preferred by the origin-scene rule.
+        { id: 'enc-3-1', isEncounter: true, encounterSetupContext: [] },
+      ],
+    };
+
+    (architect as any).registerConsequenceSeedEmitters(blueprint, input, guidance);
+
+    const seedFlag = 'treatment_seed_ep3_1';
+    // The encounter origin READS the seed via its setup context (precondition position)...
+    expect(blueprint.scenes[1].encounterSetupContext.some((d: string) => d.includes(seedFlag))).toBe(true);
+    // ...and the choice-bearing scene is recorded to SET it (the guard fix).
+    expect(blueprint.scenes[0].choicePoint.setsTreatmentSeeds).toContain(seedFlag);
+    // The flag is registered as known on the blueprint.
+    expect(blueprint.suggestedFlags.some((f: any) => f.name === seedFlag)).toBe(true);
+  });
+
   it('repairs treatment theme pressure and sceneEpisode forward pressure into validator-visible fields', () => {
     const architect = new StoryArchitect(config, { episodeStructureMode: 'sceneEpisodes', allowLinearBottleneckEpisodes: true } as any);
     const input = makeInput({

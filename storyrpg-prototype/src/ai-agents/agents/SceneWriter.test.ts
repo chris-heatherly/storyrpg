@@ -476,6 +476,88 @@ describe('SceneWriter structural guards', () => {
     expect(normalized.beats[0].text).toContain('Aethavyr hears the first arrow hit the carriage.');
   });
 
+  it('injects the required-beats checklist into the prompt when the blueprint carries requiredBeats (treatment-sourced)', () => {
+    const writer = new SceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+    const input = {
+      sceneBlueprint: {
+        id: 'scene-2-3',
+        name: 'The Battlement Leap',
+        description: 'Darian storms the wall; Aethavyr is tested.',
+        location: 'fort wall',
+        mood: 'tense',
+        purpose: 'bottleneck',
+        narrativeFunction: 'Dramatize the authored Ep2 naming/leap turn.',
+        dramaticQuestion: 'Does Aethavyr act?',
+        wantVsNeed: 'Instinct versus self-doubt',
+        conflictEngine: 'Darian breaches the battlement.',
+        npcsPresent: [],
+        keyBeats: ['The wall is breached.'],
+        leadsTo: [],
+        signatureMoment: 'Lysandra names him Aethavyr after the leap.',
+        requiredBeats: [
+          { id: 's2-3-rb1', sourceTurn: 'turn A', mustDepict: 'Darian assaults the battlement.', tier: 'authored' },
+          { id: 's2-3-rb2', sourceTurn: 'turn B', mustDepict: 'Aethavyr makes an instinctive rescue leap.', tier: 'authored' },
+        ],
+      },
+      storyContext: { title: 'Endsong', genre: 'fantasy', tone: 'epic', worldContext: 'A besieged fort.' },
+      protagonistInfo: { name: 'Aethavyr', pronouns: 'they/them', description: 'A nascent dragon.' },
+      npcs: [],
+      targetBeatCount: 4,
+      dialogueHeavy: false,
+    } as any;
+
+    const prompt = (writer as any).buildPrompt(input);
+    expect(prompt).toContain('REQUIRED BEATS — depict each, in order');
+    expect(prompt).toContain('1. [authored] Darian assaults the battlement.');
+    expect(prompt).toContain('2. [authored] Aethavyr makes an instinctive rescue leap.');
+    expect(prompt).toContain('Signature moment (MUST be depicted, never inverted):');
+    expect(prompt).toContain('Lysandra names him Aethavyr after the leap.');
+    // Ordering preserved in the rendered prompt.
+    expect(prompt.indexOf('Darian assaults')).toBeLessThan(prompt.indexOf('instinctive rescue leap'));
+  });
+
+  it('leaves the prompt unchanged (no required-beats checklist) for from-scratch scenes', () => {
+    const writer = new SceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+    const input = {
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'A Quiet Morning',
+        description: 'Nothing authored here.',
+        location: 'village',
+        mood: 'calm',
+        purpose: 'transition',
+        narrativeFunction: 'Establish the village.',
+        dramaticQuestion: 'What is normal?',
+        wantVsNeed: 'Comfort versus restlessness',
+        conflictEngine: 'Routine.',
+        npcsPresent: [],
+        keyBeats: ['The day begins.'],
+        leadsTo: [],
+      },
+      storyContext: { title: 'Test', genre: 'fantasy', tone: 'calm', worldContext: 'A village.' },
+      protagonistInfo: { name: 'Ren', pronouns: 'they/them', description: 'A farmhand.' },
+      npcs: [],
+      targetBeatCount: 4,
+      dialogueHeavy: false,
+    } as any;
+
+    const prompt = (writer as any).buildPrompt(input);
+    expect(prompt).not.toContain('REQUIRED BEATS');
+    expect(prompt).not.toContain('Signature moment (MUST be depicted');
+  });
+
   it('flags unresolved schema variables in player-facing beat text', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',

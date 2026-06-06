@@ -6,6 +6,24 @@
  */
 
 import { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
+import { extractTreatmentFromMarkdown } from './treatmentExtraction';
+import {
+  compareTreatmentFingerprints,
+  computeTreatmentFingerprint,
+  type TreatmentFingerprint,
+} from './treatmentFingerprint';
+
+/** Options for {@link parseDocument} / {@link documentToBrief}. */
+export interface ParseDocumentOptions {
+  /**
+   * Optional expected treatment fingerprint (full object or bare `signature`
+   * string). When provided AND the ingested document is classified as a
+   * treatment, the computed fingerprint is compared against this; a mismatch
+   * THROWS before any planning happens (Phase 0 / RC1 version guard). Leave
+   * unset to keep the default behavior (compute + log only, never block).
+   */
+  expectedTreatmentFingerprint?: TreatmentFingerprint | string;
+}
 
 // Dynamic import for pdfjs-dist
 let pdfjsLib: any;
@@ -63,13 +81,58 @@ export interface DocumentParseResult {
   brief?: FullCreativeBrief;
   error?: string;
   warnings: string[];
+  /**
+   * Phase 0 / RC1: identity fingerprint of the ingested treatment, present only
+   * when the document is classified as a treatment. Persist next to
+   * 00-input-brief.json so a version swap is diagnosable.
+   */
+  treatmentFingerprint?: TreatmentFingerprint;
+}
+
+/**
+ * Phase 0 / RC1 treatment version/identity guard. When the ingested document is a
+ * treatment, compute a stable fingerprint, emit a LOUD diagnostic listing the
+ * ingested episode titles (so a version swap like "Dawn in Silvermist Valley" vs
+ * "Dawn and Discord" is visible), and — only when an expected fingerprint is
+ * supplied — THROW on mismatch before any planning. Returns the fingerprint (or
+ * undefined for non-treatment documents).
+ */
+function computeTreatmentVersionGuard(
+  rawContent: string,
+  options?: ParseDocumentOptions,
+): TreatmentFingerprint | undefined {
+  const extracted = extractTreatmentFromMarkdown(rawContent || '');
+  if (!extracted.isTreatment) return undefined;
+  const fingerprint = computeTreatmentFingerprint(extracted);
+  console.info(
+    `[DocumentParser] TREATMENT INGESTED — ${fingerprint.episodeCount} episode(s). ` +
+      `Authored titles (in order): ${fingerprint.normalizedTitles
+        .map((t, i) => `#${i + 1} "${t}"`)
+        .join(', ')}. Beat anchors: ${fingerprint.signature.split('anchors=')[1] || '(none)'}.`,
+  );
+  if (options?.expectedTreatmentFingerprint !== undefined) {
+    const comparison = compareTreatmentFingerprints(fingerprint, options.expectedTreatmentFingerprint);
+    if (!comparison.matches) {
+      throw new Error(
+        `Treatment version mismatch — the ingested document does not match the expected treatment ` +
+          `fingerprint. Differences: ${comparison.differences.join('; ')}. ` +
+          `Refusing to plan against a non-canonical treatment.`,
+      );
+    }
+    console.info('[DocumentParser] Treatment fingerprint matches the expected treatment.');
+  }
+  return fingerprint;
 }
 
 /**
  * Parse a document and extract story brief information.
  * Supports markdown, plain text, and JSON formats.
  */
-export function parseDocument(content: string, fileName?: string): DocumentParseResult {
+export function parseDocument(
+  content: string,
+  fileName?: string,
+  options?: ParseDocumentOptions,
+): DocumentParseResult {
   const warnings: string[] = [];
 
   console.log(`[DocumentParser] Parsing document: ${fileName || 'unnamed'} (${content.length} chars)`);
@@ -139,6 +202,11 @@ export function parseDocument(content: string, fileName?: string): DocumentParse
     locationNames: parsed.locations?.map(l => l.name) || [],
   });
 
+  // Phase 0 / RC1: compute the treatment fingerprint, log the ingested titles, and
+  // (when an expected fingerprint is supplied) THROW on a version mismatch before
+  // any planning. Propagates out of parseDocument so the caller aborts the run.
+  const treatmentFingerprint = computeTreatmentVersionGuard(parsed.rawContent, options);
+
   // Convert to FullCreativeBrief
   const brief = documentToBrief(parsed);
 
@@ -154,6 +222,7 @@ export function parseDocument(content: string, fileName?: string): DocumentParse
     document: parsed,
     brief,
     warnings,
+    treatmentFingerprint,
   };
 }
 

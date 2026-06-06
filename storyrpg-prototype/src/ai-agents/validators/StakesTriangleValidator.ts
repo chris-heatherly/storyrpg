@@ -20,6 +20,7 @@ import {
   ValidationConfig,
 } from '../../types/validation';
 import { STAKES_TRIANGLE } from '../prompts/storytellingPrinciples';
+import { isPlaceholderStake } from '../constants/placeholderStakes';
 
 // API URL handling for web proxy
 const ANTHROPIC_API_URL = isWebRuntime()
@@ -195,6 +196,9 @@ export class StakesTriangleValidator {
   private calculateBasicScore(input: StakesTriangleInput): StakesQualityScore {
     const scoreComponent = (text: string | undefined): number => {
       if (!text || text.trim().length === 0) return 0;
+      // Un-authored placeholder stakes (StoryArchitect fallback) must fail so the
+      // choice is regenerated with real stakes — never let the length heuristic pass them.
+      if (isPlaceholderStake(text)) return 0;
       const length = text.trim().length;
       if (length < 10) return 30;
       if (length < 30) return 60;

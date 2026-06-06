@@ -29,6 +29,7 @@ import {
 } from '../../types/scenePlan';
 import type { ChoiceType } from '../../types/choice';
 import {
+  bindAuthoredTurnsToScenes,
   buildEpisodeScenes,
   sevenPointTextForEpisode,
   toSceneEncounter,
@@ -75,24 +76,42 @@ const VALID_TIERS: ReadonlySet<ConsequenceTier> = new Set([
  */
 export function buildScenePlanPrompt(plan: SeasonPlan): string {
   const sevenPoint = plan.sevenPoint;
+  // Treatment-sourced run: any episode carries authored turns. When true, the
+  // authored turns/signature moments/encounter anchors are FIXED required beats
+  // and the model dramatizes them — it does not re-design the episode (§5).
+  const isTreatmentSourced = plan.episodes.some(
+    (ep) => (ep.treatmentGuidance?.episodeTurns?.length ?? 0) > 0,
+  );
+
   const episodeBlocks = [...plan.episodes]
     .sort((a, b) => a.episodeNumber - b.episodeNumber)
     .map((ep) => {
       const beat = sevenPointTextForEpisode(plan, ep);
       const role = ep.structuralRole?.join(' / ') || 'rising/falling buffer';
-      const turns = ep.treatmentGuidance?.episodeTurns?.length
-        ? ep.treatmentGuidance.episodeTurns.map((t) => `    - ${t}`).join('\n')
+      const authoredTurns = ep.treatmentGuidance?.episodeTurns ?? [];
+      // Treatment runs: render turns as a NUMBERED required-beat checklist (FIXED,
+      // must be depicted in order). Non-treatment runs keep the soft advisory list.
+      const turns = authoredTurns.length
+        ? authoredTurns
+            .map((t, i) => (isTreatmentSourced ? `    ${i + 1}. [REQUIRED BEAT] ${t}` : `    - ${t}`))
+            .join('\n')
         : '    - (none authored)';
+      const signature = ep.treatmentGuidance?.visualAnchor
+        ? `  Signature moment (MUST be depicted, never inverted): ${ep.treatmentGuidance.visualAnchor}\n`
+        : '';
       const encounters = (ep.plannedEncounters ?? []).length
         ? ep.plannedEncounters!
             .map((e) => `    - encounterId "${e.id}": ${e.type} — ${e.description} (difficulty ${e.difficulty})`)
             .join('\n')
         : '    - (none)';
+      const turnsLabel = isTreatmentSourced
+        ? 'REQUIRED BEATS (FIXED — depict every one, in order; do NOT add/drop/re-order/re-interpret)'
+        : 'Authored turns';
       return [
         `Episode ${ep.episodeNumber}: "${ep.title}"`,
         `  7-point role: ${role}${beat ? ` — beat: "${beat}"` : ''}`,
         `  Synopsis: ${ep.synopsis}`,
-        `  Authored turns:\n${turns}`,
+        `${signature}  ${turnsLabel}:\n${turns}`,
         `  Planned encounters (MUST each appear as one kind:"encounter" scene):\n${encounters}`,
         `  Target scene count: ~${ep.estimatedSceneCount || 5}`,
       ].join('\n');
@@ -103,11 +122,23 @@ export function buildScenePlanPrompt(plan: SeasonPlan): string {
     .flatMap((c) => (c.consequences ?? []).map((q) => `  - Episode ${c.origin.episodeNumber} plants "${c.origin.description}" → pays off Episode ${q.episodeNumber}`))
     .join('\n');
 
-  return `You are the season's scene planner. Plan the SCENES for every episode of this season.
+  const framing = isTreatmentSourced
+    ? `You are dramatizing an ALREADY-AUTHORED season into scenes. The episodes, their order and
+titles, their 7-point roles, their REQUIRED BEATS (authored turns), their signature moments, and
+their encounter anchors are FIXED. Your job is to produce scenes that DEPICT every required beat in
+its authored order — one clear dramatic job per scene — and to INVENT ONLY the connective tissue:
+transitions, sensory texture, NPC micro-beats, and prose framing between the fixed beats. You may
+add connective scenes where pacing needs them, but you must NOT add, drop, re-order, merge, split,
+or re-interpret a required beat, and you must NOT relocate a beat to a different episode. Where the
+treatment is silent, sensible invention is expected; where it speaks, it wins. Beats (prose units)
+are written later to serve the scene. Encounters ARE scenes (kind:"encounter").`
+    : `You are the season's scene planner. Plan the SCENES for every episode of this season.
 
 A scene is the unit of story. Each scene must do one clear dramatic job and must know its place
 relative to the others — what it sets up and what it pays off. Beats are NOT planned here; they are
-written later to serve the scene. Encounters ARE scenes (kind:"encounter").
+written later to serve the scene. Encounters ARE scenes (kind:"encounter").`;
+
+  return `${framing}
 
 SEASON 7-POINT SPINE (a meta-concept that lives at the season level):
   hook: ${sevenPoint?.hook ?? ''}
@@ -443,6 +474,14 @@ function normalizeEpisodeScenes(ep: SeasonEpisode, rawScenes: RawScene[]): Plann
   built.forEach((s, i) => {
     s.order = i;
   });
+
+  // Bind the authored turns + signature device deterministically onto the LLM
+  // scenes. The model's prose framing of the turns rides in dramaticPurpose; the
+  // AUTHORITATIVE required-beat binding is derived from the treatment here so a
+  // treatment-sourced run carries discrete requiredBeats + a signatureMoment
+  // regardless of what the model returned (§3.2 / §5). Shared with the
+  // deterministic path via the same helper.
+  bindAuthoredTurnsToScenes(ep, built);
   return built;
 }
 

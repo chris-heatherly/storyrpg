@@ -110,12 +110,12 @@ export function assignSeasonChoiceTypes(
     counts,
   };
 
-  // Bucket D: ChoiceDistribution gate (opt-in, default OFF). Plan-emit time is the
-  // earliest reliable seam — the season type-mix is fixed here, before any episode
-  // authors against its slice. The validator runs ONLY when GATE_CHOICE_DISTRIBUTION=1
-  // (zero added cost / unchanged behavior when unset), and HARD-BLOCKS only on
-  // error-severity findings.
-  if (process.env[PLAN_GATE_FLAGS.choiceDistribution] === '1') {
+  // Bucket D: ChoiceDistribution. Plan-emit time is the earliest reliable seam — the
+  // season type-mix is fixed here, before any episode authors against its slice. The
+  // validator now runs UNCONDITIONALLY and logs its findings as advisory shadow
+  // telemetry (so we accumulate the data that justifies promoting the gate to
+  // default-on); only the HARD-BLOCK throw remains behind GATE_CHOICE_DISTRIBUTION.
+  {
     const distResult = new ChoiceDistributionValidator().validate({
       choiceSets: plan.moments.map((m) => ({
         beatId: m.id,
@@ -126,6 +126,12 @@ export function assignSeasonChoiceTypes(
       targets: target,
       maxBranchingChoicesPerEpisode: Number.MAX_SAFE_INTEGER,
     });
+    if (distResult.issues.length > 0) {
+      console.info(
+        `[ChoiceDistribution][shadow] season type-mix advisory (${distResult.issues.length} issue(s)): ` +
+          distResult.issues.map((i) => `${i.severity}:${i.message}`).join('; '),
+      );
+    }
     const distGate = shouldGate(
       PLAN_GATE_FLAGS.choiceDistribution,
       distResult.issues,

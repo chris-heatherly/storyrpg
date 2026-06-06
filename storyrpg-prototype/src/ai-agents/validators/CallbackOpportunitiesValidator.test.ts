@@ -113,3 +113,48 @@ describe('CallbackOpportunitiesValidator referential-flag filter (Fix 3i)', () =
     expect(result.metrics.flagsSet).toBe(1);
   });
 });
+
+describe('CallbackOpportunitiesValidator flag-reference detection (Issue 1a)', () => {
+  it('counts a flag referenced by an exact condition and avoids substring false positives', async () => {
+    const validator = new CallbackOpportunitiesValidator();
+    const result = await validator.validate({
+      scenes: [makeScene('s1', [{
+        id: 'b1', text: 'default',
+        textVariants: [{ condition: { type: 'flag', flag: 'met_andrei_before_attack', value: true }, text: 'he remembers you' }],
+      }])],
+      choices: [{
+        id: 'c1', sceneId: 's1', text: 'x',
+        consequences: [
+          { type: 'setFlag', flag: 'met_andrei_before_attack' },
+          { type: 'setFlag', flag: 'andrei' }, // substring of the above — must NOT be falsely counted
+        ] as any,
+      }],
+    });
+    expect(result.metrics.flagsSet).toBe(2);
+    expect(result.metrics.flagsReferenced).toBe(1); // only the exact match, not 'andrei'
+  });
+
+  it('walks compound and/or/not conditions to find referenced flags', async () => {
+    const validator = new CallbackOpportunitiesValidator();
+    const result = await validator.validate({
+      scenes: [makeScene('s1', [{
+        id: 'b1', text: 'default',
+        textVariants: [{
+          condition: { type: 'and', conditions: [
+            { type: 'not', condition: { type: 'flag', flag: 'signed_republic_as_is', value: true } },
+            { type: 'or', conditions: [{ type: 'flag', flag: 'helped_carmen', value: true }] },
+          ] },
+          text: 'variant',
+        }],
+      }])],
+      choices: [{
+        id: 'c1', sceneId: 's1', text: 'x',
+        consequences: [
+          { type: 'setFlag', flag: 'signed_republic_as_is' },
+          { type: 'setFlag', flag: 'helped_carmen' },
+        ] as any,
+      }],
+    });
+    expect(result.metrics.flagsReferenced).toBe(2);
+  });
+});

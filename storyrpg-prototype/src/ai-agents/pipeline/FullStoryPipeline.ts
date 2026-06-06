@@ -301,6 +301,7 @@ import { recordGateShadow, buildGateShadowRecord, type GateShadowRecord } from '
 import { isGateEnabled, gateEnabledPredicate, isShadowLoggingEnabled } from '../remediation/gateDefaults';
 import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairReport } from '../remediation/finalContractRepair';
 import { repairAndRevalidatePropIntroduction } from '../remediation/repairs/propIntroductionRepair';
+import { computePlanTimeShadow } from '../remediation/planTimeShadow';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
@@ -21925,6 +21926,26 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         await this.recordGateShadowSafe(buildGateShadowRecord({
           gate: flag, validator, scope: 'episode',
           enabled: isGateEnabled(flag) && treatmentSourced, blockingCount: counts.get(validator) ?? 0, storyId: input.story.id,
+        }));
+      }
+    } catch {
+      /* shadow only — never load-bearing */
+    }
+
+    // Resume-proof plan-time shadow: recompute the plan-time gates from the ASSEMBLED
+    // story here (the per-episode seam is skipped on resumed jobs, so this final-stage
+    // pass is the always-on source). Aggregated per gate across episodes.
+    try {
+      const planTime = await computePlanTimeShadow({
+        story: input.story as unknown as { episodes?: unknown[]; npcs?: Array<{ id: string; name?: string }> },
+        callbackLedger: this.callbackLedger?.serialize?.(),
+        totalEpisodes: (input.story as unknown as { episodes?: unknown[] }).episodes?.length ?? 0,
+      });
+      for (const r of planTime) {
+        await this.recordGateShadowSafe(buildGateShadowRecord({
+          gate: r.gate, validator: r.validator, scope: 'episode',
+          enabled: isGateEnabled(r.gate), blockingCount: r.blockingCount, storyId: input.story.id,
+          details: 'final-stage aggregate (resume-proof)',
         }));
       }
     } catch {

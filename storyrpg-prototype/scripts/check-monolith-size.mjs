@@ -226,7 +226,12 @@ const baselines = {
   // charactersInvolved so the "not listed in scene" presence warning clears (additive,
   // deterministic). Logic in utils/witnessNpcResolver.ts (ensureWitnessNpcsInScenes);
   // only the gated call is here. Default-on, reversible (GATE_WITNESS_SCENE_PRESENCE).
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 22321,
+  //
+  // +21 (22321 -> 22342): resume-proof plan-time shadow — recompute the 5 plan-time
+  // gates from the ASSEMBLED story at the final stage (the per-episode seam is skipped
+  // on resumed jobs). Logic in remediation/planTimeShadow.ts (computePlanTimeShadow);
+  // only the call + per-gate recording is here.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 22342,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

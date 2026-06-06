@@ -29,6 +29,24 @@ function isReferentialFlag(flag: string): boolean {
   return !/^(?:tint|expr|expression|moment):/i.test(flag);
 }
 
+/**
+ * Walk a (possibly compound) condition expression and return every flag name it
+ * references. Recurses through `and`/`or`/`not`. Returns exact flag names so the
+ * caller can match against the set of flags actually set (no substring matching).
+ */
+function extractFlagNames(condition: unknown): string[] {
+  if (!condition || typeof condition !== 'object') return [];
+  const c = condition as Record<string, unknown>;
+  const out: string[] = [];
+  if (c.type === 'flag' && typeof c.flag === 'string') out.push(c.flag);
+  // Compound: { type: 'and'|'or', conditions: [...] } or { type: 'not', condition }
+  if (Array.isArray(c.conditions)) {
+    for (const child of c.conditions) out.push(...extractFlagNames(child));
+  }
+  if (c.condition) out.push(...extractFlagNames(c.condition));
+  return out;
+}
+
 export interface CallbackInput {
   // Scenes with their beats
   scenes: Array<{
@@ -140,13 +158,13 @@ export class CallbackOpportunitiesValidator {
           textVariantsCount += beat.textVariants.length;
           conditionalContentCount++;
 
-          // Try to extract flag references from conditions
+          // Extract flag references by walking the condition tree (exact flag-name
+          // matches), not substring-matching a JSON blob — substring matching
+          // false-positives when one flag name is contained in another
+          // (e.g. `andrei` inside `met_andrei_before_attack`).
           for (const variant of beat.textVariants) {
-            const conditionStr = JSON.stringify(variant.condition);
-            for (const flag of flagsSet) {
-              if (conditionStr.includes(flag)) {
-                flagsReferenced.add(flag);
-              }
+            for (const flag of extractFlagNames(variant.condition)) {
+              if (flagsSet.has(flag)) flagsReferenced.add(flag);
             }
           }
         }

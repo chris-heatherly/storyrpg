@@ -101,6 +101,30 @@ Final-contract-class shadow data (a *regen*, so the plan-time seam did not run �
 
 Decisions: design-note ON; final-contract repair loop ON (safety net); InformationLedgerSchedule stays advisory (over-strict); the other 4 fidelity gates stay off until (a) more runs confirm clean and (b) a fidelity-class repair exists so escalation self-heals instead of aborting. Plan-time gates / prop / micro-episode await a full-generation shadow run.
 
+### Plan-time shadow — resume-proof fix + findings
+
+The plan-time gates + their shadow lived only in the per-episode generation loop,
+which is **skipped on resumed jobs** (episodes load from a checkpoint) — so resumed
+runs produced no plan-time data and the gates were effectively inert for them. Fixed
+by `remediation/planTimeShadow.ts` (`computePlanTimeShadow`): recompute all five
+plan-time gates from the **assembled story at the final stage**, which runs on every
+job. Wired into `recordFinalContractShadow`. The prop check applies the
+label→canonical-id resolver on copies first, so the count reflects what a fresh-run
+gate actually sees (not inflated label/id noise).
+
+Backfilled from the 2026-06-06 run:
+
+| Gate | wouldGate | count | note |
+|---|---|---|---|
+| `GATE_CHOICE_DENSITY` | no | 0 | clean |
+| `GATE_CONSEQUENCE_BUDGET` | no | 0 | clean |
+| `GATE_CALLBACK_COVERAGE` | no | 0 | clean |
+| `GATE_SETUP_PAYOFF` | no | 0 | clean (inert without an authored ThreadPlanner ledger) |
+| `GATE_PROP_INTRODUCTION` | yes | 7 (was 34 pre-resolver) | resolver clears 27/34; 7 genuine unresolved refs in a shipped story → keep OFF, investigate |
+
+All five stay OFF: density/budget/callback/setup are clean on one run (need 1–2 more
+to confirm before flipping); prop has 7 genuine unresolved references worth a look.
+
 ## Wave 0 shadow coverage (now complete across all gate classes)
 
 Shadow logging records would-gate data **regardless of flag** for every gate class:

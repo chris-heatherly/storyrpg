@@ -63,14 +63,25 @@ describe('assignChoiceTypes', () => {
     expect(assignChoiceTypes([{ id: 'x' }])).toEqual([]);
   });
 
-  it('honors the season slice when seasonCounts is given (E1)', () => {
-    // Season plan allocated this episode 3 strategic + 1 relationship — no expression.
+  it('honors the season slice but still guarantees >=1 dilemma (E1)', () => {
+    // Season plan allocated this episode 3 strategic + 1 relationship + 0 dilemma.
+    // The per-episode dilemma guarantee now fires even with an explicit slice: it
+    // converts ONE over-represented choice (the largest non-dilemma = strategic) to
+    // a dilemma, so no reasonably-sized episode ships zero moral choices.
     const s = scenes(4);
     assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, { expression: 0, relationship: 1, strategic: 3, dilemma: 0 });
     const counts = s.reduce((a, x) => { a[x.choicePoint!.type] = (a[x.choicePoint!.type] ?? 0) + 1; return a; }, {} as Record<string, number>);
     expect(counts.expression ?? 0).toBe(0);
-    expect(counts.strategic).toBe(3);
+    expect(counts.dilemma).toBe(1);   // guaranteed
+    expect(counts.strategic).toBe(2); // donor: largest non-dilemma type
     expect(counts.relationship).toBe(1);
+  });
+
+  it('does not force a dilemma for tiny episodes (<3 choice points)', () => {
+    const s = scenes(2);
+    assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, { expression: 1, relationship: 1, strategic: 0, dilemma: 0 });
+    const counts = s.reduce((a, x) => { a[x.choicePoint!.type] = (a[x.choicePoint!.type] ?? 0) + 1; return a; }, {} as Record<string, number>);
+    expect(counts.dilemma ?? 0).toBe(0);
   });
 
   it('falls back to the default mix when seasonCounts is all-zero', () => {

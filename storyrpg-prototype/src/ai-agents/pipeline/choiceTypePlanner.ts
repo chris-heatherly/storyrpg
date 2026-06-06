@@ -156,10 +156,16 @@ export function assignChoiceTypes(
   // from the largest non-dilemma category to stay closest to the target mix.
   // The assignment loop below routes it to a branching/bottleneck choice point
   // first (those are sorted ahead), landing it on the episode's pivotal choice.
-  // Skip the local guarantee when the SEASON plan owns the mix (E1) — it may deliberately
-  // place this episode's dilemmas in other episodes; forcing one here breaks the budget.
+  // Enforce >=1 dilemma per reasonably-sized episode even when the season plan
+  // allocated zero — shipped choice-point count is ground truth and we never starve
+  // an episode of moral choices. (Previously this was skipped whenever `seasonCounts`
+  // was supplied, but the per-episode path ALWAYS supplies it, so the guarantee never
+  // fired and episodes shipped 0 dilemmas — the audit's `dilemma 0%` finding.) The
+  // guard fires only when `dilemma === 0`, so it never deletes an existing dilemma; it
+  // converts exactly one over-represented choice. The season plan's protest, if any,
+  // is surfaced by ChoiceDistributionValidator shadow telemetry.
   const MIN_CHOICE_POINTS_FOR_DILEMMA = 3;
-  if (!seasonCounts && counts.dilemma === 0 && n >= MIN_CHOICE_POINTS_FOR_DILEMMA) {
+  if (counts.dilemma === 0 && n >= MIN_CHOICE_POINTS_FOR_DILEMMA) {
     // Steal from the OVER-represented type (largest count), not always 'strategic'.
     // The old code took from strategic first, which zeroed the (already rarest)
     // strategic slot at small N — the audit's `strategic 0%` finding. On ties,

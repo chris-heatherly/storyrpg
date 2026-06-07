@@ -123,8 +123,10 @@ describe('GAP-D fidelity dispatch → FinalStoryContract escalation (end-to-end)
     expect(report.blockingIssues.some((i) => i.type === 'treatment_fidelity_violation')).toBe(true);
   });
 
-  it('gate OFF: the whole dispatch path is inert and the story still passes', async () => {
-    // No gate flags set.
+  it('gate OFF (env kill-switch): the whole dispatch path is inert and the story still passes', async () => {
+    // Wave-5 promoted these gates default-ON, so "off" now means the explicit env
+    // kill-switch ("0") on every flag — proving a deploy can fully disable the path.
+    for (const flag of Object.values(TREATMENT_FIDELITY_GATE_FLAGS)) process.env[flag] = '0';
     const fidelity = runFidelityValidators({
       story: minimalStory(),
       seasonPlan: misanchoredSeasonPlan(),

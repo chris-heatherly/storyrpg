@@ -73,6 +73,25 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   GATE_CHOICE_DISTRIBUTION: false,
   GATE_CONSEQUENCE_BUDGET: false,
   GATE_ARC_PRESSURE: false,
+
+  // ── Wave 5: treatment-fidelity §4 gates (Remediation §4.1–§4.5) ──
+  // Promoted ON to ENFORCE authored-treatment fidelity (not merely steer it): with
+  // these off the validators are dispatched but never block, so a re-cut episode
+  // list, an empty encounter anchor, a missing signature device, a mis-scheduled
+  // info reveal, or a mis-anchored 7-point beat would ship silently. SCOPE: these
+  // escalate to blocking ONLY on treatment-sourced runs (runFidelityValidators sets
+  // treatmentSourced from sourceFormat; FinalStoryContractValidator.validateFidelity
+  // -Findings only hard-fails when treatmentSourced) — non-treatment generation is
+  // byte-identical to before, so the broad corpus is unaffected. CAVEAT: promoted by
+  // direction rather than off a clean shadow-ledger pass (live treatment runs were
+  // blocked by proxy redeploys at promotion time); the deterministic binding was
+  // validated offline against the real bite-me brief. Each is reversible per-env via
+  // `<FLAG>=0` (kill-switch) if a real treatment run surfaces a false positive.
+  GATE_AUTHORED_EPISODE_CONFORMANCE: true,
+  GATE_ENCOUNTER_ANCHOR_CONTENT: true,
+  GATE_INFORMATION_LEDGER_SCHEDULE: true,
+  GATE_SIGNATURE_DEVICE_PRESENCE: true,
+  GATE_SEVEN_POINT_ANCHOR_CONFORMANCE: true,
 };
 
 /**

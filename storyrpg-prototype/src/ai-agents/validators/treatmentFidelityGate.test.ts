@@ -23,15 +23,17 @@ describe('treatmentFidelityGate', () => {
     }
   });
 
-  it('is default-off: every gate flag is disabled when unset', () => {
+  it('is default-on (Wave-5 promotion): every gate flag is enabled when unset', () => {
     for (const flag of flags) {
-      expect(isFidelityGateEnabled(flag)).toBe(false);
+      expect(isFidelityGateEnabled(flag)).toBe(true);
     }
   });
 
-  it('only the exact string "1" enables a flag', () => {
-    process.env[TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance] = 'true';
+  it('env "0" is the kill-switch; non-"0" strings fall through to the default-on', () => {
+    process.env[TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance] = '0';
     expect(isFidelityGateEnabled(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance)).toBe(false);
+    process.env[TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance] = 'true';
+    expect(isFidelityGateEnabled(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance)).toBe(true);
     process.env[TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance] = '1';
     expect(isFidelityGateEnabled(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance)).toBe(true);
   });

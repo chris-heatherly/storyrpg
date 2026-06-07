@@ -39,13 +39,26 @@ afterEach(() => {
 });
 
 describe('runFidelityValidators (GAP-D dispatch)', () => {
-  it('is a no-op when every gate flag is unset (default-off, no regression)', () => {
+  it('dispatches by default now that the Wave-5 gates are promoted ON', () => {
+    // Wave 5 (gateDefaults): the §4 gates are default-ON, so an unset env now RUNS
+    // the validators on a treatment-sourced plan and surfaces the misanchor finding.
     const result = runFidelityValidators({
       story,
       seasonPlan: misanchoredSeasonPlan(),
       sourceAnalysis: treatmentAnalysis(),
     });
-    // Treatment-sourced flag still resolves, but no validator ran → no findings.
+    expect(result.treatmentSourced).toBe(true);
+    expect(result.fidelityFindings.some((f) => f.validator === 'SevenPointAnchorConformanceValidator')).toBe(true);
+  });
+
+  it('env "0" is a kill-switch that disables every gate (no findings)', () => {
+    for (const flag of ALL_FLAGS) process.env[flag] = '0';
+    const result = runFidelityValidators({
+      story,
+      seasonPlan: misanchoredSeasonPlan(),
+      sourceAnalysis: treatmentAnalysis(),
+    });
+    // Treatment-sourced flag still resolves, but every gate is killed → no findings.
     expect(result.fidelityFindings).toEqual([]);
     expect(result.treatmentSourced).toBe(true);
   });
@@ -77,6 +90,9 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
   });
 
   it('skips a gated validator whose required input is missing (no scene plan → no encounter-anchor dispatch)', () => {
+    // Isolate the encounter-anchor gate: kill the other (now default-on) gates so
+    // only encounterAnchorContent is active, proving it skips when its input is absent.
+    for (const flag of ALL_FLAGS) process.env[flag] = '0';
     process.env[TREATMENT_FIDELITY_GATE_FLAGS.encounterAnchorContent] = '1';
     const result = runFidelityValidators({
       story,

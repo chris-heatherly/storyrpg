@@ -44,6 +44,32 @@ describe('BaseAgent JSON repair', () => {
   });
 });
 
+describe('BaseAgent.classifyLlmError (retry classification)', () => {
+  it('treats undici "terminated" as a retryable connection failure (large-prompt socket drop)', () => {
+    const c = BaseAgent.classifyLlmError({ message: 'terminated', errorName: 'TypeError' });
+    expect(c.isRetryable).toBe(true);
+    expect(c.isConnectionFailure).toBe(true);
+    expect(c.isAbortError).toBe(false);
+  });
+
+  it('does NOT retry "terminated" when the scoped abort signal fired (intentional timeout)', () => {
+    const c = BaseAgent.classifyLlmError({ message: 'terminated', errorName: 'TypeError', signalAborted: true });
+    expect(c.isAbortError).toBe(true);
+    expect(c.isRetryable).toBe(false);
+  });
+
+  it('does NOT retry a genuine AbortError or quota error', () => {
+    expect(BaseAgent.classifyLlmError({ message: 'The operation was aborted', errorName: 'AbortError' }).isRetryable).toBe(false);
+    expect(BaseAgent.classifyLlmError({ message: 'terminated', isQuotaError: true }).isRetryable).toBe(false);
+  });
+
+  it('retries other known transient errors and never retries auth/validation', () => {
+    expect(BaseAgent.classifyLlmError({ message: 'ECONNRESET' }).isRetryable).toBe(true);
+    expect(BaseAgent.classifyLlmError({ message: 'overloaded_error (529)' }).isRetryable).toBe(true);
+    expect(BaseAgent.classifyLlmError({ message: 'invalid x-api-key' }).isRetryable).toBe(false);
+  });
+});
+
 describe('BaseAgent prompt caching (C1)', () => {
   it('wraps a non-empty system prompt in a cache_control:ephemeral block', () => {
     const agent = new TestAgent();

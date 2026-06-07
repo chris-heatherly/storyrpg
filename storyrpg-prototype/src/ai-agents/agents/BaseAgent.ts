@@ -166,6 +166,51 @@ export abstract class BaseAgent {
     );
   }
 
+  /**
+   * Classify an LLM-call failure for the retry loop. PURE (no `this`, no side
+   * effects) so it can be unit-tested directly.
+   *
+   * `terminated` is undici's message when the underlying socket / response body
+   * stream drops mid-request (`UND_ERR_SOCKET`). On a very large prompt (e.g. a
+   * full treatment) this transient drop is the dominant failure mode, so it counts
+   * as a connection failure (feeds the circuit breaker) AND is retryable — UNLESS
+   * the call was intentionally aborted (the scoped `withTimeoutAbort` timeout or a
+   * caller cancellation), in which case it must never be retried. undici can
+   * surface a timeout-abort as a bare `terminated`, so the caller passes the scoped
+   * signal's `aborted` state as the authoritative abort signal rather than relying
+   * on the message text.
+   */
+  static classifyLlmError(input: {
+    message: string;
+    errorName?: string;
+    signalAborted?: boolean;
+    isQuotaError?: boolean;
+  }): { isRetryable: boolean; isAbortError: boolean; isConnectionFailure: boolean } {
+    const msg = (input.message || '').toLowerCase();
+    const isConnectionFailure =
+      msg.includes('fetch failed') || msg.includes('500') || msg.includes('502') ||
+      msg.includes('503') || msg.includes('unreachable') || msg.includes('terminated');
+    const isAbortError =
+      !!input.signalAborted || input.errorName === 'AbortError' || msg.includes('aborted');
+    const isRetryable = !input.isQuotaError && !isAbortError && (
+      msg.includes('fetch failed') ||
+      msg.includes('network') ||
+      msg.includes('timeout') ||
+      msg.includes('terminated') || // undici socket/body-stream drop (UND_ERR_SOCKET)
+      msg.includes('econnreset') ||
+      msg.includes('econnrefused') ||
+      msg.includes('socket hang up') ||
+      msg.includes('529') || // Anthropic overloaded
+      msg.includes('500') || // Internal server error
+      msg.includes('502') || // Bad gateway
+      msg.includes('503') || // Service unavailable
+      msg.includes('rate limit') ||
+      msg.includes('overloaded') ||
+      msg.includes('high demand')
+    );
+    return { isRetryable, isAbortError, isConnectionFailure };
+  }
+
   constructor(name: string, config: AgentConfig) {
     this.name = name;
     this.config = config;
@@ -324,9 +369,16 @@ Do not use markdown code blocks around the JSON.
           error: lastError.message,
         });
 
-        // Track consecutive failures for circuit breaker
-        const isConnectionFailure = msg.includes('fetch failed') || msg.includes('500') ||
-          msg.includes('502') || msg.includes('503') || msg.includes('unreachable');
+        // Classify the failure (pure helper — see BaseAgent.classifyLlmError). The
+        // scoped abort signal is authoritative for "was this an intentional abort",
+        // since undici can surface a timeout-abort as a bare `terminated`.
+        const { isRetryable, isConnectionFailure } = BaseAgent.classifyLlmError({
+          message: msg,
+          errorName: lastError.name,
+          signalAborted: !!this.activeAbortSignal?.aborted,
+          isQuotaError,
+        });
+        // Track consecutive connection failures for the circuit breaker.
         if (isConnectionFailure) {
           BaseAgent._cbConsecutiveFailures++;
           if (BaseAgent._cbConsecutiveFailures >= BaseAgent.CIRCUIT_BREAKER_THRESHOLD) {
@@ -334,25 +386,7 @@ Do not use markdown code blocks around the JSON.
             console.warn(`[${this.name}] Circuit breaker TRIPPED after ${BaseAgent._cbConsecutiveFailures} failures — all LLM calls paused for ${BaseAgent.CIRCUIT_BREAKER_COOLDOWN_MS / 1000}s`);
           }
         }
-        
-        const isAbortError = lastError.name === 'AbortError' || msg.includes('aborted');
-        // Only retry on transient/network errors, not on auth, validation, or abort errors
-        const isRetryable = !isQuotaError && !isAbortError && (
-          msg.includes('fetch failed') ||
-          msg.includes('network') ||
-          msg.includes('timeout') ||
-          msg.includes('econnreset') ||
-          msg.includes('econnrefused') ||
-          msg.includes('socket hang up') ||
-          msg.includes('529') || // Anthropic overloaded
-          msg.includes('500') || // Internal server error
-          msg.includes('502') || // Bad gateway
-          msg.includes('503') || // Service unavailable
-          msg.includes('rate limit') ||
-          msg.includes('overloaded') ||
-          msg.includes('high demand')
-        );
-        
+
         if (!isRetryable || attempt === retries) {
           throw lastError;
         }

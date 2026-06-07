@@ -184,6 +184,12 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // in place at the final contract; GATE_PROTAGONIST_PRONOUN promotes ambiguous residue
   // to a blocking issue routed to scene/encounter regen.
   { validator: 'protagonistPronounResolver (ambiguous-residue class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_PROTAGONIST_PRONOUN', dispatchedFrom: 'FinalStoryContractValidator' },
+  // Encounter-outcome state: flags are always seeded; this flags a reconvergence scene
+  // that ignores the outcome (no outcome-conditioned variant) for regen.
+  { validator: 'encounterOutcomeFlags (reconvergence-desync class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_ENCOUNTER_OUTCOME_VARIANT', dispatchedFrom: 'FinalStoryContractValidator' },
+  // Continuity remediation: promote cross-scene continuity ERRORS from the advisory QA
+  // report to blocking so the final-contract repair loop engages.
+  { validator: 'ContinuityChecker (cross-scene error class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_CONTINUITY_REMEDIATION', dispatchedFrom: 'FinalStoryContractValidator' },
 ];
 
 /** Validators that hard-block a run regardless of validation mode. */

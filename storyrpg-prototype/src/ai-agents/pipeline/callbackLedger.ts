@@ -177,7 +177,7 @@ export class CallbackLedger {
     sceneId: string;
   }): CallbackHook | undefined {
     const { flag } = params;
-    if (!flag || flag.startsWith('tint:') || flag.startsWith('route_')) return undefined;
+    if (!flag || flag.startsWith('tint:') || flag.startsWith('route_') || flag.startsWith('treatment_branch_')) return undefined;
     const summary = params.choice.memorableMoment?.summary
       || (params.choice.text ? `Earlier choice: "${params.choice.text}" (sets ${flag}).` : `An earlier choice set ${flag}.`);
     return this.add({
@@ -253,8 +253,10 @@ export class CallbackLedger {
 
   /**
    * Trackable flags a choice sets: `setFlag` consequences that are neither
-   * cosmetic (`tint:`) nor structural (`route_`), and that set rather than
-   * clear the flag. Mirrors ChoiceAuthor.setsTrackableFlag.
+   * cosmetic (`tint:`) nor structural (`route_` / `treatment_branch_`), and that
+   * set rather than clear the flag. Mirrors ChoiceAuthor.setsTrackableFlag.
+   * `treatment_branch_*` is structural BRANCH-tier divergence (W5.2), paid off by
+   * the branch + reconvergence residue — not a callback line — so it is excluded.
    */
   trackableFlagsOf(choice: Choice): string[] {
     const flags: string[] = [];
@@ -264,6 +266,7 @@ export class CallbackLedger {
         typeof consequence.flag === 'string' &&
         !consequence.flag.startsWith('tint:') &&
         !consequence.flag.startsWith('route_') &&
+        !consequence.flag.startsWith('treatment_branch_') &&
         consequence.value !== false
       ) {
         flags.push(consequence.flag);

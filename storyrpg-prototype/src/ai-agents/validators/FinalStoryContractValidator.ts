@@ -8,6 +8,7 @@ import { MechanicsLeakageValidator, type MechanicsLeakageText } from './Mechanic
 import { gateDesignNoteLeak, isEscalatedIssue } from './issueEscalation';
 import { canonicalizeStoryWitnessReactions } from '../utils/witnessNpcResolver';
 import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory } from '../utils/protagonistPronounResolver';
+import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs } from '../utils/encounterOutcomeFlags';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isTreatmentFidelityFinding } from './treatmentFidelityGate';
 import { findBeatIdCollisions } from './beatIdCollisions';
@@ -43,6 +44,8 @@ export type FinalStoryContractIssueType =
   | 'source_role_mismatch'
   | 'treatment_fidelity_violation'
   | 'ambiguous_protagonist_pronoun'
+  | 'encounter_outcome_desync'
+  | 'continuity_error'
   | 'qa_blocker_present';
 
 export interface FinalStoryContractIssue {
@@ -192,6 +195,27 @@ export class FinalStoryContractValidator {
             });
           }
         }
+      }
+    }
+
+    // W4: deterministically seed `encounter_<id>_<outcome>` flags on every encounter
+    // outcome (always-on capability seeding), then detect reconvergences where ≥2
+    // outcomes share a next scene that carries no outcome-conditioned text — the
+    // prose cannot reflect what happened (the Endsong wall-breach → s3-5 desync).
+    seedEncounterOutcomeFlags(input.story);
+    if (isGateEnabled('GATE_ENCOUNTER_OUTCOME_VARIANT')) {
+      for (const desync of findEncounterOutcomeDesyncs(input.story)) {
+        issues.push({
+          type: 'encounter_outcome_desync',
+          severity: mode === 'strict' ? 'error' : 'warning',
+          message:
+            `Encounter ${desync.encounterId} outcomes [${desync.outcomes.join(', ')}] reconverge into scene ` +
+            `${desync.reconvergenceSceneId}, which has no text conditioned on the outcome — the scene cannot ` +
+            'reflect what happened (e.g. a character wounded in one outcome appears unharmed).',
+          sceneId: desync.reconvergenceSceneId,
+          validator: 'encounterOutcomeFlags',
+          suggestion: `Add a textVariant gated on an encounter_${desync.encounterId}_<outcome> flag to ${desync.reconvergenceSceneId}.`,
+        });
       }
     }
 
@@ -704,6 +728,31 @@ export class FinalStoryContractValidator {
         message: `QA report did not pass: ${qaReport.criticalIssues.join('; ') || `score ${qaReport.overallScore}`}`,
         validator: 'QARunner',
       });
+    }
+
+    // W6: cross-scene continuity ERRORS (impossible_knowledge / contradiction /
+    // missing_setup / timeline_error) are detected by the QA pass but, being part of
+    // the advisory QA report, otherwise ship unremediated. When
+    // GATE_CONTINUITY_REMEDIATION is on, promote ONLY these high-precision error
+    // classes to blocking contract issues so the bounded GATE_FINAL_CONTRACT_REPAIR
+    // loop engages (and, failing that, the run fails loud rather than shipping a
+    // contradiction). state_conflict is deliberately excluded (noisier). Default-off
+    // ⇒ behavior unchanged. NOTE: post-assembly scene REGEN wiring is the deferred
+    // deeper step; this is the detection + gating half.
+    if (qaReport?.continuity?.issues?.length && isGateEnabled('GATE_CONTINUITY_REMEDIATION')) {
+      const REMEDIABLE = new Set(['impossible_knowledge', 'contradiction', 'missing_setup', 'timeline_error']);
+      for (const issue of qaReport.continuity.issues) {
+        if (issue.severity !== 'error' || !REMEDIABLE.has(issue.type)) continue;
+        issues.push({
+          type: 'continuity_error',
+          severity: 'error',
+          message: `Continuity ${issue.type}: ${issue.description}`,
+          sceneId: issue.location?.sceneId,
+          beatId: issue.location?.beatId,
+          validator: 'ContinuityChecker',
+          suggestion: issue.suggestedFix,
+        });
+      }
     }
 
     for (const issue of bestPracticesReport?.blockingIssues || []) {

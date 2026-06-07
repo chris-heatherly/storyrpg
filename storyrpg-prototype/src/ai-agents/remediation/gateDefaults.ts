@@ -90,6 +90,15 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // safe (protagonist-only-sentence) wrong-gender cases; this flag additionally
   // promotes ambiguous, un-repairable residue to a blocking contract issue (→ regen).
   GATE_PROTAGONIST_PRONOUN: false,
+  // Encounter-outcome variant: outcome state flags are ALWAYS seeded; this flag
+  // promotes a reconvergence-with-no-outcome-variant (the wall-breach → s3-5 desync)
+  // to a blocking contract issue.
+  GATE_ENCOUNTER_OUTCOME_VARIANT: false,
+  // Continuity remediation: promote high-precision cross-scene continuity ERRORS
+  // (impossible_knowledge/contradiction/missing_setup/timeline_error) from the
+  // advisory QA report to blocking contract issues so the final-contract repair loop
+  // engages instead of shipping them silently.
+  GATE_CONTINUITY_REMEDIATION: false,
 
   // ── Wave 5: treatment-fidelity §4 gates (Remediation §4.1–§4.5) ──
   // Promoted ON to ENFORCE authored-treatment fidelity (not merely steer it): with

@@ -553,4 +553,50 @@ describe('FinalStoryContractValidator', () => {
 
     expect(report.blockingIssues.some((i) => i.type === 'treatment_fidelity_violation')).toBe(false);
   });
+
+  describe('W6 continuity remediation gate', () => {
+    const qaReportWithContradiction = () => ({
+      continuity: {
+        overallScore: 70,
+        issueCount: { errors: 1, warnings: 0, suggestions: 0 },
+        issues: [{
+          severity: 'error' as const,
+          type: 'contradiction' as const,
+          location: { sceneId: 'scene-1', beatId: 'beat-1' },
+          description: 'Two scenes stage the same first entry.',
+          suggestedFix: 'Make the second a continuation.',
+        }],
+        passedChecks: [], recommendations: [],
+      },
+      voice: { overallScore: 95, characterScores: [], issues: [], distinctionScore: 90, recommendations: [] },
+      stakes: { overallScore: 95, choiceSetAnalysis: [], metrics: {} as any, issues: [], strengths: [], recommendations: [] },
+      overallScore: 88,
+      passesQA: true,
+      criticalIssues: [],
+      summary: 'fixture',
+    }) as any;
+
+    it('does NOT promote continuity errors to blocking when the gate is off', async () => {
+      const report = await new FinalStoryContractValidator().validate({
+        story: validStory(), qaReport: qaReportWithContradiction(),
+      });
+      expect(report.blockingIssues.some((i) => i.type === 'continuity_error')).toBe(false);
+    });
+
+    it('promotes error-class continuity issues to blocking when GATE_CONTINUITY_REMEDIATION=1', async () => {
+      const prev = process.env.GATE_CONTINUITY_REMEDIATION;
+      process.env.GATE_CONTINUITY_REMEDIATION = '1';
+      try {
+        const report = await new FinalStoryContractValidator().validate({
+          story: validStory(), qaReport: qaReportWithContradiction(),
+        });
+        const ce = report.blockingIssues.find((i) => i.type === 'continuity_error');
+        expect(ce).toBeDefined();
+        expect(ce?.sceneId).toBe('scene-1');
+      } finally {
+        if (prev === undefined) delete process.env.GATE_CONTINUITY_REMEDIATION;
+        else process.env.GATE_CONTINUITY_REMEDIATION = prev;
+      }
+    });
+  });
 });

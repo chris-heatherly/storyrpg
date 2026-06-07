@@ -23,6 +23,20 @@ describe('CallbackLedger', () => {
     expect(ledger.size()).toBe(0);
   });
 
+  it('excludes structural treatment_branch_ flags from trackable callbacks (W5.2)', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({
+      consequences: [
+        { type: 'setFlag', flag: 'treatment_branch_scene_2a', value: true } as any,
+        { type: 'setFlag', flag: 'kylie_noticed', value: true } as any,
+      ],
+    });
+    const flags = ledger.trackableFlagsOf(choice);
+    expect(flags).toContain('kylie_noticed');
+    expect(flags).not.toContain('treatment_branch_scene_2a');
+    expect(ledger.recordFlagSet({ choice, flag: 'treatment_branch_scene_2a', episode: 1, sceneId: 's1' })).toBeUndefined();
+  });
+
   it('records a memorableMoment as a hook and infers flags when absent', () => {
     const ledger = new CallbackLedger();
     const choice = makeChoice({

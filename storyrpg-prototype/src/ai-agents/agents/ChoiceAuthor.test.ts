@@ -409,3 +409,46 @@ describe('ChoiceAuthor skill rotation (1.7)', () => {
     expect(author.leastUsedRelevantSkill('strategic')).not.toBe('investigation');
   });
 });
+
+// -----------------------------------------------------------------------
+// normalizeChoiceSet — W5.2 BRANCH-tier consequences at real branch points
+// -----------------------------------------------------------------------
+
+describe('ChoiceAuthor.normalizeChoiceSet (W5.2 branch-tier)', () => {
+  const author: any = new ChoiceAuthor(config);
+
+  it('registers treatment_branch_ flags at a genuine multi-target branch point', () => {
+    const choiceSet = makeChoiceSet({
+      choiceType: 'dilemma',
+      choices: [
+        { id: 'c1', text: 'Take the high road', choiceType: 'dilemma', nextSceneId: 'scene-2a', consequences: [] },
+        { id: 'c2', text: 'Take the low road', choiceType: 'dilemma', nextSceneId: 'scene-2b', consequences: [] },
+      ],
+    });
+    const input = makeInput({
+      sceneBlueprint: {
+        id: 'scene-1', name: 'Fork', leadsTo: ['scene-2a', 'scene-2b'],
+        choicePoint: { branches: true, stakes: { want: 'w', cost: 'c', identity: 'i' }, optionHints: [] },
+      },
+      possibleNextScenes: [{ id: 'scene-2a', name: 'A' }, { id: 'scene-2b', name: 'B' }],
+    });
+    const result = author.normalizeChoiceSet(choiceSet, input);
+    const flags = result.choices.flatMap((c: any) =>
+      (c.consequences || []).filter((x: any) => x.type === 'setFlag').map((x: any) => x.flag));
+    expect(flags.some((f: string) => f.startsWith('treatment_branch_'))).toBe(true);
+  });
+
+  it('does not add branch flags when all choices route to the same scene', () => {
+    const choiceSet = makeChoiceSet({
+      choiceType: 'dilemma',
+      choices: [
+        { id: 'c1', text: 'a', choiceType: 'dilemma', nextSceneId: 'scene-2', consequences: [] },
+        { id: 'c2', text: 'b', choiceType: 'dilemma', nextSceneId: 'scene-2', consequences: [] },
+      ],
+    });
+    const result = author.normalizeChoiceSet(choiceSet, makeInput());
+    const flags = result.choices.flatMap((c: any) =>
+      (c.consequences || []).filter((x: any) => x.type === 'setFlag').map((x: any) => x.flag));
+    expect(flags.some((f: string) => f.startsWith('treatment_branch_'))).toBe(false);
+  });
+});

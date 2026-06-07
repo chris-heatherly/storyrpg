@@ -808,6 +808,38 @@ Before finalizing:
       console.warn(`[ChoiceAuthor] Added cross-episode route flag consequences to ${choiceSet.choices.length} choice(s).`);
     }
 
+    // W5.2 (mustDiverge): at a GENUINE intra-episode branch point — choices route to
+    // >=2 distinct scenes — register a BRANCH-tier consequence so the consequence
+    // budget stops reading 0% structural branching. Cross-episode route_ branches are
+    // handled above (they delete nextSceneId); this covers the in-episode fork that
+    // keeps nextSceneId. A `treatment_branch_<target>` setFlag is attached to each
+    // branching choice (keyed to its destination), giving the reconvergence residue
+    // something to acknowledge. Additive + deterministic; only fires when the fork is
+    // real, so non-branching scenes are untouched.
+    const branchingChoices = choiceSet.choices.filter(
+      choice => typeof choice.nextSceneId === 'string' && choice.nextSceneId.length > 0,
+    );
+    const distinctBranchTargets = new Set(branchingChoices.map(choice => choice.nextSceneId));
+    const alreadyHasBranchConsequence = choiceSet.choices.some(choice =>
+      choice.consequences?.some(
+        c => c.type === 'setFlag'
+          && (c.flag.startsWith('route_') || c.flag.startsWith('treatment_branch_'))
+          && c.value !== false,
+      ),
+    );
+    if (distinctBranchTargets.size >= 2 && !alreadyHasBranchConsequence) {
+      for (const choice of branchingChoices) {
+        const target = String(choice.nextSceneId).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        const branchFlag = `treatment_branch_${target}`;
+        if (choice.consequences?.some(c => c.type === 'setFlag' && c.flag === branchFlag)) continue;
+        choice.consequences = [
+          ...(choice.consequences || []),
+          { type: 'setFlag', flag: branchFlag, value: true },
+        ];
+      }
+      console.warn(`[ChoiceAuthor] Registered BRANCH-tier consequences for ${distinctBranchTargets.size}-way intra-episode branch.`);
+    }
+
     // Ensure overallStakes exists with values from blueprint as fallback
     if (!choiceSet.overallStakes) {
       choiceSet.overallStakes = {
@@ -968,6 +1000,7 @@ Before finalizing:
         typeof c.flag === 'string' &&
         !c.flag.startsWith('tint:') &&
         !c.flag.startsWith('route_') &&
+        !c.flag.startsWith('treatment_branch_') &&
         c.value !== false,
     );
   }

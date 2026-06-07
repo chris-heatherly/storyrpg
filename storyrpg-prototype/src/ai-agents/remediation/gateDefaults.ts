@@ -74,30 +74,41 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   GATE_CONSEQUENCE_BUDGET: false,
   GATE_ARC_PRESSURE: false,
 
-  // ── Gen-4 audit follow-ups — default-off pending a clean shadow pass ──
+  // ── Gen-4 audit follow-ups ──
+  // ENABLED: precise structural / backstop checks with a low false-positive profile
+  // and no fix-side dependency — safe to fail loud on a genuine defect.
+  //
   // Dead-branch detection: a blueprint scene declared as a multi-target branch
   // point (leadsTo.size>1) whose own choices fan out to <2 of those targets
   // assembled as a linear pass-through. The metric is always recorded; this flag
   // promotes it to a blocking SceneGraphBranchValidator error.
-  GATE_BRANCH_FANOUT: false,
-  // Duplicate establishing-beat: two scenes on a linear path both staged as a
-  // first entry into the same location (the Endsong s3-2/s3-3 dual-first-entry).
-  GATE_DUPLICATE_ESTABLISHING_BEAT: false,
+  GATE_BRANCH_FANOUT: true,
   // Treatment-seed on-page presence: every treatment_seed_* declared for an
   // episode must be set via a setFlag consequence on some choice in that episode.
-  GATE_TREATMENT_SEED_ONPAGE: false,
+  // Seeds are emitted deterministically upstream, so this is a pure backstop.
+  GATE_TREATMENT_SEED_ONPAGE: true,
+  //
+  // STILL OFF — detection-only / fix-side deferred. Their detection runs regardless
+  // (warnings + metrics); promoting to BLOCKING here would hard-fail runs until the
+  // generative repair lands (or, for pronouns, false-positive on correct prose):
+  //
+  // Duplicate establishing-beat: prose heuristic; needs shadow data before blocking
+  // (two scenes legitimately sharing a location could false-positive).
+  GATE_DUPLICATE_ESTABLISHING_BEAT: false,
   // Protagonist pronoun integrity: the deterministic resolver ALWAYS repairs the
-  // safe (protagonist-only-sentence) wrong-gender cases; this flag additionally
-  // promotes ambiguous, un-repairable residue to a blocking contract issue (→ regen).
+  // safe (protagonist-only-sentence) wrong-gender cases (ungated). This flag would
+  // promote AMBIGUOUS residue to blocking — but that fires on correct prose too
+  // ("Kylie watches Mika lift HIS glass"), so it stays off until a regen route exists.
   GATE_PROTAGONIST_PRONOUN: false,
-  // Encounter-outcome variant: outcome state flags are ALWAYS seeded; this flag
-  // promotes a reconvergence-with-no-outcome-variant (the wall-breach → s3-5 desync)
-  // to a blocking contract issue.
+  // Encounter-outcome variant: outcome state flags are ALWAYS seeded (ungated). This
+  // flag blocks a reconvergence-with-no-outcome-variant — but nothing authors those
+  // variants yet, so blocking would halt ~every encounter. Off until the generative
+  // half (outcome-aware variant authoring) lands.
   GATE_ENCOUNTER_OUTCOME_VARIANT: false,
-  // Continuity remediation: promote high-precision cross-scene continuity ERRORS
-  // (impossible_knowledge/contradiction/missing_setup/timeline_error) from the
-  // advisory QA report to blocking contract issues so the final-contract repair loop
-  // engages instead of shipping them silently.
+  // Continuity remediation: would promote high-precision cross-scene continuity ERRORS
+  // (impossible_knowledge/contradiction/missing_setup/timeline_error) to blocking, but
+  // there is no repair wired (the final-contract repair loop can't fix continuity), so
+  // it would hard-fail any run with a continuity error. Off until scene-regen is wired.
   GATE_CONTINUITY_REMEDIATION: false,
 
   // ── Wave 5: treatment-fidelity §4 gates (Remediation §4.1–§4.5) ──

@@ -231,7 +231,18 @@ const baselines = {
   // gates from the ASSEMBLED story at the final stage (the per-episode seam is skipped
   // on resumed jobs). Logic in remediation/planTimeShadow.ts (computePlanTimeShadow);
   // only the call + per-gate recording is here.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 22342,
+  //
+  // +208 (22342 -> 22550): Gen-4 audit remediation Phases 1-3 (commits 5b1a2ee,
+  // 069c013) — pronoun-determinism prompt, treatmentSourced wiring, branch/seed/
+  // continuity validator seams — landed without bumping this baseline. Recorded here
+  // to re-true the ratchet to the committed reality.
+  //
+  // +80 (22550 -> 22630): Gen-4 audit follow-up — ending-reachability wiring (the
+  // EndingReachabilityValidator gate seam, mirroring the adjacent treatment-seed
+  // block) + the emitSceneBranchAxes call + a thin genre-reconcile wrapper. The bulk
+  // (the genre/tone/themes reconciliation body) was EXTRACTED to
+  // pipeline/briefStoryMetadata.ts (reconcileBriefStoryMetadata) rather than added here.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 22630,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

@@ -186,6 +186,23 @@ export interface SceneWriterInput {
   // When present, the FIRST beat must visually and textually pay off this choice.
   incomingChoiceContext?: string;
 
+  // B1 prevention: when the immediately-preceding scene on this path is in the
+  // SAME location, the writer must continue the visit rather than re-stage a fresh
+  // arrival (the Endsong dual-first-entry: two scenes both "entering" the hall).
+  continueInLocation?: string;
+
+  // W4 prevention: when an encounter routes into THIS scene, the encounter's
+  // possible outcomes + their pre-seeded state flags. The scene must author
+  // textVariants gated on these flags so its prose reflects what happened (e.g. an
+  // ally wounded on partialVictory) rather than reading identically on every path.
+  priorEncounterOutcomes?: Array<{
+    encounterId: string;
+    encounterName: string;
+    victoryStakes?: string;
+    defeatStakes?: string;
+    outcomeFlags: Array<{ outcome: string; flag: string }>;
+  }>;
+
   // Source material analysis for IP fidelity (optional)
   sourceAnalysis?: SourceMaterialAnalysis;
 
@@ -1526,6 +1543,15 @@ ${input.targetBeatCount >= 6 ? '- If this is a scene-length episode, write at le
 - Never write "skill check", "threshold", "bonus", "modifier", "success chance", percentages, or raw skill/stat names as player-facing labels.
 ${input.previousSceneSummary ? `- Previous scene context: ${input.previousSceneSummary}` : ''}
 ${input.nextSceneContext ? `- Next scene context: ${input.nextSceneContext.name} (${input.nextSceneContext.location}) — ${input.nextSceneContext.encounterDescription || input.nextSceneContext.description}` : ''}
+${input.continueInLocation ? `- CONTINUITY: the previous scene already took place in ${input.continueInLocation}. The protagonist is ALREADY here — open mid-presence (continue the visit), do NOT re-stage a first arrival, threshold-crossing, or "the smell hits you as you enter". Re-entering a location you never left reads as a continuity error.` : ''}
+${(input.priorEncounterOutcomes?.length ?? 0) > 0 ? `
+## POST-ENCOUNTER OUTCOME REACTIVITY (CRITICAL)
+This scene follows an encounter that can end several ways, and the gameplay state already records which: ${input.priorEncounterOutcomes!.map(e => `"${e.encounterName}"${e.defeatStakes ? ` (a hard outcome means: ${e.defeatStakes})` : ''}`).join('; ')}.
+- The opening MUST NOT read identically regardless of how that encounter went.
+- Author at least one textVariant on an EARLY beat gated on the outcome flag so the prose reflects the result — e.g. an ally who was hurt appears injured, a costly win shows its cost, a defeat colors the mood. Use these EXACT flags:
+${input.priorEncounterOutcomes!.flatMap(e => e.outcomeFlags.map(o => `  - { "type": "flag", "flag": "${o.flag}", "value": true }  // ${e.encounterName}: ${o.outcome}`)).join('\n')}
+- Keep the base text true for the most neutral (victory) path; the variants carry the harder outcomes.
+` : ''}
 ${input.sceneBlueprint.choicePoint ? '- Mark the final beat as isChoicePoint: true for the Choice Author to add options' : ''}
 ${input.nextSceneContext?.isEncounter && !input.sceneBlueprint.choicePoint ? `
 ## PRE-ENCOUNTER HANDOFF (CRITICAL)

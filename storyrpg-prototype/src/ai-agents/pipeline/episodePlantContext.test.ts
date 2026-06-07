@@ -10,6 +10,8 @@ import {
   emitTreatmentSeedConsequences,
   resolveSceneTreatmentSeeds,
   emitSceneTreatmentSeeds,
+  resolveSceneBranchAxes,
+  emitSceneBranchAxes,
   type EpisodePlant,
 } from './episodePlantContext';
 import type { Choice } from '../../types/choice';
@@ -234,5 +236,37 @@ describe('resolveSceneTreatmentSeeds + emitSceneTreatmentSeeds (GAP-C wiring)', 
     const choices: Choice[] = [{ id: 'c1', text: 't', consequences: [] } as unknown as Choice];
     emitSceneTreatmentSeeds(scene, choices);
     expect((choices[0].consequences ?? []).length).toBe(0);
+  });
+});
+
+describe('ending-axis emitters (treatment_branch_*)', () => {
+  it('resolveSceneBranchAxes reads setsBranchAxes and prefix-guards', () => {
+    const scene = { choicePoint: { setsBranchAxes: ['treatment_branch_a', 'route_x', 'treatment_branch_a', 'treatment_branch_b'] } };
+    expect(resolveSceneBranchAxes(scene)).toEqual(['treatment_branch_a', 'treatment_branch_b']);
+  });
+
+  it('emitSceneBranchAxes distributes axes round-robin across choices so distinct choices drive distinct axes', () => {
+    const scene = { choicePoint: { setsBranchAxes: ['treatment_branch_a', 'treatment_branch_b'] } };
+    const choices: Choice[] = [
+      { id: 'c1', text: 't', consequences: [] } as unknown as Choice,
+      { id: 'c2', text: 't', consequences: [] } as unknown as Choice,
+    ];
+    emitSceneBranchAxes(scene, choices);
+    const flagsOf = (c: Choice) => (c.consequences ?? []).filter((x: any) => x.type === 'setFlag').map((x: any) => x.flag);
+    expect(flagsOf(choices[0])).toEqual(['treatment_branch_a']);
+    expect(flagsOf(choices[1])).toEqual(['treatment_branch_b']);
+  });
+
+  it('does not duplicate an axis already set on any choice, and no-ops when nothing is declared', () => {
+    const scene = { choicePoint: { setsBranchAxes: ['treatment_branch_a'] } };
+    const choices: Choice[] = [
+      { id: 'c1', text: 't', consequences: [{ type: 'setFlag', flag: 'treatment_branch_a', value: true }] } as unknown as Choice,
+    ];
+    emitSceneBranchAxes(scene, choices);
+    expect((choices[0].consequences ?? []).length).toBe(1);
+
+    const empty: Choice[] = [{ id: 'c1', text: 't', consequences: [] } as unknown as Choice];
+    emitSceneBranchAxes({ choicePoint: { setsBranchAxes: [] } }, empty);
+    expect((empty[0].consequences ?? []).length).toBe(0);
   });
 });

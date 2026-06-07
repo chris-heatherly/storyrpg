@@ -19,6 +19,7 @@ import { getMemoryStore, NodeMemoryStore, type MemoryStore } from '../utils/memo
 import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 import { isUnsafeCallbackProse } from '../constants/metaProse';
+import { buildPriorEncounterOutcomes, buildContinueInLocation } from './scenePreventionContext';
 import { 
   SCENE_DEFAULTS, 
   clampSceneCount,
@@ -35,6 +36,7 @@ import {
 } from '../../constants/validation';
 import { WorldBuilder, WorldBible } from '../agents/WorldBuilder';
 import { CharacterDesigner, CharacterBible, CharacterProfile } from '../agents/CharacterDesigner';
+import { resolveCharacterProfile } from '../utils/characterProfileResolver';
 import { StoryArchitect, StoryArchitectInput, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
@@ -136,7 +138,8 @@ import {
   type SeasonChoicePlan,
 } from './seasonChoicePlan';
 import { buildSeasonSkillPlan, skillsForEpisode, type SeasonSkillPlan } from './seasonSkillPlan';
-import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, emitSceneTreatmentSeeds, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
+import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, emitSceneTreatmentSeeds, emitSceneBranchAxes, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
+import { reconcileBriefStoryMetadata } from './briefStoryMetadata';
 import { SeasonCanon } from './seasonCanon';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
@@ -279,6 +282,7 @@ import {
   SceneGraphBranchValidator,
   DuplicateEstablishingBeatValidator,
   TreatmentSeedOnPageValidator,
+  EndingReachabilityValidator,
   MicroEpisodeStructureValidator,
   MicroEpisodeSeasonValidator,
   FinalStoryContractValidator,
@@ -730,6 +734,7 @@ export class FullStoryPipeline {
   private sceneGraphBranchValidator: SceneGraphBranchValidator = new SceneGraphBranchValidator();
   private duplicateEstablishingBeatValidator: DuplicateEstablishingBeatValidator = new DuplicateEstablishingBeatValidator();
   private treatmentSeedOnPageValidator: TreatmentSeedOnPageValidator = new TreatmentSeedOnPageValidator();
+  private endingReachabilityValidator: EndingReachabilityValidator = new EndingReachabilityValidator();
   private microEpisodeStructureValidator: MicroEpisodeStructureValidator = new MicroEpisodeStructureValidator();
   private microEpisodeSeasonValidator: MicroEpisodeSeasonValidator = new MicroEpisodeSeasonValidator();
   
@@ -1211,6 +1216,30 @@ export class FullStoryPipeline {
           `Treatment seed not set on-page: ${seedCheck.issues.map(issue => issue.message).join(' ')}`,
           context.phase,
           { context: { missingTreatmentSeeds: seedCheck.issues, failureKind: 'treatment_seed_not_set_on_page' } },
+        );
+      }
+    }
+
+    // Gen-4 audit (R3): every declared ending-axis (treatment_branch_*) must be SET
+    // on-page so the named ending it drives is mechanically reachable. Always warns
+    // when an axis is missing; only fail-fasts when GATE_ENDING_REACHABILITY is on
+    // (default-off until validated against a full-season run).
+    const endingBlocking = isGateEnabled('GATE_ENDING_REACHABILITY');
+    const endingCheck = this.endingReachabilityValidator.validateEpisode(episode, blueprint, { blocking: endingBlocking });
+    if (endingCheck.issues.length > 0) {
+      this.emit({
+        type: 'warning',
+        phase: context.phase,
+        message:
+          `EndingReachabilityValidator: ${endingCheck.metrics.missingAxes}/${endingCheck.metrics.declaredAxes} ` +
+          `ending-axis flag(s) never set on-page — ${endingCheck.issues.map(issue => issue.flag).join(', ')}`,
+        data: endingCheck,
+      });
+      if (endingBlocking && !endingCheck.valid) {
+        this.throwIfFailFast(
+          `Ending axis not set on-page: ${endingCheck.issues.map(issue => issue.message).join(' ')}`,
+          context.phase,
+          { context: { missingEndingAxes: endingCheck.issues, failureKind: 'ending_axis_not_set_on_page' } },
         );
       }
     }
@@ -4033,19 +4062,8 @@ export class FullStoryPipeline {
     };
     const providerCredentialError = resolveProviderCredentialError();
 
-    const normalizeId = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
-    const characterForToken = (token?: string) => {
-      if (!token) return undefined;
-      if (characterById.has(token)) return characterById.get(token);
-      const normalized = normalizeId(token);
-      return (characterBible.characters || []).find((character: any) => {
-        const fullName = normalizeId(character.name || '');
-        const firstName = normalizeId(String(character.name || '').split(/\s+/)[0] || '');
-        return normalizeId(character.id || '') === normalized
-          || fullName === normalized
-          || firstName === normalized;
-      });
-    };
+    const characterForToken = (token?: string) =>
+      resolveCharacterProfile(characterBible.characters, token);
     const collectCharacterIds = (beat: any): string[] => {
       const values = [
         ...(beat.visualCast?.foregroundCharacterIds || []),
@@ -5224,11 +5242,11 @@ export class FullStoryPipeline {
                     physicalDescription: protagonistProfile?.physicalDescription,
                   },
                   npcs: sceneBlueprint.npcsPresent.map(npcId => {
-                    const profile = characterBible.characters.find(c => c.id === npcId);
+                    const profile = resolveCharacterProfile(characterBible.characters, npcId);
                     return {
                       id: npcId,
                       name: profile?.name || npcId,
-                      pronouns: profile?.pronouns || 'he/him',
+                      pronouns: profile?.pronouns || 'they/them',
                       description: profile?.overview || '',
                       physicalDescription: profile?.physicalDescription,
                       voiceNotes: profile?.voiceProfile?.writingGuidance || '',
@@ -5433,11 +5451,11 @@ export class FullStoryPipeline {
                   physicalDescription: protagonistProfile?.physicalDescription,
                 },
                 npcs: sceneBlueprint.npcsPresent.map(npcId => {
-                  const profile = characterBible.characters.find(c => c.id === npcId);
+                  const profile = resolveCharacterProfile(characterBible.characters, npcId);
                   return {
                     id: npcId,
                     name: profile?.name || npcId,
-                    pronouns: profile?.pronouns || 'he/him',
+                    pronouns: profile?.pronouns || 'they/them',
                     description: profile?.overview || '',
                     physicalDescription: profile?.physicalDescription,
                     voiceNotes: profile?.voiceProfile?.writingGuidance || '',
@@ -7558,14 +7576,14 @@ export class FullStoryPipeline {
             physicalDescription: protagonistProfile?.physicalDescription,
           },
           npcs: sceneBlueprint.npcsPresent.map(npcId => {
-            const profile = characterBible.characters.find(c => c.id === npcId);
+            const profile = resolveCharacterProfile(characterBible.characters, npcId);
             // Prevention: append the capability constraint so the writer never
             // depicts a non-combatant fighting (Season Canon, Phase B).
             const capabilityNote = profile ? capabilityNoteForProfile(profile) : '';
             return {
               id: npcId,
               name: profile?.name || npcId,
-              pronouns: profile?.pronouns || 'he/him',
+              pronouns: profile?.pronouns || 'they/them',
               description: [profile?.overview || '', capabilityNote].filter(Boolean).join(' '),
               physicalDescription: profile?.physicalDescription,
               voiceNotes: profile?.voiceProfile?.writingGuidance || '',
@@ -7585,6 +7603,15 @@ export class FullStoryPipeline {
             : undefined,
           nextSceneContext,
           incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
+          // W4 prevention: if an encounter routes into this scene, hand the writer the
+          // encounter's outcomes + their pre-seeded state flags so it authors
+          // outcome-conditioned variants natively (the scene reflects what happened).
+          priorEncounterOutcomes: buildPriorEncounterOutcomes(
+            blueprint, sceneBlueprint, (n, f) => this.sanitizeReaderFacingSceneName(n, f),
+          ),
+          // B1 prevention: if the prior scene shares this scene's location, tell the
+          // writer to continue the visit rather than re-stage an arrival (dual-first-entry).
+          continueInLocation: buildContinueInLocation(blueprint, sceneBlueprint),
           sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
           episodeEncounterContext: primaryEncounterContext && !sceneBlueprint.isEncounter
             ? {
@@ -7643,7 +7670,7 @@ export class FullStoryPipeline {
           if (validCandidates.length > 1) {
             const bestOfNVoiceProfiles: CharacterVoiceProfile[] = sceneBlueprint.npcsPresent
               .map(npcId => {
-                const profile = characterBible.characters.find(c => c.id === npcId);
+                const profile = resolveCharacterProfile(characterBible.characters, npcId);
                 if (!profile?.voiceProfile) return null;
                 return {
                   characterId: npcId,
@@ -7715,11 +7742,11 @@ export class FullStoryPipeline {
               physicalDescription: protagonistProfile?.physicalDescription,
             },
             npcs: sceneBlueprint.npcsPresent.map(npcId => {
-              const profile = characterBible.characters.find(c => c.id === npcId);
+              const profile = resolveCharacterProfile(characterBible.characters, npcId);
               return {
                 id: npcId,
                 name: profile?.name || npcId,
-                pronouns: profile?.pronouns || 'he/him',
+                pronouns: profile?.pronouns || 'they/them',
                 description: profile?.overview || '',
                 physicalDescription: profile?.physicalDescription,
                 voiceNotes: profile?.voiceProfile?.writingGuidance || '',
@@ -7941,6 +7968,10 @@ export class FullStoryPipeline {
             // attach a setFlag(treatment_seed_*) to a choice so a later authored
             // precondition reading the seed can be true. No-op off treatment runs.
             emitSceneTreatmentSeeds(sceneBlueprint, choiceResult.data.choices);
+            // Ending reachability: SET the season's ending-axis flags (treatment_branch_*)
+            // on-page so the finale's ending-route logic can read them and each named
+            // ending is mechanically reachable. No-op off treatment runs.
+            emitSceneBranchAxes(sceneBlueprint, choiceResult.data.choices);
             choiceSets.push({ ...choiceResult.data, sceneId: sceneBlueprint.id });
             // Phase 1: record this scene's planted flags so later scenes can pay them off.
             episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }, this.callbackLedger));
@@ -8172,7 +8203,7 @@ export class FullStoryPipeline {
         if (this.incrementalValidator) {
           const voiceProfiles: CharacterVoiceProfile[] = sceneBlueprint.npcsPresent
             .map(npcId => {
-              const profile = characterBible.characters.find(c => c.id === npcId);
+              const profile = resolveCharacterProfile(characterBible.characters, npcId);
               if (profile && profile.voiceProfile) {
                 return {
                   id: profile.id,
@@ -8296,11 +8327,11 @@ export class FullStoryPipeline {
                   physicalDescription: protagonistProfile?.physicalDescription,
                 },
                 npcs: sceneBlueprint.npcsPresent.map(npcId => {
-                  const profile = characterBible.characters.find(c => c.id === npcId);
+                  const profile = resolveCharacterProfile(characterBible.characters, npcId);
                   return {
                     id: npcId,
                     name: profile?.name || npcId,
-                    pronouns: profile?.pronouns || 'he/him',
+                    pronouns: profile?.pronouns || 'they/them',
                     description: profile?.overview || '',
                     physicalDescription: profile?.physicalDescription,
                     voiceNotes: profile?.voiceProfile?.writingGuidance || '',
@@ -8595,7 +8626,14 @@ export class FullStoryPipeline {
           hard: baseEncounterBeats + 1,
           extreme: baseEncounterBeats + 2,
         };
-        const uncappedTargetBeatCount = beatCountByDifficulty[sceneBlueprint.encounterDifficulty || 'moderate'] || baseEncounterBeats;
+        // Honor the authored anchor: a treatment encounterBeatPlan enumerates the
+        // required beats (e.g. a two-location "rooftop + 1am attack/rescue"
+        // sequence). Target at least one beat per planned anchor so the architect
+        // renders the full shape on the first pass instead of collapsing it.
+        const uncappedTargetBeatCount = Math.max(
+          beatCountByDifficulty[sceneBlueprint.encounterDifficulty || 'moderate'] || baseEncounterBeats,
+          encounterBeatPlan.length,
+        );
         const targetBeatCount = sceneEpisodeEncounterMax
           ? Math.min(sceneEpisodeEncounterMax, uncappedTargetBeatCount)
           : uncappedTargetBeatCount;
@@ -8609,12 +8647,12 @@ export class FullStoryPipeline {
 
         // Build NPCs list - add a fallback antagonist if none present for combat/chase encounters
         let npcsInvolved = encounterRequiredNpcIds.map(npcId => {
-          const profile = characterBible.characters.find(c => c.id === npcId);
+          const profile = resolveCharacterProfile(characterBible.characters, npcId);
           const npcBrief = brief.npcs.find(n => n.id === npcId);
           return {
             id: npcId,
             name: profile?.name || npcId,
-            pronouns: (profile?.pronouns || 'he/him') as 'he/him' | 'she/her' | 'they/them',
+            pronouns: (profile?.pronouns || 'they/them') as 'he/him' | 'she/her' | 'they/them',
             role: (npcBrief?.role === 'antagonist' ? 'enemy' : 
                    npcBrief?.role === 'ally' ? 'ally' : 
                    npcBrief?.role === 'neutral' ? 'neutral' : 'obstacle') as 'ally' | 'enemy' | 'neutral' | 'obstacle',
@@ -8641,7 +8679,7 @@ export class FullStoryPipeline {
           npcsInvolved = [{
             id: 'unnamed-antagonist',
             name: 'the adversary',
-            pronouns: 'he/him' as const,
+            pronouns: 'they/them' as const,
             role: 'enemy' as const,
             description: sceneBlueprint.encounterDescription || 'An opposing force',
             physicalDescription: undefined,
@@ -10268,7 +10306,8 @@ export class FullStoryPipeline {
     this.validateBrief(baseBrief);
     analysis = this.refreshAnalysisFromTreatmentDocument(analysis, baseBrief.rawDocument);
     baseBrief = this.refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis);
-    
+    baseBrief = this.reconcileBriefStoryMetadataFromPlan(baseBrief, analysis);
+
     if (!analysis || !analysis.episodeBreakdown || analysis.episodeBreakdown.length === 0) {
       throw new Error('Invalid source analysis: no episode breakdown provided');
     }
@@ -21554,7 +21593,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     characterBible: CharacterBible
   ): Array<{ id: string; name: string; pronouns: 'he/him' | 'she/her' | 'they/them'; description: string; voiceNotes?: string; physicalDescription?: string }> {
     return npcIds.map(npcId => {
-      const profile = characterBible.characters.find(c => c.id === npcId);
+      const profile = resolveCharacterProfile(characterBible.characters, npcId);
       return {
         id: npcId,
         name: profile?.name || npcId,
@@ -21988,6 +22027,27 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       ...baseBrief,
       seasonPlan: refreshedPlan,
     };
+  }
+
+  /**
+   * Reconcile the brief's top-level story metadata (genre / tone / synopsis /
+   * themes) with the canonical season plan. Thin wrapper over the pure
+   * {@link reconcileBriefStoryMetadata} helper (extracted to keep this monolith
+   * from growing); see that module for the rationale.
+   */
+  private reconcileBriefStoryMetadataFromPlan(
+    baseBrief: FullCreativeBrief,
+    analysis: SourceMaterialAnalysis
+  ): FullCreativeBrief {
+    const result = reconcileBriefStoryMetadata(baseBrief, analysis);
+    if (result.changed) {
+      this.emit({
+        type: 'debug',
+        phase: 'season_plan_refresh',
+        message: `Reconciled brief story metadata from season plan (genre="${result.genre}").`,
+      });
+    }
+    return result.brief;
   }
 
   /**

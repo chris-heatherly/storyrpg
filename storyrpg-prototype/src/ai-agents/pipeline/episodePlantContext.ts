@@ -292,3 +292,59 @@ export function emitTreatmentSeedConsequences(choices: Choice[], seedFlags: read
   target.consequences = next;
   return choices;
 }
+
+// ========================================
+// BRANCH / ENDING-AXIS EMISSION
+// ========================================
+
+const BRANCH_AXIS_PREFIX = 'treatment_branch_';
+
+/**
+ * Resolve the ending-axis flags (`treatment_branch_*`) a scene's choices must
+ * SET on-page, from the StoryArchitect-recorded `choicePoint.setsBranchAxes`.
+ * Order-preserving, deduped, prefix-guarded. Mirrors
+ * {@link resolveSceneTreatmentSeeds} but for the ending-axis channel.
+ */
+export function resolveSceneBranchAxes(scene: {
+  choicePoint?: { setsBranchAxes?: string[] };
+}): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const flag of scene.choicePoint?.setsBranchAxes ?? []) {
+    if (typeof flag !== 'string' || !flag.startsWith(BRANCH_AXIS_PREFIX) || seen.has(flag)) continue;
+    seen.add(flag);
+    out.push(flag);
+  }
+  return out;
+}
+
+/**
+ * Pipeline seam: deterministically emit `setFlag` consequences for this scene's
+ * ending-axis flags so the season's named endings are mechanically REACHABLE.
+ * Distributes the axes ROUND-ROBIN across the scene's choices so distinct
+ * choices drive distinct ending axes (richer than piling them on one choice).
+ * A no-op when the scene declares no branch axes, so non-treatment runs are
+ * unaffected. An axis already set on ANY choice is not duplicated.
+ */
+export function emitSceneBranchAxes(
+  scene: { choicePoint?: { setsBranchAxes?: string[] } },
+  choices: Choice[],
+): Choice[] {
+  const axes = resolveSceneBranchAxes(scene);
+  if (!choices.length || !axes.length) return choices;
+
+  const alreadySet = new Set<string>();
+  for (const choice of choices) {
+    for (const c of choice.consequences ?? []) {
+      if (c.type === 'setFlag' && typeof c.flag === 'string') alreadySet.add(c.flag);
+    }
+  }
+  const pending = axes.filter((f) => !alreadySet.has(f));
+  if (!pending.length) return choices;
+
+  pending.forEach((flag, index) => {
+    const choice = choices[index % choices.length];
+    choice.consequences = [...(choice.consequences ?? []), { type: 'setFlag', flag, value: true }];
+  });
+  return choices;
+}

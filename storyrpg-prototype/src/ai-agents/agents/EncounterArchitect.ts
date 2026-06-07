@@ -853,7 +853,19 @@ export function snapEncounterSkill(raw: string | undefined, validSkills: string[
 
 export class EncounterArchitect extends BaseAgent {
   private getMinimumRequiredBeatCount(input: EncounterArchitectInput): number {
-    return 2;
+    // Honor the authored anchor: a treatment-sourced encounter carries an
+    // `encounterBeatPlan` (one entry per authored required beat). The minimum
+    // must scale to that plan so the architect renders the FULL anchor on the
+    // first pass (e.g. a two-location "rooftop + the 1am attack/rescue"
+    // sequence), rather than collapsing it to a single beat and only being
+    // caught reactively by EncounterAnchorContentValidator's repair loop.
+    // Clamped to the scene's target beat count and a sane ceiling so we never
+    // demand more beats than the structure targets. Falls back to 2 when there
+    // is no authored plan.
+    const authored = input.encounterBeatPlan?.length ?? 0;
+    if (authored <= 0) return 2;
+    const ceiling = Math.min(input.targetBeatCount || authored, 8);
+    return Math.max(2, Math.min(authored, ceiling));
   }
 
   private readonly defaultStoryboardRoles: EncounterStoryboardFrameRole[] = [
@@ -1560,7 +1572,7 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
     : input.protagonistInfo.pronouns === 'he/him'
       ? `Correct: he/him/his/himself. WRONG: she/her/hers/herself.`
       : `Use they/them/their/themselves (singular).`}
-- PREFER second person ("you", "your") for the protagonist in all encounter prose — it is the house POV and removes any pronoun ambiguity. Use the protagonist's name for emphasis; use a third-person pronoun for the protagonist only when unmistakable.
+- WRITE THE PROTAGONIST IN SECOND PERSON ("you", "your") throughout — this is the house POV and removes pronoun ambiguity entirely. Do NOT narrate the protagonist in the third person by name + pronoun (write "you hold his gaze", never "${protagonist} holds his gaze"). Reserve third-person + a concrete pronoun for NPCs only.
 - Use each NPC's exact name and their listed pronouns; never swap a character's gender.
 - When the protagonist and an NPC share the scene, use NAMES (not bare pronouns) to keep references unambiguous.
 
@@ -4001,7 +4013,7 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
     : input.protagonistInfo.pronouns === 'he/him'
       ? `Correct: he/him/his/himself. WRONG: she/her/hers/herself.`
       : `Use they/them/their/themselves (singular).`}
-- PREFER second person ("you", "your") for the protagonist in all encounter prose — it is the house POV and removes any pronoun ambiguity. Use the protagonist's name for emphasis; use a third-person pronoun for the protagonist only when unmistakable.
+- WRITE THE PROTAGONIST IN SECOND PERSON ("you", "your") throughout — this is the house POV and removes pronoun ambiguity entirely. Do NOT narrate the protagonist in the third person by name + pronoun (write "you hold his gaze", never "${protagonist} holds his gaze"). Reserve third-person + a concrete pronoun for NPCs only.
 - Use each NPC's exact name and their listed pronouns; never swap a character's gender.
 - When the protagonist and an NPC share the scene, use NAMES (not bare pronouns) to keep references unambiguous.
 

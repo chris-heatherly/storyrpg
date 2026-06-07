@@ -71,6 +71,29 @@ function makePhase1(): Phase1Result {
   };
 }
 
+describe('getMinimumRequiredBeatCount (authored-anchor scaling)', () => {
+  const min = (overrides: Partial<EncounterArchitectInput>): number => {
+    const architect = new EncounterArchitect(config) as any;
+    return architect.getMinimumRequiredBeatCount({ ...input, ...overrides });
+  };
+
+  it('scales the minimum to the authored encounterBeatPlan length', () => {
+    // The Gen-4 defect: a 5-beat authored anchor rendered as 1 beat.
+    expect(min({ encounterBeatPlan: ['a', 'b', 'c', 'd', 'e'], targetBeatCount: 6 })).toBe(5);
+    expect(min({ encounterBeatPlan: ['a', 'b', 'c'], targetBeatCount: 4 })).toBe(3);
+  });
+
+  it('falls back to 2 when there is no authored beat plan', () => {
+    expect(min({ encounterBeatPlan: [], targetBeatCount: 4 })).toBe(2);
+    expect(min({ encounterBeatPlan: undefined, targetBeatCount: 4 })).toBe(2);
+  });
+
+  it('never demands more beats than the target structure, and caps at a sane ceiling', () => {
+    expect(min({ encounterBeatPlan: ['a', 'b', 'c', 'd', 'e'], targetBeatCount: 4 })).toBe(4);
+    expect(min({ encounterBeatPlan: Array(12).fill('x'), targetBeatCount: 12 })).toBe(8);
+  });
+});
+
 describe('classifyPhaseError', () => {
   it('classifies timeout, parse, empty, and other', () => {
     expect(classifyPhaseError(new TimeoutError('x', 1000))).toBe('timeout');

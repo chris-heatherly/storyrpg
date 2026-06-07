@@ -306,6 +306,51 @@ describe('StoryArchitect treatment fidelity validation', () => {
     expect(blueprint.suggestedFlags.some((f: any) => f.name === seedFlag)).toBe(true);
   });
 
+  it('registerBranchAxisEmitters registers ending axes in suggestedFlags and records them on a choice scene', () => {
+    // Gen-4 R3: the season's ending-axis flags (treatment_branch_*) surface to the
+    // episode via seasonPlanDirectives.flagsToSet but were never SET on-page, so the
+    // endings they drive were unreachable. registerBranchAxisEmitters wires them.
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const input = makeInput({
+      episodeNumber: 2,
+      seasonPlanDirectives: {
+        flagsToSet: [
+          { flag: 'treatment_branch_essence_spent_vs_hoarded', description: 'Essence ledger axis.' },
+          { flag: 'treatment_branch_mercy_vs_vengeance', description: 'Mercy axis.' },
+          { flag: 'route_some_route', description: 'Not an ending axis — ignored.' },
+          { flag: 'plain_flag', description: 'Not an ending axis — ignored.' },
+        ],
+      },
+    });
+    const blueprint: any = {
+      episodeId: 'episode-2',
+      number: 2,
+      suggestedFlags: [],
+      scenes: [
+        { id: 's2-1', isEncounter: true, encounterSetupContext: [] },
+        {
+          id: 's2-2',
+          choicePoint: { type: 'dilemma', stakes: {}, description: 'A real fork.', optionHints: [], branches: [{}, {}] },
+          encounterSetupContext: [],
+        },
+      ],
+    };
+
+    (architect as any).registerBranchAxisEmitters(blueprint, input);
+
+    // Both ending axes registered as known flags; non-axis flags ignored.
+    const names = blueprint.suggestedFlags.map((f: any) => f.name);
+    expect(names).toContain('treatment_branch_essence_spent_vs_hoarded');
+    expect(names).toContain('treatment_branch_mercy_vs_vengeance');
+    expect(names).not.toContain('route_some_route');
+    expect(names).not.toContain('plain_flag');
+    // Recorded on the choice-bearing scene so emitSceneBranchAxes can set them on-page.
+    expect(blueprint.scenes[1].choicePoint.setsBranchAxes).toEqual([
+      'treatment_branch_essence_spent_vs_hoarded',
+      'treatment_branch_mercy_vs_vengeance',
+    ]);
+  });
+
   it('repairs treatment theme pressure and sceneEpisode forward pressure into validator-visible fields', () => {
     const architect = new StoryArchitect(config, { episodeStructureMode: 'sceneEpisodes', allowLinearBottleneckEpisodes: true } as any);
     const input = makeInput({

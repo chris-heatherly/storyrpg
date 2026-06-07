@@ -110,6 +110,13 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // there is no repair wired (the final-contract repair loop can't fix continuity), so
   // it would hard-fail any run with a continuity error. Off until scene-regen is wired.
   GATE_CONTINUITY_REMEDIATION: false,
+  // Ending reachability: the branch-axis emitter ALWAYS sets the season's
+  // treatment_branch_* ending axes on-page (ungated). This flag would promote a
+  // declared-but-unset axis to blocking — but it needs a full-season shadow pass
+  // first (a 3-episode generation can't exercise axes whose setInEpisode is a
+  // later, ungenerated episode, so it would false-positive). Off until validated
+  // against a full-season run.
+  GATE_ENDING_REACHABILITY: false,
 
   // ── Wave 5: treatment-fidelity §4 gates (Remediation §4.1–§4.5) ──
   // Promoted ON to ENFORCE authored-treatment fidelity (not merely steer it): with

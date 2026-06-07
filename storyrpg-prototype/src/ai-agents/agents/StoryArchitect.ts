@@ -429,6 +429,17 @@ export interface SceneBlueprint {
      * (`treatment_seed_ep<N>_<idx>`).
      */
     setsTreatmentSeeds?: string[];
+    /**
+     * Ending-axis flag names (`treatment_branch_*`) this scene's choices must
+     * set on-page so the season's named endings are mechanically REACHABLE.
+     * These axes are declared in `seasonPlan.seasonFlags` (with a `setInEpisode`)
+     * and READ by the finale's ending-route logic — but nothing set them, so the
+     * endings were unreachable (Gen-4 defect). Populated deterministically by
+     * {@link registerBranchAxisEmitters}; emitted as `setFlag` consequences by
+     * the branch-axis backstop ({@link emitSceneBranchAxes}). Distinct from
+     * `setsTreatmentSeeds` (which is the `treatment_seed_*` foreshadow channel).
+     */
+    setsBranchAxes?: string[];
   };
 
   // Scene connections
@@ -1585,6 +1596,72 @@ export class StoryArchitect extends BaseAgent {
     };
 
     this.registerConsequenceSeedEmitters(blueprint, input, guidance);
+    this.registerBranchAxisEmitters(blueprint, input);
+  }
+
+  /**
+   * Treatment fidelity — make the season's ending-axis flags REACHABLE on-page.
+   *
+   * The SeasonPlanner declares each ending state-driver as a `treatment_branch_*`
+   * entry in `seasonPlan.seasonFlags` (with a `setInEpisode`), surfaced to this
+   * episode as `seasonPlanDirectives.flagsToSet`. The finale's ending-route logic
+   * READS those axes — but nothing ever SET them (only destination-keyed
+   * `treatment_branch_<sceneId>` and `route_*` flags were emitted, and `route_*`
+   * only in sceneEpisodes mode), so the named endings were mechanically
+   * unreachable in `standard` mode (Gen-4 defect).
+   *
+   * This deterministically, for the ending axes whose `setInEpisode` is this
+   * episode:
+   *   (a) registers each axis flag in `suggestedFlags` so the pipeline tracks it
+   *       and downstream episodes can forward-condition on it; and
+   *   (b) records the axis flags on a choice-bearing scene's
+   *       `choicePoint.setsBranchAxes` so the branch-axis emitter
+   *       ({@link emitSceneBranchAxes}) attaches a real `setFlag` (round-robin
+   *       across the scene's choices, so distinct choices drive distinct axes).
+   *
+   * Works in BOTH `standard` and `sceneEpisodes` modes because the axes come
+   * from `flagsToSet` (derived from `seasonFlags`), not from the
+   * sceneEpisodes-only `route_*` path.
+   */
+  private registerBranchAxisEmitters(
+    blueprint: EpisodeBlueprint,
+    input: StoryArchitectInput,
+  ): void {
+    const BRANCH_AXIS_PREFIX = 'treatment_branch_';
+    const axisFlags = (input.seasonPlanDirectives?.flagsToSet || [])
+      .map((f) => f.flag)
+      .filter((flag): flag is string => typeof flag === 'string' && flag.startsWith(BRANCH_AXIS_PREFIX));
+    if (axisFlags.length === 0) return;
+
+    const scenes = blueprint.scenes || [];
+    if (scenes.length === 0) return;
+
+    blueprint.suggestedFlags = Array.isArray(blueprint.suggestedFlags) ? blueprint.suggestedFlags : [];
+    const knownFlagNames = new Set(blueprint.suggestedFlags.map((f) => f.name));
+    const flagDescriptionByName = new Map(
+      (input.seasonPlanDirectives?.flagsToSet || []).map((f) => [f.flag, f.description]),
+    );
+    for (const flag of axisFlags) {
+      if (knownFlagNames.has(flag)) continue;
+      knownFlagNames.add(flag);
+      blueprint.suggestedFlags.push({
+        name: flag,
+        description: flagDescriptionByName.get(flag) || `Ending-axis flag set on-page so its ending is reachable: ${flag}`,
+      });
+    }
+
+    // Prefer a genuine branch point (choicePoint.branches truthy) so distinct
+    // choices can drive distinct axes; else fall back to the last choice-bearing scene.
+    const choiceScenes = scenes.filter((s) => s.choicePoint);
+    if (choiceScenes.length === 0) return;
+    const axisHost = choiceScenes.find((s) => s.choicePoint?.branches)
+      || choiceScenes[choiceScenes.length - 1];
+    if (axisHost.choicePoint) {
+      axisHost.choicePoint.setsBranchAxes = Array.from(new Set([
+        ...(axisHost.choicePoint.setsBranchAxes || []),
+        ...axisFlags,
+      ]));
+    }
   }
 
   /**

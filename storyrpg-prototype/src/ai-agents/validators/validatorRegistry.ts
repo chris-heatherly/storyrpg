@@ -180,6 +180,10 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // Treatment-seed on-page presence: each declared treatment_seed_* must be set via a
   // setFlag consequence on some choice in its episode (presence-only, deterministic).
   { validator: 'TreatmentSeedOnPageValidator', stage: 'final', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_TREATMENT_SEED_ONPAGE', dispatchedFrom: 'FullStoryPipeline (episode validation)' },
+  // Ending reachability: each declared ending-axis (treatment_branch_*) must be set via a
+  // setFlag consequence on some choice in its episode, so the named ending it drives is
+  // mechanically reachable (presence-only, deterministic).
+  { validator: 'EndingReachabilityValidator', stage: 'final', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_ENDING_REACHABILITY', dispatchedFrom: 'FullStoryPipeline (episode validation)' },
   // Protagonist pronoun integrity: the resolver ALWAYS repairs safe wrong-gender cases
   // in place at the final contract; GATE_PROTAGONIST_PRONOUN promotes ambiguous residue
   // to a blocking issue routed to scene/encounter regen.

@@ -213,4 +213,5 @@ describe('FullStoryPipeline sceneEpisode playable contract repair', () => {
     // Falls back to the neutral lead + a generic in-fiction destination.
     expect(bridgeText).toContain('The choice changes the air around you.');
   });
+
 });

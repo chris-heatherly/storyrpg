@@ -28,6 +28,12 @@ export type {
   TreatmentSeedOnPageResult,
   TreatmentSeedOnPageOptions,
 } from './TreatmentSeedOnPageValidator';
+export { EndingReachabilityValidator } from './EndingReachabilityValidator';
+export type {
+  EndingReachabilityIssue,
+  EndingReachabilityResult,
+  EndingReachabilityOptions,
+} from './EndingReachabilityValidator';
 export { MicroEpisodeStructureValidator } from './MicroEpisodeStructureValidator';
 export type {
   MicroEpisodeStructureIssue,

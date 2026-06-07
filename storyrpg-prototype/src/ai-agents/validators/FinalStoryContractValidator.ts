@@ -7,6 +7,8 @@ import { IncrementalEncounterValidator } from './IncrementalValidators';
 import { MechanicsLeakageValidator, type MechanicsLeakageText } from './MechanicsLeakageValidator';
 import { gateDesignNoteLeak, isEscalatedIssue } from './issueEscalation';
 import { canonicalizeStoryWitnessReactions } from '../utils/witnessNpcResolver';
+import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory } from '../utils/protagonistPronounResolver';
+import { isGateEnabled } from '../remediation/gateDefaults';
 import { isTreatmentFidelityFinding } from './treatmentFidelityGate';
 import { findBeatIdCollisions } from './beatIdCollisions';
 
@@ -40,6 +42,7 @@ export type FinalStoryContractIssueType =
   | 'unrepaired_callback_debt'
   | 'source_role_mismatch'
   | 'treatment_fidelity_violation'
+  | 'ambiguous_protagonist_pronoun'
   | 'qa_blocker_present';
 
 export interface FinalStoryContractIssue {
@@ -76,6 +79,13 @@ export interface FinalStoryContractReport {
 
 export interface FinalStoryContractInput {
   story: Story;
+  /**
+   * Canonical protagonist identity (from the brief/character bible). When present,
+   * the contract deterministically repairs wrong-gender protagonist pronouns in
+   * player-facing prose (W1) and — when GATE_PROTAGONIST_PRONOUN is on — flags any
+   * ambiguous residue for regen. Absent ⇒ the pronoun pass is skipped.
+   */
+  protagonist?: { name?: string; aliases?: string[]; pronouns?: string };
   requestedEpisodeNumbers?: number[];
   sourceSeasonPlan?: {
     totalEpisodes?: number;
@@ -145,6 +155,44 @@ export class FinalStoryContractValidator {
       console.info(
         `[FinalStoryContract] witness npcIds canonicalized: remapped ${witnessFix.remapped}, dropped ${witnessFix.dropped} of ${witnessFix.total}`,
       );
+    }
+
+    // W1: deterministically repair wrong-gender protagonist pronouns in player-facing
+    // prose (the encounter generator drifted Kylie -> he/him). Pronouns are canon, so
+    // the safe (protagonist-only-sentence) repair runs always — pure data correctness,
+    // like the witness pass above. Genuinely ambiguous residue (protagonist + a
+    // wrong-gender NPC in one sentence) is never auto-rewritten; it is flagged for
+    // regen only when GATE_PROTAGONIST_PRONOUN is on.
+    if (input.protagonist?.pronouns) {
+      const names = [input.protagonist.name, ...(input.protagonist.aliases || [])].filter(
+        (n): n is string => Boolean(n),
+      );
+      if (names.length > 0) {
+        const pronounFix = canonicalizeProtagonistPronouns(
+          input.story,
+          { names, pronouns: input.protagonist.pronouns },
+          otherGenderNamesFromStory(input.story, input.protagonist.pronouns),
+        );
+        if (pronounFix.repaired > 0 || pronounFix.ambiguous.length > 0) {
+          console.info(
+            `[FinalStoryContract] protagonist pronouns: repaired ${pronounFix.repaired}, ` +
+            `ambiguous ${pronounFix.ambiguous.length} (of ${pronounFix.fieldsScanned} fields)`,
+          );
+        }
+        if (isGateEnabled('GATE_PROTAGONIST_PRONOUN')) {
+          for (const amb of pronounFix.ambiguous) {
+            issues.push({
+              type: 'ambiguous_protagonist_pronoun',
+              severity: mode === 'strict' ? 'error' : 'warning',
+              message:
+                `Ambiguous protagonist pronoun could not be deterministically resolved: "${amb.sentence}". ` +
+                'Regenerate the prose in second person or with explicit names.',
+              validator: 'protagonistPronounResolver',
+              suggestion: 'Use "you"/the protagonist name; avoid a bare third-person pronoun shared with another character.',
+            });
+          }
+        }
+      }
     }
 
     this.validateRequestedEpisodes(input, issues, metrics);

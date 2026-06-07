@@ -74,6 +74,23 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   GATE_CONSEQUENCE_BUDGET: false,
   GATE_ARC_PRESSURE: false,
 
+  // ── Gen-4 audit follow-ups — default-off pending a clean shadow pass ──
+  // Dead-branch detection: a blueprint scene declared as a multi-target branch
+  // point (leadsTo.size>1) whose own choices fan out to <2 of those targets
+  // assembled as a linear pass-through. The metric is always recorded; this flag
+  // promotes it to a blocking SceneGraphBranchValidator error.
+  GATE_BRANCH_FANOUT: false,
+  // Duplicate establishing-beat: two scenes on a linear path both staged as a
+  // first entry into the same location (the Endsong s3-2/s3-3 dual-first-entry).
+  GATE_DUPLICATE_ESTABLISHING_BEAT: false,
+  // Treatment-seed on-page presence: every treatment_seed_* declared for an
+  // episode must be set via a setFlag consequence on some choice in that episode.
+  GATE_TREATMENT_SEED_ONPAGE: false,
+  // Protagonist pronoun integrity: the deterministic resolver ALWAYS repairs the
+  // safe (protagonist-only-sentence) wrong-gender cases; this flag additionally
+  // promotes ambiguous, un-repairable residue to a blocking contract issue (→ regen).
+  GATE_PROTAGONIST_PRONOUN: false,
+
   // ── Wave 5: treatment-fidelity §4 gates (Remediation §4.1–§4.5) ──
   // Promoted ON to ENFORCE authored-treatment fidelity (not merely steer it): with
   // these off the validators are dispatched but never block, so a re-cut episode

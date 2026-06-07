@@ -14,6 +14,7 @@
 import type { Choice, ReminderPlan } from '../../types/choice';
 import type { TextVariant } from '../../types/content';
 import type { ConditionExpression } from '../../types/conditions';
+import { isUnsafeCallbackProse } from '../constants/metaProse';
 import type { CallbackLedger } from './callbackLedger';
 
 /** A single unresolved hook, shaped for a SceneWriter/ChoiceAuthor prompt. */
@@ -198,10 +199,39 @@ function buildCallbackCondition(conditionKey: string): ConditionExpression {
   return { type: 'flag', flag: conditionKey, value: true };
 }
 
-/** Choose the prose for a callback: prefer the authored reminderPlan, fall back to the hook summary. */
-function pickCallbackProse(reminderPlan: ReminderPlan | undefined, summary: string): string {
-  const candidate = reminderPlan?.shortTerm || reminderPlan?.immediate || summary;
-  return (candidate ?? '').replace(/\s+/g, ' ').trim();
+/**
+ * Choose reader-facing prose for an auto-injected callback.
+ *
+ * The authored callback sources — `reminderPlan` and `feedbackCue` — are
+ * planning-register ("In the caravan scene, she …", "The next scene should
+ * remember this choice"), and the ledger's synthesized fallback summary embeds
+ * raw flag names ('Earlier choice: "…" (sets treatment_seed_ep2_1).'). Injecting
+ * any of those verbatim leaked design notes to readers. We now consider candidates
+ * in reader-facing-preference order and return the FIRST one that passes the
+ * meta-prose reject filter; if none is clean we return '' so the caller skips the
+ * injection entirely (a missing callback is strictly better than a leaked note).
+ */
+function pickCallbackProse(meta: CallbackProseMeta | undefined, summary: string): string {
+  const candidates = [
+    // memorableMoment.summary arrives here as `summary` (an in-fiction recap);
+    // for flag/score hooks `summary` is the synthesized stub, which the filter rejects.
+    summary,
+    meta?.echoSummary,
+    meta?.reminderPlan?.shortTerm,
+    meta?.reminderPlan?.immediate,
+  ];
+  for (const raw of candidates) {
+    const candidate = (raw ?? '').replace(/\s+/g, ' ').trim();
+    if (candidate && !isUnsafeCallbackProse(candidate)) return candidate;
+  }
+  return '';
+}
+
+/** Choice metadata the callback realizer consults for reader-facing prose. */
+interface CallbackProseMeta {
+  reminderPlan?: ReminderPlan;
+  echoSummary?: string;
+  text?: string;
 }
 
 /**
@@ -230,11 +260,17 @@ export function injectFallbackCallbacks(
   const sceneIndexById = new Map<string, number>();
   sceneContents.forEach((sc, idx) => sceneIndexById.set(sc.sceneId, idx));
 
-  // Choice metadata (reminderPlan + text) for prose sourcing.
-  const choiceMetaById = new Map<string, { reminderPlan?: ReminderPlan; text?: string }>();
+  // Choice metadata (reminderPlan + echoSummary + text) for prose sourcing.
+  const choiceMetaById = new Map<string, CallbackProseMeta>();
   const noteChoice = (raw: unknown): void => {
     const c = raw as Choice;
-    if (c?.id && !choiceMetaById.has(c.id)) choiceMetaById.set(c.id, { reminderPlan: c.reminderPlan, text: c.text });
+    if (c?.id && !choiceMetaById.has(c.id)) {
+      choiceMetaById.set(c.id, {
+        reminderPlan: c.reminderPlan,
+        echoSummary: c.feedbackCue?.echoSummary,
+        text: c.text,
+      });
+    }
   };
   for (const cs of choiceSets) for (const choice of cs.choices || []) noteChoice(choice);
   for (const sc of sceneContents) for (const beat of sc.beats || []) for (const choice of beat.choices || []) noteChoice(choice);
@@ -260,6 +296,12 @@ export function injectFallbackCallbacks(
     if (!conditionKey) continue;
     if (alreadyReferenced.has(conditionKey) || alreadyReferenced.has(hook.id)) continue;
 
+    // Resolve reader-facing prose once per hook. If no candidate survives the
+    // meta-prose filter, skip the hook entirely rather than leak a planning note.
+    const meta = hook.sourceChoiceId ? choiceMetaById.get(hook.sourceChoiceId) : undefined;
+    const text = pickCallbackProse(meta, hook.summary);
+    if (!text) continue;
+
     // Within-episode hooks must land in a LATER scene than where the flag was set;
     // cross-episode hooks (sourceIdx -1) may land anywhere in this episode.
     const sourceIdx = hook.sourceEpisode === episodeNumber
@@ -274,10 +316,6 @@ export function injectFallbackCallbacks(
         const beatId = beat.id || '';
         if (!beatId) continue;
         if ((usedPerBeat.get(beatId) ?? 0) >= maxPerBeat) continue;
-
-        const meta = hook.sourceChoiceId ? choiceMetaById.get(hook.sourceChoiceId) : undefined;
-        const text = pickCallbackProse(meta?.reminderPlan, hook.summary);
-        if (!text) continue;
 
         const variant: TextVariant = {
           condition: buildCallbackCondition(conditionKey),

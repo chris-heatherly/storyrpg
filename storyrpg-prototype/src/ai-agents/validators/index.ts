@@ -16,6 +16,18 @@ export type {
   SceneGraphBranchValidationOptions,
   SceneGraphBranchValidationResult,
 } from './SceneGraphBranchValidator';
+export { DuplicateEstablishingBeatValidator } from './DuplicateEstablishingBeatValidator';
+export type {
+  DuplicateEstablishingBeatIssue,
+  DuplicateEstablishingBeatResult,
+  DuplicateEstablishingBeatOptions,
+} from './DuplicateEstablishingBeatValidator';
+export { TreatmentSeedOnPageValidator } from './TreatmentSeedOnPageValidator';
+export type {
+  TreatmentSeedOnPageIssue,
+  TreatmentSeedOnPageResult,
+  TreatmentSeedOnPageOptions,
+} from './TreatmentSeedOnPageValidator';
 export { MicroEpisodeStructureValidator } from './MicroEpisodeStructureValidator';
 export type {
   MicroEpisodeStructureIssue,

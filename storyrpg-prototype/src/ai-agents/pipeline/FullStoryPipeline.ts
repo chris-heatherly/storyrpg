@@ -18,6 +18,7 @@ import { PipelineConfig, loadConfig, defaultValidationConfig, clampTargetBeatCou
 import { getMemoryStore, NodeMemoryStore, type MemoryStore } from '../utils/memoryStore';
 import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
+import { isUnsafeCallbackProse } from '../constants/metaProse';
 import { 
   SCENE_DEFAULTS, 
   clampSceneCount,
@@ -276,6 +277,8 @@ import {
   StructuralValidator,
   ChoiceDistributionValidator,
   SceneGraphBranchValidator,
+  DuplicateEstablishingBeatValidator,
+  TreatmentSeedOnPageValidator,
   MicroEpisodeStructureValidator,
   MicroEpisodeSeasonValidator,
   FinalStoryContractValidator,
@@ -725,6 +728,8 @@ export class FullStoryPipeline {
   private phaseValidator: PhaseValidator;
   private distributionValidator: ChoiceDistributionValidator = new ChoiceDistributionValidator();
   private sceneGraphBranchValidator: SceneGraphBranchValidator = new SceneGraphBranchValidator();
+  private duplicateEstablishingBeatValidator: DuplicateEstablishingBeatValidator = new DuplicateEstablishingBeatValidator();
+  private treatmentSeedOnPageValidator: TreatmentSeedOnPageValidator = new TreatmentSeedOnPageValidator();
   private microEpisodeStructureValidator: MicroEpisodeStructureValidator = new MicroEpisodeStructureValidator();
   private microEpisodeSeasonValidator: MicroEpisodeSeasonValidator = new MicroEpisodeSeasonValidator();
   
@@ -1103,6 +1108,9 @@ export class FullStoryPipeline {
       minSceneGraphBranchesPerEpisode: this.config.generation?.minSceneGraphBranchesPerEpisode,
       allowLinearBottleneckEpisodes: isSceneEpisodeMode ? true : this.config.generation?.allowLinearBottleneckEpisodes,
       ignoreBlueprintBranchesWithoutSceneRouting: isSceneEpisodeMode,
+      // Gen-4 audit: flag planned multi-target branch points that assembled as a
+      // linear pass-through (dead branch). Default-off; metric always recorded.
+      requireBlueprintBranchFanOut: isGateEnabled('GATE_BRANCH_FANOUT'),
     };
     let result = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
 
@@ -1160,6 +1168,53 @@ export class FullStoryPipeline {
       );
     }
 
+    // Gen-4 audit: dual-first-entry / duplicate establishing-beat check. Always
+    // recorded as a warning event; only fail-fasts when GATE_DUPLICATE_ESTABLISHING_BEAT
+    // promotes it to blocking. (The season-level continuity remediation loop is the
+    // softer landing once it lands.)
+    const dupBlocking = isGateEnabled('GATE_DUPLICATE_ESTABLISHING_BEAT');
+    const dup = this.duplicateEstablishingBeatValidator.validateEpisode(episode, blueprint, { blocking: dupBlocking });
+    if (dup.issues.length > 0) {
+      this.emit({
+        type: 'warning',
+        phase: context.phase,
+        message:
+          `DuplicateEstablishingBeatValidator: ${dup.metrics.duplicateEstablishingBeatCount} duplicate establishing beat(s) — ` +
+          dup.issues.map(issue => `${issue.priorSceneId}->${issue.sceneId}`).join(', '),
+        data: dup,
+      });
+      if (dupBlocking && !dup.valid) {
+        this.throwIfFailFast(
+          `Duplicate establishing-beat: ${dup.issues.map(issue => issue.message).join(' ')}`,
+          context.phase,
+          { context: { duplicateEstablishingBeats: dup.issues, failureKind: 'duplicate_establishing_beat' } },
+        );
+      }
+    }
+
+    // Gen-4 audit: every declared treatment_seed_* must be SET on-page by a setFlag
+    // consequence on some choice in the episode. Always emits a warning when a seed
+    // is missing; only fail-fasts when GATE_TREATMENT_SEED_ONPAGE is on.
+    const seedBlocking = isGateEnabled('GATE_TREATMENT_SEED_ONPAGE');
+    const seedCheck = this.treatmentSeedOnPageValidator.validateEpisode(episode, blueprint, { blocking: seedBlocking });
+    if (seedCheck.issues.length > 0) {
+      this.emit({
+        type: 'warning',
+        phase: context.phase,
+        message:
+          `TreatmentSeedOnPageValidator: ${seedCheck.metrics.missingSeeds}/${seedCheck.metrics.declaredSeeds} ` +
+          `treatment seed(s) never set on-page — ${seedCheck.issues.map(issue => issue.flag).join(', ')}`,
+        data: seedCheck,
+      });
+      if (seedBlocking && !seedCheck.valid) {
+        this.throwIfFailFast(
+          `Treatment seed not set on-page: ${seedCheck.issues.map(issue => issue.message).join(' ')}`,
+          context.phase,
+          { context: { missingTreatmentSeeds: seedCheck.issues, failureKind: 'treatment_seed_not_set_on_page' } },
+        );
+      }
+    }
+
     return result;
   }
 
@@ -1186,6 +1241,9 @@ export class FullStoryPipeline {
     const runValidation = async (story: Story): Promise<FinalStoryContractReport> => {
       const r = await new FinalStoryContractValidator().validate({
         story,
+        protagonist: input.brief.protagonist
+          ? { name: input.brief.protagonist.name, pronouns: input.brief.protagonist.pronouns }
+          : undefined,
         requestedEpisodeNumbers: input.requestedEpisodeNumbers,
         sourceSeasonPlan: input.brief.seasonPlan,
         incrementalValidationResults: this.allSceneValidationResults.length > 0
@@ -20614,7 +20672,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
           continue;
         }
 
-        const bridgeText = this.buildChoiceBridgeBeatText(choice, targetScene);
+        const bridgeText = this.buildChoiceBridgeBeatText(choice);
         content.beats.push({
           id: bridgeId,
           text: bridgeText,
@@ -20644,16 +20702,35 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     }
   }
 
-  private buildChoiceBridgeBeatText(choice: ChoiceSet['choices'][number], targetScene?: SceneBlueprint): string {
-    const immediate = this.cleanChoiceBridgeFragment(choice.feedbackCue?.progressSummary || choice.reminderPlan?.immediate);
-    const targetName = this.sanitizeReaderFacingSceneName(targetScene?.name, '');
-    // Destination from the sanitized scene NAME only — never the agent-facing `description` (it leaks planning meta-narration).
-    const destination = targetName ? `${targetName} waits ahead.` : 'The next threshold waits ahead.';
+  private buildChoiceBridgeBeatText(choice: ChoiceSet['choices'][number]): string {
+    const rawImmediate = this.cleanChoiceBridgeFragment(choice.feedbackCue?.progressSummary || choice.reminderPlan?.immediate);
+    // The lead fragment is sourced from planning fields; reject any meta/design-note
+    // register ("In the next scene…", raw flag ids) rather than leak it to readers.
+    const immediate = rawImmediate && !isUnsafeCallbackProse(rawImmediate) ? rawImmediate : '';
+    // Destination is intentionally GENERIC and in-fiction. We deliberately do NOT
+    // surface the target scene's NAME ("The First Clash waits ahead.") — scene names
+    // are structural labels, not prose. A deterministic rotation keyed on the choice
+    // id keeps consecutive bridges from reading identically.
+    const destination = this.genericBridgeDestination(choice.id);
     return [immediate || 'The choice changes the air around you.', destination]
       .filter(Boolean)
       .map(part => String(part).trim())
       .map(part => /[.!?]$/.test(part) ? part : `${part}.`)
       .join(' ');
+  }
+
+  /** Deterministic generic forward-motion line for a choice bridge (no scene name). */
+  private genericBridgeDestination(choiceId: string | undefined): string {
+    const options = [
+      'What comes next is already in motion.',
+      'The next threshold waits ahead.',
+      'There is no stepping back from here.',
+      'The path forward is set.',
+    ];
+    const key = String(choiceId || '');
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+    return options[hash % options.length];
   }
 
   private assembleEpisode(

@@ -169,6 +169,21 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'InformationLedgerScheduleValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_INFORMATION_LEDGER_SCHEDULE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
   { validator: 'SignatureDevicePresenceValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_SIGNATURE_DEVICE_PRESENCE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
   { validator: 'SevenPointAnchorConformanceValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
+
+  // --- Gen-4 audit follow-ups (default-off; the metric is always recorded) ---
+  // Dead-branch: a planned multi-target branch point whose choices collapsed to a
+  // single target (assembled linear). GATE_BRANCH_FANOUT promotes it to an error.
+  { validator: 'SceneGraphBranchValidator (branch-fan-out class)', stage: 'final', tier: 'advisory', remediation: 'regen-choices', rolloutFlag: 'GATE_BRANCH_FANOUT', dispatchedFrom: 'FullStoryPipeline (validateSceneGraphBranching)' },
+  // Duplicate establishing-beat: two scenes on a linear path both staged as a first
+  // entry into the same location (dual-first-entry). Surfaced to the continuity pass.
+  { validator: 'DuplicateEstablishingBeatValidator', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_DUPLICATE_ESTABLISHING_BEAT', dispatchedFrom: 'FullStoryPipeline (continuity check)' },
+  // Treatment-seed on-page presence: each declared treatment_seed_* must be set via a
+  // setFlag consequence on some choice in its episode (presence-only, deterministic).
+  { validator: 'TreatmentSeedOnPageValidator', stage: 'final', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_TREATMENT_SEED_ONPAGE', dispatchedFrom: 'FullStoryPipeline (episode validation)' },
+  // Protagonist pronoun integrity: the resolver ALWAYS repairs safe wrong-gender cases
+  // in place at the final contract; GATE_PROTAGONIST_PRONOUN promotes ambiguous residue
+  // to a blocking issue routed to scene/encounter regen.
+  { validator: 'protagonistPronounResolver (ambiguous-residue class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_PROTAGONIST_PRONOUN', dispatchedFrom: 'FinalStoryContractValidator' },
 ];
 
 /** Validators that hard-block a run regardless of validation mode. */

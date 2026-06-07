@@ -234,4 +234,76 @@ describe('injectFallbackCallbacks', () => {
     expect(injected).toBe(0);
     expect(laterBeat.textVariants).toHaveLength(0);
   });
+
+  it('skips injection when every prose candidate is agent-facing meta (no leak)', () => {
+    const ledger = new CallbackLedger();
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          {
+            id: 'c1',
+            text: 'Hold her gaze.',
+            consequences: [{ type: 'setFlag', flag: 'aethavyr_held_distance', value: true } as any],
+            // Both reminderPlan fields are planning-register scene references — the
+            // exact shape that leaked "In the caravan scene, she stops pretending…".
+            reminderPlan: {
+              immediate: 'In the next scene, she addresses him only when necessary.',
+              shortTerm: 'In the caravan scene, she stops pretending to look at the road.',
+            },
+          } as any,
+        ],
+      },
+    ];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+
+    const laterBeat = { id: 'scene-2-beat-1', textVariants: [] as any[] };
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [
+        { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+        { sceneId: 'scene-2', beats: [laterBeat] },
+      ] as any,
+      choiceSets: choiceSets as any,
+    });
+
+    // No clean candidate -> no injection, no leaked design note.
+    expect(injected).toBe(0);
+    expect(laterBeat.textVariants).toHaveLength(0);
+  });
+
+  it('falls through a meta reminderPlan to a clean echoSummary', () => {
+    const ledger = new CallbackLedger();
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          {
+            id: 'c1',
+            text: 'Pour the cordial.',
+            consequences: [{ type: 'setFlag', flag: 'shared_the_cordial', value: true } as any],
+            reminderPlan: {
+              immediate: 'In the next scene, this pays off.',
+              shortTerm: 'In the wall-breach encounter, he remembers.',
+            },
+            feedbackCue: { echoSummary: 'The warmth of that shared cup stays with him.' },
+          } as any,
+        ],
+      },
+    ];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+
+    const laterBeat = { id: 'scene-2-beat-1', textVariants: [] as any[] };
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [
+        { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+        { sceneId: 'scene-2', beats: [laterBeat] },
+      ] as any,
+      choiceSets: choiceSets as any,
+    });
+
+    expect(injected).toBe(1);
+    expect(laterBeat.textVariants[0].text).toContain('shared cup');
+  });
 });

@@ -180,23 +180,37 @@ describe('FullStoryPipeline sceneEpisode playable contract repair', () => {
         immediate: 'The proper order is maintained, but connection is lost.',
         shortTerm: 'Lysandra remembers the distance.',
       },
-    }, {
-      id: 'scene-3',
-      name: 'The Hidden Chamber (ENCOUNTER — Episode Climax)',
-      description: 'The hidden chamber opens beneath the storm shelter.',
     });
 
     // The choice residue (immediate) half is reader-safe and preserved.
     expect(bridgeText).toContain('The proper order is maintained');
-    // Destination is built from the SANITIZED scene NAME only — never the planning
-    // `description` field (which is agent-facing and may carry meta-narration).
-    expect(bridgeText).toContain('The Hidden Chamber waits ahead.');
+    // Destination is GENERIC and in-fiction — the structural scene NAME must never
+    // surface (scene names are labels, not prose: "The First Clash waits ahead.").
+    expect(bridgeText).not.toContain('Hidden Chamber');
     expect(bridgeText).not.toContain('The hidden chamber opens beneath the storm shelter.');
     expect(bridgeText).not.toContain('You chose');
-    expect(bridgeText).not.toContain('Protocol wins');
     expect(bridgeText).not.toContain('The decision carries you');
     expect(bridgeText).not.toContain('one concrete step');
     expect(bridgeText).not.toContain('ENCOUNTER');
     expect(bridgeText).not.toContain('Episode Climax');
+  });
+
+  it('drops meta/design-note lead fragments and never leaks the scene name', async () => {
+    const { FullStoryPipeline } = await import('./FullStoryPipeline');
+    const pipeline = Object.create(FullStoryPipeline.prototype);
+
+    const bridgeText = pipeline.buildChoiceBridgeBeatText({
+      id: 'choice-9',
+      text: 'Pour the cordial.',
+      // Planning-register lead — must be rejected, not rendered.
+      feedbackCue: { progressSummary: 'In the wall-breach encounter, he remembers.' },
+      reminderPlan: { immediate: 'In the next scene, this pays off.', shortTerm: 'x' },
+    });
+
+    expect(bridgeText).not.toContain('In the wall-breach encounter');
+    expect(bridgeText).not.toContain('In the next scene');
+    expect(bridgeText).not.toContain('encounter');
+    // Falls back to the neutral lead + a generic in-fiction destination.
+    expect(bridgeText).toContain('The choice changes the air around you.');
   });
 });

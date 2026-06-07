@@ -6,6 +6,7 @@
  * code/config strings and should be run only on rendered story text.
  */
 
+import { READER_PROSE_LEAK_PATTERNS } from '../constants/metaProse';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
 
 export interface MechanicsLeakageText {
@@ -180,6 +181,11 @@ const DESIGN_NOTE_PATTERNS: Array<{ pattern: RegExp; label: string; suggestion: 
     label: 'cross-episode planning narration',
     suggestion: 'Keep setup/payoff planning out of reader prose.',
   },
+  // Shared high-confidence reader-prose leak signatures (anchored scene/encounter
+  // references, raw flag identifiers, parenthetical variable mentions). These catch
+  // the meta-narration that leaked into auto-injected callback TextVariants — text
+  // the historical stat/episode patterns above did not cover.
+  ...READER_PROSE_LEAK_PATTERNS,
 ];
 
 export class MechanicsLeakageValidator extends BaseValidator {

@@ -1,0 +1,168 @@
+/**
+ * Protagonist pronoun resolver (Gen-4 W1).
+ *
+ * The protagonist's pronouns are CANON — authored once on the brief
+ * (`brief.protagonist.pronouns`) and on the character bible. Yet the encounter
+ * outcome generator drifted: Bite Me Gen-4 rendered the female protagonist
+ * "Kylie" as "he/him/himself" across ~160 player-facing encounter fields while
+ * the linear SceneWriter prose was correct. No validator caught it.
+ *
+ * This module makes the fact deterministic AFTER generation, mirroring the
+ * witnessNpcResolver pattern: it walks the assembled story's reader-facing text
+ * and, for sentences whose ONLY person referent is the protagonist, rewrites
+ * wrong-gender pronouns to the canon set. Sentences that also name another
+ * character of the wrong gender are genuinely ambiguous ("Victor looks at him")
+ * — those are NOT rewritten (we never risk introducing a new error); they are
+ * returned as `ambiguous` findings the caller can route to a bounded regen.
+ *
+ * Deterministic, no LLM. Mutates the story in place so the shipped story.json is
+ * corrected. Only `he/him` and `she/her` canon are repaired; `they/them` is
+ * skipped (it is never "wrong-gender" against a third-person singular).
+ */
+
+import type { Story } from '../../types';
+
+export interface ProtagonistIdentity {
+  /** Display + reference names/aliases for the protagonist (e.g. ["Kylie", "Kylie Marinescu"]). */
+  names: string[];
+  pronouns: string;
+}
+
+export interface ProtagonistPronounAmbiguity {
+  location: string;
+  sentence: string;
+}
+
+export interface ProtagonistPronounResult {
+  repaired: number;
+  ambiguous: ProtagonistPronounAmbiguity[];
+  fieldsScanned: number;
+}
+
+// Reader-facing text fields anywhere in the story graph (incl. nested encounter
+// situations). Agent-facing planning fields are deliberately excluded.
+const TEXT_KEYS = new Set([
+  'text', 'narrativeText', 'setupText', 'outcomeText', 'reactionText',
+  'lockedText', 'description', 'visualMoment', 'primaryAction',
+]);
+
+type Gender = 'm' | 'f';
+
+// Wrong-gender pronoun word source per target canon. Fresh RegExp objects are
+// built per use to avoid shared global-regex lastIndex state.
+const WRONG_SOURCE: Record<Gender, string> = {
+  // target = female canon -> wrong = masculine pronouns
+  f: '\\b(he|him|his|himself)\\b',
+  // target = male canon -> wrong = feminine pronouns
+  m: '\\b(she|her|hers|herself)\\b',
+};
+
+function mapPronoun(word: string, target: Gender): string {
+  const lower = word.toLowerCase();
+  const table: Record<string, string> =
+    target === 'f'
+      ? { he: 'she', him: 'her', his: 'her', himself: 'herself' }
+      : { she: 'he', her: 'him', hers: 'his', herself: 'himself' };
+  const replacement = table[lower] ?? word;
+  // Preserve capitalization of the original first letter.
+  return /^[A-Z]/.test(word) ? replacement.charAt(0).toUpperCase() + replacement.slice(1) : replacement;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Split a block of prose into sentences, preserving terminators. */
+function splitSentences(text: string): string[] {
+  const parts = text.match(/[^.!?]+[.!?]*/g);
+  return parts ?? [text];
+}
+
+function targetGender(pronouns: string): Gender | undefined {
+  const p = pronouns.toLowerCase();
+  if (p.startsWith('she')) return 'f';
+  if (p.startsWith('he')) return 'm';
+  return undefined; // they/them or unknown -> skip
+}
+
+/**
+ * Repair wrong-gender protagonist pronouns across the story in place.
+ *
+ * @param story    The assembled story (mutated).
+ * @param identity Canonical protagonist names + pronouns (from the brief/bible).
+ * @param otherGenderNames Names of characters of the WRONG gender — their presence
+ *   in a sentence makes a wrong-gender pronoun ambiguous (skip + report).
+ */
+export function canonicalizeProtagonistPronouns(
+  story: Story,
+  identity: ProtagonistIdentity,
+  otherGenderNames: string[],
+): ProtagonistPronounResult {
+  const result: ProtagonistPronounResult = { repaired: 0, ambiguous: [], fieldsScanned: 0 };
+  const target = targetGender(identity.pronouns);
+  if (!target) return result;
+
+  const names = identity.names.filter(Boolean);
+  if (names.length === 0) return result;
+  // Non-global (used only with .test()), so no lastIndex state to manage.
+  const nameRe = new RegExp(`\\b(?:${names.map(escapeRegExp).join('|')})\\b`, 'i');
+  const otherRe = otherGenderNames.length
+    ? new RegExp(`\\b(?:${otherGenderNames.filter(Boolean).map(escapeRegExp).join('|')})\\b`, 'i')
+    : undefined;
+  const wrongTest = new RegExp(WRONG_SOURCE[target], 'i');
+
+  const repairField = (value: string, location: string): string => {
+    result.fieldsScanned += 1;
+    if (!nameRe.test(value)) return value; // protagonist not referenced here
+    if (!wrongTest.test(value)) return value; // no wrong-gender pronoun
+
+    return splitSentences(value)
+      .map((sentence) => {
+        if (!nameRe.test(sentence)) return sentence;
+        if (!wrongTest.test(sentence)) return sentence;
+        // Ambiguous when another wrong-gender character is named in the sentence.
+        if (otherRe && otherRe.test(sentence)) {
+          result.ambiguous.push({ location, sentence: sentence.trim() });
+          return sentence;
+        }
+        // Fresh global regex per sentence for the actual replace.
+        return sentence.replace(new RegExp(WRONG_SOURCE[target], 'gi'), (m) => {
+          result.repaired += 1;
+          return mapPronoun(m, target);
+        });
+      })
+      .join('');
+  };
+
+  const walk = (node: unknown, path: string): void => {
+    if (Array.isArray(node)) {
+      node.forEach((child, i) => walk(child, `${path}[${i}]`));
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    const obj = node as Record<string, unknown>;
+    for (const [key, val] of Object.entries(obj)) {
+      if (typeof val === 'string' && TEXT_KEYS.has(key)) {
+        obj[key] = repairField(val, `${path}/${key}`);
+      } else if (val && typeof val === 'object') {
+        walk(val, `${path}/${key}`);
+      }
+    }
+  };
+
+  walk(story, '');
+  return result;
+}
+
+/** Derive the wrong-gender NPC names from the story roster for a given target. */
+export function otherGenderNamesFromStory(story: Story, pronouns: string): string[] {
+  const target = targetGender(pronouns);
+  if (!target) return [];
+  const wrongPrefix = target === 'f' ? 'he' : 'she'; // protagonist female -> male NPCs are the risk
+  const names: string[] = [];
+  for (const npc of story.npcs || []) {
+    const p = (npc.pronouns || '').toLowerCase();
+    if (p.startsWith(wrongPrefix) && npc.name) names.push(npc.name);
+  }
+  return names;
+}

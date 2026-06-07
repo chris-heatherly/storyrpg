@@ -351,4 +351,71 @@ describe('SceneGraphBranchValidator', () => {
     expect(result.issues.some(issue => issue.type === 'invalid_branch_target')).toBe(false);
     expect(result.issues.some(issue => issue.message.includes('episode-end'))).toBe(false);
   });
+
+  describe('branch-fan-out (dead-branch) detection', () => {
+    // scene-1 is PLANNED as a multi-target branch (leadsTo: [scene-2, scene-3])
+    // but every choice routes to scene-2 — the Endsong s3-1 dead-branch shape.
+    const deadBranchEpisode = () => episode([
+      scene('scene-1', ['scene-2', 'scene-3'], [
+        { id: 'choice-a', nextSceneId: 'scene-2' },
+        { id: 'choice-b', nextSceneId: 'scene-2' },
+      ]),
+      scene('scene-2', ['scene-3']),
+      scene('scene-3'),
+    ]);
+    const deadBranchBlueprint = () => blueprint([
+      { id: 'scene-1', leadsTo: ['scene-2', 'scene-3'], branches: true, type: 'dilemma' },
+      { id: 'scene-2', leadsTo: ['scene-3'] },
+      { id: 'scene-3', leadsTo: [] },
+    ]);
+    // Isolate the fan-out check from the other branch contracts.
+    const isolate = {
+      requireSceneGraphBranching: false,
+      requireChoiceBridge: false,
+      allowLinearBottleneckEpisodes: true,
+    } as const;
+
+    it('records the metric but emits no issue when the gate is off', () => {
+      const result = new SceneGraphBranchValidator().validateEpisode(
+        deadBranchEpisode(), deadBranchBlueprint(), { ...isolate },
+      );
+      expect(result.metrics.unrealizedBlueprintBranchTargetCount).toBe(1);
+      expect(result.issues.some(i => i.type === 'unrealized_blueprint_branch_target')).toBe(false);
+    });
+
+    it('flags an unrealized branch target as an error when the gate is on', () => {
+      const result = new SceneGraphBranchValidator().validateEpisode(
+        deadBranchEpisode(), deadBranchBlueprint(), { ...isolate, requireBlueprintBranchFanOut: true },
+      );
+      expect(result.metrics.unrealizedBlueprintBranchTargetCount).toBe(1);
+      const issue = result.issues.find(i => i.type === 'unrealized_blueprint_branch_target');
+      expect(issue).toBeDefined();
+      expect(issue?.severity).toBe('error');
+      expect(issue?.sceneId).toBe('scene-1');
+      expect(result.valid).toBe(false);
+    });
+
+    it('does not flag a genuine fan-out that reaches both targets', () => {
+      const ep = episode([
+        scene('scene-1', ['scene-2', 'scene-3'], [
+          { id: 'choice-a', nextSceneId: 'scene-2' },
+          { id: 'choice-b', nextSceneId: 'scene-3' },
+        ]),
+        scene('scene-2', ['scene-4']),
+        scene('scene-3', ['scene-4']),
+        scene('scene-4'),
+      ]);
+      const bp = blueprint([
+        { id: 'scene-1', leadsTo: ['scene-2', 'scene-3'], branches: true, type: 'dilemma' },
+        { id: 'scene-2', leadsTo: ['scene-4'] },
+        { id: 'scene-3', leadsTo: ['scene-4'] },
+        { id: 'scene-4', leadsTo: [] },
+      ]);
+      const result = new SceneGraphBranchValidator().validateEpisode(ep, bp, {
+        ...isolate, requireBlueprintBranchFanOut: true,
+      });
+      expect(result.metrics.unrealizedBlueprintBranchTargetCount).toBe(0);
+      expect(result.issues.some(i => i.type === 'unrealized_blueprint_branch_target')).toBe(false);
+    });
+  });
 });

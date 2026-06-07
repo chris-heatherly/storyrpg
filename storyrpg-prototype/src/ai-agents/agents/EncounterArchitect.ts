@@ -1553,6 +1553,17 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 
 ## Protagonist: ${protagonist} (${input.protagonistInfo.pronouns})
 
+## CRITICAL: Protagonist pronouns & POV (ABSOLUTE)
+- The protagonist ${protagonist} uses **${input.protagonistInfo.pronouns}** pronouns. NEVER use the opposite gender's pronouns for ${protagonist}.
+  ${input.protagonistInfo.pronouns === 'she/her'
+    ? `Correct: she/her/hers/herself. WRONG: he/him/his/himself.`
+    : input.protagonistInfo.pronouns === 'he/him'
+      ? `Correct: he/him/his/himself. WRONG: she/her/hers/herself.`
+      : `Use they/them/their/themselves (singular).`}
+- PREFER second person ("you", "your") for the protagonist in all encounter prose — it is the house POV and removes any pronoun ambiguity. Use the protagonist's name for emphasis; use a third-person pronoun for the protagonist only when unmistakable.
+- Use each NPC's exact name and their listed pronouns; never swap a character's gender.
+- When the protagonist and an NPC share the scene, use NAMES (not bare pronouns) to keep references unambiguous.
+
 ## NPCs
 ${npcsList || 'None'}
 
@@ -3982,6 +3993,17 @@ CRITICAL RULES:
 ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 
 ## Protagonist: ${protagonist} (${input.protagonistInfo.pronouns})
+
+## CRITICAL: Protagonist pronouns & POV (ABSOLUTE)
+- The protagonist ${protagonist} uses **${input.protagonistInfo.pronouns}** pronouns. NEVER use the opposite gender's pronouns for ${protagonist}.
+  ${input.protagonistInfo.pronouns === 'she/her'
+    ? `Correct: she/her/hers/herself. WRONG: he/him/his/himself.`
+    : input.protagonistInfo.pronouns === 'he/him'
+      ? `Correct: he/him/his/himself. WRONG: she/her/hers/herself.`
+      : `Use they/them/their/themselves (singular).`}
+- PREFER second person ("you", "your") for the protagonist in all encounter prose — it is the house POV and removes any pronoun ambiguity. Use the protagonist's name for emphasis; use a third-person pronoun for the protagonist only when unmistakable.
+- Use each NPC's exact name and their listed pronouns; never swap a character's gender.
+- When the protagonist and an NPC share the scene, use NAMES (not bare pronouns) to keep references unambiguous.
 
 ## NPCs
 ${npcsList || 'None'}

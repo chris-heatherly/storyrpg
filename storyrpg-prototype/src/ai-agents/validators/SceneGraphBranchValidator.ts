@@ -10,6 +10,7 @@ export type SceneGraphBranchIssueType =
   | 'missing_choice_bridge'
   | 'branch_without_reconvergence'
   | 'lost_branch_during_assembly'
+  | 'unrealized_blueprint_branch_target'
   | 'missing_branch_residue'
   | 'premature_npc_visual';
 
@@ -36,6 +37,14 @@ export interface SceneGraphBranchMetrics {
   blueprintBranchPointCount: number;
   blueprintMultiTargetSceneCount: number;
   reconvergingBranchTargetCount: number;
+  /**
+   * Blueprint scenes declared as multi-target (leadsTo.size>1) whose own
+   * assembled choices fan out to fewer than two of those declared targets — i.e.
+   * a planned branch point that assembled as a linear pass-through (a "dead
+   * branch"). Always measured; only escalated to an issue when
+   * `requireBlueprintBranchFanOut` is set.
+   */
+  unrealizedBlueprintBranchTargetCount: number;
 }
 
 export interface SceneGraphBranchValidationOptions {
@@ -45,6 +54,15 @@ export interface SceneGraphBranchValidationOptions {
   allowLinearBottleneckEpisodes?: boolean;
   ignoreBlueprintBranchesWithoutSceneRouting?: boolean;
   importantNpcIds?: string[];
+  /**
+   * When true, a blueprint scene declared as a multi-target branch point
+   * (leadsTo.size>1) whose own choices fan out to fewer than two of its declared
+   * targets is reported as an `unrealized_blueprint_branch_target` error. Default
+   * (false/undefined) is byte-identical to historical behavior — the count is
+   * still measured into metrics, but no issue is emitted. Gated via
+   * GATE_BRANCH_FANOUT by the pipeline.
+   */
+  requireBlueprintBranchFanOut?: boolean;
 }
 
 export interface SceneGraphBranchValidationResult {
@@ -187,6 +205,40 @@ export class SceneGraphBranchValidator {
     const blueprintMultiTargetSceneCount = blueprint?.scenes?.filter(scene => new Set(scene.leadsTo || []).size > 1).length || 0;
     const blueprintRequiresBranches = blueprintBranchPointCount > 0 || blueprintMultiTargetSceneCount > 0;
 
+    // Fan-out coverage: a blueprint scene declared as a multi-target branch point
+    // must have its OWN choices route to ≥2 of its declared `leadsTo` targets.
+    // When the assembled choices all collapse to a single target, the planned
+    // branch became a linear pass-through (a "dead branch" — the Endsong s3-1
+    // case where leadsTo:[s3-2,s3-3] but every choice forced s3-2).
+    let unrealizedBlueprintBranchTargetCount = 0;
+    for (const bpScene of blueprint?.scenes || []) {
+      const declaredTargets = new Set((bpScene.leadsTo || []).filter(Boolean));
+      if (declaredTargets.size <= 1) continue;
+      const assembled = scenesById.get(bpScene.id);
+      if (!assembled) continue;
+      const reachedTargets = new Set<string>();
+      for (const beat of assembled.beats || []) {
+        for (const choice of beat.choices || []) {
+          const target = choice.nextSceneId || resolveChoicePayoffSceneTarget(assembled, choice.nextBeatId);
+          if (target && declaredTargets.has(target)) reachedTargets.add(target);
+        }
+      }
+      if (reachedTargets.size < 2) {
+        unrealizedBlueprintBranchTargetCount += 1;
+        if (options.requireBlueprintBranchFanOut) {
+          issues.push({
+            type: 'unrealized_blueprint_branch_target',
+            severity: 'error',
+            message:
+              `Scene ${bpScene.id} is a planned branch point (leadsTo: ${[...declaredTargets].join(', ')}) ` +
+              `but its choices only reach ${reachedTargets.size === 0 ? 'none' : [...reachedTargets].join(', ')} ` +
+              'of those targets — the branch assembled as a linear pass-through.',
+            sceneId: bpScene.id,
+          });
+        }
+      }
+    }
+
     if (blueprintRequiresBranches && sceneGraphBranchChoiceCount === 0 && !options.ignoreBlueprintBranchesWithoutSceneRouting) {
       issues.push({
         type: 'lost_branch_during_assembly',
@@ -250,6 +302,7 @@ export class SceneGraphBranchValidator {
       blueprintBranchPointCount,
       blueprintMultiTargetSceneCount,
       reconvergingBranchTargetCount,
+      unrealizedBlueprintBranchTargetCount,
     };
 
     const errorCount = issues.filter(issue => issue.severity === 'error').length;

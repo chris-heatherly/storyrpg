@@ -175,6 +175,30 @@ export interface ValidationInput {
   cliffhangerPlan?: CliffhangerPlan;
 }
 
+/**
+ * Resolve the stakes triangle the validator should score for a choice.
+ *
+ * ChoiceAuthor writes the AUTHORED triangle to `choice.stakes`; `stakesAnnotation`
+ * historically carried StoryArchitect's placeholder sentinel and would otherwise be
+ * scored instead of the real content (the false-positive "WANT is a project title"
+ * blocking errors). Prefer the authored stakes, fall back to the annotation only when
+ * the choice was never authored (genuinely un-authored choices still surface the
+ * placeholder so the Karpathy repair loop / StakesTriangleValidator sentinel can score
+ * them 0 and force regeneration). See constants/placeholderStakes.ts.
+ */
+export function resolveStakesForValidation(choice: {
+  stakes?: { want: string; cost: string; identity: string };
+  stakesAnnotation?: StakesAnnotation;
+}): { want?: string; cost?: string; identity?: string } {
+  const authored = choice.stakes;
+  const annotation = choice.stakesAnnotation;
+  return {
+    want: authored?.want ?? annotation?.want,
+    cost: authored?.cost ?? annotation?.cost,
+    identity: authored?.identity ?? annotation?.identity,
+  };
+}
+
 export class IntegratedBestPracticesValidator {
   private config: ValidationConfig;
   private choiceDensityValidator: ChoiceDensityValidator;
@@ -299,7 +323,7 @@ export class IntegratedBestPracticesValidator {
       for (const choice of input.choices) {
         const isHighStakes = choice.choiceType === 'dilemma' || choice.nextSceneId;
         if (isHighStakes) {
-          const stakes = choice.stakesAnnotation;
+          const stakes = resolveStakesForValidation(choice);
           if (!stakes?.want || !stakes?.cost || !stakes?.identity) {
             const missing: string[] = [];
             if (!stakes?.want) missing.push('WANT');
@@ -599,15 +623,18 @@ export class IntegratedBestPracticesValidator {
       const nonExpressionChoices = input.choices.filter(c => c.choiceType !== 'expression');
 
       if (nonExpressionChoices.length > 0) {
-        const stakesInputs: StakesTriangleInput[] = nonExpressionChoices.map(c => ({
-          choiceId: c.id,
-          choiceType: c.choiceType,
-          choiceText: c.text,
-          want: c.stakesAnnotation?.want,
-          cost: c.stakesAnnotation?.cost,
-          identity: c.stakesAnnotation?.identity,
-          context: c.sceneContext || '',
-        }));
+        const stakesInputs: StakesTriangleInput[] = nonExpressionChoices.map(c => {
+          const stakes = resolveStakesForValidation(c);
+          return {
+            choiceId: c.id,
+            choiceType: c.choiceType,
+            choiceText: c.text,
+            want: stakes.want,
+            cost: stakes.cost,
+            identity: stakes.identity,
+            context: c.sceneContext || '',
+          };
+        });
 
         const stakesResults = await this.stakesTriangleValidator.validateBatch(stakesInputs);
 

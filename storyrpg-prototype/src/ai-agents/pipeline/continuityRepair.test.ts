@@ -23,6 +23,21 @@ describe('selectRepairableContinuityFindings', () => {
   it('scenesNeedingRepair lists distinct scenes', () => {
     expect(scenesNeedingRepair(findings)).toEqual(['scene-4']);
   });
+  it('treats a scene-anchored timeline_error as repairable', () => {
+    const timeline: ContinuityFinding[] = [
+      {
+        severity: 'error',
+        type: 'timeline_error',
+        location: { sceneId: 's3-3', beatId: 's3-3-beat-3b' },
+        description: "Mika's car-window refusal placed at the estate, but the drive home is after Sunday breakfast.",
+        suggestedFix: "Move the car-window detail to the drive-home beat.",
+      },
+    ];
+    const sel = selectRepairableContinuityFindings(timeline);
+    expect(sel).toHaveLength(1);
+    expect(scenesNeedingRepair(timeline)).toEqual(['s3-3']);
+    expect(buildContinuityRepairGuidance('s3-3', timeline, [])).toContain('car-window');
+  });
 });
 
 describe('buildContinuityRepairGuidance', () => {

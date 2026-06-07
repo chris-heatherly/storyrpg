@@ -272,6 +272,13 @@ export class ChoiceAuthor extends BaseAgent {
   // used to rotate auto-assigned default skills off the persuasion/investigation
   // monoculture toward >=5/6 attribute coverage across the season.
   private skillUsage: Record<string, number> = {};
+  // Per-episode favoured skill order from the SeasonSkillPlan (P2-skills). Biases
+  // skill selection/rebalance toward the season-planned spread so the whole season
+  // exercises >=6 skills and no skill dominates. Empty = no plan (pure least-used).
+  private episodeSkillTargets: string[] = [];
+  // How far a skill's season usage must exceed the least-used relevant skill before
+  // an authored single-skill statCheck is rebalanced onto the under-used one.
+  private static readonly SKILL_REBALANCE_GAP = 2;
   // Candidate skills per choice type, ordered to lead away from the historical
   // persuasion-first default. Selection picks the least-used among these.
   private static readonly RELEVANT_SKILLS: Record<string, string[]> = {
@@ -279,6 +286,15 @@ export class ChoiceAuthor extends BaseAgent {
     strategic: ['investigation', 'perception', 'stealth', 'athletics', 'survival'],
     dilemma: ['survival', 'investigation', 'perception', 'athletics', 'persuasion'],
   };
+
+  /**
+   * Set the favoured skill order for the episode currently being authored (from the
+   * SeasonSkillPlan). ChoiceAuthor is a single persistent instance per run, so this
+   * is called once per episode before its choices are authored.
+   */
+  setEpisodeSkillTargets(skills: string[] | undefined): void {
+    this.episodeSkillTargets = Array.isArray(skills) ? skills : [];
+  }
 
   constructor(config: AgentConfig, generationConfig?: GenerationSettingsConfig) {
     super('Choice Author', config);
@@ -685,18 +701,16 @@ Before finalizing:
         choice.consequences = [];
       }
 
-      // Normalize stakesAnnotation for each choice if present but incomplete
-      if (choice.stakesAnnotation) {
-        if (!choice.stakesAnnotation.want) {
-          choice.stakesAnnotation.want = blueprintStakes.want;
-        }
-        if (!choice.stakesAnnotation.cost) {
-          choice.stakesAnnotation.cost = blueprintStakes.cost;
-        }
-        if (!choice.stakesAnnotation.identity) {
-          choice.stakesAnnotation.identity = blueprintStakes.identity;
-        }
-      }
+      // Keep stakesAnnotation in lock-step with the AUTHORED triangle (choice.stakes,
+      // computed just above). Historically the annotation could retain StoryArchitect's
+      // placeholder sentinel while choice.stakes held the real authored text, which made
+      // the season validator score the placeholder. Mirroring the two prevents that drift.
+      // See constants/placeholderStakes.ts and resolveStakesForValidation.
+      choice.stakesAnnotation = {
+        want: choice.stakes.want,
+        cost: choice.stakes.cost,
+        identity: choice.stakes.identity,
+      };
 
       if (!choice.consequenceDomain) {
         choice.consequenceDomain = blueprintDomain || this.defaultDomainForChoiceType(choiceSet.choiceType);
@@ -973,12 +987,19 @@ Before finalizing:
     }
   }
 
-  /** Least-used skill relevant to the choice type, for a rotated default (1.7). */
+  /**
+   * Least-used skill relevant to the choice type, for a rotated default (1.7).
+   * Biased toward the episode's SeasonSkillPlan targets (P2-skills): among the
+   * type-relevant candidates, prefer those the plan favours for this episode, then
+   * pick the season-wide least-used so coverage spreads across all eight skills.
+   */
   private leastUsedRelevantSkill(choiceType: ChoiceType): string {
     const candidates = ChoiceAuthor.RELEVANT_SKILLS[choiceType] ?? ['investigation'];
-    let best = candidates[0];
+    const targeted = candidates.filter((s) => this.episodeSkillTargets.includes(s));
+    const pool = targeted.length > 0 ? targeted : candidates;
+    let best = pool[0];
     let bestCount = Infinity;
-    for (const skill of candidates) {
+    for (const skill of pool) {
       const count = this.skillUsage[skill] ?? 0;
       if (count < bestCount) {
         bestCount = count;
@@ -986,6 +1007,46 @@ Before finalizing:
       }
     }
     return best;
+  }
+
+  /**
+   * Rebalance authored single-skill stat-checks off an over-used skill onto an
+   * under-used, type-relevant one (P2-skills). The LLM favours a couple of skills
+   * (perception in the audited run), so without this the season exercises <6 skills
+   * with one dominating >30% of weight. Stat-check skills are mechanical (never shown
+   * to the player), and we only ever swap WITHIN a choice type's plausible skill set,
+   * so the swap stays narratively coherent. Multi-skill (blended) checks are left
+   * untouched — those are intentional. Updates the running season usage counts.
+   */
+  private rebalanceStatCheckSkills(choiceSet: ChoiceSet): void {
+    // Only rebalance when a SeasonSkillPlan is active for this episode — without a
+    // plan we leave authored skills exactly as written (preserves single-shot/test
+    // behavior; the plan is what makes season-wide spread intentional).
+    if (this.episodeSkillTargets.length === 0) return;
+    const candidates = ChoiceAuthor.RELEVANT_SKILLS[choiceSet.choiceType];
+    if (!candidates) return;
+    for (const choice of choiceSet.choices) {
+      const sc = choice.statCheck as { skill?: string; skillWeights?: Record<string, number>; difficulty?: number } | undefined;
+      if (!sc) continue;
+      const weights = sc.skillWeights;
+      // Only rebalance a single-dominant-skill check.
+      const single =
+        weights && Object.keys(weights).length === 1
+          ? Object.keys(weights)[0]
+          : !weights && sc.skill
+            ? sc.skill
+            : undefined;
+      if (!single || !candidates.includes(single)) continue;
+
+      const target = this.leastUsedRelevantSkill(choiceSet.choiceType);
+      const gap = (this.skillUsage[single] ?? 0) - (this.skillUsage[target] ?? 0);
+      if (target === single || gap < ChoiceAuthor.SKILL_REBALANCE_GAP) continue;
+
+      const difficulty = sc.difficulty ?? (choiceSet.choiceType === 'dilemma' ? 60 : 50);
+      choice.statCheck = { skillWeights: { [target]: 1.0 }, difficulty };
+      this.skillUsage[single] = Math.max(0, (this.skillUsage[single] ?? 0) - 1);
+      this.skillUsage[target] = (this.skillUsage[target] ?? 0) + 1;
+    }
   }
 
   private buildPrompt(input: ChoiceAuthorInput): string {
@@ -1496,6 +1557,10 @@ CRITICAL REQUIREMENTS:
           `[ChoiceAuthor] ${choiceSet.choiceType.toUpperCase()} choice set "${choiceSet.beatId}" ` +
           `had no statCheck — auto-assigned ${defaultSkill}@${defaultDiff} to choice-0.`
         );
+      } else {
+        // Spread authored stat-checks off the LLM's favoured skill toward under-used,
+        // type-relevant ones so the season covers >=6 skills with no >30% dominance.
+        this.rebalanceStatCheckSkills(choiceSet);
       }
     }
 

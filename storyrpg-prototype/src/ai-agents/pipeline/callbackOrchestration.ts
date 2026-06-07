@@ -11,8 +11,9 @@
  * delegating wrappers.
  */
 
-import type { Choice } from '../../types/choice';
+import type { Choice, ReminderPlan } from '../../types/choice';
 import type { TextVariant } from '../../types/content';
+import type { ConditionExpression } from '../../types/conditions';
 import type { CallbackLedger } from './callbackLedger';
 
 /** A single unresolved hook, shaped for a SceneWriter/ChoiceAuthor prompt. */
@@ -158,4 +159,145 @@ export function harvestEpisodeCallbacks(
   }
 
   return { newHooks, payoffs };
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic callback realization (P1b)
+// ---------------------------------------------------------------------------
+
+/** Tag stamped on auto-injected callback variants so they're identifiable. */
+export const AUTO_CALLBACK_REMINDER_TAG = 'auto-callback';
+
+export interface InjectFallbackCallbacksParams {
+  episodeNumber: number;
+  sceneContents: HarvestSceneContent[];
+  choiceSets: HarvestChoiceSet[];
+  /** Max callback variants to inject per beat (default 1). */
+  maxPerBeat?: number;
+  /** Max callback variants to inject per scene (default 2). */
+  maxPerScene?: number;
+}
+
+/** Every flag / score key a (possibly compound) condition references. */
+function extractConditionKeys(condition: unknown): string[] {
+  if (!condition || typeof condition !== 'object') return [];
+  const c = condition as Record<string, unknown>;
+  const out: string[] = [];
+  if (c.type === 'flag' && typeof c.flag === 'string') out.push(c.flag);
+  if (c.type === 'score' && typeof c.score === 'string') out.push(`score:${c.score}`);
+  if (Array.isArray(c.conditions)) for (const child of c.conditions) out.push(...extractConditionKeys(child));
+  if (c.condition) out.push(...extractConditionKeys(c.condition));
+  return out;
+}
+
+/** Build the gating condition for a callback variant from a ledger condition key. */
+function buildCallbackCondition(conditionKey: string): ConditionExpression {
+  if (conditionKey.startsWith('score:')) {
+    return { type: 'score', score: conditionKey.slice('score:'.length), operator: '>=', value: 1 };
+  }
+  return { type: 'flag', flag: conditionKey, value: true };
+}
+
+/** Choose the prose for a callback: prefer the authored reminderPlan, fall back to the hook summary. */
+function pickCallbackProse(reminderPlan: ReminderPlan | undefined, summary: string): string {
+  const candidate = reminderPlan?.shortTerm || reminderPlan?.immediate || summary;
+  return (candidate ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Deterministically realize planted-but-uncollected callbacks.
+ *
+ * The ledger plants a hook for every trackable flag/score a choice sets, and the
+ * harvest pass records payoffs only for TextVariants the LLM *chose* to author with a
+ * `callbackHookId`. In practice the LLM skips most of them, so player choices set state
+ * that later prose never acknowledges (the audited run referenced 1 of 21 flags). This
+ * pass closes that gap: for each in-window, never-paid-off hook it appends a TextVariant
+ * — gated on the hook's flag/score, sourced from the choice's authored `reminderPlan` —
+ * to an eligible downstream beat, and records the payoff. Runs AFTER harvest (so this
+ * episode's hooks are already seeded) and BEFORE assembly/validation (which both read the
+ * mutated sceneContents). Only hooks whose payoffWindow includes this episode are
+ * realized, so cross-episode hooks targeting later episodes correctly stay open.
+ */
+export function injectFallbackCallbacks(
+  ledger: CallbackLedger,
+  params: InjectFallbackCallbacksParams,
+): { injected: number } {
+  const { episodeNumber, sceneContents, choiceSets } = params;
+  const maxPerBeat = params.maxPerBeat ?? 1;
+  const maxPerScene = params.maxPerScene ?? 2;
+  if (!sceneContents.length) return { injected: 0 };
+
+  const sceneIndexById = new Map<string, number>();
+  sceneContents.forEach((sc, idx) => sceneIndexById.set(sc.sceneId, idx));
+
+  // Choice metadata (reminderPlan + text) for prose sourcing.
+  const choiceMetaById = new Map<string, { reminderPlan?: ReminderPlan; text?: string }>();
+  const noteChoice = (raw: unknown): void => {
+    const c = raw as Choice;
+    if (c?.id && !choiceMetaById.has(c.id)) choiceMetaById.set(c.id, { reminderPlan: c.reminderPlan, text: c.text });
+  };
+  for (const cs of choiceSets) for (const choice of cs.choices || []) noteChoice(choice);
+  for (const sc of sceneContents) for (const beat of sc.beats || []) for (const choice of beat.choices || []) noteChoice(choice);
+
+  // Flags/scores/hookIds already referenced by an existing TextVariant — never double up.
+  const alreadyReferenced = new Set<string>();
+  for (const sc of sceneContents) {
+    for (const beat of sc.beats || []) {
+      for (const variant of beat.textVariants || []) {
+        for (const key of extractConditionKeys(variant.condition)) alreadyReferenced.add(key);
+        if (variant.callbackHookId) alreadyReferenced.add(variant.callbackHookId);
+      }
+    }
+  }
+
+  const usedPerBeat = new Map<string, number>();
+  const usedPerScene = new Map<number, number>();
+  let injected = 0;
+
+  // Never-paid-off hooks whose window includes this episode, oldest first.
+  for (const hook of ledger.unresolvedFor(episodeNumber).filter((h) => h.payoffCount === 0)) {
+    const conditionKey = hook.flags[0] ?? (hook.conditionKeys ?? []).find((k) => k.startsWith('score:'));
+    if (!conditionKey) continue;
+    if (alreadyReferenced.has(conditionKey) || alreadyReferenced.has(hook.id)) continue;
+
+    // Within-episode hooks must land in a LATER scene than where the flag was set;
+    // cross-episode hooks (sourceIdx -1) may land anywhere in this episode.
+    const sourceIdx = hook.sourceEpisode === episodeNumber
+      ? (sceneIndexById.get(hook.sourceSceneId) ?? -1)
+      : -1;
+
+    let placed = false;
+    for (let sIdx = 0; sIdx < sceneContents.length && !placed; sIdx++) {
+      if (sIdx <= sourceIdx) continue;
+      if ((usedPerScene.get(sIdx) ?? 0) >= maxPerScene) continue;
+      for (const beat of sceneContents[sIdx].beats || []) {
+        const beatId = beat.id || '';
+        if (!beatId) continue;
+        if ((usedPerBeat.get(beatId) ?? 0) >= maxPerBeat) continue;
+
+        const meta = hook.sourceChoiceId ? choiceMetaById.get(hook.sourceChoiceId) : undefined;
+        const text = pickCallbackProse(meta?.reminderPlan, hook.summary);
+        if (!text) continue;
+
+        const variant: TextVariant = {
+          condition: buildCallbackCondition(conditionKey),
+          text,
+          callbackHookId: hook.id,
+          sourceChoiceId: hook.sourceChoiceId,
+          reminderTag: AUTO_CALLBACK_REMINDER_TAG,
+        };
+        beat.textVariants = [...(beat.textVariants || []), variant];
+        beat.callbackHookIds = Array.from(new Set([...(beat.callbackHookIds || []), hook.id]));
+        ledger.recordPayoff(hook.id);
+        alreadyReferenced.add(conditionKey);
+        usedPerBeat.set(beatId, (usedPerBeat.get(beatId) ?? 0) + 1);
+        usedPerScene.set(sIdx, (usedPerScene.get(sIdx) ?? 0) + 1);
+        injected += 1;
+        placed = true;
+        break;
+      }
+    }
+  }
+
+  return { injected };
 }

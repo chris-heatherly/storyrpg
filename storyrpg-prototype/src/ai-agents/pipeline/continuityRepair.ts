@@ -20,8 +20,13 @@ export interface ContinuityFinding {
   suggestedFix?: string;
 }
 
-/** Finding types whose fix is a localized prose re-author grounded in canon. */
-const REPAIRABLE_TYPES = new Set(['state_conflict', 'impossible_knowledge', 'contradiction']);
+/**
+ * Finding types whose fix is a localized prose re-author grounded in canon.
+ * `timeline_error` (e.g. an observation placed in the wrong scene relative to the
+ * timeline) is scene-anchored and carries a concrete suggestedFix, so it is repaired
+ * the same way — re-authoring the flagged beat to honor the corrected sequence.
+ */
+const REPAIRABLE_TYPES = new Set(['state_conflict', 'impossible_knowledge', 'contradiction', 'timeline_error']);
 
 /**
  * Pick repairable continuity findings: blocking-ish (error) defects of a prose

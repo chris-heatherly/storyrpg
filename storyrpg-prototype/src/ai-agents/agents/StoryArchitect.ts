@@ -24,7 +24,7 @@ import {
   buildGenreAwareJeopardyGuidance,
 } from '../prompts/storytellingPrinciples';
 import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
-import { PLACEHOLDER_STAKES } from '../constants/placeholderStakes';
+import { PLACEHOLDER_STAKES, isPlaceholderStake } from '../constants/placeholderStakes';
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType, NarrativeSequenceIntent, StakesLayers } from '../../types';
 import type { ArcEpisodeTurnout, CliffhangerPlan, InformationLedgerEntry, SeasonPromiseArchitecture } from '../../types/seasonPlan';
 import type { PlannedScene, SetupPayoffEdge, SceneNarrativeRole, RequiredBeat } from '../../types/scenePlan';
@@ -3950,9 +3950,13 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     const pressureBeat = scene.keyBeats?.find((beat) =>
       /\b(peak|cost|choice|pressure|risk|danger|reveal|turn)\b/i.test(beat)
     );
+    // Skip the choice-point cost when it is still StoryArchitect's placeholder sentinel
+    // ("Each option forfeits a different advantage.") — otherwise the placeholder leaks
+    // into real pressureChange prose ("…escalates into…"). See constants/placeholderStakes.ts.
+    const choiceCost = scene.choicePoint?.stakes?.cost;
     const fromPressure = this.pickBlueprintText(
       scene.dramaticStructure?.pressurePeak,
-      scene.choicePoint?.stakes?.cost,
+      isPlaceholderStake(choiceCost) ? undefined : choiceCost,
       scene.personalStake,
       scene.conflictEngine,
       pressureBeat,

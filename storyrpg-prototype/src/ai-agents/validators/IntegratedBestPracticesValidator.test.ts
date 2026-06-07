@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { IntegratedBestPracticesValidator, type ValidationInput } from './IntegratedBestPracticesValidator';
+import {
+  IntegratedBestPracticesValidator,
+  resolveStakesForValidation,
+  type ValidationInput,
+} from './IntegratedBestPracticesValidator';
+import { PLACEHOLDER_STAKES } from '../constants/placeholderStakes';
 import type { AgentConfig } from '../config';
 
 // Empty apiKey keeps the LLM-backed sub-validators (StakesTriangle, FiveFactor)
@@ -120,5 +125,39 @@ describe('IntegratedBestPracticesValidator (aggregator)', () => {
     expect(report.blockingIssues.some((i) => i.category === 'choice_density')).toBe(true);
     expect(report.metrics).toBeDefined();
     expect(report.timestamp).toBeInstanceOf(Date);
+  });
+});
+
+describe('resolveStakesForValidation', () => {
+  it('prefers the authored choice.stakes over a placeholder stakesAnnotation', () => {
+    const resolved = resolveStakesForValidation({
+      stakes: {
+        want: 'Get an honest answer from someone who might have one',
+        cost: 'Asking directly puts Mika in a position she cannot answer honestly',
+        identity: 'Trusting a new friend enough to ask is a different kind of courage',
+      },
+      stakesAnnotation: {
+        want: PLACEHOLDER_STAKES.want('Stray Dog, Black Roses'),
+        cost: PLACEHOLDER_STAKES.cost,
+        identity: PLACEHOLDER_STAKES.identity,
+      },
+    });
+
+    expect(resolved.want).toBe('Get an honest answer from someone who might have one');
+    expect(resolved.cost).toContain('position she cannot answer honestly');
+    expect(resolved.identity).toContain('different kind of courage');
+  });
+
+  it('falls back to stakesAnnotation when the choice was never authored', () => {
+    const resolved = resolveStakesForValidation({
+      stakesAnnotation: {
+        want: PLACEHOLDER_STAKES.want('American Shoes'),
+        cost: PLACEHOLDER_STAKES.cost,
+        identity: PLACEHOLDER_STAKES.identity,
+      },
+    });
+
+    expect(resolved.want).toBe(PLACEHOLDER_STAKES.want('American Shoes'));
+    expect(resolved.cost).toBe(PLACEHOLDER_STAKES.cost);
   });
 });

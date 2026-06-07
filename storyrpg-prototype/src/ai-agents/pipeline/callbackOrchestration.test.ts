@@ -3,6 +3,8 @@ import { CallbackLedger } from './callbackLedger';
 import {
   getUnresolvedCallbacksForPrompt,
   harvestEpisodeCallbacks,
+  injectFallbackCallbacks,
+  AUTO_CALLBACK_REMINDER_TAG,
   type HarvestEpisodeCallbacksParams,
 } from './callbackOrchestration';
 
@@ -122,5 +124,114 @@ describe('getUnresolvedCallbacksForPrompt', () => {
     expect(shaped).toHaveLength(1);
     expect(shaped![0]).toMatchObject({ id: 'hook-A', sourceEpisode: 1, summary: 'A choice that matters.' });
     expect(shaped![0].flags).toContain('flag-a');
+  });
+});
+
+describe('injectFallbackCallbacks', () => {
+  it('realizes an uncollected within-episode flag hook in a later scene', () => {
+    const ledger = new CallbackLedger();
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          {
+            id: 'c1',
+            text: 'Take the key card.',
+            // setFlag consequence so the harvest seeds a flag hook
+            consequences: [{ type: 'setFlag', flag: 'accepted_keycard', value: true } as any],
+            reminderPlan: {
+              immediate: 'The card is warm in your pocket.',
+              shortTerm: 'The side door clicks open before you reach it — someone is expecting you.',
+            },
+          } as any,
+        ],
+      },
+    ];
+    // Seed the flag hook (within-episode, window includes ep1).
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+
+    const laterBeat = { id: 'scene-2-beat-1', textVariants: [] as any[] };
+    const sceneContents = [
+      { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+      { sceneId: 'scene-2', beats: [laterBeat] },
+    ];
+
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: sceneContents as any,
+      choiceSets: choiceSets as any,
+    });
+
+    expect(injected).toBe(1);
+    expect(laterBeat.textVariants).toHaveLength(1);
+    const variant = laterBeat.textVariants[0];
+    expect(variant.callbackHookId).toBe('flag:accepted_keycard');
+    expect(variant.condition).toMatchObject({ type: 'flag', flag: 'accepted_keycard', value: true });
+    expect(variant.reminderTag).toBe(AUTO_CALLBACK_REMINDER_TAG);
+    // sourced from reminderPlan.shortTerm
+    expect(variant.text).toContain('side door clicks open');
+  });
+
+  it('does not double-realize a hook already referenced by an authored variant', () => {
+    const ledger = new CallbackLedger();
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          {
+            id: 'c1',
+            text: 'Investigate the roses.',
+            consequences: [{ type: 'setFlag', flag: 'investigated_roses', value: true } as any],
+            reminderPlan: { immediate: 'x', shortTerm: 'y' },
+          } as any,
+        ],
+      },
+    ];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+
+    // A later beat already has an authored callback gated on the same flag.
+    const sceneContents = [
+      { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+      {
+        sceneId: 'scene-2',
+        beats: [
+          {
+            id: 'scene-2-beat-1',
+            textVariants: [{ condition: { type: 'flag', flag: 'investigated_roses', value: true }, text: 'authored', callbackHookId: 'flag:investigated_roses' }],
+          },
+        ],
+      },
+    ];
+
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: sceneContents as any,
+      choiceSets: choiceSets as any,
+    });
+
+    expect(injected).toBe(0);
+  });
+
+  it('does not realize a hook whose window is a future episode', () => {
+    const ledger = new CallbackLedger();
+    // recordChoice with a memorableMoment seeds a hook with window [ep+1, ...]
+    harvestEpisodeCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [],
+      choiceSets: [
+        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'hook-future', summary: 'A weighty moment.', flags: ['weighty'] } }] },
+      ],
+    });
+
+    // Try to realize in episode 1 — the memorableMoment window starts at ep2.
+    const laterBeat = { id: 'scene-2-beat-1', textVariants: [] as any[] };
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [{ sceneId: 'scene-1', beats: [{ id: 'b0' }] }, { sceneId: 'scene-2', beats: [laterBeat] }] as any,
+      choiceSets: [],
+    });
+
+    expect(injected).toBe(0);
+    expect(laterBeat.textVariants).toHaveLength(0);
   });
 });

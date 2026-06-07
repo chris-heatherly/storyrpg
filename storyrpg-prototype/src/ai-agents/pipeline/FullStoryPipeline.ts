@@ -134,6 +134,7 @@ import {
   spineEntriesFromChoicePlan,
   type SeasonChoicePlan,
 } from './seasonChoicePlan';
+import { buildSeasonSkillPlan, skillsForEpisode, type SeasonSkillPlan } from './seasonSkillPlan';
 import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, emitSceneTreatmentSeeds, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { SeasonCanon } from './seasonCanon';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
@@ -204,8 +205,10 @@ import { CallbackLedger } from './callbackLedger';
 import {
   getUnresolvedCallbacksForPrompt as getUnresolvedCallbacksForPromptImpl,
   harvestEpisodeCallbacks as harvestEpisodeCallbacksImpl,
+  injectFallbackCallbacks as injectFallbackCallbacksImpl,
   type UnresolvedCallbackForPrompt,
   type HarvestEpisodeCallbacksParams,
+  type InjectFallbackCallbacksParams,
 } from './callbackOrchestration';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
@@ -857,6 +860,7 @@ export class FullStoryPipeline {
    * from the season plan; each episode draws its type slice via episodeTypeCounts.
    */
   private seasonChoicePlan?: SeasonChoicePlan;
+  private seasonSkillPlan?: SeasonSkillPlan;
   /**
    * Season Canon is ON by default (opt-out, not opt-in): it activates unless the
    * config EXPLICITLY sets seasonCanonEnabled === false. The flag is built client-
@@ -7093,6 +7097,16 @@ export class FullStoryPipeline {
     // clone/checkpoint reload). Empty slice → default mix.
     const episodeSlice = episodeTypeCounts(this.seasonChoicePlan, episodeNumber ?? 1);
     const choiceTypePlan = assignChoiceTypes(blueprint.scenes as never, undefined, episodeSlice);
+
+    // P2-skills: bias this episode's stat-check skill assignment toward the season
+    // skill plan so the season exercises >=6 of the 8 skills with no >30% dominance.
+    // Built once from the season's episode set; ChoiceAuthor (a persistent instance)
+    // honors the per-episode targets when assigning/rebalancing stat-check skills.
+    this.seasonSkillPlan ??= buildSeasonSkillPlan(
+      Array.from(new Set((this.seasonChoicePlan?.moments ?? []).map((m) => m.episode)))
+        .filter((n): n is number => typeof n === 'number'),
+    );
+    this.choiceAuthor.setEpisodeSkillTargets(skillsForEpisode(this.seasonSkillPlan, episodeNumber ?? 1));
     if (outputDirectory) {
       await saveEarlyDiagnostic(outputDirectory, 'choice-type-plan.json', {
         generatedAt: new Date().toISOString(),
@@ -9815,6 +9829,73 @@ export class FullStoryPipeline {
     };
   }
 
+  /**
+   * Deterministically derive the per-episode character-arc and relationship deltas to
+   * seal into the Season Canon. Without this the canon's `characters[]` / `relationships[]`
+   * arrays were always empty (only flag-knowledge + worldFacts were sealed), so
+   * later-episode prompts inherited no character-state or relationship continuity.
+   *
+   * No new LLM call: arc phase is derived from the episode's position in the season and
+   * the bible's want→need framing; relationship dimensions come from the core NPCs'
+   * tracked stats (`relationshipDimensionsForNpc` / `ensureRelationshipStats`). The
+   * protagonist id is the literal 'protagonist' to match the flag-knowledge sealed by
+   * extractCanonDeltasFromEpisode.
+   */
+  private extractArcAndRelationshipDeltas(
+    characterBible: CharacterBible,
+    episodeNumber: number,
+    seasonLength: number,
+  ): { arcStates: Array<{ characterId: string; state: string }>; relationships: Array<{ a: string; b: string; dimension: string; value: number }> } {
+    const phases = ['establishment', 'test', 'turning_point', 'commitment', 'resolution'] as const;
+    const ratio = seasonLength > 1 ? (episodeNumber - 1) / (seasonLength - 1) : 0;
+    const phase =
+      ratio < 0.2 ? phases[0]
+      : ratio < 0.45 ? phases[1]
+      : ratio < 0.6 ? phases[2]
+      : ratio < 0.85 ? phases[3]
+      : phases[4];
+
+    const arcStates: Array<{ characterId: string; state: string }> = [];
+    const relationships: Array<{ a: string; b: string; dimension: string; value: number }> = [];
+    const protagonistCanonId = 'protagonist';
+
+    const truncate = (text: string | undefined, max = 120): string =>
+      (text ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+
+    for (const c of characterBible.characters) {
+      const isProtagonist = c.role === 'protagonist';
+      if (isProtagonist) {
+        const want = truncate(c.want, 90);
+        const need = truncate((c as { need?: string }).need, 90);
+        const headline = need ? `want: ${want} → need: ${need}` : `want: ${want}`;
+        arcStates.push({ characterId: protagonistCanonId, state: `${phase} — ${headline}` });
+        continue;
+      }
+      if (c.tier !== 'core') continue;
+
+      // Arc state for a core NPC: phase + their relationship-to-protagonist framing.
+      const relToProtag = (c.relationships ?? []).find(
+        (r) => r.characterId === characterBible.characters.find((x) => x.role === 'protagonist')?.id,
+      );
+      const relType = truncate(relToProtag?.type, 80);
+      arcStates.push({
+        characterId: c.id,
+        state: relType ? `${phase} — ${relType}` : phase,
+      });
+
+      // Relationship dimensions (protagonist ↔ NPC). Values come from the NPC's tracked
+      // stats; neutral (0) when the bible has not seeded them, which still records that
+      // the relationship is canon and tracked.
+      const stats = this.ensureRelationshipStats(c.initialStats, c.tier);
+      for (const dimension of this.relationshipDimensionsForNpc(stats, c.tier)) {
+        const value = (stats as Record<string, number | undefined>)?.[dimension] ?? 0;
+        relationships.push({ a: protagonistCanonId, b: c.id, dimension, value });
+      }
+    }
+
+    return { arcStates, relationships };
+  }
+
   private prepareValidationInput(
     sceneContents: SceneContent[],
     choiceSets: ChoiceSet[],
@@ -9828,6 +9909,21 @@ export class FullStoryPipeline {
     const leadsToById = new Map<string, string[] | undefined>(
       (blueprint?.scenes ?? []).map((s) => [s.id, s.leadsTo]),
     );
+    // Branch-point targets by scene: a scene whose choicePoint genuinely diverges
+    // (branches===true with ≥2 distinct leadsTo targets). Choices at these scenes route
+    // to different scenes at runtime via bridge beats, so they carry no `nextSceneId` on
+    // the choice object after branchRepair — which made every branch-aware validator
+    // (IBPV isHighStakes, ChoiceDistribution branchingCount) under-count branching to 0.
+    // We re-derive the effective scene target from the blueprint so validation is honest.
+    // Only TRUE branch points are marked (linear bottlenecks stay non-branching) to keep
+    // branchingCount under the per-episode cap. See SceneGraphBranchValidator.
+    const branchPointTargetsByScene = new Map<string, string[]>();
+    for (const s of blueprint?.scenes ?? []) {
+      const targets = Array.from(new Set(s.leadsTo ?? []));
+      if (s.choicePoint?.branches && targets.length >= 2) {
+        branchPointTargetsByScene.set(s.id, targets);
+      }
+    }
     // Canonicalize witnessReaction npcIds against the canonical character roster
     // BEFORE validation. Upstream authoring uses raw per-scene NPC labels, so without
     // this the per-episode best-practices report (and thus the aggregate + final-gate)
@@ -9889,8 +9985,9 @@ export class FullStoryPipeline {
       });
 
     // Prepare choices for validation (regular choices)
-    const choices = choiceSets.flatMap(cs =>
-      cs.choices.map(choice => ({
+    const choices = choiceSets.flatMap(cs => {
+      const branchTargets = cs.sceneId ? branchPointTargetsByScene.get(cs.sceneId) : undefined;
+      return cs.choices.map((choice, choiceIdx) => ({
         id: choice.id,
         text: choice.text,
         choiceType: choice.choiceType || cs.choiceType,
@@ -9898,9 +9995,17 @@ export class FullStoryPipeline {
         // tint flags as the tint tier (validation runs on raw choiceSets, BEFORE story
         // assembly does the same fold — so without this the metric showed tint 0%).
         consequences: foldTintFlagIntoConsequences(choice.consequences || [], choice.tintFlag) || [],
-        stakesAnnotation: choice.stakesAnnotation || cs.overallStakes,
+        // Prefer the AUTHORED triangle (choice.stakes) so any annotation reader scores
+        // the real content, not StoryArchitect's placeholder sentinel. The validator
+        // (resolveStakesForValidation) also reads choice.stakes directly; this keeps the
+        // annotation consistent for belt-and-suspenders. See constants/placeholderStakes.ts.
+        stakesAnnotation: choice.stakes ?? choice.stakesAnnotation ?? cs.overallStakes,
         sceneContext: cs.designNotes,
-        nextSceneId: choice.nextSceneId,
+        // Effective scene target: the authored nextSceneId, or — for a genuine
+        // branch point whose choices route via bridge beats — the blueprint leadsTo
+        // target for this choice. Makes branch-aware validators see the branch.
+        nextSceneId: choice.nextSceneId
+          ?? (branchTargets ? branchTargets[choiceIdx % branchTargets.length] : undefined),
         reminderPlan: choice.reminderPlan,
         choiceIntent: choice.choiceIntent,
         impactFactors: choice.impactFactors,
@@ -9921,8 +10026,8 @@ export class FullStoryPipeline {
         affordanceSource: choice.affordanceSource,
         witnessReactions: choice.witnessReactions,
         failureResidue: choice.failureResidue,
-      }))
-    );
+      }));
+    });
 
     // Prepare encounters for validation
     const encounterValidation = encounters ? Array.from(encounters.values()).map(enc => ({
@@ -10446,22 +10551,32 @@ export class FullStoryPipeline {
               characterKnowledge: this.buildContinuityCharacterKnowledge(characterBible),
               referencedFlags: collectReferencedFlags(generated.episode as any),
             });
+            const seasonLengthForArc = analysis.totalEstimatedEpisodes || this.totalEpisodes;
+            const arcAndRelationship = this.extractArcAndRelationshipDeltas(
+              characterBible,
+              i,
+              seasonLengthForArc,
+            );
             const seal = await sealAndPersistEpisode({
               episode: generated.episode as any,
               episodeNumber: i,
-              seasonLength: analysis.totalEstimatedEpisodes || this.totalEpisodes,
+              seasonLength: seasonLengthForArc,
               ledger: this.callbackLedger,
               canon: this.seasonCanon,
               priorSnapshot: this.priorEpisodeSnapshot,
               claims: episodeKnowledge.claims,
               // Seal capability facts (who-can-do-what) + extracted knowledge/worldFacts
               // so downstream prompts inherit a richer canon (Season Canon, Phase B/B2).
+              // Plus per-episode character arc state + relationship dimensions so the
+              // canon's characters[]/relationships[] are populated (were always empty).
               extraDeltas: {
                 worldFacts: [
                   ...characterCapabilityWorldFacts(characterBible.characters),
                   ...(episodeKnowledge.deltas.worldFacts ?? []),
                 ],
                 knowledge: episodeKnowledge.deltas.knowledge,
+                arcStates: arcAndRelationship.arcStates,
+                relationships: arcAndRelationship.relationships,
               },
               save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
             });
@@ -11032,11 +11147,21 @@ export class FullStoryPipeline {
           sceneContents: sceneContents as unknown as Parameters<typeof this.harvestEpisodeCallbacks>[0]['sceneContents'],
           choiceSets: choiceSets as unknown as Parameters<typeof this.harvestEpisodeCallbacks>[0]['choiceSets'],
         });
-        if (newHooks > 0 || payoffs > 0) {
+        // Deterministically realize planted-but-uncollected callbacks: append a
+        // flag-gated TextVariant (sourced from the choice's reminderPlan) to a downstream
+        // beat for each in-window hook the LLM left unreferenced. Mutates sceneContents,
+        // which assembly + validation both read afterward, so the payoff lands in the
+        // shipped story AND lifts the callback-coverage metric. See callbackOrchestration.
+        const { injected } = this.injectFallbackCallbacks({
+          episodeNumber: i,
+          sceneContents: sceneContents as unknown as InjectFallbackCallbacksParams['sceneContents'],
+          choiceSets: choiceSets as unknown as InjectFallbackCallbacksParams['choiceSets'],
+        });
+        if (newHooks > 0 || payoffs > 0 || injected > 0) {
           this.emit({
             type: 'debug',
             phase: `episode_${i}_callbacks`,
-            message: `Callback ledger: +${newHooks} new hook(s), +${payoffs} payoff(s) this episode; ${this.callbackLedger.size()} total`,
+            message: `Callback ledger: +${newHooks} new hook(s), +${payoffs} authored payoff(s), +${injected} auto-realized this episode; ${this.callbackLedger.size()} total`,
           });
         }
         await saveEarlyDiagnostic(outputDirectory, '09-callback-ledger.json', this.callbackLedger.serialize());
@@ -18715,6 +18840,12 @@ Design the key art. Return STRICT JSON matching the schema.`;
     params: HarvestEpisodeCallbacksParams,
   ): { newHooks: number; payoffs: number } {
     return harvestEpisodeCallbacksImpl(this.callbackLedger, params);
+  }
+
+  private injectFallbackCallbacks(
+    params: InjectFallbackCallbacksParams,
+  ): { injected: number } {
+    return injectFallbackCallbacksImpl(this.callbackLedger, params);
   }
 
   /**

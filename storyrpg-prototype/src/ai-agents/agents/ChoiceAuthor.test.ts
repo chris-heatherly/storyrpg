@@ -156,6 +156,40 @@ describe('ChoiceAuthor.validateChoices', () => {
     expect(choiceSet.choices[0].statCheck.skillWeights).toEqual({ perception: 1.0 });
     expect(choiceSet.choices[1].statCheck).toBeUndefined();
   });
+
+  it('preserves authored skills when no season skill plan is active', () => {
+    const fresh = new ChoiceAuthor(config);
+    (fresh as any).skillUsage = { perception: 5 };
+    const choiceSet = makeChoiceSet({
+      choiceType: 'strategic',
+      choices: [
+        { id: 'c1', text: 'Investigate', choiceType: 'strategic', consequences: [], statCheck: { skillWeights: { perception: 1.0 }, difficulty: 55 } },
+        { id: 'c2', text: 'Other approach', choiceType: 'strategic', consequences: [] },
+      ],
+    });
+    (fresh as any).validateChoices(choiceSet, input);
+    // No setEpisodeSkillTargets -> rebalance is a no-op even though perception is over-used.
+    expect(choiceSet.choices[0].statCheck.skillWeights).toEqual({ perception: 1.0 });
+  });
+
+  it('rebalances an over-used authored skill toward an under-used one when a skill plan is active', () => {
+    const fresh = new ChoiceAuthor(config);
+    fresh.setEpisodeSkillTargets(['investigation', 'perception', 'stealth', 'athletics', 'survival']);
+    (fresh as any).skillUsage = { perception: 4 };
+    const choiceSet = makeChoiceSet({
+      choiceType: 'strategic',
+      choices: [
+        { id: 'c1', text: 'Investigate', choiceType: 'strategic', consequences: [], statCheck: { skillWeights: { perception: 1.0 }, difficulty: 55 } },
+        { id: 'c2', text: 'Other approach', choiceType: 'strategic', consequences: [] },
+      ],
+    });
+    (fresh as any).validateChoices(choiceSet, input);
+    const skill = Object.keys(choiceSet.choices[0].statCheck.skillWeights)[0];
+    expect(skill).not.toBe('perception');
+    expect(['investigation', 'stealth', 'athletics', 'survival']).toContain(skill);
+    // difficulty preserved from the authored check
+    expect(choiceSet.choices[0].statCheck.difficulty).toBe(55);
+  });
 });
 
 // -----------------------------------------------------------------------

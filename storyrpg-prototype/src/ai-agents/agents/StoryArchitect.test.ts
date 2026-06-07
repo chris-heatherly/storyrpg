@@ -1571,3 +1571,51 @@ describe('StoryArchitect 7-point spine verification (tier 2)', () => {
     expect(() => (architect as any).validateBlueprint(bp, makeInput())).not.toThrow(/SevenPointGate/);
   });
 });
+
+// -----------------------------------------------------------------------
+// buildTransitionPressureChange — placeholder cost must not leak (P1a)
+// -----------------------------------------------------------------------
+
+describe('StoryArchitect.buildTransitionPressureChange', () => {
+  const architect = new StoryArchitect(config);
+
+  it('drops the placeholder cost sentinel instead of leaking it into pressureChange', () => {
+    const scene = {
+      name: 'The Velvet Booth',
+      choicePoint: {
+        stakes: {
+          want: 'Advance the goal of The Velvet Booth',
+          cost: 'Each option forfeits a different advantage.',
+          identity: 'The choice reveals the protagonist under pressure.',
+        },
+      },
+      personalStake: 'Kylie risks letting Victor see how much she wants to belong',
+    };
+    const target = { conflictEngine: 'Whether Victor controls the night' };
+
+    const result = (architect as any).buildTransitionPressureChange(scene, target, 'therefore');
+
+    expect(result).not.toContain('Each option forfeits a different advantage');
+    expect(result).toContain('Kylie risks letting Victor see');
+    expect(result).toContain('escalates into');
+  });
+
+  it('uses a real choice-point cost when one is authored', () => {
+    const scene = {
+      name: 'Sunday Breakfast',
+      choicePoint: {
+        stakes: {
+          want: 'Know what the photograph means',
+          cost: 'Naming what she noticed ends the easy warmth of the morning',
+          identity: 'The woman who asks',
+        },
+      },
+    };
+    const target = { name: 'The drive home' };
+
+    const result = (architect as any).buildTransitionPressureChange(scene, target, 'but');
+
+    expect(result).toContain('ends the easy warmth of the morning');
+    expect(result).toContain('reverses into');
+  });
+});

@@ -199,6 +199,59 @@ export class CallbackLedger {
   }
 
   /**
+   * Seed a callback hook for a single score a choice moves (`setScore` /
+   * `changeScore`). The mirror of {@link recordFlagSet} for the score axis: a
+   * SceneWriter can emit a TextVariant keyed on `score:<name>` (e.g. a beat that
+   * fires when `thorne_loyalty` is high), and without a planted promise that payoff
+   * is "dangling" and trips the Season-Canon promise gate. The hook id is keyed on
+   * the score (`score:<name>`) so repeated moves of the same score merge.
+   */
+  recordScoreSet(params: {
+    choice: Choice;
+    score: string;
+    episode: number;
+    sceneId: string;
+  }): CallbackHook | undefined {
+    const { score } = params;
+    if (!score) return undefined;
+    const summary = params.choice.memorableMoment?.summary
+      || (params.choice.text ? `Earlier choice: "${params.choice.text}" (moved ${score}).` : `An earlier choice moved ${score}.`);
+    return this.add({
+      id: `score:${score}`,
+      sourceEpisode: params.episode,
+      sourceSceneId: params.sceneId,
+      sourceChoiceId: params.choice.id,
+      flags: [],
+      conditionKeys: [`score:${score}`],
+      impactFactors: params.choice.impactFactors ?? [],
+      consequenceTier: 'branchlet',
+      summary,
+      payoffWindow: {
+        minEpisode: params.episode,
+        maxEpisode: params.episode + this.config.defaultWindowSpan,
+      },
+    });
+  }
+
+  /**
+   * Trackable scores a choice moves: the score names of its `setScore` /
+   * `changeScore` consequences. The score axis of {@link trackableFlagsOf}.
+   */
+  trackableScoresOf(choice: Choice): string[] {
+    const scores: string[] = [];
+    for (const consequence of choice.consequences ?? []) {
+      if (
+        (consequence.type === 'setScore' || consequence.type === 'changeScore') &&
+        typeof (consequence as { score?: unknown }).score === 'string' &&
+        (consequence as { score: string }).score.length > 0
+      ) {
+        scores.push((consequence as { score: string }).score);
+      }
+    }
+    return scores;
+  }
+
+  /**
    * Trackable flags a choice sets: `setFlag` consequences that are neither
    * cosmetic (`tint:`) nor structural (`route_`), and that set rather than
    * clear the flag. Mirrors ChoiceAuthor.setsTrackableFlag.

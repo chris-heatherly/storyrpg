@@ -116,6 +116,18 @@ export function harvestEpisodeCallbacks(
         });
         if (added) newHooks += 1;
       }
+      // Mirror for the score axis: plant a `score:<name>` promise for every score
+      // the choice moves, so a later TextVariant keyed on that score resolves
+      // against a real ledger hook instead of dangling (Season-Canon promise gate).
+      for (const score of ledger.trackableScoresOf(typedChoice)) {
+        const added = ledger.recordScoreSet({
+          choice: typedChoice,
+          score,
+          episode: params.episodeNumber,
+          sceneId,
+        });
+        if (added) newHooks += 1;
+      }
     }
   }
 

@@ -39,6 +39,21 @@ describe('CallbackLedger', () => {
     expect(hook!.payoffWindow.minEpisode).toBe(2);
   });
 
+  it('plants a score:<name> promise so a score-keyed payoff is not dangling', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({
+      id: 'earn-thorne-trust',
+      text: 'Take the eastern-wall assessment to Thorne yourself.',
+      consequences: [{ type: 'changeScore', score: 'thorne_loyalty', change: 1 } as any],
+    });
+    expect(ledger.trackableScoresOf(choice)).toEqual(['thorne_loyalty']);
+    const hook = ledger.recordScoreSet({ choice, score: 'thorne_loyalty', episode: 2, sceneId: 's2-1' });
+    expect(hook).toBeDefined();
+    expect(hook!.id).toBe('score:thorne_loyalty');
+    // A later TextVariant keyed on this score now resolves against a real hook.
+    expect(ledger.has('score:thorne_loyalty')).toBe(true);
+  });
+
   it('records impact factors and explicit consequence tier from the choice', () => {
     const ledger = new CallbackLedger();
     const choice = makeChoice({

@@ -100,9 +100,14 @@ describe('validateNoDanglingPayoffs', () => {
 });
 
 describe('validatePlantValidity', () => {
-  it('flags a backward/same-episode target', () => {
-    const ledger = ledgerWithHook({ sourceEpisode: 3, payoffEpisode: 3 });
+  it('flags a BACKWARD target (payoff before the plant episode)', () => {
+    const ledger = ledgerWithHook({ sourceEpisode: 3, payoffEpisode: 2 });
     expect(validatePlantValidity(ledger, 5)).toHaveLength(1);
+  });
+
+  it('ALLOWS a same-episode target (within-episode forward promise; promise-due enforces it)', () => {
+    const ledger = ledgerWithHook({ sourceEpisode: 3, payoffEpisode: 3 });
+    expect(validatePlantValidity(ledger, 5)).toHaveLength(0);
   });
 
   it('flags a target beyond the season', () => {

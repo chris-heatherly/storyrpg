@@ -14,10 +14,12 @@
  *                     exist in the ledger. Always safe to check (never a false
  *                     alarm). Within-episode plant refs (`within-ep*`) are not
  *                     ledger hooks and are excluded.
- *   - plant-validity:  a promise with an explicit target must point strictly
- *                     forward and within the season: sourceEpisode < payoffEpisode
- *                     <= seasonLength. Catches vague/unreachable plants at plant
- *                     time so we never hit the finale owing a debt to a missing
+ *   - plant-validity:  a promise with an explicit target must not point BACKWARD and
+ *                     must stay within the season: sourceEpisode <= payoffEpisode <=
+ *                     seasonLength. A same-episode target is valid (a within-episode
+ *                     forward promise, paid off in a later scene of its own episode;
+ *                     promise-due enforces the payment). Catches only backward /
+ *                     beyond-season plants so we never owe a debt to an impossible
  *                     episode.
  *
  * Pure functions over a CallbackLedger — unit-testable, no I/O. Wiring into the
@@ -84,20 +86,27 @@ export function validateNoDanglingPayoffs(
 }
 
 /**
- * plant-validity: every promise carrying an explicit payoffEpisode must target a
- * strictly-later episode within the season. `seasonLength` is the count of
- * planned episodes.
+ * plant-validity: every promise carrying an explicit payoffEpisode must target its
+ * OWN or a later episode within the season (never earlier). A same-episode target is a
+ * valid within-episode forward promise (promise-due enforces it pays off in that
+ * episode). `seasonLength` is the count of planned episodes.
  */
 export function validatePlantValidity(ledger: CallbackLedger, seasonLength: number): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   for (const hook of ledger.withExplicitTarget()) {
     const target = hook.payoffEpisode as number;
-    if (target <= hook.sourceEpisode) {
+    if (target < hook.sourceEpisode) {
+      // BACKWARD only. A same-episode target (target === sourceEpisode) is a valid
+      // WITHIN-EPISODE forward promise — set up in an early scene, paid off in a later
+      // scene of the SAME episode (e.g. "when Victor finally sits across from her in the
+      // booth…"). It is NOT a plant-validity error: `validatePromisesDue` already
+      // requires it to be paid off within its own episode, so enforcement lives there.
+      // Only a promise pointing EARLIER than its plant episode is genuinely impossible.
       issues.push({
         severity: 'error',
-        message: `Promise "${hook.summary}" (${hook.id}) planted in episode ${hook.sourceEpisode} targets episode ${target}, which is not strictly later.`,
+        message: `Promise "${hook.summary}" (${hook.id}) planted in episode ${hook.sourceEpisode} targets episode ${target}, which is earlier than its plant episode — a promise cannot pay off before it is made.`,
         location: `promise:${hook.id}`,
-        suggestion: `Set payoffEpisode > ${hook.sourceEpisode}.`,
+        suggestion: `Set payoffEpisode >= ${hook.sourceEpisode}.`,
       });
     } else if (target > seasonLength) {
       issues.push({

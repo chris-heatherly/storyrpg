@@ -143,7 +143,7 @@ import {
 } from './seasonChoicePlan';
 import { buildSeasonSkillPlan, skillsForEpisode, type SeasonSkillPlan } from './seasonSkillPlan';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
-import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, emitSceneTreatmentSeeds, emitSceneBranchAxes, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
+import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, emitSceneTreatmentSeeds, emitSceneBranchAxes, emitSceneInfoReveals, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { reconcileBriefStoryMetadata } from './briefStoryMetadata';
 import { SeasonCanon } from './seasonCanon';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
@@ -7771,6 +7771,16 @@ export class FullStoryPipeline {
           }),
           relevantFlags: blueprint.suggestedFlags,
           relevantScores: blueprint.suggestedScores,
+          // Step 2 (info-reveal): resolve the INFO ids assigned to this scene (Step 1)
+          // to their authored fact text so SceneWriter dramatizes each reveal on-page.
+          // Empty when no reveal is scheduled here, so the prompt is unchanged otherwise.
+          revealDirectives: (sceneBlueprint.revealsInfoIds ?? [])
+            .map((infoId) => {
+              const entry = brief.seasonPlan?.informationLedger?.find((e) => e.id === infoId);
+              const fact = entry?.label || entry?.description;
+              return fact ? { infoId, fact } : undefined;
+            })
+            .filter((d): d is { infoId: string; fact: string } => Boolean(d)),
           // B1 (Season Canon read-back): serve the sealed canon as authoritative
           // "do not contradict" context so prior-episode facts constrain this prose.
           establishedCanon: this.establishedCanonForPrompt(brief.episode?.number),
@@ -8171,6 +8181,10 @@ export class FullStoryPipeline {
             // on-page so the finale's ending-route logic can read them and each named
             // ending is mechanically reachable. No-op off treatment runs.
             emitSceneBranchAxes(sceneBlueprint, choiceResult.data.choices);
+            // Step 3 (info-reveal): SET the detectable info_<id>_reveal flag for each INFO
+            // reveal assigned to this scene (Step 1), so the schedule validator can confirm
+            // the reveal landed. No-op when the scene has no assigned reveals.
+            emitSceneInfoReveals(sceneBlueprint, choiceResult.data.choices);
             choiceSets.push({ ...choiceResult.data, sceneId: sceneBlueprint.id });
             // Phase 1: record this scene's planted flags so later scenes can pay them off.
             episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }, this.callbackLedger));

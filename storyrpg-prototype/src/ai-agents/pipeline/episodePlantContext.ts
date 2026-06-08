@@ -425,3 +425,47 @@ export function emitSceneBranchAxes(
   }
   return choices;
 }
+
+/**
+ * The detectable reveal flag for an INFO ledger entry. Format mirrors the
+ * `info_<id>_reveal` convention the InformationLedgerScheduleValidator recognizes:
+ * the flag contains the entry id and a `reveal` token, so its `referencesEntry` +
+ * REVEAL_TOKEN detection matches it. Pure.
+ */
+export function infoRevealFlag(infoId: string): string {
+  return `${infoId}_reveal`;
+}
+
+/**
+ * Step 3 (info-reveal): for a scene StoryArchitect assigned INFO reveals to
+ * (`scene.revealsInfoIds`), set the detectable `<id>_reveal` flag via a setFlag
+ * consequence on a choice, so InformationLedgerScheduleValidator can confirm the
+ * reveal landed in this scene's episode. Mirrors emitSceneBranchAxes: idempotent
+ * (skips flags already present), additive-only, and a no-op when the scene has no
+ * assigned reveals or no choices. Returns the (possibly mutated) choices.
+ */
+export function emitSceneInfoReveals(
+  scene: { revealsInfoIds?: string[]; id?: string },
+  choices: Choice[],
+): Choice[] {
+  const ids = (scene.revealsInfoIds ?? []).filter((id): id is string => Boolean(id));
+  if (!choices.length || ids.length === 0) return choices;
+
+  const alreadySet = new Set<string>();
+  for (const choice of choices) {
+    for (const c of choice.consequences ?? []) {
+      if (c.type === 'setFlag' && typeof c.flag === 'string') alreadySet.add(c.flag);
+    }
+  }
+
+  let roundRobin = 0;
+  for (const id of ids) {
+    const flag = infoRevealFlag(id);
+    if (alreadySet.has(flag)) continue;
+    const choice = choices[roundRobin % choices.length];
+    roundRobin += 1;
+    choice.consequences = [...(choice.consequences ?? []), { type: 'setFlag', flag, value: true }];
+    alreadySet.add(flag);
+  }
+  return choices;
+}

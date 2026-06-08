@@ -27,6 +27,7 @@ import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraf
 import { PLACEHOLDER_STAKES, isPlaceholderStake } from '../constants/placeholderStakes';
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType, NarrativeSequenceIntent, StakesLayers } from '../../types';
 import type { ArcEpisodeTurnout, CliffhangerPlan, InformationLedgerEntry, SeasonPromiseArchitecture } from '../../types/seasonPlan';
+import { assignInfoRevealsToScenes } from '../pipeline/infoRevealAssignment';
 import type { PlannedScene, SetupPayoffEdge, SceneNarrativeRole, RequiredBeat } from '../../types/scenePlan';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
@@ -380,6 +381,13 @@ export interface SceneBlueprint {
   setsUp?: string[];
   paysOff?: string[];
 
+  // Authored INFO-ledger reveals assigned to land on-page in THIS scene (Step 1 of the
+  // info-reveal pipeline). Set deterministically by assignInfoRevealsToScenes for each
+  // ledger entry whose plannedRevealEpisode is this episode. SceneWriter dramatizes them
+  // (Step 2) and emitSceneInfoReveals flags them (Step 3) so the schedule validator can
+  // confirm the reveal landed. Empty/undefined when no reveal is scheduled here.
+  revealsInfoIds?: string[];
+
   // === AUTHORED-TREATMENT FIDELITY ("expand, do not rewrite") ===
   // Carried verbatim from PlannedScene when the run is treatment-sourced so
   // SceneWriter can render an explicit "depict each, in order" required-beats
@@ -631,6 +639,25 @@ export class StoryArchitect extends BaseAgent {
     scene.choicePoint = this.createExpressionChoicePoint(scene, reason);
     console.log(`[StoryArchitect] Auto-added expression choicePoint to ${scene.id}: ${reason}`);
     return true;
+  }
+
+  /**
+   * Step 1 of the info-reveal pipeline: deterministically assign each authored INFO
+   * ledger entry whose reveal episode is THIS episode to a specific scene, recording it
+   * on `scene.revealsInfoIds`. Additive + idempotent — a no-op when there is no ledger
+   * or no reveal scheduled this episode, so non-treatment / no-ledger runs are unchanged.
+   */
+  private assignInfoReveals(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const entries = input.seasonPlanDirectives?.informationLedgerEntries;
+    const scenes = blueprint.scenes ?? [];
+    if (!entries?.length || scenes.length === 0) return;
+    const assignment = assignInfoRevealsToScenes(scenes, entries, input.episodeNumber);
+    if (assignment.size === 0) return;
+    for (const scene of scenes) {
+      const ids = assignment.get(scene.id);
+      if (!ids?.length) continue;
+      scene.revealsInfoIds = [...new Set([...(scene.revealsInfoIds ?? []), ...ids])];
+    }
   }
 
   private isFirstSeasonEpisode(input: StoryArchitectInput): boolean {
@@ -2115,6 +2142,7 @@ ${sceneEpisodeMode}
       this.ensureDramaticAuditMinimums(blueprint, input);
       this.repairSceneTransitions(blueprint);
       this.repairSceneTurnContracts(blueprint);
+      this.assignInfoReveals(blueprint, input);
       return { success: true, data: blueprint, rawResponse: '' };
     }
 
@@ -2455,6 +2483,7 @@ REQUIREMENTS:
       this.ensureDramaticAuditMinimums(blueprint, input);
       this.repairSceneTransitions(blueprint);
       this.repairSceneTurnContracts(blueprint);
+      this.assignInfoReveals(blueprint, input);
 
       // Log choice point info BEFORE validation
       const scenesWithChoices = blueprint.scenes?.filter(s => s.choicePoint) || [];

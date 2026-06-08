@@ -85,6 +85,12 @@ export interface InformationScheduleMetrics {
   missingRevealCount: number;
   /** Entries with an off-by-one / off-episode placement (warning). */
   offPlacementCount: number;
+  /**
+   * Entries whose reveal LANDED (flag observed) but whose authored fact content is not
+   * depicted in the reveal episode's prose — a "tagged but not depicted" warning (Step 4).
+   * Warning-tier for now; promotable to blocking once shadow data confirms the matcher.
+   */
+  flaggedNotDepictedCount: number;
 }
 
 export interface InformationScheduleResult extends ValidationResult {
@@ -103,6 +109,30 @@ const SETUP_TOKEN = /(^|[^a-z])(setup|set[\s_-]?up|hint|plant|seed|foreshadow)/i
 
 function normalizeToken(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+// §4.3 Step 4 (prose confirmation): minimum number of the fact's DISTINCTIVE content
+// words that must appear in the reveal episode's prose for the reveal to count as
+// "depicted". Deliberately conservative (1) so the depiction WARNING fires only when
+// the prose shares essentially nothing with the authored fact — a high-precision
+// "the writer ignored the reveal directive" signal, not a fuzzy guess.
+const REVEAL_DEPICTION_MIN_TOKENS = 1;
+
+const CONTENT_STOPWORDS = new Set([
+  'the', 'and', 'that', 'this', 'with', 'from', 'into', 'their', 'they', 'them', 'have',
+  'has', 'had', 'will', 'would', 'about', 'what', 'when', 'where', 'which', 'while',
+  'because', 'after', 'before', 'over', 'under', 'then', 'than', 'your', 'you', 'her',
+  'his', 'him', 'she', 'who', 'whom', 'whose', 'for', 'are', 'was', 'were', 'been',
+  'info', 'reveal', 'reveals', 'reveal', 'reader', 'player', 'story', 'scene', 'episode',
+]);
+
+/** Distinctive content words (length ≥ 4, not a stopword), lowercased + deduped. */
+function contentWords(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of String(text || '').toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length >= 4 && !CONTENT_STOPWORDS.has(raw)) out.add(raw);
+  }
+  return out;
 }
 
 /**
@@ -151,6 +181,7 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
       revealBeforeSetupCount: 0,
       missingRevealCount: 0,
       offPlacementCount: 0,
+      flaggedNotDepictedCount: 0,
     };
 
     if (entries.length === 0) {
@@ -193,9 +224,8 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
       const authoredReveal = entry.plannedRevealEpisode ?? entry.plannedPayoffEpisode;
 
       // Observed schedule: caller override, else derived from the story scan.
-      const observed = Object.prototype.hasOwnProperty.call(overrides, entry.id)
-        ? overrides[entry.id]
-        : this.scanStory(entry, episodes);
+      const usedOverride = Object.prototype.hasOwnProperty.call(overrides, entry.id);
+      const observed = usedOverride ? overrides[entry.id] : this.scanStory(entry, episodes);
 
       const observedSetup = observed.setupEpisode;
       const observedReveal = observed.revealEpisode;
@@ -264,10 +294,70 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
         ));
       }
 
+      // (4) Step 4 — prose confirmation. A reveal LANDED (flag observed) but the
+      // authored fact's content is absent from the reveal episode's prose ⇒ the reveal
+      // was tagged but not dramatized (the writer ignored the directive). WARNING-tier:
+      // the flag stays the deterministic blocking signal; this conservative content
+      // check (fires only when the episode prose shares ZERO distinctive fact words)
+      // surfaces the rubber-stamp risk without a fuzzy false-positive hard-block.
+      if (!usedOverride && observedReveal !== undefined && episodeGenerated(observedReveal)) {
+        const want = contentWords(`${entry.label ?? ''} ${entry.description ?? ''}`);
+        if (want.size > 0) {
+          const prose = this.episodeProse(episodes, observedReveal);
+          const present = contentWords(prose);
+          let shared = 0;
+          for (const w of want) if (present.has(w)) shared += 1;
+          if (shared < REVEAL_DEPICTION_MIN_TOKENS) {
+            metrics.flaggedNotDepictedCount += 1;
+            entryClean = false;
+            issues.push(this.warning(
+              `INFO "${entry.id}" is flagged as revealed in episode ${observedReveal} but its authored content is not depicted in that episode's prose.`,
+              `${location}.reveal`,
+              'Dramatize the reveal on-page (a character states/shows/discovers the fact), not only via the reveal flag.',
+            ));
+          }
+        }
+      }
+
       if (entryClean) metrics.onScheduleCount += 1;
     }
 
     return this.result(issues, metrics);
+  }
+
+  /**
+   * All reader-facing prose of one episode (flat beats + encounter phase/storylet
+   * beats), joined. Used by the Step-4 depiction check. Empty string for an episode
+   * that wasn't generated.
+   */
+  private episodeProse(episodes: Episode[], epNum: number): string {
+    const parts: string[] = [];
+    const pushBeat = (beat: Beat): void => {
+      const b = beat as Beat & { setupText?: string; escalationText?: string };
+      for (const t of [b.text, b.setupText, b.escalationText]) {
+        if (typeof t === 'string' && t.trim()) parts.push(t);
+      }
+    };
+    for (const episode of episodes) {
+      if (episode.number !== epNum) continue;
+      for (const scene of episode.scenes ?? []) {
+        for (const beat of scene.beats ?? []) pushBeat(beat);
+        const enc = scene.encounter as
+          | { phases?: Array<{ beats?: Beat[] }>; storylets?: unknown }
+          | undefined;
+        if (enc) {
+          for (const phase of enc.phases ?? []) for (const beat of phase.beats ?? []) pushBeat(beat);
+          const storylets = Array.isArray(enc.storylets)
+            ? enc.storylets
+            : Object.values((enc.storylets ?? {}) as Record<string, unknown>);
+          for (const storylet of storylets) {
+            if (!storylet || typeof storylet !== 'object') continue;
+            for (const beat of (storylet as { beats?: Beat[] }).beats ?? []) pushBeat(beat);
+          }
+        }
+      }
+    }
+    return parts.join(' ');
   }
 
   /** Earliest authored setup episode (min setupTouchEpisodes, else introducedEpisode). */

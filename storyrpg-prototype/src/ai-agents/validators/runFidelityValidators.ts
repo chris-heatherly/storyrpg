@@ -108,14 +108,19 @@ function isTreatmentSourced(analysis: SourceMaterialAnalysis | undefined): boole
   return Object.values(analysis.treatmentSeasonGuidance ?? {}).length > 0;
 }
 
-/** Map a validator's `ValidationIssue`s (error/warning only) to fidelity findings. */
-function toFindings(validator: string, issues: ValidationIssue[]): FidelityFinding[] {
+/**
+ * Map a validator's `ValidationIssue`s (error/warning only) to fidelity findings.
+ * `downgradeToWarning` forces every finding to `warning` severity — used to keep a
+ * validator VISIBLE (its findings surface in the contract report) while its gate is
+ * off, so it advises without hard-blocking.
+ */
+function toFindings(validator: string, issues: ValidationIssue[], downgradeToWarning = false): FidelityFinding[] {
   const out: FidelityFinding[] = [];
   for (const issue of issues) {
     if (issue.severity !== 'error' && issue.severity !== 'warning') continue;
     out.push({
       validator,
-      severity: issue.severity,
+      severity: downgradeToWarning ? 'warning' : issue.severity,
       message: issue.message,
       suggestion: issue.suggestion,
     });
@@ -148,6 +153,7 @@ export const FIDELITY_VALIDATOR_FLAGS: Record<string, string> = {
 function collectFidelityFindings(
   input: RunFidelityValidatorsInput,
   isEnabled: (flag: TreatmentFidelityGateFlag) => boolean,
+  treatmentSourced: boolean,
 ): FidelityFinding[] {
   const { story, seasonPlan, sourceAnalysis } = input;
   const findings: FidelityFinding[] = [];
@@ -185,12 +191,17 @@ function collectFidelityFindings(
     });
   }
 
-  // 4.3 — authored INFO setup/reveal land on their scheduled episodes.
-  if (isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.informationLedgerSchedule) && seasonPlan) {
+  // 4.3 — authored INFO setup/reveal land on their scheduled episodes. VISIBLE-ALWAYS on
+  // treatment runs: the schedule check always runs so its findings are never hidden, but
+  // it only HARD-BLOCKS when its gate is on. While the gate is off (its generative half —
+  // the info-reveal emitter, Steps 1-3 — is still being built) the findings are downgraded
+  // to advisory warnings: visible in the contract report, non-blocking.
+  if (seasonPlan && treatmentSourced) {
+    const infoGateOn = isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.informationLedgerSchedule);
     guard(() => {
       const ledger = seasonPlan.informationLedger as InformationLedgerEntry[] | undefined;
       const result = new InformationLedgerScheduleValidator().validate(ledger, story);
-      return toFindings('InformationLedgerScheduleValidator', result.issues);
+      return toFindings('InformationLedgerScheduleValidator', result.issues, !infoGateOn);
     });
   }
 
@@ -217,7 +228,7 @@ function collectFidelityFindings(
 
 export function runFidelityValidators(input: RunFidelityValidatorsInput): RunFidelityValidatorsResult {
   const treatmentSourced = isTreatmentSourced(input.sourceAnalysis);
-  const findings = collectFidelityFindings(input, isFidelityGateEnabled);
+  const findings = collectFidelityFindings(input, isFidelityGateEnabled, treatmentSourced);
   if (findings.length === 0 && !treatmentSourced) return EMPTY;
   return { fidelityFindings: findings, treatmentSourced };
 }
@@ -227,5 +238,5 @@ export function runFidelityValidators(input: RunFidelityValidatorsInput): RunFid
  * data. Never feeds blocking findings — callers record the counts to the shadow ledger.
  */
 export function runFidelityValidatorsShadow(input: RunFidelityValidatorsInput): FidelityFinding[] {
-  return collectFidelityFindings(input, () => true);
+  return collectFidelityFindings(input, () => true, true);
 }

@@ -12,6 +12,8 @@ import {
   emitSceneTreatmentSeeds,
   resolveSceneBranchAxes,
   emitSceneBranchAxes,
+  emitSceneInfoReveals,
+  infoRevealFlag,
   type EpisodePlant,
 } from './episodePlantContext';
 import type { Choice } from '../../types/choice';
@@ -297,5 +299,34 @@ describe('emitSceneBranchAxes semantic placement (gen-5 wine-branch collapse)', 
       choices,
     );
     expect(hasFlag(choices[0], 'treatment_branch_quartz_sanctuary_vs_open_threshold')).toBe(true);
+  });
+});
+
+describe('emitSceneInfoReveals (Step 3)', () => {
+  const mkChoice = (id: string): Choice => ({ id, text: id, choiceType: 'relationship', consequences: [] } as unknown as Choice);
+
+  it('sets a detectable <id>_reveal flag for each assigned reveal, round-robin across choices', () => {
+    const choices = [mkChoice('c1'), mkChoice('c2')];
+    emitSceneInfoReveals({ id: 's3', revealsInfoIds: ['info-A', 'info-F'] }, choices);
+    const flags = choices.flatMap((c) => (c.consequences ?? []).map((x: any) => x.flag));
+    expect(flags).toContain(infoRevealFlag('info-A'));
+    expect(flags).toContain(infoRevealFlag('info-F'));
+    // round-robin: one flag on each choice
+    expect((choices[0].consequences ?? []).length).toBe(1);
+    expect((choices[1].consequences ?? []).length).toBe(1);
+  });
+
+  it('the emitted flag matches the schedule validator reveal convention (<id> + _reveal)', () => {
+    expect(infoRevealFlag('info-A')).toBe('info-A_reveal');
+  });
+
+  it('is idempotent (skips a flag already set) and a no-op without reveals or choices', () => {
+    const pre = [{ id: 'c1', text: 'c1', choiceType: 'relationship', consequences: [{ type: 'setFlag', flag: 'info-A_reveal', value: true }] } as unknown as Choice];
+    emitSceneInfoReveals({ id: 's3', revealsInfoIds: ['info-A'] }, pre);
+    expect((pre[0].consequences ?? []).filter((c: any) => c.flag === 'info-A_reveal').length).toBe(1);
+    const none = [mkChoice('c1')];
+    expect(emitSceneInfoReveals({ id: 's3' }, none)).toBe(none);
+    expect((none[0].consequences ?? []).length).toBe(0);
+    expect(emitSceneInfoReveals({ id: 's3', revealsInfoIds: ['info-A'] }, [])).toEqual([]);
   });
 });

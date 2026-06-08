@@ -32,6 +32,16 @@ function treatmentAnalysis(): SourceMaterialAnalysis {
   } as unknown as SourceMaterialAnalysis;
 }
 
+/** A treatment plan whose INFO ledger has a reveal that never lands (no reveal flag/prose). */
+function ledgerSeasonPlan(): SeasonPlan {
+  return {
+    episodes: [{ episodeNumber: 1, structuralRole: ['hook'] }],
+    informationLedger: [
+      { id: 'info-A', label: 'The steward is the informant', description: 'The steward fed the enemy the route.', plannedRevealEpisode: 1, setupTouchEpisodes: [], introducedEpisode: 1 },
+    ],
+  } as unknown as SeasonPlan;
+}
+
 const ALL_FLAGS = Object.values(TREATMENT_FIDELITY_GATE_FLAGS);
 
 afterEach(() => {
@@ -87,6 +97,32 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
     expect(result.treatmentSourced).toBe(false);
     // No anchor map on a non-treatment source → the anchor validator is skipped.
     expect(result.fidelityFindings).toEqual([]);
+  });
+
+  it('keeps the info-ledger schedule VISIBLE as an advisory warning while its gate is off (demoted)', () => {
+    // GATE_INFORMATION_LEDGER_SCHEDULE is default-off (demoted), so an unset env must
+    // still RUN the schedule check on a treatment run and surface the unlanded reveal —
+    // but as a non-blocking WARNING, never an error.
+    const result = runFidelityValidators({ story, seasonPlan: ledgerSeasonPlan(), sourceAnalysis: treatmentAnalysis() });
+    const info = result.fidelityFindings.filter((f) => f.validator === 'InformationLedgerScheduleValidator');
+    expect(info.length).toBeGreaterThan(0);
+    expect(info.every((f) => f.severity === 'warning')).toBe(true);
+  });
+
+  it('hard-blocks the info-ledger schedule (error) when its gate is explicitly on', () => {
+    process.env[TREATMENT_FIDELITY_GATE_FLAGS.informationLedgerSchedule] = '1';
+    const result = runFidelityValidators({ story, seasonPlan: ledgerSeasonPlan(), sourceAnalysis: treatmentAnalysis() });
+    const info = result.fidelityFindings.filter((f) => f.validator === 'InformationLedgerScheduleValidator');
+    expect(info.some((f) => f.severity === 'error')).toBe(true);
+  });
+
+  it('does NOT run the info-ledger schedule on a non-treatment run', () => {
+    const result = runFidelityValidators({
+      story,
+      seasonPlan: ledgerSeasonPlan(),
+      sourceAnalysis: { sourceFormat: 'source_material', episodeBreakdown: [] } as unknown as SourceMaterialAnalysis,
+    });
+    expect(result.fidelityFindings.filter((f) => f.validator === 'InformationLedgerScheduleValidator')).toEqual([]);
   });
 
   it('skips a gated validator whose required input is missing (no scene plan → no encounter-anchor dispatch)', () => {

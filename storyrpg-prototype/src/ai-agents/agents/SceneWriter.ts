@@ -162,6 +162,11 @@ export interface SceneWriterInput {
   relevantFlags?: Array<{ name: string; description: string }>;
   relevantScores?: Array<{ name: string; description: string }>;
 
+  // Step 2 (info-reveal): authored facts this scene must REVEAL on-page (assigned by
+  // StoryArchitect from the season INFO ledger). When present, the prompt instructs the
+  // writer to dramatize each reveal here. Empty/absent for scenes with no scheduled reveal.
+  revealDirectives?: Array<{ infoId: string; fact: string }>;
+
   // Scene specific guidance
   targetBeatCount: number; // Max beats per scene (cap)—engine may use fewer
   dialogueHeavy: boolean; // Is this a conversation-focused scene?
@@ -1310,6 +1315,24 @@ Return exactly one complete SceneContent JSON object with:
     return this.choiceDensityValidator.annotateBeatsWithTiming(beats);
   }
 
+  /**
+   * Step 2 (info-reveal): when StoryArchitect assigned authored INFO reveals to this
+   * scene, instruct the writer to dramatize each on-page. Returns '' when none, leaving
+   * the prompt byte-identical for scenes with no scheduled reveal.
+   */
+  private buildRevealDirectivesSection(input: SceneWriterInput): string {
+    const directives = (input.revealDirectives ?? []).filter((d) => d?.fact?.trim());
+    if (directives.length === 0) return '';
+    const lines = directives.map((d) => `- ${d.fact.trim()}`).join('\n');
+    return (
+      '\n### Reveal On-Page (required)\n' +
+      'This scene must REVEAL the following established fact(s) to the reader — dramatize each ' +
+      'clearly in the prose (a character states, shows, or discovers it), not merely allude to it. ' +
+      'Keep it fiction-first: never mention information ledgers, flags, or that this is a "reveal".\n' +
+      lines
+    );
+  }
+
   private buildPrompt(input: SceneWriterInput): string {
     const npcDetails = input.npcs
       .filter(npc => input.sceneBlueprint.npcsPresent.includes(npc.id))
@@ -1424,6 +1447,7 @@ ${input.sceneBlueprint.keyBeats
   .map((beat) => `- ${stripAgentFacingPressureLabel(beat)}`)
   .join('\n')}
 ${buildRequiredBeatsSection(input.sceneBlueprint)}
+${this.buildRevealDirectivesSection(input)}
 
 ${input.sceneBlueprint.choicePoint ? `
 ### Choice Point

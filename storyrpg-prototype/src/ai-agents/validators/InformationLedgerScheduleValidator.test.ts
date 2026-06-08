@@ -30,7 +30,11 @@ function setFlag(flag: string): Consequence {
  * Build a story whose episodes each carry a single scene with a single beat. The
  * `flags` map assigns setFlag emitters (on the beat's onShow) per episode number.
  */
-function story(flagsByEpisode: Record<number, string[]>, episodeNumbers = [1, 2, 3, 4, 5, 6]): Pick<Story, 'episodes'> {
+function story(
+  flagsByEpisode: Record<number, string[]>,
+  episodeNumbers = [1, 2, 3, 4, 5, 6],
+  textByEpisode: Record<number, string> = {},
+): Pick<Story, 'episodes'> {
   const episodes: Episode[] = episodeNumbers.map((n) => ({
     id: `ep-${n}`,
     number: n,
@@ -45,7 +49,7 @@ function story(flagsByEpisode: Record<number, string[]>, episodeNumbers = [1, 2,
         beats: [
           {
             id: `ep-${n}-s1-b1`,
-            text: `Beat in episode ${n}.`,
+            text: textByEpisode[n] ?? `Beat in episode ${n}.`,
             onShow: (flagsByEpisode[n] ?? []).map(setFlag),
           },
         ],
@@ -57,13 +61,18 @@ function story(flagsByEpisode: Record<number, string[]>, episodeNumbers = [1, 2,
 }
 
 describe('InformationLedgerScheduleValidator', () => {
-  it('passes when authored setup lands on its episode and reveal lands on its authored episode', () => {
+  it('passes when authored setup lands on its episode and the reveal is DEPICTED in its authored episode', () => {
     const result = new InformationLedgerScheduleValidator().validate(
       [infoEntry()],
-      story({
-        2: ['info_1_setup'],
-        6: ['info_1_reveal'],
-      }),
+      story(
+        {
+          2: ['info_1_setup'],
+          6: ['info_1_reveal'],
+        },
+        [1, 2, 3, 4, 5, 6],
+        // Step 4: the reveal episode's prose actually depicts the fact (Sylvanor / Starborn).
+        { 6: 'At the midpoint, Sylvanor finally reveals his Starborn blood to the court.' },
+      ),
     );
 
     expect(result.valid).toBe(true);
@@ -71,6 +80,19 @@ describe('InformationLedgerScheduleValidator', () => {
     expect(result.metrics.onScheduleCount).toBe(1);
     expect(result.metrics.revealBeforeSetupCount).toBe(0);
     expect(result.metrics.offPlacementCount).toBe(0);
+    expect(result.metrics.flaggedNotDepictedCount).toBe(0);
+  });
+
+  it('Step 4: WARNS (not blocks) when the reveal flag is set but the fact is not depicted in the prose', () => {
+    const result = new InformationLedgerScheduleValidator().validate(
+      [infoEntry()],
+      // reveal flag set in ep6, but ep6 prose says nothing about Sylvanor/Starborn.
+      story({ 2: ['info_1_setup'], 6: ['info_1_reveal'] }),
+    );
+    expect(result.valid).toBe(true); // warning, not error — flag stays the blocking signal
+    expect(result.metrics.flaggedNotDepictedCount).toBe(1);
+    expect(result.metrics.missingRevealCount).toBe(0); // the reveal DID land (flag) — just not depicted
+    expect(result.issues.some((i) => i.severity === 'warning' && /not depicted/.test(i.message))).toBe(true);
   });
 
   it('blocks (error) when the reveal precedes its setup on-page', () => {

@@ -22,20 +22,53 @@ export function routeFallbackChoicesAcrossTargets<T extends { id: string; nextSc
   return choices.map((choice, i) => ({ ...choice, nextSceneId: targets[i % targets.length] }));
 }
 
+const BRANCH_MATCH_STOPWORDS = new Set([
+  'the', 'and', 'that', 'this', 'with', 'from', 'into', 'your', 'you', 'her', 'his',
+  'him', 'she', 'they', 'them', 'their', 'a', 'an', 'to', 'of', 'it', 'is', 'in', 'on',
+  'because', 'rather', 'than', 'not', 'but', 'where', 'when', 'who',
+]);
+
+function branchTokens(text: string | undefined): Set<string> {
+  const out = new Set<string>();
+  for (const raw of String(text || '').toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length >= 4 && !BRANCH_MATCH_STOPWORDS.has(raw)) out.add(raw);
+  }
+  return out;
+}
+
+/** Content-word overlap between a choice's text and a branch path's label. */
+function branchAffinity(choiceText: string | undefined, label: string | undefined): number {
+  const a = branchTokens(choiceText);
+  const b = branchTokens(label);
+  if (a.size === 0 || b.size === 0) return 0;
+  let hits = 0;
+  for (const t of a) if (b.has(t)) hits += 1;
+  return hits;
+}
+
 /**
  * Repair an UNDER-FANNED branch point in place: when a multi-target branch scene's
  * AUTHORED choices route to fewer than 2 of its `leadsTo` targets (e.g. the LLM pointed
  * both choices at the same scene, orphaning the other branch — the bite-me-gen-8 s1-1
  * case), re-point spare choices at the unreached targets until ≥2 distinct targets are
- * covered. "Spare" = a choice whose nextSceneId is not an in-target route, else a
- * redundant choice whose target is already covered by another choice. Existing distinct
- * routing is preserved. Returns true iff any choice was re-pointed. Pure (mutates the
- * passed choices); unit-testable. Cheaper + more reliable than re-rolling ChoiceAuthor,
- * and the only alternative to a hard-abort at GATE_BRANCH_FANOUT.
+ * covered.
+ *
+ * IMPORTANT (story coherence): this does NOT write or move prose — the choices are
+ * already authored. It only corrects each choice's DESTINATION. When `pathHints` give
+ * the authored branch-path label for each target (from BranchManager — e.g. s1-3="The
+ * Side Entrance / accept the key card", s1-2="The Front Door / decline"), the spare
+ * choice routed to a target is the one whose TEXT best matches that target's authored
+ * intent — so "decline" lands on the front-door branch, never the side-entrance one.
+ * Without hints it falls back to the first safe spare (last resort; logged by caller).
+ *
+ * "Spare" = a choice whose nextSceneId is not an in-target route, else a redundant
+ * choice whose target is already covered by another choice. Existing distinct routing is
+ * preserved. Returns true iff any choice was re-pointed. Pure (mutates choices).
  */
-export function repairBranchFanOut<T extends { nextSceneId?: string }>(
+export function repairBranchFanOut<T extends { nextSceneId?: string; text?: string }>(
   choices: T[],
   leadsTo: string[] | undefined,
+  opts?: { pathHints?: Array<{ target: string; label: string }> },
 ): boolean {
   const targets = [...new Set((leadsTo ?? []).filter(Boolean))];
   const need = Math.min(2, targets.length, choices.length);
@@ -45,19 +78,35 @@ export function repairBranchFanOut<T extends { nextSceneId?: string }>(
   const distinctReached = (): Set<string> => new Set(choices.map((c) => c.nextSceneId).filter(inTarget));
   if (distinctReached().size >= need) return false; // already fans out enough
 
+  const labelByTarget = new Map((opts?.pathHints ?? []).map((h) => [h.target, h.label]));
+
+  // Choices safe to re-point: unrouted / out-of-target, OR redundant (their target is
+  // covered by another choice). Never steals the SOLE choice reaching a target.
+  const spareChoices = (): T[] => {
+    const counts = new Map<string, number>();
+    for (const c of choices) if (inTarget(c.nextSceneId)) counts.set(c.nextSceneId, (counts.get(c.nextSceneId) ?? 0) + 1);
+    return choices.filter((c) => !inTarget(c.nextSceneId) || (counts.get(c.nextSceneId as string) ?? 0) > 1);
+  };
+
   let changed = false;
   for (const target of targets) {
     if (distinctReached().size >= need) break;
     if (distinctReached().has(target)) continue;
-    // Prefer an unrouted / out-of-target choice; else steal a redundant one.
-    let spare = choices.find((c) => !inTarget(c.nextSceneId));
-    if (!spare) {
-      const counts = new Map<string, number>();
-      for (const c of choices) if (inTarget(c.nextSceneId)) counts.set(c.nextSceneId, (counts.get(c.nextSceneId) ?? 0) + 1);
-      spare = choices.find((c) => inTarget(c.nextSceneId) && (counts.get(c.nextSceneId) ?? 0) > 1);
+    const spares = spareChoices();
+    if (spares.length === 0) break; // nothing safe to re-point
+    // Route the spare whose TEXT best matches this target's authored branch label, so
+    // the choice goes where the author intended (not by arbitrary order). First spare
+    // when there is no label or no signal.
+    const label = labelByTarget.get(target);
+    let chosen = spares[0];
+    if (label) {
+      let best = -1;
+      for (const c of spares) {
+        const score = branchAffinity(c.text, label);
+        if (score > best) { best = score; chosen = c; }
+      }
     }
-    if (!spare) break; // nothing safe to re-point
-    spare.nextSceneId = target;
+    chosen.nextSceneId = target;
     changed = true;
   }
   return changed;

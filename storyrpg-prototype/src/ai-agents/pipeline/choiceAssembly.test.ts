@@ -22,6 +22,26 @@ describe('repairBranchFanOut (under-fanned branch point recovery)', () => {
     expect(choices.find((c) => c.id === 'a')!.nextSceneId).toBe('s1-2'); // existing distinct route preserved
   });
 
+  it('routes each choice to its AUTHORED target by matching choice text to the path label', () => {
+    // Both choices wrongly point at s1-2; pathHints carry the authored intent
+    // (s1-3 = "The Side Entrance / accept the key card", s1-2 = "The Front Door / decline").
+    // The "decline" choice must land on s1-2, the "accept" choice on s1-3 — by MEANING,
+    // not order. Ordered decline-first so a naive first-spare repair would mis-route.
+    const choices = [
+      { id: 'decline', nextSceneId: 's1-2', text: 'Decline the key card and walk in the front door.' },
+      { id: 'accept', nextSceneId: 's1-2', text: 'Accept the key card and slip in the side entrance.' },
+    ];
+    const changed = repairBranchFanOut(choices, ['s1-2', 's1-3'], {
+      pathHints: [
+        { target: 's1-3', label: 'The Side Entrance — accept the key card and use the side entrance' },
+        { target: 's1-2', label: 'The Front Door — decline the key card' },
+      ],
+    });
+    expect(changed).toBe(true);
+    expect(choices.find((c) => c.id === 'accept')!.nextSceneId).toBe('s1-3'); // side entrance
+    expect(choices.find((c) => c.id === 'decline')!.nextSceneId).toBe('s1-2'); // front door
+  });
+
   it('is a no-op when the branch already fans out to >=2 targets', () => {
     const choices = [{ id: 'a', nextSceneId: 's1-2' }, { id: 'b', nextSceneId: 's1-3' }];
     expect(repairBranchFanOut(choices, ['s1-2', 's1-3'])).toBe(false);

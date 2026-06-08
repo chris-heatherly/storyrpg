@@ -7466,6 +7466,11 @@ export class FullStoryPipeline {
       stateReconciliationNotes?: string[];
       reconvergenceNarrativeAcknowledgment?: string;
     }> = new Map();
+    // For branch fan-out repair: scene id -> the authored immediate-next target(s) on
+    // each branch path through it, labelled with the path's name/description so an
+    // under-fanned branch can be re-routed by AUTHORED INTENT (matching a choice's text
+    // to its path), never arbitrarily. Empty when there is no branch analysis.
+    const branchTargetHintsByScene = new Map<string, Array<{ target: string; label: string }>>();
     if (branchAnalysis) {
       const bottlenecks = new Set(blueprint.bottleneckScenes || []);
       const branchPathsByScene = new Map<string, string[]>();
@@ -7474,6 +7479,20 @@ export class FullStoryPipeline {
           const arr = branchPathsByScene.get(sid) || [];
           arr.push(path.id);
           branchPathsByScene.set(sid, arr);
+        }
+      }
+      for (const path of branchAnalysis.branchPaths || []) {
+        const seq = path.sceneSequence || [];
+        const label = `${path.name || ''} ${path.description || ''}`.trim();
+        for (let i = 0; i + 1 < seq.length; i++) {
+          const s = seq[i];
+          const t = seq[i + 1];
+          if (!s || !t || s === t) continue;
+          const arr = branchTargetHintsByScene.get(s) || [];
+          const existing = arr.find((h) => h.target === t);
+          if (existing) existing.label = `${existing.label} ${label}`.trim();
+          else arr.push({ target: t, label });
+          branchTargetHintsByScene.set(s, arr);
         }
       }
       const reconvMap = new Map<string, ReconvergencePoint>();
@@ -8192,9 +8211,12 @@ export class FullStoryPipeline {
             // each unreached target so the planned branch is realized. No-op for
             // non-branch scenes or already-fanned choices.
             if ((new Set(sceneBlueprint.leadsTo ?? []).size) > 1) {
-              const repaired = repairBranchFanOut(choiceResult.data.choices, sceneBlueprint.leadsTo);
+              const repaired = repairBranchFanOut(choiceResult.data.choices, sceneBlueprint.leadsTo, {
+                pathHints: branchTargetHintsByScene.get(sceneBlueprint.id),
+              });
               if (repaired) {
-                this.emit({ type: 'warning', phase: 'choices', message: `Repaired branch fan-out for ${sceneBlueprint.id}: re-pointed a choice to cover all leadsTo targets [${[...new Set(sceneBlueprint.leadsTo ?? [])].join(', ')}].` });
+                const hinted = branchTargetHintsByScene.has(sceneBlueprint.id);
+                this.emit({ type: 'warning', phase: 'choices', message: `Repaired branch fan-out for ${sceneBlueprint.id}: re-pointed a choice to its authored target [${[...new Set(sceneBlueprint.leadsTo ?? [])].join(', ')}]${hinted ? ' (matched to authored branch intent)' : ' (no branch-path hints — first-spare fallback)'}.` });
               }
             }
             choiceSets.push({ ...choiceResult.data, sceneId: sceneBlueprint.id });

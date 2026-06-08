@@ -257,12 +257,36 @@ function isSignatureBeat(beat: RequiredBeat): boolean {
   return beat.tier === 'signature';
 }
 
-/** Collect every signature expectation a plan carries. */
+/**
+ * A descriptive DESIGN-NOTE signature (a "label — description" summary, a parenthetical
+ * aside, or a long abstract phrase) rather than a concrete staged line. The keyword /
+ * proximity heuristics false-positive on these (they share abstract words with faithful
+ * prose and sit near benign negations), and for encounter scenes their depiction is
+ * already hard-checked by EncounterAnchorContentValidator — so this validator treats
+ * them as advisory rather than blocking.
+ */
+function isDesignNoteSignature(text: string): boolean {
+  if (/[—–]| -- | - /.test(text)) return true;        // "label — description" separator
+  if (/\([^)]*\)/.test(text)) return true;             // parenthetical aside
+  return contentTokens(text).length > INVERSION_MAX_SIG_TOKENS; // long summary
+}
+
+/** Collect every signature expectation a plan carries (deduped by scene + text). */
 function collectSignatures(plan: SeasonScenePlan): SignatureExpectation[] {
   const out: SignatureExpectation[] = [];
+  const seen = new Set<string>();
+  // The SAME signature text often appears as BOTH scene.signatureMoment AND a signature
+  // requiredBeat (scene- or encounter-level) — without dedup that emits the identical
+  // finding 2-3×, inflating the blocking count. Key on scene id + normalized text.
+  const push = (sig: SignatureExpectation): void => {
+    const key = `${sig.sceneId}::${normalize(sig.text)}`;
+    if (!sig.text || seen.has(key)) return;
+    seen.add(key);
+    out.push(sig);
+  };
   for (const scene of plan.scenes) {
     if (scene.signatureMoment?.trim()) {
-      out.push({
+      push({
         episodeNumber: scene.episodeNumber,
         sceneId: scene.id,
         origin: 'signatureMoment',
@@ -271,7 +295,7 @@ function collectSignatures(plan: SeasonScenePlan): SignatureExpectation[] {
     }
     for (const beat of scene.requiredBeats || []) {
       if (isSignatureBeat(beat) && beat.mustDepict.trim()) {
-        out.push({
+        push({
           episodeNumber: scene.episodeNumber,
           sceneId: scene.id,
           origin: 'requiredBeat',
@@ -282,7 +306,7 @@ function collectSignatures(plan: SeasonScenePlan): SignatureExpectation[] {
     }
     for (const beat of scene.encounter?.requiredBeats || []) {
       if (isSignatureBeat(beat) && beat.mustDepict.trim()) {
-        out.push({
+        push({
           episodeNumber: scene.episodeNumber,
           sceneId: scene.id,
           origin: 'encounterRequiredBeat',
@@ -364,16 +388,22 @@ export class SignatureDevicePresenceValidator extends BaseValidator {
         continue;
       }
 
+      // Design-note signatures (descriptive summaries) are advisory here: their keyword/
+      // proximity heuristics false-positive on faithful dramatized prose, and encounter
+      // depiction is hard-checked by EncounterAnchorContentValidator. Concrete staged
+      // signatures stay BLOCKING errors.
+      const designNote = isDesignNoteSignature(sig.text);
+
       if (!signaturePresent(sig.text, haystack)) {
-        issues.push(this.error(
-          `Signature device is missing from the final prose of episode ${sig.episodeNumber} scene "${sig.sceneId}": "${sig.text}". The staged signature moment must be depicted, not summarized away.`,
-          where,
-          'Dramatize the signature device on-page in this scene — show the staged image/action the treatment fixed; do not drop or paraphrase it out.',
-        ));
+        const message = `Signature device is missing from the final prose of episode ${sig.episodeNumber} scene "${sig.sceneId}": "${sig.text}". The staged signature moment must be depicted, not summarized away.`;
+        const suggestion = 'Dramatize the signature device on-page in this scene — show the staged image/action the treatment fixed; do not drop or paraphrase it out.';
+        issues.push(designNote ? this.warning(message, where, suggestion) : this.error(message, where, suggestion));
         continue;
       }
 
-      if (contentTokens(sig.text).length <= INVERSION_MAX_SIG_TOKENS && signatureInverted(sig.text, haystack)) {
+      // Inversion-by-proximity is unreliable for design-note signatures (and long ones),
+      // so only run it on concrete, in-range signatures — where it stays a blocking error.
+      if (!designNote && contentTokens(sig.text).length <= INVERSION_MAX_SIG_TOKENS && signatureInverted(sig.text, haystack)) {
         issues.push(this.error(
           `Signature device appears INVERTED/negated in episode ${sig.episodeNumber} scene "${sig.sceneId}": "${sig.text}". The prose negates the staged moment (e.g. "he didn't ...") instead of depicting it.`,
           where,

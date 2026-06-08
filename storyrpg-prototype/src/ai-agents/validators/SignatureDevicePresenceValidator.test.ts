@@ -259,4 +259,43 @@ describe('SignatureDevicePresenceValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
+
+  it('design-note signature (em-dash summary) missing → WARNING, not a blocking error', () => {
+    // "label — description" summaries false-positive on the keyword bar; encounter
+    // depiction is owned by EncounterAnchorContentValidator, so this is advisory here.
+    const sig = 'The siege itself — a sustained defensive set piece (wall breach + repulse) culminating in the choice to evacuate.';
+    const result = run({
+      plan: plan([plannedScene('s3-1', 3, { signatureMoment: sig })]),
+      story: story([episode(3, [generatedScene('s3-1', [beat('b1', 'They held the line as long as they could, then slipped out the postern.')])])]),
+    });
+    expect(result.valid).toBe(true); // warning, not error
+    expect(result.issues.some((i) => i.severity === 'warning' && /missing/i.test(i.message))).toBe(true);
+    expect(result.issues.some((i) => i.severity === 'error')).toBe(false);
+  });
+
+  it('design-note signature is NOT flagged inverted on incidental negation in faithful prose', () => {
+    const sig = 'The ambush in the pass — Shadowscale raiders plus shadow-magic duel against the Sunblade.';
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { signatureMoment: sig })]),
+      story: story([episode(1, [generatedScene('s1-1', [
+        // depicts the ambush/duel, with an incidental negation near content words
+        beat('b1', 'The Shadowscale raiders sprang the ambush in the pass; the Sunblade would not yield as shadow-magic lashed the duel.'),
+      ])])]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues.some((i) => /INVERTED|negat/i.test(i.message))).toBe(false);
+  });
+
+  it('dedupes a signature carried as BOTH signatureMoment and an encounter required beat', () => {
+    const sig = 'Aethavyr leaps from the battlement to save the falling child';
+    const result = run({
+      plan: plan([plannedScene('s2-3', 2, {
+        signatureMoment: sig,
+        encounterRequiredBeats: [{ id: 'erb1', sourceTurn: 's', mustDepict: sig, tier: 'signature' }],
+      })]),
+      // absent from prose → would emit a "missing" error ONCE, not twice
+      story: story([episode(2, [generatedScene('s2-3', [beat('b1', 'A quiet, empty hall.')])])]),
+    });
+    expect(result.issues.filter((i) => /missing/i.test(i.message))).toHaveLength(1);
+  });
 });

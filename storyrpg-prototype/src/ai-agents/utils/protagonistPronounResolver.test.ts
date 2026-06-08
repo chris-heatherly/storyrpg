@@ -3,6 +3,7 @@ import type { Story } from '../../types';
 import {
   canonicalizeProtagonistPronouns,
   otherGenderNamesFromStory,
+  applyPronounDisambiguations,
 } from './protagonistPronounResolver';
 
 function storyWith(npcs: Array<{ name: string; pronouns: string }>, beats: Array<Record<string, unknown>>): Story {
@@ -140,5 +141,31 @@ describe('otherGenderNamesFromStory', () => {
       [{ id: 'b1', text: '' }],
     );
     expect(otherGenderNamesFromStory(story, 'she/her')).toEqual(['Victor']);
+  });
+});
+
+describe('applyPronounDisambiguations', () => {
+  it('replaces an ambiguous sentence in a reader-facing field (incl. encounter outcomeText)', () => {
+    const story = storyWith(
+      [{ name: 'Victor', pronouns: 'he/him' }],
+      [{ id: 'b1', outcomeText: 'Kylie watches Victor lift his glass. The room goes quiet.' }],
+    );
+    const rewrites = new Map([
+      ['Kylie watches Victor lift his glass.', 'Kylie watches Victor lift his own glass.'],
+    ]);
+    const applied = applyPronounDisambiguations(story, rewrites);
+    expect(applied).toBe(1);
+    expect(beat0(story).outcomeText).toBe('Kylie watches Victor lift his own glass. The room goes quiet.');
+  });
+
+  it('does not touch agent-facing fields and returns 0 when nothing matches', () => {
+    const story = storyWith([{ name: 'Victor', pronouns: 'he/him' }], [
+      { id: 'b1', text: 'Unrelated prose.', authorNote: 'Kylie watches Victor lift his glass.' },
+    ]);
+    const rewrites = new Map([['Kylie watches Victor lift his glass.', 'rewritten']]);
+    // authorNote is NOT a reader-facing TEXT_KEY → never rewritten.
+    expect(applyPronounDisambiguations(story, rewrites)).toBe(0);
+    expect((beat0(story) as { authorNote: string }).authorNote).toBe('Kylie watches Victor lift his glass.');
+    expect(applyPronounDisambiguations(story, new Map())).toBe(0);
   });
 });

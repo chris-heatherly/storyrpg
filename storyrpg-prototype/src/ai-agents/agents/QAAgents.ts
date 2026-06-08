@@ -935,6 +935,49 @@ export interface QAReport {
 }
 
 /**
+ * Derive the QA-level outcome (overall score, critical-issue list, pass/fail) purely
+ * from the three sub-reports. The single source of truth for QA aggregation: used both
+ * when the report is first assembled (QARunner.runFullQA) and when it is RECOMPUTED
+ * after a repair refreshes a sub-report (e.g. continuity re-validation), so the
+ * GATE_QA_CRITICAL_BLOCK gate reflects post-repair residue, not stale findings. Pure.
+ */
+export function deriveQAOutcome(
+  continuity: Pick<ContinuityReport, 'overallScore' | 'issueCount'>,
+  voice: Pick<VoiceReport, 'overallScore' | 'issues'>,
+  stakes: Pick<StakesReport, 'overallScore' | 'metrics'>,
+): { overallScore: number; criticalIssues: string[]; passesQA: boolean } {
+  const overallScore = Math.round(
+    (continuity.overallScore * 0.35) +
+    (voice.overallScore * 0.30) +
+    (stakes.overallScore * 0.35)
+  );
+  const criticalIssues: string[] = [];
+  if (continuity.issueCount.errors > 0) {
+    criticalIssues.push(`${continuity.issueCount.errors} continuity error(s)`);
+  }
+  if (voice.issues.filter((i) => i.severity === 'error').length > 0) {
+    criticalIssues.push('Voice consistency errors');
+  }
+  if (stakes.metrics.falseChoiceCount > 0) {
+    criticalIssues.push(`${stakes.metrics.falseChoiceCount} false choice(s)`);
+  }
+  return { overallScore, criticalIssues, passesQA: overallScore >= 70 && criticalIssues.length === 0 };
+}
+
+/**
+ * Recompute a QAReport's derived fields (overallScore / criticalIssues / passesQA) in
+ * place from its current sub-reports. Call after a repair mutates a sub-report so the
+ * QA-critical gate and the aggregated season report see the residue. Pure (mutates the
+ * passed report only).
+ */
+export function recomputeQAReportDerived(report: QAReport): void {
+  const { overallScore, criticalIssues, passesQA } = deriveQAOutcome(report.continuity, report.voice, report.stakes);
+  report.overallScore = overallScore;
+  report.criticalIssues = criticalIssues;
+  report.passesQA = passesQA;
+}
+
+/**
  * Options for QA execution - allows skipping checks done incrementally
  */
 export interface QARunnerOptions {
@@ -1078,25 +1121,9 @@ export class QARunner {
       stakes = stakesResult?.data || this.getDefaultStakesReport();
     }
 
-    // Calculate overall score
-    const overallScore = Math.round(
-      (continuity.overallScore * 0.35) +
-      (voice.overallScore * 0.30) +
-      (stakes.overallScore * 0.35)
-    );
-
-    // Collect critical issues
-    const criticalIssues: string[] = [];
-
-    if (continuity.issueCount.errors > 0) {
-      criticalIssues.push(`${continuity.issueCount.errors} continuity error(s)`);
-    }
-    if (voice.issues.filter(i => i.severity === 'error').length > 0) {
-      criticalIssues.push('Voice consistency errors');
-    }
-    if (stakes.metrics.falseChoiceCount > 0) {
-      criticalIssues.push(`${stakes.metrics.falseChoiceCount} false choice(s)`);
-    }
+    // Score + critical-issue derivation lives in the pure deriveQAOutcome (so the
+    // post-repair recompute uses the EXACT same formula — no drift).
+    const { overallScore, criticalIssues, passesQA } = deriveQAOutcome(continuity, voice, stakes);
 
     // Generate summary
     const summary = this.generateSummary(continuity, voice, stakes, overallScore);
@@ -1106,7 +1133,7 @@ export class QARunner {
       voice,
       stakes,
       overallScore,
-      passesQA: overallScore >= 70 && criticalIssues.length === 0,
+      passesQA,
       criticalIssues,
       summary,
       skippedChecks: skippedChecks.length > 0 ? skippedChecks : undefined,

@@ -4,6 +4,8 @@ import {
   seedEncounterOutcomeFlags,
   findEncounterOutcomeDesyncs,
   encounterOutcomeFlag,
+  firstProseBeatId,
+  applyOutcomeVariants,
 } from './encounterOutcomeFlags';
 
 function storyWithEncounter(opts: {
@@ -81,5 +83,51 @@ describe('findEncounterOutcomeDesyncs', () => {
       reconvScene: { id: 's5', variants: [] },
     });
     expect(findEncounterOutcomeDesyncs(story)).toHaveLength(0);
+  });
+});
+
+describe('firstProseBeatId', () => {
+  it('returns the first non-empty, non-choice-bridge beat id', () => {
+    const scene = { id: 's', beats: [
+      { id: 'cb', text: '', isChoiceBridge: true },
+      { id: 'rb1', text: 'after' },
+      { id: 'rb2', text: 'later' },
+    ] } as any;
+    expect(firstProseBeatId(scene)).toBe('rb1');
+  });
+});
+
+describe('applyOutcomeVariants', () => {
+  it('adds flag-gated variants to the beat and CLEARS the desync (round-trip)', () => {
+    const story = storyWithEncounter({
+      outcomes: { victory: { nextSceneId: 's5' }, partialVictory: { nextSceneId: 's5' } },
+      reconvScene: { id: 's5', variants: [] },
+    });
+    expect(findEncounterOutcomeDesyncs(story)).toHaveLength(1);
+
+    const added = applyOutcomeVariants(story, 's5', 'rb1', 'enc-1', [
+      { outcome: 'victory', text: 'She stands easy at the parapet.' },
+      { outcome: 'partialVictory', text: 'She stands at the parapet, favoring her ribs.' },
+    ]);
+    expect(added).toBe(2);
+
+    const beat = (story.episodes[0].scenes[1] as any).beats[0];
+    expect(beat.textVariants).toHaveLength(2);
+    expect(beat.textVariants[0].condition).toEqual({ type: 'flag', flag: encounterOutcomeFlag('enc-1', 'victory'), value: true });
+    // The detector now sees outcome-conditioned text → no desync.
+    expect(findEncounterOutcomeDesyncs(story)).toHaveLength(0);
+  });
+
+  it('is idempotent: re-applying the same outcome adds nothing, and skips empty text', () => {
+    const story = storyWithEncounter({
+      outcomes: { victory: { nextSceneId: 's5' }, partialVictory: { nextSceneId: 's5' } },
+      reconvScene: { id: 's5', variants: [] },
+    });
+    applyOutcomeVariants(story, 's5', 'rb1', 'enc-1', [{ outcome: 'victory', text: 'easy.' }]);
+    const again = applyOutcomeVariants(story, 's5', 'rb1', 'enc-1', [
+      { outcome: 'victory', text: 'easy.' },          // already present → skipped
+      { outcome: 'partialVictory', text: '   ' },      // empty → skipped
+    ]);
+    expect(again).toBe(0);
   });
 });

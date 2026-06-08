@@ -5,7 +5,10 @@ import {
   normalizeContinuitySeverity,
   deriveContinuityScore,
   deriveVoiceScore,
+  deriveQAOutcome,
+  recomputeQAReportDerived,
   type ContinuityIssue,
+  type QAReport,
 } from './QAAgents';
 
 describe('QAAgents continuity normalization', () => {
@@ -75,5 +78,45 @@ describe('deriveVoiceScore', () => {
 
   it('returns null (→ fail closed) on a true non-response', () => {
     expect(deriveVoiceScore({ characterScores: [], issues: [], recommendations: [], distinctionScore: 50 })).toBeNull();
+  });
+});
+
+describe('deriveQAOutcome / recomputeQAReportDerived', () => {
+  const clean = {
+    continuity: { overallScore: 100, issueCount: { errors: 0, warnings: 0, suggestions: 0 } },
+    voice: { overallScore: 90, issues: [] as Array<{ severity: string }> },
+    stakes: { overallScore: 90, metrics: { falseChoiceCount: 0 } },
+  };
+
+  it('passes when score >= 70 and there are no critical issues', () => {
+    const out = deriveQAOutcome(clean.continuity, clean.voice as never, clean.stakes as never);
+    expect(out.criticalIssues).toEqual([]);
+    expect(out.passesQA).toBe(true);
+    // 100*.35 + 90*.30 + 90*.35 = 35 + 27 + 31.5 = 93.5 -> 94
+    expect(out.overallScore).toBe(94);
+  });
+
+  it('collects a critical issue per failing sub-report and fails QA', () => {
+    const out = deriveQAOutcome(
+      { overallScore: 40, issueCount: { errors: 2, warnings: 0, suggestions: 0 } },
+      { overallScore: 50, issues: [{ severity: 'error' }] } as never,
+      { overallScore: 60, metrics: { falseChoiceCount: 3 } } as never,
+    );
+    expect(out.criticalIssues).toEqual(['2 continuity error(s)', 'Voice consistency errors', '3 false choice(s)']);
+    expect(out.passesQA).toBe(false);
+  });
+
+  it('recompute flips a stale report to passing once continuity errors are repaired to 0', () => {
+    const report = {
+      continuity: { overallScore: 100, issueCount: { errors: 0, warnings: 0, suggestions: 0 }, issues: [], passedChecks: [], recommendations: [] },
+      voice: { overallScore: 90, issues: [] },
+      stakes: { overallScore: 90, metrics: { falseChoiceCount: 0 } },
+      // stale derived fields from before the repair (2 continuity errors)
+      overallScore: 40, passesQA: false, criticalIssues: ['2 continuity error(s)'], summary: '',
+    } as unknown as QAReport;
+    recomputeQAReportDerived(report);
+    expect(report.criticalIssues).toEqual([]);
+    expect(report.passesQA).toBe(true);
+    expect(report.overallScore).toBe(94);
   });
 });

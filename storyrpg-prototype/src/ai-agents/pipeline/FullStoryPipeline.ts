@@ -40,7 +40,7 @@ import { resolveCharacterProfile } from '../utils/characterProfileResolver';
 import { StoryArchitect, StoryArchitectInput, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
-import { QARunner, QAReport, QARunnerOptions } from '../agents/QAAgents';
+import { QARunner, QAReport, QARunnerOptions, ContinuityChecker, type ContinuityIssue, recomputeContinuityIssueCount, deriveContinuityScore, recomputeQAReportDerived } from '../agents/QAAgents';
 import { SourceMaterialAnalyzer, SourceMaterialInput } from '../agents/SourceMaterialAnalyzer';
 import { SeasonPlan } from '../../types/seasonPlan';
 import type { CharacterFashionStyle } from '../../types/sourceAnalysis';
@@ -48,6 +48,10 @@ import { buildGrowthTemplates, type GrowthCurveEntry } from '../../engine/growth
 // Types CrossEpisodeBranch, ConsequenceChain, PlannedEncounter used transitively via SeasonPlan
 import { BranchManager, BranchAnalysis, BranchPath, ReconvergencePoint } from '../agents/BranchManager';
 import { SceneCritic } from '../agents/SceneCritic';
+import { PronounDisambiguator } from '../agents/PronounDisambiguator';
+import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory, applyPronounDisambiguations } from '../utils/protagonistPronounResolver';
+import { OutcomeVariantAuthor } from '../agents/OutcomeVariantAuthor';
+import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs, firstProseBeatId, applyOutcomeVariants } from '../utils/encounterOutcomeFlags';
 import { 
   EncounterArchitect, 
   EncounterArchitectInput, 
@@ -155,6 +159,8 @@ import {
   selectRepairableContinuityFindings,
   buildContinuityRepairGuidance,
   mergeRewrittenBeatsIntoStory,
+  applyRewrittenBeatsToSceneContents,
+  mergeRevalidatedContinuityIssues,
   type ContinuityFinding,
 } from './continuityRepair';
 import type { EpisodeStateSnapshot } from './episodeStateSnapshot';
@@ -1180,6 +1186,22 @@ export class FullStoryPipeline {
     // softer landing once it lands.)
     const dupBlocking = isGateEnabled('GATE_DUPLICATE_ESTABLISHING_BEAT');
     const dup = this.duplicateEstablishingBeatValidator.validateEpisode(episode, blueprint, { blocking: dupBlocking });
+    // Wave-0 shadow telemetry: record the flag-INDEPENDENT would-fire count
+    // (duplicateEstablishingBeatCount is the same whether blocking is on or off) so
+    // gate-shadow-ledger.jsonl accumulates the false-positive data this prose
+    // heuristic needs before it can be promoted off -> on. Best-effort, never blocks.
+    {
+      const dupShadow = buildGateShadowRecord({
+        gate: 'GATE_DUPLICATE_ESTABLISHING_BEAT',
+        validator: 'DuplicateEstablishingBeatValidator',
+        scope: 'episode',
+        enabled: dupBlocking,
+        blockingCount: dup.metrics.duplicateEstablishingBeatCount,
+        storyId: episode.id,
+      });
+      const dupDetails = dup.issues.map((issue) => `${issue.priorSceneId}->${issue.sceneId}`).join('; ') || undefined;
+      await this.recordGateShadowSafe({ ...dupShadow, details: dupDetails });
+    }
     if (dup.issues.length > 0) {
       this.emit({
         type: 'warning',
@@ -1248,6 +1270,117 @@ export class FullStoryPipeline {
     return result;
   }
 
+  /**
+   * W1 regen route for the protagonist-pronoun gate. Runs the deterministic resolver
+   * to surface the AMBIGUOUS residue (sentences naming the protagonist and a
+   * wrong-gender NPC), hands those sentences to {@link PronounDisambiguator} for a
+   * minimal rewrite, and applies the rewrites back into the story in place. After this
+   * the contract's own resolver re-scan finds only genuinely-unresolvable residue, so
+   * GATE_PROTAGONIST_PRONOUN can block on real defects instead of every shared-pronoun
+   * sentence. No-op (and zero LLM cost) when the gate is off or there is no residue.
+   */
+  private async disambiguateProtagonistPronouns(story: Story, brief: FullCreativeBrief): Promise<void> {
+    if (!isGateEnabled('GATE_PROTAGONIST_PRONOUN')) return;
+    const pronouns = brief.protagonist?.pronouns;
+    const name = brief.protagonist?.name;
+    if (!pronouns || !name) return;
+
+    const names = [name, ...((brief.protagonist as { aliases?: string[] })?.aliases ?? [])].filter(Boolean) as string[];
+    const otherGenderNames = otherGenderNamesFromStory(story, pronouns);
+    // First pass is read-only here: it reports the ambiguous residue (the safe cases
+    // are repaired again, idempotently, by the contract's own resolver run later).
+    const scan = canonicalizeProtagonistPronouns(story, { names, pronouns }, otherGenderNames);
+    const sentences = [...new Set(scan.ambiguous.map((a) => a.sentence.trim()).filter(Boolean))];
+    if (sentences.length === 0) return;
+
+    try {
+      const agent = new PronounDisambiguator(this.config.agents.sceneWriter);
+      const res = await withTimeout(
+        agent.execute({ sentences, protagonistName: name, protagonistPronouns: pronouns, otherGenderNames }),
+        PIPELINE_TIMEOUTS.llmAgent,
+        'PronounDisambiguator',
+      );
+      const rewrites = new Map((res.data?.rewrites ?? []).map((r) => [r.original, r.rewritten]));
+      const applied = rewrites.size > 0 ? applyPronounDisambiguations(story, rewrites) : 0;
+      this.emit({
+        type: 'debug',
+        phase: 'pronoun_disambiguation',
+        message: `Protagonist pronoun disambiguation: ${sentences.length} ambiguous sentence(s), ${rewrites.size} rewritten, ${applied} field replacement(s).`,
+      });
+    } catch (err) {
+      // Degrade: keep the residue; the gate will block on it (never silently passes).
+      this.emit({
+        type: 'warning',
+        phase: 'pronoun_disambiguation',
+        message: `Pronoun disambiguation failed (keeping residue): ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  /**
+   * W4 regen route for the encounter-outcome-variant gate. Seeds the outcome flags,
+   * finds reconvergence scenes whose opening prose ignores the outcome, and authors a
+   * per-outcome opening variant (via {@link OutcomeVariantAuthor}) gated on the
+   * matching `encounter_<id>_<outcome>` flag. After this the contract's own desync
+   * detector finds only reconvergences the author could not cover, so
+   * GATE_ENCOUNTER_OUTCOME_VARIANT blocks on real residue. No-op (zero LLM cost) when
+   * the gate is off or there are no desyncs.
+   */
+  private async authorEncounterOutcomeVariants(story: Story): Promise<void> {
+    if (!isGateEnabled('GATE_ENCOUNTER_OUTCOME_VARIANT')) return;
+    seedEncounterOutcomeFlags(story); // idempotent: ensure the flags the variants gate on exist
+    const desyncs = findEncounterOutcomeDesyncs(story).slice(0, 8); // bound the regen work
+    if (desyncs.length === 0) return;
+
+    const sceneById = new Map<string, Scene>();
+    for (const ep of story.episodes || []) for (const s of ep.scenes || []) sceneById.set(s.id, s);
+
+    let authored = 0;
+    try {
+      const agent = new OutcomeVariantAuthor(this.config.agents.sceneWriter);
+      for (const desync of desyncs) {
+        const encounterScene = sceneById.get(desync.encounterSceneId);
+        const enc = encounterScene?.encounter;
+        const reconScene = sceneById.get(desync.reconvergenceSceneId);
+        if (!enc?.outcomes || !reconScene) continue;
+        const beatId = firstProseBeatId(reconScene);
+        if (!beatId) continue;
+        const openingBeatText = (reconScene.beats || []).find((b) => b.id === beatId)?.text ?? '';
+        const outcomes = desync.outcomes
+          .map((k) => ({ outcome: k, outcomeText: (enc.outcomes as Record<string, { outcomeText?: string }>)[k]?.outcomeText ?? '' }))
+          .filter((o) => o.outcomeText);
+        if (outcomes.length < 2) continue;
+
+        const res = await withTimeout(
+          agent.execute({
+            reconvergenceSceneId: desync.reconvergenceSceneId,
+            openingBeatText,
+            encounterId: desync.encounterId,
+            encounterName: enc.name ?? desync.encounterId,
+            outcomes,
+          }),
+          PIPELINE_TIMEOUTS.llmAgent,
+          `OutcomeVariantAuthor(${desync.reconvergenceSceneId})`,
+        );
+        const variants = res.data?.variants ?? [];
+        if (variants.length > 0) {
+          authored += applyOutcomeVariants(story, desync.reconvergenceSceneId, beatId, desync.encounterId, variants);
+        }
+      }
+      this.emit({
+        type: 'debug',
+        phase: 'encounter_outcome_variants',
+        message: `Encounter outcome variants: ${desyncs.length} desync(s), ${authored} variant(s) authored.`,
+      });
+    } catch (err) {
+      this.emit({
+        type: 'warning',
+        phase: 'encounter_outcome_variants',
+        message: `Outcome-variant authoring failed (keeping desync): ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
   private async enforceFinalStoryContract(input: {
     story: Story;
     brief: FullCreativeBrief;
@@ -1259,6 +1392,20 @@ export class FullStoryPipeline {
     if (!this.config.validation?.enabled || this.config.validation?.mode === 'disabled') {
       return undefined;
     }
+
+    // W1 regen route: BEFORE the contract reads protagonist-pronoun residue, run the
+    // ambiguous-sentence disambiguator so the gate fires only on residue the regen
+    // could not resolve (not on every protagonist+NPC sentence). Gated + LLM-backed,
+    // so it costs nothing with GATE_PROTAGONIST_PRONOUN off and degrades to a no-op on
+    // any failure. The contract's own deterministic resolver then re-scans the
+    // (now-disambiguated) prose; only true residue survives to block.
+    await this.disambiguateProtagonistPronouns(input.story, input.brief);
+
+    // W4 regen route: BEFORE the contract detects encounter-outcome desyncs, author the
+    // missing outcome-conditioned opening variants so the gate fires only on
+    // reconvergences the author could not cover. Gated + LLM-backed (zero cost with
+    // GATE_ENCOUNTER_OUTCOME_VARIANT off; degrades to a no-op on failure).
+    await this.authorEncounterOutcomeVariants(input.story);
 
     // §4/GAP-D: dispatch the five treatment-fidelity validators (default-off per gate
     // flag) so §4.6 can keep authored-fidelity errors blocking. Logic is in the sibling
@@ -9423,6 +9570,7 @@ export class FullStoryPipeline {
     characterBible: CharacterBible,
     qaReport: QAReport,
     outputDirectory: string,
+    blueprint?: EpisodeBlueprint,
   ): Promise<void> {
     const findings = (qaReport.continuity?.issues ?? []) as unknown as ContinuityFinding[];
     const scenes = scenesNeedingRepair(findings).slice(0, 3); // bound the repair work
@@ -9463,6 +9611,7 @@ export class FullStoryPipeline {
     }
     const capabilityFacts = capabilityFactStrings(characterBible.characters);
     const repaired: Array<{ sceneId: string; beatIds: string[]; merged: number }> = [];
+    const rewrittenSceneIds = new Set<string>();
     for (const sceneId of scenes) {
       const scene = sceneContents.find((sc) => sc.sceneId === sceneId);
       if (!scene) continue;
@@ -9478,8 +9627,14 @@ export class FullStoryPipeline {
           `SceneCritic.continuityRepair(${sceneId})`,
         );
         if (critique.success && critique.data) {
-          const merged = mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never);
+          const rewrittenBeats = critique.data.rewrittenBeats;
+          const merged = mergeRewrittenBeatsIntoStory(story as never, sceneId, rewrittenBeats as never);
           if (merged > 0) {
+            // Mirror the rewrite into the in-memory sceneContents too, so the
+            // post-repair re-check (which re-reads sceneContents, not the assembled
+            // story) sees the repaired prose rather than the original.
+            applyRewrittenBeatsToSceneContents(sceneContents as never, sceneId, rewrittenBeats as never);
+            rewrittenSceneIds.add(sceneId);
             repaired.push({ sceneId, beatIds: flaggedBeatIds, merged });
             this.emit({ type: 'debug', phase: 'continuity_repair', message: `Repaired ${merged} beat(s) in ${sceneId} for character-consistency continuity.` });
           }
@@ -9488,6 +9643,23 @@ export class FullStoryPipeline {
         this.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity repair for ${sceneId} failed (keeping original): ${err instanceof Error ? err.message : String(err)}` });
       }
     }
+    // Post-repair re-validation: when a gate actually CONSUMES the continuity residue
+    // (GATE_CONTINUITY_REMEDIATION / GATE_QA_CRITICAL_BLOCK), re-run the checker over
+    // the repaired prose and refresh qaReport.continuity IN PLACE so the gate blocks
+    // only on genuinely-unfixed errors — not on stale pre-repair findings the rewrite
+    // already resolved. With both gates off this is skipped (no LLM cost, behavior
+    // unchanged: advisory repair + stale report, exactly as before).
+    let revalidation: { ran: boolean; succeeded: boolean; residueErrors: number } | undefined;
+    if (rewrittenSceneIds.size > 0) {
+      revalidation = await this.revalidateRepairedContinuity(
+        sceneContents,
+        characterBible,
+        qaReport,
+        [...rewrittenSceneIds],
+        blueprint,
+      );
+    }
+
     // Persist a summary so "did repair fire?" is answerable from artifacts — the
     // 06-qa-report.json is PRE-repair and will still list the original findings.
     await saveEarlyDiagnostic(outputDirectory, 'continuity-repair.json', {
@@ -9495,8 +9667,84 @@ export class FullStoryPipeline {
       continuityIssuesSeen: findings.length,
       candidateScenes: scenes,
       repaired,
+      revalidation,
       criticWasInjected: !!this.sceneCritic,
     });
+  }
+
+  /**
+   * Re-run the ContinuityChecker over the repaired prose and refresh the qaReport's
+   * continuity findings in place, so a blocking continuity/QA gate fires only on
+   * CONFIRMED residue. Gated on the consuming flags so the LLM cost is paid only when
+   * a gate will act on the result.
+   *
+   * Failure policy (matches the no-new-abort-modes discipline of the final-contract
+   * repair loop): if the re-check itself fails (e.g. Gemini parse fragility), we do
+   * NOT keep the stale findings — that would let LLM flakiness hard-fail a run whose
+   * prose we already re-authored. Instead we prune the repaired scenes' findings
+   * (trusting the canon-grounded rewrite, exactly as the advisory path does today).
+   * A clean re-check adopts the fresh residue for the repaired scenes; findings for
+   * scenes we did not re-author are always kept verbatim.
+   */
+  private async revalidateRepairedContinuity(
+    sceneContents: SceneContent[],
+    characterBible: CharacterBible,
+    qaReport: QAReport,
+    repairedSceneIds: string[],
+    blueprint?: EpisodeBlueprint,
+  ): Promise<{ ran: boolean; succeeded: boolean; residueErrors: number } | undefined> {
+    if (!isGateEnabled('GATE_CONTINUITY_REMEDIATION') && !isGateEnabled('GATE_QA_CRITICAL_BLOCK')) {
+      return { ran: false, succeeded: false, residueErrors: 0 };
+    }
+    if (repairedSceneIds.length === 0 || !qaReport.continuity) return { ran: false, succeeded: false, residueErrors: 0 };
+
+    let fresh: ContinuityIssue[] = [];
+    let succeeded = false;
+    try {
+      const checker = new ContinuityChecker(this.config.agents.qaRunner || this.config.agents.storyArchitect);
+      const result = await withTimeout(
+        checker.execute({
+          // Full repaired scene set preserves cross-scene context; we only ADOPT
+          // residue for the repaired scenes (see mergeRevalidatedContinuityIssues).
+          sceneContents,
+          knownFlags: blueprint?.suggestedFlags ?? [],
+          knownScores: blueprint?.suggestedScores ?? [],
+          knownTags: [],
+          establishedFacts: capabilityFactStrings(characterBible.characters),
+          characterKnowledge: this.buildContinuityCharacterKnowledge(characterBible),
+          timelineEvents: blueprint ? this.buildContinuityTimeline(blueprint) : undefined,
+          focusCrossScene: true,
+        }),
+        PIPELINE_TIMEOUTS.llmAgent,
+        'ContinuityChecker.revalidate',
+      );
+      if (result.success && result.data) {
+        fresh = (result.data.issues ?? []) as unknown as ContinuityIssue[];
+        succeeded = true;
+      } else {
+        this.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity re-validation did not return a report; pruning repaired-scene findings (trusting the rewrite).` });
+      }
+    } catch (err) {
+      this.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity re-validation failed (${err instanceof Error ? err.message : String(err)}); pruning repaired-scene findings (trusting the rewrite).` });
+    }
+
+    // succeeded → adopt fresh residue for repaired scenes; failed → fresh is [] so the
+    // repaired scenes' findings are simply pruned (optimistic fallback).
+    const merged = mergeRevalidatedContinuityIssues(
+      (qaReport.continuity.issues ?? []) as ContinuityIssue[],
+      repairedSceneIds,
+      fresh,
+    );
+    qaReport.continuity.issues = merged;
+    qaReport.continuity.issueCount = recomputeContinuityIssueCount(merged);
+    const score = deriveContinuityScore(qaReport.continuity);
+    if (score != null) qaReport.continuity.overallScore = score;
+    // Refresh the QA-level derived fields (overallScore/criticalIssues/passesQA) so the
+    // GATE_QA_CRITICAL_BLOCK gate and the aggregated season report reflect the repaired
+    // continuity rather than the stale pre-repair count.
+    recomputeQAReportDerived(qaReport);
+
+    return { ran: true, succeeded, residueErrors: merged.filter((i) => i.severity === 'error').length };
   }
 
   /**
@@ -11781,7 +12029,7 @@ export class FullStoryPipeline {
       this.emit({ type: 'debug', phase: `continuity_repair_ep_${i}`, message: `Continuity repair gate: seasonCanonOn=${this.seasonCanonOn} hasQaReport=${!!qaReport}` });
       if (this.seasonCanonOn && qaReport) {
         try {
-          await this.repairContinuityFindings(story, sceneContents, characterBible, qaReport, outputDirectory);
+          await this.repairContinuityFindings(story, sceneContents, characterBible, qaReport, outputDirectory, blueprint);
         } catch (repairErr) {
           this.emit({ type: 'warning', phase: `continuity_repair_ep_${i}`, message: `Continuity repair failed (non-fatal): ${repairErr instanceof Error ? repairErr.message : String(repairErr)}` });
         }

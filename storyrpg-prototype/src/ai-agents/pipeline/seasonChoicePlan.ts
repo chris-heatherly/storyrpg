@@ -22,6 +22,7 @@ import type { ChoiceType, ChoiceTypeTarget } from './choiceTypePlanner';
 import { allocateChoiceTypeCounts, DEFAULT_CHOICE_TYPE_TARGET } from './choiceTypePlanner';
 import { ChoiceDistributionValidator } from '../validators/ChoiceDistributionValidator';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
+import { gateEnabledPredicate } from '../remediation/gateDefaults';
 
 const ORDER: ChoiceType[] = ['expression', 'relationship', 'strategic', 'dilemma'];
 
@@ -135,7 +136,7 @@ export function assignSeasonChoiceTypes(
     const distGate = shouldGate(
       PLAN_GATE_FLAGS.choiceDistribution,
       distResult.issues,
-      (flag) => process.env[flag] === '1',
+      gateEnabledPredicate,
     );
     if (distGate.gate) {
       // S3: remediation-ledger recording is DEFERRED for this plan-stage gate —

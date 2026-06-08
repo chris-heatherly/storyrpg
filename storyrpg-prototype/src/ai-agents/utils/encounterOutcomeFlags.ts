@@ -92,6 +92,55 @@ function sceneHasOutcomeVariant(scene: Scene, encounterId: string): boolean {
   return false;
 }
 
+/** The id of a scene's first reader-facing prose beat (skips choice-bridge beats). */
+export function firstProseBeatId(scene: Scene): string | undefined {
+  const beat = (scene.beats || []).find(
+    (b) => !(b as { isChoiceBridge?: boolean }).isChoiceBridge && typeof b.text === 'string' && b.text.trim().length > 0,
+  );
+  return beat?.id;
+}
+
+/**
+ * Add outcome-conditioned text variants to a beat, gated on the
+ * `encounter_<id>_<outcome>` flags. Skips any outcome whose flag already has a
+ * variant on the beat (idempotent), so re-running never duplicates. Returns the
+ * number of variants added. Pure (mutates the story in place). Unit-testable — the
+ * LLM that authors the prose is the caller's responsibility.
+ */
+export function applyOutcomeVariants(
+  story: Story,
+  reconvergenceSceneId: string,
+  beatId: string,
+  encounterId: string,
+  variants: Array<{ outcome: string; text: string }>,
+): number {
+  if (variants.length === 0) return 0;
+  let added = 0;
+  for (const episode of story.episodes || []) {
+    for (const scene of episode.scenes || []) {
+      if (scene.id !== reconvergenceSceneId) continue;
+      for (const beat of scene.beats || []) {
+        if (beat.id !== beatId) continue;
+        const existing = (beat.textVariants || []) as Array<{ condition?: { flag?: string } }>;
+        const have = new Set(
+          existing.map((v) => v.condition?.flag).filter((f): f is string => typeof f === 'string'),
+        );
+        const toAdd = variants
+          .map((v) => ({ flag: encounterOutcomeFlag(encounterId, v.outcome), text: v.text }))
+          .filter((v) => v.text.trim() && !have.has(v.flag))
+          .map((v) => ({
+            condition: { type: 'flag' as const, flag: v.flag, value: true },
+            text: v.text,
+          }));
+        if (toAdd.length === 0) continue;
+        beat.textVariants = [...(beat.textVariants || []), ...(toAdd as never[])];
+        added += toAdd.length;
+      }
+    }
+  }
+  return added;
+}
+
 /**
  * Find encounters where ≥2 distinct outcomes reconverge into one next scene that
  * has no outcome-conditioned text — the scene cannot reflect what happened.

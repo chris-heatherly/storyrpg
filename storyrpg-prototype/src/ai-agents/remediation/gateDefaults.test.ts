@@ -7,6 +7,7 @@ const TOUCHED = [
   'GATE_DESIGN_NOTE_LEAK',
   'GATE_WITNESS_ID_INTEGRITY',
   'GATE_SETUP_PAYOFF',
+  'GATE_PROP_INTRODUCTION',
   'GATE_UNKNOWN_NEVER_REGISTERED',
   'STORYRPG_GATE_SHADOW',
 ];
@@ -27,7 +28,8 @@ describe('isGateEnabled', () => {
   it('returns the rolled-out default when no env override is present', () => {
     expect(GATE_DEFAULTS.GATE_NPC_DEPTH).toBe(true);
     expect(isGateEnabled('GATE_NPC_DEPTH')).toBe(true); // Wave 1 default-on
-    expect(isGateEnabled('GATE_SETUP_PAYOFF')).toBe(false); // Wave 4, still off
+    expect(isGateEnabled('GATE_SETUP_PAYOFF')).toBe(true); // Wave 4, promoted on (clean shadow pass)
+    expect(isGateEnabled('GATE_PROP_INTRODUCTION')).toBe(false); // Wave 4, still off (fires pre-repair)
   });
 
   it('treats an unregistered flag as default-off (old opt-in semantics)', () => {
@@ -42,15 +44,15 @@ describe('isGateEnabled', () => {
   });
 
   it("env '1' force-enables a default-off gate", () => {
-    process.env.GATE_SETUP_PAYOFF = '1';
-    expect(isGateEnabled('GATE_SETUP_PAYOFF')).toBe(true);
+    process.env.GATE_PROP_INTRODUCTION = '1';
+    expect(isGateEnabled('GATE_PROP_INTRODUCTION')).toBe(true);
   });
 
   it('only the exact strings 1/0 override; other values fall through to the default', () => {
     process.env.GATE_NPC_DEPTH = 'true';
     expect(isGateEnabled('GATE_NPC_DEPTH')).toBe(true); // falls through to default true
-    process.env.GATE_SETUP_PAYOFF = 'yes';
-    expect(isGateEnabled('GATE_SETUP_PAYOFF')).toBe(false); // falls through to default false
+    process.env.GATE_PROP_INTRODUCTION = 'yes';
+    expect(isGateEnabled('GATE_PROP_INTRODUCTION')).toBe(false); // falls through to default false
   });
 
   it('design-note-leak is default-on after a clean shadow pass (reversible via env 0)', () => {

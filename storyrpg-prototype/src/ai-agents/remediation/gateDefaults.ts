@@ -64,14 +64,31 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // rescue a failing one. Reversible via env=0.
   GATE_FINAL_CONTRACT_REPAIR: true,
 
-  // ── Wave 4: plan-time gates — stay OFF until their repair loop lands AND the
-  // shadow pass clears them. Listed here (false) so the rollout state is visible.
-  GATE_SETUP_PAYOFF: false,
-  GATE_CALLBACK_COVERAGE: false,
+  // ── Wave 4: plan-time gates ──
+  // PROMOTED ON after a clean shadow pass: across the six gen-3/4/5 runs recorded in
+  // gate-shadow-ledger.jsonl, each of these logged wouldGate=false / blockingCount=0
+  // on every episode — a zero false-positive profile. They block at plan time (before
+  // any prose is authored), so a genuine error fails fast with no wasted generation and
+  // no regen loop required. Each is reversible per-env via `<FLAG>=0` (kill-switch).
+  GATE_SETUP_PAYOFF: true,
+  GATE_CALLBACK_COVERAGE: true,
+  GATE_CHOICE_DENSITY: true,
+  GATE_CONSEQUENCE_BUDGET: true,
+  // STILL OFF — fires on every shadow run pre-repair (5/5 runs, 16 blocking issues
+  // total) via the cast-reference subset. It has a repair loop
+  // (repairAndRevalidatePropIntroduction) that resolves the raw-label→canonical-id
+  // class before aborting, but the loop has never been exercised live, so promoting
+  // now risks hard-failing every run on residue the repair can't clear. Promote only
+  // after one live `GATE_PROP_INTRODUCTION=1` run confirms the loop drives blocking→0.
   GATE_PROP_INTRODUCTION: false,
-  GATE_CHOICE_DENSITY: false,
+  // STILL OFF — no structured shadow data. Unlike the gates above (logged via
+  // recordPlanGateShadow in FullStoryPipeline), these enforce at the season-planning
+  // seam (seasonChoicePlan / SeasonPlannerAgent), which has no run output directory /
+  // ledger baseDir to write a shadow record to. Their call sites now resolve through
+  // gateEnabledPredicate (registry-controlled, env-overridable) so a future flip is a
+  // one-liner here — but they cannot be promoted on data until that seam can emit a
+  // shadow record (requires threading a baseDir into the season planner).
   GATE_CHOICE_DISTRIBUTION: false,
-  GATE_CONSEQUENCE_BUDGET: false,
   GATE_ARC_PRESSURE: false,
 
   // ── Gen-4 audit follow-ups ──
@@ -96,27 +113,43 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // (two scenes legitimately sharing a location could false-positive).
   GATE_DUPLICATE_ESTABLISHING_BEAT: false,
   // Protagonist pronoun integrity: the deterministic resolver ALWAYS repairs the
-  // safe (protagonist-only-sentence) wrong-gender cases (ungated). This flag would
-  // promote AMBIGUOUS residue to blocking — but that fires on correct prose too
-  // ("Kylie watches Mika lift HIS glass"), so it stays off until a regen route exists.
+  // safe (protagonist-only-sentence) wrong-gender cases (ungated). The regen route for
+  // AMBIGUOUS residue now exists — when this gate is on, disambiguateProtagonistPronouns
+  // hands each ambiguous sentence ("Kylie watches Mika lift HIS glass") to the
+  // PronounDisambiguator agent before the contract re-scans, so the gate blocks only on
+  // residue the rewrite could not resolve, not on every shared-pronoun sentence. STILL
+  // OFF: needs one live run to confirm the disambiguator clears real residue (the LLM
+  // path can't be exercised offline). Flip to true after that; reversible via =0.
   GATE_PROTAGONIST_PRONOUN: false,
-  // Encounter-outcome variant: outcome state flags are ALWAYS seeded (ungated). This
-  // flag blocks a reconvergence-with-no-outcome-variant — but nothing authors those
-  // variants yet, so blocking would halt ~every encounter. Off until the generative
-  // half (outcome-aware variant authoring) lands.
+  // Encounter-outcome variant: outcome state flags are ALWAYS seeded (ungated). The
+  // generative half now exists — when this gate is on, authorEncounterOutcomeVariants
+  // runs the OutcomeVariantAuthor over each detected reconvergence desync to write the
+  // missing outcome-conditioned opening variants (gated on encounter_<id>_<outcome>)
+  // before the contract re-detects, so the gate blocks only on reconvergences the
+  // author could not cover. STILL OFF until one live run confirms the author clears
+  // real desyncs (the LLM path can't be exercised offline); reversible via =0.
   GATE_ENCOUNTER_OUTCOME_VARIANT: false,
-  // Continuity remediation: would promote high-precision cross-scene continuity ERRORS
-  // (impossible_knowledge/contradiction/missing_setup/timeline_error) to blocking, but
-  // there is no repair wired (the final-contract repair loop can't fix continuity), so
-  // it would hard-fail any run with a continuity error. Off until scene-regen is wired.
+  // Continuity remediation: promotes high-precision cross-scene continuity ERRORS
+  // (impossible_knowledge/contradiction/missing_setup/timeline_error) to blocking. The
+  // scene-regen IS now wired: repairContinuityFindings re-authors the flagged beats via
+  // SceneCritic and, when this gate (or GATE_QA_CRITICAL_BLOCK) is on, re-runs the
+  // ContinuityChecker over the repaired prose and refreshes qaReport.continuity in place,
+  // so the gate fires only on CONFIRMED residue rather than stale pre-repair findings.
+  // STILL OFF: promotion needs ONE live treatment/season run to confirm the repair loop
+  // drives real continuity errors to 0 (the LLM re-validate path can't be exercised
+  // offline). Flip to true after that run; reversible per-env via =0.
   GATE_CONTINUITY_REMEDIATION: false,
   // QA critical-issue block: promotes a failing QA report (passesQA=false OR any
-  // criticalIssues) from advisory to a BLOCKING contract issue. Default-OFF because,
-  // like GATE_CONTINUITY_REMEDIATION, no auto-repair is wired — flipping it on would
-  // hard-fail any run QA scores below the threshold. Distinct from
-  // GATE_CONTINUITY_REMEDIATION (which only promotes the four remediable continuity
-  // error CLASSES); this one gates the whole QA pass/fail. Detection of continuity
-  // errors is now ALWAYS surfaced as at least a warning regardless of either flag.
+  // criticalIssues) from advisory to a BLOCKING contract issue. Partial repair is now
+  // wired: turning this on also runs the continuity re-validation loop, and the QA
+  // report's derived fields (overallScore/criticalIssues/passesQA) are RECOMPUTED from
+  // the refreshed sub-reports (recomputeQAReportDerived), so a continuity error that the
+  // repair resolved no longer counts against the gate. CAVEAT: voice + stakes criticals
+  // have no repair loop yet, so those still block when present (correctly — they are
+  // unrepaired residue). STILL OFF until a live run confirms the recompute leaves only
+  // genuine residue; reversible via =0. Distinct from GATE_CONTINUITY_REMEDIATION (which
+  // promotes only the four remediable continuity error CLASSES); this gates whole-QA
+  // pass/fail. Continuity errors are ALWAYS surfaced as at least a warning either way.
   GATE_QA_CRITICAL_BLOCK: false,
   // Ending reachability: the branch-axis emitter ALWAYS sets the season's
   // treatment_branch_* ending axes on-page (ungated). This flag would promote a
@@ -128,13 +161,18 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // Treatment-sourced arming: stitches the live treatment `sourceAnalysis` onto
   // `brief.multiEpisode.sourceAnalysis` so `runFidelityValidators` resolves
   // `treatmentSourced=true` and the five §4 fidelity gates ENFORCE (hard-fail) on
-  // treatment runs. Default-OFF because arming flips ALL five gates to blocking at
-  // once: the EncounterAnchorContent gate is now partial-season-safe, but
-  // InformationLedgerSchedule and SignatureDevicePresence still check the WHOLE
-  // treatment against a partial (e.g. 3-of-8) story and would false-fail on
-  // not-yet-generated episodes. Flip ON only after those validators are
-  // partial-season-scoped and a real treatment run passes clean.
-  GATE_TREATMENT_SOURCED_ARM: false,
+  // treatment runs (without this, the §4 gates run but never block).
+  //
+  // Promoted ON after the three STORY-dependent §4 validators were verified clean on a
+  // real partial-season run (bite-me-gen-5, 3-of-8): EncounterAnchorContent (storylet +
+  // partial-season + episode-scope fixes), InformationLedgerSchedule (encounter-beat
+  // scan + arc-reframe-summary exemption), and SignatureDevicePresence (encounter prose
+  // + verb-only negation cues + length-gated inversion) all report 0 errors. The two
+  // PLAN-vs-treatment validators (AuthoredEpisodeConformance, SevenPointAnchor) are
+  // independent of how many episodes were generated and could not be offline-verified
+  // (the run did not persist sourceAnalysis); watch them on the next live run.
+  // Reversible per-env via STORYRPG / GATE_TREATMENT_SOURCED_ARM=0 (kill-switch).
+  GATE_TREATMENT_SOURCED_ARM: true,
 
   // ── Wave 5: treatment-fidelity §4 gates (Remediation §4.1–§4.5) ──
   // Promoted ON to ENFORCE authored-treatment fidelity (not merely steer it): with

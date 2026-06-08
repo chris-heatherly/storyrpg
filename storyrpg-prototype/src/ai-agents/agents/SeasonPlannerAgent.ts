@@ -53,6 +53,7 @@ import {
 } from '../validators/SevenPointCoverageValidator';
 import { ArcPressureArchitectureValidator } from '../validators/ArcPressureArchitectureValidator';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
+import { gateEnabledPredicate } from '../remediation/gateDefaults';
 import { CharacterArchitectureValidator } from '../validators/CharacterArchitectureValidator';
 import { SeasonPromiseValidator } from '../validators/SeasonPromiseValidator';
 import { InformationLedgerValidator } from '../validators/InformationLedgerValidator';
@@ -410,7 +411,7 @@ Your plans must define:
     // plan.warnings); this only HARD-BLOCKS on error-severity findings when
     // GATE_ARC_PRESSURE=1. The validator is re-run here ONLY when the flag is set,
     // so with the flag unset there is no added cost and behavior is unchanged.
-    if (process.env[PLAN_GATE_FLAGS.arcPressure] === '1') {
+    if (gateEnabledPredicate(PLAN_GATE_FLAGS.arcPressure)) {
       const arcPressureGateResult = new ArcPressureArchitectureValidator().validate(seasonPlan, {
         episodeStructureMode:
           preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard',
@@ -418,7 +419,7 @@ Your plans must define:
       const arcPressureGate = shouldGate(
         PLAN_GATE_FLAGS.arcPressure,
         arcPressureGateResult.issues,
-        (flag) => process.env[flag] === '1',
+        gateEnabledPredicate,
       );
       if (arcPressureGate.gate) {
         // S3: remediation-ledger recording is DEFERRED for plan-stage gates — the

@@ -176,6 +176,48 @@ export function canonicalizeProtagonistPronouns(
   return result;
 }
 
+/**
+ * Apply LLM-produced sentence rewrites to the assembled story in place. For every
+ * reader-facing text field (the same {@link TEXT_KEYS} the resolver scans, so this
+ * reaches encounter outcome/reaction fields too), replace the first occurrence of any
+ * `original` ambiguous sentence with its `rewritten` form. Returns the number of
+ * replacements applied. Pure (mutates in place), deterministic, unit-testable — the
+ * LLM call that produces `rewrites` is the caller's responsibility.
+ */
+export function applyPronounDisambiguations(story: Story, rewrites: Map<string, string>): number {
+  if (rewrites.size === 0) return 0;
+  let applied = 0;
+
+  const repairField = (value: string): string => {
+    let out = value;
+    for (const [original, rewritten] of rewrites) {
+      if (!original || out.indexOf(original) === -1) continue;
+      out = out.replace(original, rewritten); // first occurrence only
+      applied += 1;
+    }
+    return out;
+  };
+
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach((child) => walk(child));
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    const obj = node as Record<string, unknown>;
+    for (const [key, val] of Object.entries(obj)) {
+      if (typeof val === 'string' && TEXT_KEYS.has(key)) {
+        obj[key] = repairField(val);
+      } else if (val && typeof val === 'object') {
+        walk(val);
+      }
+    }
+  };
+
+  walk(story);
+  return applied;
+}
+
 /** Derive the wrong-gender NPC names from the story roster for a given target. */
 export function otherGenderNamesFromStory(story: Story, pronouns: string): string[] {
   const target = targetGender(pronouns);

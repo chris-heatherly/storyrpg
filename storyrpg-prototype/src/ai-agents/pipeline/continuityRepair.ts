@@ -88,6 +88,67 @@ interface MergeableStory {
   episodes?: Array<{ scenes?: MergeableScene[] }>;
 }
 
+/** Scene-content shape for the re-validation merge (keyed on sceneId, unlike story scenes which key on id). */
+interface MergeableSceneContent {
+  sceneId?: string;
+  beats?: MergeableBeat[];
+}
+
+/**
+ * Apply SceneCritic-rewritten beats to the in-memory SceneContent list (the input
+ * the ContinuityChecker re-reads), matching by beat id and replacing ONLY prose.
+ * The sibling of {@link mergeRewrittenBeatsIntoStory} for the re-validation path —
+ * the checker re-reads sceneContents, not the assembled story, so both must carry
+ * the repaired prose for the post-repair re-check to see the fix. Returns the
+ * number of beats updated. Pure (mutates in place). Unit-testable.
+ */
+export function applyRewrittenBeatsToSceneContents(
+  sceneContents: MergeableSceneContent[] | undefined,
+  sceneId: string,
+  rewrittenBeats: MergeableBeat[] | undefined,
+): number {
+  if (!rewrittenBeats?.length) return 0;
+  const byId = new Map(rewrittenBeats.filter((b) => b.id).map((b) => [b.id as string, b]));
+  let merged = 0;
+  for (const scene of sceneContents ?? []) {
+    if (scene.sceneId !== sceneId) continue;
+    for (const beat of scene.beats ?? []) {
+      const rewrite = beat.id ? byId.get(beat.id) : undefined;
+      if (!rewrite) continue;
+      if (typeof rewrite.text === 'string' && rewrite.text.trim()) beat.text = rewrite.text;
+      if (rewrite.textVariants !== undefined) beat.textVariants = rewrite.textVariants;
+      merged += 1;
+    }
+  }
+  return merged;
+}
+
+/**
+ * Refresh a continuity issue list with the result of a post-repair re-check.
+ *
+ * For every scene we actually re-authored AND re-validated, the FRESH findings are
+ * authoritative — so drop the original findings for those scenes and adopt the
+ * re-check's residue for them. Findings for scenes we did NOT re-validate are kept
+ * verbatim (we hold no fresh opinion on them). This is what lets a blocking gate
+ * fire only on genuinely-unfixed continuity errors instead of on stale pre-repair
+ * findings. Conservative: a second-opinion finding in an UN-repaired scene is NOT
+ * adopted (we never manufacture new blocking issues from the re-check). Pure.
+ */
+export function mergeRevalidatedContinuityIssues<T extends { location?: { sceneId?: string } }>(
+  original: T[] | undefined,
+  revalidatedSceneIds: Iterable<string>,
+  freshIssues: T[] | undefined,
+): T[] {
+  const revalidated = new Set(revalidatedSceneIds);
+  const kept = (original ?? []).filter(
+    (issue) => !(issue.location?.sceneId && revalidated.has(issue.location.sceneId)),
+  );
+  const adopted = (freshIssues ?? []).filter(
+    (issue) => issue.location?.sceneId != null && revalidated.has(issue.location.sceneId),
+  );
+  return [...kept, ...adopted];
+}
+
 /**
  * Merge SceneCritic-rewritten beats back into an already-assembled story, matching
  * by beat id and replacing ONLY prose (`text` and, when provided, `textVariants`).

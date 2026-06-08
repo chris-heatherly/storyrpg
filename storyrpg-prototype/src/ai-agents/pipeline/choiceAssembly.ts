@@ -1,6 +1,28 @@
 import type { Choice, Consequence } from '../../types';
 
 /**
+ * Route a fallback choice set across a branch point's distinct `leadsTo` targets so
+ * every target is reached by ≥1 choice (round-robin), padding the choice list when
+ * there are fewer choices than targets. Used to structurally realize a planned branch
+ * when ChoiceAuthor fails for a branch point, so GATE_BRANCH_FANOUT passes instead of
+ * hard-aborting the episode. Pure (returns new objects); unit-testable.
+ */
+export function routeFallbackChoicesAcrossTargets<T extends { id: string; nextSceneId?: string }>(
+  baseChoices: T[],
+  targets: string[],
+  beatId: string,
+): T[] {
+  if (targets.length === 0 || baseChoices.length === 0) return baseChoices.slice();
+  const choices = baseChoices.slice();
+  while (choices.length < targets.length) {
+    const i = choices.length;
+    const template = baseChoices[i % baseChoices.length];
+    choices.push({ ...template, id: `${beatId}-fallback-choice-${i + 1}` });
+  }
+  return choices.map((choice, i) => ({ ...choice, nextSceneId: targets[i % targets.length] }));
+}
+
+/**
  * Normalize a Consequence object to fix common LLM field-name deviations.
  */
 export function normalizeConsequence(c: Consequence): Consequence {

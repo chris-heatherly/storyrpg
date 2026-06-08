@@ -4,7 +4,41 @@ import {
   foldTintFlagIntoConsequences,
   normalizeConsequence,
   normalizeConsequences,
+  routeFallbackChoicesAcrossTargets,
 } from './choiceAssembly';
+
+describe('routeFallbackChoicesAcrossTargets (branch-point recovery)', () => {
+  it('routes each choice to a distinct target so every leadsTo target is reached', () => {
+    const out = routeFallbackChoicesAcrossTargets<{ id: string; nextSceneId?: string }>(
+      [{ id: 'c1' }, { id: 'c2' }],
+      ['s3-2', 's3-3'],
+      'beat-x',
+    );
+    expect(out.map((c) => c.nextSceneId)).toEqual(['s3-2', 's3-3']);
+    // every target is reached by ≥1 choice (the gate's requirement)
+    expect(new Set(out.map((c) => c.nextSceneId))).toEqual(new Set(['s3-2', 's3-3']));
+  });
+
+  it('pads when there are more targets than base choices, with stable ids', () => {
+    const out = routeFallbackChoicesAcrossTargets<{ id: string; nextSceneId?: string }>([{ id: 'c1' }], ['a', 'b', 'c'], 'beat-x');
+    expect(out).toHaveLength(3);
+    expect(out.map((c) => c.nextSceneId)).toEqual(['a', 'b', 'c']);
+    expect(out[1].id).toBe('beat-x-fallback-choice-2');
+    expect(out[2].id).toBe('beat-x-fallback-choice-3');
+  });
+
+  it('round-robins when there are more choices than targets (all targets still covered)', () => {
+    const out = routeFallbackChoicesAcrossTargets<{ id: string; nextSceneId?: string }>([{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }], ['a', 'b'], 'beat-x');
+    expect(out.map((c) => c.nextSceneId)).toEqual(['a', 'b', 'a']);
+  });
+
+  it('is a no-op clone when there are no targets', () => {
+    const base = [{ id: 'c1', nextSceneId: 'keep' }];
+    const out = routeFallbackChoicesAcrossTargets<{ id: string; nextSceneId?: string }>(base, [], 'beat-x');
+    expect(out).toEqual(base);
+    expect(out).not.toBe(base); // returns a copy, does not mutate input
+  });
+});
 
 describe('foldTintFlagIntoConsequences (D1)', () => {
   it('adds the tintFlag as a setFlag consequence', () => {

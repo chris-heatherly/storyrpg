@@ -361,7 +361,7 @@ import {
   getLocationInfoForScene,
 } from './planningHelpers';
 import { mergeSeasonEpisodes } from './seasonStoryMerge';
-import { assembleChoiceForStory, foldTintFlagIntoConsequences, normalizeConsequences } from './choiceAssembly';
+import { assembleChoiceForStory, foldTintFlagIntoConsequences, normalizeConsequences, routeFallbackChoicesAcrossTargets } from './choiceAssembly';
 import { repairLostSceneGraphBranches } from './branchRepair';
 
 // Re-export types for consumers
@@ -1862,6 +1862,33 @@ export class FullStoryPipeline {
     const trimmed = String(text || '').trim();
     if (!trimmed) return 'The pressure changes shape.';
     return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  }
+
+  /**
+   * Last-resort fallback for a choiceless BRANCH POINT. Reuses the deterministic
+   * choice-set builder, then routes ≥1 choice to EACH distinct `leadsTo` target so the
+   * planned branch is structurally realized (satisfying GATE_BRANCH_FANOUT) instead of
+   * hard-aborting the episode when ChoiceAuthor fails. Returns undefined for non-branch
+   * scenes (leadsTo < 2 distinct), where a choiceless scene is survivable on its own.
+   */
+  private buildBranchFallbackChoiceSet(
+    sceneBlueprint: SceneBlueprint,
+    choiceBeat: GeneratedBeat | undefined,
+  ): ChoiceSet | undefined {
+    if (!choiceBeat) return undefined;
+    const targets = [...new Set((sceneBlueprint.leadsTo || []).filter(Boolean))];
+    if (targets.length < 2) return undefined; // only branch points need this net
+
+    const base = this.createFallbackSceneEpisodeChoiceSet(sceneBlueprint, choiceBeat);
+    // Pad to cover every target and route round-robin so each leadsTo target is reached.
+    const choices = routeFallbackChoicesAcrossTargets(base.choices, targets, choiceBeat.id);
+    return {
+      ...base,
+      choices,
+      designNotes:
+        `${base.designNotes} Routed across leadsTo targets [${targets.join(', ')}] to preserve the ` +
+        'planned branch after ChoiceAuthor failed for this branch point.',
+    };
   }
 
   private stripAgentFacingFidelityText(text: string, fallback: string): string {
@@ -8043,7 +8070,7 @@ export class FullStoryPipeline {
               message: `Creating choices for ${sceneBlueprint.name}`,
             });
 
-            const choiceResult = await withTimeout(this.choiceAuthor.execute({
+            const choiceAuthorInput = {
               sceneBlueprint,
               beatText: choicePointBeat.text,
               beatId: choicePointBeat.id,
@@ -8107,14 +8134,34 @@ export class FullStoryPipeline {
               episodeStructuralRole: brief.seasonPlan?.episodes.find(
                 (e) => e.episodeNumber === brief.episode.number,
               )?.structuralRole,
-            }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
+            };
+            // Bounded retry: a transient ChoiceAuthor failure (LLM/parse blip) must not
+            // leave a scene choiceless. For a branch point that unrealizes the branch and
+            // hard-aborts the whole episode at GATE_BRANCH_FANOUT, so retry before degrading.
+            const maxChoiceAuthorAttempts = 3;
+            let choiceAuthorAttempt = 1;
+            let choiceResult = await withTimeout(this.choiceAuthor.execute(choiceAuthorInput), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
+            while ((!choiceResult.success || !choiceResult.data) && choiceAuthorAttempt < maxChoiceAuthorAttempts) {
+              choiceAuthorAttempt++;
+              this.emit({ type: 'warning', phase: 'choices', message: `Choice Author failed on ${sceneBlueprint.id} (attempt ${choiceAuthorAttempt - 1}/${maxChoiceAuthorAttempts}): ${choiceResult.error ?? 'no data'} — retrying.` });
+              choiceResult = await withTimeout(this.choiceAuthor.execute(choiceAuthorInput), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} retry-${choiceAuthorAttempt})`);
+            }
 
             if (!choiceResult.success || !choiceResult.data) {
-              // ChoiceAuthor failed — warn and continue. The scene will be included
-              // but without branching choices at this point.
-              const caFailMsg = `Choice Author failed on ${sceneBlueprint.id}: ${choiceResult.error}`;
+              // ChoiceAuthor failed after retries — warn and continue. The scene ships
+              // without authored choices at this point.
+              const caFailMsg = `Choice Author failed on ${sceneBlueprint.id} after ${choiceAuthorAttempt} attempt(s): ${choiceResult.error}`;
               console.error(`[Pipeline] ❌ ${caFailMsg}`);
               this.emit({ type: 'warning', phase: 'choices', message: caFailMsg });
+              // Branch-aware fallback: a choiceless BRANCH POINT would unrealize the branch
+              // and hard-abort the episode at GATE_BRANCH_FANOUT. Synthesize a deterministic
+              // choice set routed across the leadsTo targets so the branch is structurally
+              // realized (degraded prose, logged) rather than aborting the whole episode.
+              const branchFallback = this.buildBranchFallbackChoiceSet(sceneBlueprint, choicePointBeat);
+              if (branchFallback) {
+                choiceSets.push(branchFallback);
+                this.emit({ type: 'warning', phase: 'choices', message: `Inserted deterministic branch fallback for ${sceneBlueprint.id} (${branchFallback.choices.length} routed choice(s)) to preserve the planned branch.` });
+              }
             } else {
             // §3.3/GAP-C: deterministically SET authored consequence seeds on-page —
             // attach a setFlag(treatment_seed_*) to a choice so a later authored

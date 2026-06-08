@@ -130,6 +130,14 @@ export interface ChoiceAuthorInput {
     description: string;
   }>;
 
+  /**
+   * Branch-recovery directive: author EXACTLY one choice routing to each target below,
+   * each choice's wording fitting that target's authored intent. Set on a per-target
+   * regeneration after a first attempt failed to fan out a branch point — so the LLM
+   * writes a real, coherent choice per branch instead of falling back to templates.
+   */
+  requiredBranchTargets?: Array<{ sceneId: string; intent: string }>;
+
   // Guidance
   optionCount: number; // Usually 2-4
 
@@ -1311,6 +1319,15 @@ ${input.branchContext ? `
 ${input.branchContext.isBranchPoint ? `- This IS a branch point — include \`nextSceneId\` on at least ${Math.max(2, input.branchContext.expectedBranches || 2)} options.` : '- This is NOT a branch point — choices should be tint choices. Do NOT include \`nextSceneId\` unless the scene blueprint routes to different scenes.'}
 ${input.branchContext.reconvergenceTargets && input.branchContext.reconvergenceTargets.length > 0 ? `- Reconvergence targets (if branching): ${input.branchContext.reconvergenceTargets.join(', ')}` : ''}
 ${input.branchContext.stateReconciliationHints && input.branchContext.stateReconciliationHints.length > 0 ? `- State reconciliation hints:\n${input.branchContext.stateReconciliationHints.map(h => `  - ${h}`).join('\n')}` : ''}
+` : ''}
+${input.requiredBranchTargets && input.requiredBranchTargets.length > 0 ? `
+## REQUIRED BRANCHING — author one choice per target
+This is a branch point that MUST fan out. Author EXACTLY one choice routing to EACH
+target below: set that choice's \`nextSceneId\` to the target's scene id, and write the
+choice so its wording clearly FITS that target's authored intent (a player picking it
+would naturally arrive there). Do not point two choices at the same target; do not omit
+a target.
+${input.requiredBranchTargets.map(t => `- nextSceneId "${t.sceneId}" → ${t.intent}`).join('\n')}
 ` : ''}
 ${input.consequenceBudgetTarget ? `
 ## Consequence Budget Target (episode-wide 60/25/10/5)

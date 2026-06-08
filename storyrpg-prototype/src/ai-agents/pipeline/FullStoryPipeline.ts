@@ -8176,9 +8176,37 @@ export class FullStoryPipeline {
               choiceResult = await withTimeout(this.choiceAuthor.execute(choiceAuthorInput), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} retry-${choiceAuthorAttempt})`);
             }
 
+            // Per-target branch regeneration (preferred over a templated fallback): if the
+            // choices still failed AND this is a multi-target branch point with authored
+            // target intents, re-run ChoiceAuthor with explicit one-choice-per-target
+            // guidance so the LLM authors a REAL, coherent choice for each branch. On
+            // success, promote it so the normal success path (emitters, plants, validation,
+            // fan-out repair) runs uniformly.
+            const branchRegenHints = branchTargetHintsByScene.get(sceneBlueprint.id);
+            if (
+              (!choiceResult.success || !choiceResult.data)
+              && new Set(sceneBlueprint.leadsTo ?? []).size > 1
+              && branchRegenHints && branchRegenHints.length > 0
+            ) {
+              this.emit({ type: 'debug', phase: 'choices', message: `Regenerating ${sceneBlueprint.id} choices with explicit per-target branch guidance (${branchRegenHints.length} target(s)) before any templated fallback.` });
+              const branchRegen = await withTimeout(
+                this.choiceAuthor.execute({
+                  ...choiceAuthorInput,
+                  requiredBranchTargets: branchRegenHints.map((h) => ({ sceneId: h.target, intent: h.label })),
+                }),
+                PIPELINE_TIMEOUTS.llmAgent,
+                `ChoiceAuthor.execute(${sceneBlueprint.id} branch-regen)`,
+              );
+              if (branchRegen.success && branchRegen.data && (branchRegen.data.choices?.length ?? 0) > 0) {
+                choiceResult = branchRegen;
+                this.emit({ type: 'warning', phase: 'choices', message: `Authored ${sceneBlueprint.id} branch choices via per-target regeneration (one coherent choice per branch) — no templated fallback needed.` });
+              }
+            }
+
             if (!choiceResult.success || !choiceResult.data) {
-              // ChoiceAuthor failed after retries — warn and continue. The scene ships
-              // without authored choices at this point.
+              // ChoiceAuthor failed after retries AND per-target regeneration — only now
+              // fall back to deterministic templated choices. The scene ships without
+              // LLM-authored choices at this point.
               const caFailMsg = `Choice Author failed on ${sceneBlueprint.id} after ${choiceAuthorAttempt} attempt(s): ${choiceResult.error}`;
               console.error(`[Pipeline] ❌ ${caFailMsg}`);
               this.emit({ type: 'warning', phase: 'choices', message: caFailMsg });

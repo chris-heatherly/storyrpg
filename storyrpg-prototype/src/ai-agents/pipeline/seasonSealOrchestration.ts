@@ -34,6 +34,7 @@ interface SealConsequence {
 }
 interface SealVariant {
   callbackHookId?: string;
+  condition?: { flag?: string };
 }
 interface SealChoice {
   consequences?: SealConsequence[];
@@ -75,6 +76,41 @@ export function collectReferencedHookIds(episode: SealEpisode): string[] {
     }
   }
   return [...ids];
+}
+
+/**
+ * Strip hallucinated within-episode tint hooks (mutates the episode in place).
+ *
+ * A SceneWriter sometimes gates a prose TextVariant on a within-episode tint flag
+ * (`condition.flag`) AND tags that same variant with a ledger-style
+ * `callbackHookId: "flag:<X>"` for the same flag — turning a within-episode tint
+ * into what looks like a cross-episode payoff. When `flag:<X>` is NOT a planted
+ * ledger promise and the variant's own `condition.flag` is exactly `<X>`, that
+ * callbackHookId is a mislabel (the flag is set/consumed within the episode and was
+ * never planted), not a real payoff. Drop the `callbackHookId` (keep
+ * `condition.flag`) so the dangling-payoff gate doesn't abort on the orphan, while
+ * genuine dangling cross-episode payoffs (no matching same-variant tint, or a flag
+ * that IS planted) still flow through to the gate unchanged.
+ *
+ * Returns the stripped ids (with duplicates) for advisory reporting.
+ */
+export function sanitizeWithinEpisodeTintHooks(episode: SealEpisode, ledger: CallbackLedger): string[] {
+  const stripped: string[] = [];
+  for (const beat of beatsOf(episode)) {
+    for (const v of beat.textVariants ?? []) {
+      const id = v.callbackHookId;
+      if (!id || !id.startsWith('flag:')) continue;
+      if (ledger.has(id)) continue; // real planted promise — leave it for the gate to accept
+      const flagName = id.slice('flag:'.length);
+      // Tightest signature of the defect: the variant pays off the exact flag it
+      // also gates its own prose on → a within-episode tint, not a payoff.
+      if (v.condition?.flag === flagName) {
+        delete v.callbackHookId;
+        stripped.push(id);
+      }
+    }
+  }
+  return stripped;
 }
 
 /** Trackable flags the episode sets (set, non-cosmetic, non-structural). */
@@ -139,6 +175,10 @@ export function evaluateEpisodeForSeal(params: {
   canon: SeasonCanon;
   claims?: KnowledgeClaim[];
 }): SealEvaluation {
+  // Drop SceneWriter-hallucinated within-episode tint hooks before the gate so an
+  // unplanted `flag:<X>` that only tints same-variant prose isn't treated as an
+  // orphan cross-episode payoff (keeps condition.flag; surfaced as an advisory).
+  const strippedTintHooks = [...new Set(sanitizeWithinEpisodeTintHooks(params.episode, params.ledger))];
   const referencedHookIds = collectReferencedHookIds(params.episode);
   const promise = validatePromiseLedger({
     ledger: params.ledger,
@@ -147,7 +187,13 @@ export function evaluateEpisodeForSeal(params: {
     referencedHookIds,
   });
   const canonIssues = validateKnowledgeConsistency(params.claims ?? [], params.canon);
-  const issues = [...promise.issues, ...canonIssues];
+  const tintWarnings: ValidationIssue[] = strippedTintHooks.map((id) => ({
+    severity: 'warning' as const,
+    message: `Within-episode tint hook ${id} carried a ledger-style callbackHookId but the flag is gated/consumed within episode ${params.episodeNumber} and was never planted; treated as a within-episode tint (callbackHookId dropped, condition.flag kept).`,
+    location: `tint-hook:${id}`,
+    suggestion: 'Plant the flag as a cross-episode promise if a real payoff is intended, or rely on condition.flag alone for within-episode tints.',
+  }));
+  const issues = [...promise.issues, ...canonIssues, ...tintWarnings];
   return {
     clean: issues.every((i) => i.severity !== 'error'),
     issues,

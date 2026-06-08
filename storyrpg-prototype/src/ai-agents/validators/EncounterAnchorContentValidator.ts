@@ -135,17 +135,36 @@ function collectReaderFacingTexts(scene: Scene): string[] {
       if (isReaderFacingText(variant.text)) texts.push(variant.text);
     }
   }
+  const collectBeatText = (beat: unknown): void => {
+    // Standard Beat carries `text`; EncounterBeat carries `setupText` (+ escalationText).
+    const withText = beat as Partial<Beat> & { setupText?: string; escalationText?: string };
+    for (const text of [withText.text, withText.setupText, withText.escalationText]) {
+      if (isReaderFacingText(text)) texts.push(text!);
+    }
+    for (const variant of (withText as Partial<Beat>).textVariants ?? []) {
+      if (isReaderFacingText(variant.text)) texts.push(variant.text);
+    }
+  };
+
   const phases: EncounterPhase[] = scene.encounter?.phases ?? [];
   for (const phase of phases) {
-    for (const beat of phase.beats ?? []) {
-      // Standard Beat carries `text`; EncounterBeat carries `setupText` (+ escalationText).
-      const withText = beat as Partial<Beat> & { setupText?: string; escalationText?: string };
-      for (const text of [withText.text, withText.setupText, withText.escalationText]) {
-        if (isReaderFacingText(text)) texts.push(text!);
-      }
-    }
+    for (const beat of phase.beats ?? []) collectBeatText(beat);
     if (isReaderFacingText(phase.onSuccess?.outcomeText)) texts.push(phase.onSuccess!.outcomeText);
     if (isReaderFacingText(phase.onFailure?.outcomeText)) texts.push(phase.onFailure!.outcomeText);
+  }
+
+  // Storylets are where most branching encounter prose lives (victory / partialVictory
+  // / defeat / escape follow-ups). Their beats are reader-facing and frequently carry
+  // the encounter's authored "dark half" (e.g. the attack/rescue that resolves a
+  // two-location anchor) — so they MUST be collected, else an anchor depicted only in
+  // its storylets is wrongly reported as not depicted.
+  const storylets = scene.encounter?.storylets;
+  const storyletList = Array.isArray(storylets)
+    ? storylets
+    : Object.values((storylets ?? {}) as Record<string, unknown>);
+  for (const storylet of storyletList) {
+    if (!storylet || typeof storylet !== 'object') continue;
+    for (const beat of (storylet as { beats?: unknown[] }).beats ?? []) collectBeatText(beat);
   }
   return texts;
 }
@@ -193,7 +212,9 @@ export class EncounterAnchorContentValidator extends BaseValidator {
 
     // Index final scenes by id (with their episode for diagnostics).
     const finalById = new Map<string, { scene: Scene; episode: Episode }>();
+    const generatedEpisodeNumbers = new Set<number>();
     for (const episode of story.episodes ?? []) {
+      if (typeof episode.number === 'number') generatedEpisodeNumbers.add(episode.number);
       for (const scene of episode.scenes ?? []) {
         finalById.set(scene.id, { scene, episode });
       }
@@ -202,6 +223,18 @@ export class EncounterAnchorContentValidator extends BaseValidator {
     const anchors = (ctx.scenePlan.scenes ?? []).filter(isAuthoredEncounterAnchor);
 
     for (const planned of anchors) {
+      // Partial-season scoping: a treatment can plan anchors for all N episodes, but a
+      // run may generate only a subset (e.g. the first 3). Skip anchors whose episode
+      // was not generated — those scenes are legitimately absent, not "dropped". Only
+      // applies when we can tell which episodes ran (story has numbered episodes).
+      if (
+        generatedEpisodeNumbers.size > 0
+        && typeof planned.episodeNumber === 'number'
+        && !generatedEpisodeNumbers.has(planned.episodeNumber)
+      ) {
+        continue;
+      }
+
       const found = finalById.get(planned.id);
       const loc = `encounterAnchor:${planned.id}`;
 
@@ -216,10 +249,12 @@ export class EncounterAnchorContentValidator extends BaseValidator {
         continue;
       }
 
-      const { scene } = found;
+      const { scene, episode } = found;
       const readerTexts = collectReaderFacingTexts(scene);
 
-      // 1) Non-empty: ≥1 reader-facing beat.
+      // 1) Non-empty: ≥1 reader-facing beat IN THE ANCHOR SCENE ITSELF. (This check
+      // stays anchor-scoped: an empty encounter shell is a real defect even if sibling
+      // scenes have prose.)
       if (readerTexts.length === 0) {
         issues.push(this.error(
           `Authored encounter anchor "${planned.title || planned.id}" (Ep ${planned.episodeNumber}) has no reader-facing beats in the final story — it is an empty encounter placeholder.`,
@@ -229,7 +264,15 @@ export class EncounterAnchorContentValidator extends BaseValidator {
         continue; // nothing to match against; the deeper checks would just pile on.
       }
 
-      const haystack = readerTexts.join('\n');
+      // Depiction is checked EPISODE-WIDE, not just within the anchor scene. The
+      // scenePlan often authors a moment as a "required beat" of the encounter anchor
+      // (e.g. Ep2's cab-breakdown meet-cute hung on the Velvet Booth encounter), but the
+      // pipeline legitimately distributes such moments across the episode's scenes. The
+      // fidelity contract is "the authored moment is depicted on-page in its episode" —
+      // so matching anchor-only produced false negatives for correctly-distributed beats.
+      const haystack = (episode.scenes ?? [])
+        .flatMap(s => collectReaderFacingTexts(s))
+        .join('\n');
 
       // 2) Central conflict depicted.
       const centralConflict = planned.encounter?.centralConflict ?? '';

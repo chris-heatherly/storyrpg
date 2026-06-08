@@ -105,6 +105,17 @@ function normalizeToken(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
+/**
+ * True for the SeasonPlanner's arc-recontextualization summary entries
+ * (`info-arc-<N>-reframe` / label "… (Arc N) reframe"). These summarize a whole
+ * arc rather than carrying a discrete, id-tagged reveal, so the schedule's
+ * discrete-reveal checks do not apply to them.
+ */
+function isArcReframeSummary(entry: InformationLedgerEntry): boolean {
+  return /^info-arc-\d+-reframe$/i.test(entry.id || '')
+    || /\(arc\s*\d+\)\s*reframe/i.test(entry.label || '');
+}
+
 /** Does a flag / text reference this INFO entry's id (or its label as a token)? */
 function referencesEntry(text: string, entry: InformationLedgerEntry): boolean {
   const haystack = normalizeToken(text);
@@ -166,6 +177,15 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
 
     for (const entry of entries) {
       const location = `informationLedger.${entry.id || entry.label || 'unknown'}`;
+
+      // Arc-reframe summary entries (id `info-arc-<N>-reframe`, label "… (Arc N)
+      // reframe") are NOT discrete plantable facts — the SeasonPlanner injects them to
+      // describe an arc's overall recontextualization, which is delivered across the
+      // arc's scenes collectively rather than as a single id-tagged reveal or flag.
+      // They carry no reveal flag and no id-in-prose, so the discrete-reveal checks
+      // would always false-fail. Skip them (a thematic arc-reframe check, if ever
+      // wanted, is a separate concern).
+      if (isArcReframeSummary(entry)) continue;
 
       // Authored expectation: earliest authored setup episode and the authored
       // reveal episode (reveal preferred, else payoff).

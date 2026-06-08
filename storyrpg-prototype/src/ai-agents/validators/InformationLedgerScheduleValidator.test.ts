@@ -141,13 +141,55 @@ describe('InformationLedgerScheduleValidator', () => {
     expect(result.valid).toBe(true);
   });
 
-  it('partial-season: STILL flags an in-range reveal that never landed (gen-5 info-arc-1-reframe)', () => {
+  it('partial-season: STILL flags an in-range reveal that never landed (real INFO entry)', () => {
     // Reveal scheduled for ep2, which WAS generated, but no reveal flag landed → real miss.
     const result = new InformationLedgerScheduleValidator().validate(
-      [infoEntry({ id: 'info-arc-1-reframe', introducedEpisode: 1, setupTouchEpisodes: [1], plannedRevealEpisode: 2 })],
-      story({ 1: ['info-arc-1-reframe_setup'] }, [1, 2, 3]),
+      [infoEntry({ id: 'info-a', introducedEpisode: 1, setupTouchEpisodes: [1], plannedRevealEpisode: 2 })],
+      story({ 1: ['info-a_setup'] }, [1, 2, 3]),
     );
     expect(result.metrics.missingRevealCount).toBe(1);
     expect(result.valid).toBe(false);
+  });
+
+  it('exempts arc-reframe SUMMARY entries from the discrete-reveal requirement', () => {
+    // `info-arc-<N>-reframe` entries are arc recontextualization summaries injected by
+    // the SeasonPlanner — delivered across the arc's scenes, not as a discrete id-tagged
+    // reveal/flag. Requiring a discrete reveal for them is a category error (the gen-5
+    // false positive). They must NOT be flagged even when no reveal "lands".
+    const result = new InformationLedgerScheduleValidator().validate(
+      [infoEntry({ id: 'info-arc-1-reframe', label: 'Champagne (Arc 1) reframe', introducedEpisode: 1, setupTouchEpisodes: [1], plannedRevealEpisode: 2 })],
+      story({ 1: ['something_unrelated'] }, [1, 2, 3]),
+    );
+    expect(result.metrics.missingRevealCount).toBe(0);
+    expect(result.valid).toBe(true);
+  });
+
+  it('detects a reveal that lands inside an ENCOUNTER beat (phases/storylets, not scene.beats)', () => {
+    // Encounter scenes carry their setup/reveal beats under encounter.phases /
+    // encounter.storylets — not scene.beats. A reveal flag set there must be detected,
+    // not reported "never landed".
+    const encStory: Pick<Story, 'episodes'> = {
+      episodes: [1, 2].map((n) => ({
+        id: `ep-${n}`, number: n, title: `Episode ${n}`, synopsis: '',
+        coverImage: '' as unknown as Episode['coverImage'], startingSceneId: `ep-${n}-s1`,
+        scenes: [
+          n === 2
+            ? ({
+                id: 'treatment-enc-2-1', name: 'Velvet Booth', startingBeatId: '', beats: [],
+                encounter: {
+                  phases: [{ id: 'p1', beats: [{ id: 'p1-b1', text: 'x', onShow: [setFlag('info-1-reveal')] }] }],
+                  storylets: {},
+                },
+              } as unknown as Episode['scenes'][number])
+            : ({ id: `ep-${n}-s1`, name: 's', startingBeatId: `ep-${n}-s1-b1`, beats: [{ id: `ep-${n}-s1-b1`, text: 'setup', onShow: [setFlag('info-1_setup')] }] } as unknown as Episode['scenes'][number]),
+        ],
+      })),
+    };
+    const result = new InformationLedgerScheduleValidator().validate(
+      [infoEntry({ id: 'info-1', introducedEpisode: 1, setupTouchEpisodes: [1], plannedRevealEpisode: 2 })],
+      encStory,
+    );
+    expect(result.metrics.missingRevealCount).toBe(0);
+    expect(result.valid).toBe(true);
   });
 });

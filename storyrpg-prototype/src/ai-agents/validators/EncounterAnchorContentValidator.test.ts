@@ -199,3 +199,60 @@ describe('EncounterAnchorContentValidator — exemptions (legitimate inference s
     expect(errs).toHaveLength(0);
   });
 });
+
+describe('EncounterAnchorContentValidator — storylet depiction (Gen-4 R1)', () => {
+  it('PASSES when a required beat is depicted only in an encounter STORYLET (not a phase beat)', () => {
+    const planned = plannedEncounter();
+    // Anchor scene: opening phase beat depicts the breach but NOT the poison; the
+    // poison (required beat rb1) is depicted only in the defeat storylet's beat.
+    const scene: Scene = {
+      id: 'enc-3-1',
+      name: 'Wall Breach',
+      startingBeatId: '',
+      beats: [],
+      encounter: {
+        id: 'enc-3-1', type: 'combat', name: 'Wall Breach', description: 'x',
+        goalClock: { current: 0, max: 6, label: 'goal' },
+        threatClock: { current: 0, max: 6, label: 'threat' },
+        stakes: { victory: 'v', defeat: 'd' }, startingPhaseId: 'p1', outcomes: {},
+        phases: [{ id: 'p1', beats: [{ id: 'p1-b1', text: 'The wall breach opened a ragged gap in the stone.' }] }],
+        storylets: {
+          defeat: { id: 'defeat', beats: [{ id: 'd-b1', text: 'In the smoke, Darian administers poison to the garrison well, unseen.' }] },
+        },
+      } as unknown as Scene['encounter'],
+    };
+    const errs = errorsOf(storyWith([scene]), { scenePlan: scenePlanOf([planned]) });
+    expect(errs).toHaveLength(0);
+  });
+});
+
+describe('EncounterAnchorContentValidator — partial-season scoping (Gen-4 R1)', () => {
+  it('SKIPS anchors whose episode was not generated (3-of-N run)', () => {
+    // Planned anchor for Ep 5, but the story only generated Ep 3 — not a dropped anchor.
+    const ep5anchor = plannedEncounter({ id: 'enc-5-1', episodeNumber: 5 });
+    const ep3anchor = plannedEncounter(); // enc-3-1, depicted below
+    const story = storyWith([
+      sceneWithBeats('enc-3-1', [
+        'The wall breach opened a ragged gap.',
+        'Darian administers poison to the garrison well in the chaos.',
+      ]),
+    ]);
+    const errs = errorsOf(story, { scenePlan: scenePlanOf([ep3anchor, ep5anchor]) });
+    expect(errs.some((m) => /enc-5-1|Ep 5/.test(m))).toBe(false);
+    expect(errs).toHaveLength(0);
+  });
+});
+
+describe('EncounterAnchorContentValidator — episode-scoped depiction (Gen-4 R1)', () => {
+  it('PASSES when a required beat is depicted in a SIBLING scene of the same episode', () => {
+    const planned = plannedEncounter();
+    // The anchor scene has prose but not the poison; a sibling scene in the same
+    // episode depicts the poison (the pipeline distributed the authored beat).
+    const story = storyWith([
+      sceneWithBeats('enc-3-1', ['The wall breach opened a ragged gap in the stone.']),
+      sceneWithBeats('s3-2', ['Later, Darian administers poison to the garrison well, unseen.']),
+    ]);
+    const errs = errorsOf(story, { scenePlan: scenePlanOf([planned]) });
+    expect(errs).toHaveLength(0);
+  });
+});

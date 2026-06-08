@@ -237,4 +237,26 @@ describe('SignatureDevicePresenceValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
+
+  it('finds a signature depicted in an encounter STORYLET (not just scene.beats)', () => {
+    // Encounter scenes hold prose in encounter.phases/storylets, not scene.beats.
+    // A signature staged in a storylet must be found, not reported "missing".
+    const sig = 'the rougher man vanishes into the fog as Victor steps in';
+    const encScene = {
+      id: 'treatment-enc-1-1', name: 'Rooftop to Cișmigiu', startingBeatId: '', beats: [],
+      encounter: {
+        id: 'treatment-enc-1-1', type: 'social', name: 'x', description: 'x',
+        goalClock: { current: 0, max: 6, label: 'g' }, threatClock: { current: 0, max: 6, label: 't' },
+        stakes: { victory: 'v', defeat: 'd' }, startingPhaseId: 'p1', outcomes: {},
+        phases: [{ id: 'p1', beats: [{ id: 'p1-b1', text: 'The rooftop bar smells like warm concrete.' }] }],
+        storylets: { defeat: { id: 'defeat', beats: [{ id: 'd1', text: 'The rougher man vanishes into the fog as Victor steps in, hand out.' }] } },
+      },
+    } as unknown as Scene;
+    const result = run({
+      plan: plan([plannedScene('treatment-enc-1-1', 1, { encounterRequiredBeats: [{ id: 'sig1', sourceTurn: 's', mustDepict: sig, tier: 'signature' }] })]),
+      story: story([episode(1, [encScene])]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
 });

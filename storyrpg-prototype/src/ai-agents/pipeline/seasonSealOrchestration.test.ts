@@ -5,6 +5,7 @@ import {
   collectReferencedHookIds,
   extractCanonDeltasFromEpisode,
   evaluateEpisodeForSeal,
+  sanitizeWithinEpisodeTintHooks,
   sealEpisodeIntoCanon,
   type SealEpisode,
 } from './seasonSealOrchestration';
@@ -77,6 +78,70 @@ describe('evaluateEpisodeForSeal', () => {
     const result = evaluateEpisodeForSeal({ episode: { number: 1, scenes: [] }, episodeNumber: 1, seasonLength: 3, ledger, canon });
     expect(result.clean).toBe(false);
     expect(result.issues.some((i) => i.location === 'promise:h')).toBe(true);
+  });
+});
+
+describe('sanitizeWithinEpisodeTintHooks (within-episode tint hooks)', () => {
+  // Reproduces the Endsong ep3 abort: SceneWriter gated a prose variant on a
+  // within-episode tint flag AND tagged it with a ledger-style callbackHookId for
+  // the same flag, which was never planted → dangling-payoff gate aborted.
+  const tintEpisode = (): SealEpisode => ({
+    number: 3,
+    scenes: [
+      {
+        beats: [
+          {
+            textVariants: [
+              { condition: { flag: 'chose_confidence_s3_1' }, callbackHookId: 'flag:chose_confidence_s3_1' },
+              { condition: { flag: 'chose_confidence_s3_1' } }, // tint without a hook — fine
+            ],
+          },
+        ],
+      },
+    ],
+  });
+
+  it('strips an unplanted same-variant tint hook (keeps condition.flag)', () => {
+    const ep = tintEpisode();
+    const ledger = new CallbackLedger(); // flag:chose_confidence_s3_1 NOT planted
+    const stripped = sanitizeWithinEpisodeTintHooks(ep, ledger);
+    expect(stripped).toEqual(['flag:chose_confidence_s3_1']);
+    const v = ep.scenes![0].beats![0].textVariants![0];
+    expect(v.callbackHookId).toBeUndefined(); // hook dropped
+    expect(v.condition?.flag).toBe('chose_confidence_s3_1'); // tint preserved
+  });
+
+  it('lets the seal gate pass with only an advisory warning (no dangling error)', () => {
+    const ledger = new CallbackLedger();
+    const canon = new SeasonCanon();
+    const result = evaluateEpisodeForSeal({ episode: tintEpisode(), episodeNumber: 3, seasonLength: 8, ledger, canon });
+    expect(result.clean).toBe(true);
+    expect(result.issues.some((i) => i.severity === 'error')).toBe(false);
+    expect(result.issues.some((i) => i.location === 'tint-hook:flag:chose_confidence_s3_1' && i.severity === 'warning')).toBe(true);
+    expect(result.referencedHookIds).not.toContain('flag:chose_confidence_s3_1');
+  });
+
+  it('does NOT strip a genuine dangling cross-episode payoff (no same-variant tint)', () => {
+    const ep: SealEpisode = {
+      number: 3,
+      scenes: [{ beats: [{ textVariants: [{ callbackHookId: 'flag:real_promise_y' }] }] }],
+    };
+    const ledger = new CallbackLedger(); // not planted
+    expect(sanitizeWithinEpisodeTintHooks(ep, ledger)).toEqual([]);
+    const result = evaluateEpisodeForSeal({ episode: ep, episodeNumber: 3, seasonLength: 8, ledger, canon: new SeasonCanon() });
+    expect(result.clean).toBe(false);
+    expect(result.issues.some((i) => i.location === 'payoff:flag:real_promise_y' && i.severity === 'error')).toBe(true);
+  });
+
+  it('leaves a planted promise referenced as a payoff untouched', () => {
+    const ep: SealEpisode = {
+      number: 3,
+      scenes: [{ beats: [{ textVariants: [{ condition: { flag: 'planted_z' }, callbackHookId: 'flag:planted_z' }] }] }],
+    };
+    const ledger = new CallbackLedger();
+    ledger.add({ id: 'flag:planted_z', sourceEpisode: 1, sourceSceneId: 's', sourceChoiceId: 'c', flags: ['planted_z'], summary: 'planted', payoffWindow: { minEpisode: 1, maxEpisode: 8 } });
+    expect(sanitizeWithinEpisodeTintHooks(ep, ledger)).toEqual([]); // planted → not stripped
+    expect(ep.scenes![0].beats![0].textVariants![0].callbackHookId).toBe('flag:planted_z');
   });
 });
 

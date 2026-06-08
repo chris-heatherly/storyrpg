@@ -52,16 +52,36 @@ const STOPWORDS = new Set([
   'staged', 'moment', 'signature', 'device', 'image', 'show', 'shows', 'depict', 'depicts',
 ]);
 
-/** Negation cues that, near a signature's content words, mean it was inverted. */
+/**
+ * Negation cues that, near a signature's content words, mean it was inverted.
+ *
+ * Deliberately ACTION/verb-negation forms only. The bare standalone "not"/"no" is
+ * EXCLUDED: it produces "not X but Y" noun-contrast false positives (e.g. "what she
+ * keeps returning to is not the shadow or the scream but …" is not an inverted
+ * signature). The auxiliary forms ("did not", "does not", …) still catch the real
+ * "he did not <do the signature>" inversion (RC5) via the multi-word cues below.
+ */
 const NEGATION_CUES = [
   "didn't", 'did not', 'does not', "doesn't", 'do not', "don't",
-  'never', 'no longer', 'not', 'without', 'failed to', 'fails to', 'fail to',
+  'never', 'no longer', 'without', 'failed to', 'fails to', 'fail to',
   'refused to', 'refuses to', 'unable to', "couldn't", 'could not', "wouldn't",
   'would not', 'cannot', "can't", 'instead of', 'rather than', 'avoided', 'avoids',
 ];
 
 /** How many normalized tokens around a content-word hit to scan for a negation cue. */
 const INVERSION_WINDOW_TOKENS = 6;
+
+/**
+ * Inversion-by-proximity is only reliable for SHORT, concrete signatures (a literal
+ * staged action like "leaps from the battlement to save the child"). Long descriptive
+ * design-note signatures (15+ content words, often containing their own negations and
+ * abstract vocabulary like "realizes"/"somehow") share words with faithful prose that
+ * naturally sits near benign negations ("without once checking her phone", "no longer
+ * knows") — producing irreducible false positives. So the inversion check is skipped
+ * for signatures longer than this; presence (and the EncounterAnchorContentValidator's
+ * depiction check) still cover them.
+ */
+const INVERSION_MAX_SIG_TOKENS = 12;
 
 /** Minimum content-word overlap for a signature to count as "present". */
 const PRESENCE_MIN_SCORE = 0.5;
@@ -123,36 +143,57 @@ function signatureInverted(signature: string, prose: string): boolean {
   const sigTokens = new Set(contentTokens(signature));
   if (sigTokens.size === 0) return false;
 
-  const normalizedProse = normalize(prose);
-  // Multi-word cues are checked on the normalized string; single-word cues are
-  // checked positionally against signature content tokens.
-  const proseTokens = normalizedProse.split(' ').filter(Boolean);
+  const proseTokens = normalize(prose).split(' ').filter(Boolean);
+  if (proseTokens.length === 0) return false;
 
-  // Index every position where a signature content token (or its stem) appears.
-  const sigHitPositions: number[] = [];
-  proseTokens.forEach((tok, idx) => {
+  const tokenIsSig = (tok: string): string | undefined => {
     for (const sigTok of sigTokens) {
-      if (tok === sigTok || tok.startsWith(sigTok) || sigTok.startsWith(tok)) {
-        sigHitPositions.push(idx);
-        break;
-      }
+      if (tok === sigTok || tok.startsWith(sigTok) || sigTok.startsWith(tok)) return sigTok;
     }
+    return undefined;
+  };
+
+  // Index every position of a negation cue (single-word checked positionally;
+  // multi-word matched as a contiguous token run).
+  const singleWordCues = new Set(
+    NEGATION_CUES.filter((c) => !c.includes(' ')).map((c) => normalize(c)).filter(Boolean),
+  );
+  const multiWordCues = NEGATION_CUES
+    .filter((c) => c.includes(' '))
+    .map((c) => normalize(c).split(' ').filter(Boolean))
+    .filter((arr) => arr.length > 0);
+
+  const cuePositions: number[] = [];
+  proseTokens.forEach((tok, idx) => {
+    if (singleWordCues.has(tok)) cuePositions.push(idx);
   });
-  if (sigHitPositions.length === 0) return false;
+  for (const cue of multiWordCues) {
+    for (let i = 0; i + cue.length <= proseTokens.length; i++) {
+      let match = true;
+      for (let j = 0; j < cue.length; j++) {
+        if (proseTokens[i + j] !== cue[j]) { match = false; break; }
+      }
+      if (match) cuePositions.push(i);
+    }
+  }
+  if (cuePositions.length === 0) return false;
 
-  // Pre-normalize the cues so multi-word cues match the normalized prose.
-  const normalizedCues = NEGATION_CUES.map((c) => normalize(c)).filter(Boolean);
-
-  for (const pos of sigHitPositions) {
+  // A genuine inversion negates the signature's ACTION: ≥2 DISTINCT signature content
+  // tokens cluster within the window of a negation cue (e.g. "he did NOT leap from the
+  // battlement to save the child" — battlement/leap/save/child all near "not"). The old
+  // rule fired on a SINGLE content token near any negation, which false-positived on
+  // descriptive/meta signatures full of common words ("light then dark … the attack")
+  // in long prose — a lone "dark" near an unrelated "not" is not an inversion.
+  for (const pos of cuePositions) {
     const start = Math.max(0, pos - INVERSION_WINDOW_TOKENS);
     const end = Math.min(proseTokens.length, pos + INVERSION_WINDOW_TOKENS + 1);
-    const window = proseTokens.slice(start, end).join(' ');
-    for (const cue of normalizedCues) {
-      // Word-boundary-ish: cue surrounded by spaces or at window edges.
-      if (window === cue || window.includes(` ${cue} `) || window.startsWith(`${cue} `) || window.endsWith(` ${cue}`)) {
-        return true;
-      }
+    const distinct = new Set<string>();
+    for (let i = start; i < end; i++) {
+      if (i === pos) continue;
+      const sigTok = tokenIsSig(proseTokens[i]);
+      if (sigTok) distinct.add(sigTok);
     }
+    if (distinct.size >= 2) return true;
   }
   return false;
 }
@@ -332,7 +373,7 @@ export class SignatureDevicePresenceValidator extends BaseValidator {
         continue;
       }
 
-      if (signatureInverted(sig.text, haystack)) {
+      if (contentTokens(sig.text).length <= INVERSION_MAX_SIG_TOKENS && signatureInverted(sig.text, haystack)) {
         issues.push(this.error(
           `Signature device appears INVERTED/negated in episode ${sig.episodeNumber} scene "${sig.sceneId}": "${sig.text}". The prose negates the staged moment (e.g. "he didn't ...") instead of depicting it.`,
           where,

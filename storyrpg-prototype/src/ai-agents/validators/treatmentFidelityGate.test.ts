@@ -23,10 +23,15 @@ describe('treatmentFidelityGate', () => {
     }
   });
 
-  it('is default-on (Wave-5 promotion): every gate flag is enabled when unset', () => {
+  it('is default-on (Wave-5 promotion) for every gate EXCEPT the demoted info-ledger one', () => {
+    // GATE_INFORMATION_LEDGER_SCHEDULE was demoted to default-off after endsong-gen-7:
+    // it requires an `info_<id>_reveal` flag that no emitter sets (no generative half),
+    // so it false-fails every treatment run. Re-promote once the emitter lands.
     for (const flag of flags) {
-      expect(isFidelityGateEnabled(flag)).toBe(true);
+      const expected = flag !== TREATMENT_FIDELITY_GATE_FLAGS.informationLedgerSchedule;
+      expect(isFidelityGateEnabled(flag)).toBe(expected);
     }
+    expect(isFidelityGateEnabled(TREATMENT_FIDELITY_GATE_FLAGS.informationLedgerSchedule)).toBe(false);
   });
 
   it('env "0" is the kill-switch; non-"0" strings fall through to the default-on', () => {

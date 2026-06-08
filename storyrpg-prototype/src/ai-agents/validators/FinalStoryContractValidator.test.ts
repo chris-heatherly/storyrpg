@@ -420,28 +420,56 @@ describe('FinalStoryContractValidator', () => {
     expect(report.blockingIssues.filter((i) => i.type === 'broken_navigation')).toEqual([]);
   });
 
-  // §4.2 (Treatment-Fidelity Remediation): on a TREATMENT-SOURCED run, an encounter
-  // scene with ZERO reader-facing beats is empty — even when its runtime encounter is
-  // valid. This closes the wall-breach-is-empty → poisoning-never-administered hole
-  // where an authored encounter anchor materialized as a 0-beat placeholder and passed.
-  it('fails a 0-beat valid-encounter scene on a treatment-sourced run', async () => {
+  // §4.2 (Treatment-Fidelity Remediation): on a TREATMENT-SOURCED run, a TRULY HOLLOW
+  // encounter scene (zero reader-facing prose ANYWHERE — no scene beats, no phase
+  // setupText, no storylets) is empty. This closes the wall-breach-is-empty →
+  // poisoning-never-administered hole where an anchor materialized as a placeholder.
+  it('fails a hollow (no-prose) encounter scene on a treatment-sourced run', async () => {
+    const base = validEncounter();
+    const hollowEncounter = {
+      ...base,
+      phases: (base.phases as any[]).map((p) => ({ ...p, beats: (p.beats ?? []).map((b: any) => ({ ...b, setupText: '' })) })),
+      outcomes: {},
+    };
     const story = validStory({
       episodes: [{
         ...validStory().episodes[0],
         scenes: [{
           id: 'scene-1',
-          name: 'Empty Encounter',
+          name: 'Hollow Encounter',
           startingBeatId: '',
           beats: [],
-          encounter: validEncounter() as any,
+          encounter: hollowEncounter as any,
         }],
       }],
     });
 
     const report = await new FinalStoryContractValidator().validate({ story, treatmentSourced: true });
 
-    expect(report.passed).toBe(false);
     expect(report.blockingIssues.some((i) => i.type === 'empty_scene')).toBe(true);
+  });
+
+  // Regression (endsong-gen-7): a 0-scene-beat encounter whose anchor IS dramatized in
+  // its phase setupText / outcome storylets must NOT be flagged empty on a treatment run.
+  // The encounter prose lives in `scene.encounter`, not `scene.beats` — and this is the
+  // exact shape EncounterAnchorContentValidator already passes, so the two must agree.
+  it('does NOT fail a dramatized 0-scene-beat encounter on a treatment-sourced run', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        scenes: [{
+          id: 'scene-1',
+          name: 'Dramatized Encounter',
+          startingBeatId: '',
+          beats: [],
+          encounter: validEncounter() as any, // carries phase setupText prose
+        }],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story, treatmentSourced: true });
+
+    expect(report.blockingIssues.some((i) => i.type === 'empty_scene')).toBe(false);
   });
 
   // Regression guard: a 0-beat scene whose content legitimately lives in its runtime

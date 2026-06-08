@@ -12,6 +12,7 @@ import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs } from '../utils
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isTreatmentFidelityFinding } from './treatmentFidelityGate';
 import { findBeatIdCollisions } from './beatIdCollisions';
+import { collectReaderFacingTexts } from './EncounterAnchorContentValidator';
 
 /**
  * Scene-target sentinels that mean "the episode/story ends here" rather than a
@@ -320,9 +321,15 @@ export class FinalStoryContractValidator {
         // `invalid_encounter` check above. The ONE exception is a treatment-sourced
         // run: under the "expand, don't rewrite" contract every authored encounter
         // anchor must be dramatized into prose, so a 0-beat encounter placeholder
-        // (wall-breach-is-empty → poisoning-never-administered) must fail there.
+        // (wall-breach-is-empty → poisoning-never-administered) must fail there —
+        // BUT only when the encounter has no reader-facing prose ANYWHERE. An encounter
+        // dramatized in its situation beats / outcome storylets (not `scene.beats`) is a
+        // real anchor: consult the same collector EncounterAnchorContentValidator uses so
+        // the two validators agree (the false positive that aborted endsong-gen-7 ep1,
+        // where the encounter had a setup beat + four prose storylets).
         const sceneHasNoBeats = !scene.beats || scene.beats.length === 0;
-        if (sceneHasNoBeats && (!scene.encounter || input.treatmentSourced)) {
+        const encounterHasProse = !!scene.encounter && collectReaderFacingTexts(scene).length > 0;
+        if (sceneHasNoBeats && (!scene.encounter || (input.treatmentSourced && !encounterHasProse))) {
           issues.push({
             type: 'empty_scene',
             severity: 'error',

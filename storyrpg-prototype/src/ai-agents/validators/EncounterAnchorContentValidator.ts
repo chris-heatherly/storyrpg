@@ -127,7 +127,7 @@ function isReaderFacingText(text: string | undefined): boolean {
 }
 
 /** Collect every reader-facing beat text from a final scene (flat beats + encounter phases). */
-function collectReaderFacingTexts(scene: Scene): string[] {
+export function collectReaderFacingTexts(scene: Scene): string[] {
   const texts: string[] = [];
   for (const beat of scene.beats ?? []) {
     if (isReaderFacingText(beat.text)) texts.push(beat.text);

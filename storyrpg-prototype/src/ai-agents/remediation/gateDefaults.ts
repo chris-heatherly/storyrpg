@@ -189,7 +189,17 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // `<FLAG>=0` (kill-switch) if a real treatment run surfaces a false positive.
   GATE_AUTHORED_EPISODE_CONFORMANCE: true,
   GATE_ENCOUNTER_ANCHOR_CONTENT: true,
-  GATE_INFORMATION_LEDGER_SCHEDULE: true,
+  // DEMOTED to default-off after endsong-gen-7 surfaced it as un-satisfiable: the gate
+  // requires each authored INFO reveal to "land" on-page, detected via an
+  // `info_<id>_reveal`/`payoff` flag (prose can't carry the internal id like "info-A").
+  // But there is NO generative half — no emitter sets those flags (cf. the
+  // emitSceneTreatmentSeeds / emitSceneBranchAxes backstops that DO exist for seeds and
+  // branch axes), and InformationLedgerEntry carries no scene mapping. So every treatment
+  // run with declared reveals false-fails. Re-promote once the generative half lands: a
+  // SceneWriter directive that dramatizes the authored reveal in its episode AND an
+  // emitSceneInfoReveals backstop that sets the detectable flag. (Detection still runs as
+  // shadow telemetry while off.)
+  GATE_INFORMATION_LEDGER_SCHEDULE: false,
   GATE_SIGNATURE_DEVICE_PRESENCE: true,
   GATE_SEVEN_POINT_ANCHOR_CONFORMANCE: true,
 };

@@ -776,21 +776,32 @@ function createWorkerLifecycle({
         }
       }
 
+      // A `pending` job has NO worker yet — it is waiting in the queue for a slot behind
+      // a running job, which can legitimately run far longer than 3 min (e.g. 15-20 min
+      // of source analysis on a large document). The 3-min worker-heartbeat timeout is
+      // only meaningful for a RUNNING worker that has stopped emitting heartbeats; applying
+      // it to a queued job falsely kills the second of two concurrent generations with
+      // "Worker stale for 3 minutes" while it was merely waiting its turn. Bound pending
+      // jobs by the generous job-level timeout instead, so the queue can drain.
+      const isPending = job.status === 'pending';
+      const staleThreshold = isPending ? JOB_STALE_RUNNING_MS : WORKER_STALE_RUNNING_MS;
       const heartbeat = new Date(job.updatedAt || job.createdAt || 0).getTime();
       if (!Number.isFinite(heartbeat)) return job;
-      if (now - heartbeat < WORKER_STALE_RUNNING_MS) return job;
+      if (now - heartbeat < staleThreshold) return job;
       changed = true;
       const staleMin = Math.round((now - heartbeat) / 60000);
       const failed = {
         ...job,
         status: 'failed',
-        error: job.error || `Worker stale for ${staleMin} minutes`,
+        error: job.error || (isPending
+          ? `Queued ${staleMin} minutes without an available worker slot`
+          : `Worker stale for ${staleMin} minutes`),
         updatedAt: new Date().toISOString(),
         deadLetter: true,
       };
       appendDeadLetter({
         jobId: job.id,
-        reason: 'stale',
+        reason: isPending ? 'queue_timeout' : 'stale',
         staleMinutes: staleMin,
         at: failed.updatedAt,
       });

@@ -5,7 +5,34 @@ import {
   normalizeConsequence,
   normalizeConsequences,
   routeFallbackChoicesAcrossTargets,
+  repairBranchFanOut,
 } from './choiceAssembly';
+
+describe('repairBranchFanOut (under-fanned branch point recovery)', () => {
+  it('re-points a redundant choice to the orphaned target (bite-me-gen-8 s1-1)', () => {
+    const choices = [{ id: 'accept', nextSceneId: 's1-2' }, { id: 'decline', nextSceneId: 's1-2' }];
+    expect(repairBranchFanOut(choices, ['s1-2', 's1-3'])).toBe(true);
+    expect(new Set(choices.map((c) => c.nextSceneId))).toEqual(new Set(['s1-2', 's1-3']));
+  });
+
+  it('fills an unreached target using an unrouted choice first', () => {
+    const choices = [{ id: 'a', nextSceneId: 's1-2' }, { id: 'b', nextSceneId: undefined }];
+    expect(repairBranchFanOut(choices, ['s1-2', 's1-3'])).toBe(true);
+    expect(choices.find((c) => c.id === 'b')!.nextSceneId).toBe('s1-3');
+    expect(choices.find((c) => c.id === 'a')!.nextSceneId).toBe('s1-2'); // existing distinct route preserved
+  });
+
+  it('is a no-op when the branch already fans out to >=2 targets', () => {
+    const choices = [{ id: 'a', nextSceneId: 's1-2' }, { id: 'b', nextSceneId: 's1-3' }];
+    expect(repairBranchFanOut(choices, ['s1-2', 's1-3'])).toBe(false);
+    expect(choices.map((c) => c.nextSceneId)).toEqual(['s1-2', 's1-3']);
+  });
+
+  it('is a no-op for a single-target (non-branch) scene or too few choices', () => {
+    expect(repairBranchFanOut([{ id: 'a', nextSceneId: 's2' }], ['s2'])).toBe(false);
+    expect(repairBranchFanOut([{ id: 'a', nextSceneId: 's2' }], ['s2', 's3'])).toBe(false); // 1 choice, can't cover 2
+  });
+});
 
 describe('routeFallbackChoicesAcrossTargets (branch-point recovery)', () => {
   it('routes each choice to a distinct target so every leadsTo target is reached', () => {

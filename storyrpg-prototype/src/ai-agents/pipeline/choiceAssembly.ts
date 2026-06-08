@@ -23,6 +23,47 @@ export function routeFallbackChoicesAcrossTargets<T extends { id: string; nextSc
 }
 
 /**
+ * Repair an UNDER-FANNED branch point in place: when a multi-target branch scene's
+ * AUTHORED choices route to fewer than 2 of its `leadsTo` targets (e.g. the LLM pointed
+ * both choices at the same scene, orphaning the other branch — the bite-me-gen-8 s1-1
+ * case), re-point spare choices at the unreached targets until ≥2 distinct targets are
+ * covered. "Spare" = a choice whose nextSceneId is not an in-target route, else a
+ * redundant choice whose target is already covered by another choice. Existing distinct
+ * routing is preserved. Returns true iff any choice was re-pointed. Pure (mutates the
+ * passed choices); unit-testable. Cheaper + more reliable than re-rolling ChoiceAuthor,
+ * and the only alternative to a hard-abort at GATE_BRANCH_FANOUT.
+ */
+export function repairBranchFanOut<T extends { nextSceneId?: string }>(
+  choices: T[],
+  leadsTo: string[] | undefined,
+): boolean {
+  const targets = [...new Set((leadsTo ?? []).filter(Boolean))];
+  const need = Math.min(2, targets.length, choices.length);
+  if (need < 2) return false; // not a multi-target branch (or too few choices to fan out)
+
+  const inTarget = (id: string | undefined): id is string => !!id && targets.includes(id);
+  const distinctReached = (): Set<string> => new Set(choices.map((c) => c.nextSceneId).filter(inTarget));
+  if (distinctReached().size >= need) return false; // already fans out enough
+
+  let changed = false;
+  for (const target of targets) {
+    if (distinctReached().size >= need) break;
+    if (distinctReached().has(target)) continue;
+    // Prefer an unrouted / out-of-target choice; else steal a redundant one.
+    let spare = choices.find((c) => !inTarget(c.nextSceneId));
+    if (!spare) {
+      const counts = new Map<string, number>();
+      for (const c of choices) if (inTarget(c.nextSceneId)) counts.set(c.nextSceneId, (counts.get(c.nextSceneId) ?? 0) + 1);
+      spare = choices.find((c) => inTarget(c.nextSceneId) && (counts.get(c.nextSceneId) ?? 0) > 1);
+    }
+    if (!spare) break; // nothing safe to re-point
+    spare.nextSceneId = target;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
  * Normalize a Consequence object to fix common LLM field-name deviations.
  */
 export function normalizeConsequence(c: Consequence): Consequence {

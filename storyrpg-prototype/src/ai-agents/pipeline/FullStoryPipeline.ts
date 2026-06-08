@@ -361,7 +361,7 @@ import {
   getLocationInfoForScene,
 } from './planningHelpers';
 import { mergeSeasonEpisodes } from './seasonStoryMerge';
-import { assembleChoiceForStory, foldTintFlagIntoConsequences, normalizeConsequences, routeFallbackChoicesAcrossTargets } from './choiceAssembly';
+import { assembleChoiceForStory, foldTintFlagIntoConsequences, normalizeConsequences, routeFallbackChoicesAcrossTargets, repairBranchFanOut } from './choiceAssembly';
 import { repairLostSceneGraphBranches } from './branchRepair';
 
 // Re-export types for consumers
@@ -8185,6 +8185,18 @@ export class FullStoryPipeline {
             // reveal assigned to this scene (Step 1), so the schedule validator can confirm
             // the reveal landed. No-op when the scene has no assigned reveals.
             emitSceneInfoReveals(sceneBlueprint, choiceResult.data.choices);
+            // Branch fan-out repair: a multi-target branch point (leadsTo.size>1) whose
+            // authored choices all route to ONE target leaves the other branch orphaned
+            // and hard-aborts the episode at GATE_BRANCH_FANOUT (the bite-me-gen-8 s1-1
+            // case: both choices → s1-2). Deterministically re-point a spare choice at
+            // each unreached target so the planned branch is realized. No-op for
+            // non-branch scenes or already-fanned choices.
+            if ((new Set(sceneBlueprint.leadsTo ?? []).size) > 1) {
+              const repaired = repairBranchFanOut(choiceResult.data.choices, sceneBlueprint.leadsTo);
+              if (repaired) {
+                this.emit({ type: 'warning', phase: 'choices', message: `Repaired branch fan-out for ${sceneBlueprint.id}: re-pointed a choice to cover all leadsTo targets [${[...new Set(sceneBlueprint.leadsTo ?? [])].join(', ')}].` });
+              }
+            }
             choiceSets.push({ ...choiceResult.data, sceneId: sceneBlueprint.id });
             // Phase 1: record this scene's planted flags so later scenes can pay them off.
             episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }, this.callbackLedger));

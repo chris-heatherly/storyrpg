@@ -75,6 +75,24 @@ export class PovClarityValidator {
       });
     }
 
+    // Beat-level POV consistency (gen-5): the original check only inspected the OPENING
+    // beat, so a mid-scene payoff beat that flipped into third person ("Kylie hits
+    // publish… She wakes to 84,000") in an otherwise second-person scene shipped
+    // unflagged. Scan EVERY beat for third-person protagonist narration. Advisory
+    // (warning) — it never forces regeneration, so it cannot destabilize a run, but it
+    // surfaces the POV break in diagnostics.
+    for (const beat of sceneContent.beats || []) {
+      const beatText = typeof beat.text === 'string' ? beat.text : String(beat.text || '');
+      if (this.isThirdPersonProtagonistNarration(beatText, context.protagonistName)) {
+        issues.push({
+          beatId: beat.id,
+          issue: `Beat narrates the protagonist in the third person ("${context.protagonistName}… she/he…") in a second-person story — a POV break.`,
+          severity: 'warning',
+          suggestion: 'Rewrite the beat in second person ("you/your"); reserve third-person + pronoun for NPCs only.',
+        });
+      }
+    }
+
     const errorCount = issues.filter(i => i.severity === 'error').length;
     const warningCount = issues.filter(i => i.severity === 'warning').length;
     const score = Math.max(0, 100 - errorCount * 70 - warningCount * 20);
@@ -86,6 +104,28 @@ export class PovClarityValidator {
       shouldRegenerate: errorCount > 0,
       checkedBeatId: firstBeat.id,
     };
+  }
+
+  /**
+   * True when a beat narrates the PROTAGONIST in the third person in a second-person
+   * story: the protagonist is referenced by name AND a third-person singular pronoun
+   * appears, while NO second-person marker ("you/your") is present anywhere in the
+   * beat. The absence of any "you" is the load-bearing signal — a beat that addresses
+   * the player even once is in-register and not flagged (so an occasional stylized
+   * self-naming like "You sign it: Kylie Marinescu" is safe). Heuristic + advisory.
+   */
+  private isThirdPersonProtagonistNarration(text: string, protagonistName?: string): boolean {
+    if (!protagonistName) return false;
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return false;
+    // Any second-person address means the beat is in the house POV — not a break.
+    if (hasPlayerReference(trimmed)) return false;
+    const names = Array.from(new Set([protagonistName, protagonistName.split(/\s+/)[0]].filter(Boolean)));
+    const nameRe = new RegExp(`\\b(?:${names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'i');
+    if (!nameRe.test(trimmed)) return false;
+    // Protagonist named, third-person singular pronoun present, and no "you" anywhere →
+    // the protagonist is being narrated in third person.
+    return /\b(?:she|he|her|him|his|hers|herself|himself)\b/i.test(trimmed);
   }
 
   private hasAmbiguousPronounChain(text: string, characterNames: string[], protagonistName?: string): boolean {

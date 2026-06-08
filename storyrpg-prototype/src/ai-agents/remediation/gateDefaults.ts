@@ -110,6 +110,14 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // there is no repair wired (the final-contract repair loop can't fix continuity), so
   // it would hard-fail any run with a continuity error. Off until scene-regen is wired.
   GATE_CONTINUITY_REMEDIATION: false,
+  // QA critical-issue block: promotes a failing QA report (passesQA=false OR any
+  // criticalIssues) from advisory to a BLOCKING contract issue. Default-OFF because,
+  // like GATE_CONTINUITY_REMEDIATION, no auto-repair is wired — flipping it on would
+  // hard-fail any run QA scores below the threshold. Distinct from
+  // GATE_CONTINUITY_REMEDIATION (which only promotes the four remediable continuity
+  // error CLASSES); this one gates the whole QA pass/fail. Detection of continuity
+  // errors is now ALWAYS surfaced as at least a warning regardless of either flag.
+  GATE_QA_CRITICAL_BLOCK: false,
   // Ending reachability: the branch-axis emitter ALWAYS sets the season's
   // treatment_branch_* ending axes on-page (ungated). This flag would promote a
   // declared-but-unset axis to blocking — but it needs a full-season shadow pass
@@ -117,6 +125,16 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // later, ungenerated episode, so it would false-positive). Off until validated
   // against a full-season run.
   GATE_ENDING_REACHABILITY: false,
+  // Treatment-sourced arming: stitches the live treatment `sourceAnalysis` onto
+  // `brief.multiEpisode.sourceAnalysis` so `runFidelityValidators` resolves
+  // `treatmentSourced=true` and the five §4 fidelity gates ENFORCE (hard-fail) on
+  // treatment runs. Default-OFF because arming flips ALL five gates to blocking at
+  // once: the EncounterAnchorContent gate is now partial-season-safe, but
+  // InformationLedgerSchedule and SignatureDevicePresence still check the WHOLE
+  // treatment against a partial (e.g. 3-of-8) story and would false-fail on
+  // not-yet-generated episodes. Flip ON only after those validators are
+  // partial-season-scoped and a real treatment run passes clean.
+  GATE_TREATMENT_SOURCED_ARM: false,
 
   // ── Wave 5: treatment-fidelity §4 gates (Remediation §4.1–§4.5) ──
   // Promoted ON to ENFORCE authored-treatment fidelity (not merely steer it): with

@@ -234,6 +234,42 @@ export class CallbackLedger {
   }
 
   /**
+   * Register a forward-promise written into a choice's `reminderPlan.later`
+   * ("In Episode 2 … the photo appears in the blog's sidebar"). gen-5: these were
+   * authored but never reconciled, so a promise naming a generated episode shipped
+   * broken. Planting a hook (with the named `payoffEpisode` when one was parsed)
+   * brings the promise into the inject -> payoff loop so it can be realized — and the
+   * Season-Canon / schedule gates can detect a same-season miss. Keyed on the choice
+   * id so repeated harvests of the same promise merge.
+   */
+  recordForwardPromise(params: {
+    choice: Choice;
+    episode: number;
+    sceneId: string;
+    summary: string;
+    payoffEpisode?: number;
+  }): CallbackHook | undefined {
+    const { choice, episode, sceneId, summary, payoffEpisode } = params;
+    if (!summary || summary.trim().length === 0) return undefined;
+    return this.add({
+      id: `later:${choice.id}`,
+      sourceEpisode: episode,
+      sourceSceneId: sceneId,
+      sourceChoiceId: choice.id,
+      flags: [],
+      conditionKeys: [],
+      impactFactors: choice.impactFactors ?? [],
+      consequenceTier: 'callback',
+      summary: summary.trim(),
+      payoffEpisode,
+      payoffWindow:
+        payoffEpisode != null
+          ? { minEpisode: payoffEpisode, maxEpisode: payoffEpisode }
+          : { minEpisode: episode + 1, maxEpisode: episode + this.config.defaultWindowSpan },
+    });
+  }
+
+  /**
    * Trackable scores a choice moves: the score names of its `setScore` /
    * `changeScore` consequences. The score axis of {@link trackableFlagsOf}.
    */
@@ -262,6 +298,33 @@ export class CallbackLedger {
     const flags: string[] = [];
     for (const consequence of choice.consequences ?? []) {
       if (
+        consequence.type === 'setFlag' &&
+        typeof consequence.flag === 'string' &&
+        !consequence.flag.startsWith('tint:') &&
+        !consequence.flag.startsWith('route_') &&
+        !consequence.flag.startsWith('treatment_branch_') &&
+        consequence.value !== false
+      ) {
+        flags.push(consequence.flag);
+      }
+    }
+    return flags;
+  }
+
+  /**
+   * Trackable flags a choice sets via its DELAYED consequences (not its immediate
+   * `consequences`). `trackableFlagsOf` only reads immediate consequences, so a
+   * delayed `setFlag` (e.g. the Mika-betrayal seeds `mika_invented_cover_story`,
+   * `mika_reported_roses_to_victor`) never entered the ledger and shipped as a
+   * truly-dead flag — set, registered nowhere, never read in a later episode
+   * (gen-5 audit). Same cosmetic/structural exclusions as the immediate axis.
+   */
+  trackableDelayedFlagsOf(choice: Choice): string[] {
+    const flags: string[] = [];
+    for (const delayed of choice.delayedConsequences ?? []) {
+      const consequence = delayed?.consequence;
+      if (
+        consequence &&
         consequence.type === 'setFlag' &&
         typeof consequence.flag === 'string' &&
         !consequence.flag.startsWith('tint:') &&

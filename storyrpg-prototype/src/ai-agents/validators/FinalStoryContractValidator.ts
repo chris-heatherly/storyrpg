@@ -719,12 +719,13 @@ export class FinalStoryContractValidator {
     metrics: FinalStoryContractReport['metrics']
   ): void {
     if (qaReport && (!qaReport.passesQA || qaReport.criticalIssues.length > 0)) {
+      // F3: QA score is an LLM self-assessment (craft signal), not a hard
+      // playability gate — advisory by default so the story ships with the score
+      // recorded rather than producing zero output. GATE_QA_CRITICAL_BLOCK promotes
+      // it to blocking once an auto-repair path exists (default-off ⇒ unchanged).
       issues.push({
-        // F3: QA score is an LLM self-assessment (craft signal), not a hard
-        // playability gate — advisory so the story ships with the score
-        // recorded rather than producing zero output.
         type: 'qa_blocker_present',
-        severity: 'warning',
+        severity: isGateEnabled('GATE_QA_CRITICAL_BLOCK') ? 'error' : 'warning',
         message: `QA report did not pass: ${qaReport.criticalIssues.join('; ') || `score ${qaReport.overallScore}`}`,
         validator: 'QARunner',
       });
@@ -732,20 +733,24 @@ export class FinalStoryContractValidator {
 
     // W6: cross-scene continuity ERRORS (impossible_knowledge / contradiction /
     // missing_setup / timeline_error) are detected by the QA pass but, being part of
-    // the advisory QA report, otherwise ship unremediated. When
-    // GATE_CONTINUITY_REMEDIATION is on, promote ONLY these high-precision error
-    // classes to blocking contract issues so the bounded GATE_FINAL_CONTRACT_REPAIR
-    // loop engages (and, failing that, the run fails loud rather than shipping a
-    // contradiction). state_conflict is deliberately excluded (noisier). Default-off
-    // ⇒ behavior unchanged. NOTE: post-assembly scene REGEN wiring is the deferred
-    // deeper step; this is the detection + gating half.
-    if (qaReport?.continuity?.issues?.length && isGateEnabled('GATE_CONTINUITY_REMEDIATION')) {
+    // the advisory QA report, previously shipped invisibly when the remediation gate
+    // was off (only the generic qa_blocker_present warning mentioned them in passing).
+    // DETECTION is now DECOUPLED from remediation: these high-precision error classes
+    // are ALWAYS surfaced as discrete contract issues. Severity escalates to blocking
+    // only when GATE_CONTINUITY_REMEDIATION (or the broader GATE_QA_CRITICAL_BLOCK) is
+    // on, so the bounded GATE_FINAL_CONTRACT_REPAIR loop can engage / the run fails
+    // loud rather than shipping a contradiction. state_conflict is deliberately
+    // excluded (noisier). Default-off ⇒ they appear as warnings (newly visible) but
+    // never block, so a passing run cannot flip to failing.
+    if (qaReport?.continuity?.issues?.length) {
       const REMEDIABLE = new Set(['impossible_knowledge', 'contradiction', 'missing_setup', 'timeline_error']);
+      const blockContinuity =
+        isGateEnabled('GATE_CONTINUITY_REMEDIATION') || isGateEnabled('GATE_QA_CRITICAL_BLOCK');
       for (const issue of qaReport.continuity.issues) {
         if (issue.severity !== 'error' || !REMEDIABLE.has(issue.type)) continue;
         issues.push({
           type: 'continuity_error',
-          severity: 'error',
+          severity: blockContinuity ? 'error' : 'warning',
           message: `Continuity ${issue.type}: ${issue.description}`,
           sceneId: issue.location?.sceneId,
           beatId: issue.location?.beatId,

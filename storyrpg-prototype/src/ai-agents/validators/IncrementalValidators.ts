@@ -1355,6 +1355,8 @@ export class IncrementalValidationRunner {
   private intensityDistributionValidator: IntensityDistributionValidator;
   private mechanicsLeakageValidator: MechanicsLeakageValidator;
   private config: IncrementalValidationConfig;
+  /** Protagonist display name, used by the beat-level POV-consistency check. */
+  private protagonistName?: string;
 
   constructor(
     knownFlags: string[],
@@ -1384,9 +1386,48 @@ export class IncrementalValidationRunner {
     this.encounterValidator = new IncrementalEncounterValidator(validSkills);
   }
 
+  /** Set the protagonist display name so beat-level POV checks can detect third-person drift. */
+  setProtagonistName(name: string | undefined): void {
+    this.protagonistName = name && name.trim().length > 0 ? name.trim() : undefined;
+  }
+
   /**
    * Run all enabled incremental validations for a scene.
    */
+  /**
+   * Collect every reader-facing prose fragment from an encounter structure so the
+   * incremental prose scans can see it. Encounter prose lives OUTSIDE the flat
+   * `sceneContent.beats` array (in phase beats, storylet beats, and the goal/threat
+   * clock labels that surface in the encounter UI), so without this it is invisible
+   * to POV/voice/mechanics-leak validation. Pure; returns `{id, text}` pairs.
+   */
+  private collectEncounterProseTexts(
+    encounter: EncounterStructure
+  ): Array<{ id: string; text: string }> {
+    const out: Array<{ id: string; text: string }> = [];
+    const push = (id: string, text: string | undefined): void => {
+      if (typeof text === 'string' && text.trim().length > 0) out.push({ id, text });
+    };
+    for (const beat of encounter.beats ?? []) {
+      push(`${beat.id}:setup`, beat.setupText);
+      push(`${beat.id}:escalation`, beat.escalationText);
+      for (const variant of beat.setupTextVariants ?? []) push(`${beat.id}:variant`, variant.text);
+    }
+    const storylets = encounter.storylets ?? ({} as EncounterStructure['storylets']);
+    for (const key of ['victory', 'partialVictory', 'defeat', 'escape'] as const) {
+      const storylet = storylets[key];
+      if (!storylet) continue;
+      for (const beat of storylet.beats ?? []) push(`${storylet.id}:${beat.id}`, beat.text);
+    }
+    // Clock name/description surface as UI labels — scan them for meta and
+    // wrong-gender-pronoun leaks (e.g. the "Kylie allows himself" goalClock bug).
+    push('goalClock:name', encounter.goalClock?.name);
+    push('goalClock:description', encounter.goalClock?.description);
+    push('threatClock:name', encounter.threatClock?.name);
+    push('threatClock:description', encounter.threatClock?.description);
+    return out;
+  }
+
   async validateScene(
     sceneContent: SceneContent,
     choiceSet: ChoiceSet | undefined,
@@ -1407,6 +1448,7 @@ export class IncrementalValidationRunner {
     if (this.config.povClarityValidation) {
       results.povClarity = this.povClarityValidator.validateScene(sceneContent, {
         characterNames: characterProfiles.map(profile => profile.name),
+        protagonistName: this.protagonistName,
       });
       if (results.povClarity.shouldRegenerate) {
         results.regenerationRequested = 'scene';
@@ -1462,6 +1504,39 @@ export class IncrementalValidationRunner {
       if (!results.encounter.passed) {
         results.regenerationRequested = results.regenerationRequested === 'none' ? 'encounter' : results.regenerationRequested;
         results.overallPassed = false;
+      }
+    }
+
+    // Encounter PROSE scan (0.1) — the default-on POV/voice/continuity checks above
+    // read `sceneContent.beats`, which is EMPTY for encounter scenes (their reader
+    // prose lives in the EncounterStructure: storylets, phase beats, clock labels).
+    // Without this, encounter scenes validated in ~0ms with 0 issues — the no-op that
+    // let the meta-leak (branch-residue), combat-boilerplate, and clock-pronoun defects
+    // ship invisibly. Scan the encounter's reader-facing prose for mechanics/meta leaks
+    // so they surface in the per-scene result (and the 06b aggregate). Advisory by
+    // default (records the finding); escalates to encounter-regen only under the same
+    // gate as the scene-level mechanics scan, so default behavior cannot destabilize a run.
+    if (encounter) {
+      const encounterTexts = this.collectEncounterProseTexts(encounter).map(t => ({
+        id: t.id,
+        text: t.text,
+        sceneId: sceneContent.sceneId,
+        beatId: t.id,
+      }));
+      if (encounterTexts.length > 0) {
+        const strict = process.env.GATE_MECHANICS_LEAKAGE_REGEN === '1';
+        const r = this.mechanicsLeakageValidator.validate({ texts: encounterTexts, strict });
+        results.mechanicsLeakage = {
+          passed: r.valid,
+          score: r.score,
+          issues: r.issues,
+          metrics: r.metrics,
+        };
+        if (strict && r.issues.some(i => i.severity === 'error')) {
+          results.regenerationRequested =
+            results.regenerationRequested === 'none' ? 'encounter' : results.regenerationRequested;
+          results.overallPassed = false;
+        }
       }
     }
 

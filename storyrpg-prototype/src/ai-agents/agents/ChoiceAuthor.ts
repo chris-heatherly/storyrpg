@@ -279,6 +279,15 @@ export class ChoiceAuthor extends BaseAgent {
   // How far a skill's season usage must exceed the least-used relevant skill before
   // an authored single-skill statCheck is rebalanced onto the under-used one.
   private static readonly SKILL_REBALANCE_GAP = 2;
+  // Hard cap on any one skill's share of total stat-check weight across the season.
+  // When a skill is already at/over this share, an authored single-skill check on it
+  // is rebalanced onto an under-used relevant skill EVEN IF the pairwise gap is below
+  // SKILL_REBALANCE_GAP — this is what breaks the "perception carries 43%" monopoly
+  // the gen-5 audit flagged (the pairwise gap alone let a dominant skill keep growing).
+  private static readonly SKILL_DOMINANCE_CAP = 0.30;
+  // Below this many total stat-checks the dominance cap is not enforced (small samples
+  // make the share meaningless — one check is trivially 100%).
+  private static readonly SKILL_DOMINANCE_MIN_SAMPLE = 4;
   // Candidate skills per choice type, ordered to lead away from the historical
   // persuasion-first default. Selection picks the least-used among these.
   private static readonly RELEVANT_SKILLS: Record<string, string[]> = {
@@ -519,6 +528,50 @@ Before finalizing:
     }
   }
 
+  /**
+   * Distinct, tier-appropriate fallback outcome prose for a choice whose LLM-authored
+   * `outcomeTexts` were missing. Uses the choice's stakes triangle (want/cost) when
+   * present so success leans on the WANT and partial/failure lean on the COST; even
+   * without stakes the three tiers lead with different clauses so they never collapse
+   * into the identical-copy stub the old fallback produced. Fiction-first: no stats/dice.
+   */
+  private buildFallbackOutcomeText(
+    choice: ChoiceSet['choices'][number],
+    tier: 'success' | 'partial' | 'failure',
+  ): string {
+    const stakes = (choice as { stakes?: { want?: string; cost?: string } }).stakes;
+    const lc = (s: string | undefined): string =>
+      s ? s.charAt(0).toLowerCase() + s.slice(1).replace(/[.!?]\s*$/, '') : '';
+    const want = lc(stakes?.want);
+    const cost = lc(stakes?.cost);
+    switch (tier) {
+      case 'success':
+        return want ? `It works — you get what you reached for: ${want}.` : 'It works, and the moment goes your way.';
+      case 'partial':
+        return cost
+          ? `You get part of what you wanted, but it costs you: ${cost}.`
+          : 'It half-works: you gain ground, but not cleanly, and the cost lingers.';
+      case 'failure':
+        return cost ? `It slips away from you, and ${cost}.` : 'It does not go the way you hoped.';
+    }
+  }
+
+  /**
+   * Backstop for outcome-text distinctness: if any two tiers (or a tier and the choice
+   * label) are identical after normalization, re-derive the colliding tier(s) from the
+   * distinct fallbacks so no stub outcome ships. Mutates the choice in place.
+   */
+  private dedupeOutcomeTexts(choice: ChoiceSet['choices'][number]): void {
+    const ot = choice.outcomeTexts;
+    if (!ot) return;
+    const label = String(choice.text || '').trim();
+    const collides = (value: string | undefined, others: Array<string | undefined>): boolean =>
+      Boolean(value) && (value!.trim() === label || others.some(o => o && o.trim() === value!.trim()));
+    if (collides(ot.success, [ot.partial, ot.failure])) ot.success = this.buildFallbackOutcomeText(choice, 'success');
+    if (collides(ot.partial, [ot.success, ot.failure])) ot.partial = this.buildFallbackOutcomeText(choice, 'partial');
+    if (collides(ot.failure, [ot.success, ot.partial])) ot.failure = this.buildFallbackOutcomeText(choice, 'failure');
+  }
+
   private normalizeChoiceSet(choiceSet: ChoiceSet, input: ChoiceAuthorInput): ChoiceSet {
     // Get blueprint stakes as fallback
     const blueprintStakes = input.sceneBlueprint.choicePoint?.stakes || {
@@ -620,19 +673,27 @@ Before finalizing:
         console.warn(`[ChoiceAuthor] Choice ${choice.id || i} had non-string text, converted to string`);
       }
 
-      // Normalize outcomeTexts — fallback to the choice text if the LLM omitted them
+      // Normalize outcomeTexts — when the LLM omits a tier, fall back to a DISTINCT,
+      // tier-appropriate line (success/partial/failure read differently) instead of
+      // copying the choice label into all three tiers. The old identical-copy fallback
+      // shipped stub outcomes where every resolution read the same flat instruction
+      // (gen-5 audit: 3 choices with success===partial===failure===choice.text).
       if (!choice.outcomeTexts || typeof choice.outcomeTexts !== 'object') {
         choice.outcomeTexts = {
-          success: choice.text,
-          partial: choice.text,
-          failure: choice.text,
+          success: this.buildFallbackOutcomeText(choice, 'success'),
+          partial: this.buildFallbackOutcomeText(choice, 'partial'),
+          failure: this.buildFallbackOutcomeText(choice, 'failure'),
         };
-        console.warn(`[ChoiceAuthor] Choice "${choice.id}" missing outcomeTexts — using choice text as fallback`);
+        console.warn(`[ChoiceAuthor] Choice "${choice.id}" missing outcomeTexts — synthesized distinct tier fallbacks`);
       } else {
-        if (!choice.outcomeTexts.success) choice.outcomeTexts.success = choice.text;
-        if (!choice.outcomeTexts.partial) choice.outcomeTexts.partial = choice.text;
-        if (!choice.outcomeTexts.failure) choice.outcomeTexts.failure = choice.text;
+        if (!choice.outcomeTexts.success) choice.outcomeTexts.success = this.buildFallbackOutcomeText(choice, 'success');
+        if (!choice.outcomeTexts.partial) choice.outcomeTexts.partial = this.buildFallbackOutcomeText(choice, 'partial');
+        if (!choice.outcomeTexts.failure) choice.outcomeTexts.failure = this.buildFallbackOutcomeText(choice, 'failure');
       }
+      // Backstop: if any two tiers (or a tier and the choice label) are still identical
+      // after normalization, the outcome reads the same regardless of how it resolves.
+      // Re-derive the colliding tiers from the distinct fallbacks so no stub ships.
+      this.dedupeOutcomeTexts(choice);
       // Advisory: identical success/failure prose means the stat-check outcome makes
       // no narrative difference — usually lazy authoring. Surface it; don't rewrite.
       if (
@@ -1072,8 +1133,17 @@ Before finalizing:
       if (!single || !candidates.includes(single)) continue;
 
       const target = this.leastUsedRelevantSkill(choiceSet.choiceType);
+      if (target === single) continue;
       const gap = (this.skillUsage[single] ?? 0) - (this.skillUsage[target] ?? 0);
-      if (target === single || gap < ChoiceAuthor.SKILL_REBALANCE_GAP) continue;
+      // Season-wide dominance: force a swap once `single` exceeds its share cap, even
+      // when the pairwise gap is small — otherwise a perpetually-favoured skill keeps
+      // its lead and never trips the gap test (the gen-5 perception monopoly).
+      const totalUsage = Object.values(this.skillUsage).reduce((a, b) => a + b, 0);
+      const singleShare = totalUsage > 0 ? (this.skillUsage[single] ?? 0) / totalUsage : 0;
+      const overCap =
+        totalUsage >= ChoiceAuthor.SKILL_DOMINANCE_MIN_SAMPLE &&
+        singleShare > ChoiceAuthor.SKILL_DOMINANCE_CAP;
+      if (gap < ChoiceAuthor.SKILL_REBALANCE_GAP && !overCap) continue;
 
       const difficulty = sc.difficulty ?? (choiceSet.choiceType === 'dilemma' ? 60 : 50);
       choice.statCheck = { skillWeights: { [target]: 1.0 }, difficulty };

@@ -157,6 +157,12 @@ Rule of thumb: validators inside the orchestrator enforce narrative *best practi
 | IncrementalContinuityChecker | Undefined flags/scores tracking | Fast |
 | IncrementalEncounterValidator | Encounter structure validation | Fast |
 
+> **gen-5:** `validateScene` also scans ENCOUNTER prose (`collectEncounterProseTexts` over storylet/phase
+> beats + goal/threat clock labels) through the mechanics-leak validator — encounter scenes carry empty
+> `sceneContent.beats`, so without this they validated as a ~1ms no-op. `PovClarityValidator` checks
+> POV consistency on EVERY beat (not just the opener; wire the protagonist via `setProtagonistName`) so a
+> mid-scene flip into third person is surfaced as an advisory warning.
+
 ### Regeneration Signal
 
 Incremental validation returns:

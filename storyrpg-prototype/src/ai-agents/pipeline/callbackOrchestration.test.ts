@@ -4,6 +4,7 @@ import {
   getUnresolvedCallbacksForPrompt,
   harvestEpisodeCallbacks,
   injectFallbackCallbacks,
+  parsePromisedEpisode,
   AUTO_CALLBACK_REMINDER_TAG,
   type HarvestEpisodeCallbacksParams,
 } from './callbackOrchestration';
@@ -305,5 +306,21 @@ describe('injectFallbackCallbacks', () => {
 
     expect(injected).toBe(1);
     expect(laterBeat.textVariants[0].text).toContain('shared cup');
+  });
+});
+
+describe('parsePromisedEpisode (gen-5 forward-promise harvesting)', () => {
+  it('extracts a future episode number from a promise string', () => {
+    expect(parsePromisedEpisode('In Episode 2 the photo appears in the blog sidebar.', 1)).toBe(2);
+    expect(parsePromisedEpisode('Mika revisits this in episode three.', 1)).toBe(3);
+  });
+
+  it('uses the earliest FUTURE episode when a range is named', () => {
+    expect(parsePromisedEpisode("Mika's confession in Episode 3/4 cataloguing the tells.", 1)).toBe(3);
+  });
+
+  it('returns undefined for a vague later-episode promise or a past/current episode', () => {
+    expect(parsePromisedEpisode('She will remember this in a later episode.', 1)).toBeUndefined();
+    expect(parsePromisedEpisode('Back in Episode 1 she hesitated.', 2)).toBeUndefined();
   });
 });

@@ -47,12 +47,56 @@ export const READER_PROSE_LEAK_PATTERNS: Array<{ pattern: RegExp; label: string;
 ];
 
 /**
+ * Structural narrative-scaffolding signatures — the "third class" of leak the
+ * gen-5 audit surfaced: prose that narrates the STORY ENGINE's mechanics (branch
+ * residue, reconvergence, forward-motion) in quasi-poetic language without naming a
+ * scene/flag, so the scene-reference and flag-id patterns above miss it. Each entry
+ * is a SPECIFIC, tightly-anchored phrasing (not a bare word like "threshold" or
+ * "residue", which appear diegetically) so it is safe to feed a blocking detector.
+ * These are the exact templates the branch-residue repair and choice-bridge builder
+ * used to emit; the generators no longer produce them, so this is a regression backstop.
+ */
+export const STRUCTURAL_SCAFFOLDING_PATTERNS: Array<{ pattern: RegExp; label: string; suggestion: string }> = [
+  {
+    pattern: /\bleaves a visible residue\b/i,
+    label: 'branch-residue scaffolding',
+    suggestion: 'Describe the lingering effect of the earlier choice in-fiction; never narrate "branch residue".',
+  },
+  {
+    pattern: /\bstill colors how (?:everyone|the player|you|they)\s+enters?\b/i,
+    label: 'branch-reconvergence scaffolding',
+    suggestion: 'Show how the prior path changes this moment in-fiction; do not narrate reconvergence.',
+  },
+  {
+    pattern: /\bthe path here still matters\b/i,
+    label: 'branch-path scaffolding',
+    suggestion: 'Remove structural commentary about paths/branches from reader prose.',
+  },
+  {
+    pattern: /\bthe (?:route|path) chosen before this moment\b/i,
+    label: 'branch-path scaffolding',
+    suggestion: 'Remove structural commentary about the chosen route from reader prose.',
+  },
+  {
+    pattern: /\bthe next threshold waits ahead\b/i,
+    label: 'forward-motion scaffolding',
+    suggestion: 'Replace the structural forward-motion tag with in-fiction prose.',
+  },
+  {
+    pattern: /\bthe path forward is set\b/i,
+    label: 'forward-motion scaffolding',
+    suggestion: 'Replace the structural forward-motion tag with in-fiction prose.',
+  },
+];
+
+/**
  * Broad reject set for the auto-callback injection filter. Includes the
  * high-confidence signatures above plus planning stubs that are too loose to
  * block on globally but should never be injected as a callback line.
  */
 export const META_CALLBACK_REJECT_PATTERNS: RegExp[] = [
   ...READER_PROSE_LEAK_PATTERNS.map((p) => p.pattern),
+  ...STRUCTURAL_SCAFFOLDING_PATTERNS.map((p) => p.pattern),
   // Scene-ordering planning phrases: "the next scene should remember this".
   /\bthe\s+(?:next|following|previous|prior|earlier|last|final|first)\s+scene\b/i,
   // Synthesized ledger stub: 'Earlier choice: "…" (sets …).'

@@ -6,7 +6,7 @@
  * code/config strings and should be run only on rendered story text.
  */
 
-import { READER_PROSE_LEAK_PATTERNS } from '../constants/metaProse';
+import { READER_PROSE_LEAK_PATTERNS, STRUCTURAL_SCAFFOLDING_PATTERNS } from '../constants/metaProse';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
 
 export interface MechanicsLeakageText {
@@ -186,6 +186,9 @@ const DESIGN_NOTE_PATTERNS: Array<{ pattern: RegExp; label: string; suggestion: 
   // the meta-narration that leaked into auto-injected callback TextVariants — text
   // the historical stat/episode patterns above did not cover.
   ...READER_PROSE_LEAK_PATTERNS,
+  // Structural narrative-scaffolding signatures (branch residue / reconvergence /
+  // forward-motion) — the gen-5 "third class" that named neither a scene nor a flag.
+  ...STRUCTURAL_SCAFFOLDING_PATTERNS,
 ];
 
 export class MechanicsLeakageValidator extends BaseValidator {

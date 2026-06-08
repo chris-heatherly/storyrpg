@@ -130,4 +130,24 @@ describe('InformationLedgerScheduleValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.metrics.entryCount).toBe(0);
   });
+
+  it('partial-season: does not flag a reveal scheduled for an UNGENERATED episode (gen-5)', () => {
+    // Reveal scheduled for ep6, but only ep1–3 were generated → not "missing".
+    const result = new InformationLedgerScheduleValidator().validate(
+      [infoEntry({ introducedEpisode: 2, setupTouchEpisodes: [2], plannedRevealEpisode: 6 })],
+      story({ 2: ['info_1_setup'] }, [1, 2, 3]),
+    );
+    expect(result.metrics.missingRevealCount).toBe(0);
+    expect(result.valid).toBe(true);
+  });
+
+  it('partial-season: STILL flags an in-range reveal that never landed (gen-5 info-arc-1-reframe)', () => {
+    // Reveal scheduled for ep2, which WAS generated, but no reveal flag landed → real miss.
+    const result = new InformationLedgerScheduleValidator().validate(
+      [infoEntry({ id: 'info-arc-1-reframe', introducedEpisode: 1, setupTouchEpisodes: [1], plannedRevealEpisode: 2 })],
+      story({ 1: ['info-arc-1-reframe_setup'] }, [1, 2, 3]),
+    );
+    expect(result.metrics.missingRevealCount).toBe(1);
+    expect(result.valid).toBe(false);
+  });
 });

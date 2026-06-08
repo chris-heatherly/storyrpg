@@ -172,4 +172,36 @@ describe('CallbackLedger', () => {
     expect(round.size()).toBe(1);
     expect(round.all()[0].id).toBe('h');
   });
+
+  it('harvests flags set via DELAYED consequences (gen-5)', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({
+      delayedConsequences: [
+        { consequence: { type: 'setFlag', flag: 'mika_invented_cover_story', value: true } as any, description: 'later betrayal', delay: { type: 'episodes', count: 2 } },
+        { consequence: { type: 'setFlag', flag: 'tint:wary', value: true } as any, description: 'cosmetic' },
+      ],
+    });
+    const flags = ledger.trackableDelayedFlagsOf(choice);
+    expect(flags).toContain('mika_invented_cover_story');
+    expect(flags).not.toContain('tint:wary');
+    expect(ledger.recordFlagSet({ choice, flag: 'mika_invented_cover_story', episode: 1, sceneId: 's1' })).toBeDefined();
+    expect(ledger.all().some((h) => h.flags.includes('mika_invented_cover_story'))).toBe(true);
+  });
+
+  it('records a forward-promise targeting the named payoff episode (gen-5)', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({ id: 'choice-shoes-3' });
+    const hook = ledger.recordForwardPromise({
+      choice,
+      episode: 1,
+      sceneId: 's1',
+      summary: 'In Episode 2 the photo from this night appears in the blog sidebar.',
+      payoffEpisode: 2,
+    });
+    expect(hook).toBeDefined();
+    expect(hook!.id).toBe('later:choice-shoes-3');
+    expect(hook!.payoffEpisode).toBe(2);
+    // Eligible to pay off in episode 2, its named episode.
+    expect(ledger.unresolvedFor(2).some((h) => h.id === 'later:choice-shoes-3')).toBe(true);
+  });
 });

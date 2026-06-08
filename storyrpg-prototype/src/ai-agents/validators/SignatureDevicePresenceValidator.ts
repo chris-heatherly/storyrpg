@@ -164,9 +164,33 @@ function beatProse(beat: Beat): string {
     .join(' ');
 }
 
-/** All reader-facing prose for one generated scene. */
+/** All reader-facing prose for one generated scene (flat beats + encounter content). */
 function sceneProse(scene: Scene): string {
-  return [scene.name, ...(scene.beats || []).map(beatProse)].filter(Boolean).join(' ');
+  const parts: string[] = [scene.name, ...(scene.beats || []).map(beatProse)];
+  // Encounter scenes carry their prose in `encounter.phases[].beats` and
+  // `encounter.storylets[].beats`, NOT `scene.beats` — so an encounter-staged
+  // signature device (e.g. the rooftop→Cișmigiu "two anchors" anchor) would read as
+  // "missing" if we only scanned scene.beats. Include encounter prose too.
+  const enc = scene.encounter as
+    | { phases?: Array<{ beats?: unknown[] }>; storylets?: unknown }
+    | undefined;
+  if (enc) {
+    const collect = (beats: unknown[] | undefined): void => {
+      for (const beat of beats || []) {
+        const b = beat as Partial<Beat> & { setupText?: string; escalationText?: string };
+        parts.push(b.text || '', b.setupText || '', b.escalationText || '');
+        for (const variant of b.textVariants || []) parts.push(variant.text || '');
+      }
+    };
+    for (const phase of enc.phases || []) collect(phase.beats);
+    const storylets = Array.isArray(enc.storylets)
+      ? enc.storylets
+      : Object.values((enc.storylets ?? {}) as Record<string, unknown>);
+    for (const storylet of storylets) {
+      if (storylet && typeof storylet === 'object') collect((storylet as { beats?: unknown[] }).beats);
+    }
+  }
+  return parts.filter(Boolean).join(' ');
 }
 
 /** All reader-facing prose for one generated episode. */
@@ -261,7 +285,9 @@ export class SignatureDevicePresenceValidator extends BaseValidator {
     // Index generated prose by scene id and by episode number.
     const sceneProseById = new Map<string, string>();
     const episodeProseByNumber = new Map<number, string>();
+    const generatedEpisodeNumbers = new Set<number>();
     for (const episode of input.story.episodes || []) {
+      if (typeof episode.number === 'number') generatedEpisodeNumbers.add(episode.number);
       episodeProseByNumber.set(episode.number, episodeProse(episode));
       for (const scene of episode.scenes || []) {
         sceneProseById.set(scene.id, sceneProse(scene));
@@ -269,6 +295,19 @@ export class SignatureDevicePresenceValidator extends BaseValidator {
     }
 
     for (const sig of signatures) {
+      // Partial-season scoping: a treatment plans signatures for all N episodes, but a
+      // run may generate only a subset (e.g. the first 3). A signature whose episode was
+      // not generated is legitimately absent — not "summarized away" — so skip it rather
+      // than emitting a false "no generated prose found" error for ungenerated episodes.
+      // Only applies when we can tell which episodes ran.
+      if (
+        generatedEpisodeNumbers.size > 0
+        && typeof sig.episodeNumber === 'number'
+        && !generatedEpisodeNumbers.has(sig.episodeNumber)
+      ) {
+        continue;
+      }
+
       // Prefer the exact scene's prose; fall back to the whole episode if the
       // scene id was split/renamed downstream (still scene-local, not whole-story).
       const sceneText = sceneProseById.get(sig.sceneId);

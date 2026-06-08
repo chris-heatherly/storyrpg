@@ -210,8 +210,18 @@ describe('FullStoryPipeline sceneEpisode playable contract repair', () => {
     expect(bridgeText).not.toContain('In the wall-breach encounter');
     expect(bridgeText).not.toContain('In the next scene');
     expect(bridgeText).not.toContain('encounter');
-    // Falls back to the neutral lead + a generic in-fiction destination.
-    expect(bridgeText).toContain('The choice changes the air around you.');
+    // With no safe authored fragment, the bridge falls back to a generic in-fiction
+    // line ALONE (the generic destination is no longer appended onto real prose —
+    // that produced robotic structural closers in gen-5). It must be one of the
+    // in-fiction options and carry no structural-scaffolding register.
+    const GENERIC_FALLBACKS = [
+      'What comes next is already in motion.',
+      'There is no stepping back from here.',
+      'The decision settles into your chest and stays there.',
+      'The choice changes the air around you.',
+    ];
+    expect(GENERIC_FALLBACKS).toContain(bridgeText);
+    expect(bridgeText).not.toMatch(/path forward is set|threshold waits/i);
   });
 
 });

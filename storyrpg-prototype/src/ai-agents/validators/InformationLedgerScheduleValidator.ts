@@ -150,6 +150,20 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
     const episodes = Array.isArray(story.episodes) ? story.episodes : [];
     const overrides = ctx.observedSchedule ?? {};
 
+    // Partial-season scoping: a treatment authors INFO reveals across all N episodes,
+    // but a run may generate only a subset (e.g. the first 3). A reveal/payoff
+    // scheduled for an ungenerated episode legitimately cannot have landed — flagging
+    // it "missing" is a false positive. Scope schedule checks to generated episodes.
+    // (An in-range reveal that never landed — e.g. an Ep2 reveal in a 3-episode run —
+    // is still a REAL miss and is NOT suppressed.) Only applies when we can tell which
+    // episodes ran.
+    const generatedEpisodeNumbers = new Set<number>();
+    for (const ep of episodes) {
+      if (typeof ep.number === 'number' && Number.isFinite(ep.number)) generatedEpisodeNumbers.add(ep.number);
+    }
+    const episodeGenerated = (ep: number | undefined): boolean =>
+      generatedEpisodeNumbers.size === 0 || (typeof ep === 'number' && generatedEpisodeNumbers.has(ep));
+
     for (const entry of entries) {
       const location = `informationLedger.${entry.id || entry.label || 'unknown'}`;
 
@@ -181,8 +195,11 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
         ));
       }
 
-      // (2) authored reveal/payoff never appeared — BLOCKING.
-      if (authoredReveal !== undefined && observedReveal === undefined) {
+      // (2) authored reveal/payoff never appeared — BLOCKING. Scoped to generated
+      // episodes: a reveal scheduled for an episode that was never generated cannot
+      // have landed yet, so skip it (partial-season run). An in-range reveal that
+      // never landed is still flagged.
+      if (authoredReveal !== undefined && observedReveal === undefined && episodeGenerated(authoredReveal)) {
         metrics.missingRevealCount += 1;
         entryClean = false;
         issues.push(this.error(
@@ -198,7 +215,8 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
       if (
         authoredSetup !== undefined &&
         observedSetup !== undefined &&
-        observedSetup > authoredSetup
+        observedSetup > authoredSetup &&
+        episodeGenerated(authoredSetup)
       ) {
         metrics.offPlacementCount += 1;
         entryClean = false;
@@ -214,7 +232,8 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
         authoredReveal !== undefined &&
         observedReveal !== undefined &&
         observedReveal !== authoredReveal &&
-        !(effectiveSetup !== undefined && observedReveal < effectiveSetup)
+        !(effectiveSetup !== undefined && observedReveal < effectiveSetup) &&
+        episodeGenerated(authoredReveal)
       ) {
         metrics.offPlacementCount += 1;
         entryClean = false;
@@ -283,6 +302,28 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
     for (const beat of scene.beats ?? []) {
       this.collectBeatMarkers(entry, beat, epNum, markers);
     }
+    // Encounter scenes carry their setup/reveal beats in `encounter.phases[].beats`
+    // and `encounter.storylets[].beats`, NOT `scene.beats` — so an INFO reveal that
+    // lands inside an encounter (e.g. a midpoint reframe staged in the Velvet Booth)
+    // would read as "never landed" if we only scanned scene.beats. Scan encounter
+    // beats too.
+    const enc = scene.encounter as
+      | { phases?: Array<{ beats?: Beat[] }>; storylets?: unknown }
+      | undefined;
+    if (enc) {
+      for (const phase of enc.phases ?? []) {
+        for (const beat of phase.beats ?? []) this.collectBeatMarkers(entry, beat, epNum, markers);
+      }
+      const storylets = Array.isArray(enc.storylets)
+        ? enc.storylets
+        : Object.values((enc.storylets ?? {}) as Record<string, unknown>);
+      for (const storylet of storylets) {
+        if (!storylet || typeof storylet !== 'object') continue;
+        for (const beat of (storylet as { beats?: Beat[] }).beats ?? []) {
+          this.collectBeatMarkers(entry, beat, epNum, markers);
+        }
+      }
+    }
   }
 
   private collectBeatMarkers(
@@ -301,9 +342,17 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
       }
     }
     // Softer prose signal: beat text that names the INFO id. Treated as a reveal
-    // touch when it carries a reveal keyword, otherwise a setup touch.
-    if (typeof beat.text === 'string' && referencesEntry(beat.text, entry)) {
-      markers.push({ episode: epNum, phase: REVEAL_TOKEN.test(beat.text) ? 'reveal' : 'setup' });
+    // touch when it carries a reveal keyword, otherwise a setup touch. Encounter beats
+    // carry prose in `setupText`/`escalationText` rather than `text`, so check those too.
+    const proseFields = [
+      beat.text,
+      (beat as { setupText?: string }).setupText,
+      (beat as { escalationText?: string }).escalationText,
+    ];
+    for (const prose of proseFields) {
+      if (typeof prose === 'string' && referencesEntry(prose, entry)) {
+        markers.push({ episode: epNum, phase: REVEAL_TOKEN.test(prose) ? 'reveal' : 'setup' });
+      }
     }
   }
 

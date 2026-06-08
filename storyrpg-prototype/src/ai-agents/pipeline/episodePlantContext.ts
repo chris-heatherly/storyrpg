@@ -277,19 +277,27 @@ export function emitTreatmentSeedConsequences(choices: Choice[], seedFlags: read
   const pending = seedFlags.filter((f) => !alreadySet.has(f));
   if (!pending.length) return choices;
 
-  // Pick the load-bearing choice: most existing consequences, else the first.
-  let target = choices[0];
-  let best = target.consequences?.length ?? 0;
+  // Load-bearing choice (most existing consequences) is the fallback target for
+  // index-keyed seeds (`treatment_seed_ep3_4`) that carry no semantic content.
+  let loadBearing = choices[0];
+  let best = loadBearing.consequences?.length ?? 0;
   for (const choice of choices) {
     const n = choice.consequences?.length ?? 0;
     if (n > best) {
       best = n;
-      target = choice;
+      loadBearing = choice;
     }
   }
 
-  const next: Consequence[] = [...(target.consequences ?? []), ...buildTreatmentSeedConsequences(pending)];
-  target.consequences = next;
+  // Per-seed placement: a descriptively-named seed lands on the choice its text
+  // matches; an index-keyed seed falls back to the load-bearing choice. (Previously
+  // ALL seeds piled onto the load-bearing choice, which mis-bound seeds to unrelated
+  // choices — gen-5 treatment_seed_ep3_4 attached to an Ileana choice.)
+  for (const flag of pending) {
+    const semanticIdx = bestSemanticChoiceIndex(flag, choices);
+    const target = semanticIdx >= 0 ? choices[semanticIdx] : loadBearing;
+    target.consequences = [...(target.consequences ?? []), ...buildTreatmentSeedConsequences([flag])];
+  }
   return choices;
 }
 
@@ -318,16 +326,66 @@ export function resolveSceneBranchAxes(scene: {
   return out;
 }
 
+const SEMANTIC_MATCH_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'vs', 'versus', 'none', 'new', 'not', 'a', 'an', 'of', 'or',
+  'treatment', 'branch', 'seed', 'house', 'open', 'close', 'gentle', 'cruel', 'hard', 'line',
+]);
+
+/** Content tokens of a descriptive flag name (`treatment_branch_the_country_house_wine_…`). */
+function flagSemanticTokens(flag: string): string[] {
+  return flag
+    .replace(/^treatment_(?:branch|seed)_/i, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 3 && !SEMANTIC_MATCH_STOPWORDS.has(t) && !/^\d+$/.test(t) && !/^ep\d*$/.test(t));
+}
+
+/** Reader-facing text a choice carries, for semantic affinity scoring. */
+function choiceSemanticText(choice: Choice): string {
+  return [
+    choice.text,
+    choice.memorableMoment?.summary,
+    (choice.stakes as { want?: string; cost?: string; identity?: string } | undefined)?.want,
+    (choice.stakes as { want?: string; cost?: string } | undefined)?.cost,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+/**
+ * Index of the choice whose text best matches a descriptive flag's content tokens,
+ * or -1 when no choice shares any token (an index-keyed flag like `treatment_seed_ep3_4`
+ * has no content tokens → always -1, so callers fall back to their heuristic).
+ */
+export function bestSemanticChoiceIndex(flag: string, choices: Choice[]): number {
+  const tokens = flagSemanticTokens(flag);
+  if (tokens.length === 0) return -1;
+  let bestIdx = -1;
+  let bestScore = 0;
+  choices.forEach((choice, idx) => {
+    const text = choiceSemanticText(choice);
+    const score = tokens.reduce((acc, t) => acc + (text.includes(t) ? 1 : 0), 0);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = idx;
+    }
+  });
+  return bestScore > 0 ? bestIdx : -1;
+}
+
 /**
  * Pipeline seam: deterministically emit `setFlag` consequences for this scene's
  * ending-axis flags so the season's named endings are mechanically REACHABLE.
- * Distributes the axes ROUND-ROBIN across the scene's choices so distinct
- * choices drive distinct ending axes (richer than piling them on one choice).
- * A no-op when the scene declares no branch axes, so non-treatment runs are
- * unaffected. An axis already set on ANY choice is not duplicated.
+ * SEMANTIC placement first: an axis whose descriptive name matches a choice's text
+ * (e.g. `…_wine_a_new_appetite_vs_none` → the wine choice) is attached to THAT choice,
+ * so the named decision lands where the fiction stages it instead of being smeared
+ * round-robin onto an unrelated option (gen-5: the wine axis collapsed onto a rose
+ * gesture). Axes with no semantic match fall back to round-robin and emit a warning so
+ * the misplacement is visible. A no-op when no axes are declared; never duplicates.
  */
 export function emitSceneBranchAxes(
-  scene: { choicePoint?: { setsBranchAxes?: string[] } },
+  scene: { choicePoint?: { setsBranchAxes?: string[] }; id?: string },
   choices: Choice[],
 ): Choice[] {
   const axes = resolveSceneBranchAxes(scene);
@@ -342,9 +400,28 @@ export function emitSceneBranchAxes(
   const pending = axes.filter((f) => !alreadySet.has(f));
   if (!pending.length) return choices;
 
-  pending.forEach((flag, index) => {
-    const choice = choices[index % choices.length];
+  let roundRobin = 0;
+  for (const flag of pending) {
+    const semanticIdx = bestSemanticChoiceIndex(flag, choices);
+    let choice: Choice;
+    if (semanticIdx >= 0) {
+      choice = choices[semanticIdx];
+    } else {
+      choice = choices[roundRobin % choices.length];
+      roundRobin += 1;
+      // Descriptive axes that find no matching choice were likely never authored as a
+      // player-facing decision (the gen-5 wine-branch collapse). Surface it; the
+      // on-page presence gate still guarantees the flag is SET, but its decision may
+      // not be staged on the right choice.
+      if (flagSemanticTokens(flag).length > 0) {
+        console.warn(
+          `[BranchAxes] Axis "${flag}" found no semantically-matching choice in scene ` +
+            `"${scene.id ?? '(unknown)'}" — attaching round-robin. The treatment may declare a ` +
+            `decision (e.g. drink/sip/refuse) that ChoiceAuthor did not author as a distinct choice.`
+        );
+      }
+    }
     choice.consequences = [...(choice.consequences ?? []), { type: 'setFlag', flag, value: true }];
-  });
+  }
   return choices;
 }

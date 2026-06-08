@@ -17,6 +17,31 @@ import type { ConditionExpression } from '../../types/conditions';
 import { isUnsafeCallbackProse } from '../constants/metaProse';
 import type { CallbackLedger } from './callbackLedger';
 
+/**
+ * Parse an explicit FUTURE episode number out of a forward-promise string
+ * ("In Episode 2 …", "Mika's confession in Episode 3/4", "in episode three").
+ * Returns the number only when it names an episode strictly AFTER the current one
+ * (a vague "in a later episode" yields undefined → the hook uses a default window).
+ * When a range is named ("Episode 3/4"), the earliest future episode is used.
+ */
+export function parsePromisedEpisode(text: string, currentEpisode: number): number | undefined {
+  const words: Record<string, number> = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  };
+  const candidates: number[] = [];
+  const re = /\bepisode[s]?\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)(?:\s*\/\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten))?/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    for (const token of [m[1], m[2]]) {
+      if (!token) continue;
+      const lower = token.toLowerCase();
+      const n = /^\d+$/.test(lower) ? parseInt(lower, 10) : words[lower];
+      if (n && n > currentEpisode) candidates.push(n);
+    }
+  }
+  return candidates.length > 0 ? Math.min(...candidates) : undefined;
+}
+
 /** A single unresolved hook, shaped for a SceneWriter/ChoiceAuthor prompt. */
 export interface UnresolvedCallbackForPrompt {
   id: string;
@@ -115,6 +140,35 @@ export function harvestEpisodeCallbacks(
           flag,
           episode: params.episodeNumber,
           sceneId,
+        });
+        if (added) newHooks += 1;
+      }
+      // gen-5: also seed hooks for flags set via DELAYED consequences (e.g. the
+      // Mika-betrayal seeds). These never entered the ledger before, so they were
+      // truly-dead flags — set, registered nowhere, never read downstream.
+      for (const flag of ledger.trackableDelayedFlagsOf(typedChoice)) {
+        const added = ledger.recordFlagSet({
+          choice: typedChoice,
+          flag,
+          episode: params.episodeNumber,
+          sceneId,
+        });
+        if (added) newHooks += 1;
+      }
+      // gen-5: harvest forward-promises written into reminderPlan.later. The author
+      // often promises a SPECIFIC later-episode payoff ("In Episode 2 … the photo
+      // appears in the blog's sidebar"); nothing reconciled these, so they shipped
+      // as broken in-range promises. Plant a hook targeting the named episode so the
+      // promise enters the inject -> payoff loop and the gate can detect a miss.
+      const laterPromise = typedChoice.reminderPlan?.later;
+      if (laterPromise && laterPromise.trim().length > 0) {
+        const payoffEpisode = parsePromisedEpisode(laterPromise, params.episodeNumber);
+        const added = ledger.recordForwardPromise({
+          choice: typedChoice,
+          episode: params.episodeNumber,
+          sceneId,
+          summary: laterPromise.trim(),
+          payoffEpisode,
         });
         if (added) newHooks += 1;
       }

@@ -138,6 +138,7 @@ import {
   type SeasonChoicePlan,
 } from './seasonChoicePlan';
 import { buildSeasonSkillPlan, skillsForEpisode, type SeasonSkillPlan } from './seasonSkillPlan';
+import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
 import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, emitSceneTreatmentSeeds, emitSceneBranchAxes, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { reconcileBriefStoryMetadata } from './briefStoryMetadata';
 import { SeasonCanon } from './seasonCanon';
@@ -743,10 +744,10 @@ export class FullStoryPipeline {
   private sceneValidationResults: SceneValidationResult[] = [];
   private allSceneValidationResults: SceneValidationResult[] = [];
 
-  // Per-encounter telemetry, populated from EncounterArchitect.execute()'s
-  // response metadata. Persisted via pipelineOutputWriter so we can later
-  // analyze per-phase success rates and LLM cost (I2 instrumentation).
+  // Per-encounter telemetry (I2). `encounterTelemetry` is reset per episode; season-
+  // final consumers read `allEncounterTelemetry`. See encounterTelemetryCollect.ts.
   private encounterTelemetry: EncounterTelemetry[] = [];
+  private allEncounterTelemetry: EncounterTelemetry[] = [];
 
   // S3: per-run remediation budget — a hard cap on total corrective re-work
   // (scene/encounter/choice regeneration). Created per run/episode with a HIGH
@@ -1286,7 +1287,9 @@ export class FullStoryPipeline {
         treatmentSourced: fidelity.treatmentSourced,
       });
       try {
-        applyEncounterQualityGate(r, story, this.encounterTelemetry);
+        // Season-final gate: read the cross-episode accumulator (superset of the
+        // per-episode buffer, which is reset each episode).
+        applyEncounterQualityGate(r, story, this.allEncounterTelemetry);
       } catch (encErr) {
         console.warn(`[Pipeline] EncounterQualityValidator failed (non-fatal): ${(encErr as Error).message}`);
       }
@@ -1963,48 +1966,47 @@ export class FullStoryPipeline {
       if (!sceneBlueprint || !sceneContent) continue;
 
       const incomingScenes = blueprint.scenes.filter(scene => scene.leadsTo?.includes(targetId));
-      const branchNames = incomingScenes
-        .map(scene => scene.incomingChoiceContext || scene.name)
-        .filter(Boolean)
-        .slice(0, 3);
-      const acknowledgment = branchNames.length > 0
-        ? `The path here still matters: ${branchNames.join(' / ')} leaves a visible residue in how everyone enters ${sceneBlueprint.name}.`
-        : `The route chosen before this moment still colors how everyone enters ${sceneBlueprint.name}.`;
+
+      // The residue SceneGraphBranchValidator requires is the callbackHookId MARKER
+      // below — NOT reader prose. This repair previously also injected structural
+      // commentary ("…leaves a visible residue…") into beat.text, a fiction-first leak
+      // (gen-5: it became the Ep2 encounter's opening beat). Attach only the marker;
+      // the empty-scene fallback gets an in-world line.
+      const hookId = `branch-reconvergence-${targetId}`;
 
       if (sceneContent.beats.length === 0) {
         sceneContent.beats.push({
           id: `${targetId}-branch-residue`,
-          text: acknowledgment,
-          callbackHookIds: [`branch-reconvergence-${targetId}`],
+          text: 'You carry the weight of the choices that brought you here.',
+          callbackHookIds: [hookId],
           intensityTier: 'supporting',
         } as GeneratedBeat);
         sceneContent.startingBeatId = `${targetId}-branch-residue`;
       }
 
       const firstBeat = sceneContent.beats[0];
-      const alreadyAcknowledged = [
-        firstBeat.text,
-        ...(firstBeat.textVariants || []).map(variant => variant.text),
-        ...(firstBeat.callbackHookIds || []),
-      ].join(' ').toLowerCase().includes('branch-reconvergence');
-      if (alreadyAcknowledged) continue;
+      const alreadyAcknowledged = (firstBeat.callbackHookIds || []).some(h => h.startsWith('branch-reconvergence'));
+      if (alreadyAcknowledged) {
+        repaired = true;
+        continue;
+      }
 
-      firstBeat.text = `${firstBeat.text.trim()} ${acknowledgment}`.trim();
+      // Attach the marker ONLY — never mutate reader prose with branch commentary.
       firstBeat.callbackHookIds = Array.from(new Set([
         ...(firstBeat.callbackHookIds || []),
-        `branch-reconvergence-${targetId}`,
+        hookId,
       ]));
       sceneContent.isConvergencePoint = true;
       sceneContent.continuityNotes = Array.from(new Set([
         ...(sceneContent.continuityNotes || []),
-        `Branch reconvergence residue repaired for ${targetId}: ${acknowledgment}`,
+        `Branch reconvergence residue marked for ${targetId}.`,
       ]));
 
       this.emit({
         type: 'regeneration_triggered',
         phase,
         message: `Repairing branch reconvergence residue for ${targetId}`,
-        data: { sceneId: targetId, incomingScenes: incomingScenes.map(scene => scene.id), acknowledgment },
+        data: { sceneId: targetId, incomingScenes: incomingScenes.map(scene => scene.id) },
       });
       repaired = true;
     }
@@ -4574,6 +4576,7 @@ export class FullStoryPipeline {
     };
     this.sceneValidationResults = [];
     this.allSceneValidationResults = [];
+    this.allEncounterTelemetry = [];
     this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
     this.resetCollectedVisualPlanning(); // Reset visual planning collection for new run
     const startTime = Date.now();
@@ -7233,7 +7236,9 @@ export class FullStoryPipeline {
         initialRelationship: c.initialStats as Partial<Record<string, number>> | undefined,
       }));
     this.incrementalValidator.setRelationshipBaselines(npcBaselines);
-    
+    // Powers the beat-level POV-consistency check (third-person-drift detection).
+    this.incrementalValidator.setProtagonistName(brief.protagonist?.name);
+
     // Reset scene validation results
     this.sceneValidationResults = [];
     // Reset encounter telemetry (I2 — fresh per episode run)
@@ -8919,7 +8924,7 @@ export class FullStoryPipeline {
         // Only register encounter + run validation if EncounterArchitect succeeded
         if (encounterResult?.success && encounterResult.data) {
           encounters.set(sceneBlueprint.id, encounterResult.data);
-          this.captureEncounterTelemetry(encounterResult.metadata);
+          this.captureEncounterTelemetry(encounterResult.metadata, sceneBlueprint.id);
           this.emit({
             type: 'agent_complete',
             agent: 'EncounterArchitect',
@@ -9066,7 +9071,7 @@ export class FullStoryPipeline {
                         regenValidation.issues.length < encounterValidation.issues.length ||
                         regenCollisions.length < phase4Collisions.length) {
                       encounters.set(sceneBlueprint.id, regenEncounterResult.data);
-                      this.captureEncounterTelemetry(regenEncounterResult.metadata);
+                      this.captureEncounterTelemetry(regenEncounterResult.metadata, sceneBlueprint.id);
                       // overallPassed is driven only by the real validator —
                       // collisions never flip a passing scene to failed.
                       const valIdx = this.sceneValidationResults.findIndex(v =>
@@ -9500,11 +9505,15 @@ export class FullStoryPipeline {
    * telemetry collector. Silently ignores responses that predate the
    * telemetry contract.
    */
-  private captureEncounterTelemetry(metadata: Record<string, unknown> | undefined): void {
-    const raw = metadata?.encounterTelemetry as EncounterTelemetry | undefined;
-    if (raw && typeof raw.sceneId === 'string') {
-      this.encounterTelemetry.push(raw);
-    }
+  private captureEncounterTelemetry(
+    metadata: Record<string, unknown> | undefined,
+    sceneId?: string
+  ): void {
+    captureEncounterTelemetryInto(
+      { perEpisode: this.encounterTelemetry, season: this.allEncounterTelemetry },
+      metadata,
+      sceneId
+    );
   }
 
   /** Outcome slots that shipped identical default fallback prose (advisory). */
@@ -10307,6 +10316,17 @@ export class FullStoryPipeline {
     analysis = this.refreshAnalysisFromTreatmentDocument(analysis, baseBrief.rawDocument);
     baseBrief = this.refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis);
     baseBrief = this.reconcileBriefStoryMetadataFromPlan(baseBrief, analysis);
+    // Arm treatmentSourced: the final-contract fidelity path reads the treatment
+    // analysis from `brief.multiEpisode.sourceAnalysis`, but nothing ever populated it
+    // (so `treatmentSourced` resolved false and the §4 gates never enforced). Stitch the
+    // live, treatment-detected analysis back onto the brief. Gated default-OFF until the
+    // remaining §4 validators are partial-season-safe (see GATE_TREATMENT_SOURCED_ARM).
+    if (isGateEnabled('GATE_TREATMENT_SOURCED_ARM')) {
+      baseBrief = {
+        ...baseBrief,
+        multiEpisode: { ...(baseBrief.multiEpisode || {}), sourceAnalysis: analysis },
+      };
+    }
 
     if (!analysis || !analysis.episodeBreakdown || analysis.episodeBreakdown.length === 0) {
       throw new Error('Invalid source analysis: no episode breakdown provided');
@@ -10344,6 +10364,7 @@ export class FullStoryPipeline {
     };
     this.sceneValidationResults = [];
     this.allSceneValidationResults = [];
+    this.allEncounterTelemetry = [];
     this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
     this.seasonCanon = new SeasonCanon({ storyId: idSlugify(baseBrief.story.title) });
     this.priorEpisodeSnapshot = undefined;
@@ -11005,9 +11026,8 @@ export class FullStoryPipeline {
         incrementalValidationResults: this.allSceneValidationResults.length > 0
           ? this.allSceneValidationResults
           : undefined,
-        encounterTelemetry: this.encounterTelemetry.length > 0
-          ? this.encounterTelemetry
-          : undefined,
+        // allEncounterTelemetry is the season superset (per-episode buffer is reset).
+        encounterTelemetry: this.allEncounterTelemetry.length > 0 ? this.allEncounterTelemetry : undefined,
         llmLedger: this.telemetry.getLlmLedger() ?? undefined,
         branchShadowDiffs: this.branchShadowDiffs.length > 0
           ? this.branchShadowDiffs
@@ -20746,25 +20766,25 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     // The lead fragment is sourced from planning fields; reject any meta/design-note
     // register ("In the next scene…", raw flag ids) rather than leak it to readers.
     const immediate = rawImmediate && !isUnsafeCallbackProse(rawImmediate) ? rawImmediate : '';
-    // Destination is intentionally GENERIC and in-fiction. We deliberately do NOT
-    // surface the target scene's NAME ("The First Clash waits ahead.") — scene names
-    // are structural labels, not prose. A deterministic rotation keyed on the choice
-    // id keeps consecutive bridges from reading identically.
-    const destination = this.genericBridgeDestination(choice.id);
-    return [immediate || 'The choice changes the air around you.', destination]
-      .filter(Boolean)
-      .map(part => String(part).trim())
-      .map(part => /[.!?]$/.test(part) ? part : `${part}.`)
-      .join(' ');
+    // Prefer the authored in-fiction fragment ALONE. The generic line was previously
+    // APPENDED to every bridge, producing robotic structural closers ("The path forward
+    // is set.") on top of real prose (gen-5 audit) — it is now a last-resort fallback.
+    const lead = immediate || this.genericBridgeDestination(choice.id);
+    const trimmed = lead.trim();
+    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
   }
 
-  /** Deterministic generic forward-motion line for a choice bridge (no scene name). */
+  /**
+   * Deterministic generic in-fiction line for a choice bridge with no authored
+   * fragment. In-world register (no "path/threshold/forward is set" scaffolding, no
+   * scene names); rotation keyed on the choice id avoids identical consecutive lines.
+   */
   private genericBridgeDestination(choiceId: string | undefined): string {
     const options = [
       'What comes next is already in motion.',
-      'The next threshold waits ahead.',
       'There is no stepping back from here.',
-      'The path forward is set.',
+      'The decision settles into your chest and stays there.',
+      'The choice changes the air around you.',
     ];
     const key = String(choiceId || '');
     let hash = 0;

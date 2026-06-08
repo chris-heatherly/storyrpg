@@ -18,7 +18,10 @@ whether it's HARD or advisory). Read those before assuming a validator's name, w
   `SeasonValidator` was removed), coverage (`SevenPointCoverageValidator`), E2E (`playwrightQARunner`),
   HTTP assets (`storyAssetWalker`), plus many narrative validators.
 - **Incremental**: `IncrementalValidationRunner` runs per-scene during content generation and returns
-  `regenerationRequested: 'scene'|'choices'|'encounter'|'none'`.
+  `regenerationRequested: 'scene'|'choices'|'encounter'|'none'`. It also scans ENCOUNTER prose
+  (`collectEncounterProseTexts` over storylet/phase beats + clock labels) — encounter scenes carry
+  empty `sceneContent.beats`, so without this they validated as a ~1ms no-op (gen-5). POV consistency
+  is checked on EVERY beat (not just the opener) via `setProtagonistName` to catch third-person drift.
 
 ## The structure contract validators protect
 

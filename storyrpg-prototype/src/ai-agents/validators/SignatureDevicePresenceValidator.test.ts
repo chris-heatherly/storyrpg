@@ -217,4 +217,24 @@ describe('SignatureDevicePresenceValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
+
+  it('partial-season: skips signatures for episodes that were not generated (gen-5)', () => {
+    // A treatment plans signatures for ep1 AND ep4, but only ep1–3 were generated.
+    // The ep4 signature must NOT be flagged "no generated prose" — it is legitimately
+    // absent. The ep1 signature is present and clean.
+    const ep1sig = 'the rooftop bar at sunset where the dusk club locks into place';
+    const result = run({
+      plan: plan([
+        plannedScene('s1-1', 1, { signatureMoment: ep1sig }),
+        plannedScene('treatment-enc-4-1', 4, { signatureMoment: 'the fire-lit dinner at Casa Lupului' }),
+      ]),
+      story: story([
+        episode(1, [generatedScene('s1-1', [beat('b1', 'On the rooftop bar at sunset the dusk club locks into place around you.')])]),
+        episode(2, [generatedScene('s2-1', [beat('b1', 'A different night.')])]),
+        episode(3, [generatedScene('s3-1', [beat('b1', 'Another night still.')])]),
+      ]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
 });

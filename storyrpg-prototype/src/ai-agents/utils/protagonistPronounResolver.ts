@@ -116,14 +116,36 @@ export function canonicalizeProtagonistPronouns(
     if (!nameRe.test(value)) return value; // protagonist not referenced here
     if (!wrongTest.test(value)) return value; // no wrong-gender pronoun
 
+    // Reflexive wrong-gender pronoun for this target (himself when canon is female).
+    const reflexiveSource = target === 'f' ? '\\bhimself\\b' : '\\bherself\\b';
+    // Non-reflexive wrong-gender pronouns (he/him/his when canon is female).
+    const nonReflexiveSource = target === 'f' ? '\\b(he|him|his)\\b' : '\\b(she|her|hers)\\b';
+
     return splitSentences(value)
       .map((sentence) => {
         if (!nameRe.test(sentence)) return sentence;
         if (!wrongTest.test(sentence)) return sentence;
-        // Ambiguous when another wrong-gender character is named in the sentence.
+        // Ambiguous when another wrong-gender character is named in the sentence
+        // ("Victor looks at him" — the "him" could be Victor). We never risk
+        // introducing an error, so non-reflexive pronouns are reported, not touched.
+        // EXCEPTION: a reflexive pronoun (himself/herself) binds to its own clause's
+        // SUBJECT, so a wrong-gender reflexive in a protagonist-named sentence is the
+        // protagonist's even when an NPC is also named (an NPC of the correct gender
+        // would never carry a wrong-gender reflexive). Repair reflexives; report only
+        // residual non-reflexive ambiguity. This fixes the gen-5 clock-label bug
+        // ("how fully Kylie allows himself … for Victor") the blanket skip missed.
         if (otherRe && otherRe.test(sentence)) {
-          result.ambiguous.push({ location, sentence: sentence.trim() });
-          return sentence;
+          let out = sentence;
+          if (new RegExp(reflexiveSource, 'i').test(sentence)) {
+            out = out.replace(new RegExp(reflexiveSource, 'gi'), (m) => {
+              result.repaired += 1;
+              return mapPronoun(m, target);
+            });
+          }
+          if (new RegExp(nonReflexiveSource, 'i').test(out)) {
+            result.ambiguous.push({ location, sentence: sentence.trim() });
+          }
+          return out;
         }
         // Fresh global regex per sentence for the actual replace.
         return sentence.replace(new RegExp(WRONG_SOURCE[target], 'gi'), (m) => {

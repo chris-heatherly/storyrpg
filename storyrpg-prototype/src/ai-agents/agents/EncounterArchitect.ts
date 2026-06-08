@@ -902,10 +902,105 @@ export class EncounterArchitect extends BaseAgent {
     }
   }
 
+  /**
+   * Distinct fallback `visualMoment` for a storyboard frame whose role has no
+   * dedicated authored beat. Without this, every spine frame beyond the authored
+   * beat count fell back to the SAME (last) beat's setupText, producing a 9-node
+   * spine that repeated one image verbatim (the "hollow middle" the gen-5 audit
+   * flagged). Each role gets a dramatically distinct line so the spine reads as a
+   * progression even in the deterministic fallback path. `establish` is the only
+   * role that leans on the concrete scene description; the rest describe the beat's
+   * dramatic function so they never collapse into one another.
+   */
+  private defaultVisualMomentForRole(
+    role: EncounterStoryboardFrameRole,
+    input: EncounterArchitectInput,
+    styleFocus: string,
+  ): string {
+    const subject = input.encounterDescription || input.sceneDescription || 'the encounter';
+    switch (role) {
+      case 'establish':
+        return `Establish the scene — ${subject}: the player and the opposition are placed and the pressure (${styleFocus}) is named.`;
+      case 'pressureReveal':
+        return `The true pressure surfaces: the stakes sharpen, the easy option closes, and ${styleFocus} comes to the fore.`;
+      case 'commit':
+        return 'The player commits to an approach and the first decisive action lands, changing position or leverage.';
+      case 'exchange':
+        return 'Back-and-forth: the opposition answers in kind and the balance of leverage shifts under the choice just made.';
+      case 'reversal':
+        return 'A turn — leverage flips or a revelation reframes the moment, and the previous plan no longer fits.';
+      case 'opening':
+        return 'An opening appears: the player can press the advantage or protect what matters, but not both.';
+      case 'decisiveMove':
+        return 'The decisive move — the single choice that determines which outcome the encounter resolves into.';
+      case 'fallout':
+        return 'The immediate fallout: the cost or relief of the encounter is visible on the bodies and the space.';
+      case 'aftermath':
+        return 'Aftermath — what remains changed: position, relationship pressure, resource state, or resolve.';
+      default:
+        return `The encounter advances through a readable change in ${styleFocus}.`;
+    }
+  }
+
+  /**
+   * Style-aware fallback escalation narrative. A romance/social encounter that
+   * escalates with the combat string "The situation becomes critical!" reads as a
+   * genre break (gen-5 audit). Resolve the encounter's narrative style the same way
+   * {@link describeEncounterStyleFocus} does and return text that escalates in that
+   * register (emotional irreversibility for romance, rupture for social, …).
+   */
+  private defaultEscalationNarrative(style?: EncounterNarrativeStyle, type?: EncounterType): string {
+    const resolved = style || (type === 'combat' || type === 'chase' ? 'action' : type === 'stealth' || type === 'heist' ? 'stealth' : type === 'investigation' || type === 'puzzle' ? 'mystery' : type === 'romantic' ? 'romantic' : type === 'social' || type === 'negotiation' ? 'social' : type === 'survival' || type === 'exploration' ? 'adventure' : 'dramatic');
+    switch (resolved) {
+      case 'action':
+        return 'The situation turns critical — one wrong move now and it all goes the wrong way.';
+      case 'romantic':
+        return 'The moment tips toward the irreversible — one more step and there is no taking it back.';
+      case 'social':
+        return 'The room tightens — the conversation is one wrong word away from rupture.';
+      case 'stealth':
+        return 'Exposure is seconds away — the margin for a clean exit is almost gone.';
+      case 'mystery':
+        return 'The thread pulls taut — the truth is close, and so is the cost of reaching it.';
+      case 'adventure':
+        return 'Conditions turn against you — the way through is narrowing fast.';
+      case 'dramatic':
+        return 'The pressure peaks — what is said or done now cannot be undone.';
+      default:
+        return 'The pressure peaks and the easy way out closes.';
+    }
+  }
+
+  /**
+   * Phase-appropriate fallback for an encounter beat that the LLM left without
+   * `setupText`. Keeps the staged middle from rendering blank while staying generic
+   * enough that it can never satisfy an authored required/signature beat (the
+   * fidelity validators still demand the authored content episode-wide).
+   */
+  private defaultBeatSetupText(phase: EscalationPhase, structure: EncounterStructure): string {
+    const styleFocus = this.describeEncounterStyleFocus(structure.encounterStyle, structure.encounterType);
+    switch (phase) {
+      case 'setup':
+        return `The encounter opens: the pressure is established (${styleFocus}) and the player must read the moment before acting.`;
+      case 'rising':
+        return `The pressure builds — ${styleFocus} sharpen and the stakes climb with each exchange.`;
+      case 'peak':
+        return 'The encounter reaches its peak: the decisive pressure lands and a choice can no longer be deferred.';
+      case 'resolution':
+        return `The encounter resolves — the cost or relief is visible in ${styleFocus}.`;
+      default:
+        return `The encounter continues through a readable change in ${styleFocus}.`;
+    }
+  }
+
   private buildDefaultStoryboard(input: EncounterArchitectInput, structure: EncounterStructure): EncounterStoryboard {
     const styleFocus = this.describeEncounterStyleFocus(input.encounterStyle, input.encounterType);
     const frames = this.defaultStoryboardRoles.map((role, index) => {
-      const beat = structure.beats[index] || structure.beats[Math.min(index, Math.max(0, structure.beats.length - 1))];
+      // Only use an authored beat for THIS frame when one exists at this index — do
+      // NOT fall back to the last beat for higher indices (that produced the
+      // duplicated-spine "hollow middle"). Frames without a dedicated authored beat
+      // get a role-distinct synthetic moment instead.
+      const authoredBeat = index < structure.beats.length ? structure.beats[index] : undefined;
       const hasDecision = role === 'commit' || role === 'exchange' || role === 'opening' || role === 'decisiveMove';
       return {
         id: `${input.sceneId}-storyboard-${role}`,
@@ -914,7 +1009,10 @@ export class EncounterArchitect extends BaseAgent {
         purpose: hasDecision
           ? 'Create a tactical decision window that pays off prior story state while preserving cinematic continuity.'
           : 'Advance the encounter spine through a readable visual/emotional state change.',
-        visualMoment: beat?.setupText || beat?.description || input.encounterDescription || input.sceneDescription,
+        visualMoment:
+          authoredBeat?.setupText ||
+          authoredBeat?.description ||
+          this.defaultVisualMomentForRole(role, input, styleFocus),
         tacticalFunction: hasDecision
           ? 'Player choice can change position, leverage, information, exposure, relationship pressure, resource state, clocks, cost, or storylet outcome.'
           : 'No new mechanical UI; show pressure and consequence through the fiction and current clock feedback only.',
@@ -2041,8 +2139,17 @@ RULES:
       if (!beat.description) {
         beat.description = '';
       }
-      if (!beat.setupText) {
-        beat.setupText = '';
+      if (!beat.setupText || beat.setupText.trim().length === 0) {
+        // Never ship an empty phase beat — that rendered as a blank "staged middle"
+        // at runtime (gen-5 hollow-encounter defect). Prefer the authored beat
+        // description; fall back to a phase-appropriate line so the spine reads as a
+        // progression. This does NOT mask fidelity checks: EncounterAnchorContent
+        // still requires the AUTHORED required-beat content to appear episode-wide,
+        // so a generic fill cannot satisfy a missing signature/required beat.
+        beat.setupText =
+          (beat.description && beat.description.trim().length > 0
+            ? beat.description.trim()
+            : this.defaultBeatSetupText(beat.phase, structure));
       }
       
       // Add visual direction if missing
@@ -2209,14 +2316,18 @@ RULES:
       }));
     }
 
-    // Ensure escalation triggers
+    // Ensure escalation triggers. The narrative text is STYLE-AWARE: a flat
+    // "The situation becomes critical!" is a combat-template string that leaked into
+    // romance/social encounters (gen-5 audit). Romance escalates by emotional
+    // irreversibility, social by rupture, etc. — so the fallback now matches the
+    // encounter's style instead of always sounding like a fight.
     if (!structure.escalationTriggers) {
       structure.escalationTriggers = [
         {
           id: 'threat-75',
           condition: { type: 'threat_threshold', value: 75 },
           effect: {
-            narrativeText: 'The situation becomes critical!',
+            narrativeText: this.defaultEscalationNarrative(structure.encounterStyle, structure.encounterType),
             threatBonus: 1
           }
         }
@@ -3040,14 +3151,14 @@ ${choiceSection}
   },
   
   "goalClock": {
-    "name": "Objective name (e.g., 'Escape the Manor')",
+    "name": "Objective name (e.g., 'Escape the Manor'). These labels surface in the player UI — write in SECOND PERSON ('you/your') or use the protagonist's name; NEVER use a third-person pronoun for the protagonist.",
     "segments": 6,
-    "description": "What filling this clock represents"
+    "description": "What filling this clock represents. SECOND PERSON only for the protagonist ('how fully you allow yourself…'), never 'he/she/him/her' — clock text is player-facing and a wrong-gender pronoun here is a visible defect."
   },
   "threatClock": {
-    "name": "Threat name (e.g., 'Guards Close In')",
+    "name": "Threat name (e.g., 'Guards Close In'). Player-facing label — second person or names only; no protagonist third-person pronouns.",
     "segments": 4,
-    "description": "What filling this clock represents"
+    "description": "What filling this clock represents. SECOND PERSON only for the protagonist ('the city closes in on you…'), never 'he/she/him/her'."
   },
   
   "stakes": {

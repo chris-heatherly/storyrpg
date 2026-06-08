@@ -270,3 +270,32 @@ describe('ending-axis emitters (treatment_branch_*)', () => {
     expect((empty[0].consequences ?? []).length).toBe(0);
   });
 });
+
+describe('emitSceneBranchAxes semantic placement (gen-5 wine-branch collapse)', () => {
+  const hasFlag = (choice: Choice, flag: string): boolean =>
+    (choice.consequences ?? []).some((c) => c.type === 'setFlag' && (c as { flag?: string }).flag === flag);
+
+  it('attaches a descriptive axis to the semantically-matching choice, not round-robin', () => {
+    const choices: Choice[] = [
+      { id: 'c-rose', text: 'Compose a sentence about the black rose on the wall.', consequences: [] } as unknown as Choice,
+      { id: 'c-wine', text: 'Drink the dark wine Victor pours at the Equinox toast.', consequences: [] } as unknown as Choice,
+    ];
+    emitSceneBranchAxes(
+      { id: 's3-2', choicePoint: { setsBranchAxes: ['treatment_branch_the_country_house_wine_a_new_appetite_vs_none'] } },
+      choices,
+    );
+    expect(hasFlag(choices[1], 'treatment_branch_the_country_house_wine_a_new_appetite_vs_none')).toBe(true);
+    expect(hasFlag(choices[0], 'treatment_branch_the_country_house_wine_a_new_appetite_vs_none')).toBe(false);
+  });
+
+  it('still sets an axis with no semantic match (falls back to round-robin)', () => {
+    const choices: Choice[] = [
+      { id: 'c1', text: 'Say nothing.', consequences: [] } as unknown as Choice,
+    ];
+    emitSceneBranchAxes(
+      { id: 's1', choicePoint: { setsBranchAxes: ['treatment_branch_quartz_sanctuary_vs_open_threshold'] } },
+      choices,
+    );
+    expect(hasFlag(choices[0], 'treatment_branch_quartz_sanctuary_vs_open_threshold')).toBe(true);
+  });
+});

@@ -106,6 +106,33 @@ describe('canonicalizeProtagonistPronouns', () => {
   });
 });
 
+describe('canonicalizeProtagonistPronouns — reflexive in ambiguous sentence (gen-5 clock bug)', () => {
+  it('repairs a wrong-gender REFLEXIVE even when another character is named', () => {
+    // "how fully Kylie allows himself to be present … for Victor" — the blanket
+    // ambiguity skip left "himself" unrepaired because Victor is also named, but a
+    // reflexive binds to its clause subject (Kylie), so it is safe to repair.
+    const story = storyWith(
+      [{ name: 'Victor', pronouns: 'he/him' }],
+      [{ id: 'b1', description: 'How fully Kylie allows himself to be present in Bucharest, instead of performing it for Victor.' }],
+    );
+    const result = canonicalizeProtagonistPronouns(story, KYLIE, otherGenderNamesFromStory(story, 'she/her'));
+    expect(beat0(story).description).toContain('allows herself');
+    expect(beat0(story).description).not.toContain('himself');
+    expect(result.repaired).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports (does not touch) a non-reflexive pronoun that is genuinely ambiguous', () => {
+    const story = storyWith(
+      [{ name: 'Victor', pronouns: 'he/him' }],
+      [{ id: 'b1', description: 'Kylie watches Victor lift his glass.' }],
+    );
+    const result = canonicalizeProtagonistPronouns(story, KYLIE, otherGenderNamesFromStory(story, 'she/her'));
+    // "his" could be Victor's — left untouched, reported as ambiguous.
+    expect(beat0(story).description).toContain('his glass');
+    expect(result.ambiguous.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe('otherGenderNamesFromStory', () => {
   it('returns male NPC names for a female protagonist', () => {
     const story = storyWith(

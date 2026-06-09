@@ -385,17 +385,60 @@ export class CallbackLedger {
     return hook;
   }
 
+  /** Collect every flag name referenced by a condition expression (flag/and/or/not). */
+  private flagsInCondition(cond: unknown, out: Set<string> = new Set<string>()): Set<string> {
+    if (!cond || typeof cond !== 'object') return out;
+    const c = cond as { type?: string; flag?: string; conditions?: unknown[]; condition?: unknown };
+    if (c.type === 'flag' && typeof c.flag === 'string') out.add(c.flag);
+    if (Array.isArray(c.conditions)) for (const sub of c.conditions) this.flagsInCondition(sub, out);
+    if (c.condition) this.flagsInCondition(c.condition, out);
+    return out;
+  }
+
   /**
-   * Scan a set of TextVariants for callbackHookId references and record
-   * a payoff for each one. Returns the list of hookIds that matched.
+   * Scan a set of TextVariants and record a payoff for the hooks they honor. A hook is
+   * credited when:
+   *   1. the variant's `callbackHookId` names it (direct reference); OR
+   *   2. the variant's CONDITION is gated on a flag the hook carries (a flag-conditional
+   *      acknowledgment pays off every hook gated on that flag — incl. untagged variants);
+   * and in either case its SAME-`sourceChoiceId` siblings are credited too. The last
+   * point fixes the Season-Canon false positive where a choice spawns BOTH a flag-set
+   * hook (`flag:<flag>`) and a forward-promise hook (`later:<choice>`) for the same
+   * decision: honoring the flag on-page paid the flag hook but left the promise hook
+   * "never referenced", even though the decision WAS acknowledged. Returns matched ids.
    */
   recordPayoffsFromVariants(variants: TextVariant[] | undefined): string[] {
     if (!variants) return [];
     const matched: string[] = [];
     for (const variant of variants) {
+      const credited = new Set<string>();
+      const credit = (hookId: string): void => {
+        const hook = this.hooks.get(hookId);
+        if (!hook || credited.has(hookId)) return;
+        this.recordPayoff(hookId);
+        matched.push(hookId);
+        credited.add(hookId);
+        // Same decision → credit the choice's other hooks (e.g. the `later:<choice>`
+        // forward promise when its `flag:<flag>` twin is honored).
+        if (hook.sourceChoiceId) {
+          for (const sib of this.hooks.values()) {
+            if (sib.id !== hookId && sib.sourceChoiceId === hook.sourceChoiceId) credit(sib.id);
+          }
+        }
+      };
+
+      // 1. Direct hook reference.
       if (variant.callbackHookId && this.hooks.has(variant.callbackHookId)) {
-        this.recordPayoff(variant.callbackHookId);
-        matched.push(variant.callbackHookId);
+        credit(variant.callbackHookId);
+      }
+      // 2. Flag-conditional payoff: credit every hook gated on a flag the variant checks.
+      const flags = this.flagsInCondition((variant as { condition?: unknown }).condition);
+      if (flags.size > 0) {
+        for (const hook of this.hooks.values()) {
+          if (credited.has(hook.id)) continue;
+          const keys = [...(hook.flags ?? []), ...(hook.conditionKeys ?? [])];
+          if (keys.some((k) => flags.has(k))) credit(hook.id);
+        }
       }
     }
     return matched;

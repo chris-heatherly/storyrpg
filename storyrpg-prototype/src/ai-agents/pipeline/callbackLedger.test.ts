@@ -156,6 +156,36 @@ describe('CallbackLedger', () => {
     expect(ledger.all()[0].payoffCount).toBe(1);
   });
 
+  it('credits a forward-promise hook when its same-choice flag hook is honored (sibling payoff)', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({
+      id: 'choice-protect-brightwell',
+      consequences: [{ type: 'setFlag', flag: 'protected_brightwell', value: true } as any],
+    });
+    ledger.recordFlagSet({ choice, flag: 'protected_brightwell', episode: 1, sceneId: 's1-1' });
+    ledger.recordForwardPromise({ choice, episode: 1, sceneId: 's1-1', payoffEpisode: 2, summary: 'In Episode 2, Lysandra withholds intelligence.' });
+    const promise0 = ledger.all().find((h) => h.id === 'later:choice-protect-brightwell');
+    expect(promise0!.payoffCount).toBe(0);
+
+    // ep2 honors the decision via a flag-gated variant tagged with ONLY the flag hook id.
+    ledger.recordPayoffsFromVariants([
+      { condition: { type: 'flag', flag: 'protected_brightwell', value: true }, text: 'She says nothing.', callbackHookId: 'flag:protected_brightwell' } as any,
+    ]);
+    // the forward-promise hook (same sourceChoiceId) is credited too → not "never referenced".
+    expect(ledger.all().find((h) => h.id === 'later:choice-protect-brightwell')!.payoffCount).toBeGreaterThan(0);
+    expect(ledger.all().find((h) => h.id === 'flag:protected_brightwell')!.payoffCount).toBeGreaterThan(0);
+  });
+
+  it('credits hooks via an untagged flag-conditional variant (no callbackHookId)', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({ id: 'c1', consequences: [{ type: 'setFlag', flag: 'kept_the_secret', value: true } as any] });
+    ledger.recordFlagSet({ choice, flag: 'kept_the_secret', episode: 1, sceneId: 's1' });
+    ledger.recordPayoffsFromVariants([
+      { condition: { type: 'flag', flag: 'kept_the_secret', value: true }, text: 'It surfaces again.' } as any, // no callbackHookId
+    ]);
+    expect(ledger.all().find((h) => h.id === 'flag:kept_the_secret')!.payoffCount).toBeGreaterThan(0);
+  });
+
   it('returns only unresolved hooks within the payoff window', () => {
     const ledger = new CallbackLedger();
     ledger.add({

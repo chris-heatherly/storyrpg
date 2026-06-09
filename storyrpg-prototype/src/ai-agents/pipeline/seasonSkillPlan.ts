@@ -50,3 +50,49 @@ export function buildSeasonSkillPlan(episodes: number[]): SeasonSkillPlan {
 export function skillsForEpisode(plan: SeasonSkillPlan | undefined, episode: number): string[] {
   return plan?.episodeSkills[episode] ?? [];
 }
+
+export interface SeasonSkillPlanCheck {
+  valid: boolean;
+  issues: string[];
+  coveredSkills: number;
+}
+
+/**
+ * Assert the season skill plan is internally sound — this is the SEASON-level coverage
+ * guarantee (L1). Balance is a whole-season property: validate it here over the entire
+ * plan, NOT against a generated K-of-N slice (that is a category error). The rotation in
+ * {@link buildSeasonSkillPlan} satisfies this by construction; the check is a guard so a
+ * future change to the rotation cannot silently regress season coverage.
+ *
+ *   - the union of episode lead skills across the season covers all 8 canonical skills
+ *     (for seasons with ≥8 episodes; for shorter seasons, covers min(episodes, 8));
+ *   - no two consecutive planned episodes share a lead skill.
+ */
+export function validateSeasonSkillPlan(plan: SeasonSkillPlan): SeasonSkillPlanCheck {
+  const issues: string[] = [];
+  const episodes = Object.keys(plan.episodeSkills)
+    .map(Number)
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+
+  const leads = new Set<string>();
+  let prevLead: string | undefined;
+  for (const ep of episodes) {
+    const lead = plan.episodeSkills[ep]?.[0];
+    if (!lead) continue;
+    leads.add(lead);
+    if (prevLead && lead === prevLead) {
+      issues.push(`Episodes share a consecutive lead skill "${lead}" (episode ${ep}).`);
+    }
+    prevLead = lead;
+  }
+
+  const expectedCoverage = Math.min(episodes.length, CANON_SKILLS.length);
+  if (leads.size < expectedCoverage) {
+    issues.push(
+      `Season lead skills cover only ${leads.size}/${expectedCoverage} expected — the rotation is not spreading skills across the season.`,
+    );
+  }
+
+  return { valid: issues.length === 0, issues, coveredSkills: leads.size };
+}

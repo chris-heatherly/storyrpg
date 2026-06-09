@@ -29,6 +29,41 @@ describe('MechanicalStorytellingValidator', () => {
     expect(result.issues.map((issue) => issue.message).join('\n')).toContain('unknown NPC');
   });
 
+  it('flags a relationship consequence targeting an unknown NPC ("None")', () => {
+    const result = new MechanicalStorytellingValidator().validate({
+      storyNpcs: [{ id: 'lysandra_brightwell' }],
+      choices: [{
+        id: 'reflexive-protect',
+        text: 'Step between her and the blade.',
+        choiceType: 'relationship',
+        impactFactors: ['relationship'],
+        outcomeTexts: { success: 'a', partial: 'b', failure: 'c' },
+        consequences: [
+          { type: 'adjustRelationship', npcId: 'None', dimension: 'affection', delta: 12 } as any,
+          { type: 'adjustRelationship', npcId: 'lysandra_brightwell', dimension: 'trust', delta: 8 } as any,
+        ],
+      }],
+    });
+    expect(result.metrics.invalidRelationshipReferences).toBe(1);
+    expect(result.issues.map((i) => i.message).join('\n')).toContain('targets unknown NPC');
+  });
+
+  it('does not flag a relationship consequence whose npcId is in the roster', () => {
+    const result = new MechanicalStorytellingValidator().validate({
+      storyNpcs: [{ id: 'lysandra_brightwell' }],
+      choices: [{
+        id: 'open-up',
+        text: 'Tell her the truth.',
+        choiceType: 'relationship',
+        impactFactors: ['relationship'],
+        outcomeTexts: { success: 'a', partial: 'b', failure: 'c' },
+        consequences: [{ type: 'adjustRelationship', npcId: 'lysandra_brightwell', dimension: 'trust', delta: 6 } as any],
+        delayedConsequences: [{ consequence: { type: 'relationship', npcId: 'lysandra_brightwell', dimension: 'affection', change: 3 }, delay: { type: 'scenes', count: 2 } } as any],
+      }],
+    });
+    expect(result.metrics.invalidRelationshipReferences).toBe(0);
+  });
+
   it('warns when stat-check failure has no playable failure signal', () => {
     const result = new MechanicalStorytellingValidator().validate({
       choices: [{

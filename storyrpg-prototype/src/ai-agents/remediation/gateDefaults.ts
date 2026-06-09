@@ -40,6 +40,20 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // prepareValidationInput) so the aggregate can no longer carry raw-label
   // errors — the gate enforces against canonical ids only.
   GATE_WITNESS_ID_INTEGRITY: true,
+  // G10: promote unknown-NPC RELATIONSHIP-consequence errors to blocking.
+  // PROMOTED ON 2026-06-09 after wiring the canonicalizer that this gate depends on. The
+  // 2026-06-09 offline audit (memory: g10-shadow-gate-audit) found the dead deltas were
+  // STILL shipping (bite-me 3, endsong 6 distinct unknown ids) because
+  // canonicalizeRelationshipConsequences existed but was NEVER CALLED — only the witness
+  // variant ran. It is now wired at BOTH the per-episode chokepoint (prepareValidationInput,
+  // mirroring canonicalizeWitnessReactions) and the assembled-story chokepoint
+  // (enforceFinalStoryContract → canonicalizeStoryRelationshipConsequences). resolveWitnessNpcId
+  // remaps the resolvable raw labels (first-name token overlap, snake/full-name normalized
+  // equality) to their canonical char-* id and drops the genuinely-unknown (e.g. "fort_soldiers",
+  // "(missing)") BEFORE the validator scans — so the gate now fires only on real residue
+  // (a relationship delta whose target truly is not in the roster), which is correctly
+  // unshippable. Reversible via =0.
+  GATE_RELATIONSHIP_ID_INTEGRITY: true,
   // Deterministic repair: add canonical witness NPCs to their scene's roster so the
   // "Witness reaction NPC … is not listed in scene" PREFERENCE warning clears (the NPC
   // is real and meant to observe). Additive-only, reversible via env=0.
@@ -121,6 +135,54 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // OFF: needs one live run to confirm the disambiguator clears real residue (the LLM
   // path can't be exercised offline). Flip to true after that; reversible via =0.
   GATE_PROTAGONIST_PRONOUN: false,
+  // G10: promote NPC pronoun inconsistencies (a uniquely-named gendered NPC paired with
+  // a wrong binary or singular-they pronoun — Endsong ep3 narrated he/him Thorne as
+  // "their shoulder"/"their gaze") to blocking. Detection is conservative (single-NPC
+  // sentences only, plural-cue guard for they/them) and advisory by default; flip on
+  // after one live `=1` run confirms zero false-positive hard-fails. Reversible via =0.
+  GATE_NPC_PRONOUN: false,
+  // G10: promote stub/scaffold-leak/echo/duplicate outcomeTexts to blocking. The
+  // ChoiceAuthor fallback that produced these is fixed; OutcomeTextQualityValidator is
+  // the durable backstop. High-precision (exact scaffold lead-ins + annotation-echo +
+  // tier-duplication), but default-OFF for one live `=1` confirmation run. Reversible.
+  GATE_OUTCOME_TEXT_QUALITY: false,
+  // Prose craft: flag monotonous second-person sentence cadence — a single beat or
+  // outcome tier that stacks 3+ consecutive "You …" openers ("You save the file. You
+  // don't know where. You just know …"). The reader is second person, so "You" openers
+  // are correct; only consecutive runs flag. The ChoiceAuthor/SceneWriter opener-variety
+  // prompt guidance is the real fix; SentenceOpenerVarietyValidator is the deterministic
+  // backstop. Default-OFF: advisory-only until a live `=1` run confirms the post-prompt-fix
+  // false-positive rate is acceptable, then promote. Reversible via =0.
+  GATE_SENTENCE_OPENER_VARIETY: false,
+  // G10: a treatment-staged SUSTAINED set-piece encounter (e.g. "wall breach + repulse →
+  // evacuate") must keep escalating structure (≥2 phases or a ≥3-point tension curve),
+  // not collapse to one decision + a summary outcome (Endsong ep3 siege). Complements
+  // SignatureDevicePresence (string present) with a structural-depth check.
+  // PROMOTED ON after the 2026-06-09 offline audit (memory: g10-shadow-gate-audit): replaying
+  // over the bite-me-g10 + endsong-g10 final stories produced exactly ONE finding — the
+  // documented Endsong "Wall Breach and Repulse" siege collapsed to 1 phase + 1-point
+  // tensionCurve — and ZERO false positives. Fires only on a genuinely-flattened set piece.
+  // CAVEAT: hard-gate at the final contract with NO deterministic repair, so on a treatment
+  // run it ABORTS (wastes the generation) rather than rescuing — pair with the
+  // EncounterArchitect depth fix so the gen stops emitting a 1-phase siege. Reversible via =0.
+  GATE_ENCOUNTER_SETPIECE_DEPTH: true,
+  // G10: an enumerated scene objective ("collects four splinters — Ileana's tears, the
+  // photograph, the maiden name, Mika's absence") must dramatize each listed item on
+  // page; otherwise a later scene pays off a clue the reader never saw. Conservative
+  // (only explicit ≥3-item enumerations).
+  // PROMOTED ON after the 2026-06-09 offline audit (memory: g10-shadow-gate-audit): replaying
+  // over bite-me-g10 + endsong-g10 produced exactly the 3 documented "Splinters" misses (the
+  // photograph, the maiden name, Mika's absence) on bite-me and ZERO on endsong — no false
+  // positives. CAVEAT: hard-gate at the final contract with NO deterministic repair, so it
+  // ABORTS a run that still ships an undramatized promised clue — pair with the SceneWriter
+  // "dramatize enumerated objective items" fix so the gen stops producing it. Reversible via =0.
+  GATE_REFERENCED_EVENT_PRESENCE: true,
+  // G10: per-episode plan-conformance gates (replace the slice-vs-season-target category
+  // error). Choice-type / skill BALANCE is validated at the season-plan level; per
+  // generated episode we only check it realized what the plan assigned to IT. Default-OFF
+  // pending one live `=1` run.
+  GATE_CHOICE_TYPE_CONFORMANCE: false,
+  GATE_SKILL_PLAN_CONFORMANCE: false,
   // Encounter-outcome variant: outcome state flags are ALWAYS seeded (ungated). The
   // generative half now exists — when this gate is on, authorEncounterOutcomeVariants
   // runs the OutcomeVariantAuthor over each detected reconvergence desync to write the
@@ -202,6 +264,16 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   GATE_INFORMATION_LEDGER_SCHEDULE: false,
   GATE_SIGNATURE_DEVICE_PRESENCE: true,
   GATE_SEVEN_POINT_ANCHOR_CONFORMANCE: true,
+  // G10: SignatureDevicePresence demoted ALL design-note signatures (anything with an
+  // em-dash / parenthetical / >12 tokens) to advisory, so two genuinely-staged-but-
+  // verbosely-described signatures that were summarized away (Bite Me ep1 Cișmigiu
+  // rescue, Endsong ep3 siege) shipped as mere warnings. With this strict flag on, a
+  // PRESENCE failure (keyword overlap < 0.5 → the moment is essentially absent) blocks
+  // for concrete staged signatures; only true meta-narration notes ("the player…",
+  // "establishes that…") stay advisory. The inversion check remains advisory for long
+  // signatures regardless (its proximity heuristic genuinely false-positives there).
+  // Default-OFF pending one live `=1` validation run on Bite Me + Endsong.
+  GATE_SIGNATURE_PRESENCE_STRICT: false,
 };
 
 /**

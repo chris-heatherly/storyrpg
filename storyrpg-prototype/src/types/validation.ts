@@ -207,6 +207,7 @@ export interface ValidationMetrics {
     choicesWithWitnessReactions: number;
     statChecksWithPlayableFailure: number;
     invalidWitnessReferences: number;
+    invalidRelationshipReferences?: number;
   };
   statCheckBalance?: {
     checkedChoices: number;
@@ -235,15 +236,24 @@ export interface ValidationMetrics {
     totalChoiceSets: number;
     counts: Record<string, number>;
     actualPercentages: Record<string, number>;
-    targetPercentages: {
+    branchingCount: number;
+    branchingCap: number;
+    // G10: this block reports the GENERATED slice only. Choice-type BALANCE is a
+    // whole-season property validated at plan time (seasonChoicePlan), so a K-of-N
+    // generation is NOT compared against the 35/30/20/15 target here — that was a
+    // category error that made a legitimate partial-season slice read as a defect.
+    // `scope` marks the unit; target/deviation are intentionally omitted.
+    scope?: 'generated-slice';
+    note?: string;
+    // Retained optional for backward-compat with any reader that expects them; not
+    // populated for a generated slice.
+    targetPercentages?: {
       expression: number;
       relationship: number;
       strategic: number;
       dilemma: number;
     };
-    deviations: Record<string, number>;
-    branchingCount: number;
-    branchingCap: number;
+    deviations?: Record<string, number>;
   };
 }
 

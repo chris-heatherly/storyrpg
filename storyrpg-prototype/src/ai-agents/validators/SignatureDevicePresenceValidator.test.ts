@@ -298,4 +298,48 @@ describe('SignatureDevicePresenceValidator', () => {
     });
     expect(result.issues.filter((i) => /missing/i.test(i.message))).toHaveLength(1);
   });
+
+  // --- G10 strict-presence mode -------------------------------------------
+
+  it('STRICT: a concrete em-dashed signature summarized away is a BLOCKING error', () => {
+    // The G10 miss: a genuinely-staged, verbosely-described moment (em-dash + long)
+    // was demoted to a warning and shipped summarized. Under strict mode it blocks.
+    const sig = 'Two anchors, light then dark — the rooftop bar at sunset where the dusk club locks into place, then Cișmigiu at 1am, fog, a shadow, a scream, and a rescue.';
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { signatureMoment: sig })]),
+      story: story([episode(1, [generatedScene('s1-1', [
+        beat('b1', 'Inside her apartment, she replays the night in fragments and goes to bed.'),
+      ])])]),
+      strictPresence: true,
+    });
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((i) => i.severity === 'error' && /missing/i.test(i.message))).toBe(true);
+  });
+
+  it('STRICT: a TRUE meta-narration signature missing stays a WARNING (not depictable verbatim)', () => {
+    const sig = 'This scene establishes that the player should distrust Victor for the finale payoff.';
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { signatureMoment: sig })]),
+      story: story([episode(1, [generatedScene('s1-1', [
+        beat('b1', 'A calm, ordinary evening with nothing of note.'),
+      ])])]),
+      strictPresence: true,
+    });
+    expect(result.valid).toBe(true); // advisory only
+    expect(result.issues.some((i) => i.severity === 'warning' && /missing/i.test(i.message))).toBe(true);
+    expect(result.issues.some((i) => i.severity === 'error')).toBe(false);
+  });
+
+  it('STRICT: a concrete signature that IS depicted still passes (no false block)', () => {
+    const sig = 'the rooftop bar at sunset — the dusk club locks into place and she catches both men watching her';
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { signatureMoment: sig })]),
+      story: story([episode(1, [generatedScene('s1-1', [
+        beat('b1', 'On the rooftop bar at sunset the dusk club locks into place; she catches both men watching her across the bar.'),
+      ])])]),
+      strictPresence: true,
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
 });

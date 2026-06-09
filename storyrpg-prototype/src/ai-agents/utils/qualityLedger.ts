@@ -44,6 +44,10 @@ export interface QualityLedgerEntry {
   errorCount?: number;
   /** Advisory craft/fidelity warnings the run shipped with (validator tiering, B1). */
   advisoryWarningCount?: number;
+  /** Prose craft: fraction (0-1) of sentences opening in second person ("You …"). */
+  secondPersonOpenerRatio?: number;
+  /** Prose craft: count of passages with a 3+ consecutive second-person-opener run. */
+  openerMonotonyPassages?: number;
   episodeCount?: number;
   durationMs?: number;
   /** True when the run was hard-blocked (failed a blocking gate / PipelineError). */

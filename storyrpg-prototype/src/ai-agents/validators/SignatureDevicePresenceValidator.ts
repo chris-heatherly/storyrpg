@@ -271,6 +271,22 @@ function isDesignNoteSignature(text: string): boolean {
   return contentTokens(text).length > INVERSION_MAX_SIG_TOKENS; // long summary
 }
 
+/**
+ * Authorial / meta-narration markers — phrases that frame a signature as a design
+ * intention rather than a depictable staged moment ("the player realizes…",
+ * "establishes that…", "sets up the finale"). These genuinely cannot be matched
+ * against prose verbatim, so a presence failure on them stays advisory even under
+ * strict mode. A long, em-dashed, parenthetical-but-CONCRETE staged description
+ * ("the rooftop bar at sunset … a shadow, a scream, and a rescue") is NOT one of
+ * these — it is depictable and must land, so it blocks under strict mode (G10).
+ */
+const META_NARRATION_RE =
+  /\b(the player|the audience|the reader|establish(?:es|ed|ing)?\s+that|sets?\s+up|set\s+up\s+for|for\s+(?:later|the\s+(?:finale|payoff|reveal))|payoff|foreshadow\w*|callback|treatment|this\s+(?:scene|beat|moment)\s+(?:should|must|establishes|sets)|we\s+(?:see|learn)|signature\s+(?:device|moment))\b/i;
+
+function isMetaNarrationSignature(text: string): boolean {
+  return META_NARRATION_RE.test(text);
+}
+
 /** Collect every signature expectation a plan carries (deduped by scene + text). */
 function collectSignatures(plan: SeasonScenePlan): SignatureExpectation[] {
   const out: SignatureExpectation[] = [];
@@ -325,6 +341,14 @@ export interface SignatureDevicePresenceInput {
   plan: SeasonScenePlan;
   /** The generated story whose prose must land each signature. */
   story: Story;
+  /**
+   * When true, a PRESENCE failure blocks for concrete staged signatures (only true
+   * meta-narration notes stay advisory). When false (default), the legacy behavior
+   * holds: any design-note signature (em-dash / parenthetical / long) demotes to a
+   * warning on absence. Wired from `GATE_SIGNATURE_PRESENCE_STRICT`. The inversion
+   * check is unaffected — it remains advisory for long signatures either way.
+   */
+  strictPresence?: boolean;
 }
 
 export class SignatureDevicePresenceValidator extends BaseValidator {
@@ -397,7 +421,15 @@ export class SignatureDevicePresenceValidator extends BaseValidator {
       if (!signaturePresent(sig.text, haystack)) {
         const message = `Signature device is missing from the final prose of episode ${sig.episodeNumber} scene "${sig.sceneId}": "${sig.text}". The staged signature moment must be depicted, not summarized away.`;
         const suggestion = 'Dramatize the signature device on-page in this scene — show the staged image/action the treatment fixed; do not drop or paraphrase it out.';
-        issues.push(designNote ? this.warning(message, where, suggestion) : this.error(message, where, suggestion));
+        // PRESENCE demotion. Legacy (strictPresence off): any design-note signature
+        // demotes to a warning on absence. Strict (G10): only TRUE meta-narration notes
+        // demote — a concrete staged description that was summarized away blocks, even if
+        // it is long / em-dashed / parenthetical (the keyword-overlap < 0.5 signal is
+        // high-precision: the moment's nouns are essentially absent from the scene).
+        const demotePresence = input.strictPresence
+          ? isMetaNarrationSignature(sig.text)
+          : designNote;
+        issues.push(demotePresence ? this.warning(message, where, suggestion) : this.error(message, where, suggestion));
         continue;
       }
 

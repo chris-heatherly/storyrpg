@@ -99,7 +99,12 @@ import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingCon
 import { deriveStoryVerbs } from '../utils/storyVerbs';
 import { buildFashionPrimaryClothing, buildFashionStyleSummary } from '../images/characterFashionStyle';
 import { resolvePlayerTemplatesInObject } from '../utils/playerTemplateResolver';
-import { canonicalizeWitnessReactions, ensureWitnessNpcsInScenes } from '../utils/witnessNpcResolver';
+import {
+  canonicalizeWitnessReactions,
+  ensureWitnessNpcsInScenes,
+  canonicalizeRelationshipConsequences,
+  canonicalizeStoryRelationshipConsequences,
+} from '../utils/witnessNpcResolver';
 import { applyPromptContract, sanitizeStyleContaminationText } from '../images/imagePromptContracts';
 import {
   attachStoryboardPlanToVisualPlan,
@@ -141,7 +146,7 @@ import {
   spineEntriesFromChoicePlan,
   type SeasonChoicePlan,
 } from './seasonChoicePlan';
-import { buildSeasonSkillPlan, skillsForEpisode, type SeasonSkillPlan } from './seasonSkillPlan';
+import { buildSeasonSkillPlan, skillsForEpisode, validateSeasonSkillPlan, type SeasonSkillPlan } from './seasonSkillPlan';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
 import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, emitSceneTreatmentSeeds, emitSceneBranchAxes, emitSceneInfoReveals, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { reconcileBriefStoryMetadata } from './briefStoryMetadata';
@@ -1393,6 +1398,14 @@ export class FullStoryPipeline {
       return undefined;
     }
 
+    // Defense-in-depth (G10): canonicalize relationship-consequence npcIds across the
+    // ASSEMBLED final story before the contract's MechanicalStorytellingValidator scans for
+    // "targets unknown NPC". prepareValidationInput already cleans the per-episode choiceSet
+    // refs, but anything reconstructed during assembly is caught here against the story's own
+    // roster. Idempotent (resolvable ids already canonical → no-op); remaps stragglers and
+    // drops the genuinely-unknown so GATE_RELATIONSHIP_ID_INTEGRITY fires only on real residue.
+    canonicalizeStoryRelationshipConsequences(input.story);
+
     // W1 regen route: BEFORE the contract reads protagonist-pronoun residue, run the
     // ambiguous-sentence disambiguator so the gate fires only on residue the regen
     // could not resolve (not on every protagonist+NPC sentence). Gated + LLM-backed,
@@ -1432,6 +1445,11 @@ export class FullStoryPipeline {
         mode: this.config.validation.mode,
         fidelityFindings: fidelity.fidelityFindings,
         treatmentSourced: fidelity.treatmentSourced,
+        // L2 conformance: each generated episode realizes the season plan's per-episode
+        // choice-type budget and leans on its planned skills (balance itself is validated
+        // at plan time, over the whole season).
+        seasonChoicePlan: this.seasonChoicePlan,
+        seasonSkillPlan: this.seasonSkillPlan,
       });
       try {
         // Season-final gate: read the cross-episode accumulator (superset of the
@@ -2138,6 +2156,27 @@ export class FullStoryPipeline {
       const sceneBlueprint = blueprint.scenes.find(scene => scene.id === targetId);
       const sceneContent = sceneContents.find(scene => scene.sceneId === targetId);
       if (!sceneBlueprint || !sceneContent) continue;
+
+      // Encounter scenes legitimately carry an empty `beats` array — their reader-facing
+      // content lives in the encounter structure (situation beats + outcome storylets),
+      // and reconvergence residue belongs there too (sceneAcknowledgesBranchResidue
+      // already inspects scene.encounter.outcomes). Injecting a residue beat here both
+      // leaks structural prose into an encounter AND masks a failed/empty encounter from
+      // FinalStoryContractValidator's empty_scene check, which only fires when
+      // beats.length === 0. That masking is exactly how G10 Endsong ep2 shipped the
+      // "You carry the weight of the choices…" + "Continue…" stub over an encounter whose
+      // generation produced no content. Never inject residue into an encounter scene; if
+      // its content is genuinely empty, leave beats.length === 0 so the final-contract
+      // empty_scene gate catches it.
+      if (sceneBlueprint.isEncounter || (sceneContent as { encounter?: unknown }).encounter) {
+        this.emit({
+          type: 'warning',
+          phase,
+          message: `Skipped branch-residue injection for encounter scene "${targetId}" — encounter reconvergence residue lives in encounter outcomes, not scene beats.`,
+          data: { sceneId: targetId, reason: 'encounter_scene_residue_skip' },
+        });
+        continue;
+      }
 
       const incomingScenes = blueprint.scenes.filter(scene => scene.leadsTo?.includes(targetId));
 
@@ -7355,10 +7394,24 @@ export class FullStoryPipeline {
     // skill plan so the season exercises >=6 of the 8 skills with no >30% dominance.
     // Built once from the season's episode set; ChoiceAuthor (a persistent instance)
     // honors the per-episode targets when assigning/rebalancing stat-check skills.
-    this.seasonSkillPlan ??= buildSeasonSkillPlan(
-      Array.from(new Set((this.seasonChoicePlan?.moments ?? []).map((m) => m.episode)))
-        .filter((n): n is number => typeof n === 'number'),
-    );
+    if (!this.seasonSkillPlan) {
+      this.seasonSkillPlan = buildSeasonSkillPlan(
+        Array.from(new Set((this.seasonChoicePlan?.moments ?? []).map((m) => m.episode)))
+          .filter((n): n is number => typeof n === 'number'),
+      );
+      // L1 season-coverage guard: the rotation satisfies this by construction, so a
+      // failure means a future change regressed the spread. Log (don't throw) so a run
+      // is never aborted by a balance-of-skills invariant.
+      const skillPlanCheck = validateSeasonSkillPlan(this.seasonSkillPlan);
+      if (!skillPlanCheck.valid) {
+        this.emit({
+          type: 'warning',
+          phase: 'content_generation',
+          message: `Season skill plan failed its coverage invariant: ${skillPlanCheck.issues.join('; ')}`,
+          data: { coveredSkills: skillPlanCheck.coveredSkills },
+        });
+      }
+    }
     this.choiceAuthor.setEpisodeSkillTargets(skillsForEpisode(this.seasonSkillPlan, episodeNumber ?? 1));
     if (outputDirectory) {
       await saveEarlyDiagnostic(outputDirectory, 'choice-type-plan.json', {
@@ -10419,6 +10472,13 @@ export class FullStoryPipeline {
     // carries "unknown NPC" witness errors. Mutates the shared choiceSet refs in place,
     // so the assembled story is corrected too. Lets GATE_WITNESS_ID_INTEGRITY enforce safely.
     canonicalizeWitnessReactions(choiceSets, characterBible.characters.map((c) => ({ id: c.id, name: c.name })));
+    // Same chokepoint for RELATIONSHIP-consequence npcIds (G10): authoring emits raw
+    // labels ("mika", "lysandra_brightwell", "Captain Rorik Thorne") that don't match the
+    // canonical char-* roster, so the bond delta is silently dropped at runtime. Remap the
+    // resolvable ones to their canonical id and drop the genuinely-unknown ones IN PLACE
+    // (mutates the shared choiceSet refs, so the assembled story is corrected too). This is
+    // what lets GATE_RELATIONSHIP_ID_INTEGRITY enforce on real residue only.
+    canonicalizeRelationshipConsequences(choiceSets, characterBible.characters.map((c) => ({ id: c.id, name: c.name })));
     // Then add each canonical witness NPC to its scene's roster (deterministic repair
     // for the "not listed in scene" presence warning). Additive-only; mutates the
     // shared sceneContents refs so both validation and the assembled story see it.

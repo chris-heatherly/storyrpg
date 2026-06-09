@@ -144,6 +144,116 @@ export function canonicalizeStoryWitnessReactions(story: unknown): WitnessCanoni
   return canonicalizeWitnessReactions(story, Array.isArray(npcs) ? npcs : []);
 }
 
+// ============================================================================
+// Relationship-consequence NPC-id canonicalization
+// ============================================================================
+
+const REL_CONSEQUENCE_TYPES = new Set(['adjustRelationship', 'changeRelationship', 'relationship']);
+
+function isRelationshipConsequence(v: unknown): v is Record<string, unknown> {
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    REL_CONSEQUENCE_TYPES.has(String((v as Record<string, unknown>).type))
+  );
+}
+
+export interface RelationshipCanonicalizationResult {
+  total: number;
+  remapped: number;
+  dropped: number;
+}
+
+/**
+ * Walk any node and canonicalize relationship-consequence `npcId`s against the
+ * authoritative roster, mirroring `canonicalizeWitnessReactions`.
+ *
+ * Relationship consequences (`adjustRelationship` / `changeRelationship` /
+ * `relationship`) carry an `npcId` the LLM authored. When it is missing, the
+ * literal string "None", or otherwise unresolvable, the reader runtime silently
+ * no-ops the delta — `gameStore` only applies a relationship change when
+ * `player.relationships[npcId]` already exists — so the choice's intended bond
+ * movement never lands. G10 Endsong ep2 shipped 4/6 stat-gated choices writing to
+ * npcId "None"; the whole episode's relationship advancement was dead data.
+ *
+ * Remaps resolvable ids IN PLACE; DROPS consequences whose target cannot be
+ * resolved (a relationship delta to a non-existent NPC is dead data the engine
+ * already discards — better to drop it loudly here than ship a silent no-op).
+ * No-op when the roster is empty. Covers both `consequences[]` and
+ * `delayedConsequences[].consequence` wherever they nest.
+ */
+export function canonicalizeRelationshipConsequences(
+  node: unknown,
+  roster: NpcRosterEntry[],
+): RelationshipCanonicalizationResult {
+  const result: RelationshipCanonicalizationResult = { total: 0, remapped: 0, dropped: 0 };
+  const cleanRoster: NpcRosterEntry[] = Array.isArray(roster)
+    ? roster.filter((n) => n && typeof n.id === 'string').map((n) => ({ id: n.id, name: n.name }))
+    : [];
+  if (cleanRoster.length === 0) return result; // no authoritative roster → leave untouched
+
+  // Returns true to KEEP the consequence, false to DROP it.
+  const resolveOrDrop = (c: Record<string, unknown>): boolean => {
+    result.total++;
+    const rawId = typeof c.npcId === 'string' ? c.npcId : '';
+    const canonical = rawId ? resolveWitnessNpcId(rawId, cleanRoster) : undefined;
+    if (canonical) {
+      if (canonical !== rawId) {
+        c.npcId = canonical;
+        result.remapped++;
+      }
+      return true;
+    }
+    result.dropped++;
+    return false;
+  };
+
+  const visit = (n: unknown): void => {
+    if (Array.isArray(n)) {
+      for (const item of n) visit(item);
+      return;
+    }
+    if (!n || typeof n !== 'object') return;
+    const obj = n as Record<string, unknown>;
+
+    if (Array.isArray(obj.consequences)) {
+      obj.consequences = (obj.consequences as unknown[]).filter((c) =>
+        isRelationshipConsequence(c) ? resolveOrDrop(c as Record<string, unknown>) : true,
+      );
+    }
+    if (Array.isArray(obj.delayedConsequences)) {
+      obj.delayedConsequences = (obj.delayedConsequences as unknown[]).filter((d) => {
+        const inner =
+          d && typeof d === 'object' ? (d as Record<string, unknown>).consequence : undefined;
+        return isRelationshipConsequence(inner)
+          ? resolveOrDrop(inner as Record<string, unknown>)
+          : true;
+      });
+    }
+
+    for (const key of Object.keys(obj)) {
+      if (key === 'consequences' || key === 'delayedConsequences') continue;
+      visit(obj[key]);
+    }
+  };
+
+  visit(node);
+  return result;
+}
+
+/**
+ * Convenience wrapper: canonicalize relationship-consequence npcIds across a whole
+ * story object against its own authoritative `story.npcs` roster (used at the
+ * final-assembly chokepoint, alongside witness canonicalization).
+ */
+export function canonicalizeStoryRelationshipConsequences(
+  story: unknown,
+): RelationshipCanonicalizationResult {
+  if (!story || typeof story !== 'object') return { total: 0, remapped: 0, dropped: 0 };
+  const npcs = (story as { npcs?: NpcRosterEntry[] }).npcs;
+  return canonicalizeRelationshipConsequences(story, Array.isArray(npcs) ? npcs : []);
+}
+
 export interface WitnessPresenceScene {
   sceneId: string;
   beats?: Array<{ id?: string } | null | undefined>;

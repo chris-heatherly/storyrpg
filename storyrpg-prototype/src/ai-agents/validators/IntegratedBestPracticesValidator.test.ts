@@ -108,7 +108,12 @@ describe('IntegratedBestPracticesValidator (aggregator)', () => {
     expect(dist?.counts.dilemma).toBe(1);
     // Two relationship choices route to another scene.
     expect(dist?.branchingCount).toBe(2);
-    expect(dist?.targetPercentages).toEqual({ expression: 35, relationship: 30, strategic: 20, dilemma: 15 });
+    // G10: this is a GENERATED-SLICE report, NOT validated against the whole-season
+    // target (that comparison is the season-plan's job). Target/deviation are omitted;
+    // the block is marked as a slice so it can't be misread as a deviation defect.
+    expect(dist?.scope).toBe('generated-slice');
+    expect(dist?.targetPercentages).toBeUndefined();
+    expect(dist?.deviations).toBeUndefined();
   });
 
   it('full validation returns a scored ComprehensiveValidationReport', async () => {

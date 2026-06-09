@@ -91,6 +91,28 @@ describe('PovClarityValidator', () => {
     expect(povBreak!.issue).toContain('third person');
   });
 
+  it('findThirdPersonProtagonistTexts flags encounter-outcome prose narrated in third person', () => {
+    const validator = new PovClarityValidator();
+    const texts = [
+      'You clock the door before he does.', // second person — in register
+      'Kylie smiles back and lets her keep it, filing the whole exchange somewhere useful.', // 3rd-person protagonist
+      'Mika watches you from across the booth.', // NPC 3rd person + "you" — fine
+      'Kylie has the thread now, and she is not letting go.', // 3rd-person protagonist
+    ];
+    const hits = validator.findThirdPersonProtagonistTexts(texts, 'Kylie');
+    expect(hits).toHaveLength(2);
+    expect(hits[0]).toContain('Kylie smiles back');
+  });
+
+  it('findThirdPersonProtagonistTexts returns nothing when every text addresses you', () => {
+    const validator = new PovClarityValidator();
+    const hits = validator.findThirdPersonProtagonistTexts(
+      ['You take the card.', 'Your pulse steadies as Aethavyr turns away.', ''],
+      'Aethavyr',
+    );
+    expect(hits).toEqual([]);
+  });
+
   it('does not flag an occasional self-naming beat that still addresses you', () => {
     const sc: SceneContent = {
       sceneId: 'scene-1',

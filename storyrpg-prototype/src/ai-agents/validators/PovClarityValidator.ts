@@ -107,6 +107,34 @@ export class PovClarityValidator {
   }
 
   /**
+   * Scan an arbitrary set of reader-facing texts (e.g. encounter situation beats and
+   * outcome storylets, which never live in `sceneContent.beats` and so escape the
+   * per-scene beat scan above) for third-person protagonist narration. Returns the
+   * offending snippets (deduped, trimmed to a readable length). Used by the final-story
+   * pass to catch the encounter-outcome POV break (G10 Bite Me ep1/ep2 wrote whole
+   * encounter sub-branches as "Kylie smiles back…" in a second-person story).
+   */
+  findThirdPersonProtagonistTexts(
+    texts: Array<string | undefined | null>,
+    protagonistName?: string,
+  ): string[] {
+    const hits: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of texts) {
+      const text = typeof raw === 'string' ? raw : '';
+      if (!text.trim()) continue;
+      if (this.isThirdPersonProtagonistNarration(text, protagonistName)) {
+        const snippet = text.trim().slice(0, 160);
+        if (!seen.has(snippet)) {
+          seen.add(snippet);
+          hits.push(snippet);
+        }
+      }
+    }
+    return hits;
+  }
+
+  /**
    * True when a beat narrates the PROTAGONIST in the third person in a second-person
    * story: the protagonist is referenced by name AND a third-person singular pronoun
    * appears, while NO second-person marker ("you/your") is present anywhere in the

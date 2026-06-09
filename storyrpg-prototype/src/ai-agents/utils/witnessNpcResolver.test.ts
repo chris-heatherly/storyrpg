@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveWitnessNpcId, canonicalizeStoryWitnessReactions, canonicalizeWitnessReactions, ensureWitnessNpcsInScenes } from './witnessNpcResolver';
+import { resolveWitnessNpcId, canonicalizeStoryWitnessReactions, canonicalizeWitnessReactions, ensureWitnessNpcsInScenes, canonicalizeRelationshipConsequences, canonicalizeStoryRelationshipConsequences } from './witnessNpcResolver';
 
 // Roster mirrors a real bite-me run's story.npcs (canonical char- ids).
 const ROSTER = [
@@ -157,5 +157,71 @@ describe('ensureWitnessNpcsInScenes', () => {
     const res = ensureWitnessNpcsInScenes(scenes, choiceSets, KNOWN);
     expect(res.added).toBe(1);
     expect(scenes[0].charactersInvolved).toEqual(['char-radu-stoian']);
+  });
+});
+
+describe('canonicalizeRelationshipConsequences', () => {
+  it('drops an adjustRelationship consequence whose npcId is the literal "None"', () => {
+    const choice = {
+      consequences: [
+        { type: 'adjustRelationship', npcId: 'None', dimension: 'affection', delta: 12 },
+        { type: 'adjustRelationship', npcId: 'None', dimension: 'trust', delta: 8 },
+        { type: 'setFlag', flag: 'x', value: true },
+      ],
+    };
+    const res = canonicalizeRelationshipConsequences(choice, ROSTER);
+    expect(res).toEqual({ total: 2, remapped: 0, dropped: 2 });
+    // The dead relationship deltas are gone; the unrelated setFlag is untouched.
+    expect(choice.consequences).toEqual([{ type: 'setFlag', flag: 'x', value: true }]);
+  });
+
+  it('remaps a resolvable raw npcId to its canonical roster id', () => {
+    const choice = {
+      consequences: [{ type: 'adjustRelationship', npcId: 'mika', dimension: 'affection', delta: 5 }],
+    };
+    const res = canonicalizeRelationshipConsequences(choice, ROSTER);
+    expect(res).toEqual({ total: 1, remapped: 1, dropped: 0 });
+    expect((choice.consequences[0] as any).npcId).toBe('char-mihaela-mika-drgan');
+  });
+
+  it('handles delayedConsequences[].consequence and drops unresolvable targets', () => {
+    const choice = {
+      delayedConsequences: [
+        { consequence: { type: 'changeRelationship', npcId: 'None', dimension: 'trust', delta: -3 }, delay: { type: 'scenes', count: 2 } },
+        { consequence: { type: 'setFlag', flag: 'y', value: true }, delay: { type: 'scenes', count: 1 } },
+      ],
+    };
+    const res = canonicalizeRelationshipConsequences(choice, ROSTER);
+    expect(res).toEqual({ total: 1, remapped: 0, dropped: 1 });
+    expect(choice.delayedConsequences).toHaveLength(1);
+    expect((choice.delayedConsequences[0] as any).consequence.flag).toBe('y');
+  });
+
+  it('walks a whole story and corrects nested choice consequences', () => {
+    const story = {
+      npcs: ROSTER,
+      episodes: [
+        {
+          scenes: [
+            {
+              id: 's1',
+              beats: [
+                { id: 'b1', choices: [{ id: 'c1', consequences: [{ type: 'adjustRelationship', npcId: 'None', dimension: 'affection', delta: 4 }] }] },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const res = canonicalizeStoryRelationshipConsequences(story);
+    expect(res.dropped).toBe(1);
+    expect(story.episodes[0].scenes[0].beats[0].choices[0].consequences).toEqual([]);
+  });
+
+  it('no-ops when there is no authoritative roster', () => {
+    const choice = { consequences: [{ type: 'adjustRelationship', npcId: 'None', dimension: 'trust', delta: 1 }] };
+    const res = canonicalizeRelationshipConsequences(choice, []);
+    expect(res).toEqual({ total: 0, remapped: 0, dropped: 0 });
+    expect(choice.consequences).toHaveLength(1);
   });
 });

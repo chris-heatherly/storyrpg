@@ -22,6 +22,7 @@ import type { FinalStoryContractReport } from '../validators/FinalStoryContractV
 import type { LlmLedger } from './pipelineTelemetry';
 import type { BranchShadowDiff } from './branchShadowDiff';
 import { appendQualityLedger } from './qualityLedger';
+import { analyzeStory as analyzeSentenceOpeners } from './sentenceOpenerStats';
 import { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import type { 
   ColorScript,
@@ -2081,6 +2082,15 @@ export async function savePipelineOutputs(
   // derived from the run dir's parent so test runs don't pollute the real
   // ledger (F4).
   try {
+    let openerRatio: number | undefined;
+    let openerMonotony: number | undefined;
+    try {
+      if (outputs.finalStory) {
+        const opener = analyzeSentenceOpeners(outputs.finalStory);
+        openerRatio = opener.secondPersonRatio;
+        openerMonotony = opener.monotonyPassages.length;
+      }
+    } catch { /* opener stats are best-effort telemetry */ }
     await appendQualityLedger(ledgerBaseDir(outputDir), {
       timestamp: manifest.generatedAt || new Date().toISOString(),
       runDir: runNameFromDir(outputDir),
@@ -2094,6 +2104,8 @@ export async function savePipelineOutputs(
       remediationsAttempted: outputs.remediationSummary?.attempted,
       remediationsSucceeded: outputs.remediationSummary?.succeeded,
       remediationsDegraded: outputs.remediationSummary?.degraded,
+      secondPersonOpenerRatio: openerRatio,
+      openerMonotonyPassages: openerMonotony,
     });
   } catch { /* ledger is best-effort */ }
 

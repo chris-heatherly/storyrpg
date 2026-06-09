@@ -512,12 +512,15 @@ export class IntegratedBestPracticesValidator {
       };
     }
 
-    // 1.6 Choice TYPE distribution (taxonomy) — reporting only.
-    // ChoiceDistributionValidator was previously unregistered, so the
-    // taxonomy mix (e.g. the dilemma-monoculture problem) was never measured.
-    // Surface it as a metric here; gating on deviation is deferred (Phase 2).
+    // 1.6 Choice TYPE distribution (taxonomy) — GENERATED-SLICE reporting only.
+    // Choice-type BALANCE is a whole-season property and is validated at plan time
+    // (seasonChoicePlan runs ChoiceDistributionValidator over the full season's moments
+    // vs target). Comparing a generated K-of-N slice against the 35/30/20/15 target was a
+    // category error (it made a legitimate partial-season strategic shortfall read as a
+    // −20pp defect). So here we report the slice counts/percentages WITHOUT a target
+    // comparison; per-episode conformance is ChoiceTypePlanConformanceValidator's job.
     if (input.choices.length > 0) {
-      metrics.choiceDistribution = this.choiceDistributionValidator.computeMetrics({
+      const raw = this.choiceDistributionValidator.computeMetrics({
         choiceSets: input.choices.map((c) => ({
           beatId: c.id,
           choiceType: c.choiceType,
@@ -527,6 +530,15 @@ export class IntegratedBestPracticesValidator {
         targets: { expression: 35, relationship: 30, strategic: 20, dilemma: 15 },
         maxBranchingChoicesPerEpisode: CHOICE_DISTRIBUTION_BRANCHING_CAP,
       });
+      metrics.choiceDistribution = {
+        totalChoiceSets: raw.totalChoiceSets,
+        counts: raw.counts,
+        actualPercentages: raw.actualPercentages,
+        branchingCount: raw.branchingCount,
+        branchingCap: raw.branchingCap,
+        scope: 'generated-slice',
+        note: 'Generated slice only — choice-type balance is validated against target at the season-plan level, not here.',
+      };
     }
 
     // 1.5 Choice Impact Validation
@@ -554,12 +566,17 @@ export class IntegratedBestPracticesValidator {
         choicesWithWitnessReactions: mechanicalResult.metrics.choicesWithWitnessReactions,
         statChecksWithPlayableFailure: mechanicalResult.metrics.statChecksWithPlayableFailure,
         invalidWitnessReferences: mechanicalResult.metrics.invalidWitnessReferences,
+        invalidRelationshipReferences: mechanicalResult.metrics.invalidRelationshipReferences,
       };
 
       const balanceResult = this.statCheckBalanceValidator.validate({ choices: input.choices as any });
       allIssues.push(...balanceResult.issues.map((issue) => toValidationIssue('stat_check_balance', issue)));
       metrics.statCheckBalance = balanceResult.metrics;
 
+      // Skill coverage is a SEASON property — never gated against a generated K-of-N
+      // slice (that is a category error). Reported here for visibility only; the
+      // season plan owns balance (validateSeasonSkillPlan) and per-episode conformance
+      // is checked by SkillPlanConformanceValidator.
       const coverageResult = this.skillCoverageValidator.validate({ choices: input.choices as any });
       allIssues.push(...coverageResult.issues.map((issue) => toValidationIssue('skill_coverage', issue)));
       metrics.skillCoverage = coverageResult.metrics;

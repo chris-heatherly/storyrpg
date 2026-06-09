@@ -31,6 +31,11 @@ export function gateWitnessIdIntegrity(): boolean {
   return on('GATE_WITNESS_ID_INTEGRITY');
 }
 
+/** `GATE_RELATIONSHIP_ID_INTEGRITY` — promote unknown-relationship-NPC errors to blocking. */
+export function gateRelationshipIdIntegrity(): boolean {
+  return on('GATE_RELATIONSHIP_ID_INTEGRITY');
+}
+
 /**
  * True when a best-practices issue belongs to an escalated class AND that class's
  * gating flag is on. Matched on the issue message (the validators don't currently
@@ -53,6 +58,12 @@ export function isEscalatedIssue(issue: { category?: string; message?: string })
   // NOT be escalated to a hard blocker. A broad /witness reaction/ match used to
   // catch both and hard-aborted runs on the presence class.
   if (gateWitnessIdIntegrity() && /references unknown NPC/i.test(message)) {
+    return true;
+  }
+  // Relationship-consequence id integrity (G10): a relationship delta to "None"/an
+  // unknown NPC is silently dropped at runtime, so the choice's bond movement is lost.
+  // Distinct phrase ("targets unknown NPC") keeps it off the witness regex above.
+  if (gateRelationshipIdIntegrity() && /relationship consequence on choice.*targets unknown NPC/i.test(message)) {
     return true;
   }
   return false;

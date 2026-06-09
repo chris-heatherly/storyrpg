@@ -15,6 +15,7 @@ export interface MechanicalStorytellingMetrics {
   choicesWithWitnessReactions: number;
   statChecksWithPlayableFailure: number;
   invalidWitnessReferences: number;
+  invalidRelationshipReferences: number;
 }
 
 export interface MechanicalStorytellingResult extends ValidationResult {
@@ -66,6 +67,7 @@ export class MechanicalStorytellingValidator extends BaseValidator {
     let choicesWithWitnessReactions = 0;
     let statChecksWithPlayableFailure = 0;
     let invalidWitnessReferences = 0;
+    let invalidRelationshipReferences = 0;
 
     for (const choice of input.choices) {
       const location = [choice.sceneId, choice.beatId, choice.id].filter(Boolean).join(':') || choice.id;
@@ -134,6 +136,27 @@ export class MechanicalStorytellingValidator extends BaseValidator {
         }
       }
 
+      // Relationship-consequence npcId integrity (G10): an `adjustRelationship` /
+      // `relationship` consequence targeting "None"/an unknown id is silently no-op'd by
+      // the reader runtime (gameStore only applies a delta when the NPC bond exists), so
+      // the choice's relationship movement is lost. Mirror the witness check above; the
+      // final-assembly pass deterministically drops these, and this surfaces the count
+      // for gating/regen (escalated by GATE_RELATIONSHIP_ID_INTEGRITY).
+      for (const rel of collectRelationshipConsequences(choice)) {
+        if (!rel.npcId || rel.npcId === 'None' || (storyNpcIds.size > 0 && !storyNpcIds.has(rel.npcId))) {
+          invalidRelationshipReferences++;
+          // NOTE: deliberately phrased "targets unknown NPC" (not "references unknown
+          // NPC") so it is NOT swept up by the default-ON witness-id escalation regex;
+          // it has its own GATE_RELATIONSHIP_ID_INTEGRITY gate, default-OFF pending a
+          // live validation run.
+          issues.push(this.error(
+            `Relationship consequence on choice "${choice.id}" targets unknown NPC "${rel.npcId || '(missing)'}" — the delta will be silently dropped at runtime.`,
+            rel.npcId ? `${location}:${rel.npcId}` : location,
+            'Use an npcId from story.npcs for the relationship consequence, or remove it.',
+          ));
+        }
+      }
+
       if (choice.statCheck) {
         if (hasPlayableFailure(choice)) {
           statChecksWithPlayableFailure++;
@@ -164,9 +187,33 @@ export class MechanicalStorytellingValidator extends BaseValidator {
         choicesWithWitnessReactions,
         statChecksWithPlayableFailure,
         invalidWitnessReferences,
+        invalidRelationshipReferences,
       },
     };
   }
+}
+
+const REL_CONSEQUENCE_TYPES = new Set(['adjustRelationship', 'changeRelationship', 'relationship']);
+
+/**
+ * Gather every relationship-affecting consequence on a choice — both immediate
+ * `consequences[]` and `delayedConsequences[].consequence` — normalized to a small
+ * `{ npcId }` shape for id-integrity checking.
+ */
+function collectRelationshipConsequences(choice: Choice): Array<{ npcId?: string }> {
+  const out: Array<{ npcId?: string }> = [];
+  const consider = (c: unknown): void => {
+    if (!c || typeof c !== 'object') return;
+    const obj = c as Record<string, unknown>;
+    if (REL_CONSEQUENCE_TYPES.has(String(obj.type))) {
+      out.push({ npcId: typeof obj.npcId === 'string' ? obj.npcId : undefined });
+    }
+  };
+  for (const c of choice.consequences || []) consider(c);
+  for (const d of (choice as { delayedConsequences?: Array<{ consequence?: unknown }> }).delayedConsequences || []) {
+    consider(d?.consequence);
+  }
+  return out;
 }
 
 function hasReactiveSurface(choice: Choice): boolean {

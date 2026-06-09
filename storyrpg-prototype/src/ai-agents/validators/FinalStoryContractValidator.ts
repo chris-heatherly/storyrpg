@@ -6,13 +6,22 @@ import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator
 import { IncrementalEncounterValidator } from './IncrementalValidators';
 import { MechanicsLeakageValidator, type MechanicsLeakageText } from './MechanicsLeakageValidator';
 import { gateDesignNoteLeak, isEscalatedIssue } from './issueEscalation';
-import { canonicalizeStoryWitnessReactions } from '../utils/witnessNpcResolver';
+import { canonicalizeStoryWitnessReactions, canonicalizeStoryRelationshipConsequences } from '../utils/witnessNpcResolver';
 import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory } from '../utils/protagonistPronounResolver';
+import { findNpcPronounInconsistencies } from '../utils/npcPronounResolver';
+import { OutcomeTextQualityValidator } from './OutcomeTextQualityValidator';
+import { SentenceOpenerVarietyValidator } from './SentenceOpenerVarietyValidator';
+import { ReferencedEventPresenceValidator } from './ReferencedEventPresenceValidator';
+import { ChoiceTypePlanConformanceValidator } from './ChoiceTypePlanConformanceValidator';
+import type { SeasonChoicePlan } from '../pipeline/seasonChoicePlan';
+import { SkillPlanConformanceValidator } from './SkillPlanConformanceValidator';
+import type { SeasonSkillPlan } from '../pipeline/seasonSkillPlan';
 import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs } from '../utils/encounterOutcomeFlags';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isTreatmentFidelityFinding } from './treatmentFidelityGate';
 import { findBeatIdCollisions } from './beatIdCollisions';
 import { collectReaderFacingTexts } from './EncounterAnchorContentValidator';
+import { PovClarityValidator } from './PovClarityValidator';
 
 /**
  * Scene-target sentinels that mean "the episode/story ends here" rather than a
@@ -45,6 +54,13 @@ export type FinalStoryContractIssueType =
   | 'source_role_mismatch'
   | 'treatment_fidelity_violation'
   | 'ambiguous_protagonist_pronoun'
+  | 'npc_pronoun_inconsistency'
+  | 'outcome_text_stub'
+  | 'promised_clue_absent'
+  | 'choice_type_plan_nonconformance'
+  | 'skill_plan_nonconformance'
+  | 'sentence_opener_monotony'
+  | 'encounter_pov_break'
   | 'encounter_outcome_desync'
   | 'continuity_error'
   | 'qa_blocker_present';
@@ -100,6 +116,19 @@ export interface FinalStoryContractInput {
     }>;
   };
   incrementalValidationResults?: SceneValidationResult[];
+  /**
+   * The season choice-type plan (source of truth for which type belongs in which
+   * episode). When present, ChoiceTypePlanConformanceValidator checks each generated
+   * episode realized the types the plan budgeted for it (L2 conformance) — distinct from
+   * the season-level balance check that runs at plan time.
+   */
+  seasonChoicePlan?: SeasonChoicePlan;
+  /** Optional planned per-scene choice type (blueprint `choicePoint.type`), enabling the
+   * conformance validator's binding-fidelity Check A. */
+  plannedChoiceTypesByScene?: Record<string, string>;
+  /** The season skill plan. When present, SkillPlanConformanceValidator checks each
+   * generated episode leaned on the skills the plan favoured for it (L2). */
+  seasonSkillPlan?: SeasonSkillPlan;
   qaReport?: QAReport;
   bestPracticesReport?: ComprehensiveValidationReport;
   validSkills?: string[];
@@ -161,6 +190,19 @@ export class FinalStoryContractValidator {
       );
     }
 
+    // Canonicalize relationship-consequence npcIds against the same authoritative
+    // roster. The LLM sometimes targets a relationship delta at "None"/an unknown id,
+    // which the reader runtime silently no-ops (gameStore only applies a delta when the
+    // NPC bond already exists) — so the choice's relationship movement is lost (G10
+    // Endsong ep2). Remap resolvable ids; drop dead targets so they cannot masquerade as
+    // applied consequences. The P1.3 validator surfaces the drop count for gating/regen.
+    const relFix = canonicalizeStoryRelationshipConsequences(input.story);
+    if (relFix.remapped || relFix.dropped) {
+      console.info(
+        `[FinalStoryContract] relationship-consequence npcIds canonicalized: remapped ${relFix.remapped}, dropped ${relFix.dropped} of ${relFix.total}`,
+      );
+    }
+
     // W1: deterministically repair wrong-gender protagonist pronouns in player-facing
     // prose (the encounter generator drifted Kylie -> he/him). Pronouns are canon, so
     // the safe (protagonist-only-sentence) repair runs always — pure data correctness,
@@ -199,6 +241,145 @@ export class FinalStoryContractValidator {
       }
     }
 
+    // NPC pronoun consistency (G10): a uniquely-named gendered NPC paired with a pronoun
+    // inconsistent with its roster gender — e.g. Endsong ep3 narrated he/him Captain
+    // Thorne as "their shoulder"/"their gaze" in the finale. Detection only (NPC pronoun
+    // attribution is too ambiguous to auto-rewrite safely). Advisory; escalated to
+    // blocking when GATE_NPC_PRONOUN is on (default-OFF pending a live run).
+    {
+      const npcScan = findNpcPronounInconsistencies(input.story, input.story.npcs);
+      if (npcScan.findings.length > 0) {
+        console.info(
+          `[FinalStoryContract] NPC pronoun inconsistencies: ${npcScan.findings.length} (of ${npcScan.fieldsScanned} fields)`,
+        );
+      }
+      const blockNpcPronoun = isGateEnabled('GATE_NPC_PRONOUN');
+      for (const f of npcScan.findings) {
+        issues.push({
+          type: 'npc_pronoun_inconsistency',
+          severity: blockNpcPronoun ? 'error' : 'warning',
+          message: `NPC "${f.npcName}" is referred to with an inconsistent pronoun ("${f.wrongPronoun}") vs. its canon gender: "${f.sentence}".`,
+          validator: 'npcPronounResolver',
+          suggestion: `Use ${f.npcName}'s canon pronouns; reserve they/them for NPCs whose roster pronouns are they/them.`,
+        });
+      }
+    }
+
+    // Outcome-text quality (G10): flag stub / scaffold-leak / echo / duplicate choice
+    // outcomeTexts (the fixed ChoiceAuthor fallback's fingerprint). Walks the whole
+    // story. Advisory; escalated to blocking when GATE_OUTCOME_TEXT_QUALITY is on.
+    {
+      const properNouns = [
+        ...(input.story.npcs || []).map((n) => n.name).filter((n): n is string => Boolean(n)),
+        ...(input.protagonist?.name ? [input.protagonist.name] : []),
+      ];
+      const otqResult = new OutcomeTextQualityValidator().validate({ story: input.story, properNouns });
+      if (otqResult.issues.length > 0) {
+        console.info(`[FinalStoryContract] outcome-text quality: ${otqResult.issues.length} finding(s)`);
+      }
+      const blockOtq = isGateEnabled('GATE_OUTCOME_TEXT_QUALITY');
+      for (const issue of otqResult.issues) {
+        issues.push({
+          type: 'outcome_text_stub',
+          severity: blockOtq ? (issue.severity === 'error' ? 'error' : 'warning') : 'warning',
+          message: issue.message,
+          validator: 'OutcomeTextQualityValidator',
+          suggestion: issue.suggestion,
+        });
+      }
+    }
+
+    // Sentence-opener variety (prose craft): flag any beat or outcome tier that stacks
+    // 3+ consecutive "You …" openers (monotonous second-person cadence). Second person
+    // is correct for the reader POV; only consecutive runs flag. Advisory; escalated
+    // when GATE_SENTENCE_OPENER_VARIETY is on.
+    {
+      const openerResult = new SentenceOpenerVarietyValidator().validate({ story: input.story });
+      if (openerResult.issues.length > 0) {
+        console.info(`[FinalStoryContract] sentence-opener variety: ${openerResult.issues.length} finding(s)`);
+      }
+      const blockOpener = isGateEnabled('GATE_SENTENCE_OPENER_VARIETY');
+      for (const issue of openerResult.issues) {
+        issues.push({
+          type: 'sentence_opener_monotony',
+          severity: blockOpener ? 'error' : 'warning',
+          message: issue.message,
+          validator: 'SentenceOpenerVarietyValidator',
+          suggestion: issue.suggestion,
+        });
+      }
+    }
+
+    // Referenced-event / promised-clue presence (G10): an enumerated scene objective
+    // (e.g. "collects four splinters — Ileana's tears, the photograph, the maiden name,
+    // Mika's absence") must dramatize each listed item on-page, or a later payoff
+    // references a clue the reader never saw. Advisory; escalated when
+    // GATE_REFERENCED_EVENT_PRESENCE is on.
+    {
+      const refResult = new ReferencedEventPresenceValidator().validate({ story: input.story });
+      if (refResult.issues.length > 0) {
+        console.info(`[FinalStoryContract] referenced-event presence: ${refResult.issues.length} finding(s)`);
+      }
+      const blockRef = isGateEnabled('GATE_REFERENCED_EVENT_PRESENCE');
+      for (const issue of refResult.issues) {
+        issues.push({
+          type: 'promised_clue_absent',
+          severity: blockRef ? 'error' : 'warning',
+          message: issue.message,
+          validator: 'ReferencedEventPresenceValidator',
+          suggestion: issue.suggestion,
+        });
+      }
+    }
+
+    // Choice-type plan conformance (G10, L2): each generated episode must realize the
+    // choice types the SEASON PLAN budgeted for it. Balance itself is validated at plan
+    // time over the whole season — this never compares a generated slice to the global
+    // target. Advisory; escalated when GATE_CHOICE_TYPE_CONFORMANCE is on.
+    if (input.seasonChoicePlan) {
+      const confResult = new ChoiceTypePlanConformanceValidator().validate({
+        seasonPlan: input.seasonChoicePlan,
+        story: input.story,
+        plannedTypesByScene: input.plannedChoiceTypesByScene,
+      });
+      if (confResult.issues.length > 0) {
+        console.info(`[FinalStoryContract] choice-type plan conformance: ${confResult.issues.length} finding(s)`);
+      }
+      const blockConf = isGateEnabled('GATE_CHOICE_TYPE_CONFORMANCE');
+      for (const issue of confResult.issues) {
+        issues.push({
+          type: 'choice_type_plan_nonconformance',
+          severity: blockConf ? 'error' : 'warning',
+          message: issue.message,
+          validator: 'ChoiceTypePlanConformanceValidator',
+          suggestion: issue.suggestion,
+        });
+      }
+    }
+
+    // Skill plan conformance (G10, L2): each generated episode leaned on the skills its
+    // season plan favoured for it (not an off-plan dominant skill). Season coverage is an
+    // L1 plan property (validateSeasonSkillPlan); this never gates a slice vs season target.
+    if (input.seasonSkillPlan) {
+      const skillConf = new SkillPlanConformanceValidator().validate({
+        story: input.story,
+        seasonSkillPlan: input.seasonSkillPlan,
+      });
+      if (skillConf.issues.length > 0) {
+        console.info(`[FinalStoryContract] skill plan conformance: ${skillConf.issues.length} finding(s)`);
+      }
+      const blockSkill = isGateEnabled('GATE_SKILL_PLAN_CONFORMANCE');
+      for (const issue of skillConf.issues) {
+        issues.push({
+          type: 'skill_plan_nonconformance',
+          severity: blockSkill ? 'error' : 'warning',
+          message: issue.message,
+          validator: 'SkillPlanConformanceValidator',
+          suggestion: issue.suggestion,
+        });
+      }
+    }
+
     // W4: deterministically seed `encounter_<id>_<outcome>` flags on every encounter
     // outcome (always-on capability seeding), then detect reconvergences where ≥2
     // outcomes share a next scene that carries no outcome-conditioned text — the
@@ -227,6 +408,8 @@ export class FinalStoryContractValidator {
     const callbackScenes: Array<{ id: string; beats: Array<{ id: string; text: string; textVariants?: Array<{ condition: unknown; text: string }>; speaker?: string }> }> = [];
     const callbackChoices: Array<{ id: string; sceneId: string; text: string; consequences?: Consequence[]; reminderPlan?: unknown }> = [];
     const encounterValidator = new IncrementalEncounterValidator(input.validSkills || Object.keys(input.story.initialState?.skills || {}));
+    const povValidator = new PovClarityValidator();
+    const protagonistName = input.protagonist?.name;
 
     for (const episode of input.story.episodes || []) {
       const sceneMap = new Map((episode.scenes || []).map(scene => [scene.id, scene]));
@@ -279,6 +462,31 @@ export class FinalStoryContractValidator {
 
         if (scene.encounter) {
           metrics.encounterScenesChecked++;
+
+          // POV-person scan over encounter reader-facing prose (situation beats +
+          // outcome storylets). These never live in `sceneContent.beats`, so the
+          // per-scene PovClarityValidator pass never sees them — which is how G10 Bite
+          // Me ep1/ep2 shipped whole encounter sub-branches narrated in the third person
+          // ("Kylie smiles back…") inside a second-person story. Advisory.
+          if (protagonistName) {
+            const povHits = povValidator.findThirdPersonProtagonistTexts(
+              collectReaderFacingTexts(scene),
+              protagonistName,
+            );
+            if (povHits.length > 0) {
+              issues.push({
+                type: 'encounter_pov_break',
+                severity: 'warning',
+                message: `Encounter scene "${scene.name || scene.id}" narrates the protagonist in the third person in ${povHits.length} place(s) — a POV break in a second-person story. e.g. "${povHits[0]}"`,
+                episodeId: episode.id,
+                episodeNumber: episode.number,
+                sceneId: scene.id,
+                validator: 'PovClarityValidator',
+                suggestion: 'Rewrite the encounter outcome prose in second person ("you/your"); reserve third-person + pronoun for NPCs only.',
+              });
+            }
+          }
+
           if (encounterResult?.passed) {
             metrics.validEncounterScenes++;
           } else {

@@ -44,6 +44,8 @@ import { AuthoredEpisodeConformanceValidator } from './AuthoredEpisodeConformanc
 import { EncounterAnchorContentValidator } from './EncounterAnchorContentValidator';
 import { InformationLedgerScheduleValidator } from './InformationLedgerScheduleValidator';
 import { SignatureDevicePresenceValidator } from './SignatureDevicePresenceValidator';
+import { EncounterSetPieceDepthValidator } from './EncounterSetPieceDepthValidator';
+import { isGateEnabled } from '../remediation/gateDefaults';
 import {
   SevenPointAnchorConformanceValidator,
   seasonPlanToAnchorConformanceInput,
@@ -208,8 +210,23 @@ function collectFidelityFindings(
   // 4.4 — each signature device appears in prose, never inverted. Needs the scene plan.
   if (isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.signatureDevicePresence) && scenePlan) {
     guard(() => {
-      const result = new SignatureDevicePresenceValidator().validate({ plan: scenePlan, story });
+      const result = new SignatureDevicePresenceValidator().validate({
+        plan: scenePlan,
+        story,
+        // G10: under strict mode a summarized-away concrete signature blocks (only true
+        // meta-narration notes stay advisory). Default-OFF pending a live validation run.
+        strictPresence: isGateEnabled('GATE_SIGNATURE_PRESENCE_STRICT'),
+      });
       return toFindings('SignatureDevicePresenceValidator', result.issues);
+    });
+  }
+
+  // G10 — a sustained set-piece encounter must keep escalating structure, not collapse
+  // to a single decision + summary. Gated separately (GATE_ENCOUNTER_SETPIECE_DEPTH).
+  if (isGateEnabled('GATE_ENCOUNTER_SETPIECE_DEPTH') && scenePlan) {
+    guard(() => {
+      const result = new EncounterSetPieceDepthValidator().validate({ story, plan: scenePlan });
+      return toFindings('EncounterSetPieceDepthValidator', result.issues);
     });
   }
 

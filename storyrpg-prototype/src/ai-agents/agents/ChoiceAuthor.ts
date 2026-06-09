@@ -547,21 +547,41 @@ Before finalizing:
     choice: ChoiceSet['choices'][number],
     tier: 'success' | 'partial' | 'failure',
   ): string {
-    const stakes = (choice as { stakes?: { want?: string; cost?: string } }).stakes;
-    const lc = (s: string | undefined): string =>
-      s ? s.charAt(0).toLowerCase() + s.slice(1).replace(/[.!?]\s*$/, '') : '';
-    const want = lc(stakes?.want);
-    const cost = lc(stakes?.cost);
-    switch (tier) {
-      case 'success':
-        return want ? `It works — you get what you reached for: ${want}.` : 'It works, and the moment goes your way.';
-      case 'partial':
-        return cost
-          ? `You get part of what you wanted, but it costs you: ${cost}.`
-          : 'It half-works: you gain ground, but not cleanly, and the cost lingers.';
-      case 'failure':
-        return cost ? `It slips away from you, and ${cost}.` : 'It does not go the way you hoped.';
-    }
+    // Deterministic, fiction-first fallback used ONLY when the LLM omitted a tier or
+    // produced colliding tiers. It must NOT leak authoring scaffolding: an earlier
+    // version pasted the stakes `want`/`cost` annotations verbatim behind connectives
+    // like "It works — you get what you reached for: <want>." — which shipped
+    // design-note text (and lowercased proper nouns, "victor gets a post…") straight
+    // into player prose (G10 Bite Me/Endsong). These are intentionally generic in-world
+    // beats; the LLM author plus the OutcomeTextQuality validator are the real quality
+    // path. Vary the line by the choice id so sibling choices in one scene don't collide
+    // and trip the dedupe backstop, and so a stub is at least tier- and choice-distinct.
+    // Openers are deliberately varied (object-first, sensory, second-person) so a
+    // scene that falls back on several tiers does not produce a run of "You …" /
+    // "It …" lines that reads as flat template output (and trips the
+    // SentenceOpenerVarietyValidator).
+    const pools: Record<'success' | 'partial' | 'failure', string[]> = {
+      success: [
+        'The room settles around the choice, and it lands the way you meant it to.',
+        'Clean — you get the better version of what you were reaching for.',
+        'For once it goes your way, a little cleaner than you expected.',
+      ],
+      partial: [
+        'Ground gained, but not cleanly; the cost settles in behind it.',
+        'Some of it, not all — the rest leaves a mark you will carry.',
+        'It works, mostly, though something slips loose in the doing and you notice.',
+      ],
+      failure: [
+        'Not the way you hoped — and the difference is yours to hold.',
+        'The moment closes before you can catch it, and it gets away from you.',
+        'You come back with less than you brought.',
+      ],
+    };
+    const id = String(choice.id || choice.text || '');
+    let hash = 0;
+    for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+    const variants = pools[tier];
+    return variants[hash % variants.length];
   }
 
   /**
@@ -1363,6 +1383,14 @@ Write them in second person, present tense, grounded in the specific scene:
 - **success**: The action lands cleanly. The protagonist achieves what they wanted.
 - **partial**: A complication arises — partial success, unexpected cost, or a twist.
 - **failure**: The action backfires or falls flat. Something goes wrong.
+
+VARY THE SENTENCE OPENERS. The reader is "you", so second person is correct — but do
+NOT stack subject-first "You …" declaratives. Never let two consecutive sentences in a
+tier begin with "You"/"Your". Open sentences instead with the object or consequence, a
+dependent clause, a sensory beat, an NPC's name/action, dialogue, or the environment as
+subject. The "You" can fall mid-sentence.
+- Flat (avoid): "You take the card. You clock the squeeze, too quick. You let the thought dissolve."
+- Varied (prefer): "The card is warm from her hand. Too quick, too tight — you clock the squeeze, then the music pulls you forward and the thought dissolves."
 
 ## Reaction Text (REQUIRED for non-branching choices)
 

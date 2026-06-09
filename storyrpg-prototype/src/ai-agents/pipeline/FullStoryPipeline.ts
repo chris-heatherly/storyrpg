@@ -8167,13 +8167,27 @@ export class FullStoryPipeline {
             // Bounded retry: a transient ChoiceAuthor failure (LLM/parse blip) must not
             // leave a scene choiceless. For a branch point that unrealizes the branch and
             // hard-aborts the whole episode at GATE_BRANCH_FANOUT, so retry before degrading.
+            // THROW-SAFE author call: a thrown timeout/rejection/parse-exception from the
+            // LLM call must be treated like a RETURNED failure, otherwise it escapes the
+            // retry → per-target regen → template fallback chain entirely and ships a branch
+            // point choiceless (the endsong s2-1 hard-abort). Never throws.
+            const authorChoices = async (input: typeof choiceAuthorInput, label: string) => {
+              try {
+                return await withTimeout(this.choiceAuthor.execute(input), PIPELINE_TIMEOUTS.llmAgent, label);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                this.emit({ type: 'warning', phase: 'choices', message: `Choice Author threw for ${sceneBlueprint.id} (${label}): ${msg} — treating as failure for fallback.` });
+                return { success: false as const, error: msg, data: undefined };
+              }
+            };
+
             const maxChoiceAuthorAttempts = 3;
             let choiceAuthorAttempt = 1;
-            let choiceResult = await withTimeout(this.choiceAuthor.execute(choiceAuthorInput), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
+            let choiceResult = await authorChoices(choiceAuthorInput, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
             while ((!choiceResult.success || !choiceResult.data) && choiceAuthorAttempt < maxChoiceAuthorAttempts) {
               choiceAuthorAttempt++;
               this.emit({ type: 'warning', phase: 'choices', message: `Choice Author failed on ${sceneBlueprint.id} (attempt ${choiceAuthorAttempt - 1}/${maxChoiceAuthorAttempts}): ${choiceResult.error ?? 'no data'} — retrying.` });
-              choiceResult = await withTimeout(this.choiceAuthor.execute(choiceAuthorInput), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} retry-${choiceAuthorAttempt})`);
+              choiceResult = await authorChoices(choiceAuthorInput, `ChoiceAuthor.execute(${sceneBlueprint.id} retry-${choiceAuthorAttempt})`);
             }
 
             // Per-target branch regeneration (preferred over a templated fallback): if the
@@ -8189,12 +8203,11 @@ export class FullStoryPipeline {
               && branchRegenHints && branchRegenHints.length > 0
             ) {
               this.emit({ type: 'debug', phase: 'choices', message: `Regenerating ${sceneBlueprint.id} choices with explicit per-target branch guidance (${branchRegenHints.length} target(s)) before any templated fallback.` });
-              const branchRegen = await withTimeout(
-                this.choiceAuthor.execute({
+              const branchRegen = await authorChoices(
+                {
                   ...choiceAuthorInput,
                   requiredBranchTargets: branchRegenHints.map((h) => ({ sceneId: h.target, intent: h.label })),
-                }),
-                PIPELINE_TIMEOUTS.llmAgent,
+                },
                 `ChoiceAuthor.execute(${sceneBlueprint.id} branch-regen)`,
               );
               if (branchRegen.success && branchRegen.data && (branchRegen.data.choices?.length ?? 0) > 0) {

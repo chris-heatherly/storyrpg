@@ -37,6 +37,30 @@ describe('CallbackLedger', () => {
     expect(ledger.recordFlagSet({ choice, flag: 'treatment_branch_scene_2a', episode: 1, sceneId: 's1' })).toBeUndefined();
   });
 
+  it('recordForwardPromise carries the choice gating flag so a conditional payoff is realizable', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({
+      id: 'choice-accept-key-card',
+      consequences: [
+        { type: 'setFlag', flag: 'accepted_mika_key_card', value: true } as any,
+        { type: 'setFlag', flag: 'treatment_branch_s1_2', value: true } as any, // structural → excluded
+      ],
+    });
+    const hook = ledger.recordForwardPromise({
+      choice, episode: 1, sceneId: 's1-1', payoffEpisode: 3,
+      summary: 'In Episode 3, the key card becomes the first data point.',
+    });
+    expect(hook).toBeDefined();
+    expect(hook!.id).toBe('later:choice-accept-key-card');
+    expect(hook!.payoffEpisode).toBe(3);
+    // the gating flag is captured (so ep3 can author a flag-conditional payoff); the
+    // structural branch flag is not.
+    expect(hook!.flags).toContain('accepted_mika_key_card');
+    expect(hook!.flags).not.toContain('treatment_branch_s1_2');
+    // add() folds flags into conditionKeys so the inject->payoff loop surfaces them.
+    expect(hook!.conditionKeys).toContain('accepted_mika_key_card');
+  });
+
   it('records a memorableMoment as a hook and infers flags when absent', () => {
     const ledger = new CallbackLedger();
     const choice = makeChoice({

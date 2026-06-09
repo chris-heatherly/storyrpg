@@ -251,12 +251,21 @@ export class CallbackLedger {
   }): CallbackHook | undefined {
     const { choice, episode, sceneId, summary, payoffEpisode } = params;
     if (!summary || summary.trim().length === 0) return undefined;
+    // Carry the choice's gating flag(s) onto the forward-promise hook. Without them the
+    // hook was flagless, so a CONDITIONAL cross-episode payoff (this promise only applies
+    // if the player took this choice — e.g. `accepted_mika_key_card`) could not be
+    // authored: the inject->payoff loop had no flag to surface and the later SceneWriter
+    // could not gate the acknowledgment, so it shipped none and promise-due hard-failed.
+    // With the flag attached, the promise enters the same realization path as flag-set
+    // hooks: ep N's SceneWriter authors a flag-conditional textVariant tagged with this
+    // hook id, which records the payoff. (`add()` folds flags into conditionKeys.)
+    const flags = this.trackableFlagsOf(choice);
     return this.add({
       id: `later:${choice.id}`,
       sourceEpisode: episode,
       sourceSceneId: sceneId,
       sourceChoiceId: choice.id,
-      flags: [],
+      flags,
       conditionKeys: [],
       impactFactors: choice.impactFactors ?? [],
       consequenceTier: 'callback',

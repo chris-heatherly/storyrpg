@@ -314,7 +314,18 @@ const baselines = {
   // phases/QuickValidationPhase.ts (typed, smoke tested). Thin delegation
   // keeps the single call site unchanged; run-scoped incremental-validation
   // state is accessor-backed. Prompt snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 17245,
+  //
+  // -247 (17245 -> 16998): decomposition PR 10 — the Phase 6 assembly region
+  // (assembleStory call + registry asset merge, structural auto-fix, gated
+  // craft auto-fix, player-template resolution, the pre-generation
+  // completeness gate with registry coverage + missing-image walk, asset
+  // HTTP verification, the deterministic flag-chronology/quote-recall scans)
+  // moved to phases/AssemblyPhase.ts (typed, smoke tested). assembleStory
+  // stays here with its other callers, injected as a closure. One documented
+  // deviation: the completeness walk's encounter-validation branch
+  // referenced out-of-scope variables (latent ReferenceError) and was
+  // dropped. Prompt snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 16998,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

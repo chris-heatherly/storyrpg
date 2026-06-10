@@ -186,6 +186,7 @@ import { SceneImagePhase } from './phases/SceneImagePhase';
 import { EncounterImagePhase } from './phases/EncounterImagePhase';
 import { QAPhase } from './phases/QAPhase';
 import { QuickValidationPhase } from './phases/QuickValidationPhase';
+import { AssemblyPhase } from './phases/AssemblyPhase';
 import {
   createOutputDirectory,
   ensureDirectory,
@@ -245,9 +246,6 @@ import {
 } from './callbackOrchestration';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
-import { validateRegistryCoverage } from '../images/coverageValidator';
-import { walkStoryAssets, formatAssetWalkReport } from '../validators/storyAssetWalker';
-import { findUnsupportedQuotedRecallIssues } from '../validators/quoteRecallValidator';
 import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
 import { remediateImageIssues, resaveFinalStory } from '../validators/qaRemediation';
 import { buildReferencePack } from '../images/referencePackBuilder';
@@ -332,7 +330,6 @@ import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { CallbackCoverageValidator } from '../validators/CallbackCoverageValidator';
 import { buildPropIntroductionInput } from '../remediation/propIntroductionGate';
 import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
-import { applyCraftAutofix } from '../remediation/applyCraftAutofix';
 import { shouldRegenChoices, isChoiceRegenImprovement } from '../remediation/regenChoicesPolicy';
 import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
 import { recordRemediation, type RemediationLedgerRecord } from '../remediation/remediationLedger';
@@ -373,7 +370,7 @@ import { buildSceneDependencyGraph, buildTopologicalWaves } from '../utils/depen
 import { PipelineTelemetry, buildLlmCallObserver } from '../utils/pipelineTelemetry';
 import { analyzeBranchTopology } from '../utils/branchTopology';
 import { buildBranchShadowDiff } from '../utils/branchShadowDiff';
-import { collectMissingEncounterImageKeys, getEncounterBeats } from '../utils/encounterImageCoverage';
+import { getEncounterBeats } from '../utils/encounterImageCoverage';
 import { extractTreatmentFromMarkdown } from '../utils/treatmentExtraction';
 import { PROXY_CONFIG } from '../../config/endpoints';
 import {
@@ -5567,285 +5564,23 @@ export class FullStoryPipeline {
       }
 
       // === PHASE 6: ASSEMBLY ===
-      this.emit({ type: 'phase_start', phase: 'assembly', message: 'Phase 6: Assembling final story' });
-      let story = this.assembleStory(
-        brief,
-        worldBible,
-        characterBible,
-        episodeBlueprint,
-        sceneContents,
-        choiceSets,
-        encounters,
-        imageResults,
-        encounterImageResults,
-        storyCoverUrl,
-        videoResults
+      // Extracted to phases/AssemblyPhase.ts (pure move): assembly + registry
+      // asset merge, structural/craft auto-fix, template resolution, the
+      // completeness gate (registry coverage + missing-image walk), asset
+      // HTTP verification, and the deterministic flag-chronology/quote-recall
+      // scans (which escalate onto qaReport in place).
+      let story = await this.assemblyPhase().run(
+        {
+          brief, worldBible, characterBible, episodeBlueprint, sceneContents,
+          choiceSets, encounters, imageResults, encounterImageResults,
+          storyCoverUrl, videoResults, outputDirectory, qaReport,
+        },
+        {
+          config: this.config,
+          emit: (event) => this.emit(event),
+          addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+        }
       );
-      story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
-
-      // === STRUCTURAL AUTO-FIX ===
-      // Repair common structural issues (missing startingBeatId, broken nextBeatId,
-      // empty beat text, malformed variants) before the completeness gate runs.
-      if (story) {
-        try {
-          const structuralValidator = new StructuralValidator();
-          const autoFixResult = structuralValidator.autoFix(story);
-          story = autoFixResult.story;
-          if (autoFixResult.fixedCount > 0) {
-            this.addCheckpoint('structural_autofix', {
-              fixedCount: autoFixResult.fixedCount,
-              fixes: autoFixResult.fixes,
-            });
-            this.emit({
-              type: 'pipeline_event',
-              event: 'structural_autofix_applied',
-              fixedCount: autoFixResult.fixedCount,
-              fixes: autoFixResult.fixes,
-            } as any);
-            console.log(
-              `[Pipeline] StructuralValidator.autoFix applied ${autoFixResult.fixedCount} repairs`
-            );
-          }
-        } catch (autoFixError) {
-          console.warn(
-            `[Pipeline] StructuralValidator.autoFix failed (non-fatal): ${(autoFixError as Error).message}`
-          );
-        }
-      }
-
-      // === CRAFT AUTO-FIX ===
-      // Deterministic, gated craft repairs (stat-check balance, choice impact,
-      // NPC depth, arc endpoints, mechanics leakage). Each is individually
-      // gated behind a GATE_* env flag; with no flags set this is a no-op, so
-      // default pipeline behavior is unchanged.
-      if (story) {
-        try {
-          const craftFix = applyCraftAutofix(story, gateEnabledPredicate);
-          if (craftFix.fixedCount > 0) {
-            this.addCheckpoint('craft_autofix', {
-              fixedCount: craftFix.fixedCount,
-              records: craftFix.records,
-            });
-            this.emit({
-              type: 'pipeline_event',
-              event: 'craft_autofix_applied',
-              fixedCount: craftFix.fixedCount,
-              records: craftFix.records,
-            } as any);
-            // S3: craft autofix is deterministic (no LLM cost) so it does NOT
-            // debit the remediation budget; we still record it for observability.
-            await this.recordRemediationSafe({
-              rule: 'craft_autofix',
-              scope: 'autofix',
-              attempted: craftFix.fixedCount,
-              succeeded: true,
-              degraded: false,
-              blocked: false,
-              attempts: 1,
-              storyId: idSlugify(brief.story.title),
-              details: `Applied craft autofix to ${craftFix.fixedCount} element(s)`,
-            });
-          }
-        } catch (craftFixError) {
-          console.warn(
-            `[Pipeline] applyCraftAutofix failed (non-fatal): ${(craftFixError as Error).message}`
-          );
-        }
-      }
-      story = this.resolveGeneratedStoryPlayerTemplates(story, brief);
-
-      // === PRE-GENERATION COMPLETENESS GATE ===
-      // Strict: ANY missing image halts the pipeline. No silent fallbacks.
-      // Skipped in story-only mode, where images are deliberately deferred and
-      // the draft ships with imagesStatus 'pending' (see saveDraftImageManifest
-      // below) — the gate would otherwise fail every story-only generate().
-      if (story && this.config.generation?.assetGenerationMode !== 'story-only') {
-        const registryCoverage = validateRegistryCoverage(story, this.assetRegistry);
-
-        if (registryCoverage.missingRequiredCoverageKeys.length > 0) {
-          console.error(
-            `[Pipeline] REGISTRY COVERAGE GATE: ${registryCoverage.missingRequiredCoverageKeys.length} required slots unresolved`
-          );
-          throw new PipelineError(
-            `Registry coverage gate failed: ${registryCoverage.missingRequiredCoverageKeys.length} required image slots unresolved`,
-            'completeness_gate',
-            {
-              context: {
-                outputDirectory,
-                missingCount: registryCoverage.missingRequiredCoverageKeys.length,
-                missingImages: registryCoverage.missingRequiredCoverageKeys.slice(0, 50),
-                failureKind: 'image_completeness',
-              },
-            }
-          );
-        }
-
-        const missingImages: { category: string; key: string }[] = [];
-
-        if (!story.coverImage) missingImages.push({ category: 'cover', key: 'story-cover' });
-
-        for (const episode of story.episodes || []) {
-          if (!episode.coverImage) missingImages.push({ category: 'cover', key: `episode:${episode.id}` });
-
-          for (const scene of episode.scenes || []) {
-            if (!scene.backgroundImage) {
-              missingImages.push({ category: 'scene-bg', key: `scene:${scene.id}` });
-            }
-
-            for (const beat of scene.beats || []) {
-              if (!beat.image) {
-                missingImages.push({ category: 'beat', key: `beat:${scene.id}::${beat.id}` });
-              }
-            }
-
-            if (scene.encounter) {
-              const missingEncKeys = collectMissingEncounterImageKeys(scene.id, scene.encounter);
-              for (const k of missingEncKeys) {
-                missingImages.push({ category: 'encounter', key: k });
-              }
-
-              for (const [outcomeName, storylet] of Object.entries((scene.encounter as any).storylets || {})) {
-                const sl = storylet as any;
-                for (const beat of sl?.beats || []) {
-                  if (!beat.image) {
-                    missingImages.push({ category: 'storylet', key: `storylet:${scene.id}::${outcomeName}::${beat.id}` });
-                  }
-                }
-              }
-
-              if (!encounterValidation.passed && this.config.validation?.enabled && this.config.validation?.mode !== 'disabled') {
-                const message = `Encounter ${sceneBlueprint.id} failed validation after regeneration: ${encounterValidation.issues.map(i => `${i.type}: ${i.detail}`).slice(0, 5).join('; ')}`;
-                this.emit({
-                  type: 'error',
-                  phase: 'encounters',
-                  message,
-                  data: { issues: encounterValidation.issues },
-                });
-                throw new PipelineError(message, 'encounters', {
-                  agent: 'EncounterArchitect',
-                  context: {
-                    sceneId: sceneBlueprint.id,
-                    sceneName: sceneBlueprint.name,
-                    encounterType: sceneBlueprint.encounterType,
-                    failureKind: 'encounter_validation',
-                    issues: encounterValidation.issues,
-                  },
-                });
-              }
-            }
-          }
-        }
-
-        if (missingImages.length > 0) {
-          const byCategory: Record<string, { category: string; key: string }[]> = {};
-          for (const m of missingImages) {
-            if (!byCategory[m.category]) byCategory[m.category] = [];
-            byCategory[m.category].push(m);
-          }
-          const summary = Object.entries(byCategory)
-            .map(([cat, items]) => `${items.length} ${cat}`)
-            .join(', ');
-
-          console.error(`[Pipeline] COMPLETENESS GATE FAILED: ${missingImages.length} images missing (${summary})`);
-          for (const [cat, items] of Object.entries(byCategory)) {
-            for (const item of items.slice(0, 10)) {
-              console.error(`[Pipeline]   [${cat}] ${item.key}`);
-            }
-          }
-
-          throw new PipelineError(
-            `Image completeness gate failed: ${missingImages.length} images missing (${summary})`,
-            'completeness_gate',
-            {
-              context: {
-                outputDirectory,
-                totalMissing: missingImages.length,
-                byCategory: Object.fromEntries(
-                  Object.entries(byCategory).map(([cat, items]) => [cat, items.map(i => i.key).slice(0, 20)])
-                ),
-                failureKind: 'image_completeness',
-              },
-            }
-          );
-        } else {
-          console.log(`[Pipeline] PRE-GENERATION COMPLETENESS: 100% image coverage — all image types verified.`);
-        }
-      }
-
-      // === ASSET HTTP VERIFICATION (Tier 1 QA) ===
-      if (story && this.config.validation?.assetHttpCheck !== false) {
-        try {
-          const assetReport = await walkStoryAssets(story, {
-            httpTimeoutMs: 5000,
-            concurrency: 20,
-          });
-          console.log(`[Pipeline] ${formatAssetWalkReport(assetReport)}`);
-          if (assetReport.missing + assetReport.broken + assetReport.unreachable > 0) {
-            const failCount = assetReport.missing + assetReport.broken + assetReport.unreachable;
-            this.emit({
-              type: 'warning',
-              phase: 'asset_verification',
-              message: `Asset HTTP check: ${failCount} image(s) failed verification (${assetReport.missing} missing, ${assetReport.broken} broken, ${assetReport.unreachable} unreachable)`,
-            });
-            if (this.config.validation?.assetHttpCheckFailFast) {
-              throw new PipelineError(
-                `Asset HTTP verification failed: ${failCount} image(s) not reachable`,
-                'completeness_gate',
-                { context: { failCount, missing: assetReport.missing, broken: assetReport.broken, unreachable: assetReport.unreachable } }
-              );
-            }
-          }
-        } catch (err) {
-          if (err instanceof PipelineError) throw err;
-          console.warn('[Pipeline] Asset HTTP verification failed (non-fatal):', (err as Error).message);
-        }
-      }
-
-      // === DETERMINISTIC FLAG CHRONOLOGY SCAN ===
-      // Walk the assembled story to catch forward-reference paradoxes that the
-      // LLM-based QA may have missed or mis-classified. Any violations become
-      // criticalIssues on the QA report, which would have triggered the repair
-      // loop had they been caught earlier.
-      if (story && qaReport) {
-        const flagIssues = this.runFlagChronologyScan(story);
-        if (flagIssues.length > 0) {
-          for (const issue of flagIssues) {
-            if (!qaReport.criticalIssues.includes(issue)) {
-              qaReport.criticalIssues.push(issue);
-            }
-          }
-          if (qaReport.criticalIssues.length > 0) {
-            qaReport.passesQA = false;
-          }
-          this.emit({
-            type: 'warning',
-            phase: 'qa',
-            message: `Deterministic flag chronology scan found ${flagIssues.length} forward-reference issue(s): ${flagIssues.join('; ')}`,
-          });
-        }
-
-        const quoteRecallIssues = findUnsupportedQuotedRecallIssues(story);
-        if (quoteRecallIssues.length > 0) {
-          for (const issue of quoteRecallIssues) {
-            if (!qaReport.criticalIssues.includes(issue.detail)) {
-              qaReport.criticalIssues.push(issue.detail);
-            }
-          }
-          qaReport.passesQA = false;
-          this.emit({
-            type: 'warning',
-            phase: 'qa',
-            message: `Deterministic quote recall scan found ${quoteRecallIssues.length} unsupported recalled quote(s): ${quoteRecallIssues.map(issue => issue.quote).join('; ')}`,
-          });
-        }
-      }
-
-      if (story && this.config.generation?.assetGenerationMode === 'story-only') {
-        story.imagesStatus = 'pending';
-        if (outputDirectory) await this.saveDraftImageManifest(outputDirectory, story);
-      } else if (story && this.config.imageGen?.enabled) {
-        story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
-      }
 
       finalStoryContractReport = await this.enforceFinalStoryContract({
         story,
@@ -8963,6 +8698,24 @@ export class FullStoryPipeline {
       cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
     });
     return new QuickValidationPhase(deps);
+  }
+
+  // Extracted to phases/AssemblyPhase.ts (pure move, one documented
+  // deviation: the completeness walk's encounter-validation branch
+  // referenced out-of-scope variables — a latent ReferenceError — and was
+  // dropped; see the NOTE in AssemblyPhase). assembleStory stays here with
+  // its other callers (multi-episode loop, branch validation) and is
+  // injected as a closure.
+  private assemblyPhase(): AssemblyPhase {
+    return new AssemblyPhase({
+      assetRegistry: this.assetRegistry,
+      assembleStory: (...args) => this.assembleStory(...args),
+      recordRemediationSafe: (...args) => this.recordRemediationSafe(...args),
+      resolveGeneratedStoryPlayerTemplates: (...args) => this.resolveGeneratedStoryPlayerTemplates(...args),
+      runFlagChronologyScan: (...args) => this.runFlagChronologyScan(...args),
+      saveDraftImageManifest: (...args) => this.saveDraftImageManifest(...args),
+      buildImageManifestFromStory: (...args) => this.buildImageManifestFromStory(...args),
+    });
   }
 
   /**

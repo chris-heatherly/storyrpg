@@ -32,8 +32,18 @@ we touch the hard dependency-heavy phases):
    QA loop with image remediation, story reassembly (the phase returns the
    possibly-replaced story), and retry budget. Smoke tests cover pass,
    remediate+retest, skip, non-fatal error, and unresolved-issues paths.
-5. [ ] `AssemblyPhase` — story assembly + `StructuralValidator.autoFix`
-   (Phase 3) + registry coverage gate + asset walk + flag chronology.
+5. [x] `AssemblyPhase` — **wired** (2026-06-10): the Phase 6 region —
+   assembleStory call + registry asset merge, `StructuralValidator.autoFix`,
+   gated craft auto-fix, player-template resolution, the pre-generation
+   completeness gate (registry coverage + missing-image walk), asset HTTP
+   verification, and the deterministic flag-chronology/quote-recall scans
+   (which escalate onto the shared qaReport in place). `assembleStory` /
+   `assembleEpisode` stay in the monolith with their multi-episode and
+   branch-validation callers, injected as a closure. One documented
+   deviation: the completeness walk's encounter-validation branch referenced
+   `encounterValidation`/`sceneBlueprint` from runContentGeneration's scope
+   (a latent ReferenceError under `@ts-nocheck`) and was dropped — see the
+   NOTE in AssemblyPhase.
 6. [x] `VideoPhase` — **wired** (2026-06-09): beat selection (selective
    strategy), per-beat VideoDirector direction + clip generation with
    diagnostics-not-throws error handling, plus `bindGeneratedVideoToStory`.

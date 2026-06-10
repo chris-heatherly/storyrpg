@@ -17,7 +17,8 @@
  *   [x] ImagePhase          (MasterImagePhase + SceneImagePhase +
  *                            EncounterImagePhase wired)
  *   [x] VideoPhase          (wired — beat selection, direction, clip generation)
- *   [ ] AssemblyPhase
+ *   [x] AssemblyPhase     (wired — assembly, auto-fixes, completeness gate,
+ *                          asset verification, deterministic scans)
  *   [x] AudioPhase          (wired — preGenerateAudio block + beat binding)
  *   [x] BrowserQAPhase      (wired — Playwright QA retry/remediation loop)
  *

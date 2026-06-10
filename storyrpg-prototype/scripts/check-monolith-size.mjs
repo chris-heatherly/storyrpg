@@ -305,7 +305,16 @@ const baselines = {
   // wrappers keep both call sites (single-episode generate, per-episode QA
   // in the multi-episode loop) unchanged; run-scoped incremental-validation
   // state is accessor-backed. Prompt snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 17528,
+  //
+  // -283 (17528 -> 17245): decomposition PR 9 — the Phase 4.5 quick-
+  // validation gate (runQuickValidation, incremental POV/voice escalation
+  // into blocking categories, targeted repair via ChoiceAuthor re-authoring
+  // + missing-choice-point generation + scoped SceneWriter rewrites, one
+  // re-validation, the blocking ValidationError) moved to
+  // phases/QuickValidationPhase.ts (typed, smoke tested). Thin delegation
+  // keeps the single call site unchanged; run-scoped incremental-validation
+  // state is accessor-backed. Prompt snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 17245,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

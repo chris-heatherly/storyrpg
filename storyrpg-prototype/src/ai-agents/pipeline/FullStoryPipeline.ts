@@ -185,6 +185,7 @@ import { MasterImagePhase } from './phases/MasterImagePhase';
 import { SceneImagePhase } from './phases/SceneImagePhase';
 import { EncounterImagePhase } from './phases/EncounterImagePhase';
 import { QAPhase } from './phases/QAPhase';
+import { QuickValidationPhase } from './phases/QuickValidationPhase';
 import {
   createOutputDirectory,
   ensureDirectory,
@@ -5253,323 +5254,19 @@ export class FullStoryPipeline {
       }
 
       // === PHASE 4.5: QUICK VALIDATION ===
-      let quickValidation: QuickValidationResult | undefined;
-      if (this.config.validation.enabled) {
-        this.emit({ type: 'phase_start', phase: 'quick_validation', message: 'Running quick validation' });
-
-        const validationInput = this.prepareValidationInput(
-          sceneContents,
-          choiceSets,
-          characterBible,
-          encounters
-        );
-
-        quickValidation = await this.integratedValidator.runQuickValidation(validationInput);
-
-        // Treat incremental scene issues as critical when they require a scoped
-        // SceneWriter rewrite. Quick validation owns the final blocking gate, so
-        // escalate incremental POV/voice failures into repairable categories.
-        try {
-          const voiceThreshold =
-            (this.config as unknown as { incrementalValidation?: { voiceRegenerationThreshold?: number } })
-              .incrementalValidation?.voiceRegenerationThreshold ?? 50;
-          const criticalVoiceScenes = this.sceneValidationResults.filter(
-            r => r.voice && r.voice.score < voiceThreshold,
-          );
-          if (criticalVoiceScenes.length > 0) {
-            const voiceBlockers = criticalVoiceScenes.map(r => ({
-              category: 'voice_fidelity' as const,
-              level: 'error' as const,
-              message: `Scene ${r.sceneId}: voice fidelity score ${r.voice!.score} below critical threshold (${voiceThreshold})`,
-              location: { sceneId: r.sceneId },
-              suggestion:
-                r.voice!.issues
-                  .slice(0, 3)
-                  .map(i => `${i.characterName}: ${i.suggestion || i.issue}`)
-                  .join('; ') || undefined,
-            }));
-            quickValidation = {
-              canProceed: false,
-              blockingIssues: [...quickValidation.blockingIssues, ...voiceBlockers],
-              warningCount: quickValidation.warningCount,
-            };
-          }
-          const povClarityScenes = this.sceneValidationResults.filter(
-            r => r.povClarity && r.povClarity.shouldRegenerate,
-          );
-          if (povClarityScenes.length > 0) {
-            const povBlockers = povClarityScenes.map(r => ({
-              category: 'pov_clarity' as const,
-              level: 'error' as const,
-              message: `Scene ${r.sceneId}: opening beat does not clearly anchor POV to the player character`,
-              location: { sceneId: r.sceneId, beatId: r.povClarity!.checkedBeatId },
-              suggestion:
-                r.povClarity!.issues
-                  .slice(0, 3)
-                  .map(i => i.suggestion || i.issue)
-                  .join('; ') || 'Rewrite the first beat with you/your, the protagonist name, or a concrete pronoun before NPC or setting exposition.',
-            }));
-            quickValidation = {
-              canProceed: false,
-              blockingIssues: [...quickValidation.blockingIssues, ...povBlockers],
-              warningCount: quickValidation.warningCount,
-            };
-          }
-        } catch (err) {
-          this.emit({
-            type: 'warning',
-            phase: 'quick_validation',
-            message: `Incremental scene escalation skipped: ${err instanceof Error ? err.message : String(err)}`,
-          });
+      // Extracted to phases/QuickValidationPhase.ts (pure move): the fast
+      // validator gate, incremental POV/voice escalation, targeted repair
+      // (ChoiceAuthor + scoped SceneWriter rewrites), one re-validation, and
+      // the blocking ValidationError. Repairs mutate sceneContents/choiceSets
+      // in place via the shared array refs.
+      const quickValidation = await this.quickValidationPhase().run(
+        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
+        {
+          config: this.config,
+          emit: (event) => this.emit(event),
+          addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
         }
-
-        if (!quickValidation.canProceed) {
-          // === KARPATHY LOOP: Attempt targeted repair before throwing ===
-          const repairableCategories = new Set([
-            'stakes_triangle',
-            'five_factor',
-            'choice_density',
-            'consequence_budget',
-            'callback_opportunities',
-            'pov_clarity',
-            'voice_fidelity',
-            'branch_topology',
-            'stat_check_balance',
-            'skill_surface',
-            'branch_mechanical_divergence',
-          ]);
-          const repairableIssues = quickValidation.blockingIssues.filter(
-            i => repairableCategories.has(i.category)
-          );
-          let repairAttempted = false;
-
-          if (repairableIssues.length > 0) {
-            this.emit({
-              type: 'regeneration_triggered',
-              phase: 'quick_validation',
-              message: `Quick validation failed with ${repairableIssues.length} repairable issue(s), attempting repair`,
-            });
-
-            // --- Repair stakes_triangle and five_factor issues (existing choices) ---
-            const choiceIssues = repairableIssues.filter(
-              i => i.category === 'stakes_triangle' || i.category === 'five_factor' || i.category === 'stat_check_balance'
-            );
-
-            for (const issue of choiceIssues) {
-              const choiceId = issue.location?.choiceId;
-              if (!choiceId) continue;
-
-              const csIdx = choiceSets.findIndex(cs =>
-                cs.choices.some(c => c.id === choiceId)
-              );
-              if (csIdx === -1) continue;
-
-              const cs = choiceSets[csIdx];
-              const beat = sceneContents.flatMap(sc => sc.beats).find(b => b.id === cs.beatId);
-              if (!beat) continue;
-
-              const sceneBlueprint = episodeBlueprint.scenes.find(s => s.choicePoint);
-              if (!sceneBlueprint) continue;
-
-              repairAttempted = true;
-              const repairResult = await withTimeout(this.choiceAuthor.execute({
-                sceneBlueprint,
-                beatText: beat.text,
-                beatId: beat.id,
-                storyContext: {
-                  title: brief.story.title,
-                  genre: brief.story.genre,
-                  tone: brief.story.tone,
-                  userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL FIX REQUIRED: ${issue.message}. ${issue.suggestion || ''}`,
-                  worldContext: this.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneBlueprint.location)?.fullDescription),
-                },
-                protagonistInfo: {
-                  name: brief.protagonist.name,
-                  pronouns: brief.protagonist.pronouns,
-                },
-                npcsInScene: this.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
-                availableFlags: episodeBlueprint.suggestedFlags,
-                availableScores: episodeBlueprint.suggestedScores,
-                availableTags: episodeBlueprint.suggestedTags,
-                possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
-                  const scene = episodeBlueprint.scenes.find(s => s.id === id);
-                  return { id, name: scene?.name || id, description: scene?.description || '' };
-                }),
-                optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
-                sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                memoryContext: this.cachedPipelineMemory || undefined,
-                storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
-              }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${cs.beatId} quick-val-repair)`);
-
-              if (repairResult.success && repairResult.data) {
-                choiceSets[csIdx] = repairResult.data;
-              }
-            }
-
-            // --- Repair choice_density issues (missing choice points) ---
-            const densityIssues = repairableIssues.filter(i => i.category === 'choice_density');
-            if (densityIssues.length > 0) {
-              const scenesWithChoices = new Set(choiceSets.map(cs => {
-                const beat = sceneContents.flatMap(sc => sc.beats).find(b => b.id === cs.beatId);
-                return beat ? sceneContents.find(sc => sc.beats.includes(beat))?.sceneId : null;
-              }).filter(Boolean));
-
-              const scenesNeedingChoices = episodeBlueprint.scenes
-                .filter(s => s.choicePoint && !scenesWithChoices.has(s.id) && !s.isEncounter)
-                .slice(0, 3);
-
-              for (const targetScene of scenesNeedingChoices) {
-                const sceneContent = sceneContents.find(sc => sc.sceneId === targetScene.id);
-                if (!sceneContent || sceneContent.beats.length === 0) continue;
-
-                const lastBeat = sceneContent.beats[sceneContent.beats.length - 1];
-                this.emit({
-                  type: 'regeneration_triggered',
-                  phase: 'quick_validation',
-                  message: `Generating missing choices for scene ${targetScene.id} (choice density repair)`,
-                });
-
-                repairAttempted = true;
-                const densityRepairResult = await withTimeout(this.choiceAuthor.execute({
-                  sceneBlueprint: targetScene,
-                  beatText: lastBeat.text,
-                  beatId: lastBeat.id,
-                  storyContext: {
-                    title: brief.story.title,
-                    genre: brief.story.genre,
-                    tone: brief.story.tone,
-                    userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL: This scene needs player choices. ${densityIssues.map(i => i.message).join('. ')}`,
-                    worldContext: this.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === targetScene.location)?.fullDescription),
-                  },
-                  protagonistInfo: {
-                    name: brief.protagonist.name,
-                    pronouns: brief.protagonist.pronouns,
-                  },
-                  npcsInScene: this.buildChoiceAuthorNpcs(targetScene.npcsPresent, characterBible),
-                  availableFlags: episodeBlueprint.suggestedFlags,
-                  availableScores: episodeBlueprint.suggestedScores,
-                  availableTags: episodeBlueprint.suggestedTags,
-                  possibleNextScenes: targetScene.leadsTo.map(id => {
-                    const scene = episodeBlueprint.scenes.find(s => s.id === id);
-                    return { id, name: scene?.name || id, description: scene?.description || '' };
-                  }),
-                  optionCount: targetScene.choicePoint?.optionHints?.length || 3,
-                  sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                  memoryContext: this.cachedPipelineMemory || undefined,
-                  storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
-                }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${lastBeat.id} density-repair)`);
-
-                if (densityRepairResult.success && densityRepairResult.data) {
-                  choiceSets.push(densityRepairResult.data);
-                }
-              }
-            }
-
-            // --- Repair pov_clarity / voice_fidelity issues (scoped SceneWriter rewrite) ---
-            const sceneRewriteIssues = repairableIssues.filter(
-              i => i.category === 'voice_fidelity' || i.category === 'pov_clarity' || i.category === 'skill_surface'
-            );
-            for (const issue of sceneRewriteIssues) {
-              const sceneId = issue.location?.sceneId;
-              if (!sceneId) continue;
-              const sceneBlueprint = episodeBlueprint.scenes.find(s => s.id === sceneId);
-              const sceneIdx = sceneContents.findIndex(sc => sc.sceneId === sceneId);
-              if (!sceneBlueprint || sceneIdx === -1 || sceneBlueprint.isEncounter) continue;
-
-              this.emit({
-                type: 'regeneration_triggered',
-                phase: 'quick_validation',
-                message: `Rewriting scene ${sceneId} for ${issue.category}: ${issue.message}`,
-              });
-              repairAttempted = true;
-
-              const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
-              const location = worldBible.locations.find(l => l.id === sceneBlueprint.location);
-              const existingSceneJson = JSON.stringify(sceneContents[sceneIdx]).slice(0, 12000);
-
-              try {
-                const voiceRepair = await withTimeout(this.sceneWriter.execute({
-                  sceneBlueprint,
-                  storyContext: {
-                    title: brief.story.title,
-                    genre: brief.story.genre,
-                    tone: brief.story.tone,
-                    userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL ${issue.category === 'pov_clarity' ? 'POV CLARITY' : issue.category === 'skill_surface' ? 'SKILL SURFACE' : 'VOICE FIDELITY'} FIX:\n${issue.message}\n${issue.suggestion || ''}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${existingSceneJson}\n\n${issue.category === 'pov_clarity'
-                      ? 'Rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, the protagonist name, or a concrete pronoun before focusing on NPCs, setting, or exposition. Do not emit template variables.'
-                      : issue.category === 'skill_surface'
-                        ? 'Add or repair fiction-first skill surfaces. Prefer beat-level skillInsights that reveal usable story information, and preserve all existing beat IDs, navigation, choices, visual contract fields, thread IDs, and callback IDs. Do not expose stats, skill checks, thresholds, modifiers, bonuses, rolls, or percentages.'
-                      : 'Re-author this scene\'s beats with stricter voice adherence; match each character\'s vocabulary, formality, sentence length, and avoided-words list.'}`,
-                    worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
-                  },
-                  protagonistInfo: {
-                    name: brief.protagonist.name,
-                    pronouns: brief.protagonist.pronouns,
-                    description: protagonistProfile?.fullBackground || brief.protagonist.description,
-                    physicalDescription: protagonistProfile?.physicalDescription,
-                  },
-                  npcs: sceneBlueprint.npcsPresent.map(npcId => {
-                    const profile = resolveCharacterProfile(characterBible.characters, npcId);
-                    return {
-                      id: npcId,
-                      name: profile?.name || npcId,
-                      pronouns: profile?.pronouns || 'they/them',
-                      description: profile?.overview || '',
-                      physicalDescription: profile?.physicalDescription,
-                      voiceNotes: profile?.voiceProfile?.writingGuidance || '',
-                      currentMood: profile?.voiceProfile?.whenNervous,
-                    };
-                  }),
-                  relevantFlags: episodeBlueprint.suggestedFlags,
-                  relevantScores: episodeBlueprint.suggestedScores,
-                  targetBeatCount: this.getTargetBeatCountForScene(sceneBlueprint),
-                  dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
-                }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneId} voice-repair)`);
-
-                if (voiceRepair.success && voiceRepair.data) {
-                  sceneContents[sceneIdx] = voiceRepair.data;
-                }
-              } catch (err) {
-                this.emit({
-                  type: 'warning',
-                  phase: 'quick_validation',
-                  message: `${issue.category} repair for ${sceneId} failed: ${err instanceof Error ? err.message : String(err)}`,
-                });
-              }
-            }
-
-            if (repairAttempted) {
-              const revalidationInput = this.prepareValidationInput(
-                sceneContents,
-                choiceSets,
-                characterBible,
-                encounters
-              );
-              quickValidation = await this.integratedValidator.runQuickValidation(revalidationInput);
-            }
-          }
-
-          if (!quickValidation.canProceed) {
-            this.emit({
-              type: 'error',
-              phase: 'quick_validation',
-              message: `Quick validation failed${repairAttempted ? ' after repair attempt' : ''}: ${quickValidation.blockingIssues.length} blocking issues`,
-              data: quickValidation.blockingIssues,
-            });
-            throw new ValidationError(
-              'Content validation failed',
-              quickValidation.blockingIssues
-            );
-          }
-        }
-
-        if (quickValidation.canProceed) {
-          this.emit({
-            type: 'phase_complete',
-            phase: 'quick_validation',
-            message: `Quick validation passed (${quickValidation.warningCount} warnings)`,
-          });
-        }
-      }
+      );
 
       // === PHASE 5: QUALITY ASSURANCE ===
       await this.checkCancellation();
@@ -9246,6 +8943,26 @@ export class FullStoryPipeline {
       cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
     });
     return new QAPhase(deps);
+  }
+
+  private quickValidationPhase(): QuickValidationPhase {
+    const deps = {
+      integratedValidator: this.integratedValidator,
+      sceneWriter: this.sceneWriter,
+      choiceAuthor: this.choiceAuthor,
+      prepareValidationInput: (...args) => this.prepareValidationInput(...args),
+      buildCompactWorldContext: (...args) => this.buildCompactWorldContext(...args),
+      getTargetBeatCountForScene: (...args) => this.getTargetBeatCountForScene(...args),
+      buildChoiceAuthorNpcs: (...args) => this.buildChoiceAuthorNpcs(...args),
+      deriveStoryVerbsForBrief: (...args) => this.deriveStoryVerbsForBrief(...args),
+    };
+    // Accessor-backed run-scoped state: reads on the phase side always see
+    // the pipeline's current values.
+    Object.defineProperties(deps, {
+      sceneValidationResults: { get: () => this.sceneValidationResults },
+      cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
+    });
+    return new QuickValidationPhase(deps);
   }
 
   /**

@@ -10,7 +10,8 @@
  *   [ ] CharacterDesignPhase, NPCDepthValidationPhase
  *   [ ] EpisodeArchitecturePhase, BranchAnalysisPhase
  *   [ ] ContentGenerationPhase
- *   [ ] QuickValidationPhase
+ *   [x] QuickValidationPhase (wired — fast validator gate, escalation,
+ *                          targeted repair, blocking ValidationError)
  *   [x] QAPhase           (wired — QA + best practices parallel block,
  *                          repair loop, runQualityAssurance)
  *   [x] ImagePhase          (MasterImagePhase + SceneImagePhase +

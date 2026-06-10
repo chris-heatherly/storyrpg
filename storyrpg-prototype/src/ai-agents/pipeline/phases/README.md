@@ -74,7 +74,15 @@ we touch the hard dependency-heavy phases):
    Run-scoped incremental-validation state (incrementalValidator,
    sceneValidationResults, cachedPipelineMemory) is accessor-backed;
    repairs mutate the shared sceneContents/choiceSets arrays in place.
-9. [ ] `QuickValidationPhase` — fast validator gate before QA.
+9. [x] `QuickValidationPhase` — **wired** (2026-06-10): the Phase 4.5 fast
+   validator gate (`runQuickValidation`), incremental POV/voice escalation
+   into blocking categories, the targeted repair pass (ChoiceAuthor
+   re-authoring for stakes/five-factor/stat-balance issues, missing
+   choice-point generation for choice-density, scoped SceneWriter rewrites
+   for POV/voice/skill-surface), one post-repair re-validation, and the
+   blocking `ValidationError`. Repairs mutate the shared
+   sceneContents/choiceSets arrays in place; sceneValidationResults and
+   cachedPipelineMemory are accessor-backed.
 10. [ ] `ContentGenerationPhase` — scene + choice + encounter generation
     loop. Hardest phase; candidate for real scene-wave parallelism once
     extracted (see plan Phase 4).

@@ -9170,6 +9170,7 @@ export class FullStoryPipeline {
                    npcBrief?.role === 'neutral' ? 'neutral' : 'obstacle') as 'ally' | 'enemy' | 'neutral' | 'obstacle',
             description: profile?.overview || '',
             physicalDescription: profile?.physicalDescription,
+            voiceNotes: profile?.voiceProfile?.writingGuidance || '',
           };
         });
 
@@ -9195,6 +9196,7 @@ export class FullStoryPipeline {
             role: 'enemy' as const,
             description: sceneBlueprint.encounterDescription || 'An opposing force',
             physicalDescription: undefined,
+            voiceNotes: '',
           }];
         }
 
@@ -9305,6 +9307,10 @@ export class FullStoryPipeline {
           targetBeatCount,
           victoryNextSceneId,
           defeatNextSceneId,
+          // Blueprint branch discipline: prefer the season plan's explicit flag,
+          // else infer from the scene's leadsTo fan-out; undefined = unknown.
+          isBranchPoint: plannedEnc?.isBranchPoint
+            ?? (leadsToScenes.length > 0 ? new Set(leadsToScenes).size > 1 : undefined),
           priorStateContext,
           memoryContext: this.cachedPipelineMemory || undefined,
           storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),

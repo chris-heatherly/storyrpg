@@ -1711,7 +1711,7 @@ Please try again. Key rules:
   private buildReliablePrompt(input: EncounterArchitectInput): string {
     const protagonist = input.protagonistInfo.name || 'the protagonist';
     const npcsList = input.npcsInvolved
-      .map(npc => `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} — ${npc.description}`)
+      .map(npc => `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} — ${npc.description}${npc.voiceNotes ? `\n  Voice: ${npc.voiceNotes}` : ''}`)
       .join('\n');
 
     const skill1 = input.availableSkills[0]?.name || 'athletics';
@@ -1779,6 +1779,8 @@ ${npcsList || 'None'}
 - Victory → ${input.victoryNextSceneId || 'next scene'}
 - Defeat → ${input.defeatNextSceneId || 'next scene'}
 ${priorCtx}
+${ENCOUNTER_PROSE_DISCIPLINE}
+
 ## TEXT RULES
 - Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
 - The opening setupText MUST anchor the encounter POV to the protagonist before focusing on NPCs, setting, or threat.
@@ -4208,7 +4210,7 @@ CRITICAL RULES:
   private buildPhase1Prompt(input: EncounterArchitectInput, brief: RelationshipDynamicsBrief): string {
     const protagonist = input.protagonistInfo.name || 'the protagonist';
     const npcsList = input.npcsInvolved
-      .map(npc => `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} — ${npc.description}`)
+      .map(npc => `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} — ${npc.description}${npc.voiceNotes ? `\n  Voice: ${npc.voiceNotes}` : ''}`)
       .join('\n');
     const skillsList = input.availableSkills.slice(0, 6)
       .map(s => `${s.name} (${s.attribute})`)
@@ -4251,6 +4253,8 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 ## NPCs
 ${npcsList || 'None'}
 ${relationshipSection}
+${ENCOUNTER_PROSE_DISCIPLINE}
+
 ## TEXT RULES
 - Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
 - The opening setupText MUST establish the protagonist as the focal character before NPC action or environmental exposition.
@@ -4328,7 +4332,7 @@ Replace ALL placeholders with actual narrative. Return ONLY the JSON object.`;
     choice: Phase1Result['openingBeat']['choices'][0],
   ): string {
     const npcsList = input.npcsInvolved
-      .map(npc => `- ${npc.name} (${npc.id}): ${npc.role}`)
+      .map(npc => `- ${npc.name} (${npc.id}): ${npc.role}${npc.voiceNotes ? ` — Voice: ${npc.voiceNotes}` : ''}`)
       .join('\n');
 
     const relationshipSection = brief.briefText
@@ -4358,6 +4362,8 @@ For EACH outcome tier (afterSuccess, afterComplicated, afterFailure), generate:
 3. Each choice has success/complicated/failure outcomes, ALL terminal (isTerminal: true)
 4. Terminal outcomes must include encounterOutcome: "victory"|"partialVictory"|"defeat"|"escape"
 5. Include relationshipConsequences on outcomes where choices affect NPC relationships
+
+${ENCOUNTER_PROSE_DISCIPLINE}
 
 ## TEXT RULES
 - Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
@@ -4459,6 +4465,8 @@ Generate a JSON patch with up to 3 types of enrichment:
 
 3. **conditionalChoices** (0-1): A bonus choice unlocked by prior state. Include lockedText hint.
 
+${ENCOUNTER_PROSE_DISCIPLINE}
+
 ## JSON FORMAT
 {
   "setupTextVariants": [
@@ -4500,7 +4508,9 @@ Return ONLY the JSON object.`;
   }
 
   private buildPhase4Prompt(input: EncounterArchitectInput, brief: RelationshipDynamicsBrief): string {
-    const npcsList = input.npcsInvolved.map(n => n.name).join(', ');
+    const npcsList = input.npcsInvolved
+      .map(n => `${n.name}${n.voiceNotes ? ` (Voice: ${n.voiceNotes})` : ''}`)
+      .join(', ');
     const relationshipSection = brief.briefText
       ? `\n## Relationship Dynamics\n${brief.briefText}\n`
       : '';
@@ -4521,6 +4531,8 @@ Generate 4 storylets for: victory, partialVictory, defeat, escape. Each is a sho
 ### Partial Victory (2 beats): Relief → visible cost. Tone: bittersweet. The cost must be explained in fiction-first prose.
 ### Defeat (3 beats): Impact → Reflection/Learning → Resolve. Tone: somber. Must feel like START of recovery, not dead end.
 ### Escape (2 beats): Close call → Assessment. Tone: relieved/tense.
+
+${ENCOUNTER_PROSE_DISCIPLINE}
 
 ## TEXT RULES
 - Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.

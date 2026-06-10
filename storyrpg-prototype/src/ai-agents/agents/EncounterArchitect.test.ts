@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EncounterArchitect, type EncounterArchitectInput, type Phase1Result, type Phase2Result, type Phase3Result, type Phase4Result } from './EncounterArchitect';
+import { EncounterArchitect, ENCOUNTER_PROSE_DISCIPLINE, enforceStoryletConvergence, type EncounterArchitectInput, type Phase1Result, type Phase2Result, type Phase3Result, type Phase4Result } from './EncounterArchitect';
 import { analyzeRelationshipDynamics, type RelationshipSnapshot, type NPCInfo } from '../utils/relationshipDynamics';
 import type { Relationship } from '../../types';
 
@@ -777,5 +777,131 @@ describe('EncounterArchitect competenceArc', () => {
     const prompt = (architect as any).buildReliablePrompt(inputWithArc);
     expect(typeof prompt).toBe('string');
     expect(prompt.length).toBeGreaterThan(100);
+  });
+});
+
+// ========================================================================
+// Blueprint branch discipline: storylet convergence guard
+// ========================================================================
+
+describe('enforceStoryletConvergence', () => {
+  const makeStorylets = () => ({
+    victory: { id: 'sv', nextSceneId: 'scene-4' } as any,
+    partialVictory: { id: 'sp', nextSceneId: 'invented-scene' } as any,
+    defeat: { id: 'sd', nextSceneId: 'scene-99' } as any,
+    escape: undefined,
+  });
+
+  it('rewrites unplanned routes to the planned next scene when isBranchPoint is false', () => {
+    const storylets = makeStorylets();
+    const corrections = enforceStoryletConvergence(storylets, {
+      isBranchPoint: false,
+      victoryNextSceneId: 'scene-4',
+      defeatNextSceneId: 'scene-4',
+    });
+    expect(corrections).toEqual([
+      { slot: 'partialVictory', from: 'invented-scene', to: 'scene-4' },
+      { slot: 'defeat', from: 'scene-99', to: 'scene-4' },
+    ]);
+    expect(storylets.partialVictory.nextSceneId).toBe('scene-4');
+    expect(storylets.defeat.nextSceneId).toBe('scene-4');
+    expect(storylets.victory.nextSceneId).toBe('scene-4');
+  });
+
+  it('leaves storylets untouched when isBranchPoint is true', () => {
+    const storylets = makeStorylets();
+    const corrections = enforceStoryletConvergence(storylets, {
+      isBranchPoint: true,
+      victoryNextSceneId: 'scene-4',
+      defeatNextSceneId: 'scene-5',
+    });
+    expect(corrections).toEqual([]);
+    expect(storylets.partialVictory.nextSceneId).toBe('invented-scene');
+    expect(storylets.defeat.nextSceneId).toBe('scene-99');
+  });
+
+  it('leaves storylets untouched when isBranchPoint is undefined (unknown)', () => {
+    const storylets = makeStorylets();
+    const corrections = enforceStoryletConvergence(storylets, {
+      victoryNextSceneId: 'scene-4',
+      defeatNextSceneId: 'scene-4',
+    });
+    expect(corrections).toEqual([]);
+    expect(storylets.partialVictory.nextSceneId).toBe('invented-scene');
+  });
+
+  it('no-ops when there is no planned next scene id or no storylets', () => {
+    const storylets = makeStorylets();
+    expect(enforceStoryletConvergence(storylets, { isBranchPoint: false })).toEqual([]);
+    expect(storylets.defeat.nextSceneId).toBe('scene-99');
+    expect(enforceStoryletConvergence(undefined, {
+      isBranchPoint: false,
+      victoryNextSceneId: 'scene-4',
+    })).toEqual([]);
+  });
+});
+
+// ========================================================================
+// Prose discipline + NPC voice injection into the phase/lean prompts
+// ========================================================================
+
+describe('prose discipline and NPC voice injection', () => {
+  const architect = new EncounterArchitect(config);
+  const brief = { npcDynamics: [], knockOnEffects: [], briefText: '' };
+  const voiceNotes = 'Speaks in clipped, archaic threats; never raises his voice.';
+  const voicedInput: EncounterArchitectInput = {
+    ...input,
+    npcsInvolved: [{ ...input.npcsInvolved[0], voiceNotes }],
+  };
+  const phase2Choice = {
+    id: 'c1', text: 'Grab the dagger', approach: 'bold', primarySkill: 'athletics',
+    outcomes: {
+      success: { narrativeText: 'You grab it.', goalTicks: 2, threatTicks: 0 },
+      complicated: { narrativeText: 'You cut yourself.', goalTicks: 1, threatTicks: 1 },
+      failure: { narrativeText: 'He slashes.', goalTicks: 0, threatTicks: 2 },
+    },
+  };
+  const phase3Input: EncounterArchitectInput = {
+    ...voicedInput,
+    priorStateContext: {
+      relevantFlags: [{ name: 'saved_eros', description: 'Player saved Eros earlier' }],
+      relevantRelationships: [],
+      significantChoices: [],
+    },
+  };
+
+  const buildAllPrompts = (forInput: EncounterArchitectInput): string[] => [
+    (architect as any).buildPhase1Prompt(forInput, brief),
+    (architect as any).buildPhase2Prompt(forInput, brief, phase2Choice),
+    (architect as any).buildPhase3Prompt({ ...phase3Input, npcsInvolved: forInput.npcsInvolved }, makePhase1()),
+    (architect as any).buildPhase4Prompt(forInput, brief),
+    (architect as any).buildReliablePrompt(forInput),
+  ];
+
+  it('includes ENCOUNTER_PROSE_DISCIPLINE exactly once in every phase prompt and the lean prompt', () => {
+    for (const prompt of buildAllPrompts(voicedInput)) {
+      expect(prompt).toContain(ENCOUNTER_PROSE_DISCIPLINE);
+      expect(prompt.split('## PROSE DISCIPLINE').length - 1).toBe(1);
+    }
+  });
+
+  it('renders an NPC Voice line in Phase 1, Phase 2, Phase 4, and lean prompts when voiceNotes is present', () => {
+    const [p1, p2, , p4, lean] = buildAllPrompts(voicedInput);
+    for (const prompt of [p1, p2, p4, lean]) {
+      expect(prompt).toContain(`Voice: ${voiceNotes}`);
+    }
+  });
+
+  it('omits the Voice line when voiceNotes is absent or empty', () => {
+    const emptyVoiceInput: EncounterArchitectInput = {
+      ...input,
+      npcsInvolved: [{ ...input.npcsInvolved[0], voiceNotes: '' }],
+    };
+    for (const forInput of [input, emptyVoiceInput]) {
+      const [p1, p2, , p4, lean] = buildAllPrompts(forInput);
+      for (const prompt of [p1, p2, p4, lean]) {
+        expect(prompt).not.toContain('Voice: ');
+      }
+    }
   });
 });

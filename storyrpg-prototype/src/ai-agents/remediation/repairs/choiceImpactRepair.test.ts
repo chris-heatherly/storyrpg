@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { repairChoiceImpact } from './choiceImpactRepair';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  repairChoiceImpact,
+  repairChoiceImpactWithLLM,
+  LLM_IMPACT_REPAIR_FLAG,
+  type ImpactAuthorFn,
+} from './choiceImpactRepair';
 import type { Story } from '../../../types/story';
 import type { Choice } from '../../../types/choice';
 
@@ -149,6 +154,127 @@ describe('repairChoiceImpact', () => {
 
     expect(result.fixedCount).toBe(0);
     expect(result.records).toEqual([]);
+    const repaired = story.episodes[0].scenes[0].beats[0].choices![0];
+    expect(repaired.impactFactors).toEqual(['outcome']);
+    expect(repaired.consequenceTier).toBe('branchlet');
+  });
+});
+
+// -----------------------------------------------------------------------
+// repairChoiceImpactWithLLM — gated LLM escalation (STORYRPG_LLM_IMPACT_REPAIR)
+// -----------------------------------------------------------------------
+
+describe('repairChoiceImpactWithLLM', () => {
+  /** A choice missing both impact fields, with derivable consequences. */
+  function makeBareChoice(): Choice {
+    return {
+      id: 'c1',
+      text: 'Spare the herald',
+      consequences: [
+        { type: 'relationship', npcId: 'npc-1', dimension: 'trust', change: 10 },
+      ],
+    };
+  }
+
+  it('LLM flag OFF => byte-identical to the deterministic repair (callback never called)', async () => {
+    const author = vi.fn<ImpactAuthorFn>().mockResolvedValue({
+      impactFactors: ['identity'],
+      consequenceTier: 'structuralBranch',
+    });
+    const llmStory = storyWithChoice(makeBareChoice());
+    const syncStory = storyWithChoice(makeBareChoice());
+
+    const llmResult = await repairChoiceImpactWithLLM(llmStory, enable(GATE_FLAG), author);
+    const syncResult = repairChoiceImpact(syncStory, enable(GATE_FLAG));
+
+    expect(author).not.toHaveBeenCalled();
+    expect(llmResult).toEqual(syncResult);
+    expect(llmStory).toEqual(syncStory);
+  });
+
+  it('gate flag OFF => complete no-op even with the LLM flag on + a callback', async () => {
+    const author = vi.fn<ImpactAuthorFn>().mockResolvedValue({ impactFactors: ['identity'] });
+    const story = storyWithChoice(makeBareChoice());
+    const before = JSON.parse(JSON.stringify(story));
+
+    const result = await repairChoiceImpactWithLLM(story, enable(LLM_IMPACT_REPAIR_FLAG), author);
+
+    expect(author).not.toHaveBeenCalled();
+    expect(result.fixedCount).toBe(0);
+    expect(result.records).toEqual([]);
+    expect(story).toEqual(before);
+  });
+
+  it('LLM flag ON + valid authored output => LLM-authored factors and tier are used', async () => {
+    const author = vi.fn<ImpactAuthorFn>().mockResolvedValue({
+      impactFactors: ['identity', 'information'],
+      consequenceTier: 'sceneTint',
+    });
+    const story = storyWithChoice(makeBareChoice());
+
+    const result = await repairChoiceImpactWithLLM(
+      story,
+      enable(GATE_FLAG, LLM_IMPACT_REPAIR_FLAG),
+      author,
+    );
+
+    // The callback saw the narrative inputs (choice text + consequences).
+    expect(author).toHaveBeenCalledTimes(1);
+    expect(author.mock.calls[0][0]).toMatchObject({
+      choiceText: 'Spare the herald',
+      consequences: [{ type: 'relationship', npcId: 'npc-1', dimension: 'trust', change: 10 }],
+    });
+
+    const repaired = story.episodes[0].scenes[0].beats[0].choices![0];
+    expect(repaired.impactFactors).toEqual(['identity', 'information']);
+    expect(repaired.consequenceTier).toBe('sceneTint');
+    expect(result.fixedCount).toBe(2);
+  });
+
+  it('LLM flag ON + invalid authored output => deterministic fallback', async () => {
+    // Unknown factor names + bogus tier must be rejected wholesale.
+    const author = vi.fn<ImpactAuthorFn>().mockResolvedValue({
+      impactFactors: ['drama', 'vibes'],
+      consequenceTier: 'mega',
+    });
+    const story = storyWithChoice(makeBareChoice());
+
+    await repairChoiceImpactWithLLM(story, enable(GATE_FLAG, LLM_IMPACT_REPAIR_FLAG), author);
+
+    const repaired = story.episodes[0].scenes[0].beats[0].choices![0];
+    // Deterministic derivation from the relationship consequence.
+    expect(repaired.impactFactors).toEqual(['relationship']);
+    expect(repaired.consequenceTier).toBe('branchlet');
+  });
+
+  it('LLM flag ON + callback rejection => deterministic fallback (never throws)', async () => {
+    const author = vi.fn<ImpactAuthorFn>().mockRejectedValue(new Error('provider down'));
+    const story = storyWithChoice(makeBareChoice());
+
+    const result = await repairChoiceImpactWithLLM(
+      story,
+      enable(GATE_FLAG, LLM_IMPACT_REPAIR_FLAG),
+      author,
+    );
+
+    const repaired = story.episodes[0].scenes[0].beats[0].choices![0];
+    expect(repaired.impactFactors).toEqual(['relationship']);
+    expect(repaired.consequenceTier).toBe('branchlet');
+    expect(result.fixedCount).toBe(2);
+  });
+
+  it('LLM flag ON + factors already present => callback not invoked, tier derived deterministically', async () => {
+    const author = vi.fn<ImpactAuthorFn>().mockResolvedValue({ impactFactors: ['identity'] });
+    const choice: Choice = {
+      ...makeBareChoice(),
+      impactFactors: ['outcome'],
+      // consequenceTier still missing
+    };
+    const story = storyWithChoice(choice);
+
+    await repairChoiceImpactWithLLM(story, enable(GATE_FLAG, LLM_IMPACT_REPAIR_FLAG), author);
+
+    expect(author).not.toHaveBeenCalled();
     const repaired = story.episodes[0].scenes[0].beats[0].choices![0];
     expect(repaired.impactFactors).toEqual(['outcome']);
     expect(repaired.consequenceTier).toBe('branchlet');

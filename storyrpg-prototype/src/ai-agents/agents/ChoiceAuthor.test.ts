@@ -452,3 +452,44 @@ describe('ChoiceAuthor.normalizeChoiceSet (W5.2 branch-tier)', () => {
     expect(flags.some((f: string) => f.startsWith('treatment_branch_'))).toBe(false);
   });
 });
+
+// -----------------------------------------------------------------------
+// buildPrompt — REQUIRED BRANCHING (branch-repair) quality bar
+// -----------------------------------------------------------------------
+
+describe('ChoiceAuthor.buildPrompt (requiredBranchTargets quality bar)', () => {
+  const author = new ChoiceAuthor(config);
+
+  it('restates the first-pass quality bar in the branch-repair section', () => {
+    const input = makeInput({
+      requiredBranchTargets: [
+        { sceneId: 'scene-2a', intent: 'Flee through the catacombs' },
+        { sceneId: 'scene-2b', intent: 'Stand and bargain' },
+      ],
+    });
+    const prompt = (author as any).buildPrompt(input);
+
+    // The routing contract is still stated…
+    expect(prompt).toContain('REQUIRED BRANCHING — author one choice per target');
+    expect(prompt).toContain('nextSceneId "scene-2a" → Flee through the catacombs');
+    expect(prompt).toContain('nextSceneId "scene-2b" → Stand and bargain');
+
+    // …and the section now restates the first-pass quality bar so branch
+    // repair cannot ship thin choices that merely satisfy the validator.
+    expect(prompt).toContain('SAME quality bar as first-pass choices');
+    expect(prompt).toContain('Full Stakes Triangle on EVERY choice');
+    expect(prompt).toContain('Wants');
+    expect(prompt).toContain('Costs');
+    expect(prompt).toContain('Identity');
+    expect(prompt).toContain('Outcome / Process / Information / Relationship / Identity');
+    expect(prompt).toContain('Real consequences');
+    expect(prompt).toContain('statCheck');
+    expect(prompt).toContain('never a stub or an echo of the choice text');
+  });
+
+  it('omits the branch-repair section when no targets are required', () => {
+    const prompt = (author as any).buildPrompt(makeInput());
+    expect(prompt).not.toContain('REQUIRED BRANCHING');
+    expect(prompt).not.toContain('SAME quality bar as first-pass choices');
+  });
+});

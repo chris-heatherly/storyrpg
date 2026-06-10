@@ -1347,6 +1347,13 @@ target below: set that choice's \`nextSceneId\` to the target's scene id, and wr
 choice so its wording clearly FITS that target's authored intent (a player picking it
 would naturally arrive there). Do not point two choices at the same target; do not omit
 a target.
+These repair choices must meet the SAME quality bar as first-pass choices — routing is
+not an excuse for thin authoring:
+- Full Stakes Triangle on EVERY choice: name what the player Wants, what it Costs, and what it says about Identity.
+- Each choice carries at least one of the five impact factors (Outcome / Process / Information / Relationship / Identity).
+- Real consequences — durable state, relationship, or flag changes, not empty routing.
+- Include a \`statCheck\` wherever the choice type requires one.
+- \`outcomeTexts\` (success/partial/failure) must each be a real dramatized beat in the fiction — never a stub or an echo of the choice text.
 ${input.requiredBranchTargets.map(t => `- nextSceneId "${t.sceneId}" → ${t.intent}`).join('\n')}
 ` : ''}
 ${input.consequenceBudgetTarget ? `

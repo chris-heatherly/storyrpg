@@ -6826,13 +6826,10 @@ export class FullStoryPipeline {
       if (c.tier !== 'core') continue;
 
       // Arc state for a core NPC: phase + their relationship-to-protagonist framing.
-      // TODO(arc-state): r.characterId/r.type don't exist on CharacterRelationship
-      // (targetId/relationshipType do), so this lookup never matches and relType is
-      // always ''. Preserved as-is: fixing it changes LLM-visible prompt context.
       const relToProtag = (c.relationships ?? []).find(
-        (r) => (r as unknown as { characterId?: string }).characterId === characterBible.characters.find((x) => x.role === 'protagonist')?.id,
+        (r) => r.targetId === characterBible.characters.find((x) => x.role === 'protagonist')?.id,
       );
-      const relType = truncate((relToProtag as unknown as { type?: string } | undefined)?.type, 80);
+      const relType = truncate(relToProtag?.relationshipType, 80);
       arcStates.push({
         characterId: c.id,
         state: relType ? `${phase} — ${relType}` : phase,
@@ -9470,7 +9467,7 @@ export class FullStoryPipeline {
         styleSource: this._uploadedStyleReferenceImages.length > 0 ? 'user-visual' : 'raw-season-style',
         mode: 'cover',
         characterIdentity: [protagonist?.name || brief.protagonist.name].filter(Boolean),
-        sceneAction: (concept as PosterConcept & { coreMetaphor?: string } | undefined)?.coreMetaphor || brief.story.title,
+        sceneAction: concept?.visualMetaphor || brief.story.title,
         composition: coverPromptBase.composition,
         negativeContract: coverPromptBase.negativePrompt,
         hasVisualStyleRef: this._uploadedStyleReferenceImages.length > 0,

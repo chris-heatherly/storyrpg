@@ -407,7 +407,13 @@ const baselines = {
   // sites unchanged; run-scoped accumulators (scene-validation results, season
   // plans, encounter telemetry, remediation budget) are accessor-backed via
   // Object.defineProperties. Goldens byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 10741,
+  // -418 (10741 -> 10323): Refactor PR 26 — the story/episode assembly cluster
+  // (assembleStory + assembleEpisode) moved to pipeline/assembly.ts (pure
+  // move). Thin delegating wrappers keep all call sites (the AssemblyPhase
+  // closure dep, the branch-validation reassemble closures, the multi-episode
+  // assembleEpisode callers) unchanged; the style anchor paths are shared by
+  // reference and the rest of the helpers are bound deps. Goldens byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 10323,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

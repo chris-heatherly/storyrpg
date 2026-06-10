@@ -11,8 +11,10 @@ back to the UI via the proxy (`proxy/workerLifecycle.js`).
 
 ## Start from artifacts, not the monolith
 
-`FullStoryPipeline.ts` is ~14k lines (typed — its `@ts-nocheck` was removed
-2026-06-10; every phase body lives in `pipeline/phases/`). **Do not read it
+`FullStoryPipeline.ts` is ~12k lines (typed — its `@ts-nocheck` was removed
+2026-06-10; every phase body lives in `pipeline/phases/`, and the non-phase
+helper clusters in `pipeline/imageSupport.ts` / `pipelineMemory.ts` /
+`runLedger.ts` / `treatmentRefresh.ts`). **Do not read it
 top-to-bottom.** Start
 from the failing run's artifacts, then jump to the owning code:
 

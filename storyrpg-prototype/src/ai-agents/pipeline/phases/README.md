@@ -6,10 +6,14 @@ into a standalone, independently-testable module that conforms to the
 
 ## Why
 
-`FullStoryPipeline.ts` is ~14 kLOC and lives under `@ts-nocheck`. That
-compounds every time we edit it: hard to test, hard to type, hard to reason
-about phase ordering and state flow. The migration goal is to shrink the
-monolith into a thin driver that wires typed phases together.
+`FullStoryPipeline.ts` started at ~23 kLOC under `@ts-nocheck`; it is now
+~12 kLOC and fully typed. The migration goal is to shrink the monolith into
+a thin driver that wires typed phases together. Beyond this directory, the
+non-phase helper clusters live in sibling modules: `../imageSupport.ts`
+(defect-retry render, style-bible anchors, LoRA, opening-beat prefetch),
+`../pipelineMemory.ts` (Claude-memory persistence), `../runLedger.ts`
+(remediation/gate-shadow ledgers), and `../treatmentRefresh.ts`
+(treatment/analysis refresh).
 
 ## Migration order
 

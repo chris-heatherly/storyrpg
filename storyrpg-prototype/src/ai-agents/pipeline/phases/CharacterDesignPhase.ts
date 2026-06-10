@@ -104,6 +104,35 @@ export class CharacterDesignPhase {
       );
     }
 
+    // Single-protagonist invariant (G12 endsong): `role: 'protagonist'` is
+    // reserved for the player character. Source material with a narrative
+    // co-lead (love interest, adapted novel hero) can come back from the
+    // designer with a SECOND protagonist-roled profile, and downstream
+    // consumers key on role — prepareValidationInput excludes role-protagonists
+    // from the validator NPC roster (witness refs then hard-fail as "unknown
+    // NPC" while assembly's id-based story.npcs filter keeps them), and the
+    // image team resolves "the protagonist" by first role match. Demote any
+    // non-player protagonist to 'ally' (core co-lead) and re-assert the player
+    // character's role so role==='protagonist' is a safe key everywhere.
+    const demoted: string[] = [];
+    for (const character of result.data.characters) {
+      const isPlayer = character.id === protId
+        || (!!protName && character.name?.toLowerCase() === protName);
+      if (character.role === 'protagonist' && !isPlayer) {
+        character.role = 'ally';
+        demoted.push(`${character.id} (${character.name})`);
+      } else if (isPlayer && character.role !== 'protagonist') {
+        character.role = 'protagonist';
+      }
+    }
+    if (demoted.length > 0) {
+      context.emit({
+        type: 'warning',
+        phase: 'character_design',
+        message: `Demoted ${demoted.length} non-player 'protagonist' profile(s) to 'ally' (role is reserved for ${brief.protagonist.name}): ${demoted.join(', ')}`,
+      });
+    }
+
     context.emit({
       type: 'agent_complete',
       agent: 'CharacterDesigner',

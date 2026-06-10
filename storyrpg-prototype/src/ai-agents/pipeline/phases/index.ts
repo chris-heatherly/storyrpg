@@ -11,7 +11,8 @@
  *                          call + dedup, depth gate + Karpathy retry)
  *   [x] EpisodeArchitecturePhase, BranchAnalysisPhase (wired — blueprint
  *                          generation + retry, branch analysis + topology)
- *   [ ] ContentGenerationPhase
+ *   [x] ContentGenerationPhase (wired — the scene/choice/encounter
+ *                          authoring loop, both call sites delegated)
  *   [x] QuickValidationPhase (wired — fast validator gate, escalation,
  *                          targeted repair, blocking ValidationError)
  *   [x] QAPhase           (wired — QA + best practices parallel block,

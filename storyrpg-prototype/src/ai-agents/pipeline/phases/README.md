@@ -93,8 +93,21 @@ we touch the hard dependency-heavy phases):
    blocking `ValidationError`. Repairs mutate the shared
    sceneContents/choiceSets arrays in place; sceneValidationResults and
    cachedPipelineMemory are accessor-backed.
-10. [ ] `ContentGenerationPhase` — scene + choice + encounter generation
-    loop. Hardest phase; candidate for real scene-wave parallelism once
+10. [x] `ContentGenerationPhase` — **wired** (2026-06-10): the full
+    `runContentGeneration` loop (scene-wave ordering, SceneWriter best-of-N,
+    ChoiceAuthor with branch fan-out repair + per-target regeneration +
+    deterministic branch fallback, EncounterArchitect with incremental
+    validation/regeneration, episode plant context, callback crediting,
+    thread/twist planning, prevention context, season-canon prompt blocks,
+    SceneCritic pass dispatch). Both call sites (generate() and the
+    multi-episode generateEpisodeFromOutline) delegate through a thin
+    wrapper; run-scoped state is accessor-backed and the four fields the
+    phase assigns (incrementalValidator, sceneValidationResults,
+    seasonSkillPlan, encounterTelemetry) are wired with setters. In lieu of
+    a mocked smoke test, this phase is end-to-end characterized by the
+    THREE prompt-snapshot goldens (linear / branching+encounter /
+    multi-episode season) which were verified byte-identical across the
+    move. Candidate for real scene-wave parallelism now that it is
     extracted (see plan Phase 4).
 11. [x] `EpisodeArchitecturePhase` + `BranchAnalysisPhase` — **wired**
     (2026-06-10): `runEpisodeArchitecture` (season-plan directives +

@@ -344,7 +344,11 @@ const baselines = {
   // phases/CharacterDesignPhase.ts / phases/NPCDepthValidationPhase.ts
   // (typed, smoke tested). Thin delegating wrapper keeps all three
   // runCharacterDesign call sites unchanged. Prompt snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 16606,
+  // -2185 (16606 -> 14421): Refactor PR 14 — runContentGeneration (the
+  // scene/choice/encounter authoring loop, the coherence-critical core)
+  // extracted to pipeline/phases/ContentGenerationPhase.ts (pure move,
+  // verified byte-identical against all three prompt-snapshot goldens).
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 14421,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

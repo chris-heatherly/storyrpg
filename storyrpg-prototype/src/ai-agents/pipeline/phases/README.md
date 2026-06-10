@@ -48,8 +48,15 @@ we touch the hard dependency-heavy phases):
      callable for the monolith's hydrate-or-generate resume paths;
      run-scoped accumulators (locationMasterShots, character references)
      are shared by reference.
-   - [ ] `SceneImagePhase` — `runEpisodeImageGeneration` (color script,
-     beat loop, QA/retry, orphan reconciliation).
+   - [x] `SceneImagePhase` — **wired** (2026-06-09): `runEpisodeImageGeneration`
+     (color script / pre-warmed promise, style bible, A3 opening-beat
+     prefetch, per-scene storyboard planning, the beat loop with chat-session
+     continuity + hero visual QA + registry/disk resume, Tier-2/3 scene QA,
+     slot repair, orphan reconciliation). Shared helpers stay injected as
+     closures; mutable run-scoped state is accessor-backed. One documented
+     deviation: the previously-undeclared `imagesDir` in the disk-artifact
+     beat-resume check (a latent ReferenceError) is now bound to
+     `<outputDirectory>/images/`.
    - [ ] `EncounterImagePhase` — `generateEncounterImages` (setup/outcome
      slots, storylets).
 8. [ ] `QAPhase` — `QARunner` + `IntegratedBestPracticesValidator` in

@@ -277,7 +277,16 @@ const baselines = {
   // moved to phases/MasterImagePhase.ts (typed, smoke tested); thin
   // delegating wrappers keep all four call sites unchanged. Prompt
   // snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21760,
+  //
+  // -2120 (21760 -> 19640): decomposition PR 6 — runEpisodeImageGeneration
+  // (the 2,217-line scene/beat image loop: color script, style bible,
+  // prefetch, storyboard planning, beat generation + hero QA, Tier-2/3
+  // scene QA, slot repair, orphan reconciliation) moved to
+  // phases/SceneImagePhase.ts (typed, smoke tested); thin delegating
+  // wrapper keeps all three call sites unchanged. Prompt snapshot
+  // byte-identical. One documented deviation: the previously-undeclared
+  // `imagesDir` in the disk-artifact beat-resume check is now bound.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 19640,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

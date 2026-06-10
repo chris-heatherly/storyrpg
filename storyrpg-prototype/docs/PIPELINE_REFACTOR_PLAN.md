@@ -30,6 +30,16 @@ that proves the LLM-visible inputs are unchanged by each refactor step.
 - Characterization test: `FullStoryPipeline.generate()` for a 1-episode
   text-only brief against scripted fixtures; golden file holds the ordered
   prompt sequence + normalized event/checkpoint sequence.
+- Characterization extension (2026-06-10, the ContentGeneration
+  prerequisite): two more golden-filed slices —
+  `FullStoryPipeline.promptSnapshot.branching.test.ts` (a real branch point
+  with per-target routed choices, a reconvergence scene with residue
+  textVariants, and an encounter scene exercising EncounterArchitect's full
+  phased flow: Phase 1 + 3× Phase 2 + Phase 3 + Phase 4) and
+  `FullStoryPipeline.promptSnapshot.season.test.ts`
+  (`generateMultipleEpisodes` for 2 episodes: shared foundation, season-canon
+  sealing read back by episode 2's prompts, callback ledger, previousSummary
+  handoff, ThreadPlanner/TwistArchitect enabled).
 - `docs/refactor-baselines/replay-gates-baseline-2026-06-09.json`: frozen
   `npm run replay:gates` report over the local corpus for post-refactor
   comparison.

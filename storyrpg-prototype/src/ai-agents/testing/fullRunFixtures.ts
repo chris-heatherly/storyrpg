@@ -13,7 +13,7 @@ import type { ScriptedFixtureMap } from './promptCapture';
 
 // ---------------------------------------------------------------- helpers
 
-function requestText(request: LlmTransportRequest): string {
+export function requestText(request: LlmTransportRequest): string {
   return request.messages
     .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
     .join('\n');
@@ -21,7 +21,7 @@ function requestText(request: LlmTransportRequest): string {
 
 // ---------------------------------------------------------------- world
 
-const worldBible = {
+export const worldBible = {
   worldRules: ['Iron disrupts the old magic'],
   taboos: ['Naming the drowned god aloud'],
   majorEvents: [
@@ -126,7 +126,7 @@ const voiceProfileBase = {
   writingGuidance: 'Direct, economical, watchful. Humor surfaces rarely and dry.',
 };
 
-const characterBible = {
+export const characterBible = {
   characters: [
     {
       id: 'prot-1',
@@ -437,7 +437,7 @@ const branchAnalysis = {
 
 // ---------------------------------------------------------------- scenes
 
-function sceneFixture(sceneId: string): string {
+export function sceneFixture(sceneId: string): string {
   if (sceneId === 'scene-1') {
     return JSON.stringify({
       sceneId: 'scene-1',

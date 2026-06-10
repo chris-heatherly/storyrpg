@@ -24,8 +24,10 @@ we touch the hard dependency-heavy phases):
    sites. `PipelineError` moved to `pipeline/errors.ts` so phases can throw it
    without importing the monolith. Verified prompt-snapshot byte-identical
    (see `FullStoryPipeline.promptSnapshot.test.ts` + `__goldens__/`).
-3. [ ] `AudioPhase` — extract the `config.narration.preGenerateAudio`
-   block that runs right after `SavingPhase`.
+3. [x] `AudioPhase` — **wired** (2026-06-09): the `preGenerateAudio` block
+   (voice casting, batch generation, beat binding, diagnostics + manifest,
+   the 08-final-story rewrite) plus `bindGeneratedAudioToStory`. Smoke tests
+   cover happy path, skip gate, and non-blocking failure.
 4. [ ] `BrowserQAPhase` — extract Playwright QA runner invocation.
 5. [ ] `AssemblyPhase` — story assembly + `StructuralValidator.autoFix`
    (Phase 3) + registry coverage gate + asset walk + flag chronology.

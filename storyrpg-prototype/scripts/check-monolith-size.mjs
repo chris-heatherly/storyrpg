@@ -255,7 +255,11 @@ const baselines = {
   // pipeline/errors.ts; runWorldBuilding body moved to the (now wired)
   // phases/WorldBuildingPhase.ts, leaving a thin delegating wrapper.
   // Verified prompt-snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 23238,
+  //
+  // -212 (23238 -> 23026): decomposition PR 2 — the audio pre-generation block
+  // and bindGeneratedAudioToStory moved to phases/AudioPhase.ts (typed, with
+  // smoke tests). Verified prompt-snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 23026,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

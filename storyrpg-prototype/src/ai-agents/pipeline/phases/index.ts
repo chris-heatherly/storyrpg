@@ -15,7 +15,7 @@
  *   [ ] ImagePhase
  *   [ ] VideoPhase
  *   [ ] AssemblyPhase
- *   [ ] AudioPhase
+ *   [x] AudioPhase          (wired — preGenerateAudio block + beat binding)
  *   [ ] BrowserQAPhase
  *
  * The monolithic `FullStoryPipeline` keeps `@ts-nocheck` until all phases

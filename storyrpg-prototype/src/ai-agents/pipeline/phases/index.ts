@@ -20,6 +20,7 @@
  *   [x] ImagePhase          (MasterImagePhase + SceneImagePhase +
  *                            EncounterImagePhase wired)
  *   [x] VideoPhase          (wired — beat selection, direction, clip generation)
+ *   [x] CoverArtPhase       (wired — poster-concept distillation + cover render)
  *   [x] AssemblyPhase     (wired — assembly, auto-fixes, completeness gate,
  *                          asset verification, deterministic scans)
  *   [x] AudioPhase          (wired — preGenerateAudio block + beat binding)

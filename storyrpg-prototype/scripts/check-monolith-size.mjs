@@ -353,7 +353,12 @@ const baselines = {
   // declarations in generate() plus NOTE comments documenting the latent
   // scope bugs it flushed (cancellation finalize, multi-episode narrative
   // diagnostics/plan gates, continuity repair). No executable logic added.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 14449,
+  // -514 (14449 -> 13935): Refactor PR 17 — generateStoryCoverArt +
+  // distillPosterConcept + poster-concept formatting/fallback and the
+  // PosterConcept types/normalizer moved to pipeline/phases/CoverArtPhase.ts
+  // (pure move, typed, smoke tested). Thin delegating wrapper keeps all
+  // three generateStoryCoverArt call sites unchanged. Goldens byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 13935,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

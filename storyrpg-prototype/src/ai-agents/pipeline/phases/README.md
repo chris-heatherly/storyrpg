@@ -48,6 +48,14 @@ we touch the hard dependency-heavy phases):
    strategy), per-beat VideoDirector direction + clip generation with
    diagnostics-not-throws error handling, plus `bindGeneratedVideoToStory`.
    Episode-scoped key builders are injected as closures over the brief.
+6b. [x] `CoverArtPhase` — **wired** (2026-06-10): `generateStoryCoverArt`
+   (poster-concept distillation via a low-temperature LLM call with the
+   principles-only fallback block, the full movie-poster rendering prompt,
+   protagonist/antagonist reference-image attachment, defect-retry render)
+   plus the `PosterConcept` types and compositional-structure normalizer.
+   A thin delegating wrapper keeps all three call sites (story-only
+   generate, image-only draft run, multi-episode cover) unchanged.
+   Non-blocking failure semantics preserved exactly.
 7. [~] `ImagePhase` — split per the plan: master images → scene images →
    encounter images.
    - [x] `MasterImagePhase` — **wired** (2026-06-09): character reference

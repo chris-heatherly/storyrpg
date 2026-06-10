@@ -286,7 +286,17 @@ const baselines = {
   // wrapper keeps all three call sites unchanged. Prompt snapshot
   // byte-identical. One documented deviation: the previously-undeclared
   // `imagesDir` in the disk-artifact beat-resume check is now bound.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 19640,
+  //
+  // -1787 (19640 -> 17853): decomposition PR 7 — the encounter-image cluster
+  // (generateEncounterImages, generateEncounterTreeImages,
+  // retryMissingEncounterTreeImages, validateEncounterImage,
+  // strengthenPromptForTextArtifacts,
+  // generateEncounterImageWithTextArtifactPolicy, the encounter visual-
+  // contract/camera/mood helpers) moved to phases/EncounterImagePhase.ts
+  // (typed, smoke tested); thin delegating wrapper keeps all three call
+  // sites unchanged. wireEncounterTreeImages and the provider preflight
+  // stay with their callers. Prompt snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 17853,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

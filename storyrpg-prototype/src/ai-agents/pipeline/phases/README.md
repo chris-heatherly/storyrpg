@@ -57,8 +57,14 @@ we touch the hard dependency-heavy phases):
      deviation: the previously-undeclared `imagesDir` in the disk-artifact
      beat-resume check (a latent ReferenceError) is now bound to
      `<outputDirectory>/images/`.
-   - [ ] `EncounterImagePhase` — `generateEncounterImages` (setup/outcome
-     slots, storylets).
+   - [x] `EncounterImagePhase` — **wired** (2026-06-09): `generateEncounterImages`
+     (slot manifests for setup/outcome/storylet images, optional storyboard
+     planning, the per-encounter loop with provider policy + resume state,
+     the choice-tree recursion, the text-artifact QA policy, the
+     missing-slot retry pass, storylet outcomes). Shared helpers stay
+     injected as closures; `wireEncounterTreeImages` and the provider
+     preflight stay in the monolith with their callers (assembly /
+     call-site regions).
 8. [ ] `QAPhase` — `QARunner` + `IntegratedBestPracticesValidator` in
    parallel.
 9. [ ] `QuickValidationPhase` — fast validator gate before QA.

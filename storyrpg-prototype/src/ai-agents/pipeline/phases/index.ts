@@ -12,8 +12,8 @@
  *   [ ] ContentGenerationPhase
  *   [ ] QuickValidationPhase
  *   [ ] QAPhase
- *   [~] ImagePhase          (MasterImagePhase + SceneImagePhase wired —
- *                            encounter images pending)
+ *   [x] ImagePhase          (MasterImagePhase + SceneImagePhase +
+ *                            EncounterImagePhase wired)
  *   [x] VideoPhase          (wired — beat selection, direction, clip generation)
  *   [ ] AssemblyPhase
  *   [x] AudioPhase          (wired — preGenerateAudio block + beat binding)

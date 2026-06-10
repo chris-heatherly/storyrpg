@@ -375,7 +375,12 @@ const baselines = {
   // pipeline memory read) moved to pipeline/pipelineMemory.ts (pure move,
   // config-only deps). Public delegating wrappers keep the MasterImagePhase
   // dep wiring and driver call sites unchanged.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 12275,
+  // -90 (12275 -> 12185): Refactor PR 21 — the quality-ledger plumbing
+  // (remediation-ledger append + counters, gate-shadow records, the
+  // final-contract and plan-time shadow passes) moved to
+  // pipeline/runLedger.ts (pure move). Thin delegating wrappers keep all
+  // gate-seam call sites unchanged; the per-run counters move with it.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 12185,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

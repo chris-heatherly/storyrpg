@@ -393,7 +393,13 @@ const baselines = {
   // both validate/repair call sites unchanged; validator/agent instances and
   // run-scoped reads (sceneCritic, cachedPipelineMemory) are injected via the
   // deps. Goldens byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 11468,
+  // -224 (11468 -> 11244): Refactor PR 24 — the SceneCritic rewrite pass +
+  // character-consistency continuity repair (runSceneCriticPass,
+  // repairContinuityFindings, revalidateRepairedContinuity) moved to
+  // pipeline/sceneCriticContinuity.ts (pure move). Thin delegating wrappers
+  // keep the ContentGeneration dep wiring + per-episode repair call site
+  // unchanged; sceneCritic is accessor-backed (lazy). Goldens byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 11244,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

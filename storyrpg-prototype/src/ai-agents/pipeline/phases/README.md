@@ -34,7 +34,10 @@ we touch the hard dependency-heavy phases):
    remediate+retest, skip, non-fatal error, and unresolved-issues paths.
 5. [ ] `AssemblyPhase` — story assembly + `StructuralValidator.autoFix`
    (Phase 3) + registry coverage gate + asset walk + flag chronology.
-6. [ ] `VideoPhase` — video director / video generation block.
+6. [x] `VideoPhase` — **wired** (2026-06-09): beat selection (selective
+   strategy), per-beat VideoDirector direction + clip generation with
+   diagnostics-not-throws error handling, plus `bindGeneratedVideoToStory`.
+   Episode-scoped key builders are injected as closures over the brief.
 7. [ ] `ImagePhase` — master images → scene images → encounter images.
 8. [ ] `QAPhase` — `QARunner` + `IntegratedBestPracticesValidator` in
    parallel.

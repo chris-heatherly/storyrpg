@@ -264,7 +264,12 @@ const baselines = {
   // retry/remediation loop moved to phases/BrowserQAPhase.ts (typed, smoke
   // tested). 'progress' added to the PipelineEventType union (the monolith
   // emitted it all along under @ts-nocheck). Prompt snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 22903,
+  //
+  // -178 (22903 -> 22725): decomposition PR 4 — runVideoGeneration and
+  // bindGeneratedVideoToStory moved to phases/VideoPhase.ts (typed, smoke
+  // tested); thin delegating wrapper keeps generate() and runVideoOnly
+  // call sites unchanged. Prompt snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 22725,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

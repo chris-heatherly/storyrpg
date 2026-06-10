@@ -13,7 +13,7 @@
  *   [ ] QuickValidationPhase
  *   [ ] QAPhase
  *   [ ] ImagePhase
- *   [ ] VideoPhase
+ *   [x] VideoPhase          (wired — beat selection, direction, clip generation)
  *   [ ] AssemblyPhase
  *   [x] AudioPhase          (wired — preGenerateAudio block + beat binding)
  *   [x] BrowserQAPhase      (wired — Playwright QA retry/remediation loop)

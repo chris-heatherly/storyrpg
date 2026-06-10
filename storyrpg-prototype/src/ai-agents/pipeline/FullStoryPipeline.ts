@@ -181,6 +181,7 @@ import { SavingPhase } from './phases/SavingPhase';
 import { WorldBuildingPhase } from './phases/WorldBuildingPhase';
 import { AudioPhase } from './phases/AudioPhase';
 import { BrowserQAPhase } from './phases/BrowserQAPhase';
+import { VideoPhase, bindGeneratedVideoToStory } from './phases/VideoPhase';
 import {
   createOutputDirectory,
   ensureDirectory,
@@ -15768,183 +15769,28 @@ ${clothingRule}
    * Uses VideoDirectorAgent to generate animation instructions, then VideoGenerationService
    * to produce animated clips from still images via Veo.
    */
+  // Extracted to phases/VideoPhase.ts (pure move). Thin wrapper keeps both
+  // call sites (generate() video phase, runVideoOnly) unchanged.
   private async runVideoGeneration(
     sceneContents: SceneContent[],
     imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> },
     brief: FullCreativeBrief,
-    worldBible: WorldBible
+    _worldBible: WorldBible
   ): Promise<{ videoResults: Map<string, string>; diagnostics: VideoGenerationDiagnostic[] }> {
-    const videoResults = new Map<string, string>();
-    const diagnostics: VideoGenerationDiagnostic[] = [];
-    const videoStrategy = this.config.videoGen?.strategy || 'selective';
-    this.videoService.clearDiagnostics();
-
-    const beatsToAnimate: Array<{
-      sceneId: string;
-      beatId: string;
-      beatText: string;
-      imageKey: string;
-      imagePath: string;
-      sceneContext: { name: string; genre: string; tone: string; mood: string };
-      visualMoment?: string;
-      primaryAction?: string;
-      emotionalRead?: string;
-    }> = [];
-
-    for (const scene of sceneContents) {
-      const sceneContext = {
-        name: scene.sceneName || scene.sceneId,
-        genre: brief.story.genre || 'drama',
-        tone: brief.story.tone || 'serious',
-        mood: (scene.moodProgression as string[])?.[0] || 'neutral',
-      };
-
-      for (const beat of scene.beats || []) {
-        const imageKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beat.id);
-        const imagePath = imageResults.beatImages.get(imageKey);
-
-        if (!imagePath) continue;
-
-        if (videoStrategy === 'selective') {
-          const isSelectiveBeat = beat.isChoicePoint || beat.visualMoment
-            || beat.shotType === 'action'
-            || scene.beats.indexOf(beat) === 0;
-          if (!isSelectiveBeat) continue;
-        }
-
-        beatsToAnimate.push({
-          sceneId: scene.sceneId,
-          beatId: beat.id,
-          beatText: beat.text,
-          imageKey,
-          imagePath,
-          sceneContext,
-          visualMoment: beat.visualMoment,
-          primaryAction: beat.primaryAction,
-          emotionalRead: beat.emotionalRead,
-        });
+    return new VideoPhase({
+      videoService: this.videoService,
+      videoDirectorAgent: this.videoDirectorAgent,
+      checkCancellation: () => this.checkCancellation(),
+      scopedSceneId: (sceneId) => this.getEpisodeScopedSceneId(brief, sceneId),
+      scopedBeatKey: (sceneId, beatId) => this.getEpisodeScopedBeatKey(brief, sceneId, beatId),
+    }).run(
+      { sceneContents, imageResults, story: { genre: brief.story.genre, tone: brief.story.tone } },
+      {
+        config: this.config,
+        emit: (event) => this.emit(event),
+        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
       }
-    }
-
-    if (beatsToAnimate.length === 0) {
-      this.emit({ type: 'debug', phase: 'video_generation', message: 'No beats selected for video animation' });
-      diagnostics.push({
-        timestamp: new Date().toISOString(),
-        stage: 'selection',
-        status: 'skipped',
-        message: 'No beats selected for video animation',
-      });
-      return { videoResults, diagnostics };
-    }
-
-    this.emit({
-      type: 'agent_start',
-      agent: 'VideoDirector',
-      message: `Generating animation directions for ${beatsToAnimate.length} beats...`,
-    });
-
-    let completed = 0;
-    const total = beatsToAnimate.length;
-
-    for (const beatInfo of beatsToAnimate) {
-      await this.checkCancellation();
-
-      try {
-        const directionRequest: VideoDirectionRequest = {
-          beatId: beatInfo.beatId,
-          sceneId: beatInfo.sceneId,
-          beatText: beatInfo.beatText,
-          imagePrompt: beatInfo.visualMoment || beatInfo.primaryAction || beatInfo.beatText,
-          sceneContext: beatInfo.sceneContext,
-        };
-
-        const directionResult = await this.videoDirectorAgent.generateVideoDirection(directionRequest);
-
-        if (!directionResult.success || !directionResult.data) {
-          console.warn(`[Pipeline] VideoDirector failed for beat ${beatInfo.beatId}: ${directionResult.error}`);
-          diagnostics.push({
-            timestamp: new Date().toISOString(),
-            sceneId: beatInfo.sceneId,
-            beatId: beatInfo.beatId,
-            imageKey: beatInfo.imageKey,
-            identifier: `video-${this.getEpisodeScopedSceneId(brief, beatInfo.sceneId)}-${beatInfo.beatId}`,
-            sourceImageUrl: beatInfo.imagePath,
-            stage: 'direction',
-            status: 'failed',
-            message: directionResult.error || 'VideoDirector returned no direction data',
-          });
-          completed++;
-          continue;
-        }
-
-        const instruction = directionResult.data;
-
-        const imageData = await this.videoService.readFileAsBase64(beatInfo.imagePath);
-        if (!imageData) {
-          console.warn(`[Pipeline] Could not read image file for video animation: ${beatInfo.imagePath}`);
-          diagnostics.push({
-            timestamp: new Date().toISOString(),
-            sceneId: beatInfo.sceneId,
-            beatId: beatInfo.beatId,
-            imageKey: beatInfo.imageKey,
-            identifier: `video-${this.getEpisodeScopedSceneId(brief, beatInfo.sceneId)}-${beatInfo.beatId}`,
-            sourceImageUrl: beatInfo.imagePath,
-            stage: 'image_load',
-            status: 'failed',
-            message: `Could not read source image for video animation: ${beatInfo.imagePath}`,
-          });
-          completed++;
-          continue;
-        }
-
-        const videoIdentifier = `video-${this.getEpisodeScopedSceneId(brief, beatInfo.sceneId)}-${beatInfo.beatId}`;
-        const videoResult = await this.videoService.generateVideo(
-          instruction,
-          imageData.data,
-          imageData.mimeType,
-          videoIdentifier,
-          { sceneId: beatInfo.sceneId, beatId: beatInfo.beatId },
-          beatInfo.imagePath,
-        );
-
-        if (videoResult.videoUrl || videoResult.videoPath) {
-          videoResults.set(beatInfo.imageKey, videoResult.videoUrl || videoResult.videoPath!);
-        }
-
-        completed++;
-        this.emit({
-          type: 'agent_start',
-          phase: 'video_generation',
-          message: `Video generation: ${completed}/${total} clips`,
-          data: { completed, total, currentItem: completed, totalItems: total, subphaseLabel: 'video:clips' },
-        });
-      } catch (beatVideoError) {
-        const msg = beatVideoError instanceof Error ? beatVideoError.message : String(beatVideoError);
-        console.warn(`[Pipeline] Video generation failed for beat ${beatInfo.beatId}: ${msg}`);
-        diagnostics.push({
-          timestamp: new Date().toISOString(),
-          sceneId: beatInfo.sceneId,
-          beatId: beatInfo.beatId,
-          imageKey: beatInfo.imageKey,
-          identifier: `video-${this.getEpisodeScopedSceneId(brief, beatInfo.sceneId)}-${beatInfo.beatId}`,
-          sourceImageUrl: beatInfo.imagePath,
-          stage: 'veo_generation',
-          status: 'failed',
-          message: msg,
-        });
-        completed++;
-      }
-    }
-
-    diagnostics.push(...this.videoService.getDiagnostics().map((diagnostic) => ({
-      ...diagnostic,
-      imageKey: diagnostic.sceneId && diagnostic.beatId
-        ? `${diagnostic.sceneId}::${diagnostic.beatId}`
-        : diagnostic.imageKey,
-    })));
-
-    console.log(`[Pipeline] Video generation complete: ${videoResults.size}/${total} clips generated`);
-    return { videoResults, diagnostics };
+    );
   }
 
   /**
@@ -21855,30 +21701,6 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
   }
 
   /**
-   * Bind generated video URLs to beats in the assembled story.
-   * Uses the same composite key pattern as images (sceneId::beatId).
-   */
-  private bindGeneratedVideoToStory(story: Story, videoResults: Map<string, string>, options: { targetEpisodeNumber?: number } = {}): number {
-    if (!videoResults || videoResults.size === 0) return 0;
-
-    let mapped = 0;
-    for (const episode of story.episodes || []) {
-      if (options.targetEpisodeNumber != null && episode.number !== options.targetEpisodeNumber) continue;
-      for (const scene of episode.scenes || []) {
-        for (const beat of scene.beats || []) {
-          const scopedKey = `episode-${episode.number}-${scene.id}::${beat.id}`;
-          const videoUrl = videoResults.get(scopedKey) || videoResults.get(`${scene.id}::${beat.id}`);
-          if (videoUrl) {
-            beat.video = videoUrl;
-            mapped++;
-          }
-        }
-      }
-    }
-    return mapped;
-  }
-
-  /**
    * Build enriched NPC descriptions for ChoiceAuthor with voice and physical details.
    */
   private buildChoiceAuthorNpcs(
@@ -22876,7 +22698,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     );
     const videoResults = videoRunResult.videoResults;
 
-    const videosGenerated = this.bindGeneratedVideoToStory(story, videoResults, options);
+    const videosGenerated = bindGeneratedVideoToStory(story, videoResults, options);
     await saveVideoDiagnosticsLog(outputDir, videoRunResult.diagnostics);
 
     this.emit({

@@ -79,6 +79,22 @@ export interface LlmGuardrailConfig {
   backoffJitterRatio: number;
 }
 
+/**
+ * The fully-assembled request callLLM is about to send: the exact messages
+ * (system prompt included) plus the routing config. This is the unit the
+ * prompt-snapshot harness captures — if two pipeline builds produce identical
+ * LlmTransportRequest sequences, the LLM sees identical inputs and generated
+ * story quality cannot differ because of the code change.
+ */
+export interface LlmTransportRequest {
+  agentName: string;
+  provider: 'anthropic' | 'openai' | 'gemini';
+  model: string;
+  messages: AgentMessage[];
+}
+
+export type LlmTransportOverride = (request: LlmTransportRequest) => Promise<string>;
+
 export interface LlmCallObservation {
   agentName: string;
   provider: 'anthropic' | 'openai' | 'gemini';
@@ -252,6 +268,19 @@ export abstract class BaseAgent {
     BaseAgent._observer = observer;
   }
 
+  /**
+   * Test-only seam: when set, callLLM routes every request through this
+   * function instead of the real provider transports (no retries, guardrails,
+   * circuit breaker, or observer — the override owns the whole exchange).
+   * Production code must never set this; it exists so the prompt-snapshot
+   * harness can capture/replay full pipeline runs offline.
+   */
+  static setLlmTransportOverride(override: LlmTransportOverride | null): void {
+    BaseAgent._transportOverride = override;
+  }
+
+  private static _transportOverride: LlmTransportOverride | null = null;
+
   private async acquireGuardrailPermits(): Promise<{ release: () => void; queueWaitMs: number }> {
     if (!BaseAgent._globalSemaphore) {
       BaseAgent.configureGuardrails(BaseAgent._guardrails);
@@ -316,6 +345,15 @@ Do not use markdown code blocks around the JSON.
       ...(systemMessage ? [systemMessage] : []),
       ...otherMessages,
     ];
+
+    if (BaseAgent._transportOverride) {
+      return BaseAgent._transportOverride({
+        agentName: this.name,
+        provider: this.config.provider,
+        model: this.config.model,
+        messages: fullMessages,
+      });
+    }
 
     // Circuit breaker: if the shared failure counter has tripped, wait for cooldown
     const now = Date.now();

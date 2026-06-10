@@ -1,5 +1,5 @@
-// @ts-nocheck — TODO(tech-debt): Phase 3 will extract this 12,986-line file
-// into pipeline/phases/*.ts modules and restore whole-file typecheck.
+// @ts-nocheck — TODO(tech-debt): decomposition in progress (~23k lines), see
+// docs/PIPELINE_REFACTOR_PLAN.md; phases move to pipeline/phases/*.ts typed.
 /**
  * Full Story Pipeline Orchestrator
  *
@@ -6246,7 +6246,10 @@ export class FullStoryPipeline {
 
       // === PRE-GENERATION COMPLETENESS GATE ===
       // Strict: ANY missing image halts the pipeline. No silent fallbacks.
-      if (story) {
+      // Skipped in story-only mode, where images are deliberately deferred and
+      // the draft ships with imagesStatus 'pending' (see saveDraftImageManifest
+      // below) — the gate would otherwise fail every story-only generate().
+      if (story && this.config.generation?.assetGenerationMode !== 'story-only') {
         const registryCoverage = validateRegistryCoverage(story, this.assetRegistry);
 
         if (registryCoverage.missingRequiredCoverageKeys.length > 0) {

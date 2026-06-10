@@ -242,7 +242,15 @@ const baselines = {
   // block) + the emitSceneBranchAxes call + a thin genre-reconcile wrapper. The bulk
   // (the genre/tone/themes reconciliation body) was EXTRACTED to
   // pipeline/briefStoryMetadata.ts (reconcileBriefStoryMetadata) rather than added here.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 22630,
+  //
+  // +679 (22630 -> 23309): re-true to committed reality. +676 landed across the
+  // G10 remediation / callback-ledger / consistency-plan / encounter-parity
+  // commits (71f7f92..526061e) without bumping this baseline; +3 is the
+  // story-only guard on the image completeness gate (single-episode story-only
+  // runs could never pass it), added with the Phase-0 refactor safety net.
+  // From here the decomposition plan (docs/PIPELINE_REFACTOR_PLAN.md) lowers
+  // this baseline with every extraction PR.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 23309,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

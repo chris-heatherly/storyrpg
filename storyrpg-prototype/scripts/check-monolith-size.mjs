@@ -399,7 +399,15 @@ const baselines = {
   // pipeline/sceneCriticContinuity.ts (pure move). Thin delegating wrappers
   // keep the ContentGeneration dep wiring + per-episode repair call site
   // unchanged; sceneCritic is accessor-backed (lazy). Goldens byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 11244,
+  // -503 (11244 -> 10741): Refactor PR 25 — the final-contract cluster
+  // (enforceFinalStoryContract with its season-final canonicalization/rebalance,
+  // regen routes, and Wave-4 repair loop; prepareValidationInput; the pure
+  // runFlagChronologyScan) moved to pipeline/finalContract.ts (pure move). Thin
+  // delegating wrappers keep both enforce call sites + the prepare/scan bind
+  // sites unchanged; run-scoped accumulators (scene-validation results, season
+  // plans, encounter telemetry, remediation budget) are accessor-backed via
+  // Object.defineProperties. Goldens byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 10741,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

@@ -7,7 +7,8 @@
  * MIGRATION STATUS (see phases/README.md for full tracker):
  *   [x] SavingPhase         (this package)
  *   [x] WorldBuildingPhase  (wired — delegated from runWorldBuilding)
- *   [ ] CharacterDesignPhase, NPCDepthValidationPhase
+ *   [x] CharacterDesignPhase, NPCDepthValidationPhase (wired — designer
+ *                          call + dedup, depth gate + Karpathy retry)
  *   [x] EpisodeArchitecturePhase, BranchAnalysisPhase (wired — blueprint
  *                          generation + retry, branch analysis + topology)
  *   [ ] ContentGenerationPhase

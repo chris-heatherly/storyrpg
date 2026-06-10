@@ -335,7 +335,16 @@ const baselines = {
   // (typed, smoke tested). Thin delegating wrappers keep all call sites
   // unchanged; seasonChoicePlan/generationPlan/architectAdvisoryWarnings/
   // branchShadowDiffs are accessor-backed. Prompt snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 16734,
+  //
+  // -128 (16734 -> 16606): decomposition PR 12 — runCharacterDesign
+  // (CharacterDesigner input assembly + protagonist-collision NPC dedup) and
+  // the Phase 2.5 NPC-depth block (cast depth gate, Karpathy
+  // character-design retry adopting via Object.assign onto the shared
+  // bible, strict-mode abort / advisory checkpoint) moved to
+  // phases/CharacterDesignPhase.ts / phases/NPCDepthValidationPhase.ts
+  // (typed, smoke tested). Thin delegating wrapper keeps all three
+  // runCharacterDesign call sites unchanged. Prompt snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 16606,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

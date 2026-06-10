@@ -108,7 +108,14 @@ we touch the hard dependency-heavy phases):
     sites unchanged. seasonChoicePlan (written by the architecture phase),
     generationPlan, architectAdvisoryWarnings, cachedPipelineMemory, and
     branchShadowDiffs are accessor-backed.
-12. [ ] `CharacterDesignPhase` + `NPCDepthValidationPhase`.
+12. [x] `CharacterDesignPhase` + `NPCDepthValidationPhase` — **wired**
+    (2026-06-10): `runCharacterDesign` (CharacterDesigner input assembly +
+    protagonist-collision NPC dedup; thin delegating wrapper covers all
+    three call sites) and the Phase 2.5 NPC-depth block (cast depth gate,
+    the Karpathy character-design retry that adopts an improved bible via
+    `Object.assign` onto the shared reference, strict-mode abort / advisory
+    checkpoint on the residue). The Phase 2.3 bible structural validation
+    (PhaseValidator retry loop) stays in the monolith with the resume state.
 
 Each extraction should:
 

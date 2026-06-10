@@ -186,6 +186,8 @@ import { QuickValidationPhase } from './phases/QuickValidationPhase';
 import { AssemblyPhase } from './phases/AssemblyPhase';
 import { EpisodeArchitecturePhase } from './phases/EpisodeArchitecturePhase';
 import { BranchAnalysisPhase } from './phases/BranchAnalysisPhase';
+import { CharacterDesignPhase } from './phases/CharacterDesignPhase';
+import { NPCDepthValidationPhase } from './phases/NPCDepthValidationPhase';
 import {
   createOutputDirectory,
   ensureDirectory,
@@ -5013,95 +5015,19 @@ export class FullStoryPipeline {
       }
 
       // === PHASE 2.5: NPC DEPTH VALIDATION ===
-      if (this.config.validation.enabled && this.config.validation.rules.npcDepth.enabled) {
-        this.emit({ type: 'phase_start', phase: 'npc_validation', message: 'Validating NPC relationship depth' });
-        let npcValidation = await this.npcDepthValidator.validateCast(characterBible.characters);
-
-        if (!npcValidation.passed) {
-          const depthIssues = npcValidation.issues.filter(i => i.level === 'error');
-
-          // === KARPATHY LOOP: Re-run character design with depth feedback ===
-          if (depthIssues.length > 0 && this.config.validation.mode !== 'disabled') {
-            const issueText = depthIssues
-              .map(i => `- ${i.message}${i.suggestion ? ` (fix: ${i.suggestion})` : ''}`)
-              .join('\n');
-
-            this.emit({
-              type: 'regeneration_triggered',
-              phase: 'npc_validation',
-              message: `NPC depth validation failed with ${depthIssues.length} error(s), retrying character design with feedback`,
-            });
-
-            try {
-              const originalBrief = { ...brief };
-              const repairedBrief = {
-                ...originalBrief,
-                userPrompt: `${originalBrief.userPrompt || ''}\n\nCRITICAL NPC DEPTH FIXES REQUIRED:\n${issueText}\n\nEnsure every major NPC has relationship dimensions (trust, affection, respect, fear) initialized. Supporting NPCs need at least 2 dimensions. Core NPCs need all 4.`,
-              };
-
-              const retryCharBible = await this.measurePhase('character_design_retry', () =>
-                this.runCharacterDesign(repairedBrief, worldBible)
-              );
-
-              const retryNpcValidation = await this.npcDepthValidator.validateCast(retryCharBible.characters);
-              const retryDepthErrors = retryNpcValidation.issues.filter(i => i.level === 'error');
-
-              if (retryNpcValidation.passed || retryDepthErrors.length < depthIssues.length) {
-                Object.assign(characterBible, retryCharBible);
-                npcValidation = retryNpcValidation;
-                this.addCheckpoint('Character Bible', characterBible, true);
-                this.emit({
-                  type: 'debug',
-                  phase: 'npc_validation',
-                  message: `NPC depth retry improved: ${depthIssues.length} -> ${retryDepthErrors.length} error(s)`,
-                });
-              } else {
-                this.emit({
-                  type: 'debug',
-                  phase: 'npc_validation',
-                  message: `NPC depth retry did not improve (${retryDepthErrors.length} errors), keeping original`,
-                });
-              }
-            } catch (retryErr) {
-              this.emit({
-                type: 'warning',
-                phase: 'npc_validation',
-                message: `Character design retry for NPC depth failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
-              });
-            }
-          }
-
-          // After repair attempt, check final state
-          const finalDepthIssues = npcValidation.issues.filter(i => i.level === 'error');
-          if (finalDepthIssues.length > 0 && this.config.validation.mode === 'strict') {
-            this.emit({
-              type: 'error',
-              message: `NPC depth requirements not met: ${finalDepthIssues.length} errors`,
-              data: finalDepthIssues,
-            });
-            throw new ValidationError('NPC depth requirements not met', finalDepthIssues);
-          } else if (finalDepthIssues.length > 0) {
-            this.emit({
-              type: 'checkpoint',
-              phase: 'npc_validation',
-              message: `NPC depth validation: ${finalDepthIssues.length} issues remain (advisory mode)`,
-              data: npcValidation,
-            });
-          } else {
-            this.emit({
-              type: 'phase_complete',
-              phase: 'npc_validation',
-              message: 'NPC depth validation passed after repair',
-            });
-          }
-        } else {
-          this.emit({
-            type: 'phase_complete',
-            phase: 'npc_validation',
-            message: 'NPC depth validation passed',
-          });
-        }
-      }
+      // Extracted to phases/NPCDepthValidationPhase.ts (pure move): the cast
+      // depth gate + the Karpathy character-design retry (adopts via
+      // Object.assign onto the shared characterBible) + strict-mode abort /
+      // advisory checkpoint on the residue.
+      await new NPCDepthValidationPhase({
+        npcDepthValidator: this.npcDepthValidator,
+        rerunCharacterDesign: (repairedBrief, wb) =>
+          this.measurePhase('character_design_retry', () => this.runCharacterDesign(repairedBrief, wb)),
+      }).run(brief, worldBible, characterBible, {
+        config: this.config,
+        emit: (event) => this.emit(event),
+        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+      });
 
       // === PHASE 3: EPISODE ARCHITECTURE ===
       await this.checkCancellation();
@@ -5877,77 +5803,23 @@ export class FullStoryPipeline {
     );
   }
 
+  // Extracted to phases/CharacterDesignPhase.ts (pure move). Thin delegating
+  // wrapper keeps all three call sites (initial design, PhaseValidator retry,
+  // the NPC-depth Karpathy retry) unchanged; cachedPipelineMemory is
+  // accessor-backed.
   private async runCharacterDesign(
     brief: FullCreativeBrief,
     worldBible: WorldBible
   ): Promise<CharacterBible> {
-    this.emit({ type: 'agent_start', agent: 'CharacterDesigner', message: 'Designing characters' });
-
-    const protagonistEntry = {
-      id: brief.protagonist.id,
-      name: brief.protagonist.name,
-      role: 'protagonist' as const,
-      briefDescription: brief.protagonist.description,
-      importance: 'major' as const,
-      fashionStyle: brief.protagonist.fashionStyle,
-    };
-
-    // Deduplicate: filter any NPC that shares an ID or name with the protagonist
-    const protId = brief.protagonist.id;
-    const protName = brief.protagonist.name?.toLowerCase();
-    const npcEntries = brief.npcs
-      .filter(npc => npc.id !== protId && npc.name?.toLowerCase() !== protName)
-      .map(npc => ({
-        id: npc.id,
-        name: npc.name,
-        role: npc.role,
-        briefDescription: npc.description,
-        importance: npc.importance,
-        fashionStyle: npc.fashionStyle,
-      }));
-
-    const charactersToCreate = [protagonistEntry, ...npcEntries];
-
-    const result = await withTimeout(this.characterDesigner.execute({
-      storyContext: {
-        title: brief.story.title,
-        genre: brief.story.genre,
-        tone: brief.story.tone,
-        themes: brief.story.themes,
-        userPrompt: brief.userPrompt,
-      },
-      charactersToCreate,
-      worldContext: worldBible.worldRules.join('. '),
-      culturalNotes: worldBible.customs,
-      rawDocument: brief.rawDocument,
-      memoryContext: this.cachedPipelineMemory || undefined,
-      seasonAnchors: brief.seasonPlan?.anchors,
-      seasonSevenPoint: brief.seasonPlan?.sevenPoint,
-      characterArchitecture: brief.seasonPlan?.characterArchitecture,
-      informationLedger: brief.seasonPlan?.informationLedger,
-    }), PIPELINE_TIMEOUTS.llmAgent, 'CharacterDesigner.execute');
-
-    if (!result.success || !result.data) {
-      throw new PipelineError(
-        `Character Designer failed: ${result.error}`,
-        'character_design',
-        {
-          agent: 'CharacterDesigner',
-          context: {
-            charactersRequested: charactersToCreate.length,
-            characterNames: charactersToCreate.map(c => c.name),
-          },
-        }
-      );
-    }
-
-    this.emit({
-      type: 'agent_complete',
-      agent: 'CharacterDesigner',
-      message: `Created ${result.data.characters.length} character profiles`,
+    const deps = { characterDesigner: this.characterDesigner };
+    Object.defineProperties(deps, {
+      cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
     });
-
-    return result.data;
+    return new CharacterDesignPhase(deps).run(brief, worldBible, {
+      config: this.config,
+      emit: (event) => this.emit(event),
+      addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+    });
   }
 
   // Extracted to phases/EpisodeArchitecturePhase.ts (pure move). Thin

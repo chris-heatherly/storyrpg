@@ -38,7 +38,20 @@ we touch the hard dependency-heavy phases):
    strategy), per-beat VideoDirector direction + clip generation with
    diagnostics-not-throws error handling, plus `bindGeneratedVideoToStory`.
    Episode-scoped key builders are injected as closures over the brief.
-7. [ ] `ImagePhase` — master images → scene images → encounter images.
+7. [~] `ImagePhase` — split per the plan: master images → scene images →
+   encounter images.
+   - [x] `MasterImagePhase` — **wired** (2026-06-09): character reference
+     sheets (eligibility incl. D1 supporting promotion, D5/D8 identity
+     drift audit/invalidation, anchor-character-first parallelism, vision
+     analysis of user reference images, portrait fallback) + location
+     master shots. `generateCharacterReferenceSheet` stays publicly
+     callable for the monolith's hydrate-or-generate resume paths;
+     run-scoped accumulators (locationMasterShots, character references)
+     are shared by reference.
+   - [ ] `SceneImagePhase` — `runEpisodeImageGeneration` (color script,
+     beat loop, QA/retry, orphan reconciliation).
+   - [ ] `EncounterImagePhase` — `generateEncounterImages` (setup/outcome
+     slots, storylets).
 8. [ ] `QAPhase` — `QARunner` + `IntegratedBestPracticesValidator` in
    parallel.
 9. [ ] `QuickValidationPhase` — fast validator gate before QA.

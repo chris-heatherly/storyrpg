@@ -269,7 +269,15 @@ const baselines = {
   // bindGeneratedVideoToStory moved to phases/VideoPhase.ts (typed, smoke
   // tested); thin delegating wrapper keeps generate() and runVideoOnly
   // call sites unchanged. Prompt snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 22725,
+  //
+  // -965 (22725 -> 21760): decomposition PR 5 — the master-image cluster
+  // (runMasterImageGeneration, generateCharacterReferenceSheet,
+  // fallbackToSinglePortrait, analyzeReferenceImageTraits,
+  // extractPhysicalTraits/extractClothingInfo, findUserReferenceImages)
+  // moved to phases/MasterImagePhase.ts (typed, smoke tested); thin
+  // delegating wrappers keep all four call sites unchanged. Prompt
+  // snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 21760,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

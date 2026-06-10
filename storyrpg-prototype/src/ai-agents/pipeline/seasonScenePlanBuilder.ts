@@ -74,10 +74,27 @@ function roleLabel(roles?: StructuralRole[]): string {
   return roles.join(' / ');
 }
 
+/**
+ * Truncate a label at a word boundary (≤ maxLength chars, with an ellipsis when
+ * cut). Titles are display labels — a mid-word cut ("…set piece (wall bre")
+ * reads as corruption when it leaks into prompts and validator messages.
+ */
+function truncateAtWordBoundary(text: string | undefined, maxLength: number): string | undefined {
+  if (!text) return undefined;
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  const cut = trimmed.slice(0, maxLength - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > maxLength / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
 /** Map a season-level PlannedEncounter onto the encounter sub-object of a scene. */
 export function toSceneEncounter(enc: NonNullable<SeasonEpisode['plannedEncounters']>[number]): PlannedSceneEncounter {
   return {
     type: enc.type,
+    // The FULL authored description — the scene title is a truncated label and
+    // must never be the only surviving copy of the anchor text (G12 endsong).
+    description: enc.description,
     style: enc.style,
     difficulty: enc.difficulty,
     relevantSkills: enc.relevantSkills ?? [],
@@ -288,8 +305,14 @@ export function buildEpisodeScenes(ep: SeasonEpisode, sevenPointText: string | u
       episodeNumber: ep.episodeNumber,
       order,
       kind: 'encounter',
-      title: enc.description?.slice(0, 60) || `encounter ${enc.id}`,
-      dramaticPurpose: composeDramaticPurpose('turn', ep, sevenPointText),
+      title: truncateAtWordBoundary(enc.description, 60) || `encounter ${enc.id}`,
+      // An authored encounter IS the scene's brief — carry its full description
+      // (and central conflict) instead of the role boilerplate, so the
+      // blueprint's description/dramaticQuestion fields stay anchored to the
+      // treatment (G12 endsong: boilerplate here starved EncounterArchitect).
+      dramaticPurpose: enc.description
+        ? `${enc.description}${enc.centralConflict ? ` — Central conflict: ${enc.centralConflict}` : ''}`
+        : composeDramaticPurpose('turn', ep, sevenPointText),
       narrativeRole: 'turn',
       locations: locations.slice(0, 1),
       npcsInvolved: enc.npcsInvolved ?? npcs.slice(0, 3),

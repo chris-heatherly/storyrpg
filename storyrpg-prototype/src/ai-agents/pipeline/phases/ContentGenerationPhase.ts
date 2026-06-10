@@ -2075,6 +2075,16 @@ export class ContentGenerationPhase {
           ),
           encounterDescription: sceneBlueprint.encounterDescription || sceneBlueprint.description,
           encounterStakes: sceneBlueprint.encounterStakes || plannedEnc?.stakes,
+          // Authored-treatment anchor (G12): the architect must SEE the
+          // authored texts to realize them — EncounterAnchorContentValidator
+          // blocks the run when one is missing from the encounter's prose.
+          requiredBeats: sceneBlueprint.requiredBeats?.map((beat) => ({
+            id: beat.id,
+            mustDepict: beat.mustDepict,
+            tier: beat.tier,
+          })),
+          signatureMoment: sceneBlueprint.signatureMoment,
+          centralConflict: plannedEnc?.centralConflict,
           encounterRequiredNpcIds,
           encounterRelevantSkills,
           encounterBeatPlan,

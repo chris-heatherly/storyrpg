@@ -905,3 +905,67 @@ describe('prose discipline and NPC voice injection', () => {
     }
   });
 });
+
+describe('authored anchor (G12)', () => {
+  const anchoredInput: EncounterArchitectInput = {
+    ...input,
+    centralConflict: "Aethavyr's flawless-protector image is eroded by an unwinnable situation.",
+    signatureMoment: 'Cordial shared on the battlements as the wall fires gutter.',
+    requiredBeats: [
+      { id: 'rb1', mustDepict: 'On the battlements, the two confess fears and doubts.', tier: 'authored' },
+      { id: 'rb2', mustDepict: "Darian's quiet maneuvering positions the poison; evacuation under truce is forced.", tier: 'authored' },
+      { id: 'rb3', mustDepict: 'A connective transition the model may invent.', tier: 'connective' },
+    ],
+  };
+
+  it('renders the anchor section with central conflict, signature, and non-connective beats', () => {
+    const architect = new EncounterArchitect(config);
+    const section = (architect as any).buildAuthoredAnchorSection(anchoredInput) as string;
+
+    expect(section).toContain('AUTHORED ANCHOR');
+    expect(section).toContain("Aethavyr's flawless-protector image");
+    expect(section).toContain('Cordial shared on the battlements');
+    expect(section).toContain("Darian's quiet maneuvering positions the poison");
+    // connective-tier beats are the model's invention band — never pinned.
+    expect(section).not.toContain('connective transition the model may invent');
+  });
+
+  it('returns an empty section for unanchored encounters', () => {
+    const architect = new EncounterArchitect(config);
+    expect((architect as any).buildAuthoredAnchorSection(input)).toBe('');
+  });
+
+  it('feeds the anchor into the lean prompt', () => {
+    const architect = new EncounterArchitect(config);
+    const prompt = (architect as any).buildReliablePrompt(anchoredInput) as string;
+    expect(prompt).toContain('AUTHORED ANCHOR');
+    expect(prompt).toContain('positions the poison');
+  });
+
+  it('detects a sustained set piece from the authored anchor fields', () => {
+    const architect = new EncounterArchitect(config);
+    const sustained: EncounterArchitectInput = {
+      ...input,
+      centralConflict: 'A sustained defensive set piece — wall breach and repulse.',
+    };
+    expect((architect as any).isSustainedSetPieceInput(sustained)).toBe(true);
+    expect((architect as any).isSustainedSetPieceInput(input)).toBe(false);
+  });
+
+  it('rejects a sustained set piece that collapsed below 3 top-level beats', () => {
+    const architect = new EncounterArchitect(config);
+    const sustained: EncounterArchitectInput = {
+      ...input,
+      encounterDescription: 'The siege itself — a sustained defensive set piece (wall breach + repulse).',
+    };
+    // The 2-beat deterministic fallback shape stands in for collapsed output.
+    let structure = (architect as any).buildDeterministicFallback(sustained);
+    structure = (architect as any).normalizeStructure(structure, sustained);
+    expect(() => (architect as any).validateStructure(structure, sustained))
+      .toThrow(/sustained set piece.*top-level beat/i);
+    // The same structure passes for a non-sustained encounter.
+    let plain = (architect as any).buildDeterministicFallback(input);
+    plain = (architect as any).normalizeStructure(plain, input);
+    expect(() => (architect as any).validateStructure(plain, input)).not.toThrow();
+  });
+});

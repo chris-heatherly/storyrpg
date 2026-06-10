@@ -146,6 +146,24 @@ export interface EncounterArchitectInput {
   difficulty: 'easy' | 'moderate' | 'hard' | 'extreme';
   partialVictoryCost?: Partial<EncounterCost>;
 
+  // --- Authored-treatment anchor ("expand, do not rewrite") ---
+  /**
+   * Authored required beats this encounter MUST depict on-page, verbatim from
+   * the treatment ({@link RequiredBeat.mustDepict}). EncounterAnchorContentValidator
+   * blocks the run when one is missing from the encounter's reader-facing
+   * prose — the architect must receive these texts or it cannot realize them
+   * (G12 endsong: the siege's poison/evacuation beat was never passed in).
+   */
+  requiredBeats?: Array<{ id: string; mustDepict: string; tier: 'signature' | 'authored' | 'connective' }>;
+  /** A single staged signature device/image the encounter must show. */
+  signatureMoment?: string;
+  /**
+   * The authored pressure this encounter exists to stage (treatment
+   * centralConflict). Must be depicted in the encounter's prose, not replaced
+   * with a generic fight.
+   */
+  centralConflict?: string;
+
   // Protagonist info
   protagonistInfo: {
     name: string;
@@ -935,6 +953,66 @@ export function snapEncounterSkill(raw: string | undefined, validSkills: string[
 // ========================================
 
 export class EncounterArchitect extends BaseAgent {
+  /**
+   * True when the encounter's intent text — including the authored anchor
+   * fields (centralConflict, signatureMoment, required beats) — stages a
+   * sustained set piece. Shares one regex with EncounterSetPieceDepthValidator
+   * so the generator and the gate agree on what "sustained" means.
+   */
+  private isSustainedSetPieceInput(input: EncounterArchitectInput): boolean {
+    return isSustainedSetPiece(
+      input.sceneName,
+      input.sceneDescription,
+      input.encounterDescription,
+      input.encounterStakes,
+      input.centralConflict,
+      input.signatureMoment,
+      ...(input.encounterBeatPlan ?? []),
+      ...(input.requiredBeats?.map((beat) => beat.mustDepict) ?? []),
+    );
+  }
+
+  /**
+   * Render the authored-treatment anchor (central conflict, signature moment,
+   * required beats) as a prompt section. EncounterAnchorContentValidator blocks
+   * the run when an anchor isn't depicted in the encounter's reader-facing
+   * prose — so the architect must see the authored texts verbatim and be told
+   * to realize them on-page. Returns '' for unanchored encounters.
+   */
+  private buildAuthoredAnchorSection(input: EncounterArchitectInput): string {
+    const beats = (input.requiredBeats ?? []).filter(
+      (beat) => beat.tier !== 'connective' && beat.mustDepict?.trim(),
+    );
+    if (!input.centralConflict?.trim() && !input.signatureMoment?.trim() && beats.length === 0) {
+      return '';
+    }
+    const lines: string[] = [
+      '',
+      '## AUTHORED ANCHOR (FIXED — expand, do not rewrite)',
+      'This encounter realizes authored treatment content. Every item below MUST be depicted on-page',
+      "in the encounter's prose (setupText / narrativeText / outcome text) using its own concrete",
+      'people, objects, and actions — shown as it happens, never summarized, dropped, inverted, or',
+      'replaced with a generic confrontation.',
+    ];
+    if (input.centralConflict?.trim()) {
+      lines.push(`- CENTRAL CONFLICT (the pressure this encounter exists to stage): ${input.centralConflict.trim()}`);
+    }
+    if (input.signatureMoment?.trim()) {
+      lines.push(`- SIGNATURE MOMENT (must be SHOWN, not referenced): ${input.signatureMoment.trim()}`);
+    }
+    beats.forEach((beat, index) => {
+      lines.push(`- REQUIRED BEAT ${index + 1} (${beat.tier}): ${beat.mustDepict.trim()}`);
+    });
+    if (this.isSustainedSetPieceInput(input)) {
+      lines.push(
+        'This is a SUSTAINED SET PIECE: dramatize it as at least 3 escalating top-level beats',
+        '(e.g. breach → repulse → decisive choice), spreading the required beats across them —',
+        'never one decision plus a summary outcome.',
+      );
+    }
+    return lines.join('\n');
+  }
+
   private getMinimumRequiredBeatCount(input: EncounterArchitectInput): number {
     // Honor the authored anchor: a treatment-sourced encounter carries an
     // `encounterBeatPlan` (one entry per authored required beat). The minimum
@@ -952,15 +1030,7 @@ export class EncounterArchitect extends BaseAgent {
     // encounter has room to escalate — this is the generative half that keeps
     // EncounterSetPieceDepthValidator (now a blocking gate) from aborting the run on a
     // collapsed siege. Detection shares one regex with the validator (sustainedEncounter util).
-    const sustainedFloor = isSustainedSetPiece(
-      input.sceneName,
-      input.sceneDescription,
-      input.encounterDescription,
-      input.encounterStakes,
-      ...(input.encounterBeatPlan ?? []),
-    )
-      ? 3
-      : 0;
+    const sustainedFloor = this.isSustainedSetPieceInput(input) ? 3 : 0;
     if (authored <= 0) return Math.max(2, sustainedFloor);
     const ceiling = Math.min(input.targetBeatCount || authored, 8);
     return Math.max(2, sustainedFloor, Math.min(Math.max(authored, sustainedFloor), ceiling));
@@ -1518,11 +1588,23 @@ Outcomes should include consequences that match the skill being tested:
     console.log(`[EncounterArchitect] Designing encounter for scene: ${input.sceneId}`);
     const execStart = Date.now();
 
-    try {
-      return await this.executePhased(input, playerRelationships, allNpcs);
-    } catch (phasedError) {
-      const msg = phasedError instanceof Error ? phasedError.message : String(phasedError);
-      console.warn(`[EncounterArchitect] Phased generation failed for ${input.sceneId}, falling back to legacy flow: ${msg}`);
+    // G12: a SUSTAINED set piece must ship ≥3 top-level beats — the runtime
+    // converter emits exactly one phase and synthesizes one tension-curve point
+    // per top-level beat, so the set-piece depth gate (phases>=2 || curve>=3)
+    // is only satisfiable that way. The phased flow structurally produces ONE
+    // top-level beat (an opening beat + nested choice trees), so a siege
+    // through it ALWAYS collapses (endsong ep3). Route sustained set pieces
+    // straight to the flat multi-beat flow, which enforces the 3-beat floor.
+    const isSustained = this.isSustainedSetPieceInput(input);
+    if (isSustained) {
+      console.info(`[EncounterArchitect] ${input.sceneId} is staged as a sustained set piece — using the flat multi-beat flow (the phased tree ships one top-level beat, which the set-piece depth gate rejects).`);
+    } else {
+      try {
+        return await this.executePhased(input, playerRelationships, allNpcs);
+      } catch (phasedError) {
+        const msg = phasedError instanceof Error ? phasedError.message : String(phasedError);
+        console.warn(`[EncounterArchitect] Phased generation failed for ${input.sceneId}, falling back to legacy flow: ${msg}`);
+      }
     }
 
     // Legacy fallback: lean prompt → retry → deterministic
@@ -1752,6 +1834,7 @@ ${input.priorStateContext.significantChoices.length > 0 ? `Prior choices: ${inpu
 - Skills: ${skillsList}
 - Beat Plan:
 ${beatPlan}
+${this.buildAuthoredAnchorSection(input)}
 
 ## Story: ${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})
 ${input.storyContext.userPrompt ? `User instructions: ${input.storyContext.userPrompt}` : ''}
@@ -3905,6 +3988,18 @@ CRITICAL RULES:
       );
     }
 
+    // G12 backstop: a sustained set piece needs ≥3 TOP-LEVEL beats — nested
+    // choice trees don't count, because the runtime converter emits one phase
+    // and one tension-curve point per top-level beat, and the set-piece depth
+    // gate requires phases>=2 || curve>=3. Rejecting here sends the attempt to
+    // the retry/fallback ladder instead of shipping a collapsed siege.
+    if (this.isSustainedSetPieceInput(input) && structure.beats.length < 3) {
+      throw new Error(
+        `Encounter is staged as a sustained set piece but has only ${structure.beats.length} top-level beat(s); ` +
+        `it needs at least 3 escalating beats (e.g. breach → repulse → decisive choice) to dramatize the sequence.`
+      );
+    }
+
     // Enforce minimum 3 choices per top-level beat
     for (const beat of structure.beats) {
       const choiceCount = beat.choices?.length || 0;
@@ -4231,6 +4326,7 @@ CRITICAL RULES:
 - Difficulty: ${input.difficulty}
 - Stakes: ${input.encounterStakes || 'Keep stakes personal'}
 - Skills: ${skillsList}
+${this.buildAuthoredAnchorSection(input)}
 
 ## Story: ${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})
 

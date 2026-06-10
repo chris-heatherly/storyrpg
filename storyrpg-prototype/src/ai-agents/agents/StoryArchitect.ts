@@ -2094,7 +2094,10 @@ ${sceneEpisodeMode}
     return {
       id: scene.id,
       type: enc.type,
-      description: scene.title || scene.dramaticPurpose,
+      // Prefer the FULL authored description — scene.title is a truncated
+      // display label, and feeding it here staged the G12 endsong siege from
+      // the fragment "…a sustained defensive set piece (wall bre".
+      description: enc.description || scene.title || scene.dramaticPurpose,
       difficulty: enc.difficulty,
       npcsInvolved: scene.npcsInvolved ?? [],
       stakes: scene.stakes ?? '',

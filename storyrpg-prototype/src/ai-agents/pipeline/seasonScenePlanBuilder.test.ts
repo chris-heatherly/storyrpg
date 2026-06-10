@@ -86,6 +86,41 @@ describe('buildSeasonScenePlan', () => {
     expect(encounterScenes[0].narrativeRole).toBe('turn');
   });
 
+  it('preserves the full authored encounter description and truncates titles at word boundaries', () => {
+    // G12 endsong: the siege anchor was sliced mid-word ("…(wall bre") for the
+    // title and the full description was lost, starving EncounterArchitect.
+    const longDescription =
+      'The siege itself — a sustained defensive set piece (wall breach + repulse) culminating in the strategic choice to evacuate.';
+    const centralConflict = "Aethavyr's flawless-protector image is eroded by an unwinnable situation.";
+    const ep = episode(3, ['climax'], {
+      plannedEncounters: [
+        {
+          id: 'treatment-enc-3-1',
+          type: 'combat',
+          description: longDescription,
+          difficulty: 'hard',
+          npcsInvolved: ['aethavyr'],
+          stakes: 'The fort, supplies, lives',
+          relevantSkills: ['resolve'],
+          centralConflict,
+          isBranchPoint: false,
+        },
+      ],
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const enc = sp.scenes.find((s) => s.id === 'treatment-enc-3-1')!;
+
+    // Full description survives on the encounter sub-object.
+    expect(enc.encounter?.description).toBe(longDescription);
+    // The brief carries the authored content, not role boilerplate.
+    expect(enc.dramaticPurpose).toContain(longDescription);
+    expect(enc.dramaticPurpose).toContain(centralConflict);
+    // The display title is short and never cut mid-word.
+    expect(enc.title.length).toBeLessThanOrEqual(60);
+    expect(enc.title).not.toMatch(/\(wall bre$/);
+    expect(enc.title.endsWith('…')).toBe(true);
+  });
+
   it('wires forward setup/payoff edges from consequence chains', () => {
     const p = plan([episode(1, ['hook']), episode(2, ['midpoint']), episode(3, ['climax'])], {
       consequenceChains: [

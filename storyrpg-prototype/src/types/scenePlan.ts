@@ -100,6 +100,14 @@ export interface RequiredBeat {
 export interface PlannedSceneEncounter {
   /** What kind of encounter. */
   type: EncounterCategory;
+  /**
+   * The FULL authored encounter description from the treatment/season plan.
+   * The scene's `title` is a truncated label — this is what downstream
+   * generation (the encounter directive → EncounterArchitect) must receive.
+   * G12 endsong: losing this to the 60-char title staged the siege from the
+   * fragment "…a sustained defensive set piece (wall bre".
+   */
+  description?: string;
   /** Optional narrative style layer for non-combat parity. */
   style?: 'action' | 'social' | 'romantic' | 'dramatic' | 'mystery' | 'stealth' | 'adventure' | 'mixed';
   /** Difficulty relative to story progression. */

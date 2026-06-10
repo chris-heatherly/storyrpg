@@ -11,7 +11,8 @@
  *   [ ] EpisodeArchitecturePhase, BranchAnalysisPhase
  *   [ ] ContentGenerationPhase
  *   [ ] QuickValidationPhase
- *   [ ] QAPhase
+ *   [x] QAPhase           (wired — QA + best practices parallel block,
+ *                          repair loop, runQualityAssurance)
  *   [x] ImagePhase          (MasterImagePhase + SceneImagePhase +
  *                            EncounterImagePhase wired)
  *   [x] VideoPhase          (wired — beat selection, direction, clip generation)

@@ -30,8 +30,7 @@ import {
   DEFAULT_SKILLS,
   CONCURRENCY_DEFAULTS,
 } from '../../constants/pipeline';
-import { 
-  QA_DEFAULTS,
+import {
   TEXT_LIMITS,
   INCREMENTAL_VALIDATION_DEFAULTS,
   BEST_OF_N_DEFAULTS,
@@ -42,7 +41,7 @@ import { resolveCharacterProfile } from '../utils/characterProfileResolver';
 import { StoryArchitect, StoryArchitectInput, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
-import { QARunner, QAReport, QARunnerOptions, ContinuityChecker, type ContinuityIssue, recomputeContinuityIssueCount, deriveContinuityScore, recomputeQAReportDerived } from '../agents/QAAgents';
+import { QARunner, QAReport, ContinuityChecker, type ContinuityIssue, recomputeContinuityIssueCount, deriveContinuityScore, recomputeQAReportDerived } from '../agents/QAAgents';
 import { SourceMaterialAnalyzer, SourceMaterialInput } from '../agents/SourceMaterialAnalyzer';
 import { SeasonPlan } from '../../types/seasonPlan';
 import type { CharacterFashionStyle } from '../../types/sourceAnalysis';
@@ -185,6 +184,7 @@ import { VideoPhase, bindGeneratedVideoToStory } from './phases/VideoPhase';
 import { MasterImagePhase } from './phases/MasterImagePhase';
 import { SceneImagePhase } from './phases/SceneImagePhase';
 import { EncounterImagePhase } from './phases/EncounterImagePhase';
+import { QAPhase } from './phases/QAPhase';
 import {
   createOutputDirectory,
   ensureDirectory,
@@ -5573,276 +5573,20 @@ export class FullStoryPipeline {
 
       // === PHASE 5: QUALITY ASSURANCE ===
       await this.checkCancellation();
-      let qaReport: QAReport | undefined;
-      let bestPracticesReport: ComprehensiveValidationReport | undefined;
       let finalStoryContractReport: FinalStoryContractReport | undefined;
 
-      if (brief.options?.runQA !== false) {
-        this.emit({ type: 'phase_start', phase: 'qa', message: 'Phase 5: Running quality assurance' });
-        this.requirePhases('qa', ['content_generation']);
-
-        // Run QA and best practices validation in parallel (including encounters)
-        const validationInput = this.prepareValidationInput(
-          sceneContents,
-          choiceSets,
-          characterBible,
-          encounters
-        );
-
-        const [qaResult, bpResult] = await this.measurePhase('qa', () => Promise.all([
-          this.runQualityAssurance(
-            brief,
-            sceneContents,
-            choiceSets,
-            characterBible,
-            episodeBlueprint
-          ),
-          this.config.validation.enabled
-            ? this.integratedValidator.runFullValidation(validationInput)
-            : Promise.resolve(undefined),
-        ]));
-
-        qaReport = qaResult;
-        bestPracticesReport = bpResult;
-        this.markPhaseComplete('qa');
-
-        this.addCheckpoint('QA Report', qaReport, qaReport.passesQA === false);
-
-        if (bestPracticesReport) {
-          this.addCheckpoint('Best Practices Report', bestPracticesReport, !bestPracticesReport.overallPassed);
-          this.emit({
-            type: 'phase_complete',
-            phase: 'best_practices',
-            message: `Best Practices Score: ${bestPracticesReport.overallScore}/100 - ${bestPracticesReport.overallPassed ? 'PASSED' : 'NEEDS REVIEW'}`,
-            data: {
-              score: bestPracticesReport.overallScore,
-              errors: bestPracticesReport.blockingIssues.length,
-              warnings: bestPracticesReport.warnings.length,
-              suggestions: bestPracticesReport.suggestions.length,
-            },
-          });
+      // QA phase extracted to phases/QAPhase.ts (pure move): QARunner + best
+      // practices in parallel, the choice-distribution checkpoint, the
+      // QA-driven targeted repair loop, and the threshold warning. Repairs
+      // mutate sceneContents/choiceSets in place via the shared array refs.
+      const { qaReport, bestPracticesReport } = await this.qaPhase().run(
+        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
+        {
+          config: this.config,
+          emit: (event) => this.emit(event),
+          addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
         }
-
-        // Phase 4.3: Wire ChoiceDistributionValidator into FullStoryPipeline
-        try {
-          const distributionInput = {
-            choiceSets: choiceSets.map(cs => ({
-              beatId: cs.beatId,
-              choiceType: cs.choiceType,
-              hasBranching: cs.choices.some(c => c.nextSceneId),
-            })),
-            targets: {
-              // Defaults match the canonical 35/30/20/15 taxonomy (was 25/10 here — the lone
-              // divergent site; every other caller uses 20/15).
-              expression: this.config.generation?.choiceDistExpression ?? 35,
-              relationship: this.config.generation?.choiceDistRelationship ?? 30,
-              strategic: this.config.generation?.choiceDistStrategic ?? 20,
-              dilemma: this.config.generation?.choiceDistDilemma ?? 15,
-            },
-            maxBranchingChoicesPerEpisode: this.config.generation?.maxBranchingChoicesPerEpisode ?? 3,
-          };
-          const distributionResult = this.distributionValidator.validate(distributionInput);
-          const distributionMetrics = this.distributionValidator.computeMetrics(distributionInput);
-          this.emit({
-            type: 'checkpoint',
-            phase: 'choice_distribution',
-            message:
-              `Choice Distribution: ${distributionResult.score}/100 — ` +
-              Object.entries(distributionMetrics.actualPercentages)
-                .map(([t, pct]) => `${t}: ${pct.toFixed(0)}%`)
-                .join(', ') +
-              ` | branching: ${distributionMetrics.branchingCount}/${distributionMetrics.branchingCap} cap`,
-            data: { distributionResult, metrics: distributionMetrics },
-          });
-        } catch (err) {
-          this.emit({
-            type: 'warning',
-            phase: 'choice_distribution',
-            message: `ChoiceDistributionValidator failed: ${err instanceof Error ? err.message : String(err)}`,
-          });
-        }
-
-        const threshold = brief.options?.qaThreshold || QA_DEFAULTS.defaultThreshold;
-        const maxQARepairPasses = brief.options?.maxQARepairPasses ?? 2;
-
-        for (let qaRepairPass = 0; qaRepairPass < maxQARepairPasses; qaRepairPass++) {
-          if (qaReport.passesQA && qaReport.criticalIssues.length === 0) break;
-
-          // === KARPATHY LOOP: QA-driven targeted repair ===
-          const previousScore = qaReport.overallScore;
-          this.emit({
-            type: 'phase_start',
-            phase: 'qa_repair',
-            message: `QA repair pass ${qaRepairPass + 1}/${maxQARepairPasses}: score ${qaReport.overallScore}/100, ${qaReport.criticalIssues.length} critical issue(s)`,
-          });
-
-          let repairsMade = 0;
-
-          // Repair scenes with continuity errors
-          if (qaReport.continuity && qaReport.continuity.issues.length > 0) {
-            const errorIssues = qaReport.continuity.issues.filter(i => i.severity === 'error');
-            const affectedSceneIds = new Set(errorIssues.map(i => i.location.sceneId));
-
-            for (const sceneId of affectedSceneIds) {
-              const sceneIssues = errorIssues.filter(i => i.location.sceneId === sceneId);
-              const sceneIdx = sceneContents.findIndex(sc => sc.sceneId === sceneId);
-              if (sceneIdx === -1) continue;
-
-              const sceneBlueprint = episodeBlueprint.scenes.find(s => s.id === sceneId);
-              if (!sceneBlueprint || sceneBlueprint.isEncounter) continue;
-
-              const issueText = sceneIssues.map(i => `- ${i.description} (fix: ${i.suggestedFix})`).join('\n');
-              const location = worldBible.locations.find(l => l.id === sceneBlueprint.location);
-              const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
-
-              this.emit({
-                type: 'regeneration_triggered',
-                phase: 'qa_repair',
-                message: `Repairing scene ${sceneId}: ${sceneIssues.length} continuity error(s)`,
-              });
-
-              const repairResult = await withTimeout(this.sceneWriter.execute({
-                sceneBlueprint,
-                storyContext: {
-                  title: brief.story.title,
-                  genre: brief.story.genre,
-                  tone: brief.story.tone,
-                  userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL CONTINUITY FIXES REQUIRED:\n${issueText}`,
-                  worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
-                },
-                protagonistInfo: {
-                  name: brief.protagonist.name,
-                  pronouns: brief.protagonist.pronouns,
-                  description: protagonistProfile?.fullBackground || brief.protagonist.description,
-                  physicalDescription: protagonistProfile?.physicalDescription,
-                },
-                npcs: sceneBlueprint.npcsPresent.map(npcId => {
-                  const profile = resolveCharacterProfile(characterBible.characters, npcId);
-                  return {
-                    id: npcId,
-                    name: profile?.name || npcId,
-                    pronouns: profile?.pronouns || 'they/them',
-                    description: profile?.overview || '',
-                    physicalDescription: profile?.physicalDescription,
-                    voiceNotes: profile?.voiceProfile?.writingGuidance || '',
-                    currentMood: profile?.voiceProfile?.whenNervous,
-                  };
-                }),
-                relevantFlags: episodeBlueprint.suggestedFlags,
-                relevantScores: episodeBlueprint.suggestedScores,
-                targetBeatCount: this.getTargetBeatCountForScene(sceneBlueprint),
-                dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
-                incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
-                sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                memoryContext: this.cachedPipelineMemory || undefined,
-              }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneId} qa-repair-${qaRepairPass + 1})`);
-
-              if (repairResult.success && repairResult.data) {
-                repairResult.data.sceneId = sceneId;
-                repairResult.data.sceneName = repairResult.data.sceneName || sceneBlueprint.name;
-                repairResult.data.locationId = sceneContents[sceneIdx].locationId;
-                repairResult.data.settingContext = sceneContents[sceneIdx].settingContext;
-                repairResult.data.branchType = sceneContents[sceneIdx].branchType;
-                repairResult.data.isBottleneck = sceneContents[sceneIdx].isBottleneck;
-                repairResult.data.isConvergencePoint = sceneContents[sceneIdx].isConvergencePoint;
-                sceneContents[sceneIdx] = repairResult.data;
-                repairsMade++;
-              }
-            }
-          }
-
-          // Repair choices with false choices / weak stakes
-          if (qaReport.stakes && qaReport.stakes.metrics.falseChoiceCount > 0) {
-            const weakChoiceSets = qaReport.stakes.choiceSetAnalysis
-              .filter(cs => cs.stakesScore < 50)
-              .slice(0, 3);
-
-            for (const weakCs of weakChoiceSets) {
-              const csIdx = choiceSets.findIndex(cs => cs.beatId === weakCs.beatId);
-              if (csIdx === -1) continue;
-
-              const sceneBlueprint = episodeBlueprint.scenes.find(s => s.choicePoint);
-              if (!sceneBlueprint) continue;
-
-              const beat = sceneContents.flatMap(sc => sc.beats).find(b => b.id === weakCs.beatId);
-              if (!beat) continue;
-
-              this.emit({
-                type: 'regeneration_triggered',
-                phase: 'qa_repair',
-                message: `Repairing weak choice set at beat ${weakCs.beatId} (stakes: ${weakCs.stakesScore}/100)`,
-              });
-
-              const repairChoiceResult = await withTimeout(this.choiceAuthor.execute({
-                sceneBlueprint,
-                beatText: beat.text,
-                beatId: beat.id,
-                storyContext: {
-                  title: brief.story.title,
-                  genre: brief.story.genre,
-                  tone: brief.story.tone,
-                  userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - QA found these stakes issues: ${weakCs.analysis}. Improvements needed: ${weakCs.improvements.join('; ')}`,
-                  worldContext: this.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneBlueprint.location)?.fullDescription),
-                },
-                protagonistInfo: {
-                  name: brief.protagonist.name,
-                  pronouns: brief.protagonist.pronouns,
-                },
-                npcsInScene: this.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
-                availableFlags: episodeBlueprint.suggestedFlags,
-                availableScores: episodeBlueprint.suggestedScores,
-                availableTags: episodeBlueprint.suggestedTags,
-                possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
-                  const scene = episodeBlueprint.scenes.find(s => s.id === id);
-                  return { id, name: scene?.name || id, description: scene?.description || '' };
-                }),
-                optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
-                sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                memoryContext: this.cachedPipelineMemory || undefined,
-                storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
-              }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${weakCs.beatId} qa-repair-${qaRepairPass + 1})`);
-
-              if (repairChoiceResult.success && repairChoiceResult.data) {
-                choiceSets[csIdx] = repairChoiceResult.data;
-                repairsMade++;
-              }
-            }
-          }
-
-          if (repairsMade > 0) {
-            this.emit({
-              type: 'debug',
-              phase: 'qa_repair',
-              message: `Pass ${qaRepairPass + 1}: made ${repairsMade} repair(s), re-running QA`,
-            });
-
-            qaReport = await this.runQualityAssurance(
-              brief, sceneContents, choiceSets, characterBible, episodeBlueprint
-            );
-
-            this.emit({
-              type: 'phase_complete',
-              phase: 'qa_repair',
-              message: `QA repair pass ${qaRepairPass + 1}: ${qaReport.overallScore}/100 (was ${previousScore}/100), ${qaReport.passesQA ? 'PASSES' : 'still below threshold'}`,
-            });
-          } else {
-            this.emit({
-              type: 'phase_complete',
-              phase: 'qa_repair',
-              message: `QA repair pass ${qaRepairPass + 1}: no repairable issues found`,
-            });
-            break;
-          }
-        }
-
-        if (qaReport.overallScore < threshold) {
-          this.emit({
-            type: 'warning',
-            phase: 'qa',
-            message: `QA score ${qaReport.overallScore} below threshold ${threshold} - story may need refinement`,
-          });
-        }
-      }
+      );
 
       await this.repairWeakCliffhangerBeforeImages(
         brief,
@@ -9458,6 +9202,9 @@ export class FullStoryPipeline {
     }
   }
 
+  // Extracted to phases/QAPhase.ts (pure move): the QARunner full-QA pass
+  // with incremental-validation skip stubs. Thin delegating wrapper keeps the
+  // per-episode QA pass in the multi-episode loop unchanged.
   private async runQualityAssurance(
     brief: FullCreativeBrief,
     sceneContents: SceneContent[],
@@ -9465,112 +9212,40 @@ export class FullStoryPipeline {
     characterBible: CharacterBible,
     blueprint: EpisodeBlueprint
   ): Promise<QAReport> {
-    const qaStepTotal = 3;
-    this.emitPhaseProgress('qa', 0, qaStepTotal, 'qa:steps', 'Preparing quality assurance checks...');
-    // Determine which checks to skip based on incremental validation
-    const skipRedundantQA = brief.options?.skipRedundantQA !== false && this.incrementalValidator !== null;
-    
-    const qaOptions: QARunnerOptions = {};
-    
-    if (skipRedundantQA && this.sceneValidationResults.length > 0) {
-      // Calculate issue counts from incremental validation
-      const aggregated = aggregateValidationResults(this.sceneValidationResults);
-
-      // Flatten actual incremental issues so the skip stubs carry them into
-      // the QA report instead of reporting `issues: []`. Without this, any
-      // run with `skipRedundantQA: true` silently discards everything that
-      // the incremental validators caught.
-      const voiceIssues: NonNullable<QARunnerOptions['incrementalResults']>['voiceIssues'] = [];
-      const stakesIssues: NonNullable<QARunnerOptions['incrementalResults']>['stakesIssues'] = [];
-      for (const sceneResult of this.sceneValidationResults) {
-        if (sceneResult.voice?.issues) {
-          for (const iss of sceneResult.voice.issues) {
-            voiceIssues.push({
-              sceneId: sceneResult.sceneId,
-              beatId: iss.beatId,
-              characterId: iss.characterId,
-              characterName: iss.characterName,
-              severity: iss.severity,
-              issue: iss.issue,
-              suggestion: iss.suggestion,
-            });
-          }
-        }
-        if (sceneResult.stakes?.issues) {
-          for (const iss of sceneResult.stakes.issues) {
-            stakesIssues.push({
-              sceneId: sceneResult.sceneId,
-              choiceSetId: iss.choiceId,
-              severity: iss.severity,
-              issue: iss.issue,
-              suggestion: iss.suggestion,
-            });
-          }
-        }
-      }
-
-      qaOptions.skipVoiceValidation = true;
-      qaOptions.skipStakesAnalysis = true;
-      qaOptions.continuityFocusCrossScene = true;
-      qaOptions.incrementalResults = {
-        voiceIssueCount: aggregated.totalIssues.voice,
-        stakesIssueCount: aggregated.totalIssues.stakes,
-        continuityIssueCount: aggregated.totalIssues.continuity,
-        voiceIssues,
-        stakesIssues,
-      };
-      
-      this.emit({ 
-        type: 'debug', 
-        agent: 'QARunner', 
-        message: `Skipping redundant QA checks (voice: ${aggregated.totalIssues.voice} issues, stakes: ${aggregated.totalIssues.stakes} issues caught incrementally)` 
-      });
-    }
-    this.emitPhaseProgress('qa', 1, qaStepTotal, 'qa:steps', 'QA input bundle prepared');
-
-    this.emit({ type: 'agent_start', agent: 'QARunner', message: 'Running quality assurance checks' });
-
-    const characterKnowledge = this.buildContinuityCharacterKnowledge(characterBible);
-    const timelineEvents = this.buildContinuityTimeline(blueprint);
-
-    const report = await this.qaRunner.runFullQA({
-      sceneContents,
-      choiceSets,
-      characterProfiles: characterBible.characters.map(c => ({
-        id: c.id,
-        name: c.name,
-        voiceProfile: c.voiceProfile,
-      })),
-      knownFlags: blueprint.suggestedFlags,
-      knownScores: blueprint.suggestedScores,
-      // Ground continuity in character-capability canon so it reliably flags
-      // "character does something they can't" (the scholar-doing-blade-work bug).
-      establishedFacts: capabilityFactStrings(characterBible.characters),
-      storyThemes: brief.story.themes,
-      targetTone: brief.story.tone,
-      sceneContexts: blueprint.scenes.map(s => ({
-        sceneId: s.id,
-        sceneName: s.name,
-        mood: s.mood,
-        narrativeFunction: s.narrativeFunction,
-      })),
-      characterKnowledge,
-      timelineEvents,
-    }, qaOptions);
-    this.emitPhaseProgress('qa', 2, qaStepTotal, 'qa:steps', 'QA analysis complete');
-
-    const skippedMsg = report.skippedChecks && report.skippedChecks.length > 0 
-      ? ` (skipped: ${report.skippedChecks.join(', ')})` 
-      : '';
-
-    this.emit({
-      type: 'agent_complete',
-      agent: 'QARunner',
-      message: `QA Score: ${report.overallScore}/100 - ${report.passesQA ? 'PASSED' : 'NEEDS REVISION'}${skippedMsg}`,
+    return this.qaPhase().runQualityAssurance(brief, sceneContents, choiceSets, characterBible, blueprint, {
+      config: this.config,
+      emit: (event) => this.emit(event),
+      addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
     });
-    this.emitPhaseProgress('qa', 3, qaStepTotal, 'qa:steps', 'QA report finalized');
+  }
 
-    return report;
+  private qaPhase(): QAPhase {
+    const deps = {
+      qaRunner: this.qaRunner,
+      integratedValidator: this.integratedValidator,
+      distributionValidator: this.distributionValidator,
+      sceneWriter: this.sceneWriter,
+      choiceAuthor: this.choiceAuthor,
+      requirePhases: (...args) => this.requirePhases(...args),
+      markPhaseComplete: (...args) => this.markPhaseComplete(...args),
+      measurePhase: (phase, fn) => this.measurePhase(phase, fn),
+      emitPhaseProgress: (...args) => this.emitPhaseProgress(...args),
+      prepareValidationInput: (...args) => this.prepareValidationInput(...args),
+      buildContinuityCharacterKnowledge: (...args) => this.buildContinuityCharacterKnowledge(...args),
+      buildContinuityTimeline: (...args) => this.buildContinuityTimeline(...args),
+      buildCompactWorldContext: (...args) => this.buildCompactWorldContext(...args),
+      getTargetBeatCountForScene: (...args) => this.getTargetBeatCountForScene(...args),
+      buildChoiceAuthorNpcs: (...args) => this.buildChoiceAuthorNpcs(...args),
+      deriveStoryVerbsForBrief: (...args) => this.deriveStoryVerbsForBrief(...args),
+    };
+    // Accessor-backed run-scoped state: reads on the phase side always see
+    // the pipeline's current values.
+    Object.defineProperties(deps, {
+      incrementalValidator: { get: () => this.incrementalValidator },
+      sceneValidationResults: { get: () => this.sceneValidationResults },
+      cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
+    });
+    return new QAPhase(deps);
   }
 
   /**

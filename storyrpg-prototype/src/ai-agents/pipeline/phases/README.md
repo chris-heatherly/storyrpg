@@ -65,8 +65,15 @@ we touch the hard dependency-heavy phases):
      injected as closures; `wireEncounterTreeImages` and the provider
      preflight stay in the monolith with their callers (assembly /
      call-site regions).
-8. [ ] `QAPhase` — `QARunner` + `IntegratedBestPracticesValidator` in
-   parallel.
+8. [x] `QAPhase` — **wired** (2026-06-10): the Phase 5 block (QARunner +
+   `IntegratedBestPracticesValidator` in parallel, choice-distribution
+   checkpoint, the QA-driven targeted repair loop with SceneWriter/
+   ChoiceAuthor re-authoring, threshold warning) plus `runQualityAssurance`
+   with its incremental-validation skip stubs. `runQualityAssurance` stays
+   publicly callable for the multi-episode loop's per-episode QA pass.
+   Run-scoped incremental-validation state (incrementalValidator,
+   sceneValidationResults, cachedPipelineMemory) is accessor-backed;
+   repairs mutate the shared sceneContents/choiceSets arrays in place.
 9. [ ] `QuickValidationPhase` — fast validator gate before QA.
 10. [ ] `ContentGenerationPhase` — scene + choice + encounter generation
     loop. Hardest phase; candidate for real scene-wave parallelism once

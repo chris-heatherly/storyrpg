@@ -296,7 +296,16 @@ const baselines = {
   // (typed, smoke tested); thin delegating wrapper keeps all three call
   // sites unchanged. wireEncounterTreeImages and the provider preflight
   // stay with their callers. Prompt snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 17853,
+  //
+  // -325 (17853 -> 17528): decomposition PR 8 — the QA phase (the Phase 5
+  // QARunner + IntegratedBestPracticesValidator parallel block, the
+  // choice-distribution checkpoint, the QA-driven targeted repair loop, the
+  // threshold warning, and runQualityAssurance with its incremental skip
+  // stubs) moved to phases/QAPhase.ts (typed, smoke tested). Thin delegating
+  // wrappers keep both call sites (single-episode generate, per-episode QA
+  // in the multi-episode loop) unchanged; run-scoped incremental-validation
+  // state is accessor-backed. Prompt snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 17528,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

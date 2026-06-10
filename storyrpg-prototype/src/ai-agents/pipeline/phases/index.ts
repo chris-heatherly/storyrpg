@@ -6,7 +6,7 @@
  *
  * MIGRATION STATUS (see phases/README.md for full tracker):
  *   [x] SavingPhase         (this package)
- *   [x] WorldBuildingPhase  (scaffold — not yet wired)
+ *   [x] WorldBuildingPhase  (wired — delegated from runWorldBuilding)
  *   [ ] CharacterDesignPhase, NPCDepthValidationPhase
  *   [ ] EpisodeArchitecturePhase, BranchAnalysisPhase
  *   [ ] ContentGenerationPhase

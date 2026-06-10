@@ -18,9 +18,12 @@ we touch the hard dependency-heavy phases):
 
 1. [x] `SavingPhase` — wraps `savePipelineOutputs` with timeout + warning
    event contract. Wired in at the end of `runEpisodeForStoryBundle`.
-2. [x] `WorldBuildingPhase` — scaffolded; **NOT wired** yet because the
-   monolith still instantiates `WorldBuilder` directly. Follow-up: replace
-   inline call in `FullStoryPipeline` with `new WorldBuildingPhase().run(...)`.
+2. [x] `WorldBuildingPhase` — **wired** (2026-06-09): faithful port of
+   `runWorldBuilding` (memoryContext, locationIntroductions, withTimeout,
+   PipelineError) behind a thin delegating wrapper covering all three call
+   sites. `PipelineError` moved to `pipeline/errors.ts` so phases can throw it
+   without importing the monolith. Verified prompt-snapshot byte-identical
+   (see `FullStoryPipeline.promptSnapshot.test.ts` + `__goldens__/`).
 3. [ ] `AudioPhase` — extract the `config.narration.preGenerateAudio`
    block that runs right after `SavingPhase`.
 4. [ ] `BrowserQAPhase` — extract Playwright QA runner invocation.

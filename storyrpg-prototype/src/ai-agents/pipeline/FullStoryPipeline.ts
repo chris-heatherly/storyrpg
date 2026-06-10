@@ -178,6 +178,7 @@ import {
 } from './continuityRepair';
 import type { EpisodeStateSnapshot } from './episodeStateSnapshot';
 import { SavingPhase } from './phases/SavingPhase';
+import { WorldBuildingPhase } from './phases/WorldBuildingPhase';
 import {
   createOutputDirectory,
   ensureDirectory,
@@ -384,48 +385,10 @@ import { repairLostSceneGraphBranches } from './branchRepair';
 export type { OutputManifest } from '../utils/pipelineOutputWriter';
 export type { PipelineEvent } from './events';
 
-/**
- * Custom error class for pipeline errors with enhanced context
- */
-export class PipelineError extends Error {
-  public readonly phase: string;
-  public readonly agent?: string;
-  public readonly context?: Record<string, unknown>;
-  public readonly originalError?: Error;
-
-  constructor(
-    message: string,
-    phase: string,
-    options?: {
-      agent?: string;
-      context?: Record<string, unknown>;
-      originalError?: Error;
-    }
-  ) {
-    super(message);
-    this.name = 'PipelineError';
-    this.phase = phase;
-    this.agent = options?.agent;
-    this.context = options?.context;
-    this.originalError = options?.originalError;
-    
-    // Capture stack trace
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, PipelineError);
-    }
-  }
-
-  toJSON() {
-    return {
-      name: this.name,
-      message: this.message,
-      phase: this.phase,
-      agent: this.agent,
-      context: this.context,
-      stack: this.stack,
-    };
-  }
-}
+// PipelineError moved to ./errors (pure move) so pipeline/phases/* can use it
+// without importing this monolith. Re-exported here for existing consumers.
+import { PipelineError } from './errors';
+export { PipelineError };
 
 // Full creative brief for complete story generation
 export interface FullCreativeBrief {
@@ -7004,61 +6967,27 @@ export class FullStoryPipeline {
     }
   }
 
+  // Extracted to phases/WorldBuildingPhase.ts (pure move). This thin wrapper
+  // keeps all three call sites (single-episode, world retry, multi-episode)
+  // unchanged while the body lives in the typed phase module.
   private async runWorldBuilding(brief: FullCreativeBrief): Promise<WorldBible> {
-    this.emit({ type: 'agent_start', agent: 'WorldBuilder', message: 'Creating world bible' });
-
-    // Debug: Log the locations being sent to WorldBuilder
-    this.emit({ type: 'debug', phase: 'world', message: `Sending ${brief.world.keyLocations.length} locations to WorldBuilder` });
-    if (this.config.debug) {
-      brief.world.keyLocations.forEach((loc, i) => {
-        this.emit({ type: 'debug', phase: 'world', message: `  ${i + 1}. ${loc.id}: "${loc.name}" (${loc.importance})` });
-      });
-    }
-    this.emit({ type: 'debug', phase: 'world', message: `Starting location ID: ${brief.episode.startingLocation}` });
-
-    const result = await withTimeout(this.worldBuilder.execute({
-      storyContext: {
-        ...brief.story,
+    return new WorldBuildingPhase(this.worldBuilder).run(
+      {
+        story: brief.story,
         userPrompt: brief.userPrompt,
+        world: brief.world,
+        startingLocationId: brief.episode.startingLocation,
+        rawDocument: brief.rawDocument,
+        memoryContext: this.cachedPipelineMemory || undefined,
+        locationIntroductions: brief.seasonPlan?.locationIntroductions,
+        debug: this.config.debug,
       },
-      worldPremise: brief.world.premise,
-      timePeriod: brief.world.timePeriod,
-      technologyLevel: brief.world.technologyLevel,
-      magicSystem: brief.world.magicSystem,
-      locationsToCreate: brief.world.keyLocations.map(loc => ({
-        id: loc.id,
-        name: loc.name,
-        type: loc.type,
-        briefDescription: loc.description,
-        importance: loc.importance,
-      })),
-      rawDocument: brief.rawDocument,
-      memoryContext: this.cachedPipelineMemory || undefined,
-      locationIntroductions: brief.seasonPlan?.locationIntroductions,
-    }), PIPELINE_TIMEOUTS.llmAgent, 'WorldBuilder.execute');
-
-    if (!result || !result.success || !result.data) {
-      console.error(`[Pipeline] World Builder failed with error:`, result.error);
-      throw new PipelineError(
-        `World Builder failed: ${result.error}`,
-        'world_building',
-        {
-          agent: 'WorldBuilder',
-          context: {
-            locationsRequested: brief.world.keyLocations.length,
-            premise: brief.world.premise?.substring(0, 100),
-          },
-        }
-      );
-    }
-
-    this.emit({
-      type: 'agent_complete',
-      agent: 'WorldBuilder',
-      message: `Created ${result.data.locations.length} locations, ${result.data.factions.length} factions`,
-    });
-
-    return result.data;
+      {
+        config: this.config,
+        emit: (event) => this.emit(event),
+        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+      }
+    );
   }
 
   private async runCharacterDesign(

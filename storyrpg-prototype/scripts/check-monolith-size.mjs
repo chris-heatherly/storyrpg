@@ -250,7 +250,12 @@ const baselines = {
   // runs could never pass it), added with the Phase-0 refactor safety net.
   // From here the decomposition plan (docs/PIPELINE_REFACTOR_PLAN.md) lowers
   // this baseline with every extraction PR.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 23309,
+  //
+  // -71 (23309 -> 23238): decomposition PR 1 — PipelineError extracted to
+  // pipeline/errors.ts; runWorldBuilding body moved to the (now wired)
+  // phases/WorldBuildingPhase.ts, leaving a thin delegating wrapper.
+  // Verified prompt-snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 23238,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

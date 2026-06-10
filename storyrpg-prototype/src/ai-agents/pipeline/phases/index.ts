@@ -8,7 +8,8 @@
  *   [x] SavingPhase         (this package)
  *   [x] WorldBuildingPhase  (wired — delegated from runWorldBuilding)
  *   [ ] CharacterDesignPhase, NPCDepthValidationPhase
- *   [ ] EpisodeArchitecturePhase, BranchAnalysisPhase
+ *   [x] EpisodeArchitecturePhase, BranchAnalysisPhase (wired — blueprint
+ *                          generation + retry, branch analysis + topology)
  *   [ ] ContentGenerationPhase
  *   [x] QuickValidationPhase (wired — fast validator gate, escalation,
  *                          targeted repair, blocking ValidationError)

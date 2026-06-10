@@ -96,8 +96,18 @@ we touch the hard dependency-heavy phases):
 10. [ ] `ContentGenerationPhase` — scene + choice + encounter generation
     loop. Hardest phase; candidate for real scene-wave parallelism once
     extracted (see plan Phase 4).
-11. [ ] `EpisodeArchitecturePhase` + `BranchAnalysisPhase` — splits the
-    current `runStoryArchitect` block.
+11. [x] `EpisodeArchitecturePhase` + `BranchAnalysisPhase` — **wired**
+    (2026-06-10): `runEpisodeArchitecture` (season-plan directives +
+    StoryArchitect input assembly, the bounded branch-repair retry loop,
+    the season-budgeted choice-type rebalance, generation-plan scene
+    seeding, B0/B1 advisory-vs-blocking craft-warning classification) and
+    `runBranchAnalysis` (BranchManager, deterministic topology cross-check,
+    I5 shadow diff; advisory — returns null on failure). The generate()-side
+    blocks (resume checkpoint + PhaseValidator retry loop) stay in the
+    monolith with the resume state; thin delegating wrappers keep all call
+    sites unchanged. seasonChoicePlan (written by the architecture phase),
+    generationPlan, architectAdvisoryWarnings, cachedPipelineMemory, and
+    branchShadowDiffs are accessor-backed.
 12. [ ] `CharacterDesignPhase` + `NPCDepthValidationPhase`.
 
 Each extraction should:

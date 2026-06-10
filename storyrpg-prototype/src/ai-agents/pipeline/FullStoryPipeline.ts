@@ -21,10 +21,9 @@ import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 import { isUnsafeCallbackProse } from '../constants/metaProse';
 import { buildPriorEncounterOutcomes, buildContinueInLocation } from './scenePreventionContext';
 import { buildSceneTimelineHandoff, sceneTimelineMetaForScene } from '../utils/sceneTimeline';
-import { introducedNpcIds, forbiddenNpcNames, plannedIntroductionsForEpisode } from '../utils/npcIntroductionLedger';
+import { introducedNpcIds, forbiddenNpcNames } from '../utils/npcIntroductionLedger';
 import { 
   SCENE_DEFAULTS, 
-  clampSceneCount,
   TIMING_DEFAULTS, 
   CHARACTER_DEFAULTS,
   DEFAULT_SKILLS,
@@ -38,7 +37,7 @@ import {
 import { WorldBuilder, WorldBible } from '../agents/WorldBuilder';
 import { CharacterDesigner, CharacterBible, CharacterProfile } from '../agents/CharacterDesigner';
 import { resolveCharacterProfile } from '../utils/characterProfileResolver';
-import { StoryArchitect, StoryArchitectInput, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
+import { StoryArchitect, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, ContinuityChecker, type ContinuityIssue, recomputeContinuityIssueCount, deriveContinuityScore, recomputeQAReportDerived } from '../agents/QAAgents';
@@ -134,7 +133,6 @@ import {
   applyEventToPlan,
   computeOverallProgress,
   initPlan,
-  setEpisodeScenes,
   setSceneBeats,
   markEpisode,
   markSceneActive,
@@ -143,7 +141,6 @@ import {
 import { assignChoiceTypes } from './choiceTypePlanner';
 import {
   episodeTypeCounts,
-  seasonChoicePlanFromSeasonPlan,
   spineEntriesFromChoicePlan,
   type SeasonChoicePlan,
 } from './seasonChoicePlan';
@@ -187,6 +184,8 @@ import { EncounterImagePhase } from './phases/EncounterImagePhase';
 import { QAPhase } from './phases/QAPhase';
 import { QuickValidationPhase } from './phases/QuickValidationPhase';
 import { AssemblyPhase } from './phases/AssemblyPhase';
+import { EpisodeArchitecturePhase } from './phases/EpisodeArchitecturePhase';
+import { BranchAnalysisPhase } from './phases/BranchAnalysisPhase';
 import {
   createOutputDirectory,
   ensureDirectory,
@@ -325,7 +324,6 @@ import {
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import { runFidelityValidators, runFidelityValidatorsShadow, FIDELITY_VALIDATOR_FLAGS } from '../validators/runFidelityValidators';
-import { classifyArchitectGateWarnings } from '../remediation/architectGatePolicy';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { CallbackCoverageValidator } from '../validators/CallbackCoverageValidator';
 import { buildPropIntroductionInput } from '../remediation/propIntroductionGate';
@@ -369,13 +367,11 @@ import { LocalWorkerQueue, mapWithConcurrency } from '../utils/concurrency';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../utils/dependencyGraph';
 import { PipelineTelemetry, buildLlmCallObserver } from '../utils/pipelineTelemetry';
 import { analyzeBranchTopology } from '../utils/branchTopology';
-import { buildBranchShadowDiff } from '../utils/branchShadowDiff';
 import { getEncounterBeats } from '../utils/encounterImageCoverage';
 import { extractTreatmentFromMarkdown } from '../utils/treatmentExtraction';
 import { PROXY_CONFIG } from '../../config/endpoints';
 import {
   buildSceneSettingContext,
-  buildSeasonPlanDirectives,
   createCharacterBriefFromAnalysis,
   createEpisodeOptions,
   createWorldBriefFromAnalysis,
@@ -5954,210 +5950,34 @@ export class FullStoryPipeline {
     return result.data;
   }
 
+  // Extracted to phases/EpisodeArchitecturePhase.ts (pure move). Thin
+  // delegating wrapper keeps both call sites (initial + PhaseValidator retry)
+  // unchanged; seasonChoicePlan (written by the phase), generationPlan,
+  // architectAdvisoryWarnings, and cachedPipelineMemory are accessor-backed.
   private async runEpisodeArchitecture(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
     characterBible: CharacterBible
   ): Promise<EpisodeBlueprint> {
-    this.emit({ type: 'agent_start', agent: 'StoryArchitect', message: 'Creating episode blueprint' });
-
-    const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
-
-    // Build season plan directives for this specific episode
-    const seasonPlanDirectives = buildSeasonPlanDirectives(brief, (message) => {
-      console.warn(
-        `[Pipeline] Season plan has no entry for episode ${brief.episode.number} — available episodes: ${brief.seasonPlan?.episodes.map((e) => e.episodeNumber).join(', ')}`,
-      );
-      this.emit({ type: 'warning', phase: 'architecture', message });
-    });
-    if (seasonPlanDirectives) {
-      const encCount = seasonPlanDirectives.plannedEncounters?.length || 0;
-      const branchCount = seasonPlanDirectives.incomingBranchEffects?.length || 0;
-      this.emit({ 
-        type: 'debug', 
-        phase: 'architecture', 
-        message: `Season plan directives: ${encCount} planned encounters, ${branchCount} incoming branch effects, difficulty: ${seasonPlanDirectives.difficultyTier || 'unset'}`
-      });
-    }
-
-    // Look up the season-level structural context so StoryArchitect can
-    // populate its episode arc block against the correct beat(s).
-    const seasonPlan = brief.seasonPlan;
-    const seasonEpisode = seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number);
-
-    const architectureInput: StoryArchitectInput = {
-      storyTitle: brief.story.title,
-      genre: brief.story.genre,
-      synopsis: brief.story.synopsis,
-      tone: brief.story.tone,
-      userPrompt: brief.userPrompt,
-      episodeNumber: brief.episode.number,
-      episodeTitle: brief.episode.title,
-      episodeSynopsis: brief.episode.synopsis,
-      protagonistDescription: protagonistProfile?.fullBackground || brief.protagonist.description,
-      availableNPCs: characterBible.characters
-        .filter(c => c.id !== brief.protagonist.id)
-        .map(c => ({
-          id: c.id,
-          name: c.name,
-          description: c.overview,
-          relationshipContext: c.relationships.find(r => r.targetId === brief.protagonist.id)?.currentDynamic,
-          initialRelationship: c.initialStats,
-        })),
-      worldContext: worldBible.worldRules.join('. ') + ' ' + worldBible.tensions.join('. '),
-      currentLocation: brief.episode.startingLocation,
-      previousEpisodeSummary: brief.episode.previousSummary,
-      targetSceneCount: this.config.generation?.episodeStructureMode === 'sceneEpisodes'
-        ? (this.config.generation?.sceneEpisodeMaxScenes || 1)
-        : clampSceneCount(
-            brief.multiEpisode?.preferences?.targetScenesPerEpisode ||
-            this.config.generation?.maxScenesPerEpisode ||
-            this.config.generation?.targetSceneCount ||
-            brief.options?.targetSceneCount ||
-            6,
-          ),
-      majorChoiceCount: brief.multiEpisode?.preferences?.targetChoicesPerEpisode || this.config.generation?.majorChoiceCount || brief.options?.majorChoiceCount || 2,
-      pacing: brief.multiEpisode?.preferences?.pacing,
-      seasonPlanDirectives,
-      seasonAnchors: seasonPlan?.anchors,
-      seasonSevenPoint: seasonPlan?.sevenPoint,
-      episodeStructuralRole: seasonEpisode?.structuralRole,
-      cliffhangerPlan: seasonEpisode?.cliffhangerPlan,
-      // Characters this episode is planned to introduce — the blueprint gives
-      // each an on-page introduction beat (uncontextualized-character fix).
-      introducesCharacters: plannedIntroductionsForEpisode({
-        episodeNumber: brief.episode.number,
-        roster: characterBible.characters
-          .filter((c) => c.id !== brief.protagonist.id)
-          .map((c) => ({ id: c.id, name: c.name })),
-        introducesCharacters: seasonEpisode?.introducesCharacters,
-        characterIntroductions: seasonPlan?.characterIntroductions,
-      }),
-      memoryContext: this.cachedPipelineMemory || undefined,
+    const deps = {
+      storyArchitect: this.storyArchitect,
+      emitPlanUpdate: (message) => this.emitPlanUpdate(message),
+      getTargetBeatCountForScene: (...args) => this.getTargetBeatCountForScene(...args),
     };
-
-    let result: AgentResponse<EpisodeBlueprint> | undefined;
-    const maxArchitectureAttempts = 3;
-    for (let attempt = 1; attempt <= maxArchitectureAttempts; attempt += 1) {
-      result = await withTimeout(
-        this.storyArchitect.execute(architectureInput),
-        PIPELINE_TIMEOUTS.storyArchitect,
-        attempt === 1 ? 'StoryArchitect.execute' : `StoryArchitect.execute(branch-repair-${attempt})`
-      );
-
-      if (result.success && result.data) break;
-
-      const errorText = result.error || '';
-      const branchFailure =
-        errorText.includes('scene-graph branching') ||
-        errorText.includes('valid branch point') ||
-        errorText.includes('branches=true');
-      if (!branchFailure || attempt >= maxArchitectureAttempts) break;
-
-      this.emit({
-        type: 'regeneration_triggered',
-        phase: 'architecture',
-        message: `Retrying StoryArchitect for missing scene-graph branch (${attempt}/${maxArchitectureAttempts})`,
-        data: { error: result.error },
-      });
-
-      architectureInput.userPrompt =
-        `${architectureInput.userPrompt || ''}\n\nCRITICAL BLUEPRINT BRANCH REPAIR:\n` +
-        `The previous blueprint failed because it did not include a real scene-graph branch. ` +
-        `Add at least ${this.config.generation?.minSceneGraphBranchesPerEpisode ?? 1} non-expression choicePoint with branches=true, ` +
-        `at least two distinct future leadsTo scene IDs, branch scene incomingChoiceContext, and a later bottleneck/reconvergence scene.`;
-    }
-
-    if (!result.success || !result.data) {
-      throw new PipelineError(
-        `Story Architect failed: ${result.error}`,
-        'episode_architecture',
-        {
-          agent: 'StoryArchitect',
-          context: {
-            episodeNumber: brief.episode.number,
-            episodeTitle: brief.episode.title,
-            hasSeasonPlanDirectives: !!seasonPlanDirectives,
-          },
-        }
-      );
-    }
-
-    this.emit({
-      type: 'agent_complete',
-      agent: 'StoryArchitect',
-      message: `Created blueprint with ${result.data.scenes.length} scenes`,
+    Object.defineProperties(deps, {
+      cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
+      generationPlan: { get: () => this.generationPlan },
+      architectAdvisoryWarnings: { get: () => this.architectAdvisoryWarnings },
+      seasonChoicePlan: {
+        get: () => this.seasonChoicePlan,
+        set: (value) => { this.seasonChoicePlan = value; },
+      },
     });
-
-    // Rebalance choice-point types before ChoiceAuthor. The 35/30/20/15 mix is a SEASON
-    // budget (E1): build the season choice plan once from the season plan, then allocate
-    // THIS episode against its season-assigned slice (episodeTypeCounts) rather than forcing
-    // the full mix locally — so a lopsided-but-on-plan episode is correct, not a defect.
-    // Falls back to the default mix when the slice is empty (no season plan).
-    this.seasonChoicePlan = seasonChoicePlanFromSeasonPlan(brief.seasonPlan, {
-      episode: brief.episode.number,
-      choicesPerEpisode:
-        brief.multiEpisode?.preferences?.targetChoicesPerEpisode ||
-        this.config.generation?.majorChoiceCount ||
-        brief.options?.majorChoiceCount ||
-        2,
+    return new EpisodeArchitecturePhase(deps).run(brief, worldBible, characterBible, {
+      config: this.config,
+      emit: (event) => this.emit(event),
+      addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
     });
-    const episodeSlice = episodeTypeCounts(this.seasonChoicePlan, brief.episode.number);
-    const choiceTypeChanges = assignChoiceTypes(result.data.scenes as never, undefined, episodeSlice).filter((r) => r.from !== r.to);
-    if (choiceTypeChanges.length > 0) {
-      this.emit({ type: 'debug', phase: 'episode_architecture', message: `Rebalanced ${choiceTypeChanges.length} choice-point type(s) toward target taxonomy` });
-    }
-
-    // Fill this episode's scenes into the structure plan (estimate-then-fill:
-    // each scene is pre-seeded with its target beat count until SceneWriter runs).
-    if (this.generationPlan) {
-      setEpisodeScenes(
-        this.generationPlan,
-        brief.episode.number,
-        result.data.scenes.map((scene) => ({
-          id: scene.id,
-          title: scene.name,
-          expectedBeatCount: this.getTargetBeatCountForScene(scene),
-          isEncounter: Boolean(scene.isEncounter),
-        })),
-      );
-      this.emitPlanUpdate(`Episode ${brief.episode.number} blueprint: ${result.data.scenes.length} scenes`);
-    }
-
-    // Validator tiering (B1): the architect may now succeed despite advisory
-    // craft/fidelity issues that previously aborted the whole run. Surface them
-    // as warnings and record them so the story still ships with the issues
-    // visible (rather than producing zero output).
-    if (result.warnings && result.warnings.length > 0) {
-      // B0: a craft warning becomes blocking only when its per-rule GATE_* flag
-      // is set. With no flags set, `blocking` is always empty and `advisory`
-      // equals `result.warnings`, so the advisory behavior below is byte-for-byte
-      // unchanged from before B0.
-      const { blocking, advisory } = classifyArchitectGateWarnings(
-        result.warnings,
-        gateEnabledPredicate,
-      );
-      if (blocking.length > 0) {
-        throw new PipelineError(
-          `Architecture craft gate(s) failed after retries: ${blocking.slice(0, 3).join(' | ')}`,
-          'episode_architecture',
-          {
-            context: {
-              failureKind: 'architecture_craft_gate',
-              blockingWarnings: blocking.slice(0, 10),
-            },
-          }
-        );
-      }
-      this.architectAdvisoryWarnings.push(...advisory);
-      this.emit({
-        type: 'warning',
-        phase: 'episode_architecture',
-        message: `StoryArchitect proceeded with ${advisory.length} unresolved advisory issue(s) (story still generated): ${advisory.slice(0, 3).join(' | ')}${advisory.length > 3 ? ' …' : ''}`,
-      });
-    }
-
-    return result.data;
   }
 
   private getTargetBeatCountForScene(sceneBlueprint: SceneBlueprint): number {
@@ -6175,105 +5995,21 @@ export class FullStoryPipeline {
   /**
    * Run BranchManager to analyze and validate branch structure
    */
+  // Extracted to phases/BranchAnalysisPhase.ts (pure move). Thin delegating
+  // wrapper; branchShadowDiffs is accessor-backed run-scoped state.
   private async runBranchAnalysis(
     brief: FullCreativeBrief,
     blueprint: EpisodeBlueprint
   ): Promise<BranchAnalysis | null> {
-    this.emit({ type: 'agent_start', agent: 'BranchManager', message: 'Analyzing branch structure' });
-
-    try {
-      const currentEpisodeNumber = brief.episode?.number;
-      const structuralRoleForEpisode = currentEpisodeNumber
-        ? brief.seasonPlan?.episodes?.find(e => e.episodeNumber === currentEpisodeNumber)?.structuralRole
-        : undefined;
-
-      const result = await withTimeout(this.branchManager.execute({
-        episodeId: blueprint.episodeId,
-        episodeTitle: blueprint.title,
-        scenes: blueprint.scenes,
-        startingSceneId: blueprint.startingSceneId,
-        bottleneckScenes: blueprint.bottleneckScenes || [],
-        availableFlags: blueprint.suggestedFlags || [],
-        availableScores: blueprint.suggestedScores || [],
-        availableTags: blueprint.suggestedTags || [],
-        storyContext: {
-          title: brief.story.title,
-          genre: brief.story.genre,
-          tone: brief.story.tone,
-        },
-        seasonAnchors: brief.seasonPlan?.anchors,
-        seasonSevenPoint: brief.seasonPlan?.sevenPoint,
-        episodeStructuralRole: structuralRoleForEpisode,
-      }), PIPELINE_TIMEOUTS.llmAgent, 'BranchManager.execute');
-
-      if (!result.success || !result.data) {
-        console.warn(`[Pipeline] BranchManager analysis failed: ${result.error}`);
-        this.emit({
-          type: 'agent_complete',
-          agent: 'BranchManager',
-          message: `Branch analysis failed (non-critical): ${result.error}`,
-        });
-        return null;
-      }
-
-      // Log validation issues (as warnings - branch structure issues are advisory, not blocking)
-      if (result.data.validationIssues.length > 0) {
-        for (const issue of result.data.validationIssues) {
-          // Branch validation issues are advisory - don't block generation
-          // The story can still work even if branching isn't perfect
-          this.emit({
-            type: 'warning',
-            phase: 'branch_validation',
-            message: `[${issue.type}] ${issue.description}`,
-          });
-        }
-      }
-
-      const deterministicTopology = analyzeBranchTopology(blueprint);
-      for (const sceneId of deterministicTopology.unreachableSceneIds) {
-        this.emit({
-          type: 'warning',
-          phase: 'branch_validation',
-          message: `[deterministic] Scene ${sceneId} is unreachable from ${blueprint.startingSceneId}`,
-        });
-      }
-      for (const sceneId of deterministicTopology.deadEndSceneIds) {
-        this.emit({
-          type: 'warning',
-          phase: 'branch_validation',
-          message: `[deterministic] Scene ${sceneId} dead-ends before the ending scene`,
-        });
-      }
-
-      // I5: capture a side-by-side diff of the LLM vs deterministic passes
-      // when shadow mode is enabled. No console spam here — the sidecar is
-      // the consumer. The LLM pass keeps running either way (it already
-      // does today), so this is pure observation, not gating.
-      if (this.config.generation?.branchShadowModeEnabled) {
-        try {
-          const diff = buildBranchShadowDiff(result.data, deterministicTopology);
-          this.branchShadowDiffs.push({ episodeId: blueprint.episodeId, diff });
-        } catch (diffErr) {
-          console.warn(`[Pipeline] Failed to build branch shadow diff: ${diffErr instanceof Error ? diffErr.message : diffErr}`);
-        }
-      }
-
-      this.emit({
-        type: 'agent_complete',
-        agent: 'BranchManager',
-        message: `Found ${result.data.branchPaths.length} paths, ${result.data.reconvergencePoints.length} reconvergence points, ${result.data.validationIssues.length} issues`,
-      });
-
-      return result.data;
-    } catch (error) {
-      console.warn(`[Pipeline] BranchManager threw error:`, error);
-      this.emit({
-        type: 'warning',
-        phase: 'branch_analysis',
-        message: `Branch analysis skipped due to error`,
-      });
-      return null;
-    }
+    const deps = { branchManager: this.branchManager };
+    Object.defineProperties(deps, {
+      branchShadowDiffs: { get: () => this.branchShadowDiffs },
+    });
+    return new BranchAnalysisPhase(deps).run(brief, blueprint, {
+      config: this.config,
+      emit: (event) => this.emit(event),
+      addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+    });
   }
 
   private async runContentGeneration(

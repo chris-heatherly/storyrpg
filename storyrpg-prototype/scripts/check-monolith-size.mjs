@@ -325,7 +325,17 @@ const baselines = {
   // deviation: the completeness walk's encounter-validation branch
   // referenced out-of-scope variables (latent ReferenceError) and was
   // dropped. Prompt snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 16998,
+  //
+  // -264 (16998 -> 16734): decomposition PR 11 — runEpisodeArchitecture
+  // (StoryArchitect input assembly + branch-repair retry loop + season
+  // choice-type rebalance + plan seeding + B0/B1 craft-warning
+  // classification) and runBranchAnalysis (BranchManager + deterministic
+  // topology cross-check + I5 shadow diff) moved to
+  // phases/EpisodeArchitecturePhase.ts / phases/BranchAnalysisPhase.ts
+  // (typed, smoke tested). Thin delegating wrappers keep all call sites
+  // unchanged; seasonChoicePlan/generationPlan/architectAdvisoryWarnings/
+  // branchShadowDiffs are accessor-backed. Prompt snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 16734,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

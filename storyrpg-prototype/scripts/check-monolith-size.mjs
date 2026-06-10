@@ -380,7 +380,13 @@ const baselines = {
   // final-contract and plan-time shadow passes) moved to
   // pipeline/runLedger.ts (pure move). Thin delegating wrappers keep all
   // gate-seam call sites unchanged; the per-run counters move with it.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 12185,
+  // -351 (12185 -> 11834): Refactor PR 22 — the draft-image entry helpers
+  // (scanExistingImagesForResume, buildImageManifestFromStory,
+  // repairBoundImageReferences) moved to pipeline/draftImageEntry.ts (pure
+  // move, deterministic — no LLM prompts). Thin delegating wrappers keep all
+  // call sites unchanged; the image-resume internals they lean on stay on the
+  // monolith and are injected via the deps. Goldens byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 11834,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

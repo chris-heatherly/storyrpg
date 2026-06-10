@@ -28,7 +28,10 @@ we touch the hard dependency-heavy phases):
    (voice casting, batch generation, beat binding, diagnostics + manifest,
    the 08-final-story rewrite) plus `bindGeneratedAudioToStory`. Smoke tests
    cover happy path, skip gate, and non-blocking failure.
-4. [ ] `BrowserQAPhase` — extract Playwright QA runner invocation.
+4. [x] `BrowserQAPhase` — **wired** (2026-06-09): the Playwright multi-path
+   QA loop with image remediation, story reassembly (the phase returns the
+   possibly-replaced story), and retry budget. Smoke tests cover pass,
+   remediate+retest, skip, non-fatal error, and unresolved-issues paths.
 5. [ ] `AssemblyPhase` — story assembly + `StructuralValidator.autoFix`
    (Phase 3) + registry coverage gate + asset walk + flag chronology.
 6. [ ] `VideoPhase` — video director / video generation block.

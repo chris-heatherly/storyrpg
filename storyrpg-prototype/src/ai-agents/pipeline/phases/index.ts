@@ -16,7 +16,7 @@
  *   [ ] VideoPhase
  *   [ ] AssemblyPhase
  *   [x] AudioPhase          (wired — preGenerateAudio block + beat binding)
- *   [ ] BrowserQAPhase
+ *   [x] BrowserQAPhase      (wired — Playwright QA retry/remediation loop)
  *
  * The monolithic `FullStoryPipeline` keeps `@ts-nocheck` until all phases
  * have moved out. New phases should type cleanly without `@ts-nocheck`.

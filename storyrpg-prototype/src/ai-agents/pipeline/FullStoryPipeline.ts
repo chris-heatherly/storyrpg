@@ -180,6 +180,7 @@ import type { EpisodeStateSnapshot } from './episodeStateSnapshot';
 import { SavingPhase } from './phases/SavingPhase';
 import { WorldBuildingPhase } from './phases/WorldBuildingPhase';
 import { AudioPhase } from './phases/AudioPhase';
+import { BrowserQAPhase } from './phases/BrowserQAPhase';
 import {
   createOutputDirectory,
   ensureDirectory,
@@ -6496,144 +6497,20 @@ export class FullStoryPipeline {
         }
       );
 
-      // === PHASE 8: BROWSER QA (Playwright playthrough) ===
+      // Browser QA extracted to phases/BrowserQAPhase.ts (pure move). The
+      // phase may replace `story` (assets reassembled during remediation).
       if (story && outputDirectory && this.config.validation?.playwrightQA !== false) {
-        const maxRetries = this.config.validation?.playwrightQAMaxRetries ?? 1;
-        const storyTitle = brief.story.title || '';
-
-        this.emit({ type: 'phase_start', phase: 'browser_qa', message: 'Phase 8: Running full-coverage browser QA...' });
-
-        let qaAttempt = 0;
-        let lastQAResult: PlaywrightQAResult | null = null;
-
-        while (qaAttempt <= maxRetries) {
-          try {
-            this.emit({
-              type: 'progress',
-              phase: 'browser_qa',
-              message: qaAttempt === 0
-                ? 'Analyzing story paths and launching parallel browser playthroughs...'
-                : `Re-testing after remediation (attempt ${qaAttempt + 1}/${maxRetries + 1})...`,
-            });
-
-            lastQAResult = await runPlaywrightQAMultiPath({
-              storyTitle,
-              story,
-              maxBeats: 200,
-              timeoutMs: 300_000,
-              maxParallel: 3,
-              onProgress: (msg) => {
-                this.emit({ type: 'progress', phase: 'browser_qa', message: msg });
-              },
-            });
-
-            if (lastQAResult.skipped) {
-              this.emit({
-                type: 'warning',
-                phase: 'browser_qa',
-                message: `Browser QA skipped: ${lastQAResult.skipReason}`,
-              });
-              break;
-            }
-
-            const coverage = lastQAResult.coverageReport;
-            const pathSummary = coverage
-              ? `${coverage.completedPaths}/${coverage.totalPaths} paths, ${coverage.totalChoicesMade} choices exercised`
-              : `${lastQAResult.totalBeats} beats`;
-
-            console.log(`[Pipeline] Browser QA pass ${qaAttempt + 1}: ${pathSummary}, ` +
-              `${lastQAResult.imageIssues.length} image issues, ${lastQAResult.networkFailures.length} network failures`);
-
-            if (lastQAResult.passed) {
-              this.emit({
-                type: 'phase_complete',
-                phase: 'browser_qa',
-                message: `Browser QA passed — ${pathSummary}, 0 issues`,
-              });
-              break;
-            }
-
-            // Issues found — attempt remediation if we have retries left
-            const issueCount = lastQAResult.imageIssues.length + lastQAResult.networkFailures.length;
-            this.emit({
-              type: 'warning',
-              phase: 'browser_qa',
-              message: `Browser QA found ${issueCount} issue(s) across ${pathSummary}`,
-            });
-
-            if (qaAttempt < maxRetries) {
-              this.emit({
-                type: 'progress',
-                phase: 'browser_qa',
-                message: `Remediating ${issueCount} issue(s)...`,
-              });
-
-              try {
-                const remediation = await remediateImageIssues(
-                  lastQAResult.imageIssues,
-                  lastQAResult.networkFailures,
-                  story,
-                  this.imageService,
-                  this.assetRegistry,
-                  outputDirectory,
-                );
-
-                const regenCount = remediation.fixes.filter(f => f.action === 'regenerated').length;
-                const skipCount = remediation.fixes.filter(f => f.action === 'skipped').length;
-
-                console.log(`[Pipeline] QA Remediation: ${regenCount} regenerated, ${skipCount} skipped`);
-                for (const fix of remediation.fixes) {
-                  console.log(`[Pipeline]   ${fix.action}: ${fix.identifier || fix.issueScreen} — ${fix.reason || fix.newUrl || ''}`);
-                }
-
-                if (remediation.hasChanges) {
-                  story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
-                  story.outputDir = outputDirectory;
-                  resaveFinalStory(story, outputDirectory);
-                  this.emit({
-                    type: 'progress',
-                    phase: 'browser_qa',
-                    message: `Remediated ${regenCount} image(s), re-saved story. Re-testing...`,
-                  });
-                } else {
-                  this.emit({
-                    type: 'warning',
-                    phase: 'browser_qa',
-                    message: 'No fixable issues found during remediation — skipping retest',
-                  });
-                  break;
-                }
-              } catch (remErr) {
-                console.warn('[Pipeline] QA remediation error (non-fatal):', (remErr as Error).message);
-                this.emit({
-                  type: 'warning',
-                  phase: 'browser_qa',
-                  message: `Remediation failed: ${(remErr as Error).message}`,
-                });
-                break;
-              }
-            }
-          } catch (qaErr) {
-            console.warn('[Pipeline] Browser QA error (non-fatal):', (qaErr as Error).message);
-            this.emit({
-              type: 'warning',
-              phase: 'browser_qa',
-              message: `Browser QA failed: ${(qaErr as Error).message}`,
-            });
-            break;
+        story = await new BrowserQAPhase({
+          imageService: this.imageService,
+          assetRegistry: this.assetRegistry,
+        }).run(
+          { story, storyTitle: brief.story.title || '', outputDirectory },
+          {
+            config: this.config,
+            emit: (event) => this.emit(event),
+            addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
           }
-
-          qaAttempt++;
-        }
-
-        if (lastQAResult && !lastQAResult.passed && !lastQAResult.skipped) {
-          const remaining = lastQAResult.imageIssues.length + lastQAResult.networkFailures.length;
-          this.emit({
-            type: 'warning',
-            phase: 'browser_qa',
-            message: `Browser QA completed with ${remaining} unresolved issue(s) after ${qaAttempt} attempt(s)`,
-          });
-        }
+        );
       }
 
       this.emit({ type: 'phase_complete', phase: 'complete', message: 'Story generation complete!' });

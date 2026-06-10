@@ -12,6 +12,7 @@ export interface PipelineEventData {
     | 'checkpoint'
     | 'debug'
     | 'warning'
+    | 'progress'
     | 'incremental_validation'
     | 'regeneration_triggered'
     | 'validation_aggregated';

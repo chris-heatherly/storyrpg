@@ -259,7 +259,12 @@ const baselines = {
   // -212 (23238 -> 23026): decomposition PR 2 — the audio pre-generation block
   // and bindGeneratedAudioToStory moved to phases/AudioPhase.ts (typed, with
   // smoke tests). Verified prompt-snapshot byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 23026,
+  //
+  // -123 (23026 -> 22903): decomposition PR 3 — the Playwright browser-QA
+  // retry/remediation loop moved to phases/BrowserQAPhase.ts (typed, smoke
+  // tested). 'progress' added to the PipelineEventType union (the monolith
+  // emitted it all along under @ts-nocheck). Prompt snapshot byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 22903,
   'src/ai-agents/services/imageGenerationService.ts': 6564,
 };
 

@@ -21,6 +21,18 @@ import { isBillingQuotaMessage } from '../utils/providerErrors';
 
 const log = createLogger('BaseAgent');
 
+/**
+ * The adaptive-thinking generation of Claude models (Opus 4.6/4.7/4.8,
+ * Sonnet 4.6, Haiku 4.5, Fable 5) removed the `temperature`/`top_p`/`top_k`
+ * sampling parameters — sending `temperature` returns a 400. Older models
+ * (claude-3.x, opus-4-0/4-1/4-5, sonnet-4-0/4-5, haiku-3.x) still accept it.
+ * Returns false for the newer family so callers omit `temperature`.
+ */
+function modelAcceptsTemperature(model: string | undefined): boolean {
+  if (!model) return true;
+  return !/claude-(?:opus-4-[678]|sonnet-4-6|haiku-4-5|fable-5)/.test(model);
+}
+
 // Use proxy server for web to avoid CORS issues
 const ANTHROPIC_API_URL = isWebRuntime()
   ? `${PROXY_CONFIG.getProxyUrl()}/v1/messages`  // Local proxy
@@ -518,7 +530,6 @@ Do not use markdown code blocks around the JSON.
     const body: any = {
       model: this.config.model,
       max_tokens: this.config.maxTokens,
-      temperature: this.config.temperature,
       // Cache the stable system prompt prefix across calls (C1).
       system: this.buildCachedSystemField(systemText),
       messages: otherMessages.map((m) => {
@@ -538,6 +549,15 @@ Do not use markdown code blocks around the JSON.
         };
       }),
     };
+
+    // Sampling params (`temperature`/`top_p`/`top_k`) were removed on the
+    // adaptive-thinking generation of Claude models (Opus 4.6/4.7/4.8,
+    // Sonnet 4.6, Haiku 4.5, Fable 5) — sending `temperature` to those returns
+    // a 400 ("temperature is deprecated for this model"). Only pass it to older
+    // models that still accept it; the newer models steer via prompting.
+    if (modelAcceptsTemperature(this.config.model)) {
+      body.temperature = this.config.temperature;
+    }
 
     // Hint proxy timeout policy for long-running calls.
     // 60s connect timeout is too aggressive for some Anthropic calls (world/story planning),

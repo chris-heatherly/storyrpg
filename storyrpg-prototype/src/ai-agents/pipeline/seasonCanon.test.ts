@@ -54,6 +54,33 @@ describe('SeasonCanon sealing + immutability', () => {
     expect(asOf1).not.toContain('Bravo fact');
   });
 
+  it('canonForPrompt surfaces the LATEST sealed arc state and relationship standing as-of an episode', () => {
+    const canon = new SeasonCanon();
+    canon.sealEpisode(1, {
+      arcStates: [{ characterId: 'kylie', state: 'guarded, testing loyalty' }],
+      relationships: [{ a: 'kylie', b: 'mika', dimension: 'trust', value: 5 }],
+    });
+    canon.sealEpisode(2, {
+      arcStates: [{ characterId: 'kylie', state: 'committed, post-betrayal resolve' }],
+      relationships: [{ a: 'kylie', b: 'mika', dimension: 'trust', value: -10 }],
+    });
+    const asOf1 = canon.canonForPrompt(1);
+    expect(asOf1).toContain('kylie arc state: guarded, testing loyalty');
+    expect(asOf1).toContain('trust stands at 5');
+    expect(asOf1).not.toContain('post-betrayal');
+    const asOf2 = canon.canonForPrompt(2);
+    expect(asOf2).toContain('kylie arc state: committed, post-betrayal resolve');
+    expect(asOf2).not.toContain('guarded, testing loyalty');
+    expect(asOf2).toContain('trust stands at -10');
+  });
+
+  it('arcStatesAsOf / relationshipsAsOf return empty before anything is sealed', () => {
+    const canon = new SeasonCanon();
+    expect(canon.arcStatesAsOf(5)).toEqual([]);
+    expect(canon.relationshipsAsOf(5)).toEqual([]);
+    expect(canon.canonForPrompt(5)).toBe('');
+  });
+
   it('round-trips through serialize/deserialize', () => {
     const canon = new SeasonCanon({ storyId: 'story-1' });
     canon.sealEpisode(1, {

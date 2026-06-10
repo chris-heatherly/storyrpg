@@ -501,13 +501,18 @@ export class EpisodePipeline {
           userPrompt: brief.story.userPrompt,
         },
         protagonistInfo: brief.protagonist,
-        npcs: brief.npcs.map(npc => ({
-          id: npc.id,
-          name: npc.name,
-          description: npc.description,
-          voiceNotes: npc.voiceNotes,
-          currentMood: npc.currentMood,
-        })),
+        // Scene cast only (mirrors the ChoiceAuthor filter below): handing the
+        // full roster to every scene let the writer name characters the reader
+        // hadn't met yet.
+        npcs: brief.npcs
+          .filter(npc => sceneBlueprint.npcsPresent.includes(npc.id))
+          .map(npc => ({
+            id: npc.id,
+            name: npc.name,
+            description: npc.description,
+            voiceNotes: npc.voiceNotes,
+            currentMood: npc.currentMood,
+          })),
         relevantFlags: allFlags,
         relevantScores: allScores,
         targetBeatCount: sceneBlueprint.purpose === 'bottleneck' ? 5 : 4,

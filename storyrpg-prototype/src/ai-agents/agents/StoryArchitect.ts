@@ -28,6 +28,8 @@ import { PLACEHOLDER_STAKES, isPlaceholderStake } from '../constants/placeholder
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType, NarrativeSequenceIntent, StakesLayers } from '../../types';
 import type { ArcEpisodeTurnout, CliffhangerPlan, InformationLedgerEntry, SeasonPromiseArchitecture } from '../../types/seasonPlan';
 import { assignInfoRevealsToScenes } from '../pipeline/infoRevealAssignment';
+import { assignBlueprintTimeline, normalizeTimeOfDay, type SceneTimeOfDay } from '../utils/sceneTimeline';
+import type { ResidueRequirement } from '../pipeline/reconvergenceResidue';
 import type { PlannedScene, SetupPayoffEdge, SceneNarrativeRole, RequiredBeat } from '../../types/scenePlan';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
@@ -198,6 +200,14 @@ export interface StoryArchitectInput {
     setupPayoffEdges?: SetupPayoffEdge[];
   };
 
+  /**
+   * Characters the season plan schedules THIS episode to introduce (from
+   * `SeasonEpisode.introducesCharacters` / `SeasonPlan.characterIntroductions`).
+   * The blueprint guarantees each one an on-page introduction key beat
+   * ({@link StoryArchitect.ensureCharacterIntroductionBeats}).
+   */
+  introducesCharacters?: Array<{ id: string; name: string }>;
+
   // Pipeline memory context (optimization hints from prior runs, Claude only)
   memoryContext?: string;
 }
@@ -352,6 +362,21 @@ export interface SceneBlueprint {
   mood: string;
   purpose: 'bottleneck' | 'branch' | 'transition';
 
+  /**
+   * Planned diegetic time-of-day for the scene. Assigned by the LLM at plan
+   * time (invention path) or carried from the planned scene (elaborate path);
+   * gaps are backfilled deterministically by {@link assignBlueprintTimeline}
+   * (text inference, then inheritance from the previous scene). Never
+   * fabricated — stays undefined when no scene ever names a time.
+   */
+  timeOfDay?: SceneTimeOfDay;
+  /**
+   * Planned gap between the previous scene and this one (e.g. "continuous",
+   * "later that night", "the next morning"). Drives the SceneWriter transition
+   * handoff: when this names a jump, the scene's opening must acknowledge it.
+   */
+  timeJumpFromPrevious?: string;
+
   // Expert Design Elements
   dramaticQuestion: string; // What are we here to find out?
   wantVsNeed: string; // Protagonist's conscious goal vs dramatic necessity
@@ -460,6 +485,15 @@ export interface SceneBlueprint {
   // with route metadata at assembly time.
   // Example: "Player chose to kiss Catherine on the moors"
   incomingChoiceContext?: string;
+
+  // WS2a (reconvergence residue by construction): stamped deterministically by
+  // attachResidueRequirements (pipeline/reconvergenceResidue.ts) when this scene
+  // is a reconvergence target — ≥2 distinct planned paths land here (blueprint
+  // leadsTo graph and/or a BranchManager reconvergence point). SceneWriter renders
+  // it as a MANDATORY deliverable (an early flag-gated textVariant acknowledging
+  // the incoming path) so the SceneGraphBranchValidator's missing_branch_residue
+  // gate passes by construction instead of aborting the run after authoring.
+  residueRequirement?: ResidueRequirement;
 
   // Encounter configuration (if this scene is an interactive encounter)
   isEncounter?: boolean;
@@ -647,6 +681,51 @@ export class StoryArchitect extends BaseAgent {
    * on `scene.revealsInfoIds`. Additive + idempotent — a no-op when there is no ledger
    * or no reveal scheduled this episode, so non-treatment / no-ledger runs are unchanged.
    */
+  /**
+   * Plan-time diegetic timeline (time/location continuity fix, 2026-06-09).
+   * Keeps a valid LLM-assigned `timeOfDay`, infers missing ones from scene
+   * text, inherits across gaps, and derives `timeJumpFromPrevious` for every
+   * scene — so SceneWriter always knows whether a scene is continuous or a
+   * time/place jump that must be acknowledged on-page.
+   */
+  private assignSceneTimeline(blueprint: EpisodeBlueprint): void {
+    assignBlueprintTimeline(blueprint.scenes || []);
+  }
+
+  /**
+   * On-page character introductions (uncontextualized-character fix,
+   * 2026-06-09). The season plan schedules which episode introduces each
+   * character (`SeasonEpisode.introducesCharacters`), but nothing downstream
+   * enforced an introduction — characters shipped name-dropped with no
+   * on-page establishment (bite-me-g10 Victor) or metadata-only (endsong-g10
+   * Sylvanor). For each character this episode introduces: make sure some
+   * scene carries them, and give the FIRST scene that does an explicit
+   * introduction key beat the SceneWriter must hit. Idempotent.
+   */
+  private ensureCharacterIntroductionBeats(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const intros = input.introducesCharacters ?? [];
+    const scenes = blueprint.scenes || [];
+    if (intros.length === 0 || scenes.length === 0) return;
+    for (const character of intros) {
+      let target = scenes.find((s) => (s.npcsPresent || []).includes(character.id));
+      if (!target) {
+        target = scenes.find((s) => !s.isEncounter) || scenes[0];
+        target.npcsPresent = [...(target.npcsPresent || []), character.id];
+        console.warn(
+          `[StoryArchitect] Episode ${input.episodeNumber} is planned to introduce "${character.name}" but no scene cast included them — added to scene "${target.id}"`,
+        );
+      }
+      const marker = `introduce ${character.name.toLowerCase()} on-page`;
+      const already = (target.keyBeats || []).some((b) => String(b || '').toLowerCase().includes(marker));
+      if (!already) {
+        target.keyBeats = [
+          `Introduce ${character.name} on-page: this is the reader's FIRST meeting with them — establish who they are and how they relate to the protagonist through action or dialogue before they drive the plot`,
+          ...(target.keyBeats || []),
+        ];
+      }
+    }
+  }
+
   private assignInfoReveals(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const entries = input.seasonPlanDirectives?.informationLedgerEntries;
     const scenes = blueprint.scenes ?? [];
@@ -2050,6 +2129,8 @@ ${sceneEpisodeMode}
         name: p.title || `Scene ${idx + 1}`,
         description: p.dramaticPurpose,
         location: p.locations?.[0] || input.currentLocation,
+        timeOfDay: normalizeTimeOfDay(p.timeOfDay),
+        timeJumpFromPrevious: p.timeJump,
         mood: p.narrativeRole === 'release' ? 'reflective' : isEncounter ? 'tense' : 'charged',
         purpose: this.purposeForRole(p.narrativeRole, isEncounter),
         dramaticQuestion: p.dramaticPurpose,
@@ -2143,6 +2224,8 @@ ${sceneEpisodeMode}
       this.repairSceneTransitions(blueprint);
       this.repairSceneTurnContracts(blueprint);
       this.assignInfoReveals(blueprint, input);
+      this.assignSceneTimeline(blueprint);
+      this.ensureCharacterIntroductionBeats(blueprint, input);
       return { success: true, data: blueprint, rawResponse: '' };
     }
 
@@ -2243,6 +2326,9 @@ REQUIREMENTS:
         if (!scene.mood) {
           scene.mood = 'neutral';
         }
+        // Normalize the plan-time time-of-day to the canonical vocabulary;
+        // invalid values drop to undefined and the timeline backfill re-derives.
+        scene.timeOfDay = normalizeTimeOfDay(scene.timeOfDay);
         if (!scene.purpose) {
           scene.purpose = 'transition';
         }
@@ -2484,6 +2570,8 @@ REQUIREMENTS:
       this.repairSceneTransitions(blueprint);
       this.repairSceneTurnContracts(blueprint);
       this.assignInfoReveals(blueprint, input);
+      this.assignSceneTimeline(blueprint);
+      this.ensureCharacterIntroductionBeats(blueprint, input);
 
       // Log choice point info BEFORE validation
       const scenesWithChoices = blueprint.scenes?.filter(s => s.choicePoint) || [];
@@ -2710,6 +2798,7 @@ ${this.episodeStructureMode === 'sceneEpisodes'
   ? '- **Scene-length central pressure**: If the season plan marks this episode as a milestone encounter, manifest the pressure as the one encounter scene. Otherwise, build one non-encounter dramatic scene with at least one choicePoint and a final cliffhanger/forward-pressure beat.'
   : "- **Encounter as central conflict**: The episode's central conflict MUST manifest in an encounter scene. Buildup scenes make that encounter feel earned; aftermath scenes show what the encounter changed."}
 - **Intensity guidance in keyBeats**: For each scene, indicate which keyBeats are the dominant peak(s) (prefix with "PEAK:") and suggest where rest/breathing beats should fall (prefix with "REST:"). The SceneWriter uses this to shape the intensity arc. Example: ["REST: the quiet village at dawn", "PEAK: confrontation erupts at the market", "the aftermath settles"]
+- **Diegetic timeline**: Give every scene a "timeOfDay" (dawn|morning|midday|afternoon|dusk|evening|night) and a "timeJumpFromPrevious" describing the gap from the previous scene ("continuous", "later that night", "the next morning — the protagonist returns home"). Time must move plausibly: no noon scene directly after a midnight scene without the jump named, and a location change always needs a timeJumpFromPrevious that says how the protagonist got there.
 - **Pressure, not mandatory combat**: Every scene should create story pressure, but the pressure must match the genre and moment. Use physical danger, social cost, mystery revelation, romantic vulnerability, moral compromise, environmental threat, resource loss, or identity pressure as appropriate.
 - **Decisive beats**: keyBeats should include specific actions, surprising complications, character development, visible consequences, and forward pressure.
 - **Turn ladder, not topic list**: Frame each scene as an active situation. keyBeats should bend or flip something: trust shifts, evidence changes hands, a secret becomes harder to deny, leverage is gained/lost, distance/closeness changes, danger/reputation/resources change, identity is expressed, or knowledge becomes actionable.
@@ -2931,6 +3020,8 @@ ${this.buildCliffhangerPlanSection(input)}
       "name": "Scene Name (Buildup)",
       "description": "What happens in this scene",
       "location": "location-1",
+      "timeOfDay": "evening",
+      "timeJumpFromPrevious": "continuous",
       "mood": "tense/calm/mysterious/etc",
       "purpose": "bottleneck",
       "npcsPresent": ["npc-id"],
@@ -3008,6 +3099,8 @@ ${this.buildCliffhangerPlanSection(input)}
       "name": "The Confrontation (ENCOUNTER — Episode Climax)",
       "description": "The protagonist faces the episode's central conflict head-on",
       "location": "location-2",
+      "timeOfDay": "night",
+      "timeJumpFromPrevious": "later that night — the protagonist crosses the city to the confrontation",
       "mood": "urgent",
       "purpose": "bottleneck",
       "npcsPresent": ["antagonist-id"],

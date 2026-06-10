@@ -202,7 +202,10 @@ export function harvestEpisodeCallbacks(
         }
       }
       if (beat.textVariants) {
-        const matched = ledger.recordPayoffsFromVariants(beat.textVariants);
+        const matched = ledger.recordPayoffsFromVariants(
+          beat.textVariants,
+          beatPayoffDedupeKey(params.episodeNumber, scene.sceneId, beat, scene.beats.indexOf(beat)),
+        );
         payoffs += matched.length;
         if (matched.length > 0) {
           const hookIds = new Set(beat.callbackHookIds || []);
@@ -214,6 +217,48 @@ export function harvestEpisodeCallbacks(
   }
 
   return { newHooks, payoffs };
+}
+
+/** Stable per-beat dedupe key so payoff crediting is idempotent across passes. */
+function beatPayoffDedupeKey(
+  episodeNumber: number,
+  sceneId: string,
+  beat: HarvestBeat,
+  beatIndex: number,
+): string {
+  return `${episodeNumber}:${sceneId}:${beat.id ?? `idx${beatIndex}`}`;
+}
+
+/**
+ * Credit callback payoffs from a SINGLE just-written scene, during episode
+ * generation. Previously payoffs were only harvested AFTER the whole episode
+ * (harvestEpisodeCallbacks), so scene 5's prompt still listed a hook scene 2 had
+ * already honored — the writer paid it again, inflating payoffCount past the
+ * resolve threshold and double-acknowledging the same decision on-page. Crediting
+ * per-scene keeps `unresolvedFor()` (and so getUnresolvedCallbacksForPrompt) live
+ * within the episode; the beat-level dedupe key makes the end-of-episode harvest
+ * re-scan a no-op for these beats rather than a double count.
+ */
+export function recordScenePayoffs(
+  ledger: CallbackLedger,
+  episodeNumber: number,
+  scene: HarvestSceneContent,
+): { payoffs: number } {
+  let payoffs = 0;
+  for (const beat of scene.beats || []) {
+    if (!beat.textVariants) continue;
+    const matched = ledger.recordPayoffsFromVariants(
+      beat.textVariants,
+      beatPayoffDedupeKey(episodeNumber, scene.sceneId, beat, scene.beats.indexOf(beat)),
+    );
+    payoffs += matched.length;
+    if (matched.length > 0) {
+      const hookIds = new Set(beat.callbackHookIds || []);
+      for (const hookId of matched) hookIds.add(hookId);
+      beat.callbackHookIds = Array.from(hookIds);
+    }
+  }
+  return { payoffs };
 }
 
 // ---------------------------------------------------------------------------

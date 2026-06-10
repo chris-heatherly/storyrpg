@@ -146,19 +146,57 @@ export class SeasonCanon {
     return this.worldFacts.filter((f) => f.establishedEpisode <= episode);
   }
 
+  /** Latest sealed arc state per character as of (<=) an episode. */
+  arcStatesAsOf(episode: number): Array<{ characterId: string; episode: number; state: string }> {
+    const out: Array<{ characterId: string; episode: number; state: string }> = [];
+    for (const c of this.characters.values()) {
+      const eps = Object.keys(c.arcStateByEpisode)
+        .map(Number)
+        .filter((n) => n <= episode);
+      if (eps.length === 0) continue;
+      const latest = Math.max(...eps);
+      out.push({ characterId: c.id, episode: latest, state: c.arcStateByEpisode[latest] });
+    }
+    return out.sort((a, b) => a.characterId.localeCompare(b.characterId));
+  }
+
+  /** Latest sealed relationship value per pair+dimension as of (<=) an episode. */
+  relationshipsAsOf(episode: number): Array<{ pairKey: string; dimension: string; episode: number; value: number }> {
+    const out: Array<{ pairKey: string; dimension: string; episode: number; value: number }> = [];
+    for (const r of this.relationships.values()) {
+      const eps = Object.keys(r.valueByEpisode)
+        .map(Number)
+        .filter((n) => n <= episode);
+      if (eps.length === 0) continue;
+      const latest = Math.max(...eps);
+      out.push({ pairKey: r.pairKey, dimension: r.dimension, episode: latest, value: r.valueByEpisode[latest] });
+    }
+    return out.sort((a, b) => a.pairKey.localeCompare(b.pairKey) || a.dimension.localeCompare(b.dimension));
+  }
+
   /**
    * Read-only canon snapshot for prompt injection, established up to `asOfEpisode`
    * (defaults to everything). Marked as authoritative so downstream prompts treat
-   * it as fixed.
+   * it as fixed. Includes the latest sealed character arc states and relationship
+   * standings: prior-episode remediation may have shifted where a character landed,
+   * and the writer of episode N must continue from the SEALED state, not the plan
+   * (cross-episode arc drift otherwise).
    */
   canonForPrompt(asOfEpisode?: number): string {
     const cap = asOfEpisode ?? Number.MAX_SAFE_INTEGER;
     const facts = this.worldFacts.filter((f) => f.establishedEpisode <= cap);
     const know = this.knowledge.filter((e) => e.asOfEpisode <= cap);
-    if (facts.length === 0 && know.length === 0) return '';
+    const arcs = this.arcStatesAsOf(cap);
+    const rels = this.relationshipsAsOf(cap);
+    if (facts.length === 0 && know.length === 0 && arcs.length === 0 && rels.length === 0) return '';
     const lines: string[] = ['ESTABLISHED CANON — do not contradict:'];
     for (const f of facts) lines.push(`- [ep${f.establishedEpisode}] ${f.statement}`);
     for (const e of know) lines.push(`- [ep${e.asOfEpisode}] ${e.characterId} knows: ${e.summary}`);
+    for (const a of arcs) lines.push(`- [ep${a.episode}] ${a.characterId} arc state: ${a.state}`);
+    for (const r of rels) {
+      const [a, b] = r.pairKey.split('|');
+      lines.push(`- [ep${r.episode}] relationship ${a} & ${b} — ${r.dimension} stands at ${r.value} (continue from this, not the plan)`);
+    }
     return lines.join('\n');
   }
 

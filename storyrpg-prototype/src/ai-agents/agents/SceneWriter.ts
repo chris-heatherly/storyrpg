@@ -13,6 +13,7 @@
 import { AgentConfig, GenerationSettingsConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
+import { buildResidueRequirementPromptSection } from '../pipeline/reconvergenceResidue';
 import { Beat, TextVariant, Consequence, TimingMetadata, SceneVisualSequencePlan } from '../../types';
 import {
   SourceMaterialAnalysis,
@@ -33,6 +34,8 @@ import {
 } from '../prompts/storytellingPrinciples';
 import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
 import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
+import { enumeratedItems } from '../utils/enumeratedObjective';
+import type { SceneTimelineHandoff } from '../utils/sceneTimeline';
 import { SCENE_WRITER_BEAT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
@@ -156,7 +159,28 @@ export interface SceneWriterInput {
     physicalDescription?: string;
     voiceNotes: string; // How they speak
     currentMood?: string;
+    /**
+     * True when the reader has NOT met this character on any earlier scene of
+     * the active path — this scene is their first on-page appearance and must
+     * INTRODUCE them (who they are, how the protagonist knows them) before
+     * they drive the action.
+     */
+    isFirstOnPageAppearance?: boolean;
   }>;
+
+  /**
+   * Roster character names the reader has not met and who are NOT in this
+   * scene's cast. The prose must not name them — a casual mention would be a
+   * "who is this?" continuity defect (the bite-me-g10 Victor class).
+   */
+  notYetIntroducedNames?: string[];
+
+  /**
+   * Diegetic timeline handoff: where/when the previous scene took place and
+   * whether this scene's planned time/location differ. When time or place
+   * changed, `transitionIn` and an opening acknowledgment are REQUIRED.
+   */
+  sceneTimeline?: SceneTimelineHandoff;
 
   // State context (for conditional content)
   relevantFlags?: Array<{ name: string; description: string }>;
@@ -206,6 +230,11 @@ export interface SceneWriterInput {
     victoryStakes?: string;
     defeatStakes?: string;
     outcomeFlags: Array<{ outcome: string; flag: string }>;
+    // The encounter's generated goal/threat clock pressure (description or name),
+    // so the aftermath carries the mechanical pressure the encounter ran under
+    // (time spent, danger escalated) instead of floating free of it.
+    goalPressure?: string;
+    threatPressure?: string;
   }>;
 
   // Source material analysis for IP fidelity (optional)
@@ -1334,6 +1363,30 @@ Return exactly one complete SceneContent JSON object with:
     );
   }
 
+  /**
+   * G10: when this scene's `sequenceIntent.objective` ENUMERATES concrete clues (e.g.
+   * "collects four splinters — Ileana's tears, the photograph, the maiden name, Mika's
+   * absence"), instruct the writer to dramatize EACH item on-page. Without this the writer
+   * tends to show only the first and summarize the rest, so a later scene pays off a clue the
+   * reader never saw (the canonical Bite Me ep3 "Splinters" miss). Uses the SAME parser as
+   * ReferencedEventPresenceValidator (shared util), so the directive covers exactly what the
+   * gate enforces. Returns '' when the objective is not an enumeration (prompt unchanged).
+   */
+  private buildEnumeratedObjectiveSection(input: SceneWriterInput): string {
+    const objective = input.sceneBlueprint.sequenceIntent?.objective;
+    const items = objective ? enumeratedItems(objective) : [];
+    if (items.length === 0) return '';
+    const lines = items.map((item) => `- ${item}`).join('\n');
+    return (
+      '\n### Promised Details (each MUST appear on-page)\n' +
+      "This scene's objective enumerates concrete things the reader is promised to SEE. " +
+      'Dramatize EACH one explicitly in the prose — a beat shows it, a character names or ' +
+      'reacts to it — not merely the first with the rest implied. A later scene will reference ' +
+      'these as if the reader witnessed them. Keep it fiction-first (no meta/objective talk).\n' +
+      lines
+    );
+  }
+
   private buildPrompt(input: SceneWriterInput): string {
     const npcDetails = input.npcs
       .filter(npc => input.sceneBlueprint.npcsPresent.includes(npc.id))
@@ -1342,7 +1395,7 @@ Return exactly one complete SceneContent JSON object with:
   - Pronouns: ${npc.pronouns}
   - Description: ${npc.description}${npc.physicalDescription ? `\n  - Physical Appearance (CANONICAL — use these exact details): ${npc.physicalDescription}` : ''}
   - Voice: ${npc.voiceNotes}
-  ${npc.currentMood ? `- Current Mood: ${npc.currentMood}` : ''}`)
+  ${npc.currentMood ? `- Current Mood: ${npc.currentMood}` : ''}${npc.isFirstOnPageAppearance ? `\n  - **FIRST APPEARANCE (CRITICAL)**: the reader has NEVER met ${npc.name}. Before they drive the action, INTRODUCE them on-page: show who they are, what the protagonist notices about them, and how the protagonist knows them (or that they are a stranger) — through action and dialogue, not a bio dump. Do NOT write them as already-familiar.` : ''}`)
       .join('\n');
 
     const flagContext = input.relevantFlags
@@ -1371,11 +1424,17 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 > Continuity (#26C): only name characters, factions, and props already established in this
 > story. Do not invent a named character or object the reader hasn't met; reference the
 > existing cast/world instead.
+${(input.notYetIntroducedNames?.length ?? 0) > 0 ? `> NOT YET INTRODUCED (do NOT name these characters in this scene — the reader has not met
+> them and they are not in this scene's cast; a casual mention would read as "who is this?"):
+> ${input.notYetIntroducedNames!.join(', ')}.
+` : ''}
 ## Scene Blueprint
 - **Scene ID**: ${input.sceneBlueprint.id}
 - **Name**: ${input.sceneBlueprint.name}
 - **Description**: ${input.sceneBlueprint.description}
 - **Location**: ${input.sceneBlueprint.location}
+${input.sceneBlueprint.timeOfDay ? `- **Time of day**: ${input.sceneBlueprint.timeOfDay}` : ''}
+${input.sceneTimeline?.timeJumpFromPrevious ? `- **Gap since previous scene**: ${input.sceneTimeline.timeJumpFromPrevious}` : ''}
 - **Mood**: ${input.sceneBlueprint.mood}
 - **Purpose**: ${input.sceneBlueprint.purpose}
 - **Narrative Function**: ${this.stripAgentFacingPressureParagraphs(input.sceneBlueprint.narrativeFunction, input.sceneBlueprint.description || input.sceneBlueprint.name)}
@@ -1449,6 +1508,7 @@ ${input.sceneBlueprint.keyBeats
   .join('\n')}
 ${buildRequiredBeatsSection(input.sceneBlueprint)}
 ${this.buildRevealDirectivesSection(input)}
+${this.buildEnumeratedObjectiveSection(input)}
 
 ${input.sceneBlueprint.choicePoint ? `
 ### Choice Point
@@ -1504,6 +1564,7 @@ ${input.branchContext.role === 'reconvergence' ? `- This scene is a **reconverge
 ${input.branchContext.stateReconciliationNotes && input.branchContext.stateReconciliationNotes.length > 0 ? `- State reconciliation notes:\n${input.branchContext.stateReconciliationNotes.map(n => `  - ${n}`).join('\n')}` : ''}
 ${input.branchContext.reconvergenceNarrativeAcknowledgment ? `- Suggested acknowledgment: "${input.branchContext.reconvergenceNarrativeAcknowledgment}"` : ''}
 ` : ''}
+${buildResidueRequirementPromptSection(input.sceneBlueprint.residueRequirement)}
 ${input.activeThreads && input.activeThreads.length > 0 ? `
 ## Active Narrative Threads (setup/payoff)
 You MUST plant or pay off the following threads in this scene. Set \`plantsThreadId\` or \`paysOffThreadId\` on the beat where each action happens.
@@ -1569,6 +1630,13 @@ ${input.targetBeatCount >= 6 ? '- If this is a scene-length episode, write at le
 ${input.previousSceneSummary ? `- Previous scene context: ${input.previousSceneSummary}` : ''}
 ${input.nextSceneContext ? `- Next scene context: ${input.nextSceneContext.name} (${input.nextSceneContext.location}) — ${input.nextSceneContext.encounterDescription || input.nextSceneContext.description}` : ''}
 ${input.continueInLocation ? `- CONTINUITY: the previous scene already took place in ${input.continueInLocation}. The protagonist is ALREADY here — open mid-presence (continue the visit), do NOT re-stage a first arrival, threshold-crossing, or "the smell hits you as you enter". Re-entering a location you never left reads as a continuity error.` : ''}
+${input.sceneTimeline && (input.sceneTimeline.locationChanged || input.sceneTimeline.timeChanged) ? `
+## SCENE TRANSITION HANDOFF (CRITICAL — time/place moved since the previous scene)
+The previous scene ("${input.sceneTimeline.previous?.sceneName ?? 'previous scene'}") took place at ${input.sceneTimeline.previous?.location ?? 'its location'}${input.sceneTimeline.previous?.timeOfDay ? ` (${input.sceneTimeline.previous.timeOfDay})` : ''}. THIS scene is at ${input.sceneBlueprint.location}${input.sceneBlueprint.timeOfDay ? ` (${input.sceneBlueprint.timeOfDay})` : ''}${input.sceneTimeline.timeJumpFromPrevious ? ` — planned gap: ${input.sceneTimeline.timeJumpFromPrevious}` : ''}.
+- \`transitionIn\` is REQUIRED for this scene: a short natural phrase that names the shift ("Later that night", "The next morning, across town").
+- The FIRST beat must let the reader feel the jump on-page: ground the new time/place and, when the location changed, how or why the protagonist is now here (an arrival, an aftermath, a decision that moved them). One or two concrete details — not a travelogue.
+- Do NOT open as if no time passed or as if the protagonist never moved; an unacknowledged cut from ${input.sceneTimeline.previous?.location ?? 'the previous place'} to ${input.sceneBlueprint.location} reads as a continuity error.
+` : ''}
 ${(input.priorEncounterOutcomes?.length ?? 0) > 0 ? `
 ## POST-ENCOUNTER OUTCOME REACTIVITY (CRITICAL)
 This scene follows an encounter that can end several ways, and the gameplay state already records which: ${input.priorEncounterOutcomes!.map(e => `"${e.encounterName}"${e.defeatStakes ? ` (a hard outcome means: ${e.defeatStakes})` : ''}`).join('; ')}.
@@ -1576,6 +1644,7 @@ This scene follows an encounter that can end several ways, and the gameplay stat
 - Author at least one textVariant on an EARLY beat gated on the outcome flag so the prose reflects the result — e.g. an ally who was hurt appears injured, a costly win shows its cost, a defeat colors the mood. Use these EXACT flags:
 ${input.priorEncounterOutcomes!.flatMap(e => e.outcomeFlags.map(o => `  - { "type": "flag", "flag": "${o.flag}", "value": true }  // ${e.encounterName}: ${o.outcome}`)).join('\n')}
 - Keep the base text true for the most neutral (victory) path; the variants carry the harder outcomes.
+${input.priorEncounterOutcomes!.some(e => e.goalPressure || e.threatPressure) ? `- The encounter ran under pressure the aftermath must still carry — ${input.priorEncounterOutcomes!.filter(e => e.goalPressure || e.threatPressure).map(e => [e.goalPressure ? `what was at stake: ${e.goalPressure}` : '', e.threatPressure ? `the rising danger: ${e.threatPressure}` : ''].filter(Boolean).join('; ')).join('; ')}. Let the prose show its residue (time lost, danger nearer, cost paid) in fiction-first terms — never name clocks, segments, or mechanics.` : ''}
 ` : ''}
 ${input.sceneBlueprint.choicePoint ? '- Mark the final beat as isChoicePoint: true for the Choice Author to add options' : ''}
 ${input.nextSceneContext?.isEncounter && !input.sceneBlueprint.choicePoint ? `

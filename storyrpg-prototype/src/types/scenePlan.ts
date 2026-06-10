@@ -161,6 +161,20 @@ export interface PlannedScene {
   npcsInvolved: string[];
 
   /**
+   * Planned diegetic time-of-day for the scene (canonical vocabulary:
+   * dawn/morning/midday/afternoon/dusk/evening/night, synonyms normalized
+   * downstream). Optional — when absent, the blueprint timeline backfill
+   * infers it from scene text or inherits it from the previous scene.
+   */
+  timeOfDay?: string;
+  /**
+   * Planned gap between the previous scene and this one (e.g. "later that
+   * night", "the next morning", "continuous"). Optional; derived
+   * deterministically when absent.
+   */
+  timeJump?: string;
+
+  /**
    * Scene ids (this season) that this scene PLANTS for — i.e. setups this scene
    * establishes that a later scene discharges. The forward half of the
    * setup/payoff graph.

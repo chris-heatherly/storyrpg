@@ -118,8 +118,40 @@ function computeImageStatsForOutputDir(outputDirAbs) {
   };
 }
 
+/**
+ * Episode-completion watermarks written by the pipeline (WS1a):
+ * checkpoints/episode-{N}-complete.json. Surfacing them on the job record lets
+ * a resume tell which episodes are already paid for and assembled.
+ */
+function computeEpisodeStatsForOutputDir(outputDirAbs) {
+  if (!outputDirAbs) return undefined;
+  const checkpointsDir = path.join(outputDirAbs, 'checkpoints');
+  if (!fs.existsSync(checkpointsDir)) return undefined;
+  const completedEpisodes = [];
+  try {
+    for (const entry of fs.readdirSync(checkpointsDir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const match = /^episode-(\d+)-complete\.json$/.exec(entry.name);
+      if (!match) continue;
+      const watermark = readJsonIfExists(path.join(checkpointsDir, entry.name));
+      if (watermark?.version === 1 && typeof watermark.episodeNumber === 'number') {
+        completedEpisodes.push(watermark.episodeNumber);
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  if (completedEpisodes.length === 0) return undefined;
+  completedEpisodes.sort((a, b) => a - b);
+  return {
+    completedEpisodes,
+    lastCompletedEpisode: completedEpisodes[completedEpisodes.length - 1],
+  };
+}
+
 function enrichJobsWithImageStats(jobs, { rootDir, storiesDir }) {
   const cache = new Map();
+  const episodeCache = new Map();
   return jobs.map((job) => {
     const outputDirAbs = resolveStoryOutputDir(getJobOutputDir(job), { rootDir, storiesDir });
     if (!outputDirAbs) return job;
@@ -128,11 +160,19 @@ function enrichJobsWithImageStats(jobs, { rootDir, storiesDir }) {
       imageStats = computeImageStatsForOutputDir(outputDirAbs);
       cache.set(outputDirAbs, imageStats);
     }
-    if (!imageStats) return job;
+    if (!episodeCache.has(outputDirAbs)) {
+      episodeCache.set(outputDirAbs, computeEpisodeStatsForOutputDir(outputDirAbs));
+    }
+    const episodeStats = episodeCache.get(outputDirAbs);
+    if (!imageStats && !episodeStats) return job;
+    if (!imageStats) {
+      return { ...job, outputDir: job.outputDir || path.relative(rootDir, outputDirAbs), episodeStats };
+    }
     return {
       ...job,
       outputDir: job.outputDir || path.relative(rootDir, outputDirAbs),
       imageStats,
+      ...(episodeStats ? { episodeStats } : {}),
       generatedImageCount: imageStats.generatedFiles,
       referenceImageCount: imageStats.referenceFiles,
       storyImageCount: imageStats.storyFiles,

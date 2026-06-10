@@ -135,11 +135,19 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // OFF: needs one live run to confirm the disambiguator clears real residue (the LLM
   // path can't be exercised offline). Flip to true after that; reversible via =0.
   GATE_PROTAGONIST_PRONOUN: false,
-  // G10: promote NPC pronoun inconsistencies (a uniquely-named gendered NPC paired with
-  // a wrong binary or singular-they pronoun — Endsong ep3 narrated he/him Thorne as
-  // "their shoulder"/"their gaze") to blocking. Detection is conservative (single-NPC
-  // sentences only, plural-cue guard for they/them) and advisory by default; flip on
-  // after one live `=1` run confirms zero false-positive hard-fails. Reversible via =0.
+  // G10: NPC pronoun inconsistencies (a uniquely-named gendered NPC paired with a wrong
+  // binary or singular-they pronoun — Endsong ep3 narrated he/him Thorne as "their
+  // shoulder"). STAYS OFF (advisory only) — the 2026-06-09 audit (memory:
+  // g10-shadow-gate-audit) replayed it over bite-me-g10 + endsong-g10 and found ~100
+  // findings/run that are ~90% FALSE POSITIVE: a sentence names one NPC but the contrary
+  // pronoun refers to a DIFFERENT, unnamed person ("meant for HIM to overhear", "before she
+  // can stop THEM" = eyes, "without learning HIS" = the opponent's). Added precision guards
+  // cut this ~50% (skip the roster-bio subtree; require the name to be the pronoun's
+  // antecedent; skip sentences with an unnamed third-party noun or a dialogue speaker tag),
+  // but heuristic detection structurally CANNOT reach blocking precision — pronoun
+  // coreference needs semantics. Durable fix to promote this: an LLM coreference judge that
+  // confirms the pronoun binds to the named NPC (mirror the protagonist PronounDisambiguator
+  // regen route), then gate on its confirmed residue. Until then: advisory backstop only.
   GATE_NPC_PRONOUN: false,
   // G10: promote stub/scaffold-leak/echo/duplicate outcomeTexts to blocking. The
   // ChoiceAuthor fallback that produced these is fixed; OutcomeTextQualityValidator is
@@ -177,6 +185,33 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // ABORTS a run that still ships an undramatized promised clue — pair with the SceneWriter
   // "dramatize enumerated objective items" fix so the gen stops producing it. Reversible via =0.
   GATE_REFERENCED_EVENT_PRESENCE: true,
+  // G10: an `authored`-tier required beat on a STANDARD (non-encounter) scene must be
+  // dramatized in that scene's prose. Closes the gap between SignatureDevicePresence
+  // (signature-tier only) and EncounterAnchorContent (encounter scenes only): the audited
+  // Endsong ep1 `s1-6` ("Vraxxan Names the Key") shipped its authored required beat — the
+  // season's key reveal — unwritten, stopping at the villain's entrance, and NO gate saw it.
+  // Default-OFF pending one live `=1` run of both stories (build OFF → validate zero
+  // false-positives → flip ON), per the gate-promotion discipline.
+  GATE_REQUIRED_BEAT_REALIZATION: false,
+  // 2026-06-09 storytelling-quality audit: unacknowledged time/place jumps between
+  // adjacent scenes (bite-me-g10 bookshop-afternoon → 4am-rooftop hard cut). The
+  // generative half is live (plan-time SceneBlueprint.timeOfDay/timeJumpFromPrevious,
+  // SceneWriter/EncounterArchitect transition handoff, Scene.timeline persistence);
+  // SceneTransitionContinuityValidator is the deterministic backstop over the persisted
+  // metadata. Default-OFF per the gate-promotion discipline: needs one live `=1` run to
+  // confirm the opening-prose transition-marker heuristic's false-positive profile
+  // (it only reads scenes that CARRY timeline metadata, so legacy stories are inert).
+  GATE_SCENE_TRANSITION_CONTINUITY: false,
+  // 2026-06-09 storytelling-quality audit: characters surfacing without on-page
+  // introduction — cold name-drops (bite-me-g10 Victor, prose names him before any
+  // scene casts him) and metadata-only presence (endsong-g10 Sylvanor, cast +
+  // npcStates but never named in prose). The generative half is live (first-appearance
+  // SceneWriter directives, notYetIntroducedNames ban-list, plan-introduction key
+  // beats); CharacterIntroductionValidator is the prose-level backstop
+  // (PropIntroductionValidator only sees structured ids, never prose). Default-OFF:
+  // needs one live `=1` run to confirm the conservative name-matching (full name +
+  // unique ≥3-char first token) holds precision on a real cast.
+  GATE_CHARACTER_INTRODUCTION: false,
   // G10: per-episode plan-conformance gates (replace the slice-vs-season-target category
   // error). Choice-type / skill BALANCE is validated at the season-plan level; per
   // generated episode we only check it realized what the plan assigned to IT. Default-OFF
@@ -264,6 +299,21 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   GATE_INFORMATION_LEDGER_SCHEDULE: false,
   GATE_SIGNATURE_DEVICE_PRESENCE: true,
   GATE_SEVEN_POINT_ANCHOR_CONFORMANCE: true,
+  // WS2a (CONSISTENCY_PLAN 2026-06-09): reconvergence-residue repair + degrade.
+  // The #1 archived-run killer (16 zero-output runs) was the SceneGraphBranchValidator
+  // missing_branch_residue ERROR escalating straight to a pipeline abort. With this ON,
+  // that finding instead gets (a) ONE targeted SceneCritic regen per offending scene with
+  // the residue requirement injected (reconvergenceResidueRepair.ts), and (b) terminal
+  // degrade-to-advisory — the story SHIPS with a recorded `[advisory]` warning rather
+  // than producing zero output. PROMOTED ON at introduction, mirroring the
+  // GATE_FINAL_CONTRACT_REPAIR rationale: it only runs on an ALREADY-FAILING validation,
+  // its repair is merge-by-beat-id idempotent, and its terminal state is strictly less
+  // destructive than the abort it replaces — it can only rescue a failing run, never
+  // fail a passing one. (Residue is also now authored by construction: planning stamps
+  // a ResidueRequirement on reconvergence-target blueprints and SceneWriter renders it
+  // as a mandatory deliverable, so this gate should rarely fire at all.) Kill-switch:
+  // `GATE_RECONVERGENCE_RESIDUE_REPAIR=0` restores the historical hard-abort behavior.
+  GATE_RECONVERGENCE_RESIDUE_REPAIR: true,
   // G10: SignatureDevicePresence demoted ALL design-note signatures (anything with an
   // em-dash / parenthetical / >12 tokens) to advisory, so two genuinely-staged-but-
   // verbosely-described signatures that were summarized away (Bite Me ep1 Cișmigiu

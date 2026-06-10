@@ -91,6 +91,8 @@ import {
   NPCInfo,
 } from '../utils/relationshipDynamics';
 import type { StoryVerb } from '../utils/storyVerbs';
+import { isSustainedSetPiece } from '../utils/sustainedEncounter';
+import type { SceneTimelineHandoff } from '../utils/sceneTimeline';
 
 // Re-export for consumers that import from this file
 export type { EncounterApproach, NPCDisposition } from '../../types';
@@ -114,6 +116,16 @@ export interface EncounterArchitectInput {
   sceneDescription: string;
   sceneMood: string;
   plannedEncounterId?: string;
+
+  /** Planned location of the encounter scene (from the scene blueprint). */
+  sceneLocation?: string;
+  /**
+   * Diegetic timeline handoff: where/when the previous scene took place and
+   * whether this encounter's planned time/location differ. When they do, the
+   * encounter's setup prose must ground the new time/place — the audited hard
+   * cuts (bookshop afternoon → 4am rooftop) happened exactly at this seam.
+   */
+  sceneTimeline?: SceneTimelineHandoff;
 
   // Story context
   storyContext: {
@@ -150,6 +162,13 @@ export interface EncounterArchitectInput {
     role: 'ally' | 'enemy' | 'neutral' | 'obstacle';
     description: string;
     physicalDescription?: string;
+    /**
+     * How they speak — same shape as SceneWriter's npcs[].voiceNotes
+     * (character bible voiceProfile.writingGuidance). Injected into the
+     * encounter prompts so encounter dialogue keeps the NPC's distinct voice
+     * instead of sounding generic.
+     */
+    voiceNotes?: string;
   }>;
 
   // Available skills for challenges
@@ -165,6 +184,15 @@ export interface EncounterArchitectInput {
   // Scene connections for storylets
   victoryNextSceneId?: string;
   defeatNextSceneId?: string;
+
+  /**
+   * Blueprint branch discipline (from the season plan / scene blueprint):
+   * `false` means this encounter's scene is NOT a planned branch point — all
+   * outcome storylets must converge on the single planned next scene (same
+   * destination, different texture/residue). `true` means branching outcomes
+   * are planned. Undefined = unknown (no convergence enforcement).
+   */
+  isBranchPoint?: boolean;
 
   /**
    * Season-level narrative anchors (from SeasonPlan.anchors). Lets the
@@ -413,6 +441,61 @@ export async function mapWithConcurrency<T, R>(
   });
   await Promise.all(workers);
   return results;
+}
+
+/**
+ * Shared prose-discipline block injected into every encounter prompt phase
+ * (Phases 1-4 and the lean fallback prompt). Mirrors SceneWriter's prose
+ * contract (Prose And Dialogue Craft + Beat Structure caps) so encounter prose
+ * — situation setupText, choice narrativeText, outcome storylets — reads with
+ * the same craft as scene beats instead of sprawling flat description (the
+ * "hollow encounter middles" defect from the live audits). Keep this in step
+ * with SceneWriter's rules: change them together, never one in isolation.
+ */
+export const ENCOUNTER_PROSE_DISCIPLINE = `## PROSE DISCIPLINE (SAME CONTRACT AS SCENE PROSE)
+- SHORT PASSAGES ONLY — DO NOT WRITE PARAGRAPHS of description. Hard caps: setupText 30-50 words; outcome narrativeText 30-60 words; storylet beat text 2-3 sentences (under ~60 words). Use fewer words when the moment doesn't need more.
+- Show, don't tell: do not state thoughts or feelings directly. Externalize inner life through action, bodily response, object handling, hesitation, proximity, distance, facial expression, or a brief spoken line.
+- Dialogue carries subtext: under pressure characters rarely say what they mean. Keep lines spare, pointed, and selective — sharper and more interrupted as jeopardy rises. No speeches, no explaining.
+- Sensory detail is selective and purposeful (place, mood, danger, intimacy, cost). Every detail must carry pressure, threat, desire, movement, or consequence — never static scenery.
+- Vary sentence rhythm and openers: shorter, sharper lines under danger; never let two consecutive sentences begin with "You".
+- When an NPC lists a Voice, every line of their dialogue must sound like that voice — distinct from other characters and consistent across the encounter.
+- Fiction-first (ABSOLUTE): never expose stats, dice, DCs, percentages, thresholds, or system math in player-facing text. The player feels mechanics only as story pressure — risk, leverage, trust, exposure, cost.`;
+
+/** One storylet route rewritten by `enforceStoryletConvergence`. */
+export interface StoryletRouteCorrection {
+  slot: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * Deterministic post-parse guard for blueprint branch discipline (C from the
+ * G10 remediation): when the season plan marks this encounter's scene as NOT a
+ * branch point (`input.isBranchPoint === false`), every outcome storylet must
+ * converge on the single planned next scene. The LLM occasionally routes
+ * storylet `nextSceneId` to an invented or unplanned scene id, silently
+ * creating scene-graph branches the blueprint never planned (later tripping
+ * GATE_BRANCH_FANOUT) — encounterConverter honors `storylets[*].nextSceneId`
+ * verbatim. Rewrites mismatched routes in place and returns the corrections so
+ * the caller can log them. Pure besides the in-place rewrite; no-ops when the
+ * encounter IS a branch point (or branch-ness is unknown).
+ */
+export function enforceStoryletConvergence(
+  storylets: Partial<Record<string, GeneratedStorylet | undefined>> | undefined,
+  input: Pick<EncounterArchitectInput, 'isBranchPoint' | 'victoryNextSceneId' | 'defeatNextSceneId'>,
+): StoryletRouteCorrection[] {
+  if (input.isBranchPoint !== false) return [];
+  const planned = input.victoryNextSceneId || input.defeatNextSceneId;
+  if (!planned || !storylets) return [];
+  const corrections: StoryletRouteCorrection[] = [];
+  for (const [slot, storylet] of Object.entries(storylets)) {
+    if (!storylet) continue;
+    if (storylet.nextSceneId && storylet.nextSceneId !== planned) {
+      corrections.push({ slot, from: storylet.nextSceneId, to: planned });
+      storylet.nextSceneId = planned;
+    }
+  }
+  return corrections;
 }
 
 /** Phase 4 output: storylets */
@@ -863,9 +946,24 @@ export class EncounterArchitect extends BaseAgent {
     // demand more beats than the structure targets. Falls back to 2 when there
     // is no authored plan.
     const authored = input.encounterBeatPlan?.length ?? 0;
-    if (authored <= 0) return 2;
+    // G10: a SUSTAINED set piece (siege / "wall breach + repulse" / wave-after-wave) must
+    // play out as an escalating SEQUENCE, not a single decision + a summary outcome. Force a
+    // floor of 3 beats so normalizeStructure synthesizes a ≥3-point tension curve and the
+    // encounter has room to escalate — this is the generative half that keeps
+    // EncounterSetPieceDepthValidator (now a blocking gate) from aborting the run on a
+    // collapsed siege. Detection shares one regex with the validator (sustainedEncounter util).
+    const sustainedFloor = isSustainedSetPiece(
+      input.sceneName,
+      input.sceneDescription,
+      input.encounterDescription,
+      input.encounterStakes,
+      ...(input.encounterBeatPlan ?? []),
+    )
+      ? 3
+      : 0;
+    if (authored <= 0) return Math.max(2, sustainedFloor);
     const ceiling = Math.min(input.targetBeatCount || authored, 8);
-    return Math.max(2, Math.min(authored, ceiling));
+    return Math.max(2, sustainedFloor, Math.min(Math.max(authored, sustainedFloor), ceiling));
   }
 
   private readonly defaultStoryboardRoles: EncounterStoryboardFrameRole[] = [
@@ -2446,6 +2544,22 @@ RULES:
       }
     }
 
+    // Blueprint branch discipline: when the scene is NOT a planned branch
+    // point, converge every storylet route to the single planned next scene.
+    // The LLM's nextSceneId ships verbatim through encounterConverter, so an
+    // unplanned id here silently creates a scene-graph branch the blueprint
+    // never planned (GATE_BRANCH_FANOUT).
+    const routeCorrections = enforceStoryletConvergence(
+      structure.storylets as Partial<Record<string, GeneratedStorylet | undefined>>,
+      input,
+    );
+    for (const fix of routeCorrections) {
+      console.warn(
+        `[EncounterArchitect] Storylet "${fix.slot}" in ${structure.sceneId} routed to unplanned scene "${fix.from}" ` +
+        `but the blueprint marks this scene as non-branching; converging to planned next scene "${fix.to}".`
+      );
+    }
+
     return structure;
   }
 
@@ -3017,7 +3131,13 @@ ${input.storyContext.userPrompt ? `- **User Instructions**: ${input.storyContext
 - **Scene Name**: ${input.sceneName}
 - **Description**: ${input.sceneDescription}
 - **Mood**: ${input.sceneMood}
+${input.sceneLocation ? `- **Location**: ${input.sceneLocation}` : ''}
+${input.sceneTimeline?.timeOfDay ? `- **Time of day**: ${input.sceneTimeline.timeOfDay}` : ''}
 - **Planned Encounter ID**: ${input.plannedEncounterId || 'none'}
+${input.sceneTimeline && (input.sceneTimeline.locationChanged || input.sceneTimeline.timeChanged) ? `
+### TRANSITION HANDOFF (CRITICAL — time/place moved since the previous scene)
+The previous scene ("${input.sceneTimeline.previous?.sceneName ?? 'previous scene'}") took place at ${input.sceneTimeline.previous?.location ?? 'its location'}${input.sceneTimeline.previous?.timeOfDay ? ` (${input.sceneTimeline.previous.timeOfDay})` : ''}${input.sceneTimeline.timeJumpFromPrevious ? ` — planned gap: ${input.sceneTimeline.timeJumpFromPrevious}` : ''}.
+The encounter's OPENING/setup prose must ground the new time and place and how the protagonist got here before the pressure starts — an unacknowledged cut reads as a continuity error.` : ''}
 
 ## Encounter Details
 - **Type**: ${input.encounterType}

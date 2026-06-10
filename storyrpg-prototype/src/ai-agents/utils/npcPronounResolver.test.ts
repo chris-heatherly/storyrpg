@@ -82,4 +82,47 @@ describe('findNpcPronounInconsistencies', () => {
     );
     expect(res.findings).toHaveLength(0);
   });
+
+  // ── G10 precision guards (2026-06-09 audit): kill the dominant false-positive classes ──
+
+  it('does NOT scan the NPC-roster bio subtree (a bio names other cast)', () => {
+    // Thorne's own description narrates him while merely mentioning Lysandra; the old walk
+    // matched Lysandra (she/her) + "his" and false-flagged. The roster subtree is skipped.
+    const story = storyWith(['A quiet scene.']) as unknown as { npcs: Array<Record<string, unknown>> };
+    story.npcs[1] = {
+      id: 'char-lysandra-brightwell', name: 'Lysandra Brightwell', pronouns: 'she/her',
+      description: 'A commander who fought beside Lysandra and never lowered his guard.',
+    };
+    const res = findNpcPronounInconsistencies(story as unknown as Story);
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('skips when the pronoun precedes the NPC name (name is not the antecedent)', () => {
+    const res = findNpcPronounInconsistencies(
+      storyWith(['His blade already drawn, the figure turns out to be Lysandra.']),
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('skips when an unnamed third party can be the referent', () => {
+    const res = findNpcPronounInconsistencies(
+      storyWith(['Lysandra watches the stranger leave, wondering where he learned to move like that.']),
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('skips a dialogue speaker tag (the pronoun is the speaker, not the named NPC)', () => {
+    const res = findNpcPronounInconsistencies(
+      storyWith(["'Vraxxan,' she says, naming the thing in the dark."]),
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('still flags a real misgendering once the guards pass', () => {
+    const res = findNpcPronounInconsistencies(
+      storyWith(['Lysandra tightens his jaw and steps onto the rampart.']),
+    );
+    expect(res.findings).toHaveLength(1);
+    expect(res.findings[0].npcId).toBe('char-lysandra-brightwell');
+  });
 });

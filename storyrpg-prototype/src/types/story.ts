@@ -54,6 +54,19 @@ export interface Scene {
   isBottleneck?: boolean;
   isConvergencePoint?: boolean;
   branchType?: 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption';
+
+  /**
+   * Generator-authored diegetic timeline metadata (planned location/time-of-day
+   * and the writer's transition phrase). Persisted at assembly so continuity
+   * validators and audits can compare the PLANNED time/place against prose.
+   * Never rendered to the player.
+   */
+  timeline?: {
+    location?: string;
+    timeOfDay?: string;
+    timeJumpFromPrevious?: string;
+    transitionIn?: string;
+  };
 }
 
 export interface Episode {

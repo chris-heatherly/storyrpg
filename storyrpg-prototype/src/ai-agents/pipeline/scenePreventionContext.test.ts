@@ -25,6 +25,28 @@ describe('buildPriorEncounterOutcomes (W4 prevention)', () => {
   it('returns undefined for a scene with no incoming encounter', () => {
     expect(buildPriorEncounterOutcomes(blueprint, blueprint.scenes[0], passthru)).toBeUndefined();
   });
+
+  it('surfaces generated stakes + clock pressure when the encounter structure exists', () => {
+    const generated = new Map([
+      ['enc-1', {
+        goalClock: { name: 'Seal the breach', segments: 6, description: 'Seal the breach before the horde pours through' },
+        threatClock: { name: 'The horde advances', segments: 4, description: 'Each delay brings the horde closer to the keep' },
+        stakes: { victory: 'The wall holds and the garrison rallies', defeat: 'The breach falls; survivors flee to the keep' },
+      }],
+    ]);
+    const post = buildPriorEncounterOutcomes(blueprint, blueprint.scenes[1], passthru, generated)!;
+    expect(post[0].victoryStakes).toBe('The wall holds and the garrison rallies');
+    expect(post[0].defeatStakes).toBe('The breach falls; survivors flee to the keep');
+    expect(post[0].goalPressure).toBe('Seal the breach before the horde pours through');
+    expect(post[0].threatPressure).toBe('Each delay brings the horde closer to the keep');
+  });
+
+  it('falls back to blueprint stakes when no generated structure is available', () => {
+    const post = buildPriorEncounterOutcomes(blueprint, blueprint.scenes[1], passthru, new Map())!;
+    expect(post[0].victoryStakes).toBe('Hold the breach or lose the wall');
+    expect(post[0].goalPressure).toBeUndefined();
+    expect(post[0].threatPressure).toBeUndefined();
+  });
 });
 
 describe('buildContinueInLocation (B1 prevention)', () => {

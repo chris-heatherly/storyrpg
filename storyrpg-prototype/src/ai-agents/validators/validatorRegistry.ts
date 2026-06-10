@@ -194,6 +194,16 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // Continuity remediation: promote cross-scene continuity ERRORS from the advisory QA
   // report to blocking so the final-contract repair loop engages.
   { validator: 'ContinuityChecker (cross-scene error class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_CONTINUITY_REMEDIATION', dispatchedFrom: 'FinalStoryContractValidator' },
+
+  // --- 2026-06-09 storytelling-quality audit (time/place + character-introduction) ---
+  // Unacknowledged time/place jump between adjacent scenes: planned Scene.timeline
+  // changed but the arriving scene has no transitionIn / transition prose. Backstop for
+  // the plan-time timeline + SceneWriter/EncounterArchitect transition-handoff fix.
+  { validator: 'SceneTransitionContinuityValidator', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_SCENE_TRANSITION_CONTINUITY', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // Characters without on-page introduction: cold prose name-drops before any cast
+  // presence, and cast-in-metadata-only NPCs the prose never names. Backstop for the
+  // first-appearance directive / notYetIntroducedNames ban-list / introduction key beats.
+  { validator: 'CharacterIntroductionValidator', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_CHARACTER_INTRODUCTION', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
 ];
 
 /** Validators that hard-block a run regardless of validation mode. */

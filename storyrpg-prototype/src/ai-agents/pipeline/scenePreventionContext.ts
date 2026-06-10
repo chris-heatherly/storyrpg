@@ -23,6 +23,13 @@ import { encounterOutcomeFlag } from '../utils/encounterOutcomeFlags';
 
 const ENCOUNTER_OUTCOMES = ['victory', 'partialVictory', 'defeat', 'escape'] as const;
 
+/** The slice of a generated EncounterStructure the aftermath scene needs. */
+export interface GeneratedEncounterPressure {
+  goalClock?: { name?: string; segments?: number; description?: string };
+  threatClock?: { name?: string; segments?: number; description?: string };
+  stakes?: { victory?: string; defeat?: string };
+}
+
 /**
  * For a scene that an encounter routes INTO, build the outcome context (outcome
  * flag names + the encounter's stakes) so the SceneWriter authors textVariants
@@ -30,25 +37,39 @@ const ENCOUNTER_OUTCOMES = ['victory', 'partialVictory', 'defeat', 'escape'] as 
  * encounter leads here. The flag names match what `seedEncounterOutcomeFlags`
  * stamps on the encounter, so prevention and the post-hoc seeder agree.
  *
+ * When the GENERATED encounter structure is available (it is — encounters are
+ * built in their own loop iteration, before any scene they lead to), its real
+ * stakes and goal/threat clocks are surfaced too. Without them the aftermath
+ * prose floats free of the encounter's mechanical pressure: a fight that ended
+ * with the threat clock nearly full reads identical to a clean win (the
+ * partialVictory state/prose desync class).
+ *
  * @param sanitizeName Reader-facing scene-name sanitizer (passed in so this stays
  *   free of pipeline state).
+ * @param generatedEncounters Generated EncounterStructure by sceneId, when available.
  */
 export function buildPriorEncounterOutcomes(
   blueprint: EpisodeBlueprint,
   sceneBlueprint: SceneBlueprint,
   sanitizeName: (name: string | undefined, fallback: string) => string,
+  generatedEncounters?: ReadonlyMap<string, GeneratedEncounterPressure>,
 ): SceneWriterInput['priorEncounterOutcomes'] {
   const incoming = (blueprint.scenes || []).filter(
     (s) => s.isEncounter && (s.leadsTo || []).includes(sceneBlueprint.id),
   );
   if (incoming.length === 0) return undefined;
-  return incoming.map((enc) => ({
-    encounterId: enc.id,
-    encounterName: sanitizeName(enc.name, enc.name),
-    victoryStakes: enc.encounterStakes,
-    defeatStakes: enc.encounterStakes,
-    outcomeFlags: ENCOUNTER_OUTCOMES.map((o) => ({ outcome: o, flag: encounterOutcomeFlag(enc.id, o) })),
-  }));
+  return incoming.map((enc) => {
+    const generated = generatedEncounters?.get(enc.id);
+    return {
+      encounterId: enc.id,
+      encounterName: sanitizeName(enc.name, enc.name),
+      victoryStakes: generated?.stakes?.victory || enc.encounterStakes,
+      defeatStakes: generated?.stakes?.defeat || enc.encounterStakes,
+      outcomeFlags: ENCOUNTER_OUTCOMES.map((o) => ({ outcome: o, flag: encounterOutcomeFlag(enc.id, o) })),
+      goalPressure: generated?.goalClock?.description || generated?.goalClock?.name,
+      threatPressure: generated?.threatClock?.description || generated?.threatClock?.name,
+    };
+  });
 }
 
 /**

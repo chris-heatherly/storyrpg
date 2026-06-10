@@ -1,6 +1,7 @@
 import type { Story } from '../../types';
 import type { SeasonScenePlan } from '../../types/scenePlan';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
+import { SUSTAINED_SET_PIECE_RE } from '../utils/sustainedEncounter';
 
 /**
  * Encounter set-piece depth (G10).
@@ -19,8 +20,7 @@ import { BaseValidator, type ValidationIssue, type ValidationResult } from './Ba
  * "sustained set-piece" banner is flagged. Deterministic, no LLM.
  */
 
-const SUSTAINED_RE =
-  /\b(sustained|set[\s-]?piece|siege|repulse|successive|wave after wave|waves of|prolonged|drawn[\s-]?out|extended (?:battle|fight|chase|defen[cs]e|siege)|escalating (?:battle|assault|siege|sequence)|running (?:battle|fight))\b/i;
+const SUSTAINED_RE = SUSTAINED_SET_PIECE_RE;
 
 export interface EncounterSetPieceDepthInput {
   story: Story;

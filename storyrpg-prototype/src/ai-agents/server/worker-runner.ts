@@ -13,6 +13,8 @@ import {
 } from '../codec/storyCodec';
 import { runImageGenerationBatch, runStoryAnalysis, runStoryGeneration } from '../services/storyGenerationService';
 import { WorkerPayload, assertValidWorkerPayload } from './workerPayload';
+import { isProviderQuotaError, PROVIDER_QUOTA_FAILURE_KIND } from '../utils/providerErrors';
+import { anthropicCreditPreflight } from './providerPreflight';
 import { installResilientHttp } from './resilientHttp';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { Story } from '../../types';
@@ -56,6 +58,10 @@ async function persistFailureResult(error: unknown) {
 function buildFailurePayload(error: unknown): Record<string, unknown> {
   const message = error instanceof Error ? error.message : String(error);
   const stack = error instanceof Error ? error.stack : undefined;
+  // WS1b: billing/quota exhaustion is resumable, not a real failure — surface a
+  // dedicated failureKind so the proxy parks the job as 'paused' for a later
+  // resume instead of discarding the run as failed.
+  const quotaKind = isProviderQuotaError(error) ? PROVIDER_QUOTA_FAILURE_KIND : undefined;
   if (error instanceof PipelineError) {
     const context = error.context || {};
     return {
@@ -63,7 +69,7 @@ function buildFailurePayload(error: unknown): Record<string, unknown> {
       stack,
       failurePhase: error.phase,
       failureStepId: typeof context.stepId === 'string' ? context.stepId : error.phase,
-      failureKind: typeof context.failureKind === 'string' ? context.failureKind : 'pipeline',
+      failureKind: quotaKind ?? (typeof context.failureKind === 'string' ? context.failureKind : 'pipeline'),
       failureArtifactKey: typeof context.failureArtifactKey === 'string' ? context.failureArtifactKey : undefined,
       resumeFromStepId: typeof context.resumeFromStepId === 'string' ? context.resumeFromStepId : error.phase,
       resumePatchableInputs: Array.isArray(context.resumePatchableInputs) ? context.resumePatchableInputs : ['settings'],
@@ -84,7 +90,7 @@ function buildFailurePayload(error: unknown): Record<string, unknown> {
   return {
     message,
     stack,
-    failureKind: 'worker',
+    failureKind: quotaKind ?? 'worker',
     resumePatchableInputs: ['settings'],
   };
 }
@@ -367,6 +373,24 @@ async function main() {
   activeResultPath = payload.resultPath;
 
   emit('worker_start', { mode: payload.mode });
+
+  // WS1b preflight: 1-token ping so an exhausted account pauses the job before
+  // any generation spend. Fail-open — only a definitive billing error throws
+  // (LLMQuotaError → failureKind 'provider-quota' → job status 'paused').
+  const agentConfigs = Object.values(payload.config?.agents ?? {}) as Array<{ provider?: string; apiKey?: string; model?: string }>;
+  const anthropicConfig = agentConfigs.find((c) => c?.provider === 'anthropic' && c?.apiKey);
+  if (anthropicConfig) {
+    const preflight = await anthropicCreditPreflight({
+      apiKey: anthropicConfig.apiKey,
+      model: anthropicConfig.model,
+    });
+    if (preflight.skipped) {
+      emit('pipeline_event', { eventType: 'debug', phase: 'preflight', message: `Credit preflight skipped: ${preflight.reason}` });
+    } else {
+      emit('pipeline_event', { eventType: 'debug', phase: 'preflight', message: 'Credit preflight OK' });
+    }
+  }
+
   if (payload.mode === 'analysis') {
     await runAnalysis(payload);
   } else if (payload.mode === 'image-generation') {

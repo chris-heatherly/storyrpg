@@ -20,6 +20,8 @@ import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 import { isUnsafeCallbackProse } from '../constants/metaProse';
 import { buildPriorEncounterOutcomes, buildContinueInLocation } from './scenePreventionContext';
+import { buildSceneTimelineHandoff, sceneTimelineMetaForScene } from '../utils/sceneTimeline';
+import { introducedNpcIds, forbiddenNpcNames, plannedIntroductionsForEpisode } from '../utils/npcIntroductionLedger';
 import { 
   SCENE_DEFAULTS, 
   clampSceneCount,
@@ -147,6 +149,8 @@ import {
   type SeasonChoicePlan,
 } from './seasonChoicePlan';
 import { buildSeasonSkillPlan, skillsForEpisode, validateSeasonSkillPlan, type SeasonSkillPlan } from './seasonSkillPlan';
+import { writeEpisodeCompletion, partitionResumableEpisodes } from './episodeCheckpoints';
+import { rebalanceSeasonSkillCoverage } from './seasonSkillRebalance';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
 import { extractPlantsFromChoiceSet, extractTintPlantsFromChoiceSet, extractBranchResidueFromChoiceSet, emitSceneTreatmentSeeds, emitSceneBranchAxes, emitSceneInfoReveals, mergeUnresolvedForScene, type EpisodePlant } from './episodePlantContext';
 import { reconcileBriefStoryMetadata } from './briefStoryMetadata';
@@ -157,6 +161,10 @@ import { applySpinePlantMap, deriveSpinePlantMap } from './spinePlantMap';
 import { extractEpisodeKnowledge, collectReferencedFlags } from './knowledgeExtraction';
 import { buildOutcomeTextVariants } from './outcomeVariants';
 import { runEpisodeChargeMaterializationForSeason } from './episodeChargeMaterialization';
+import { isThreadTwistPlanningEnabled, planEpisodeThreadsAndTwist, mergeIntoSeasonLedger, openPriorThreads, sceneActiveThreads, sceneTwistDirectives } from './threadTwistPlanning';
+import { ThreadPlanner } from '../agents/ThreadPlanner';
+import { TwistArchitect, type TwistPlan } from '../agents/TwistArchitect';
+import type { ThreadLedger } from '../../types/narrativeThread';
 import { buildSceneTimelineLabels } from './sceneNumbering';
 import { capabilityFactStrings, capabilityNoteForProfile, characterCapabilityWorldFacts } from './characterCanonFacts';
 import {
@@ -221,6 +229,7 @@ import { CallbackLedger } from './callbackLedger';
 import {
   getUnresolvedCallbacksForPrompt as getUnresolvedCallbacksForPromptImpl,
   harvestEpisodeCallbacks as harvestEpisodeCallbacksImpl,
+  recordScenePayoffs,
   injectFallbackCallbacks as injectFallbackCallbacksImpl,
   type UnresolvedCallbackForPrompt,
   type HarvestEpisodeCallbacksParams,
@@ -324,6 +333,8 @@ import { isGateEnabled, gateEnabledPredicate, isShadowLoggingEnabled } from '../
 import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairReport } from '../remediation/finalContractRepair';
 import { repairAndRevalidatePropIntroduction } from '../remediation/repairs/propIntroductionRepair';
 import { computePlanTimeShadow } from '../remediation/planTimeShadow';
+import { runReconvergenceResidueGate } from '../remediation/reconvergenceResidueRepair';
+import { attachResidueRequirements, hasMissingResidueFindings } from './reconvergenceResidue';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
@@ -872,6 +883,23 @@ export class FullStoryPipeline {
   // choices' `memorableMoment` fields and consumed as prompt context for
   // later episodes. Persisted to `09-callback-ledger.json`.
   private callbackLedger: CallbackLedger = new CallbackLedger();
+  // Thread/Twist planning (default-off, STORYRPG_THREAD_TWIST_PLANNING): run-level
+  // NarrativeThread ledger accumulated across episodes (mirrors callbackLedger) +
+  // each episode's TwistPlan, consumed by SceneWriter inputs and narrative
+  // diagnostics. Stays empty when the flag is off, so consumers see undefined.
+  private seasonThreadLedger: ThreadLedger = { threads: [] };
+  private episodeTwistPlans: Map<number, TwistPlan> = new Map();
+  // Lazily constructed so a flag-off run never instantiates the agents.
+  private _threadPlanner?: ThreadPlanner;
+  private _twistArchitect?: TwistArchitect;
+  private getThreadPlanner(): ThreadPlanner {
+    if (!this._threadPlanner) this._threadPlanner = new ThreadPlanner(this.config.agents.storyArchitect);
+    return this._threadPlanner;
+  }
+  private getTwistArchitect(): TwistArchitect {
+    if (!this._twistArchitect) this._twistArchitect = new TwistArchitect(this.config.agents.storyArchitect);
+    return this._twistArchitect;
+  }
   // Season Canon (P4): durable frozen facts + the snapshot carried forward across
   // sequentially-generated episodes.
   private seasonCanon: SeasonCanon = new SeasonCanon();
@@ -1117,6 +1145,8 @@ export class FullStoryPipeline {
       phase: string;
       outputDirectory?: string;
       artifactName?: string;
+      // WS2a: enables the targeted residue regen; degrade-to-advisory works without it.
+      residueRepair?: { sceneContents: SceneContent[]; reassemble: () => Episode };
     }
   ): Promise<SceneGraphBranchValidationResult> {
     const isSceneEpisodeMode = this.config.generation?.episodeStructureMode === 'sceneEpisodes';
@@ -1149,6 +1179,25 @@ export class FullStoryPipeline {
           result = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
         }
       }
+    }
+
+    // WS2a (reconvergence residue — the #1 archived-run killer): a missing-residue ERROR
+    // gets ONE targeted SceneCritic regen with the residue requirement injected, then
+    // degrades to an `[advisory]` warning instead of aborting the run. All logic lives in
+    // remediation/reconvergenceResidueRepair (monolith ratchet). Kill-switch via =0.
+    if (!result.valid && hasMissingResidueFindings(result) && isGateEnabled('GATE_RECONVERGENCE_RESIDUE_REPAIR')) {
+      result = (await runReconvergenceResidueGate({
+        result,
+        episodeScenes: episode.scenes as never,
+        blueprintScenes: blueprint?.scenes,
+        sceneContents: context.residueRepair?.sceneContents,
+        critic: () => this.sceneCritic ?? new SceneCritic(this.config.agents.sceneWriter),
+        revalidate: context.residueRepair
+          ? () => this.sceneGraphBranchValidator.validateEpisode(context.residueRepair!.reassemble(), blueprint, branchOptions)
+          : undefined,
+        emit: (event) => this.emit(event),
+        phase: context.phase,
+      })).result;
     }
 
     this.emit({
@@ -1405,6 +1454,25 @@ export class FullStoryPipeline {
     // roster. Idempotent (resolvable ids already canonical → no-op); remaps stragglers and
     // drops the genuinely-unknown so GATE_RELATIONSHIP_ID_INTEGRITY fires only on real residue.
     canonicalizeStoryRelationshipConsequences(input.story);
+
+    // Season-final skill rebalance (G10): the per-scene ChoiceAuthor rebalance can't hit a
+    // SEASON coverage target (≥6/8 skills, <30% dominance), so a perception-heavy season
+    // (Bite Me G10: 4/8, perception 45%) still ships. This deterministic pass reassigns
+    // single-skill checks off the over-used skill onto under-used ones (within each choice
+    // type's plausible set) until the season clears the target. No LLM; fiction-first
+    // (skill behind a check never surfaces). Logged for telemetry; runs before the contract
+    // so SkillCoverageValidator sees the rebalanced result.
+    {
+      const r = rebalanceSeasonSkillCoverage(input.story);
+      if (r.reassignments > 0) {
+        console.info(
+          `[Pipeline] season skill rebalance: ${r.reassignments} reassignment(s); ` +
+          `coverage ${r.before.coveredSkills}→${r.after.coveredSkills}/8, ` +
+          `dominance ${(r.before.dominantShare * 100).toFixed(0)}%→${(r.after.dominantShare * 100).toFixed(0)}% ` +
+          `(${r.before.dominantSkill ?? '-'}→${r.after.dominantSkill ?? '-'})`,
+        );
+      }
+    }
 
     // W1 regen route: BEFORE the contract reads protagonist-pronoun residue, run the
     // ambiguous-sentence disambiguator so the gate fires only on residue the regen
@@ -4742,6 +4810,18 @@ export class FullStoryPipeline {
         throw new JobCancelledError(this.jobId);
       }
     }
+    // WS1b: a billing-exhausted provider account fails every later call, so a
+    // latched quota error pauses the run at the next checkpoint regardless of
+    // failure policy — completed episodes survive (watermarks) and the worker
+    // maps this failureKind to a resumable 'paused' job, not a discarded fail.
+    const quotaMessage = BaseAgent.billingQuotaExhausted();
+    if (quotaMessage) {
+      throw new PipelineError(
+        `Provider credit/quota exhausted — pausing run (resume after top-up): ${quotaMessage}`,
+        'provider_quota',
+        { context: { failureKind: 'provider-quota', resumePatchableInputs: ['settings'] } },
+      );
+    }
     // C4: per-story token ceiling. Abort fast if a runaway retry loop blows the
     // budget. Disabled unless config.generation.tokenBudgetPerStory is set.
     const budget = this.config.generation?.tokenBudgetPerStory;
@@ -4792,6 +4872,7 @@ export class FullStoryPipeline {
     this.allEncounterTelemetry = [];
     this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
     this.resetCollectedVisualPlanning(); // Reset visual planning collection for new run
+    BaseAgent.resetBillingQuotaState(); // WS1b: stale quota latch must not poison a resumed run
     const startTime = Date.now();
 
     // Register this generation job for tracking
@@ -5872,6 +5953,7 @@ export class FullStoryPipeline {
           phase: 'branch_validation',
           outputDirectory,
           artifactName: `episode-${brief.episode.number}-branch-metrics.json`,
+          residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, undefined, encounters, undefined, videoResults) },
         });
         this.validateMicroEpisodeStructure(branchValidationEpisode, {
           phase: 'micro_episode_validation',
@@ -7118,6 +7200,16 @@ export class FullStoryPipeline {
       seasonSevenPoint: seasonPlan?.sevenPoint,
       episodeStructuralRole: seasonEpisode?.structuralRole,
       cliffhangerPlan: seasonEpisode?.cliffhangerPlan,
+      // Characters this episode is planned to introduce — the blueprint gives
+      // each an on-page introduction beat (uncontextualized-character fix).
+      introducesCharacters: plannedIntroductionsForEpisode({
+        episodeNumber: brief.episode.number,
+        roster: characterBible.characters
+          .filter((c) => c.id !== brief.protagonist.id)
+          .map((c) => ({ id: c.id, name: c.name })),
+        introducesCharacters: seasonEpisode?.introducesCharacters,
+        characterIntroductions: seasonPlan?.characterIntroductions,
+      }),
       memoryContext: this.cachedPipelineMemory || undefined,
     };
 
@@ -7434,6 +7526,35 @@ export class FullStoryPipeline {
       }
     }
 
+    // Thread/Twist planning (Phase 5.3 + 6 wiring): author this episode's thread
+    // ledger + TwistPlan after the blueprint is final, before scene prose. All logic
+    // lives in threadTwistPlanning (monolith ratchet). Default-off; both agents fail open.
+    if (isThreadTwistPlanningEnabled(this.config.generation)) {
+      const ttEpisode = episodeNumber ?? brief.episode.number;
+      const { threadLedger, twistPlan } = await planEpisodeThreadsAndTwist({
+        enabled: true,
+        threadPlanner: this.getThreadPlanner(),
+        twistArchitect: this.getTwistArchitect(),
+        episodeBlueprint: blueprint,
+        episodeNumber: ttEpisode,
+        seasonAnchors: brief.seasonPlan?.anchors,
+        seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+        episodeStructuralRole: brief.seasonPlan?.episodes.find((e) => e.episodeNumber === ttEpisode)?.structuralRole,
+        priorThreads: openPriorThreads(this.seasonThreadLedger, ttEpisode),
+        emitWarning: (message) => this.emit({ type: 'warning', phase: 'content', message }),
+      });
+      if (threadLedger) mergeIntoSeasonLedger(this.seasonThreadLedger, threadLedger, ttEpisode);
+      if (twistPlan) this.episodeTwistPlans.set(ttEpisode, twistPlan);
+      if (outputDirectory && (threadLedger || twistPlan)) {
+        await saveEarlyDiagnostic(outputDirectory, `episode-${ttEpisode}-thread-twist-plan.json`, {
+          generatedAt: new Date().toISOString(),
+          threadLedger,
+          twistPlan,
+          seasonThreadCount: this.seasonThreadLedger.threads.length,
+        }).catch(() => undefined);
+      }
+    }
+
     // Initialize incremental validation
     const incrementalConfig = {
       ...INCREMENTAL_VALIDATION_DEFAULTS,
@@ -7585,6 +7706,11 @@ export class FullStoryPipeline {
         }
       }
     }
+
+    // WS2a (reconvergence residue by construction): stamp a structured residue requirement
+    // onto every reconvergence-target scene blueprint so SceneWriter authors the
+    // path-acknowledging textVariants at WRITING time, not hunted post-hoc by the validator.
+    attachResidueRequirements(blueprint, branchAnalysis ?? undefined);
 
     // Phase 1.5: Build GrowthTemplate from season plan's growth curve for this
     // episode. It is attached to the first strategic choice point in the episode
@@ -7811,6 +7937,21 @@ export class FullStoryPipeline {
           message: `Writing scene ${i + 1}/${blueprint.scenes.length}: ${sceneBlueprint.name}`,
         });
 
+        // On-page introduction state (uncontextualized-character fix): which roster
+        // NPCs has the reader met before this scene in planned reading order?
+        const rosterNpcs = characterBible.characters
+          .filter((c) => c.id !== brief.protagonist.id)
+          .map((c) => ({ id: c.id, name: c.name }));
+        const blueprintOrderIdx = (blueprint.scenes || []).findIndex((s) => s.id === sceneBlueprint.id);
+        const introducedBeforeScene = introducedNpcIds({
+          episodeNumber: brief.episode.number,
+          rosterNpcIds: rosterNpcs.map((c) => c.id),
+          characterIntroductions: brief.seasonPlan?.characterIntroductions,
+          alreadyStagedNpcIds: (blueprint.scenes || [])
+            .slice(0, Math.max(0, blueprintOrderIdx))
+            .flatMap((s) => s.npcsPresent || []),
+        });
+
         const sceneWriterInput = {
           sceneBlueprint,
           storyContext: {
@@ -7839,8 +7980,19 @@ export class FullStoryPipeline {
               physicalDescription: profile?.physicalDescription,
               voiceNotes: profile?.voiceProfile?.writingGuidance || '',
               currentMood: profile?.voiceProfile?.whenNervous,
+              isFirstOnPageAppearance: !introducedBeforeScene.has(npcId),
             };
           }),
+          // Roster characters the reader hasn't met and who aren't in this scene's
+          // cast — the writer must not name them (the "who is this?" defect class).
+          notYetIntroducedNames: forbiddenNpcNames({
+            roster: rosterNpcs,
+            introduced: introducedBeforeScene,
+            sceneCastIds: sceneBlueprint.npcsPresent,
+          }),
+          // Diegetic timeline handoff: previous scene's time/place + whether this
+          // scene's planned time/location differ (transition acknowledgment required).
+          sceneTimeline: buildSceneTimelineHandoff(blueprint.scenes || [], sceneBlueprint),
           relevantFlags: blueprint.suggestedFlags,
           relevantScores: blueprint.suggestedScores,
           // Step 2 (info-reveal): resolve the INFO ids assigned to this scene (Step 1)
@@ -7867,8 +8019,10 @@ export class FullStoryPipeline {
           // W4 prevention: if an encounter routes into this scene, hand the writer the
           // encounter's outcomes + their pre-seeded state flags so it authors
           // outcome-conditioned variants natively (the scene reflects what happened).
+          // The generated encounter map adds the REAL stakes + clock pressure (scenes
+          // are written in dependency order, so an incoming encounter already exists).
           priorEncounterOutcomes: buildPriorEncounterOutcomes(
-            blueprint, sceneBlueprint, (n, f) => this.sanitizeReaderFacingSceneName(n, f),
+            blueprint, sceneBlueprint, (n, f) => this.sanitizeReaderFacingSceneName(n, f), encounters,
           ),
           // B1 prevention: if the prior scene shares this scene's location, tell the
           // writer to continue the visit rather than re-stage an arrival (dual-first-entry).
@@ -7890,6 +8044,12 @@ export class FullStoryPipeline {
           cliffhangerPlan: this.isEpisodeFinalScene(sceneBlueprint, blueprint)
             ? brief.seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number)?.cliffhangerPlan
             : undefined,
+          // Thread/Twist planning (default-off): threads to plant/pay off in THIS
+          // scene + the TwistPlan directives targeting it. Both mappers return
+          // undefined unless STORYRPG_THREAD_TWIST_PLANNING populated the run
+          // ledger above, so the prompt is byte-identical by default.
+          activeThreads: sceneActiveThreads(this.seasonThreadLedger, sceneBlueprint.id, episodeNumber ?? brief.episode.number),
+          twistDirectives: sceneTwistDirectives(this.episodeTwistPlans.get(episodeNumber ?? brief.episode.number), sceneBlueprint.id),
         };
 
         // === KARPATHY LOOP: Best-of-N for critical scenes ===
@@ -8106,6 +8266,17 @@ export class FullStoryPipeline {
         sceneContent.incomingChoiceContext = sceneBlueprint.incomingChoiceContext;
 
         sceneContents.push(sceneContent);
+
+        // Within-episode callback crediting: record this scene's textVariant payoffs
+        // NOW, so later scenes in the same episode see up-to-date hook counts in
+        // getUnresolvedCallbacksForPrompt (previously only the end-of-episode harvest
+        // credited them — scene 5 was still offered a hook scene 2 had already paid,
+        // double-acknowledging the same decision). The beat-level dedupe key makes
+        // the end-of-episode harvest re-scan a no-op for these beats.
+        recordScenePayoffs(this.callbackLedger, brief.episode?.number ?? 1, {
+          sceneId: sceneContent.sceneId,
+          beats: (sceneContent.beats ?? []) as unknown as Parameters<typeof recordScenePayoffs>[2]['beats'],
+        });
 
         this.emit({
           type: 'agent_complete',
@@ -9089,6 +9260,10 @@ export class FullStoryPipeline {
           sceneName: sceneBlueprint.name,
           sceneDescription: sceneBlueprint.description,
           sceneMood: sceneBlueprint.mood,
+          sceneLocation: sceneBlueprint.location,
+          // Timeline handoff across the encounter seam — the audited hard cuts
+          // (e.g. afternoon bookshop → 4am rooftop) happened at encounter scenes.
+          sceneTimeline: buildSceneTimelineHandoff(blueprint.scenes || [], sceneBlueprint),
           plannedEncounterId: sceneBlueprint.plannedEncounterId || plannedEnc?.id,
           storyContext: {
             title: brief.story.title,
@@ -10207,6 +10382,9 @@ export class FullStoryPipeline {
         isBottleneck: blueprint.bottleneckScenes?.includes(sceneBlueprint.id) || sceneBlueprint.purpose === 'bottleneck',
         isConvergencePoint: blueprint.scenes.filter(s => s.leadsTo?.includes(sceneBlueprint.id)).length > 1,
         branchType: content.branchType,
+        // Planned time/place + the writer's transition phrase, persisted so the
+        // SceneTransitionContinuityValidator can verify the prose honored them.
+        timeline: sceneTimelineMetaForScene(sceneBlueprint, content.transitionIn),
       };
     });
 
@@ -10757,6 +10935,7 @@ export class FullStoryPipeline {
   ): Promise<FullPipelineResult> {
     // Input validation
     this.validateBrief(baseBrief);
+    BaseAgent.resetBillingQuotaState(); // WS1b: stale quota latch must not poison a resumed run
     analysis = this.refreshAnalysisFromTreatmentDocument(analysis, baseBrief.rawDocument);
     baseBrief = this.refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis);
     baseBrief = this.reconcileBriefStoryMetadataFromPlan(baseBrief, analysis);
@@ -10993,7 +11172,29 @@ export class FullStoryPipeline {
         }
         this.emitPlanUpdate('Episode outlines ready');
       }
-      this.emitPhaseProgress('content', 0, totalEpisodeProgressItems, 'episodes', 'Preparing episode generation queue...');
+
+      // WS1a episode-granularity resume: episodes that already fully assembled
+      // in this output directory (valid watermark + assembled artifact) are
+      // rehydrated instead of regenerated.
+      const { pending: pendingEpisodeSpecs, resumed: resumedEpisodes } = partitionResumableEpisodes(
+        episodeSpecs,
+        <T,>(name: string) => loadEarlyDiagnosticSync<T>(outputDirectory, name),
+      );
+      for (const { spec, episode, watermark } of resumedEpisodes) {
+        episodes.push(episode);
+        episodeResults.push({ episodeNumber: spec.episodeNumber, title: spec.outline.title, success: true });
+        completedEpisodeCount += 1;
+        if (this.generationPlan) markEpisode(this.generationPlan, spec.episodeNumber, 'complete');
+        this.emit({
+          type: 'debug',
+          phase: `episode_${spec.episodeNumber}`,
+          message: `Resumed episode ${spec.episodeNumber} from completion watermark (${watermark.sceneCount} scenes) — skipping regeneration`,
+        });
+      }
+      if (completedEpisodeCount > 0) {
+        this.emitPlanUpdate(`${completedEpisodeCount} episode(s) resumed from checkpoints`);
+      }
+      this.emitPhaseProgress('content', completedEpisodeCount, totalEpisodeProgressItems, 'episodes', 'Preparing episode generation queue...');
 
       if (parallelEnabled) {
         this.emit({
@@ -11003,7 +11204,7 @@ export class FullStoryPipeline {
         });
         const queue = new LocalWorkerQueue(maxParallelEpisodes);
         const processed = await mapWithConcurrency(
-          episodeSpecs,
+          pendingEpisodeSpecs,
           async (spec) => queue.run(async () => {
             await this.checkCancellation();
             const nextCompleted = episodeResults.length + 1;
@@ -11027,6 +11228,14 @@ export class FullStoryPipeline {
               outputDirectory,
               previousSummary: baseBrief.episode.previousSummary,
             });
+            if (generatedEpisode.episode) {
+              await writeEpisodeCompletion({
+                episode: generatedEpisode.episode,
+                episodeNumber: spec.episodeNumber,
+                title: spec.outline.title,
+                save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
+              });
+            }
             completedEpisodeCount += 1;
             if (this.generationPlan) {
               markEpisode(this.generationPlan, spec.episodeNumber, 'complete');
@@ -11057,7 +11266,7 @@ export class FullStoryPipeline {
           }
         }
       } else {
-        for (const spec of episodeSpecs) {
+        for (const spec of pendingEpisodeSpecs) {
           const i = spec.episodeNumber;
           await this.checkCancellation();
           this.currentEpisode = spec.idx + 1;
@@ -11152,6 +11361,16 @@ export class FullStoryPipeline {
             if (this.seasonCanonBlockingOn && blockingIssues.length > 0) {
               throw new Error(`Season Canon gate failed for episode ${i}: ${blockingIssues.map((x) => x.message).join('; ')}`);
             }
+          }
+          // WS1a: watermark only after content + canon seal both succeeded, so
+          // a resume never rehydrates an episode that failed its season gate.
+          if (generated.episode) {
+            await writeEpisodeCompletion({
+              episode: generated.episode,
+              episodeNumber: i,
+              title: spec.outline.title,
+              save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
+            });
           }
           completedEpisodeCount += 1;
           if (this.generationPlan) {
@@ -11773,6 +11992,7 @@ export class FullStoryPipeline {
         phase: `episode_${i}_branch_validation`,
         outputDirectory,
         artifactName: `episode-${i}-branch-metrics.json`,
+        residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(episodeBrief, worldBible, characterBible, blueprint, sceneContents, choiceSets, undefined, encounters, undefined) },
       });
       this.validateMicroEpisodeStructure(branchValidationEpisode, {
         phase: `episode_${i}_micro_episode_validation`,
@@ -11794,6 +12014,12 @@ export class FullStoryPipeline {
           totalEpisodes: brief.seasonPlan?.episodes?.length ?? i,
           sceneContents,
           episode: branchValidationEpisode,
+          // Thread/Twist planning (default-off): hand SetupPayoff/TwistQuality the
+          // REAL ThreadPlanner ledger + this episode's TwistPlan when the flag
+          // populated them. Undefined otherwise — the historical derived/absent
+          // behavior is unchanged.
+          threadLedger: this.seasonThreadLedger.threads.length > 0 ? this.seasonThreadLedger : undefined,
+          twistPlan: this.episodeTwistPlans.get(i),
           callbackLedger: this.callbackLedger.serialize(),
           // #26C: declared cast (ids AND display names — charactersInvolved mixes both forms).
           knownEntityIds: (characterBible.characters ?? []).flatMap((c) => [c.id, c.name]).filter(Boolean),

@@ -5,6 +5,7 @@ import {
   harvestEpisodeCallbacks,
   injectFallbackCallbacks,
   parsePromisedEpisode,
+  recordScenePayoffs,
   AUTO_CALLBACK_REMINDER_TAG,
   type HarvestEpisodeCallbacksParams,
 } from './callbackOrchestration';
@@ -79,6 +80,73 @@ describe('harvestEpisodeCallbacks', () => {
     });
     expect(newHooks).toBe(1);
     expect(ledger.size()).toBe(1);
+  });
+});
+
+describe('recordScenePayoffs (within-episode crediting)', () => {
+  const seedHook = (ledger: CallbackLedger): void => {
+    harvestEpisodeCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [],
+      choiceSets: [
+        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'hook-A', summary: 'A choice that matters.' } }] },
+      ],
+    });
+  };
+  const beatFor = (id: string) => ({
+    id,
+    textVariants: [{ condition: { type: 'flag', flag: 'x' } as any, text: 'callback prose', callbackHookId: 'hook-A' }],
+  });
+
+  it('credits a scene payoff immediately and the end-of-episode harvest does NOT double count it', () => {
+    const ledger = new CallbackLedger();
+    seedHook(ledger);
+    const beat = beatFor('beat-2-1');
+    const scene = { sceneId: 'scene-2', beats: [beat] };
+
+    const { payoffs } = recordScenePayoffs(ledger, 2, scene);
+    expect(payoffs).toBe(1);
+    expect((beat as { callbackHookIds?: string[] }).callbackHookIds).toContain('hook-A');
+    const afterScene = ledger.all().find((h) => h.id === 'hook-A')!.payoffCount;
+
+    // The harvest re-scans the SAME beats; the dedupe key must make it a no-op.
+    const harvest = harvestEpisodeCallbacks(ledger, {
+      episodeNumber: 2,
+      sceneContents: [scene],
+      choiceSets: [],
+    });
+    expect(harvest.payoffs).toBe(0);
+    expect(ledger.all().find((h) => h.id === 'hook-A')!.payoffCount).toBe(afterScene);
+  });
+
+  it('still counts the same hook honored by DIFFERENT beats as distinct payoffs', () => {
+    const ledger = new CallbackLedger();
+    seedHook(ledger);
+    recordScenePayoffs(ledger, 2, { sceneId: 'scene-2', beats: [beatFor('beat-2-1')] });
+    recordScenePayoffs(ledger, 2, { sceneId: 'scene-3', beats: [beatFor('beat-3-1')] });
+    expect(ledger.all().find((h) => h.id === 'hook-A')!.payoffCount).toBe(2);
+  });
+
+  it('updates unresolvedFor mid-episode so later scenes stop being offered a resolved hook', () => {
+    const ledger = new CallbackLedger({ config: { payoffThreshold: 1 } as any });
+    seedHook(ledger);
+    expect(getUnresolvedCallbacksForPrompt(ledger, 2)?.some((h) => h.id === 'hook-A')).toBe(true);
+    recordScenePayoffs(ledger, 2, { sceneId: 'scene-2', beats: [beatFor('beat-2-1')] });
+    expect(getUnresolvedCallbacksForPrompt(ledger, 2)?.some((h) => h.id === 'hook-A') ?? false).toBe(false);
+  });
+
+  it('round-trips credited beat keys through serialize/deserialize (resume safety)', () => {
+    const ledger = new CallbackLedger();
+    seedHook(ledger);
+    const beat = beatFor('beat-2-1');
+    recordScenePayoffs(ledger, 2, { sceneId: 'scene-2', beats: [beat] });
+    const revived = CallbackLedger.deserialize(JSON.stringify(ledger.serialize()));
+    const harvest = harvestEpisodeCallbacks(revived, {
+      episodeNumber: 2,
+      sceneContents: [{ sceneId: 'scene-2', beats: [beatFor('beat-2-1')] }],
+      choiceSets: [],
+    });
+    expect(harvest.payoffs).toBe(0);
   });
 });
 

@@ -317,21 +317,77 @@ export class SceneGraphBranchValidator {
   }
 }
 
-function sceneAcknowledgesBranchResidue(scene: Scene): boolean {
-  return (scene.beats || []).some((beat) =>
-    (beat.textVariants?.length ?? 0) > 0
-      || (beat.callbackHookIds?.length ?? 0) > 0
-      || (beat.onShow?.length ?? 0) > 0
-      || (beat.choices || []).some((choice) =>
-        Boolean(
-          choice.reminderPlan
-            || choice.memorableMoment
-            || choice.tintFlag
-            || (choice.residueHints?.length ?? 0) > 0
-            || (choice.witnessReactions?.length ?? 0) > 0
-        )
-      )
+/** A single choice acknowledges the branch path if it carries any residue signal. */
+function choiceAcknowledgesResidue(choice: unknown): boolean {
+  if (!choice || typeof choice !== 'object') return false;
+  const c = choice as Record<string, unknown>;
+  return Boolean(
+    c.reminderPlan
+      || c.memorableMoment
+      || c.tintFlag
+      || (Array.isArray(c.residueHints) && c.residueHints.length > 0)
+      || (Array.isArray(c.witnessReactions) && c.witnessReactions.length > 0),
   );
+}
+
+/** A list of beats acknowledges residue via beat-level signals or any of their choices. */
+function beatsAcknowledgeResidue(beats: unknown): boolean {
+  if (!Array.isArray(beats)) return false;
+  return beats.some((beat) => {
+    if (!beat || typeof beat !== 'object') return false;
+    const b = beat as Record<string, unknown>;
+    return (
+      (Array.isArray(b.textVariants) && b.textVariants.length > 0)
+      || (Array.isArray(b.callbackHookIds) && b.callbackHookIds.length > 0)
+      || (Array.isArray(b.onShow) && b.onShow.length > 0)
+      || (Array.isArray(b.choices) && b.choices.some(choiceAcknowledgesResidue))
+    );
+  });
+}
+
+function sceneAcknowledgesBranchResidue(scene: Scene): boolean {
+  // Regular scene beats.
+  if (beatsAcknowledgeResidue(scene.beats)) return true;
+  // ENCOUNTER scenes carry their content (and thus their branch-acknowledgment residue —
+  // outcome-conditioned storylets, witness reactions, residue hints, onShow tints) inside the
+  // nested encounter structure, NOT in top-level scene.beats. Without scanning here, every
+  // reconverged encounter target (e.g. treatment-enc-2-1) false-fails this gate even when it
+  // does acknowledge the branch. Scan phase beats AND outcome storylet beats.
+  const enc = (scene as {
+    encounter?: {
+      beats?: unknown;
+      phases?: Array<{ beats?: unknown }>;
+      storylets?: Record<string, { beats?: unknown } | null | undefined>;
+      outcomes?: Record<string, { nextSceneId?: string } | null | undefined>;
+    };
+  }).encounter;
+  if (enc) {
+    // The architect emits a flat `beats` array pre-normalization and `phases[].beats` after;
+    // either may be present at validation time. Outcome storylets (victory/partial/defeat/
+    // escape) also carry per-outcome beats. Scan all three for explicit residue signals.
+    if (beatsAcknowledgeResidue(enc.beats)) return true;
+    for (const phase of enc.phases || []) {
+      if (beatsAcknowledgeResidue(phase?.beats)) return true;
+    }
+    for (const storylet of Object.values(enc.storylets || {})) {
+      if (storylet && beatsAcknowledgeResidue(storylet.beats)) return true;
+    }
+    // Structural acknowledgment: an encounter scene is the designed MERGE point — branches
+    // reconverge INTO it, and it re-diverges by OUTCOME. A genuinely-branched encounter
+    // (≥2 distinct outcome storylets / outcomes) is therefore path-reactive by construction;
+    // that is how an encounter acknowledges the branch path, since it carries no plain beats
+    // and gets no SequenceDirector residue pass (which only authors conditional text on
+    // regular scenes). Requiring beat-level residue on it is a category error — the validator
+    // already holds that "encounter branches/storylets do not satisfy [scene-graph branching]"
+    // elsewhere; the same special-casing applies here. A degenerate encounter (≤1 outcome,
+    // no residue) still fails. NOTE: this credits the encounter's OWN outgoing branching, not
+    // an incoming-branch callback — authoring convergence-aware encounter OPENINGS is a known
+    // generative follow-up (SequenceDirector); see memory g10-shadow-gate-audit.
+    const storyletCount = Object.values(enc.storylets || {}).filter(Boolean).length;
+    const outcomeCount = Object.values(enc.outcomes || {}).filter(Boolean).length;
+    if (storyletCount >= 2 || outcomeCount >= 2) return true;
+  }
+  return false;
 }
 
 function countIncomingEdges(scenes: Scene[], targetId: string): number {

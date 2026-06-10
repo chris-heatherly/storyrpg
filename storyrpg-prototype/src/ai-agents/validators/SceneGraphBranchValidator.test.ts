@@ -224,6 +224,115 @@ describe('SceneGraphBranchValidator', () => {
     expect(result.issues.some(issue => issue.type === 'missing_branch_residue')).toBe(true);
   });
 
+  it('passes a reconverged ENCOUNTER target whose residue lives in its nested structure', () => {
+    // Regression (G10): an encounter scene carries its content (and branch-acknowledgment
+    // residue — reminderPlan/witnessReactions/onShow) inside encounter.phases/beats/storylets,
+    // NOT in top-level scene.beats. The convergence-residue check must look there or every
+    // reconverged encounter (e.g. treatment-enc-2-1) false-fails.
+    const encScene = {
+      ...scene('scene-3'),
+      beats: [], // encounters have no top-level beats
+      isConvergencePoint: true,
+      isBottleneck: true,
+      encounter: {
+        phases: [
+          { beats: [{ id: 'enc-b1', text: 'opening', choices: [{ id: 'enc-c1', text: 'act', reminderPlan: { note: 'recall the path taken' } }] }] },
+        ],
+        storylets: { victory: { beats: [{ id: 'v1', text: 'win' }] } },
+        outcomes: {},
+      },
+    } as unknown as Scene;
+    const ep = episode([
+      scene('scene-1', ['scene-2a', 'scene-2b'], [
+        { id: 'choice-a', nextSceneId: 'scene-2a' },
+        { id: 'choice-b', nextSceneId: 'scene-2b' },
+      ]),
+      scene('scene-2a', ['scene-3']),
+      scene('scene-2b', ['scene-3']),
+      encScene,
+    ]);
+    const bp = blueprint([
+      { id: 'scene-1', leadsTo: ['scene-2a', 'scene-2b'], branches: true, type: 'dilemma' },
+      { id: 'scene-2a', leadsTo: ['scene-3'] },
+      { id: 'scene-2b', leadsTo: ['scene-3'] },
+      { id: 'scene-3', leadsTo: [] },
+    ]);
+
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, bp);
+    expect(result.issues.some(issue => issue.type === 'missing_branch_residue')).toBe(false);
+  });
+
+  it('passes a reconverged ENCOUNTER target that is genuinely branched (≥2 outcome storylets)', () => {
+    // A well-formed encounter is the designed merge point and re-diverges by outcome; its
+    // outcome storylets are the structural acknowledgment of the path, even without
+    // beat-level residue (encounters get no SequenceDirector residue pass).
+    const encScene = {
+      ...scene('scene-3'),
+      beats: [],
+      isConvergencePoint: true,
+      isBottleneck: true,
+      encounter: {
+        beats: [{ id: 'enc-b1', text: 'opening', choices: [{ id: 'enc-c1', text: 'act' }] }],
+        storylets: {
+          victory: { beats: [{ id: 'v1', text: 'win' }] },
+          partialVictory: { beats: [{ id: 'p1', text: 'mixed' }] },
+          defeat: { beats: [{ id: 'd1', text: 'lose' }] },
+          escape: { beats: [{ id: 'e1', text: 'flee' }] },
+        },
+        outcomes: {},
+      },
+    } as unknown as Scene;
+    const ep = episode([
+      scene('scene-1', ['scene-2a', 'scene-2b'], [
+        { id: 'choice-a', nextSceneId: 'scene-2a' },
+        { id: 'choice-b', nextSceneId: 'scene-2b' },
+      ]),
+      scene('scene-2a', ['scene-3']),
+      scene('scene-2b', ['scene-3']),
+      encScene,
+    ]);
+    const bp = blueprint([
+      { id: 'scene-1', leadsTo: ['scene-2a', 'scene-2b'], branches: true, type: 'dilemma' },
+      { id: 'scene-2a', leadsTo: ['scene-3'] },
+      { id: 'scene-2b', leadsTo: ['scene-3'] },
+      { id: 'scene-3', leadsTo: [] },
+    ]);
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, bp);
+    expect(result.issues.some(issue => issue.type === 'missing_branch_residue')).toBe(false);
+  });
+
+  it('still fails a reconverged ENCOUNTER target with no residue and <2 outcomes', () => {
+    const encScene = {
+      ...scene('scene-3'),
+      beats: [],
+      isConvergencePoint: true,
+      isBottleneck: true,
+      encounter: {
+        beats: [{ id: 'enc-b1', text: 'opening', choices: [{ id: 'enc-c1', text: 'act' }] }],
+        storylets: { victory: { beats: [{ id: 'v1', text: 'win' }] } },
+        outcomes: {},
+      },
+    } as unknown as Scene;
+    const ep = episode([
+      scene('scene-1', ['scene-2a', 'scene-2b'], [
+        { id: 'choice-a', nextSceneId: 'scene-2a' },
+        { id: 'choice-b', nextSceneId: 'scene-2b' },
+      ]),
+      scene('scene-2a', ['scene-3']),
+      scene('scene-2b', ['scene-3']),
+      encScene,
+    ]);
+    const bp = blueprint([
+      { id: 'scene-1', leadsTo: ['scene-2a', 'scene-2b'], branches: true, type: 'dilemma' },
+      { id: 'scene-2a', leadsTo: ['scene-3'] },
+      { id: 'scene-2b', leadsTo: ['scene-3'] },
+      { id: 'scene-3', leadsTo: [] },
+    ]);
+
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, bp);
+    expect(result.issues.some(issue => issue.type === 'missing_branch_residue')).toBe(true);
+  });
+
   it('fails direct scene-changing choices that skip a bridge beat', () => {
     const ep = episode([
       scene('scene-1', ['scene-2'], [{ id: 'choice-a', nextSceneId: 'scene-2' }]),

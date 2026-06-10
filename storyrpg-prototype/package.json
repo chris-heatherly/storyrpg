@@ -46,6 +46,7 @@
     "generate:template": "npx ts-node --esm src/ai-agents/generate-from-document.ts --template",
     "analyze:stat-balance": "npx ts-node --esm scripts/analyze-stat-balance.ts",
     "analyze:openers": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/analyze-sentence-openers.ts",
+    "replay:gates": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/replay-gates.ts",
     "validate:assets": "npx ts-node --esm scripts/validate-assets.ts",
     "test:e2e": "npx playwright test",
     "test:e2e:story": "npx playwright test --grep",

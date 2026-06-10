@@ -254,6 +254,18 @@ export interface GenerationSettingsConfig {
    * does not (gates deferred decision D4).
    */
   branchShadowModeEnabled?: boolean;
+  /**
+   * Thread/Twist planning wiring (Phase 5.3 + Phase 6). When true, ThreadPlanner
+   * authors the episode's NarrativeThread ledger and TwistArchitect schedules its
+   * twist right after each episode blueprint is finalized; SceneWriter then
+   * receives `activeThreads` / `twistDirectives` per scene, and the narrative
+   * diagnostics (SetupPayoffValidator / TwistQualityValidator) validate the REAL
+   * ledger instead of an absent one. DEFAULT OFF pending a live validation run —
+   * with the flag unset, behavior is byte-identical to before (no agent calls,
+   * prompts unchanged). Env: STORYRPG_THREAD_TWIST_PLANNING=1 to enable
+   * (=0 is a kill-switch over a config-on). See pipeline/threadTwistPlanning.ts.
+   */
+  enableThreadAndTwistPlanning?: boolean;
 }
 
 // Video generation settings (Veo via Gemini API)
@@ -952,7 +964,7 @@ export function loadConfig(): PipelineConfig {
   };
   const defaultConfig: AgentConfig = {
     provider: (env.EXPO_PUBLIC_LLM_PROVIDER || env.LLM_PROVIDER as 'anthropic' | 'openai' | 'gemini') || 'anthropic',
-    model: env.EXPO_PUBLIC_LLM_MODEL || env.LLM_MODEL || 'claude-sonnet-4-20250514',
+    model: env.EXPO_PUBLIC_LLM_MODEL || env.LLM_MODEL || 'claude-sonnet-4-6',
     apiKey:
       env.EXPO_PUBLIC_ANTHROPIC_API_KEY ||
       env.EXPO_PUBLIC_OPENAI_API_KEY ||
@@ -975,14 +987,17 @@ export function loadConfig(): PipelineConfig {
     agents: {
       storyArchitect: {
         ...defaultConfig,
+        model: env.EXPO_PUBLIC_ARCHITECT_LLM_MODEL || env.ARCHITECT_LLM_MODEL || defaultConfig.model,
         temperature: 0.7, // More focused for structural work
       },
       sceneWriter: {
         ...defaultConfig,
+        model: env.EXPO_PUBLIC_SCENE_LLM_MODEL || env.SCENE_LLM_MODEL || defaultConfig.model,
         temperature: 0.85, // More creative for prose
       },
       choiceAuthor: {
         ...defaultConfig,
+        model: env.EXPO_PUBLIC_CHOICE_LLM_MODEL || env.CHOICE_LLM_MODEL || defaultConfig.model,
         temperature: 0.75, // Balanced for meaningful choices
       },
       qaRunner: {
@@ -1090,6 +1105,9 @@ export function loadConfig(): PipelineConfig {
       seasonCanonBlocking: (env.EXPO_PUBLIC_SEASON_CANON_BLOCKING ?? env.SEASON_CANON_BLOCKING) !== '0',
       // 7-point spine gate: blocking on by default (opt-out) — set SEVEN_POINT_BLOCKING=0 to disable.
       sevenPointBlocking: (env.EXPO_PUBLIC_SEVEN_POINT_BLOCKING ?? env.SEVEN_POINT_BLOCKING) !== '0',
+      // Thread/Twist planning: DEFAULT OFF (opt-in) — set STORYRPG_THREAD_TWIST_PLANNING=1 to enable.
+      enableThreadAndTwistPlanning:
+        (env.EXPO_PUBLIC_STORYRPG_THREAD_TWIST_PLANNING ?? env.STORYRPG_THREAD_TWIST_PLANNING) === '1',
     },
     memory: {
       enabled: env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' || env.CLAUDE_MEMORY === 'true' || defaultConfig.provider === 'anthropic',

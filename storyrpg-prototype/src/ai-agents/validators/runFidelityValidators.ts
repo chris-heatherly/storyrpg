@@ -45,6 +45,9 @@ import { EncounterAnchorContentValidator } from './EncounterAnchorContentValidat
 import { InformationLedgerScheduleValidator } from './InformationLedgerScheduleValidator';
 import { SignatureDevicePresenceValidator } from './SignatureDevicePresenceValidator';
 import { EncounterSetPieceDepthValidator } from './EncounterSetPieceDepthValidator';
+import { RequiredBeatRealizationValidator } from './RequiredBeatRealizationValidator';
+import { SceneTransitionContinuityValidator } from './SceneTransitionContinuityValidator';
+import { CharacterIntroductionValidator } from './CharacterIntroductionValidator';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import {
   SevenPointAnchorConformanceValidator,
@@ -227,6 +230,41 @@ function collectFidelityFindings(
     guard(() => {
       const result = new EncounterSetPieceDepthValidator().validate({ story, plan: scenePlan });
       return toFindings('EncounterSetPieceDepthValidator', result.issues);
+    });
+  }
+
+  // G10 — an `authored`-tier required beat on a STANDARD scene must be dramatized in its
+  // scene's prose. Fills the gap between SignatureDevicePresence (signature-tier only) and
+  // EncounterAnchorContent (encounter scenes only) — the Endsong ep1 s1-6 key-reveal hole.
+  // Gated separately (GATE_REQUIRED_BEAT_REALIZATION, default-OFF).
+  if (isGateEnabled('GATE_REQUIRED_BEAT_REALIZATION') && scenePlan) {
+    guard(() => {
+      const result = new RequiredBeatRealizationValidator().validate({ story, plan: scenePlan });
+      return toFindings('RequiredBeatRealizationValidator', result.issues);
+    });
+  }
+
+  // 2026-06-09 — unacknowledged time/place jump between adjacent scenes: the planned
+  // location/timeOfDay changed (Scene.timeline) but the arriving scene has no
+  // transitionIn and no transition language in its opening prose. Inert on stories
+  // without timeline metadata. Gated separately (GATE_SCENE_TRANSITION_CONTINUITY).
+  if (isGateEnabled('GATE_SCENE_TRANSITION_CONTINUITY')) {
+    guard(() => {
+      const result = new SceneTransitionContinuityValidator().validate({ story });
+      return toFindings('SceneTransitionContinuityValidator', result.issues);
+    });
+  }
+
+  // 2026-06-09 — characters surfacing without on-page introduction: a roster NPC
+  // name-dropped in prose before any scene casts them, or cast in a scene whose prose
+  // never names them. Gated separately (GATE_CHARACTER_INTRODUCTION).
+  if (isGateEnabled('GATE_CHARACTER_INTRODUCTION')) {
+    guard(() => {
+      const result = new CharacterIntroductionValidator().validate({
+        story,
+        characterIntroductions: seasonPlan?.characterIntroductions,
+      });
+      return toFindings('CharacterIntroductionValidator', result.issues);
     });
   }
 

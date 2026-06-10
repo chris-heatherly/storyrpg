@@ -279,6 +279,14 @@ when looking at multiple scenes together:
 3. Timeline impossibilities across the episode
 4. State references that rely on setup in a later scene
 5. Cause-effect chains that break across scene boundaries
+6. Unacknowledged time/place jumps: a scene that opens at a clearly different
+   time of day or location than the previous scene ended, with no transition
+   prose telling the reader time passed or how the protagonist got there
+   (report as "timeline_error")
+7. Characters appearing or being named before the reader has met them on-page.
+   Ask literally: "would a reader at this point know who this is?" — being
+   listed in metadata or known to the writers does NOT count; only an earlier
+   on-page introduction does (report as "missing_setup")
 
 Do NOT spend effort re-auditing issues that live inside a single scene; the
 incremental validators have already surfaced those.`
@@ -289,7 +297,12 @@ Analyze this content for:
 2. Characters knowing things they shouldn't
 3. Timeline impossibilities
 4. State references without proper setup
-5. Missing cause-effect relationships`;
+5. Missing cause-effect relationships
+6. Unacknowledged time/place jumps: a scene opening at a different time of day
+   or location than the previous scene ended, with no transition prose
+   (report as "timeline_error")
+7. Characters named or appearing before any on-page introduction — would a
+   reader at this point know who this is? (report as "missing_setup")`;
 
     return `
 Check the following content for continuity issues:

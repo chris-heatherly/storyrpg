@@ -31,6 +31,17 @@ const WORKER_COMPLETED_PRUNE_MS = 2 * 60 * 60 * 1000;
 const WORKER_RESULT_TTL_MS = 10 * 60 * 1000;
 const JOB_STALE_RUNNING_MS = 3 * 60 * 60 * 1000;
 
+// WS1b: failureKind written by the worker when a run died on provider
+// credit/quota exhaustion (see src/ai-agents/utils/providerErrors.ts). Such
+// jobs are parked as 'paused' — resumable after a top-up — instead of failed.
+// Paused is intentionally NOT swept by the stale reapers (they only look at
+// running/pending) and is never dead-lettered.
+const PROVIDER_QUOTA_FAILURE_KIND = 'provider-quota';
+
+function isQuotaFailureContext(failureContext) {
+  return failureContext?.failureKind === PROVIDER_QUOTA_FAILURE_KIND;
+}
+
 function stripLargeValues(obj, maxStringLen = 512) {
   if (!obj || typeof obj !== 'object') return obj;
   if (Array.isArray(obj)) return obj.map((item) => stripLargeValues(item, maxStringLen));
@@ -1026,7 +1037,11 @@ function createWorkerLifecycle({
             const currentJob = loadWorkerJobs().find((j) => j.id === workerJob.id) || workerJob;
             const failureContext = buildFailureContextFromEvent(evt, currentJob);
             upsertWorkerJob(workerJob.id, {
-              status: 'failed',
+              // WS1b: provider credit/quota exhaustion parks the job as
+              // 'paused' (resumable after top-up) instead of failing it. The
+              // stale reapers only sweep running/pending, so paused jobs are
+              // never auto-killed.
+              status: isQuotaFailureContext(failureContext) ? 'paused' : 'failed',
               currentPhase: failureContext.failurePhase || currentJob.currentPhase || 'generation',
               error: failureContext.message,
               failureContext,
@@ -1114,7 +1129,7 @@ function createWorkerLifecycle({
           context: result.context,
         }, workerJob);
         const failed = upsertWorkerJob(workerJob.id, {
-          status: 'failed',
+          status: isQuotaFailureContext(failureContext) ? 'paused' : 'failed',
           progress: 100,
           finishedAt: new Date().toISOString(),
           error: failureContext.message,
@@ -1139,22 +1154,25 @@ function createWorkerLifecycle({
           failureKind: 'worker_exit',
         }, currentJob || workerJob);
         const errorMsg = failureContext.message || `Worker exited with code=${code} signal=${signal || 'none'}`;
+        const isQuotaPause = isQuotaFailureContext(failureContext);
         const failed = upsertWorkerJob(workerJob.id, {
-          status: 'failed',
+          status: isQuotaPause ? 'paused' : 'failed',
           progress: 100,
           finishedAt: new Date().toISOString(),
           error: errorMsg,
-          deadLetter: true,
+          deadLetter: !isQuotaPause,
           failureContext,
         });
         updateCheckpoint(workerJob.id, { failureContext });
-        appendDeadLetter({
-          jobId: workerJob.id,
-          reason: 'worker_exit',
-          code,
-          signal,
-          at: new Date().toISOString(),
-        });
+        if (!isQuotaPause) {
+          appendDeadLetter({
+            jobId: workerJob.id,
+            reason: 'worker_exit',
+            code,
+            signal,
+            at: new Date().toISOString(),
+          });
+        }
         syncGenerationMirrorFromWorker(failed);
       }
 

@@ -17,6 +17,7 @@ import {
   openaiSseHandler,
   geminiSseHandler,
 } from './streamLLM';
+import { isBillingQuotaMessage } from '../utils/providerErrors';
 
 const log = createLogger('BaseAgent');
 
@@ -180,6 +181,22 @@ export abstract class BaseAgent {
    * signal's `aborted` state as the authoritative abort signal rather than relying
    * on the message text.
    */
+  /**
+   * WS1b: latched when any call fails with a definitive billing/quota
+   * exhaustion error (message preserved for diagnostics). Account-global, so
+   * the pipeline checks it at cancellation checkpoints and pauses the run.
+   */
+  private static _billingQuotaExhausted: string | null = null;
+
+  static billingQuotaExhausted(): string | null {
+    return BaseAgent._billingQuotaExhausted;
+  }
+
+  /** Reset at run start so a resumed run after a credit top-up isn't poisoned. */
+  static resetBillingQuotaState(): void {
+    BaseAgent._billingQuotaExhausted = null;
+  }
+
   static classifyLlmError(input: {
     message: string;
     errorName?: string;
@@ -354,7 +371,16 @@ Do not use markdown code blocks around the JSON.
         lastError = error instanceof Error ? error : new Error(String(error));
         const msg = lastError.message.toLowerCase();
         const stack = lastError.stack || '';
-        const isQuotaError = this.config.provider === 'gemini' && BaseAgent.isQuotaMessage(msg);
+        const isBillingExhausted = lastError.name === 'LLMQuotaError' || isBillingQuotaMessage(msg);
+        const isQuotaError = isBillingExhausted ||
+          (this.config.provider === 'gemini' && BaseAgent.isQuotaMessage(msg));
+        // WS1b: billing exhaustion is account-global — every later call will
+        // fail too. Latch a process-wide flag so the pipeline aborts at its
+        // next cancellation checkpoint instead of grinding through the rest of
+        // the season one failed scene at a time.
+        if (isBillingExhausted) {
+          BaseAgent._billingQuotaExhausted = lastError.message;
+        }
         
         // Log EVERY failure with full detail so it's visible in browser console
         console.error(`[${this.name}] LLM call attempt ${attempt + 1}/${retries + 1} FAILED: ${lastError.message}`);
@@ -529,6 +555,9 @@ Do not use markdown code blocks around the JSON.
       }
       
       console.error(`[${this.name}] Anthropic API returned HTTP ${response.status}: ${errorMessage}`);
+      if (response.status === 402 || isBillingQuotaMessage(errorMessage)) {
+        throw new LLMQuotaError(errorMessage, 'anthropic');
+      }
       throw new Error(errorMessage);
     }
 
@@ -606,6 +635,9 @@ Do not use markdown code blocks around the JSON.
         /* not JSON */
       }
       console.error(`[${this.name}] Anthropic API returned HTTP ${response.status}: ${errorMessage}`);
+      if (response.status === 402 || isBillingQuotaMessage(errorMessage)) {
+        throw new LLMQuotaError(errorMessage, 'anthropic');
+      }
       throw new Error(errorMessage);
     }
 
@@ -710,6 +742,9 @@ Do not use markdown code blocks around the JSON.
           const errorJson = JSON.parse(text);
           if (errorJson.error?.message) errorMessage = `Anthropic API error: ${errorJson.error.message}`;
         } catch { /* keep original */ }
+        if (response.status === 402 || isBillingQuotaMessage(errorMessage)) {
+          throw new LLMQuotaError(errorMessage, 'anthropic');
+        }
         throw new Error(errorMessage);
       }
 

@@ -259,3 +259,78 @@ audit.
 Secondary (major): template-stub outcomeTexts; false/hollow encounter options;
 strategic=0% & perception-45% balance; Lysandra horse/carriage contradiction;
 Radu scarf address gap.
+
+---
+
+## Re-audit addendum (2026-06-09, latest g10 runs)
+
+A second independent fidelity audit of the SAME two runs (`bite-me-g10_04-07`,
+`endsong-g10_04-08`) — re-reading every episode against the treatment `rawDocument`
+(in `00-input-brief.json`) — confirmed the 9 classes above and surfaced one
+**uncovered gap** plus two **deterministically-unsolvable** classes. Method note: the
+encounter prose lives in `scene.encounter.{phases,storylets}[].{setupText,text}`, NOT
+`scene.beats` — a `beats`-only reader makes every encounter look empty (a false
+"empty encounter" blocker). Always traverse `scene.encounter`.
+
+### Net-new gap closed (code landed this session)
+
+**Authored-tier required beat on a STANDARD scene was verified by nothing.**
+`SignatureDevicePresenceValidator` checks only `tier==='signature'`;
+`EncounterAnchorContentValidator` checks only `kind==='encounter'` scenes. The
+audited **Endsong ep1 `s1-6`** ("Vraxxan Names the Key") carried its season-hook
+reveal as a single `tier:'authored'` required beat — *"Vraxxan … declares her blood
+the key to the Codex before withdrawing wounded"* — and the prose stopped at the
+villain's entrance ("Hello, old friend"), `nextBeatId:null`, scene `leadsTo:[]`. The
+scene PLAN was correct (`keyMoments`/`requiredBeats` list the reveal); beat authoring
+**truncated** before it. Shipped QA-passing because no gate checks authored-tier
+beats on a standard scene.
+
+- **`RequiredBeatRealizationValidator`** (new) — checks each `authored`-tier required
+  beat on a `standard` scene appears in that scene's generated prose (keyword overlap +
+  substring), mirroring SignatureDevicePresence. Dispatched from `runFidelityValidators`
+  behind **`GATE_REQUIRED_BEAT_REALIZATION` (default-OFF)**. Unit-tested.
+- **⚠ ADVISORY/SHADOW ONLY — do NOT promote to blocking on keyword matching.** Offline
+  replay over both stories: the heuristic does NOT separate true from false positives
+  when `mustDepict` is a *paraphrastic episode-turn summary* (the common case). True
+  s1-6 miss scored overlap 0.50; genuinely-dramatized scenes (Bite Me s1-1 key-card 0.13,
+  s2-1 three-dates 0.36) scored at/under it — i.e. an absent beat and a present-but-
+  paraphrased beat are indistinguishable by token overlap (7 findings/story, ~2 true). A
+  reliable blocking version needs an **LLM-judge** ("does this scene's prose dramatize this
+  authored turn?"), the same conclusion §2.1 reached for the "cargo" callback. It is a
+  useful triage signal (it *did* surface the real s1-6 hole), nothing more.
+
+### Confirmed NOT deterministically solvable (LLM-judge / generator-side only)
+
+- **Protagonist misgendering with cross-sentence / anaphoric referents.** The always-on
+  `canonicalizeProtagonistPronouns` (FinalStoryContract:217) repairs only the SAFE,
+  sentence-scoped subset (a wrong-gender pronoun in a sentence that names the protagonist
+  and no other-gender NPC). It does NOT fix: Bite Me s2-1 *"…Kylie Marinescu would sit
+  for a profile. **He** read it…"* (protagonist named in the prior sentence; a male NPC in
+  the roster makes it ambiguous → 0 repaired), nor the Endsong s3-6 residual *"…When
+  **she** passes…"* (no name in that sentence). A field-level "protagonist named + wrong-
+  gender pronoun, no other-gender character named/cued" detector was built and **reverted**:
+  offline replay produced **189 (bite-me) / 102 (endsong) false positives** — anaphoric
+  "he"=Victor / "she"=Lysandra in fields that don't re-name the NPC. Coreference/LLM-judge
+  required; the always-on repair remains the correct safe layer.
+- **Encounter set-piece summarized into outcome storylets** (Bite Me ep1 rooftop/Cișmigiu
+  attack told in `[victory]/[defeat]` reflections, not played; scream/run/freeze/fight
+  choice replaced by rooftop social choices) — partially covered by
+  `EncounterSetPieceDepthValidator` (structural depth) + `EncounterAnchorContentValidator`
+  (anchor prose presence), both gate-ON but never run on these (predate). The "played vs
+  summarized" nuance is an LLM-judge follow-up.
+- **Signature-clue OWNERSHIP** (Radu's canon "amber eyes that go gold" mis-applied to
+  Victor in the ep1 blog prose) — `SignatureDevicePresence` checks presence/inversion, not
+  which character a signature trait is attached to. Net-new; needs a per-character
+  trait-ownership map. Deferred.
+- **Dialogue misattribution** (Victor's "for now" line spoken by Stela) and
+  **treatment-cliffhanger element absent from prose** (the Ileana "Don't go" DM exists only
+  in `residueHints`/`sequenceIntent` metadata) — both LLM-judge territory; deferred.
+
+### Cross-check verdict
+
+Of the re-audit findings, the large majority are **already coded** by the §4 arm +
+always-on pronoun repair (landed AFTER these runs → never exercised here; several gates
+still default-OFF). The single dominating action remains the **live `=1` G11 regen of
+both stories with the OFF gates enabled** — the roadmap's own "definition of done," still
+not run. Until it runs, none of the §4 arm has touched real output, and the net-new
+shadow validator above stays default-OFF.

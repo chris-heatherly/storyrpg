@@ -85,10 +85,14 @@ export interface SerializedCallbackLedger {
   storyId?: string;
   hooks: CallbackHook[];
   config: LedgerConfig;
+  /** Beat-level payoff dedupe keys (`<beatKey>::<hookId>`) already credited. */
+  creditedVariantBeats?: string[];
 }
 
 export class CallbackLedger {
   private hooks = new Map<string, CallbackHook>();
+  /** Beat-level payoff dedupe: `<beatKey>::<hookId>` entries already credited. */
+  private creditedVariantBeats = new Set<string>();
   private config: LedgerConfig;
   private storyId?: string;
 
@@ -406,8 +410,14 @@ export class CallbackLedger {
    * hook (`flag:<flag>`) and a forward-promise hook (`later:<choice>`) for the same
    * decision: honoring the flag on-page paid the flag hook but left the promise hook
    * "never referenced", even though the decision WAS acknowledged. Returns matched ids.
+   *
+   * `dedupeKey` (when provided) identifies the BEAT these variants came from
+   * (`<episode>:<sceneId>:<beatId>`); a hook is credited at most once per beat, so
+   * crediting can run per-scene DURING generation (later scenes in the same episode
+   * see up-to-date payoff counts) and the end-of-episode harvest re-running over the
+   * same beats is a no-op instead of double-counting toward the resolve threshold.
    */
-  recordPayoffsFromVariants(variants: TextVariant[] | undefined): string[] {
+  recordPayoffsFromVariants(variants: TextVariant[] | undefined, dedupeKey?: string): string[] {
     if (!variants) return [];
     const matched: string[] = [];
     for (const variant of variants) {
@@ -415,6 +425,11 @@ export class CallbackLedger {
       const credit = (hookId: string): void => {
         const hook = this.hooks.get(hookId);
         if (!hook || credited.has(hookId)) return;
+        if (dedupeKey) {
+          const beatKey = `${dedupeKey}::${hookId}`;
+          if (this.creditedVariantBeats.has(beatKey)) return;
+          this.creditedVariantBeats.add(beatKey);
+        }
         this.recordPayoff(hookId);
         matched.push(hookId);
         credited.add(hookId);
@@ -530,6 +545,7 @@ export class CallbackLedger {
       storyId: this.storyId,
       hooks: Array.from(this.hooks.values()),
       config: this.config,
+      creditedVariantBeats: Array.from(this.creditedVariantBeats),
     };
   }
 
@@ -541,6 +557,9 @@ export class CallbackLedger {
     });
     for (const hook of parsed.hooks ?? []) {
       ledger.hooks.set(hook.id, normalizeHook(hook));
+    }
+    for (const key of parsed.creditedVariantBeats ?? []) {
+      ledger.creditedVariantBeats.add(key);
     }
     return ledger;
   }

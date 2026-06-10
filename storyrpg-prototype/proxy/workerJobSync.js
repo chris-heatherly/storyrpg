@@ -71,8 +71,11 @@ function createSyncGenerationMirrorFromWorker(deps) {
       subphaseLabel: typeof workerJob.subphaseLabel === 'string' ? workerJob.subphaseLabel : undefined,
       generationPlan: workerJob.generationPlan && typeof workerJob.generationPlan === 'object' ? workerJob.generationPlan : undefined,
       checkpoint: {
-        isResumable: workerJob.status === 'failed' || workerJob.status === 'cancelled',
-        resumeHint: workerJob.error ? `Failed: ${workerJob.error}` : undefined,
+        // 'paused' = provider credit/quota exhaustion (WS1b) — resumable after top-up.
+        isResumable: workerJob.status === 'failed' || workerJob.status === 'cancelled' || workerJob.status === 'paused',
+        resumeHint: workerJob.status === 'paused'
+          ? `Paused (provider credits exhausted): ${workerJob.error || 'resume after top-up'}`
+          : (workerJob.error ? `Failed: ${workerJob.error}` : undefined),
         failureContext: workerJob.failureContext || workerCheckpoint?.failureContext,
         resumeContext: publicResumeContext(workerCheckpoint?.resumeContext),
         outputs: sanitizeJobState(workerCheckpoint?.outputs),

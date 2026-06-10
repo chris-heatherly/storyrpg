@@ -50,6 +50,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [displayName, setDisplayName] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Bypass is allowed in local dev, or in any build where the public flag is
+  // set (e.g. the public Vercel reader, which has no proxy to authenticate
+  // against). EXPO_PUBLIC_* is client-visible by design; this is a feature flag,
+  // not a secret.
+  const bypassEnabled =
+    allowDevBypass && (__DEV__ || process.env.EXPO_PUBLIC_ALLOW_LOGIN_BYPASS === '1');
+
   const load = useCallback(async () => {
     setError(null);
     setLoading(true);
@@ -62,12 +69,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       }
     } catch (e) {
       console.warn('[LoginScreen]', e);
-      setError('Could not reach the proxy. Start it with npm run proxy (port 3001).');
+      // When bypass is enabled there is no proxy to reach (public reader), so
+      // the proxy-unreachable error is expected noise — let the guest path show
+      // instead of a scary message.
+      if (!bypassEnabled) {
+        setError('Could not reach the proxy. Start it with npm run proxy (port 3001).');
+      }
       setProviders(null);
     } finally {
       setLoading(false);
     }
-  }, [onAuthenticated]);
+  }, [onAuthenticated, bypassEnabled]);
 
   useEffect(() => {
     load();
@@ -114,7 +126,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const hasOAuth = Boolean(providers?.google || providers?.discord);
   const showLocal = providers?.local !== false;
   const canRegister = providers?.registration !== false;
-  const showDevBypass = allowDevBypass && __DEV__;
+  const showDevBypass = bypassEnabled;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -151,9 +163,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             <>
               {showDevBypass ? (
                 <View style={[styles.card, styles.devBypassCard]}>
-                  <Text style={styles.cardTitle}>DEVELOPMENT</Text>
+                  <Text style={styles.cardTitle}>{__DEV__ ? 'DEVELOPMENT' : 'GUEST ACCESS'}</Text>
                   <Text style={[styles.muted, { marginBottom: 12 }]}>
-                    Skip authentication for local development. This does not create a server session.
+                    {__DEV__
+                      ? 'Skip authentication for local development. This does not create a server session.'
+                      : 'Continue without an account to browse and read stories.'}
                   </Text>
                   <TouchableOpacity style={styles.devBypassButton} onPress={handleDevBypass}>
                     <Text style={styles.devBypassButtonText}>CONTINUE WITHOUT SIGNING IN</Text>

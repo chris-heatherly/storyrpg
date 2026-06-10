@@ -11,7 +11,9 @@ back to the UI via the proxy (`proxy/workerLifecycle.js`).
 
 ## Start from artifacts, not the monolith
 
-`FullStoryPipeline.ts` is ~21k lines. **Do not read it top-to-bottom.** Start
+`FullStoryPipeline.ts` is ~14k lines (typed — its `@ts-nocheck` was removed
+2026-06-10; every phase body lives in `pipeline/phases/`). **Do not read it
+top-to-bottom.** Start
 from the failing run's artifacts, then jump to the owning code:
 
 - `generated-stories/<run>/99-pipeline-errors.json` — per-run failure log
@@ -29,6 +31,12 @@ Navigate the pipeline by phase, not by scrolling: `pipeline/phases/`,
 
 ## Common failure modes
 
+- **A plan-time gate (SetupPayoff/CallbackCoverage/ChoiceDensity/
+  ConsequenceBudget) didn't block a season run** — by design: in the
+  multi-episode path these gates run shadow-only (records in
+  `gate-shadow-ledger.jsonl`, never throw). Their default-ON promotion predates
+  the scope-bug fix that first made them reachable there; re-promote only after
+  a fresh multi-episode shadow pass. Single-episode `generate()` enforces them.
 - **"Story Architect failed: [TreatmentFidelity]/[DramaticStructure] …"** —
   these are now **advisory** (validator tiering, B1). After retries they should
   degrade to recorded warnings and the story still ships. If a run still aborts

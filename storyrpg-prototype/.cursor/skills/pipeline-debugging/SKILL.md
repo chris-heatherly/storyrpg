@@ -92,6 +92,17 @@ resumeCheckpoint: {
 
 ## Common Failure Patterns
 
+### 0. "A plan-time gate didn't block my season run"
+
+By design (2026-06-10): in the multi-episode path
+(`generateEpisodeFromOutline`) the plan-time gates (SetupPayoff,
+CallbackCoverage, ChoiceDensity, ConsequenceBudget, PropIntroduction) run
+**shadow-only** — they validate and write `gate-shadow-ledger.jsonl` records
+but never throw. Their default-ON promotion predates the scope-bug fix that
+first made this block reachable in season runs; re-promote only after a fresh
+multi-episode shadow pass shows a clean profile. Single-episode `generate()`
+enforces them normally.
+
 ### 1. LLM Call Failures
 
 **Symptoms**: `callLLM` throws after exhausting retries.

@@ -25,6 +25,7 @@ Start from the failing symptom, then trace the execution zone that owns it:
 ## Common Checks
 
 - Pipeline orchestration: `FullStoryPipeline.ts`, worker payload types, and job timeline hooks.
+- Plan-time gates in multi-episode runs are shadow-only (validate + ledger record, never throw); only single-episode `generate()` enforces them. Check `gate-shadow-ledger.jsonl` before assuming a gate is broken.
 - Job state: proxy job routes, `.generation-jobs.json`, worker stdout events, and cancellation handling.
 - Retry loops: validator failures feeding the Karpathy retry loop, especially season planning and scene validation.
 - Output shape: canonical types in `storyrpg-prototype/src/types/` before adding compatibility shims.

@@ -37,7 +37,7 @@ Phase 7:   saving                      → Write outputs to disk
 ```
 
 Evidence: every phase is wrapped in a `measurePhase()` call in `pipeline/FullStoryPipeline.ts`
-(grep `measurePhase(` — the file is ~25k lines, so don't trust hard-coded line numbers).
+(grep `measurePhase(` — the file is ~14k lines and typed, but don't trust hard-coded line numbers).
 `asset_verification` is the `walkStoryAssets` gate; `qa_repair` is the Karpathy regeneration loop;
 telemetry normalizes per-episode labels like `qa_ep_*` and `images_ep_*`. Find each by name, not line.
 

@@ -370,7 +370,12 @@ const baselines = {
   // (pure move, typed). Thin delegating wrappers + a memoized ImageSupport
   // instance keep all call sites unchanged; LoRA agent/registry/banner state
   // moved with the cluster (nothing else read them).
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 12476,
+  // -201 (12476 -> 12275): Refactor PR 20 — the Claude-memory persistence
+  // methods (generation log, QA learnings, character knowledge write/read,
+  // pipeline memory read) moved to pipeline/pipelineMemory.ts (pure move,
+  // config-only deps). Public delegating wrappers keep the MasterImagePhase
+  // dep wiring and driver call sites unchanged.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 12275,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

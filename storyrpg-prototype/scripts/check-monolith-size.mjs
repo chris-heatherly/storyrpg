@@ -358,7 +358,11 @@ const baselines = {
   // PosterConcept types/normalizer moved to pipeline/phases/CoverArtPhase.ts
   // (pure move, typed, smoke tested). Thin delegating wrapper keeps all
   // three generateStoryCoverArt call sites unchanged. Goldens byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 13935,
+  // -299 (13935 -> 13636): Refactor PR 18 — filterAnalysisForEpisodeRange +
+  // refreshAnalysisFromTreatmentDocument + refreshBriefSeasonPlanFromAnalysis
+  // moved to pipeline/treatmentRefresh.ts as pure functions with an injected
+  // emitter (pure move; thin delegating wrappers keep call sites unchanged).
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 13636,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

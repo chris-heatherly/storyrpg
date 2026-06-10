@@ -348,8 +348,15 @@ const baselines = {
   // scene/choice/encounter authoring loop, the coherence-critical core)
   // extracted to pipeline/phases/ContentGenerationPhase.ts (pure move,
   // verified byte-identical against all three prompt-snapshot goldens).
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 14421,
-  'src/ai-agents/services/imageGenerationService.ts': 6564,
+  // 2026-06-10: +28 over the post-ContentGeneration extraction floor — the
+  // de-@ts-nocheck pass (whole-file typing) added hoisted catch-state
+  // declarations in generate() plus NOTE comments documenting the latent
+  // scope bugs it flushed (cancellation finalize, multi-episode narrative
+  // diagnostics/plan gates, continuity repair). No executable logic added.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 14449,
+  // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
+  // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
+  'src/ai-agents/services/imageGenerationService.ts': 6568,
 };
 
 let failed = false;

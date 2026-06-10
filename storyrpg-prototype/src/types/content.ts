@@ -216,6 +216,9 @@ export interface Beat {
   audio?: MediaRef;
   video?: MediaRef;
 
+  /** Camera intent persisted by the generation pipeline (establishing/character/action). */
+  shotType?: string;
+
   choices?: Choice[];
 
   nextBeatId?: string;

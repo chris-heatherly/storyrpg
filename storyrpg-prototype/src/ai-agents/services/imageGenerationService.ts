@@ -2790,6 +2790,10 @@ export class ImageGenerationService {
       regeneration?: number;
       /** When true (encounter types only), try Atlas Cloud before Gemini if primary provider is nano-banana. */
       preferAtlasFirst?: boolean;
+      /** Caller-attached visual-cast context; not consumed by the service, kept for diagnostics. */
+      visualCast?: unknown;
+      /** Caller-attached coverage-plan context; not consumed by the service, kept for diagnostics. */
+      coveragePlan?: unknown;
     },
     referenceImages?: ReferenceImage[]
   ): Promise<GeneratedImage> {

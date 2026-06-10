@@ -358,7 +358,7 @@
     {
       "type": "warning",
       "phase": "episode_1_narrative_diagnostics",
-      "message": "Narrative diagnostics failed (non-fatal): brief is not defined"
+      "message": "Narrative diagnostics warning: setup_payoff:passed(100), twist_quality:warning(80), arc_delta:skipped, divergence:passed(100), callback_coverage:passed(100), failure_modes:passed(100), intensity_distribution:passed(100), prop_introduction:passed(100), choice_coverage:warning(30)"
     },
     {
       "type": "debug",
@@ -633,7 +633,7 @@
     {
       "type": "warning",
       "phase": "episode_2_narrative_diagnostics",
-      "message": "Narrative diagnostics failed (non-fatal): brief is not defined"
+      "message": "Narrative diagnostics warning: setup_payoff:passed(100), twist_quality:warning(80), arc_delta:skipped, divergence:passed(100), callback_coverage:passed(100), failure_modes:passed(100), intensity_distribution:passed(100), prop_introduction:passed(100), choice_coverage:warning(30)"
     },
     {
       "type": "debug",

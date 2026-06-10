@@ -70,14 +70,17 @@ export function buildGateShadowRecord(opts: {
   storyId?: string;
   wouldRepairCount?: number;
   issues?: Array<{ severity: string; message?: string }>;
+  /** Explicit details override; otherwise summarized from issues. */
+  details?: string;
 }): Omit<GateShadowRecord, 'timestamp' | 'runDir'> {
   const details =
-    (opts.issues ?? [])
+    opts.details ??
+    ((opts.issues ?? [])
       .filter((x) => x.severity === 'error')
       .slice(0, 3)
       .map((x) => x.message)
       .filter(Boolean)
-      .join('; ') || undefined;
+      .join('; ') || undefined);
   return {
     gate: opts.gate,
     validator: opts.validator,

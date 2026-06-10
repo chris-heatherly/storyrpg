@@ -37,6 +37,7 @@ export type PipelineEventType =
   // Free-form progress updates (browser QA loop and friends). The monolith
   // has emitted these all along under @ts-nocheck; the union just lagged.
   | 'progress'
+  | 'info'
   | 'incremental_validation'
   | 'regeneration_triggered'
   | 'validation_aggregated';

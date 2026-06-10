@@ -132,6 +132,8 @@ export interface ImagePrompt {
     deterministicRules?: string[];
     referencePrecedence?: string;
     stylePrecedence?: string;
+    /** Which prompt-construction mode produced this prompt (deterministic | llm). */
+    sourcePromptMode?: string;
   };
   keyExpression?: string;
   keyGesture?: string;
@@ -188,6 +190,8 @@ export interface GeneratedImage {
     chatMode?: boolean;
     chatTurns?: number;
     editMode?: boolean;
+    /** Set when an image artifact was rehydrated from disk on resume. */
+    hydratedFromDisk?: boolean;
   };
 }
 

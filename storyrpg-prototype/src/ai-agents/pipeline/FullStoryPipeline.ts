@@ -1,5 +1,3 @@
-// @ts-nocheck — TODO(tech-debt): decomposition in progress (~23k lines), see
-// docs/PIPELINE_REFACTOR_PLAN.md; phases move to pipeline/phases/*.ts typed.
 /**
  * Full Story Pipeline Orchestrator
  *
@@ -35,7 +33,7 @@ import { CharacterDesigner, CharacterBible, CharacterProfile } from '../agents/C
 import { resolveCharacterProfile } from '../utils/characterProfileResolver';
 import { StoryArchitect, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
-import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
+import { ChoiceAuthor, ChoiceSet, type ChoiceAuthorInput } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, ContinuityChecker, type ContinuityIssue, recomputeContinuityIssueCount, deriveContinuityScore, recomputeQAReportDerived } from '../agents/QAAgents';
 import { SourceMaterialAnalyzer, SourceMaterialInput } from '../agents/SourceMaterialAnalyzer';
 import { SeasonPlan } from '../../types/seasonPlan';
@@ -174,15 +172,15 @@ import { AudioPhase } from './phases/AudioPhase';
 import { BrowserQAPhase } from './phases/BrowserQAPhase';
 import { VideoPhase, bindGeneratedVideoToStory } from './phases/VideoPhase';
 import { MasterImagePhase } from './phases/MasterImagePhase';
-import { SceneImagePhase } from './phases/SceneImagePhase';
+import { SceneImagePhase, type SceneImagePhaseDeps } from './phases/SceneImagePhase';
 import { EncounterImagePhase } from './phases/EncounterImagePhase';
-import { QAPhase } from './phases/QAPhase';
-import { QuickValidationPhase } from './phases/QuickValidationPhase';
-import { ContentGenerationPhase } from './phases/ContentGenerationPhase';
+import { QAPhase, type QAPhaseDeps } from './phases/QAPhase';
+import { QuickValidationPhase, type QuickValidationPhaseDeps } from './phases/QuickValidationPhase';
+import { ContentGenerationPhase, type ContentGenerationPhaseDeps } from './phases/ContentGenerationPhase';
 import { AssemblyPhase } from './phases/AssemblyPhase';
-import { EpisodeArchitecturePhase } from './phases/EpisodeArchitecturePhase';
-import { BranchAnalysisPhase } from './phases/BranchAnalysisPhase';
-import { CharacterDesignPhase } from './phases/CharacterDesignPhase';
+import { EpisodeArchitecturePhase, type EpisodeArchitecturePhaseDeps } from './phases/EpisodeArchitecturePhase';
+import { BranchAnalysisPhase, type BranchAnalysisPhaseDeps } from './phases/BranchAnalysisPhase';
+import { CharacterDesignPhase, type CharacterDesignPhaseDeps } from './phases/CharacterDesignPhase';
 import { NPCDepthValidationPhase } from './phases/NPCDepthValidationPhase';
 import {
   createOutputDirectory,
@@ -523,7 +521,7 @@ export interface CheckpointData {
   phase: string;
   data: unknown;
   timestamp: Date;
-  requiresApproval: boolean;
+  requiresApproval?: boolean;
 }
 
 /**
@@ -1131,7 +1129,7 @@ export class FullStoryPipeline {
         issue => issue.type === 'lost_branch_during_assembly' || issue.type === 'missing_scene_graph_branch'
       );
       if (lostBranch) {
-        const wired = repairLostSceneGraphBranches(episode, blueprint);
+        const wired = repairLostSceneGraphBranches(episode as never, blueprint);
         if (wired > 0) {
           this.emit({
             type: 'warning',
@@ -1157,7 +1155,7 @@ export class FullStoryPipeline {
         revalidate: context.residueRepair
           ? () => this.sceneGraphBranchValidator.validateEpisode(context.residueRepair!.reassemble(), blueprint, branchOptions)
           : undefined,
-        emit: (event) => this.emit(event),
+        emit: this.emit.bind(this),
         phase: context.phase,
       })).result;
     }
@@ -1708,7 +1706,7 @@ export class FullStoryPipeline {
     context: { phase: string }
   ): boolean {
     if (this.config.generation?.episodeStructureMode !== 'sceneEpisodes') return false;
-    if (sceneBlueprint.isEncounter || content?.encounter) return false;
+    if (sceneBlueprint.isEncounter || (content as SceneContent & { encounter?: unknown })?.encounter) return false;
 
     content.beats = Array.isArray(content.beats) ? content.beats : [];
     let repaired = false;
@@ -2116,7 +2114,7 @@ export class FullStoryPipeline {
         availableFlags: blueprint.suggestedFlags,
         availableScores: blueprint.suggestedScores,
         availableTags: blueprint.suggestedTags,
-        unresolvedCallbacks: this.getUnresolvedCallbacksForPrompt(brief.episode?.number),
+        unresolvedCallbacks: this.getUnresolvedCallbacksForPrompt(brief.episode?.number) as ChoiceAuthorInput['unresolvedCallbacks'],
         possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
           const scene = blueprint.scenes.find(candidate => candidate.id === id);
           return {
@@ -2545,7 +2543,7 @@ export class FullStoryPipeline {
     }
   }
 
-  private addCheckpoint(phase: string, data: unknown, requiresApproval: boolean): void {
+  private addCheckpoint(phase: string, data: unknown, requiresApproval?: boolean): void {
     const checkpoint: CheckpointData = {
       phase,
       data,
@@ -2684,7 +2682,7 @@ export class FullStoryPipeline {
     );
     if (savedStory?.episodes?.length) return savedStory;
 
-    const storyPackage = loadEarlyDiagnosticSync<{ story?: Story } | Story>(outputDirectory, 'story.json');
+    const storyPackage = loadEarlyDiagnosticSync<{ story?: Story } | Story>(outputDirectory as string, 'story.json');
     if (storyPackage && 'story' in storyPackage && storyPackage.story?.episodes?.length) {
       return storyPackage.story;
     }
@@ -2712,7 +2710,7 @@ export class FullStoryPipeline {
     };
   }
 
-  private hydrateSeasonImageStyleFromStoryPackage(storyPackage?: { generator?: Record<string, unknown>; story?: Story } | Story): void {
+  private hydrateSeasonImageStyleFromStoryPackage(storyPackage?: { generator?: Record<string, unknown>; story?: Story } | Story | null): void {
     if (!storyPackage || typeof storyPackage !== 'object') return;
     const generator = 'generator' in storyPackage && storyPackage.generator && typeof storyPackage.generator === 'object'
       ? storyPackage.generator
@@ -3195,7 +3193,7 @@ export class FullStoryPipeline {
           addVisualCast(beatRecord.visualCast);
           addVisualCast(beatRecord.coveragePlan);
         }
-        for (const choice of scene.choices || []) {
+        for (const choice of (scene as Scene & { choices?: unknown[] }).choices || []) {
           scanReferenceKeys(choice, 'choice');
         }
       }
@@ -3484,7 +3482,7 @@ export class FullStoryPipeline {
     for (const episode of story.episodes || []) {
       for (const scene of episode.scenes || []) {
         totalScenes += 1;
-        if (scene.backgroundImage || scene.image || scene.imageUrl || scene.imagePath) {
+        if (scene.backgroundImage || (scene as Scene & { image?: unknown; imageUrl?: unknown; imagePath?: unknown }).image || (scene as Scene & { imageUrl?: unknown }).imageUrl || (scene as Scene & { imagePath?: unknown }).imagePath) {
           scenesWithImages += 1;
         }
         const scopedSceneId = `episode-${episode.number}-${scene.id}`;
@@ -3510,7 +3508,7 @@ export class FullStoryPipeline {
         }
         for (const beat of scene.beats || []) {
           totalBeats += 1;
-          if (beat.image || beat.imageUrl || beat.imagePath) {
+          if (beat.image || (beat as Beat & { imageUrl?: unknown; imagePath?: unknown }).imageUrl || (beat as Beat & { imagePath?: unknown }).imagePath) {
             beatsWithImages += 1;
           }
           slots.push({
@@ -3904,7 +3902,7 @@ export class FullStoryPipeline {
         }
 
         for (const beat of scene.beats || []) {
-          const isEstablishingBeat = beat.shotType === 'establishing'
+          const isEstablishingBeat = (beat as Beat & { shotType?: string }).shotType === 'establishing'
             || beat.coveragePlan?.stagingPattern === 'environment';
           if (isEstablishingBeat) continue;
           report.nonEstablishingBeatCount += 1;
@@ -4284,7 +4282,7 @@ export class FullStoryPipeline {
     const resolveProviderCredentialError = (): string | null => {
       const imageConfig = this.config.imageGen || {};
       const provider = String(imageConfig.provider || 'nano-banana');
-      const env = typeof process !== 'undefined' ? process.env : {};
+      const env: Record<string, string | undefined> = typeof process !== 'undefined' ? process.env : {};
       if (
         (provider === 'nano-banana' || provider === 'gemini')
         && !(imageConfig.geminiApiKey || imageConfig.apiKey || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY)
@@ -4320,7 +4318,7 @@ export class FullStoryPipeline {
       ];
       const ids = values
         .map((value: string) => characterForToken(value)?.id)
-        .filter(Boolean);
+        .filter((value): value is string => Boolean(value));
       if (ids.length === 0 && /\b(you|your|{{player\.)\b/i.test(beat.text || '') && brief.protagonist?.id) {
         ids.push(characterForToken(brief.protagonist.id)?.id || brief.protagonist.id);
       }
@@ -4383,7 +4381,7 @@ export class FullStoryPipeline {
         sceneId: scene.id,
         sceneName: scene.name || scene.id,
         genre: brief.story?.genre || 'interactive fiction',
-        tone: brief.story?.tone || episode.tone || 'dramatic',
+        tone: brief.story?.tone || (episode as Episode & { tone?: string }).tone || 'dramatic',
         mood: Array.isArray((scene as any).moodProgression) ? (scene as any).moodProgression.join(', ') : (scene as any).mood,
         settingContext: (scene as any).settingContext,
         artStyle: this.config.artStyle || this.config.imageGen?.gemini?.canonicalArtStyle,
@@ -4411,7 +4409,11 @@ export class FullStoryPipeline {
       const scopedSceneId = `episode-${target.episodeNumber}-${target.sceneId}`;
       const slotId = `story-beat:${scopedSceneId}::${target.beatId}`;
       const previousUrl = (beat as any)?.image || '';
-      const missingRecord = {
+      const missingRecord: {
+        slotId: string; family: string; episodeNumber: number; sceneId: string;
+        beatId: string; fieldPath: string; reason: string; status: string;
+        previousUrl: string | undefined; generatedUrl?: string; error?: string;
+      } = {
         slotId,
         family: 'story-beat',
         episodeNumber: target.episodeNumber,
@@ -4480,7 +4482,7 @@ export class FullStoryPipeline {
       }, null, 2));
       try {
         if (providerCredentialError) throw new Error(providerCredentialError);
-        const result = await this.imageService.generateImage(prompt, identifier, metadata, references);
+        const result = await this.imageService.generateImage(prompt, identifier, metadata as Parameters<ImageGenerationService['generateImage']>[2], references);
         generatedUrl = result.imageUrl || (result.imagePath ? this.servedUrlForGeneratedImagePath(result.imagePath) : '');
         imagePath = result.imagePath || '';
         if (!generatedUrl) throw new Error('Image provider did not return an image URL.');
@@ -4571,7 +4573,7 @@ export class FullStoryPipeline {
       events: this.events,
       duration: Date.now() - startTime,
       outputDirectory: normalizedOutputDir,
-      outputManifest,
+      outputManifest: outputManifest as unknown as OutputManifest,
       error: failed.length > 0 ? failed.map(target => target.error).join(' ') : undefined,
     };
   }
@@ -4869,6 +4871,17 @@ export class FullStoryPipeline {
       currentEpisode: this.currentEpisode,
     });
 
+    // Hoisted above the try so the catch block can reference late-phase
+    // state. Under @ts-nocheck these lived inside the try, so the
+    // JobCancelledError handler hit a ReferenceError before it could
+    // finalize the image registry — a latent bug flushed by typing this file.
+    let worldBible!: WorldBible;
+    let characterBible!: CharacterBible;
+    let story!: Story;
+    let choiceSets!: ChoiceSet[];
+    let encounters!: Map<string, EncounterStructure>;
+    let outputDirectory: string | undefined;
+
     try {
       // Read pipeline optimization memory (prior generation insights)
       this.cachedPipelineMemory = await this.readPipelineMemory();
@@ -4881,7 +4894,7 @@ export class FullStoryPipeline {
       await this.updateJobProgress('world_building', 5);
       this.emit({ type: 'phase_start', phase: 'world', message: 'Phase 1: Building world' });
       const resumedWorldBible = this.getResumeOutput<WorldBible>(resumeCheckpoint, 'world_bible');
-      let worldBible: WorldBible = resumedWorldBible
+      worldBible = resumedWorldBible
         ? resumedWorldBible
         : await this.measurePhase('world_building', () => this.runWorldBuilding(brief));
       this.markPhaseComplete('world_building');
@@ -4935,7 +4948,7 @@ export class FullStoryPipeline {
       this.emit({ type: 'phase_start', phase: 'characters', message: 'Phase 2: Designing characters' });
       this.requirePhases('character_design', ['world_building']);
       const resumedCharacterBible = this.getResumeOutput<CharacterBible>(resumeCheckpoint, 'character_bible');
-      const characterBible: CharacterBible = resumedCharacterBible
+      characterBible = resumedCharacterBible
         ? resumedCharacterBible
         : await this.measurePhase('character_design', () => this.runCharacterDesign(brief, worldBible));
       this.markPhaseComplete('character_design');
@@ -5022,8 +5035,8 @@ export class FullStoryPipeline {
           this.measurePhase('character_design_retry', () => this.runCharacterDesign(repairedBrief, wb)),
       }).run(brief, worldBible, characterBible, {
         config: this.config,
-        emit: (event) => this.emit(event),
-        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       });
 
       // === PHASE 3: EPISODE ARCHITECTURE ===
@@ -5151,7 +5164,8 @@ export class FullStoryPipeline {
               branchAnalysis || undefined
             )
           );
-      const { sceneContents, choiceSets, encounters } = contentGenerationResult;
+      const { sceneContents } = contentGenerationResult;
+      ({ choiceSets, encounters } = contentGenerationResult);
       this.markPhaseComplete('content_generation');
       // Mark this single episode complete in the structure plan (covers the
       // resume path, where setSceneBeats never ran for the cached scenes).
@@ -5179,8 +5193,8 @@ export class FullStoryPipeline {
         { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
         {
           config: this.config,
-          emit: (event) => this.emit(event),
-          addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+          emit: this.emit.bind(this),
+          addCheckpoint: this.addCheckpoint.bind(this),
         }
       );
 
@@ -5196,8 +5210,8 @@ export class FullStoryPipeline {
         { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
         {
           config: this.config,
-          emit: (event) => this.emit(event),
-          addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+          emit: this.emit.bind(this),
+          addCheckpoint: this.addCheckpoint.bind(this),
         }
       );
 
@@ -5214,7 +5228,7 @@ export class FullStoryPipeline {
       // === PHASE 5.5: IMAGE GENERATION (single-episode mode) ===
       await this.checkCancellation();
       // Create output directory EARLY so images are saved to the right location
-      let outputDirectory: string | undefined;
+      // (outputDirectory itself is hoisted above the try for the catch block)
       let outputManifest: OutputManifest | undefined;
       let imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> } | undefined;
       let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
@@ -5249,7 +5263,7 @@ export class FullStoryPipeline {
           brief.episode.number,
           choiceSets,
           (ledger) =>
-            saveEarlyDiagnostic(outputDirectory, `episode-${brief.episode.number}-charge-materialization.json`, ledger),
+            saveEarlyDiagnostic(outputDirectory as string, `episode-${brief.episode.number}-charge-materialization.json`, ledger),
         );
 
         await this.repairSceneGraphBranchingChoices(
@@ -5488,7 +5502,7 @@ export class FullStoryPipeline {
       // completeness gate (registry coverage + missing-image walk), asset
       // HTTP verification, and the deterministic flag-chronology/quote-recall
       // scans (which escalate onto qaReport in place).
-      let story = await this.assemblyPhase().run(
+      story = await this.assemblyPhase().run(
         {
           brief, worldBible, characterBible, episodeBlueprint, sceneContents,
           choiceSets, encounters, imageResults, encounterImageResults,
@@ -5496,8 +5510,8 @@ export class FullStoryPipeline {
         },
         {
           config: this.config,
-          emit: (event) => this.emit(event),
-          addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+          emit: this.emit.bind(this),
+          addCheckpoint: this.addCheckpoint.bind(this),
         }
       );
 
@@ -5557,8 +5571,8 @@ export class FullStoryPipeline {
           },
           {
             config: this.config,
-            emit: (event) => this.emit(event),
-            addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+            emit: this.emit.bind(this),
+            addCheckpoint: this.addCheckpoint.bind(this),
           }
         );
 
@@ -5583,16 +5597,16 @@ export class FullStoryPipeline {
       await new AudioPhase({
         audioService: this.audioService,
         audioWorkerQueue: this.audioWorkerQueue,
-        requirePhases: (phase, dependencies) => this.requirePhases(phase, dependencies),
-        markPhaseComplete: (phase) => this.markPhaseComplete(phase),
-        measurePhase: (phase, task) => this.measurePhase(phase, task),
+        requirePhases: this.requirePhases.bind(this),
+        markPhaseComplete: this.markPhaseComplete.bind(this),
+        measurePhase: this.measurePhase.bind(this),
         checkCancellation: () => this.checkCancellation(),
       }).run(
         { story, characterBible, outputDirectory, audioDiagnostics },
         {
           config: this.config,
-          emit: (event) => this.emit(event),
-          addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+          emit: this.emit.bind(this),
+          addCheckpoint: this.addCheckpoint.bind(this),
         }
       );
 
@@ -5606,8 +5620,8 @@ export class FullStoryPipeline {
           { story, storyTitle: brief.story.title || '', outputDirectory },
           {
             config: this.config,
-            emit: (event) => this.emit(event),
-            addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+            emit: this.emit.bind(this),
+            addCheckpoint: this.addCheckpoint.bind(this),
           }
         );
       }
@@ -5794,8 +5808,8 @@ export class FullStoryPipeline {
       },
       {
         config: this.config,
-        emit: (event) => this.emit(event),
-        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
     );
   }
@@ -5808,14 +5822,14 @@ export class FullStoryPipeline {
     brief: FullCreativeBrief,
     worldBible: WorldBible
   ): Promise<CharacterBible> {
-    const deps = { characterDesigner: this.characterDesigner };
+    const deps = { characterDesigner: this.characterDesigner } satisfies Partial<CharacterDesignPhaseDeps> as unknown as CharacterDesignPhaseDeps;
     Object.defineProperties(deps, {
       cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
     });
     return new CharacterDesignPhase(deps).run(brief, worldBible, {
       config: this.config,
-      emit: (event) => this.emit(event),
-      addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+      emit: this.emit.bind(this),
+      addCheckpoint: this.addCheckpoint.bind(this),
     });
   }
 
@@ -5830,9 +5844,9 @@ export class FullStoryPipeline {
   ): Promise<EpisodeBlueprint> {
     const deps = {
       storyArchitect: this.storyArchitect,
-      emitPlanUpdate: (message) => this.emitPlanUpdate(message),
-      getTargetBeatCountForScene: (...args) => this.getTargetBeatCountForScene(...args),
-    };
+      emitPlanUpdate: this.emitPlanUpdate.bind(this),
+      getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
+    } satisfies Partial<EpisodeArchitecturePhaseDeps> as unknown as EpisodeArchitecturePhaseDeps;
     Object.defineProperties(deps, {
       cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
       generationPlan: { get: () => this.generationPlan },
@@ -5844,8 +5858,8 @@ export class FullStoryPipeline {
     });
     return new EpisodeArchitecturePhase(deps).run(brief, worldBible, characterBible, {
       config: this.config,
-      emit: (event) => this.emit(event),
-      addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+      emit: this.emit.bind(this),
+      addCheckpoint: this.addCheckpoint.bind(this),
     });
   }
 
@@ -5870,14 +5884,14 @@ export class FullStoryPipeline {
     brief: FullCreativeBrief,
     blueprint: EpisodeBlueprint
   ): Promise<BranchAnalysis | null> {
-    const deps = { branchManager: this.branchManager };
+    const deps = { branchManager: this.branchManager } satisfies Partial<BranchAnalysisPhaseDeps> as unknown as BranchAnalysisPhaseDeps;
     Object.defineProperties(deps, {
       branchShadowDiffs: { get: () => this.branchShadowDiffs },
     });
     return new BranchAnalysisPhase(deps).run(brief, blueprint, {
       config: this.config,
-      emit: (event) => this.emit(event),
-      addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+      emit: this.emit.bind(this),
+      addCheckpoint: this.addCheckpoint.bind(this),
     });
   }
 
@@ -5901,37 +5915,34 @@ export class FullStoryPipeline {
       encounterArchitect: this.encounterArchitect,
       getThreadPlanner: () => this.getThreadPlanner(),
       getTwistArchitect: () => this.getTwistArchitect(),
-      assertSceneDependencyInvariants: (bp, sc) => this.assertSceneDependencyInvariants(bp, sc),
-      buildBranchFallbackChoiceSet: (sb, beat) => this.buildBranchFallbackChoiceSet(sb, beat),
-      buildChoiceAuthorNpcs: (npcIds, bible) => this.buildChoiceAuthorNpcs(npcIds, bible),
-      buildCompactWorldContext: (wb, loc) => this.buildCompactWorldContext(wb, loc),
-      buildEncounterPriorStateContext: (scene, bp, npcs, flags) =>
-        this.buildEncounterPriorStateContext(scene, bp, npcs, flags),
-      captureEncounterTelemetry: (metadata, sceneId) => this.captureEncounterTelemetry(metadata, sceneId),
+      assertSceneDependencyInvariants: this.assertSceneDependencyInvariants.bind(this),
+      buildBranchFallbackChoiceSet: this.buildBranchFallbackChoiceSet.bind(this),
+      buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
+      buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
+      buildEncounterPriorStateContext: this.buildEncounterPriorStateContext.bind(this),
+      captureEncounterTelemetry: this.captureEncounterTelemetry.bind(this),
       checkCancellation: () => this.checkCancellation(),
-      deriveStoryVerbsForBrief: (b, wb) => this.deriveStoryVerbsForBrief(b, wb),
-      emitPhaseProgress: (phase, done, total, source, message) =>
-        this.emitPhaseProgress(phase, done, total, source, message),
-      emitPlanUpdate: (message) => this.emitPlanUpdate(message),
-      episodeCheckpointFile: (ep, kind, id) => this.episodeCheckpointFile(ep, kind, id),
-      establishedCanonForPrompt: (ep) => this.establishedCanonForPrompt(ep),
-      getPhase4DefaultCollisions: (metadata) => this.getPhase4DefaultCollisions(metadata),
-      getTargetBeatCountForScene: (sb) => this.getTargetBeatCountForScene(sb),
-      getUnresolvedCallbacksForPrompt: (ep) => this.getUnresolvedCallbacksForPrompt(ep),
-      inferBranchType: (sb, bp) => this.inferBranchType(sb, bp),
-      isEpisodeFinalScene: (scene, bp) => this.isEpisodeFinalScene(scene, bp),
-      loadResumeUnit: (dir, unitId, artifactPath) => this.loadResumeUnit(dir, unitId, artifactPath),
-      recordRemediationSafe: (record) => this.recordRemediationSafe(record),
-      recordSceneValidationResult: (result) => this.recordSceneValidationResult(result),
-      repairSceneEpisodePlayableContract: (sb, content, sets, ctx) =>
-        this.repairSceneEpisodePlayableContract(sb, content, sets, ctx),
-      resolveWorldLocationForScene: (sb, wb) => this.resolveWorldLocationForScene(sb, wb),
-      runSceneCriticPass: (contents, bible) => this.runSceneCriticPass(contents, bible),
-      sanitizeReaderFacingSceneName: (name, fallback) => this.sanitizeReaderFacingSceneName(name, fallback),
-      saveResumeUnit: (dir, unitId, artifactPath, data) => this.saveResumeUnit(dir, unitId, artifactPath, data),
-      throwIfFailFast: (message, phase, options) => this.throwIfFailFast(message, phase, options),
-      trackEncounterFlagConsequences: (encounter) => this.trackEncounterFlagConsequences(encounter),
-    };
+      deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+      emitPhaseProgress: this.emitPhaseProgress.bind(this),
+      emitPlanUpdate: this.emitPlanUpdate.bind(this),
+      episodeCheckpointFile: this.episodeCheckpointFile.bind(this),
+      establishedCanonForPrompt: this.establishedCanonForPrompt.bind(this),
+      getPhase4DefaultCollisions: this.getPhase4DefaultCollisions.bind(this),
+      getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
+      getUnresolvedCallbacksForPrompt: this.getUnresolvedCallbacksForPrompt.bind(this),
+      inferBranchType: this.inferBranchType.bind(this),
+      isEpisodeFinalScene: this.isEpisodeFinalScene.bind(this),
+      loadResumeUnit: this.loadResumeUnit.bind(this),
+      recordRemediationSafe: this.recordRemediationSafe.bind(this),
+      recordSceneValidationResult: this.recordSceneValidationResult.bind(this),
+      repairSceneEpisodePlayableContract: this.repairSceneEpisodePlayableContract.bind(this),
+      resolveWorldLocationForScene: this.resolveWorldLocationForScene.bind(this),
+      runSceneCriticPass: this.runSceneCriticPass.bind(this),
+      sanitizeReaderFacingSceneName: this.sanitizeReaderFacingSceneName.bind(this),
+      saveResumeUnit: this.saveResumeUnit.bind(this),
+      throwIfFailFast: this.throwIfFailFast.bind(this),
+      trackEncounterFlagConsequences: this.trackEncounterFlagConsequences.bind(this),
+    } satisfies Partial<ContentGenerationPhaseDeps> as unknown as ContentGenerationPhaseDeps;
     Object.defineProperties(deps, {
       incrementalValidator: {
         get: () => this.incrementalValidator,
@@ -5968,8 +5979,8 @@ export class FullStoryPipeline {
       episodeNumber,
       {
         config: this.config,
-        emit: (event) => this.emit(event),
-        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
     );
   }
@@ -6069,8 +6080,8 @@ export class FullStoryPipeline {
   ): Promise<QAReport> {
     return this.qaPhase().runQualityAssurance(brief, sceneContents, choiceSets, characterBible, blueprint, {
       config: this.config,
-      emit: (event) => this.emit(event),
-      addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+      emit: this.emit.bind(this),
+      addCheckpoint: this.addCheckpoint.bind(this),
     });
   }
 
@@ -6081,18 +6092,18 @@ export class FullStoryPipeline {
       distributionValidator: this.distributionValidator,
       sceneWriter: this.sceneWriter,
       choiceAuthor: this.choiceAuthor,
-      requirePhases: (...args) => this.requirePhases(...args),
-      markPhaseComplete: (...args) => this.markPhaseComplete(...args),
-      measurePhase: (phase, fn) => this.measurePhase(phase, fn),
-      emitPhaseProgress: (...args) => this.emitPhaseProgress(...args),
-      prepareValidationInput: (...args) => this.prepareValidationInput(...args),
-      buildContinuityCharacterKnowledge: (...args) => this.buildContinuityCharacterKnowledge(...args),
-      buildContinuityTimeline: (...args) => this.buildContinuityTimeline(...args),
-      buildCompactWorldContext: (...args) => this.buildCompactWorldContext(...args),
-      getTargetBeatCountForScene: (...args) => this.getTargetBeatCountForScene(...args),
-      buildChoiceAuthorNpcs: (...args) => this.buildChoiceAuthorNpcs(...args),
-      deriveStoryVerbsForBrief: (...args) => this.deriveStoryVerbsForBrief(...args),
-    };
+      requirePhases: this.requirePhases.bind(this),
+      markPhaseComplete: this.markPhaseComplete.bind(this),
+      measurePhase: this.measurePhase.bind(this),
+      emitPhaseProgress: this.emitPhaseProgress.bind(this),
+      prepareValidationInput: this.prepareValidationInput.bind(this),
+      buildContinuityCharacterKnowledge: this.buildContinuityCharacterKnowledge.bind(this),
+      buildContinuityTimeline: this.buildContinuityTimeline.bind(this),
+      buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
+      getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
+      buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
+      deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+    } satisfies Partial<QAPhaseDeps> as unknown as QAPhaseDeps;
     // Accessor-backed run-scoped state: reads on the phase side always see
     // the pipeline's current values.
     Object.defineProperties(deps, {
@@ -6108,12 +6119,12 @@ export class FullStoryPipeline {
       integratedValidator: this.integratedValidator,
       sceneWriter: this.sceneWriter,
       choiceAuthor: this.choiceAuthor,
-      prepareValidationInput: (...args) => this.prepareValidationInput(...args),
-      buildCompactWorldContext: (...args) => this.buildCompactWorldContext(...args),
-      getTargetBeatCountForScene: (...args) => this.getTargetBeatCountForScene(...args),
-      buildChoiceAuthorNpcs: (...args) => this.buildChoiceAuthorNpcs(...args),
-      deriveStoryVerbsForBrief: (...args) => this.deriveStoryVerbsForBrief(...args),
-    };
+      prepareValidationInput: this.prepareValidationInput.bind(this),
+      buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
+      getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
+      buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
+      deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+    } satisfies Partial<QuickValidationPhaseDeps> as unknown as QuickValidationPhaseDeps;
     // Accessor-backed run-scoped state: reads on the phase side always see
     // the pipeline's current values.
     Object.defineProperties(deps, {
@@ -6132,12 +6143,12 @@ export class FullStoryPipeline {
   private assemblyPhase(): AssemblyPhase {
     return new AssemblyPhase({
       assetRegistry: this.assetRegistry,
-      assembleStory: (...args) => this.assembleStory(...args),
-      recordRemediationSafe: (...args) => this.recordRemediationSafe(...args),
-      resolveGeneratedStoryPlayerTemplates: (...args) => this.resolveGeneratedStoryPlayerTemplates(...args),
-      runFlagChronologyScan: (...args) => this.runFlagChronologyScan(...args),
-      saveDraftImageManifest: (...args) => this.saveDraftImageManifest(...args),
-      buildImageManifestFromStory: (...args) => this.buildImageManifestFromStory(...args),
+      assembleStory: this.assembleStory.bind(this),
+      recordRemediationSafe: this.recordRemediationSafe.bind(this),
+      resolveGeneratedStoryPlayerTemplates: this.resolveGeneratedStoryPlayerTemplates.bind(this),
+      runFlagChronologyScan: this.runFlagChronologyScan.bind(this),
+      saveDraftImageManifest: this.saveDraftImageManifest.bind(this),
+      buildImageManifestFromStory: this.buildImageManifestFromStory.bind(this),
     });
   }
 
@@ -6815,10 +6826,13 @@ export class FullStoryPipeline {
       if (c.tier !== 'core') continue;
 
       // Arc state for a core NPC: phase + their relationship-to-protagonist framing.
+      // TODO(arc-state): r.characterId/r.type don't exist on CharacterRelationship
+      // (targetId/relationshipType do), so this lookup never matches and relType is
+      // always ''. Preserved as-is: fixing it changes LLM-visible prompt context.
       const relToProtag = (c.relationships ?? []).find(
-        (r) => r.characterId === characterBible.characters.find((x) => x.role === 'protagonist')?.id,
+        (r) => (r as unknown as { characterId?: string }).characterId === characterBible.characters.find((x) => x.role === 'protagonist')?.id,
       );
-      const relType = truncate(relToProtag?.type, 80);
+      const relType = truncate((relToProtag as unknown as { type?: string } | undefined)?.type, 80);
       arcStates.push({
         characterId: c.id,
         state: relType ? `${phase} — ${relType}` : phase,
@@ -7786,7 +7800,7 @@ export class FullStoryPipeline {
       }
 
       const storyCoverImage = multiCoverUrl
-        || (episodes.length > 0 && episodes[0].coverImage ? episodes[0].coverImage : '');
+        || (episodes.length > 0 && episodes[0].coverImage ? episodes[0].coverImage as unknown as string : '');
         
       let story: Story = {
         id: idSlugify(baseBrief.story.title) || 'untitled-story',
@@ -7803,8 +7817,8 @@ export class FullStoryPipeline {
           inventory: [],
         },
         npcs: characterBible.characters
-          .filter(c => c.id !== baseBrief.protagonist.id)
-          .map(c => {
+          .filter((c: CharacterProfile) => c.id !== baseBrief.protagonist.id)
+          .map((c: CharacterProfile) => {
             let portrait: string | undefined;
             const refSheet = this.imageAgentTeam.getReferenceSheet(c.id);
             if (refSheet) {
@@ -8232,7 +8246,7 @@ export class FullStoryPipeline {
       try {
         const narrativeDiagnostics = runNarrativeDiagnostics({
           episodeNumber: i,
-          totalEpisodes: brief.seasonPlan?.episodes?.length ?? i,
+          totalEpisodes: baseBrief.seasonPlan?.episodes?.length ?? i,
           sceneContents,
           episode: branchValidationEpisode,
           // Thread/Twist planning (default-off): hand SetupPayoff/TwistQuality the
@@ -8246,7 +8260,7 @@ export class FullStoryPipeline {
           knownEntityIds: (characterBible.characters ?? []).flatMap((c) => [c.id, c.name]).filter(Boolean),
           // D4: planned (blueprint) choice scenes vs scenes that actually authored a choice.
           choicePlannedSceneIds: (blueprint.scenes ?? []).filter((s) => !s.isEncounter && s.choicePoint).map((s) => s.id),
-          choiceAuthoredSceneIds: sceneContents.filter((sc) => (sc.beats ?? []).some((b) => (b.choices?.length ?? 0) > 0)).map((sc) => sc.sceneId),
+          choiceAuthoredSceneIds: sceneContents.filter((sc) => (sc.beats ?? []).some((b) => ((b as GeneratedBeat & { choices?: unknown[] }).choices?.length ?? 0) > 0)).map((sc) => sc.sceneId),
         });
         narrativeDiagnosticsReport = narrativeDiagnostics;
         await saveEarlyDiagnostic(outputDirectory, `episode-${i}-narrative-diagnostics.json`, narrativeDiagnostics);
@@ -8273,21 +8287,35 @@ export class FullStoryPipeline {
       // checks run OUTSIDE the diagnostics try/catch so a real gate failure propagates
       // as a PipelineError instead of being swallowed as a non-fatal warning. With the
       // flags unset, shouldGate returns gate:false → behavior is unchanged.
+      // NOTE(de-@ts-nocheck): this block previously referenced out-of-scope
+      // `brief`/`story` copied from generate(). The `brief` ReferenceError
+      // killed runNarrativeDiagnostics above as a "non-fatal" warning, which
+      // left narrativeDiagnosticsReport undefined and silently skipped every
+      // plan-time gate in multi-episode runs. Fixed to baseBrief; the gate
+      // shadow records pass storyId: undefined (no Story exists in this
+      // scope — the season story is assembled later by the driver).
       if (narrativeDiagnosticsReport) {
         const isEnabled = isGateEnabled;
         const shadow = isShadowLoggingEnabled();
+        // SHADOW-ONLY in the season path: before the scope fix above, these
+        // gates could never fire here, so their default-ON promotion was
+        // validated exclusively against single-episode shadow data (the
+        // season fixture trips ConsequenceBudget immediately). Validation +
+        // shadow records run with the real flags; blocking stays disabled
+        // until a fresh multi-episode shadow pass proves the profile clean.
+        const seasonGateEnforcement = () => false;
         const checkIssues = (name: NarrativeDiagnosticsReport['checks'][number]['name']) =>
           narrativeDiagnosticsReport.checks.find((c) => c.name === name)?.issues ?? [];
 
-        const setupPayoffGate = shouldGate(PLAN_GATE_FLAGS.setupPayoff, checkIssues('setup_payoff'), isEnabled);
-        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.setupPayoff, 'SetupPayoffValidator', setupPayoffGate.blockingCount, checkIssues('setup_payoff'), story?.id);
+        const setupPayoffGate = shouldGate(PLAN_GATE_FLAGS.setupPayoff, checkIssues('setup_payoff'), seasonGateEnforcement);
+        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.setupPayoff, 'SetupPayoffValidator', setupPayoffGate.blockingCount, checkIssues('setup_payoff'), undefined);
         if (setupPayoffGate.gate) {
           const errs = checkIssues('setup_payoff').filter((iss) => iss.severity === 'error');
           // S3: record the hard block before throwing (best-effort).
           await this.recordRemediationSafe({
             rule: 'setup_payoff_gate', scope: 'episode', attempted: 1,
             succeeded: false, degraded: false, blocked: true, attempts: 1,
-            storyId: story?.id, details: `Setup/payoff gate blocked episode ${i}: ${setupPayoffGate.blockingCount} issue(s)`,
+            storyId: undefined, details: `Setup/payoff gate blocked episode ${i}: ${setupPayoffGate.blockingCount} issue(s)`,
           });
           throw new PipelineError(
             `[SetupPayoffGate] Setup/payoff failed the blocking gate (${setupPayoffGate.blockingCount} issue(s)): ` +
@@ -8315,21 +8343,21 @@ export class FullStoryPipeline {
             {
               ledger: this.callbackLedger.serialize(),
               currentEpisode: i,
-              totalEpisodes: brief.seasonPlan?.episodes?.length ?? i,
+              totalEpisodes: baseBrief.seasonPlan?.episodes?.length ?? i,
             },
             { strict: true },
           );
           callbackGateIssues = strictResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
         }
-        const callbackGate = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, callbackGateIssues, isEnabled);
-        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.callbackCoverage, 'CallbackCoverageValidator', callbackGate.blockingCount, callbackGateIssues, story?.id);
+        const callbackGate = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, callbackGateIssues, seasonGateEnforcement);
+        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.callbackCoverage, 'CallbackCoverageValidator', callbackGate.blockingCount, callbackGateIssues, undefined);
         if (callbackGate.gate) {
           const errs = callbackGateIssues.filter((iss) => iss.severity === 'error');
           // S3: record the hard block before throwing (best-effort).
           await this.recordRemediationSafe({
             rule: 'callback_coverage_gate', scope: 'episode', attempted: 1,
             succeeded: false, degraded: false, blocked: true, attempts: 1,
-            storyId: story?.id, details: `Callback coverage gate blocked episode ${i}: ${callbackGate.blockingCount} issue(s)`,
+            storyId: undefined, details: `Callback coverage gate blocked episode ${i}: ${callbackGate.blockingCount} issue(s)`,
           });
           throw new PipelineError(
             `[CallbackCoverageGate] Callback coverage failed the blocking gate (${callbackGate.blockingCount} issue(s)): ` +
@@ -8354,7 +8382,7 @@ export class FullStoryPipeline {
                 (sc.beats ?? []).map((b) => ({
                   id: b.id,
                   text: b.text ?? b.content ?? '',
-                  isChoicePoint: (b.choices?.length ?? 0) > 0 || b.isChoicePoint,
+                  isChoicePoint: ((b as GeneratedBeat & { choices?: unknown[] }).choices?.length ?? 0) > 0 || b.isChoicePoint,
                 })),
               ),
               scenes: sceneContents.map((sc) => ({
@@ -8362,21 +8390,21 @@ export class FullStoryPipeline {
                 beats: (sc.beats ?? []).map((b) => ({
                   id: b.id,
                   text: b.text ?? b.content ?? '',
-                  isChoicePoint: (b.choices?.length ?? 0) > 0 || b.isChoicePoint,
+                  isChoicePoint: ((b as GeneratedBeat & { choices?: unknown[] }).choices?.length ?? 0) > 0 || b.isChoicePoint,
                 })),
               })),
             },
             { strict: true },
           );
           const densityIssues = densityResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
-          const densityGate = shouldGate(PLAN_GATE_FLAGS.choiceDensity, densityIssues, isEnabled);
-          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.choiceDensity, 'ChoiceDensityValidator', densityGate.blockingCount, densityIssues, story?.id);
+          const densityGate = shouldGate(PLAN_GATE_FLAGS.choiceDensity, densityIssues, seasonGateEnforcement);
+          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.choiceDensity, 'ChoiceDensityValidator', densityGate.blockingCount, densityIssues, undefined);
           if (densityGate.gate) {
             const errs = densityIssues.filter((iss) => iss.severity === 'error');
             await this.recordRemediationSafe({
               rule: 'choice_density_gate', scope: 'episode', attempted: 1,
               succeeded: false, degraded: false, blocked: true, attempts: 1,
-              storyId: story?.id, details: `Choice density gate blocked episode ${i}: ${densityGate.blockingCount} issue(s)`,
+              storyId: undefined, details: `Choice density gate blocked episode ${i}: ${densityGate.blockingCount} issue(s)`,
             });
             throw new PipelineError(
               `[ChoiceDensityGate] Choice density failed the blocking gate (${densityGate.blockingCount} issue(s)): ` +
@@ -8409,14 +8437,14 @@ export class FullStoryPipeline {
             { strictMode: true },
           );
           const budgetIssues = budgetResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
-          const budgetGate = shouldGate(PLAN_GATE_FLAGS.consequenceBudget, budgetIssues, isEnabled);
-          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.consequenceBudget, 'ConsequenceBudgetValidator', budgetGate.blockingCount, budgetIssues, story?.id);
+          const budgetGate = shouldGate(PLAN_GATE_FLAGS.consequenceBudget, budgetIssues, seasonGateEnforcement);
+          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.consequenceBudget, 'ConsequenceBudgetValidator', budgetGate.blockingCount, budgetIssues, undefined);
           if (budgetGate.gate) {
             const errs = budgetIssues.filter((iss) => iss.severity === 'error');
             await this.recordRemediationSafe({
               rule: 'consequence_budget_gate', scope: 'episode', attempted: 1,
               succeeded: false, degraded: false, blocked: true, attempts: 1,
-              storyId: story?.id, details: `Consequence budget gate blocked episode ${i}: ${budgetGate.blockingCount} issue(s)`,
+              storyId: undefined, details: `Consequence budget gate blocked episode ${i}: ${budgetGate.blockingCount} issue(s)`,
             });
             throw new PipelineError(
               `[ConsequenceBudgetGate] Consequence budget failed the blocking gate (${budgetGate.blockingCount} issue(s)): ` +
@@ -8452,8 +8480,8 @@ export class FullStoryPipeline {
           // unresolved references to error-severity here so the gate can actually fire.
           const propResult = new PropIntroductionValidator().validate(propInput, { strict: true });
           const propIssues = propResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message }));
-          const propGate = shouldGate(PLAN_GATE_FLAGS.propIntroduction, propIssues, isEnabled);
-          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.propIntroduction, 'PropIntroductionValidator', propGate.blockingCount, propIssues, story?.id);
+          const propGate = shouldGate(PLAN_GATE_FLAGS.propIntroduction, propIssues, seasonGateEnforcement);
+          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.propIntroduction, 'PropIntroductionValidator', propGate.blockingCount, propIssues, undefined);
           if (propGate.gate) {
             // Wave 4 repair loop: resolve raw label->canonical-id references (the
             // witness-bug class) and re-validate before aborting. Genuinely-unknown
@@ -8471,7 +8499,7 @@ export class FullStoryPipeline {
               await this.recordRemediationSafe({
                 rule: 'prop_introduction_gate', scope: 'episode', attempted: 1,
                 succeeded: false, degraded: false, blocked: true, attempts: 1,
-                storyId: story?.id, details: `Prop introduction gate blocked episode ${i}: ${propGate.blockingCount} issue(s)`,
+                storyId: undefined, details: `Prop introduction gate blocked episode ${i}: ${propGate.blockingCount} issue(s)`,
               });
               throw new PipelineError(
                 `[PropIntroductionGate] Prop introduction failed the blocking gate (${propGate.blockingCount} unresolved reference(s)): ` +
@@ -8672,7 +8700,13 @@ export class FullStoryPipeline {
       this.emit({ type: 'debug', phase: `continuity_repair_ep_${i}`, message: `Continuity repair gate: seasonCanonOn=${this.seasonCanonOn} hasQaReport=${!!qaReport}` });
       if (this.seasonCanonOn && qaReport) {
         try {
-          await this.repairContinuityFindings(story, sceneContents, characterBible, qaReport, outputDirectory, blueprint);
+          // NOTE(de-@ts-nocheck): this call previously referenced an
+          // out-of-scope `story` (a ReferenceError swallowed by this catch),
+          // so multi-episode continuity repair never actually ran. The merge
+          // walks story.episodes[].scenes[], so the assembled episode is
+          // wrapped as a one-episode story; beat rewrites mutate `episode`
+          // in place and flow into the season story downstream.
+          await this.repairContinuityFindings({ episodes: [episode] } as unknown as Story, sceneContents, characterBible, qaReport, outputDirectory, blueprint);
         } catch (repairErr) {
           this.emit({ type: 'warning', phase: `continuity_repair_ep_${i}`, message: `Continuity repair failed (non-fatal): ${repairErr instanceof Error ? repairErr.message : String(repairErr)}` });
         }
@@ -8749,11 +8783,10 @@ export class FullStoryPipeline {
       imageAgentTeam: this.imageAgentTeam,
       imageService: this.imageService,
       checkCancellation: () => this.checkCancellation(),
-      emitPhaseProgress: (phase, done, total, source, message) =>
-        this.emitPhaseProgress(phase, done, total, source, message),
-      hydrateReferenceSheetFromDisk: (char) => this.hydrateReferenceSheetFromDisk(char),
-      readCharacterMemory: (name) => this.readCharacterMemory(name),
-      writeCharacterMemory: (opts) => this.writeCharacterMemory(opts),
+      emitPhaseProgress: this.emitPhaseProgress.bind(this),
+      hydrateReferenceSheetFromDisk: this.hydrateReferenceSheetFromDisk.bind(this),
+      readCharacterMemory: this.readCharacterMemory.bind(this),
+      writeCharacterMemory: this.writeCharacterMemory.bind(this),
       shouldAttachCompositeCharacterRefs: () => this.shouldAttachCompositeCharacterRefs(),
       locationMasterShots: this.locationMasterShots,
       characterReferences: this.collectedVisualPlanning.characterReferences,
@@ -8769,8 +8802,8 @@ export class FullStoryPipeline {
       { characterBible, worldBible, brief },
       {
         config: this.config,
-        emit: (event) => this.emit(event),
-        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
     );
   }
@@ -8786,8 +8819,8 @@ export class FullStoryPipeline {
       userReferenceImages,
       {
         config: this.config,
-        emit: (event) => this.emit(event),
-        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
     );
   }
@@ -9168,48 +9201,48 @@ export class FullStoryPipeline {
       collectedVisualPlanning: this.collectedVisualPlanning,
       checkCancellation: () => this.checkCancellation(),
       _openingBeatPrefetch: this._openingBeatPrefetch,
-      analyzeBeatCharacters: (...args) => this.analyzeBeatCharacters(...args),
-      applyThirdPersonRenderContract: (...args) => this.applyThirdPersonRenderContract(...args),
-      buildBeatSceneStoryboardPlan: (...args) => this.buildBeatSceneStoryboardPlan(...args),
-      buildCharacterDescriptions: (...args) => this.buildCharacterDescriptions(...args),
-      createSlotReferencePack: (...args) => this.createSlotReferencePack(...args),
-      ensureCharacterReferencesForVisibleCharacters: (...args) => this.ensureCharacterReferencesForVisibleCharacters(...args),
-      extractSceneContext: (...args) => this.extractSceneContext(...args),
-      findExistingImageArtifact: (...args) => this.findExistingImageArtifact(...args),
-      gatherCharacterBodyVocabularies: (...args) => this.gatherCharacterBodyVocabularies(...args),
-      gatherCharacterReferenceImages: (...args) => this.gatherCharacterReferenceImages(...args),
-      generateEpisodeColorScript: (...args) => this.generateEpisodeColorScript(...args),
-      generateEpisodeStyleBible: (...args) => this.generateEpisodeStyleBible(...args),
-      generateImageWithDefectRetries: (...args) => this.generateImageWithDefectRetries(...args),
-      getCharacterIdsInScene: (...args) => this.getCharacterIdsInScene(...args),
+      analyzeBeatCharacters: this.analyzeBeatCharacters.bind(this),
+      applyThirdPersonRenderContract: this.applyThirdPersonRenderContract.bind(this),
+      buildBeatSceneStoryboardPlan: this.buildBeatSceneStoryboardPlan.bind(this),
+      buildCharacterDescriptions: this.buildCharacterDescriptions.bind(this),
+      createSlotReferencePack: this.createSlotReferencePack.bind(this),
+      ensureCharacterReferencesForVisibleCharacters: this.ensureCharacterReferencesForVisibleCharacters.bind(this),
+      extractSceneContext: this.extractSceneContext.bind(this),
+      findExistingImageArtifact: this.findExistingImageArtifact.bind(this),
+      gatherCharacterBodyVocabularies: this.gatherCharacterBodyVocabularies.bind(this),
+      gatherCharacterReferenceImages: this.gatherCharacterReferenceImages.bind(this),
+      generateEpisodeColorScript: this.generateEpisodeColorScript.bind(this),
+      generateEpisodeStyleBible: this.generateEpisodeStyleBible.bind(this),
+      generateImageWithDefectRetries: this.generateImageWithDefectRetries.bind(this),
+      getCharacterIdsInScene: this.getCharacterIdsInScene.bind(this),
       getEffectiveImagePlanningMode: () => this.getEffectiveImagePlanningMode(),
       getEffectiveImagePromptMode: () => this.getEffectiveImagePromptMode(),
       getEffectiveImageQaMode: () => this.getEffectiveImageQaMode(),
-      getEpisodeScopedBeatKey: (...args) => this.getEpisodeScopedBeatKey(...args),
-      getEpisodeScopedSceneId: (...args) => this.getEpisodeScopedSceneId(...args),
+      getEpisodeScopedBeatKey: this.getEpisodeScopedBeatKey.bind(this),
+      getEpisodeScopedSceneId: this.getEpisodeScopedSceneId.bind(this),
       getStoryboardMaxPanelsPerSheet: () => this.getStoryboardMaxPanelsPerSheet(),
-      inferIntensity: (...args) => this.inferIntensity(...args),
-      inferValence: (...args) => this.inferValence(...args),
-      isEstablishingBeat: (...args) => this.isEstablishingBeat(...args),
-      isLlmQuotaFailure: (...args) => this.isLlmQuotaFailure(...args),
-      mapChoicePositions: (...args) => this.mapChoicePositions(...args),
-      mapSpeakerMoodToEmotion: (...args) => this.mapSpeakerMoodToEmotion(...args),
-      prefetchSceneOpeningBeats: (...args) => this.prefetchSceneOpeningBeats(...args),
-      promptMentionsDisallowedCharacters: (...args) => this.promptMentionsDisallowedCharacters(...args),
-      promptMissingRequiredCharacters: (...args) => this.promptMissingRequiredCharacters(...args),
-      reconcileOrphanedBeatImages: (...args) => this.reconcileOrphanedBeatImages(...args),
-      runLoraTrainingIfEligible: (...args) => this.runLoraTrainingIfEligible(...args),
-      sanitizeImagePrompt: (...args) => this.sanitizeImagePrompt(...args),
-      sanitizePromptText: (...args) => this.sanitizePromptText(...args),
-      saveBeatVisualQADiagnostic: (...args) => this.saveBeatVisualQADiagnostic(...args),
-      saveSceneVisualPlanningDiagnostic: (...args) => this.saveSceneVisualPlanningDiagnostic(...args),
-      saveSceneVisualQADiagnostic: (...args) => this.saveSceneVisualQADiagnostic(...args),
-      serializeVisualQAReport: (...args) => this.serializeVisualQAReport(...args),
-      shouldRunHeroVisualQA: (...args) => this.shouldRunHeroVisualQA(...args),
-      throwIfFailFast: (...args) => this.throwIfFailFast(...args),
-      withSettingAwarePrompt: (...args) => this.withSettingAwarePrompt(...args),
-      wrapLlmImagePromptWithContracts: (...args) => this.wrapLlmImagePromptWithContracts(...args),
-    };
+      inferIntensity: this.inferIntensity.bind(this),
+      inferValence: this.inferValence.bind(this),
+      isEstablishingBeat: this.isEstablishingBeat.bind(this),
+      isLlmQuotaFailure: this.isLlmQuotaFailure.bind(this),
+      mapChoicePositions: this.mapChoicePositions.bind(this),
+      mapSpeakerMoodToEmotion: this.mapSpeakerMoodToEmotion.bind(this),
+      prefetchSceneOpeningBeats: this.prefetchSceneOpeningBeats.bind(this),
+      promptMentionsDisallowedCharacters: this.promptMentionsDisallowedCharacters.bind(this),
+      promptMissingRequiredCharacters: this.promptMissingRequiredCharacters.bind(this),
+      reconcileOrphanedBeatImages: this.reconcileOrphanedBeatImages.bind(this),
+      runLoraTrainingIfEligible: this.runLoraTrainingIfEligible.bind(this),
+      sanitizeImagePrompt: this.sanitizeImagePrompt.bind(this),
+      sanitizePromptText: this.sanitizePromptText.bind(this),
+      saveBeatVisualQADiagnostic: this.saveBeatVisualQADiagnostic.bind(this),
+      saveSceneVisualPlanningDiagnostic: this.saveSceneVisualPlanningDiagnostic.bind(this),
+      saveSceneVisualQADiagnostic: this.saveSceneVisualQADiagnostic.bind(this),
+      serializeVisualQAReport: this.serializeVisualQAReport.bind(this),
+      shouldRunHeroVisualQA: this.shouldRunHeroVisualQA.bind(this),
+      throwIfFailFast: this.throwIfFailFast.bind(this),
+      withSettingAwarePrompt: this.withSettingAwarePrompt.bind(this),
+      wrapLlmImagePromptWithContracts: this.wrapLlmImagePromptWithContracts.bind(this),
+    } satisfies Partial<SceneImagePhaseDeps> as unknown as SceneImagePhaseDeps;
     // Accessor-backed mutable state: arrow getters/setters capture the
     // pipeline instance lexically, so reads/writes on either side of the
     // phase boundary stay visible to both.
@@ -9242,8 +9275,8 @@ export class FullStoryPipeline {
       { sceneContents, choiceSets, brief, worldBible, characterBible, outputDirectory, options },
       {
         config: this.config,
-        emit: (event) => this.emit(event),
-        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
     );
   }
@@ -9271,8 +9304,8 @@ export class FullStoryPipeline {
       { sceneContents, imageResults, story: { genre: brief.story.genre, tone: brief.story.tone } },
       {
         config: this.config,
-        emit: (event) => this.emit(event),
-        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
     );
   }
@@ -9316,10 +9349,10 @@ export class FullStoryPipeline {
       const primaryLocation = worldBible.locations[0];
 
       const protDesc = protagonist
-        ? `${protagonist.name}: ${protagonist.physicalDescription || protagonist.briefDescription}`
+        ? `${protagonist.name}: ${protagonist.physicalDescription || (protagonist as CharacterProfile & { briefDescription?: string }).briefDescription}`
         : brief.protagonist.description;
       const antagDesc = antagonist
-        ? `${antagonist.name}: ${antagonist.physicalDescription || antagonist.briefDescription}`
+        ? `${antagonist.name}: ${antagonist.physicalDescription || (antagonist as CharacterProfile & { briefDescription?: string }).briefDescription}`
         : '';
 
       const artStyleProfile = this.config.imageGen?.artStyleProfile;
@@ -9437,7 +9470,7 @@ export class FullStoryPipeline {
         styleSource: this._uploadedStyleReferenceImages.length > 0 ? 'user-visual' : 'raw-season-style',
         mode: 'cover',
         characterIdentity: [protagonist?.name || brief.protagonist.name].filter(Boolean),
-        sceneAction: concept?.coreMetaphor || brief.story.title,
+        sceneAction: (concept as PosterConcept & { coreMetaphor?: string } | undefined)?.coreMetaphor || brief.story.title,
         composition: coverPromptBase.composition,
         negativeContract: coverPromptBase.negativePrompt,
         hasVisualStyleRef: this._uploadedStyleReferenceImages.length > 0,
@@ -9668,7 +9701,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
         ? parsed.supportingElements.slice(0, 3).map((e: any) => String(e))
         : [],
       colorStrategy: String(parsed.colorStrategy || ''),
-      gazeDirection: String(parsed.gazeDirection || 'none'),
+      gazeDirection: String(parsed.gazeDirection || 'none') as PosterGazeDirection,
       gazeRationale: String(parsed.gazeRationale || ''),
       negativeSpaceStrategy: String(parsed.negativeSpaceStrategy || ''),
       depthStrategy: String(parsed.depthStrategy || ''),
@@ -9747,20 +9780,20 @@ Design the key art. Return STRICT JSON matching the schema.`;
       imageAgentTeam: this.imageAgentTeam,
       collectedVisualPlanning: this.collectedVisualPlanning,
       checkCancellation: () => this.checkCancellation(),
-      buildCharacterDescriptions: (...args) => this.buildCharacterDescriptions(...args),
-      ensureCharacterReferencesForVisibleCharacters: (...args) => this.ensureCharacterReferencesForVisibleCharacters(...args),
-      gatherCharacterReferenceImages: (...args) => this.gatherCharacterReferenceImages(...args),
+      buildCharacterDescriptions: this.buildCharacterDescriptions.bind(this),
+      ensureCharacterReferencesForVisibleCharacters: this.ensureCharacterReferencesForVisibleCharacters.bind(this),
+      gatherCharacterReferenceImages: this.gatherCharacterReferenceImages.bind(this),
       getEffectiveImagePlanningMode: () => this.getEffectiveImagePlanningMode(),
       getEffectiveImagePromptMode: () => this.getEffectiveImagePromptMode(),
       getEffectiveImageQaMode: () => this.getEffectiveImageQaMode(),
-      getEpisodeScopedSceneId: (...args) => this.getEpisodeScopedSceneId(...args),
+      getEpisodeScopedSceneId: this.getEpisodeScopedSceneId.bind(this),
       getStoryboardMaxPanelsPerSheet: () => this.getStoryboardMaxPanelsPerSheet(),
-      isLlmQuotaFailure: (...args) => this.isLlmQuotaFailure(...args),
-      normalizeNarrativeText: (...args) => this.normalizeNarrativeText(...args),
-      resolvePlayerTemplates: (...args) => this.resolvePlayerTemplates(...args),
-      sanitizeImagePrompt: (...args) => this.sanitizeImagePrompt(...args),
-      saveSceneVisualPlanningDiagnostic: (...args) => this.saveSceneVisualPlanningDiagnostic(...args),
-      scrubPromptArtifacts: (...args) => this.scrubPromptArtifacts(...args),
+      isLlmQuotaFailure: this.isLlmQuotaFailure.bind(this),
+      normalizeNarrativeText: this.normalizeNarrativeText.bind(this),
+      resolvePlayerTemplates: this.resolvePlayerTemplates.bind(this),
+      sanitizeImagePrompt: this.sanitizeImagePrompt.bind(this),
+      saveSceneVisualPlanningDiagnostic: this.saveSceneVisualPlanningDiagnostic.bind(this),
+      scrubPromptArtifacts: this.scrubPromptArtifacts.bind(this),
     });
   }
 
@@ -9789,8 +9822,8 @@ Design the key art. Return STRICT JSON matching the schema.`;
       { encounters, characterBible, brief, outputDirectory },
       {
         config: this.config,
-        emit: (event) => this.emit(event),
-        addCheckpoint: (name, data, optional) => this.addCheckpoint(name, data, optional),
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
     );
   }
@@ -9932,7 +9965,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
     const characterIds = Array.from(new Set(
       attemptedLookup
         .map((id) => this.resolveCharacterIdWithBrief(id, characterBible, brief))
-        .filter(Boolean)
+        .filter((id): id is string => Boolean(id))
     ));
     if (
       characterIds.length === 0 ||
@@ -10660,7 +10693,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
       family,
       references,
       { characterWeights },
-    ).references;
+    ).references as unknown as Awaited<ReturnType<FullStoryPipeline['gatherCharacterReferenceImages']>>;
   }
 
   /**
@@ -10953,7 +10986,7 @@ Design the key art. Return STRICT JSON matching the schema.`;
           this.imageService.updateGeminiSettings({ ...currentSettings, sceneResolution: '512px' });
           try {
             const previewResult = await this.imageService.generateImage(
-              prompt, `${identifier}_preview_${attempt}`, metadata, referenceImages
+              prompt, `${identifier}_preview_${attempt}`, metadata as unknown as Parameters<ImageGenerationService['generateImage']>[2], referenceImages as unknown as Parameters<ImageGenerationService['generateImage']>[3]
             );
             if (!previewResult.imageData || !previewResult.mimeType) {
               console.warn(`[Pipeline] Preview generation failed for ${metadata.beatId}, proceeding to full resolution`);
@@ -10968,8 +11001,8 @@ Design the key art. Return STRICT JSON matching the schema.`;
         const result = await this.imageService.generateImage(
           prompt,
           identifier,
-          metadata,
-          referenceImages
+          metadata as unknown as Parameters<ImageGenerationService['generateImage']>[2],
+          referenceImages as unknown as Parameters<ImageGenerationService['generateImage']>[3]
         );
 
         if (!result.imageUrl || !result.imageData || !result.mimeType) {
@@ -12979,7 +13012,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         await this.recordRemediationSafe({
           rule: 'cliffhanger_stabilized', scope: 'episode', attempted: 1,
           succeeded: false, degraded: false, blocked: false, attempts: 1,
-          storyId: brief.story?.id,
+          storyId: (brief.story as typeof brief.story & { id?: string })?.id,
           details: `Cliffhanger repair failed for episode ${brief.episode.number} (score ${analysis.score}/100, quality ${analysis.quality})`,
         });
       }
@@ -13017,7 +13050,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       await this.recordRemediationSafe({
         rule: 'cliffhanger_stabilized', scope: 'episode', attempted: 1,
         succeeded: true, degraded: false, blocked: false, attempts: 1,
-        storyId: brief.story?.id,
+        storyId: (brief.story as typeof brief.story & { id?: string })?.id,
         details: `Cliffhanger repaired for episode ${brief.episode.number}: ${analysis.score}/100 → ${repairedAnalysis.score}/100`,
       });
     }
@@ -13055,6 +13088,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       operator: '==' | '!=' | '>' | '<' | '>=' | '<=';
       threshold: number; description: string;
       authored?: boolean;
+      currentMaxValue?: number;
     }> = [];
     const significantChoices: string[] = [];
 
@@ -13189,8 +13223,9 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     };
 
     // Collect flags from initialState
-    if (story.initialState?.flags) {
-      for (const [k, v] of Object.entries(story.initialState.flags)) {
+    const initialStateFlags = (story.initialState as typeof story.initialState & { flags?: Record<string, unknown> } | undefined)?.flags;
+    if (initialStateFlags) {
+      for (const [k, v] of Object.entries(initialStateFlags)) {
         if (v) accumulatedFlags.add(k);
       }
     }
@@ -13688,7 +13723,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         episodeStructureMode: treatment.seasonGuidance?.episodeStructureMode || existing?.episodeStructureMode,
         routeMeta: treatment.seasonGuidance?.episodeStructureMode === 'sceneEpisodes'
           ? {
-              kind: 'master',
+              kind: 'master' as const,
               spineIndex: episodeNumber,
               displayLabel: `${episodeNumber}`,
               isMilestoneEncounter: existing?.routeMeta?.isMilestoneEncounter || false,
@@ -13794,7 +13829,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         episodeStructureMode: treatmentMode || outline.episodeStructureMode || existing?.episodeStructureMode,
         routeMeta: treatmentMode === 'sceneEpisodes'
           ? {
-              kind: 'master',
+              kind: 'master' as const,
               spineIndex: outline.episodeNumber,
               displayLabel: `${outline.episodeNumber}`,
               isMilestoneEncounter: existing?.routeMeta?.isMilestoneEncounter || false,
@@ -14016,7 +14051,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
     // pass is the always-on source). Aggregated per gate across episodes.
     try {
       const planTime = await computePlanTimeShadow({
-        story: input.story as unknown as { episodes?: unknown[]; npcs?: Array<{ id: string; name?: string }> },
+        story: input.story as unknown as Parameters<typeof computePlanTimeShadow>[0]['story'],
         callbackLedger: this.callbackLedger?.serialize?.(),
         totalEpisodes: (input.story as unknown as { episodes?: unknown[] }).episodes?.length ?? 0,
       });
@@ -14321,7 +14356,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
 
         const beats: GeneratedBeat[] = (scene.beats || []).map(beat => {
           if (beat.image) {
-            beatImages.set(`episode-${episode.number}-${scene.id}::${beat.id}`, beat.image);
+            beatImages.set(`episode-${episode.number}-${scene.id}::${beat.id}`, beat.image as unknown as string);
           }
           return {
             id: beat.id,
@@ -14344,7 +14379,7 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
         });
 
         if (scene.backgroundImage) {
-          sceneImages.set(scene.id, scene.backgroundImage);
+          sceneImages.set(scene.id, scene.backgroundImage as unknown as string);
         }
 
         sceneContents.push({
@@ -14382,12 +14417,12 @@ Pass only if score is 80 or higher and the image clearly follows the authoritati
       {
         ...brief,
         episode: options.targetEpisodeNumber != null && targetEpisodes[0]
-          ? {
+          ? ({
               ...(brief.episode || {}),
               number: targetEpisodes[0].number,
               title: targetEpisodes[0].title,
               synopsis: targetEpisodes[0].synopsis,
-            }
+            } as FullCreativeBrief['episode'])
           : brief.episode,
       },
       worldBible

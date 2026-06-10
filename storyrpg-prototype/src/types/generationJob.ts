@@ -13,6 +13,7 @@ export interface PipelineEventData {
     | 'debug'
     | 'warning'
     | 'progress'
+    | 'info'
     | 'incremental_validation'
     | 'regeneration_triggered'
     | 'validation_aggregated';

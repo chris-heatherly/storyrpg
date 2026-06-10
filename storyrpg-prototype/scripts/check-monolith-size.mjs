@@ -362,7 +362,15 @@ const baselines = {
   // refreshAnalysisFromTreatmentDocument + refreshBriefSeasonPlanFromAnalysis
   // moved to pipeline/treatmentRefresh.ts as pure functions with an injected
   // emitter (pure move; thin delegating wrappers keep call sites unchanged).
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 13636,
+  // -1160 (13636 -> 12476): Refactor PR 19 — the image-support cluster
+  // (generateEpisodeStyleBible + style-anchor validation/diagnostics,
+  // generateImageWithDefectRetries + retry coercion/QA diagnostics, LoRA
+  // training agent/registry, uploaded/preapproved anchor hydration, and the
+  // A3-narrow prefetchSceneOpeningBeats) moved to pipeline/imageSupport.ts
+  // (pure move, typed). Thin delegating wrappers + a memoized ImageSupport
+  // instance keep all call sites unchanged; LoRA agent/registry/banner state
+  // moved with the cluster (nothing else read them).
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 12476,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

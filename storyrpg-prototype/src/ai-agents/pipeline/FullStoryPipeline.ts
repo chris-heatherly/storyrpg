@@ -32,7 +32,7 @@ import { CharacterDesigner, CharacterBible, CharacterProfile } from '../agents/C
 import { resolveCharacterProfile } from '../utils/characterProfileResolver';
 import { StoryArchitect, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
-import { ChoiceAuthor, ChoiceSet, type ChoiceAuthorInput } from '../agents/ChoiceAuthor';
+import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, ContinuityChecker, type ContinuityIssue, recomputeContinuityIssueCount, deriveContinuityScore, recomputeQAReportDerived } from '../agents/QAAgents';
 import { SourceMaterialAnalyzer, SourceMaterialInput } from '../agents/SourceMaterialAnalyzer';
 import { SeasonPlan } from '../../types/seasonPlan';
@@ -183,6 +183,7 @@ import { ImageSupport } from './imageSupport';
 import { PipelineMemory } from './pipelineMemory';
 import { RunLedger } from './runLedger';
 import { DraftImageEntry } from './draftImageEntry';
+import { SceneGraphValidation, type SceneGraphValidationDeps } from './sceneGraphValidation';
 import { QAPhase, type QAPhaseDeps } from './phases/QAPhase';
 import { QuickValidationPhase, type QuickValidationPhaseDeps } from './phases/QuickValidationPhase';
 import { ContentGenerationPhase, type ContentGenerationPhaseDeps } from './phases/ContentGenerationPhase';
@@ -310,8 +311,6 @@ import { buildGateShadowRecord, type GateShadowRecord } from '../remediation/gat
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
 import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairReport } from '../remediation/finalContractRepair';
 import { repairAndRevalidatePropIntroduction } from '../remediation/repairs/propIntroductionRepair';
-import { runReconvergenceResidueGate } from '../remediation/reconvergenceResidueRepair';
-import { hasMissingResidueFindings } from './reconvergenceResidue';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
@@ -357,7 +356,6 @@ import {
   normalizeConsequences,
   routeFallbackChoicesAcrossTargets,
 } from './choiceAssembly';
-import { repairLostSceneGraphBranches } from './branchRepair';
 
 // Re-export types for consumers
 export type { OutputManifest } from '../utils/pipelineOutputWriter';
@@ -988,190 +986,17 @@ export class FullStoryPipeline {
     throw new PipelineError(message, phase, options);
   }
 
-  private async validateSceneGraphBranching(
+  private validateSceneGraphBranching(
     episode: Episode,
     blueprint: EpisodeBlueprint,
     context: {
       phase: string;
       outputDirectory?: string;
       artifactName?: string;
-      // WS2a: enables the targeted residue regen; degrade-to-advisory works without it.
       residueRepair?: { sceneContents: SceneContent[]; reassemble: () => Episode };
     }
   ): Promise<SceneGraphBranchValidationResult> {
-    const isSceneEpisodeMode = this.config.generation?.episodeStructureMode === 'sceneEpisodes';
-    const branchOptions = {
-      requireSceneGraphBranching: isSceneEpisodeMode ? false : this.config.generation?.requireSceneGraphBranching,
-      minSceneGraphBranchesPerEpisode: this.config.generation?.minSceneGraphBranchesPerEpisode,
-      allowLinearBottleneckEpisodes: isSceneEpisodeMode ? true : this.config.generation?.allowLinearBottleneckEpisodes,
-      ignoreBlueprintBranchesWithoutSceneRouting: isSceneEpisodeMode,
-      // Gen-4 audit: flag planned multi-target branch points that assembled as a
-      // linear pass-through (dead branch). Default-off; metric always recorded.
-      requireBlueprintBranchFanOut: isGateEnabled('GATE_BRANCH_FANOUT'),
-    };
-    let result = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
-
-    // Repair a branch the blueprint planned but assembly dropped (intermittent),
-    // then re-validate. Deterministic: wires/synthesizes nextSceneId onto the
-    // branch scene's choice point. See branchRepair.ts / PROJECT_AUDIT.
-    if (!result.valid && !isSceneEpisodeMode) {
-      const lostBranch = result.issues.some(
-        issue => issue.type === 'lost_branch_during_assembly' || issue.type === 'missing_scene_graph_branch'
-      );
-      if (lostBranch) {
-        const wired = repairLostSceneGraphBranches(episode as never, blueprint);
-        if (wired > 0) {
-          this.emit({
-            type: 'warning',
-            phase: context.phase,
-            message: `Repaired ${wired} lost scene-graph branch(es) by wiring nextSceneId onto the branch scene's choices (would otherwise have aborted the episode).`,
-          });
-          result = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
-        }
-      }
-    }
-
-    // WS2a (reconvergence residue — the #1 archived-run killer): a missing-residue ERROR
-    // gets ONE targeted SceneCritic regen with the residue requirement injected, then
-    // degrades to an `[advisory]` warning instead of aborting the run. All logic lives in
-    // remediation/reconvergenceResidueRepair (monolith ratchet). Kill-switch via =0.
-    if (!result.valid && hasMissingResidueFindings(result) && isGateEnabled('GATE_RECONVERGENCE_RESIDUE_REPAIR')) {
-      result = (await runReconvergenceResidueGate({
-        result,
-        episodeScenes: episode.scenes as never,
-        blueprintScenes: blueprint?.scenes,
-        sceneContents: context.residueRepair?.sceneContents,
-        critic: () => this.sceneCritic ?? new SceneCritic(this.config.agents.sceneWriter),
-        revalidate: context.residueRepair
-          ? () => this.sceneGraphBranchValidator.validateEpisode(context.residueRepair!.reassemble(), blueprint, branchOptions)
-          : undefined,
-        emit: this.emit.bind(this),
-        phase: context.phase,
-      })).result;
-    }
-
-    this.emit({
-      type: result.valid ? 'checkpoint' : 'warning',
-      phase: context.phase,
-      message: `SceneGraphBranchValidator: ${result.summary}`,
-      data: result,
-    });
-
-    if (context.outputDirectory && context.artifactName) {
-      try {
-        await saveEarlyDiagnostic(context.outputDirectory, context.artifactName, result);
-      } catch (err) {
-        this.emit({
-          type: 'warning',
-          phase: context.phase,
-          message: `Failed to save branch metrics: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
-    }
-
-    if (!result.valid) {
-      const errors = result.issues.filter(issue => issue.severity === 'error');
-      this.throwIfFailFast(
-        `Scene-graph branching validation failed: ${errors.map(issue => issue.message).join(' ')}`,
-        context.phase,
-        {
-          context: {
-            branchMetrics: result.metrics,
-            branchIssues: result.issues,
-            failureKind: 'scene_graph_branching',
-          },
-        }
-      );
-    }
-
-    // Gen-4 audit: dual-first-entry / duplicate establishing-beat check. Always
-    // recorded as a warning event; only fail-fasts when GATE_DUPLICATE_ESTABLISHING_BEAT
-    // promotes it to blocking. (The season-level continuity remediation loop is the
-    // softer landing once it lands.)
-    const dupBlocking = isGateEnabled('GATE_DUPLICATE_ESTABLISHING_BEAT');
-    const dup = this.duplicateEstablishingBeatValidator.validateEpisode(episode, blueprint, { blocking: dupBlocking });
-    // Wave-0 shadow telemetry: record the flag-INDEPENDENT would-fire count
-    // (duplicateEstablishingBeatCount is the same whether blocking is on or off) so
-    // gate-shadow-ledger.jsonl accumulates the false-positive data this prose
-    // heuristic needs before it can be promoted off -> on. Best-effort, never blocks.
-    {
-      const dupShadow = buildGateShadowRecord({
-        gate: 'GATE_DUPLICATE_ESTABLISHING_BEAT',
-        validator: 'DuplicateEstablishingBeatValidator',
-        scope: 'episode',
-        enabled: dupBlocking,
-        blockingCount: dup.metrics.duplicateEstablishingBeatCount,
-        storyId: episode.id,
-      });
-      const dupDetails = dup.issues.map((issue) => `${issue.priorSceneId}->${issue.sceneId}`).join('; ') || undefined;
-      await this.recordGateShadowSafe({ ...dupShadow, details: dupDetails });
-    }
-    if (dup.issues.length > 0) {
-      this.emit({
-        type: 'warning',
-        phase: context.phase,
-        message:
-          `DuplicateEstablishingBeatValidator: ${dup.metrics.duplicateEstablishingBeatCount} duplicate establishing beat(s) — ` +
-          dup.issues.map(issue => `${issue.priorSceneId}->${issue.sceneId}`).join(', '),
-        data: dup,
-      });
-      if (dupBlocking && !dup.valid) {
-        this.throwIfFailFast(
-          `Duplicate establishing-beat: ${dup.issues.map(issue => issue.message).join(' ')}`,
-          context.phase,
-          { context: { duplicateEstablishingBeats: dup.issues, failureKind: 'duplicate_establishing_beat' } },
-        );
-      }
-    }
-
-    // Gen-4 audit: every declared treatment_seed_* must be SET on-page by a setFlag
-    // consequence on some choice in the episode. Always emits a warning when a seed
-    // is missing; only fail-fasts when GATE_TREATMENT_SEED_ONPAGE is on.
-    const seedBlocking = isGateEnabled('GATE_TREATMENT_SEED_ONPAGE');
-    const seedCheck = this.treatmentSeedOnPageValidator.validateEpisode(episode, blueprint, { blocking: seedBlocking });
-    if (seedCheck.issues.length > 0) {
-      this.emit({
-        type: 'warning',
-        phase: context.phase,
-        message:
-          `TreatmentSeedOnPageValidator: ${seedCheck.metrics.missingSeeds}/${seedCheck.metrics.declaredSeeds} ` +
-          `treatment seed(s) never set on-page — ${seedCheck.issues.map(issue => issue.flag).join(', ')}`,
-        data: seedCheck,
-      });
-      if (seedBlocking && !seedCheck.valid) {
-        this.throwIfFailFast(
-          `Treatment seed not set on-page: ${seedCheck.issues.map(issue => issue.message).join(' ')}`,
-          context.phase,
-          { context: { missingTreatmentSeeds: seedCheck.issues, failureKind: 'treatment_seed_not_set_on_page' } },
-        );
-      }
-    }
-
-    // Gen-4 audit (R3): every declared ending-axis (treatment_branch_*) must be SET
-    // on-page so the named ending it drives is mechanically reachable. Always warns
-    // when an axis is missing; only fail-fasts when GATE_ENDING_REACHABILITY is on
-    // (default-off until validated against a full-season run).
-    const endingBlocking = isGateEnabled('GATE_ENDING_REACHABILITY');
-    const endingCheck = this.endingReachabilityValidator.validateEpisode(episode, blueprint, { blocking: endingBlocking });
-    if (endingCheck.issues.length > 0) {
-      this.emit({
-        type: 'warning',
-        phase: context.phase,
-        message:
-          `EndingReachabilityValidator: ${endingCheck.metrics.missingAxes}/${endingCheck.metrics.declaredAxes} ` +
-          `ending-axis flag(s) never set on-page — ${endingCheck.issues.map(issue => issue.flag).join(', ')}`,
-        data: endingCheck,
-      });
-      if (endingBlocking && !endingCheck.valid) {
-        this.throwIfFailFast(
-          `Ending axis not set on-page: ${endingCheck.issues.map(issue => issue.message).join(' ')}`,
-          context.phase,
-          { context: { missingEndingAxes: endingCheck.issues, failureKind: 'ending_axis_not_set_on_page' } },
-        );
-      }
-    }
-
-    return result;
+    return this.sceneGraphValidation().validateSceneGraphBranching(episode, blueprint, context);
   }
 
   /**
@@ -1903,7 +1728,7 @@ export class FullStoryPipeline {
     }
   }
 
-  private async repairSceneGraphBranchingChoices(
+  private repairSceneGraphBranchingChoices(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
     characterBible: CharacterBible,
@@ -1913,236 +1738,9 @@ export class FullStoryPipeline {
     encounters: Map<string, EncounterStructure>,
     context: { phase: string }
   ): Promise<boolean> {
-    const episode = this.assembleEpisode(
-      brief,
-      worldBible,
-      characterBible,
-      blueprint,
-      sceneContents,
-      choiceSets,
-      undefined,
-      encounters,
-      undefined,
+    return this.sceneGraphValidation().repairSceneGraphBranchingChoices(
+      brief, worldBible, characterBible, blueprint, sceneContents, choiceSets, encounters, context,
     );
-    const validation = this.sceneGraphBranchValidator.validateEpisode(episode, blueprint, {
-      requireSceneGraphBranching: this.config.generation?.episodeStructureMode === 'sceneEpisodes'
-        ? false
-        : this.config.generation?.requireSceneGraphBranching,
-      minSceneGraphBranchesPerEpisode: this.config.generation?.minSceneGraphBranchesPerEpisode,
-      allowLinearBottleneckEpisodes: this.config.generation?.episodeStructureMode === 'sceneEpisodes'
-        ? true
-        : this.config.generation?.allowLinearBottleneckEpisodes,
-    });
-    if (validation.valid) return false;
-
-    const needsChoiceRepair = validation.issues.some(issue =>
-      issue.type === 'lost_branch_during_assembly' ||
-      issue.type === 'missing_scene_graph_branch'
-    );
-    const needsResidueRepair = validation.issues.some(issue =>
-      issue.type === 'missing_branch_residue'
-    );
-    const repairable = needsChoiceRepair || needsResidueRepair;
-    if (!repairable) return false;
-
-    const residueRepaired = needsResidueRepair
-      ? this.repairSceneGraphBranchResidue(
-          validation,
-          blueprint,
-          sceneContents,
-          context.phase,
-        )
-      : false;
-    if (!needsChoiceRepair) return residueRepaired;
-
-    const branchScenes = blueprint.scenes.filter(scene =>
-      scene.choicePoint?.branches &&
-      scene.choicePoint.type !== 'expression' &&
-      new Set(scene.leadsTo || []).size >= 2 &&
-      !scene.isEncounter
-    );
-    if (branchScenes.length === 0) return residueRepaired;
-
-    let repaired = residueRepaired;
-    for (const sceneBlueprint of branchScenes.slice(0, 2)) {
-      const sceneContent = sceneContents.find(scene => scene.sceneId === sceneBlueprint.id);
-      if (!sceneContent || sceneContent.beats.length === 0) continue;
-
-      let choicePointBeat = sceneContent.beats.find(beat => beat.isChoicePoint);
-      if (!choicePointBeat) {
-        choicePointBeat = sceneContent.beats[sceneContent.beats.length - 1];
-        choicePointBeat.isChoicePoint = true;
-      }
-
-      this.emit({
-        type: 'regeneration_triggered',
-        phase: context.phase,
-        message: `Repairing scene-graph branch choices for ${sceneBlueprint.id}`,
-        data: { sceneId: sceneBlueprint.id, beatId: choicePointBeat.id, leadsTo: sceneBlueprint.leadsTo },
-      });
-
-      const location = this.resolveWorldLocationForScene(sceneBlueprint, worldBible);
-      const repairResult = await withTimeout(this.choiceAuthor.execute({
-        sceneBlueprint,
-        beatText: choicePointBeat.text,
-        beatId: choicePointBeat.id,
-        storyContext: {
-          title: brief.story.title,
-          genre: brief.story.genre,
-          tone: brief.story.tone,
-          userPrompt:
-            `${brief.userPrompt || ''}\n\nCRITICAL SCENE-GRAPH BRANCH REPAIR:\n` +
-            `This scene is a required branch point. Every option must include nextSceneId, distributed across these valid future scenes: ${(sceneBlueprint.leadsTo || []).join(', ')}. ` +
-            `Do not create expression choices. Preserve the scene's stakes and make each route feel narratively distinct.`,
-          worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription),
-        },
-        protagonistInfo: {
-          name: brief.protagonist.name,
-          pronouns: brief.protagonist.pronouns,
-        },
-        npcsInScene: this.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
-        availableFlags: blueprint.suggestedFlags,
-        availableScores: blueprint.suggestedScores,
-        availableTags: blueprint.suggestedTags,
-        unresolvedCallbacks: this.getUnresolvedCallbacksForPrompt(brief.episode?.number) as ChoiceAuthorInput['unresolvedCallbacks'],
-        possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
-          const scene = blueprint.scenes.find(candidate => candidate.id === id);
-          return {
-            id,
-            name: scene?.name || id,
-            description: scene?.description || '',
-          };
-        }),
-        optionCount: Math.max(sceneBlueprint.choicePoint?.optionHints?.length || 0, Math.min(3, sceneBlueprint.leadsTo.length)),
-        sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-        memoryContext: this.cachedPipelineMemory || undefined,
-        storyVerbs: this.deriveStoryVerbsForBrief(brief, worldBible),
-        branchContext: {
-          role: 'linear',
-          isBranchPoint: true,
-          expectedBranches: new Set(sceneBlueprint.leadsTo || []).size,
-        },
-        // Match ConsequenceBudgetValidator.TARGET_BUDGET (the other call site at
-        // ~7562 already did); the stale 20/10 split told ChoiceAuthor to aim for
-        // a mix the validator then flagged.
-        consequenceBudgetTarget: { callback: 60, tint: 25, branchlet: 10, branch: 5 },
-        seasonAnchors: brief.seasonPlan?.anchors,
-        seasonSevenPoint: brief.seasonPlan?.sevenPoint,
-        episodeStructuralRole: brief.seasonPlan?.episodes.find(
-          (episodeEntry) => episodeEntry.episodeNumber === brief.episode.number,
-        )?.structuralRole,
-      }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} scene-graph-branch-repair)`);
-
-      if (!repairResult.success || !repairResult.data) {
-        this.emit({
-          type: 'warning',
-          phase: context.phase,
-          message: `Scene-graph branch repair failed for ${sceneBlueprint.id}: ${repairResult.error || 'no data'}`,
-        });
-        continue;
-      }
-
-      const repairedChoiceSet = { ...repairResult.data, sceneId: sceneBlueprint.id };
-      const existingIndex = choiceSets.findIndex(choiceSet =>
-        (choiceSet.sceneId ? `${choiceSet.sceneId}::${choiceSet.beatId}` : choiceSet.beatId) === `${sceneBlueprint.id}::${choicePointBeat.id}`
-      );
-      if (existingIndex >= 0) {
-        choiceSets[existingIndex] = repairedChoiceSet;
-      } else {
-        choiceSets.push(repairedChoiceSet);
-      }
-      repaired = true;
-    }
-
-    return repaired;
-  }
-
-  private repairSceneGraphBranchResidue(
-    validation: SceneGraphBranchValidationResult,
-    blueprint: EpisodeBlueprint,
-    sceneContents: SceneContent[],
-    phase: string,
-  ): boolean {
-    const targetIds = validation.issues
-      .filter(issue => issue.type === 'missing_branch_residue' && issue.targetSceneId)
-      .map(issue => issue.targetSceneId!)
-      .filter((id, index, all) => all.indexOf(id) === index);
-    if (targetIds.length === 0) return false;
-
-    let repaired = false;
-    for (const targetId of targetIds) {
-      const sceneBlueprint = blueprint.scenes.find(scene => scene.id === targetId);
-      const sceneContent = sceneContents.find(scene => scene.sceneId === targetId);
-      if (!sceneBlueprint || !sceneContent) continue;
-
-      // Encounter scenes legitimately carry an empty `beats` array — their reader-facing
-      // content lives in the encounter structure (situation beats + outcome storylets),
-      // and reconvergence residue belongs there too (sceneAcknowledgesBranchResidue
-      // already inspects scene.encounter.outcomes). Injecting a residue beat here both
-      // leaks structural prose into an encounter AND masks a failed/empty encounter from
-      // FinalStoryContractValidator's empty_scene check, which only fires when
-      // beats.length === 0. That masking is exactly how G10 Endsong ep2 shipped the
-      // "You carry the weight of the choices…" + "Continue…" stub over an encounter whose
-      // generation produced no content. Never inject residue into an encounter scene; if
-      // its content is genuinely empty, leave beats.length === 0 so the final-contract
-      // empty_scene gate catches it.
-      if (sceneBlueprint.isEncounter || (sceneContent as { encounter?: unknown }).encounter) {
-        this.emit({
-          type: 'warning',
-          phase,
-          message: `Skipped branch-residue injection for encounter scene "${targetId}" — encounter reconvergence residue lives in encounter outcomes, not scene beats.`,
-          data: { sceneId: targetId, reason: 'encounter_scene_residue_skip' },
-        });
-        continue;
-      }
-
-      const incomingScenes = blueprint.scenes.filter(scene => scene.leadsTo?.includes(targetId));
-
-      // The residue SceneGraphBranchValidator requires is the callbackHookId MARKER
-      // below — NOT reader prose. This repair previously also injected structural
-      // commentary ("…leaves a visible residue…") into beat.text, a fiction-first leak
-      // (gen-5: it became the Ep2 encounter's opening beat). Attach only the marker;
-      // the empty-scene fallback gets an in-world line.
-      const hookId = `branch-reconvergence-${targetId}`;
-
-      if (sceneContent.beats.length === 0) {
-        sceneContent.beats.push({
-          id: `${targetId}-branch-residue`,
-          text: 'You carry the weight of the choices that brought you here.',
-          callbackHookIds: [hookId],
-          intensityTier: 'supporting',
-        } as GeneratedBeat);
-        sceneContent.startingBeatId = `${targetId}-branch-residue`;
-      }
-
-      const firstBeat = sceneContent.beats[0];
-      const alreadyAcknowledged = (firstBeat.callbackHookIds || []).some(h => h.startsWith('branch-reconvergence'));
-      if (alreadyAcknowledged) {
-        repaired = true;
-        continue;
-      }
-
-      // Attach the marker ONLY — never mutate reader prose with branch commentary.
-      firstBeat.callbackHookIds = Array.from(new Set([
-        ...(firstBeat.callbackHookIds || []),
-        hookId,
-      ]));
-      sceneContent.isConvergencePoint = true;
-      sceneContent.continuityNotes = Array.from(new Set([
-        ...(sceneContent.continuityNotes || []),
-        `Branch reconvergence residue marked for ${targetId}.`,
-      ]));
-
-      this.emit({
-        type: 'regeneration_triggered',
-        phase,
-        message: `Repairing branch reconvergence residue for ${targetId}`,
-        data: { sceneId: targetId, incomingScenes: incomingScenes.map(scene => scene.id) },
-      });
-      repaired = true;
-    }
-
-    return repaired;
   }
 
   private assertSceneDependencyInvariants(blueprint: EpisodeBlueprint, sceneContents: SceneContent[]): void {
@@ -10281,6 +9879,43 @@ export class FullStoryPipeline {
       });
     }
     return this._imageSupport;
+  }
+
+  private _sceneGraphValidation?: SceneGraphValidation;
+
+  /**
+   * Memoized scene-graph branching validation + repair cluster — see
+   * pipeline/sceneGraphValidation.ts. Validator/agent instances and run-scoped
+   * reads are injected so config/telemetry stay shared with the run.
+   */
+  private sceneGraphValidation(): SceneGraphValidation {
+    if (!this._sceneGraphValidation) {
+      const deps = {
+        config: this.config,
+        emit: this.emit.bind(this),
+        recordGateShadowSafe: this.recordGateShadowSafe.bind(this),
+        throwIfFailFast: this.throwIfFailFast.bind(this),
+        sceneGraphBranchValidator: this.sceneGraphBranchValidator,
+        duplicateEstablishingBeatValidator: this.duplicateEstablishingBeatValidator,
+        treatmentSeedOnPageValidator: this.treatmentSeedOnPageValidator,
+        endingReachabilityValidator: this.endingReachabilityValidator,
+        choiceAuthor: this.choiceAuthor,
+        assembleEpisode: this.assembleEpisode.bind(this),
+        buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
+        buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
+        deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+        getUnresolvedCallbacksForPrompt: this.getUnresolvedCallbacksForPrompt.bind(this),
+        resolveWorldLocationForScene: this.resolveWorldLocationForScene.bind(this),
+      } satisfies Partial<SceneGraphValidationDeps> as unknown as SceneGraphValidationDeps;
+      // sceneCritic may be constructed after this accessor first runs, and
+      // cachedPipelineMemory is set once memory loads — read both lazily.
+      Object.defineProperties(deps, {
+        sceneCritic: { get: () => this.sceneCritic ?? null },
+        cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
+      });
+      this._sceneGraphValidation = new SceneGraphValidation(deps);
+    }
+    return this._sceneGraphValidation;
   }
 
   private _draftImageEntry?: DraftImageEntry;

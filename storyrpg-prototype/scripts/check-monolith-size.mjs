@@ -386,7 +386,14 @@ const baselines = {
   // move, deterministic — no LLM prompts). Thin delegating wrappers keep all
   // call sites unchanged; the image-resume internals they lean on stay on the
   // monolith and are injected via the deps. Goldens byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 11834,
+  // -366 (11834 -> 11468): Refactor PR 23 — the scene-graph branching
+  // validation + repair cluster (validateSceneGraphBranching,
+  // repairSceneGraphBranchingChoices, repairSceneGraphBranchResidue) moved to
+  // pipeline/sceneGraphValidation.ts (pure move). Thin delegating wrappers keep
+  // both validate/repair call sites unchanged; validator/agent instances and
+  // run-scoped reads (sceneCritic, cachedPipelineMemory) are injected via the
+  // deps. Goldens byte-identical.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 11468,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

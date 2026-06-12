@@ -413,7 +413,16 @@ const baselines = {
   // closure dep, the branch-validation reassemble closures, the multi-episode
   // assembleEpisode callers) unchanged; the style anchor paths are shared by
   // reference and the rest of the helpers are bound deps. Goldens byte-identical.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 10323,
+  // -552 (10323 -> 9771): Refactor R1+R4 (2026-06-11) — R1: run state segmented
+  // into pipeline/runState.ts (season narrative / episode scratch / run
+  // accumulators) with legacy field names kept as delegating accessors (the
+  // serializable season segment is the future run-graph resume payload).
+  // R4: the draft-image regeneration entry points (generateImagesForDraft +
+  // generateTargetedBeatImagesForDraft + applySceneVisualContractsToStoryScenes)
+  // moved to pipeline/draftImageGeneration.ts (pure move, memoized cluster,
+  // public delegators keep storyGenerationService callers unchanged). Includes
+  // the same-day repair-first seams (sceneCritic dep, +1). Goldens green.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9771,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

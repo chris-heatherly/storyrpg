@@ -6,6 +6,7 @@ import {
   normalizeConsequences,
   routeFallbackChoicesAcrossTargets,
   repairBranchFanOut,
+  bakeWitnessReactionsIntoOutcomeTexts,
 } from './choiceAssembly';
 
 describe('repairBranchFanOut (under-fanned branch point recovery)', () => {
@@ -88,9 +89,9 @@ describe('routeFallbackChoicesAcrossTargets (branch-point recovery)', () => {
 });
 
 describe('foldTintFlagIntoConsequences (D1)', () => {
-  it('adds the tintFlag as a setFlag consequence', () => {
+  it('adds the tintFlag as a setFlag consequence (canonicalized to the engine vocabulary)', () => {
     const out = foldTintFlagIntoConsequences([], 'tint:honest')!;
-    expect(out).toEqual([{ type: 'setFlag', flag: 'tint:honest', value: true }]);
+    expect(out).toEqual([{ type: 'setFlag', flag: 'tint:honesty', value: true }]);
   });
   it('does not duplicate an already-present flag', () => {
     const out = foldTintFlagIntoConsequences([{ type: 'setFlag', flag: 'tint:honest', value: true } as any], 'tint:honest')!;
@@ -245,14 +246,44 @@ describe('choice assembly preservation', () => {
       failureResidue: { kind: 'lost_leverage' },
       visualResidueHint: 'Mara stands farther away next time.',
       nextSceneId: 'scene-corrected',
+      // G12/WS7: witness reactions are baked into the rendered outcomeTexts at
+      // assembly (the metadata channel has no runtime consumer).
       outcomeTexts: {
-        success: 'She names the courier.',
-        partial: 'She names him, but loudly.',
-        failure: 'She shuts down and suspicion spreads.',
+        success: 'She names the courier. Mara lets her hand fall from your sleeve.',
+        partial: 'She names him, but loudly. Mara lets her hand fall from your sleeve.',
+        failure: 'She shuts down and suspicion spreads. Mara lets her hand fall from your sleeve.',
       },
       memorableMoment: { id: 'pressured-witness' },
     });
     expect(assembled.consequences?.[0]).toMatchObject({ dimension: 'trust' });
     expect(assembled.delayedConsequences?.[0].consequence).toMatchObject({ dimension: 'respect' });
+  });
+});
+
+describe('bakeWitnessReactionsIntoOutcomeTexts (G12/WS7)', () => {
+  it('appends the witness reaction to each tier', () => {
+    const baked = bakeWitnessReactionsIntoOutcomeTexts(
+      { success: 'You take the seat.', partial: 'You hesitate, then sit.', failure: 'You stay standing.' },
+      [{ npcId: 'mika', stance: 'approves', reactionText: "Mika's posture loosens by a fraction." }] as any,
+    )!;
+    expect(baked.success).toBe("You take the seat. Mika's posture loosens by a fraction.");
+    expect(baked.failure).toContain('posture loosens');
+  });
+
+  it('skips tiers where the reaction is already present, and is idempotent', () => {
+    const tiers = { success: "You sit. Mika's posture loosens by a fraction.", partial: 'Half.', failure: 'No.' };
+    const baked = bakeWitnessReactionsIntoOutcomeTexts(
+      tiers,
+      [{ npcId: 'mika', stance: 'approves', reactionText: "Mika's posture loosens by a fraction." }] as any,
+    )!;
+    expect(baked.success).toBe(tiers.success);
+    const again = bakeWitnessReactionsIntoOutcomeTexts(baked, [{ npcId: 'mika', stance: 'approves', reactionText: "Mika's posture loosens by a fraction." }] as any)!;
+    expect(again.partial).toBe(baked.partial);
+  });
+
+  it('no-ops without reactions or outcomeTexts', () => {
+    expect(bakeWitnessReactionsIntoOutcomeTexts(undefined, [] as any)).toBeUndefined();
+    const tiers = { success: 'x', partial: 'y', failure: 'z' };
+    expect(bakeWitnessReactionsIntoOutcomeTexts(tiers, undefined)).toBe(tiers);
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EncounterArchitect, ENCOUNTER_PROSE_DISCIPLINE, enforceStoryletConvergence, type EncounterArchitectInput, type Phase1Result, type Phase2Result, type Phase3Result, type Phase4Result } from './EncounterArchitect';
 import { analyzeRelationshipDynamics, type RelationshipSnapshot, type NPCInfo } from '../utils/relationshipDynamics';
 import type { Relationship } from '../../types';
@@ -51,6 +51,23 @@ const input: EncounterArchitectInput = {
   targetBeatCount: 4,
 };
 
+describe('execute() refuses the template fallback (no-boilerplate mandate)', () => {
+  it('returns success:false when phased AND both lean attempts fail — never ships deterministic template prose', async () => {
+    const architect = new EncounterArchitect(config) as any;
+    vi.spyOn(architect, 'executePhased').mockRejectedValue(new Error('phase 1 exhausted'));
+    vi.spyOn(architect, 'callLLM').mockRejectedValue(new Error('provider unavailable'));
+
+    const res = await architect.execute(input);
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/All LLM attempts failed/);
+    expect(res.data).toBeUndefined();
+  });
+});
+
+// buildDeterministicFallback is NOT called in production anymore (no-boilerplate
+// mandate 2026-06-11) — it is retained only as the TEMPLATE_SIGNATURES reference
+// corpus. These tests keep it structurally valid so the signature sync test
+// stays meaningful.
 describe('EncounterArchitect deterministic fallback', () => {
   it('builds a valid, normalizable encounter from input data alone', () => {
     const architect = new EncounterArchitect(config);
@@ -958,14 +975,57 @@ describe('authored anchor (G12)', () => {
       ...input,
       encounterDescription: 'The siege itself — a sustained defensive set piece (wall breach + repulse).',
     };
-    // The 2-beat deterministic fallback shape stands in for collapsed output.
-    let structure = (architect as any).buildDeterministicFallback(sustained);
-    structure = (architect as any).normalizeStructure(structure, sustained);
-    expect(() => (architect as any).validateStructure(structure, sustained))
+    // A collapsed structure: the non-sustained 2-beat fallback shape truncated
+    // to a single beat stands in for tree-collapsed output.
+    const collapsed = (architect as any).buildDeterministicFallback(input);
+    collapsed.beats = collapsed.beats.slice(0, 1);
+    expect(() => (architect as any).validateStructure(collapsed, sustained))
       .toThrow(/sustained set piece.*top-level beat/i);
-    // The same structure passes for a non-sustained encounter.
+    // The 2-beat fallback passes for a non-sustained encounter.
     let plain = (architect as any).buildDeterministicFallback(input);
     plain = (architect as any).normalizeStructure(plain, input);
     expect(() => (architect as any).validateStructure(plain, input)).not.toThrow();
+  });
+
+  it('sustained set piece survives the full fallback → normalize → validate path', () => {
+    // endsong-g13 ep3 regression: normalizeStructure's flat→tree conversion
+    // pruned every beat but the first, so validateStructure rejected EVERY
+    // attempt including the deterministic fallback and the episode aborted.
+    const architect = new EncounterArchitect(config);
+    const sustained: EncounterArchitectInput = {
+      ...input,
+      encounterDescription: 'The siege itself — a sustained defensive set piece (wall breach + repulse).',
+    };
+    // The fallback ships the 3-beat floor for sustained pieces…
+    let structure = (architect as any).buildDeterministicFallback(sustained);
+    expect(structure.beats.length).toBeGreaterThanOrEqual(3);
+    // …and normalizeStructure must NOT collapse it back to one top-level beat.
+    structure = (architect as any).normalizeStructure(structure, sustained);
+    expect(structure.beats.length).toBeGreaterThanOrEqual(3);
+    expect(() => (architect as any).validateStructure(structure, sustained)).not.toThrow();
+    // The opening beat routes through the escalation beat, which routes to the
+    // resolution — the spine stays connected.
+    const beatIds = structure.beats.map((b: any) => b.id);
+    expect(beatIds).toContain('beat-escalation');
+    for (const choice of structure.beats[0].choices) {
+      for (const tier of ['success', 'complicated', 'failure']) {
+        const outcome = choice.outcomes?.[tier];
+        if (outcome && !outcome.isTerminal && !outcome.nextSituation) {
+          expect(outcome.nextBeatId).toBe('beat-escalation');
+        }
+      }
+    }
+  });
+
+  it('keeps flat→tree conversion for non-sustained encounters', () => {
+    const architect = new EncounterArchitect(config);
+    let plain = (architect as any).buildDeterministicFallback(input);
+    plain = (architect as any).normalizeStructure(plain, input);
+    // Non-sustained flat encounters still convert to the single-beat tree form.
+    expect(plain.beats).toHaveLength(1);
+    const hasEmbeddedBranch = plain.beats[0].choices.some((c: any) =>
+      ['success', 'complicated', 'failure'].some(t => c.outcomes?.[t]?.nextSituation)
+    );
+    expect(hasEmbeddedBranch).toBe(true);
   });
 });

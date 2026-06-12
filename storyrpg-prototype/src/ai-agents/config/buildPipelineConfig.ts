@@ -23,6 +23,7 @@ import {
   GeneratorImageProvider,
   GeneratorLlmProvider,
 } from '../../config/generatorLlmOptions';
+import type { PipelineTask, TaskModelAssignment } from '../../config/modelFamilies';
 import type {
   GeneratorNarrationSettings,
   GeneratorVideoSettings,
@@ -36,6 +37,13 @@ export interface BuildPipelineConfigInput {
   imageLlmModel: string;
   videoLlmProvider: GeneratorLlmProvider;
   videoLlmModel: string;
+  /**
+   * Per-task model assignments (model-family presets + overrides). When present,
+   * each pipeline role gets its own provider/model. When omitted, the legacy
+   * single-model fields above are used (narrative roles → llmProvider/llmModel,
+   * image/video → their scoped fields) so older callers keep working.
+   */
+  taskAssignments?: Record<PipelineTask, TaskModelAssignment>;
   apiKey: string;
   openaiApiKey?: string;
   geminiApiKey: string;
@@ -152,7 +160,6 @@ export function buildPipelineConfig(
   extras?: PipelineConfigExtras,
 ): PipelineConfig {
   const selectedLlmModel = getSelectedLlmModel(input);
-  const selectedLlmApiKey = getSelectedLlmApiKey(input);
   const artStyle = input.artStyle.trim() || undefined;
   const normalizedImageProvider = normalizeImageProvider(input.imageProvider);
   const env = typeof process !== 'undefined' ? (process.env as Record<string, string | undefined>) : {};
@@ -163,53 +170,43 @@ export function buildPipelineConfig(
     resolveArtStylePresetProfile(env) ??
     (artStyle ? resolveArtStyleProfile(artStyle) : undefined);
 
+  // Resolve the provider/model for a given pipeline task. Prefers the per-task
+  // assignment when supplied, otherwise falls back to the legacy single-model
+  // fields so older callers keep their existing behavior.
+  const resolveTask = (task: PipelineTask): TaskModelAssignment => {
+    const assignment = input.taskAssignments?.[task];
+    if (assignment) return assignment;
+    if (task === 'image') return { provider: input.imageLlmProvider, model: input.imageLlmModel };
+    if (task === 'video') return { provider: input.videoLlmProvider, model: input.videoLlmModel };
+    return { provider: input.llmProvider, model: selectedLlmModel };
+  };
+
+  const buildAgentConfig = (
+    task: PipelineTask,
+    opts: { maxTokens: number; temperature: number },
+  ) => {
+    const { provider, model } = resolveTask(task);
+    return {
+      provider,
+      model: getScopedLlmModel(provider, model),
+      apiKey: getScopedLlmApiKey(provider, input),
+      maxTokens: opts.maxTokens,
+      temperature: opts.temperature,
+      openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
+      openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
+    };
+  };
+
   return {
     agents: {
-      storyArchitect: {
-        provider: input.llmProvider,
-        model: selectedLlmModel,
-        apiKey: selectedLlmApiKey,
-        maxTokens: 8192,
-        temperature: 0.7,
-        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
-        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
-      },
-      sceneWriter: {
-        provider: input.llmProvider,
-        model: selectedLlmModel,
-        apiKey: selectedLlmApiKey,
-        maxTokens: 4096,
-        temperature: 0.85,
-        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
-        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
-      },
-      choiceAuthor: {
-        provider: input.llmProvider,
-        model: selectedLlmModel,
-        apiKey: selectedLlmApiKey,
-        maxTokens: 4096,
-        temperature: 0.75,
-        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
-        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
-      },
-      imagePlanner: {
-        provider: input.imageLlmProvider,
-        model: getScopedLlmModel(input.imageLlmProvider, input.imageLlmModel),
-        apiKey: getScopedLlmApiKey(input.imageLlmProvider, input),
-        maxTokens: 8192,
-        temperature: 0.7,
-        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
-        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
-      },
-      videoDirector: {
-        provider: input.videoLlmProvider,
-        model: getScopedLlmModel(input.videoLlmProvider, input.videoLlmModel),
-        apiKey: getScopedLlmApiKey(input.videoLlmProvider, input),
-        maxTokens: 8192,
-        temperature: 0.7,
-        openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
-        openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
-      },
+      storyArchitect: buildAgentConfig('architect', { maxTokens: 8192, temperature: 0.7 }),
+      sceneWriter: buildAgentConfig('scene', { maxTokens: 4096, temperature: 0.85 }),
+      choiceAuthor: buildAgentConfig('choice', { maxTokens: 4096, temperature: 0.75 }),
+      // Lower temperature for consistent grading; decorrelated from the author
+      // when a distinct QA model is assigned (within the same family).
+      qaRunner: buildAgentConfig('qa', { maxTokens: 4096, temperature: 0.3 }),
+      imagePlanner: buildAgentConfig('image', { maxTokens: 8192, temperature: 0.7 }),
+      videoDirector: buildAgentConfig('video', { maxTokens: 8192, temperature: 0.7 }),
     },
     validation: {
       enabled: input.generationMode !== 'disabled',

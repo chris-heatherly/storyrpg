@@ -78,6 +78,28 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // rescue a failing one. Reversible via env=0.
   GATE_FINAL_CONTRACT_REPAIR: true,
 
+  // LLM scene-prose repair handler INSIDE the final-contract repair loop
+  // (2026-06-11 failure-cycle audit: 20 runs generated every episode and then
+  // died at the contract, median 73 min each). When ON, blocking prose-
+  // realization findings that name a scene (RequiredBeatRealization,
+  // SignatureDevicePresence) drive a bounded per-scene SceneCritic rewrite +
+  // re-validation instead of an immediate run abort — the finding's own
+  // message/suggestion is the director note. Same safety shape as
+  // GATE_FINAL_CONTRACT_REPAIR: runs only on an already-failing contract,
+  // capped per round (4 scenes), budget-guarded, so it can only rescue.
+  // No-op unless GATE_FINAL_CONTRACT_REPAIR is also on.
+  GATE_FINAL_CONTRACT_SCENE_REGEN: true,
+
+  // Judge confirmation for HEURISTIC fidelity findings (WS3, 2026-06-11 audit).
+  // RequiredBeatRealization / SignatureDevicePresence are keyword-overlap
+  // heuristics; before one of their findings blocks the contract, one bounded
+  // LLM call checks whether the flagged authored moment is actually dramatized
+  // on-page (paraphrase counts). Refuted findings downgrade to warnings;
+  // confirmed misses stay blocking. Conservative on judge failure (everything
+  // stays blocking) — so this gate can only PREVENT false-positive aborts,
+  // never create one. ON by default.
+  GATE_FIDELITY_JUDGE_CONFIRM: true,
+
   // ── Wave 4: plan-time gates ──
   // PROMOTED ON after a clean shadow pass: across the six gen-3/4/5 runs recorded in
   // gate-shadow-ledger.jsonl, each of these logged wouldGate=false / blockingCount=0
@@ -152,15 +174,24 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // G10: promote stub/scaffold-leak/echo/duplicate outcomeTexts to blocking. The
   // ChoiceAuthor fallback that produced these is fixed; OutcomeTextQualityValidator is
   // the durable backstop. High-precision (exact scaffold lead-ins + annotation-echo +
-  // tier-duplication), but default-OFF for one live `=1` confirmation run. Reversible.
-  GATE_OUTCOME_TEXT_QUALITY: false,
+  // tier-duplication).
+  // PROMOTED ON 2026-06-11 (group-A batch): the offline replay over the g10 golden corpus
+  // caught 15 (bite-me) + 3 (endsong) real scaffold/stub outcomeTexts with ZERO false
+  // positives on the clean (non-treatment) runs, and the ChoiceAuthor fallback that produced
+  // them is already fixed, so on fresh output this fires only on genuine residue. Reversible via =0.
+  GATE_OUTCOME_TEXT_QUALITY: true,
   // Prose craft: flag monotonous second-person sentence cadence — a single beat or
   // outcome tier that stacks 3+ consecutive "You …" openers ("You save the file. You
   // don't know where. You just know …"). The reader is second person, so "You" openers
   // are correct; only consecutive runs flag. The ChoiceAuthor/SceneWriter opener-variety
   // prompt guidance is the real fix; SentenceOpenerVarietyValidator is the deterministic
-  // backstop. Default-OFF: advisory-only until a live `=1` run confirms the post-prompt-fix
-  // false-positive rate is acceptable, then promote. Reversible via =0.
+  // backstop.
+  // PROMOTED ON 2026-06-11 (group-A batch) on offline g10-corpus evidence, then RETURNED
+  // TO SHADOW the same day (failure-cycle audit, repair-first policy): a blocking gate at
+  // the final contract must carry a repair handler, an autofix, or judge confirmation —
+  // this one has none, so a hit aborts an entire generated season for a cadence defect.
+  // Findings still surface as warnings. Re-promote once opener-cadence rewrites join the
+  // scene-prose repair handler (sceneProseRepairHandler.ts).
   GATE_SENTENCE_OPENER_VARIETY: false,
   // G10: a treatment-staged SUSTAINED set-piece encounter (e.g. "wall breach + repulse →
   // evacuate") must keep escalating structure (≥2 phases or a ≥3-point tension curve),
@@ -178,21 +209,27 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // photograph, the maiden name, Mika's absence") must dramatize each listed item on
   // page; otherwise a later scene pays off a clue the reader never saw. Conservative
   // (only explicit ≥3-item enumerations).
-  // PROMOTED ON after the 2026-06-09 offline audit (memory: g10-shadow-gate-audit): replaying
-  // over bite-me-g10 + endsong-g10 produced exactly the 3 documented "Splinters" misses (the
-  // photograph, the maiden name, Mika's absence) on bite-me and ZERO on endsong — no false
-  // positives. CAVEAT: hard-gate at the final contract with NO deterministic repair, so it
-  // ABORTS a run that still ships an undramatized promised clue — pair with the SceneWriter
-  // "dramatize enumerated objective items" fix so the gen stops producing it. Reversible via =0.
-  GATE_REFERENCED_EVENT_PRESENCE: true,
+  // PROMOTED ON after the 2026-06-09 offline audit, then RETURNED TO SHADOW 2026-06-11
+  // (failure-cycle audit, repair-first policy): keyword-presence heuristic with NO repair
+  // handler and NO judge confirmation — the same paraphrase-blind failure shape that
+  // produced same-day season aborts from the other group-A heuristics. Findings still
+  // surface as warnings. Re-promote once its findings carry a sceneId (they currently
+  // don't reach the judge/repair selectors) and it joins the judge-confirmation set in
+  // fidelityRealizationJudge.ts.
+  GATE_REFERENCED_EVENT_PRESENCE: false,
   // G10: an `authored`-tier required beat on a STANDARD (non-encounter) scene must be
   // dramatized in that scene's prose. Closes the gap between SignatureDevicePresence
   // (signature-tier only) and EncounterAnchorContent (encounter scenes only): the audited
   // Endsong ep1 `s1-6` ("Vraxxan Names the Key") shipped its authored required beat — the
   // season's key reveal — unwritten, stopping at the villain's entrance, and NO gate saw it.
-  // Default-OFF pending one live `=1` run of both stories (build OFF → validate zero
-  // false-positives → flip ON), per the gate-promotion discipline.
-  GATE_REQUIRED_BEAT_REALIZATION: false,
+  // PROMOTED ON 2026-06-11 (group-A batch): the offline replay over the g10 corpus produced
+  // 7 (bite-me) + 7 (endsong) real undramatized-required-beat misses with ZERO false positives.
+  // STAYS ON under the repair-first policy (same-day failure-cycle audit) because it now has
+  // BOTH safety routes: GATE_FIDELITY_JUDGE_CONFIRM judge-checks each finding against the
+  // scene's actual prose (paraphrase-blind false positives downgrade to warnings), and
+  // confirmed misses drive the GATE_FINAL_CONTRACT_SCENE_REGEN per-scene rewrite instead of
+  // an immediate abort. The run aborts only when repair rounds exhaust. Reversible via =0.
+  GATE_REQUIRED_BEAT_REALIZATION: true,
   // 2026-06-09 storytelling-quality audit: unacknowledged time/place jumps between
   // adjacent scenes (bite-me-g10 bookshop-afternoon → 4am-rooftop hard cut). The
   // generative half is live (plan-time SceneBlueprint.timeOfDay/timeJumpFromPrevious,
@@ -208,24 +245,51 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // npcStates but never named in prose). The generative half is live (first-appearance
   // SceneWriter directives, notYetIntroducedNames ban-list, plan-introduction key
   // beats); CharacterIntroductionValidator is the prose-level backstop
-  // (PropIntroductionValidator only sees structured ids, never prose). Default-OFF:
-  // needs one live `=1` run to confirm the conservative name-matching (full name +
-  // unique ≥3-char first token) holds precision on a real cast.
+  // (PropIntroductionValidator only sees structured ids, never prose).
+  // PROMOTED ON 2026-06-11 (group-A batch), then RETURNED TO SHADOW the same day
+  // (failure-cycle audit, repair-first policy): no repair handler, no autofix, no judge —
+  // a cold name-drop would abort an entire generated season at the final contract.
+  // Findings still surface as warnings. Re-promote once introduction-weaving joins the
+  // scene-prose repair handler.
   GATE_CHARACTER_INTRODUCTION: false,
   // G10: per-episode plan-conformance gates (replace the slice-vs-season-target category
   // error). Choice-type / skill BALANCE is validated at the season-plan level; per
-  // generated episode we only check it realized what the plan assigned to IT. Default-OFF
-  // pending one live `=1` run.
+  // generated episode we only check it realized what the plan assigned to IT.
+  // PROMOTED ON 2026-06-11 (group-A batch), then RETURNED TO SHADOW the same day after
+  // GATE_SKILL_PLAN_CONFORMANCE killed the endsong-g14 run at the final contract
+  // (failure-cycle audit): per-episode plan conformance has NO remediation path — the
+  // season-level skill rebalance runs pre-contract but does not fix per-episode leaning,
+  // so a hit is an unavoidable end-of-run abort for a balance defect. Findings still
+  // surface as warnings. Re-promote with a per-episode rebalance autofix (reassign
+  // stat-check skills within the episode toward its planned set, mirroring
+  // rebalanceSeasonSkillCoverage), or move the check to scene/episode generation time.
   GATE_CHOICE_TYPE_CONFORMANCE: false,
   GATE_SKILL_PLAN_CONFORMANCE: false,
+  // G12: flag setter/consumer contract. Deterministic (a condition reading a flag
+  // nothing sets is dead content), but authored orphan conditions are common until
+  // the SceneWriter/ChoiceAuthor flag-context wiring beds in — findings ship as
+  // warnings by default; flip to blocking after one live run shows a clean baseline.
+  GATE_FLAG_CONTRACT: false,
+  // G12/WS7: bake witness reactions into outcomeTexts at assembly. reactionText /
+  // witnessReactions have NO runtime consumer (storyEngine renders outcomeTexts
+  // only), so authored witness reactivity silently dropped. Deterministic, additive
+  // concatenation (one reaction sentence per tier, skipped when already present).
+  // ON by default like the other pure assembly repairs; reversible via =0.
+  GATE_WITNESS_BAKE: true,
   // Encounter-outcome variant: outcome state flags are ALWAYS seeded (ungated). The
   // generative half now exists — when this gate is on, authorEncounterOutcomeVariants
   // runs the OutcomeVariantAuthor over each detected reconvergence desync to write the
   // missing outcome-conditioned opening variants (gated on encounter_<id>_<outcome>)
   // before the contract re-detects, so the gate blocks only on reconvergences the
-  // author could not cover. STILL OFF until one live run confirms the author clears
-  // real desyncs (the LLM path can't be exercised offline); reversible via =0.
-  GATE_ENCOUNTER_OUTCOME_VARIANT: false,
+  // author could not cover.
+  // PROMOTED ON 2026-06-10 (G12 audit): the run shipped THREE flag spellings — the
+  // seeder keyed on `<sceneId>-encounter`, authored variants on the scene id, and
+  // architect storylets on `partial_victory`/`escaped` — so every encounter's outcome
+  // residue was dead and this gate, off, never even surfaced the desync.
+  // normalizeEncounterOutcomeFlags now unifies setters/consumers at both chokepoints
+  // (FullStoryPipeline.authorEncounterOutcomeVariants + enforceFinalStoryContract),
+  // making the author's variants reachable at runtime. Reversible via =0.
+  GATE_ENCOUNTER_OUTCOME_VARIANT: true,
   // Continuity remediation: promotes high-precision cross-scene continuity ERRORS
   // (impossible_knowledge/contradiction/missing_setup/timeline_error) to blocking. The
   // scene-regen IS now wired: repairContinuityFindings re-authors the flagged beats via
@@ -322,8 +386,14 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // for concrete staged signatures; only true meta-narration notes ("the player…",
   // "establishes that…") stay advisory. The inversion check remains advisory for long
   // signatures regardless (its proximity heuristic genuinely false-positives there).
-  // Default-OFF pending one live `=1` validation run on Bite Me + Endsong.
-  GATE_SIGNATURE_PRESENCE_STRICT: false,
+  // PROMOTED ON 2026-06-11 (group-A batch): scoped to concrete staged-signature PRESENCE
+  // failures (keyword overlap < 0.5) only — true meta-narration notes and the long-signature
+  // inversion check stay advisory — so the g10 corpus replay blocked the two summarized-away
+  // signatures (Cișmigiu rescue, Endsong siege) without false-positiving. STAYS ON under the
+  // repair-first policy (same-day failure-cycle audit): findings are judge-confirmed against
+  // the scene's actual prose (GATE_FIDELITY_JUDGE_CONFIRM) and confirmed misses drive the
+  // per-scene rewrite (GATE_FINAL_CONTRACT_SCENE_REGEN) before any abort. Reversible via =0.
+  GATE_SIGNATURE_PRESENCE_STRICT: true,
 };
 
 /**

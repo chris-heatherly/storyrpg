@@ -33,6 +33,9 @@ import type { ComprehensiveValidationReport } from '../../types/validation';
 import { runFidelityValidators } from '../validators/runFidelityValidators';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
 import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairReport } from '../remediation/finalContractRepair';
+import { buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
+import { SceneCritic } from '../agents/SceneCritic';
+import { FidelityRealizationJudge, confirmHeuristicFidelityFindings } from '../validators/fidelityRealizationJudge';
 import { RemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
 import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { rebalanceSeasonSkillCoverage } from './seasonSkillRebalance';
@@ -74,6 +77,8 @@ export interface FinalContractDeps {
   readonly seasonSkillPlan: SeasonSkillPlan | undefined;
   readonly allEncounterTelemetry: EncounterTelemetry[];
   readonly remediationBudget: RemediationBudget | null;
+  /** The run's SceneCritic for the contract scene-prose repair handler (a one-off is constructed when absent). */
+  readonly sceneCritic?: SceneCritic | null;
 }
 
 export class FinalContract {
@@ -175,6 +180,37 @@ export class FinalContract {
 
     let report = await runValidation(input.story);
 
+    // WS3 (2026-06-11 audit): judge-confirm HEURISTIC fidelity findings before
+    // they can block. RequiredBeatRealization / SignatureDevicePresence are
+    // keyword-overlap heuristics; a paraphrased-but-dramatized moment reads as
+    // "missing" and aborts the season. One bounded LLM call asks whether each
+    // flagged moment is actually dramatized on-page: refuted findings downgrade
+    // to warnings; confirmed misses stay blocking and flow to the repair loop.
+    // Conservative on failure (judge unavailable/error → everything stays
+    // blocking, byte-identical to today). Gated; can only downgrade.
+    if (!report.passed && isGateEnabled('GATE_FIDELITY_JUDGE_CONFIRM')) {
+      const outcome = await confirmHeuristicFidelityFindings({
+        report,
+        story: input.story,
+        judge: () => {
+          try {
+            return new FidelityRealizationJudge(this.deps.config.agents.sceneWriter);
+          } catch (err) {
+            console.warn(`[Pipeline] Fidelity judge unavailable (findings stay blocking): ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+          }
+        },
+        emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+      });
+      if (outcome.judged > 0) {
+        this.deps.emit({
+          type: 'checkpoint',
+          phase: input.phase,
+          message: `Fidelity judge reviewed ${outcome.judged} heuristic finding(s); ${outcome.downgraded} refuted (downgraded), ${outcome.judged - outcome.downgraded} confirmed blocking`,
+        });
+      }
+    }
+
     // Wave-0 shadow telemetry for the final-contract-class gates (design-note +
     // treatment-fidelity), recorded regardless of flag so off→on has data.
     if (isShadowLoggingEnabled()) {
@@ -182,13 +218,33 @@ export class FinalContract {
     }
 
     // Wave 4 keystone: attempt bounded repair + re-validation BEFORE the hard abort,
-    // instead of throwing on first failure. Default-off (GATE_FINAL_CONTRACT_REPAIR);
-    // deterministic handlers today, LLM-regen handlers plug in here next.
+    // instead of throwing on first failure (GATE_FINAL_CONTRACT_REPAIR, default ON).
+    // Handlers: deterministic autofixes first, then the LLM scene-prose repair
+    // (GATE_FINAL_CONTRACT_SCENE_REGEN) — per-scene SceneCritic rewrites driven by
+    // the contract's own findings (required-beat / signature-device realization),
+    // so a prose-realization miss becomes a bounded repair instead of discarding
+    // the entire generated season (2026-06-11 failure-cycle audit).
     if (!report.passed && isGateEnabled('GATE_FINAL_CONTRACT_REPAIR')) {
+      const handlers = buildDeterministicContractHandlers();
+      if (isGateEnabled('GATE_FINAL_CONTRACT_SCENE_REGEN')) {
+        handlers.push(
+          buildSceneProseRepairHandler({
+            critic: () => {
+              try {
+                return this.deps.sceneCritic ?? new SceneCritic(this.deps.config.agents.sceneWriter);
+              } catch (err) {
+                console.warn(`[Pipeline] Scene-prose contract repair: SceneCritic unavailable — ${err instanceof Error ? err.message : String(err)}`);
+                return null;
+              }
+            },
+            emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+          }),
+        );
+      }
       const outcome = await runFinalContractRepair({
         story: input.story,
         initialReport: report as ContractRepairReport,
-        handlers: buildDeterministicContractHandlers(),
+        handlers,
         revalidate: async (s) => (await runValidation(s)) as ContractRepairReport,
         maxAttempts: 2,
         canSpend: () => shouldAttemptRemediation(this.deps.remediationBudget),

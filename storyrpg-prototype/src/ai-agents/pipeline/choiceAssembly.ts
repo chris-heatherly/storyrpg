@@ -1,4 +1,6 @@
 import type { Choice, Consequence } from '../../types';
+import { normalizeTintFlag } from '../utils/tintVocabulary';
+import { isGateEnabled } from '../remediation/gateDefaults';
 
 /**
  * Route a fallback choice set across a branch point's distinct `leadsTo` targets so
@@ -121,7 +123,15 @@ export function normalizeConsequence(c: Consequence): Consequence {
     return { ...(c as Record<string, unknown>), score: raw.target as string } as Consequence;
   }
   if (c.type === 'setFlag' && !('flag' in c) && typeof raw.name === 'string') {
-    return { ...(c as Record<string, unknown>), flag: raw.name as string } as Consequence;
+    return normalizeConsequence({ ...(c as Record<string, unknown>), flag: raw.name as string } as Consequence);
+  }
+  // G12: authored tints rarely matched the identity engine's canonical vocabulary
+  // (tint:bold vs tint:boldness), leaving the whole tint tier inert at runtime.
+  if (c.type === 'setFlag' && typeof raw.flag === 'string' && (raw.flag as string).startsWith('tint:')) {
+    const canonical = normalizeTintFlag(raw.flag as string);
+    if (canonical !== raw.flag) {
+      return { ...(c as unknown as Record<string, unknown>), flag: canonical } as unknown as Consequence;
+    }
   }
   if (c.type === 'relationship' && !('dimension' in c)) {
     const dimensionAlias = raw.relationshipType ?? raw.aspect;
@@ -158,10 +168,49 @@ export function foldTintFlagIntoConsequences(
   tintFlag: string | undefined,
 ): Consequence[] | undefined {
   if (!tintFlag) return consequences;
+  const canonicalTint = normalizeTintFlag(tintFlag);
   const list = Array.isArray(consequences) ? [...consequences] : [];
-  const already = list.some((c) => c.type === 'setFlag' && (c as { flag?: string }).flag === tintFlag);
-  if (!already) list.push({ type: 'setFlag', flag: tintFlag, value: true } as Consequence);
+  const already = list.some(
+    (c) => c.type === 'setFlag' && typeof (c as { flag?: string }).flag === 'string'
+      && normalizeTintFlag((c as { flag: string }).flag) === canonicalTint,
+  );
+  if (!already) list.push({ type: 'setFlag', flag: canonicalTint, value: true } as Consequence);
   return list;
+}
+
+/**
+ * Bake witness reactions into the rendered outcome texts (G12 / WS7).
+ *
+ * `reactionText` and `witnessReactions` have NO runtime consumer — the engine
+ * renders `outcomeTexts` only (storyEngine), so roughly half the authored witness
+ * reactivity never reached the player ("Mika's posture loosens…" lived only in
+ * metadata). Deterministic, additive: append the first witness reaction sentence
+ * to each tier that does not already mention that witness. Kill switch:
+ * GATE_WITNESS_BAKE=0.
+ */
+export function bakeWitnessReactionsIntoOutcomeTexts(
+  outcomeTexts: Choice['outcomeTexts'],
+  witnessReactions: Choice['witnessReactions'],
+): Choice['outcomeTexts'] {
+  if (!outcomeTexts || !witnessReactions?.length) return outcomeTexts;
+  const reaction = witnessReactions
+    .map((wr) => (typeof wr?.reactionText === 'string' ? wr.reactionText.trim() : ''))
+    .find((t) => t.length > 0);
+  if (!reaction) return outcomeTexts;
+  const probe = reaction.toLowerCase().slice(0, 40);
+  const bake = (tier: string | undefined): string | undefined => {
+    if (!tier || !tier.trim()) return tier;
+    if (tier.toLowerCase().includes(probe)) return tier; // already present
+    const base = tier.trim();
+    const sep = /[.!?…"”]$/.test(base) ? ' ' : '. ';
+    return `${base}${sep}${reaction}`;
+  };
+  return {
+    ...outcomeTexts,
+    ...(outcomeTexts.success !== undefined ? { success: bake(outcomeTexts.success)! } : {}),
+    ...(outcomeTexts.partial !== undefined ? { partial: bake(outcomeTexts.partial)! } : {}),
+    ...(outcomeTexts.failure !== undefined ? { failure: bake(outcomeTexts.failure)! } : {}),
+  };
 }
 
 export function assembleChoiceForStory(
@@ -195,9 +244,11 @@ export function assembleChoiceForStory(
     routeContext: choice.routeContext,
     nextSceneId,
     nextBeatId: choice.nextBeatId,
-    outcomeTexts: choice.outcomeTexts,
+    outcomeTexts: isGateEnabled('GATE_WITNESS_BAKE')
+      ? bakeWitnessReactionsIntoOutcomeTexts(choice.outcomeTexts, choice.witnessReactions)
+      : choice.outcomeTexts,
     reactionText: choice.reactionText,
-    tintFlag: choice.tintFlag,
+    tintFlag: choice.tintFlag ? normalizeTintFlag(choice.tintFlag) : choice.tintFlag,
     memorableMoment: choice.memorableMoment,
   };
 }

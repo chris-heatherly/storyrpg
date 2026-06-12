@@ -28,8 +28,77 @@ import type { Consequence } from '../../types/consequences';
 const OUTCOMES = ['victory', 'partialVictory', 'defeat', 'escape'] as const;
 type OutcomeKey = (typeof OUTCOMES)[number];
 
+/**
+ * G12 found THREE spellings of the same outcome flag in one run: the seeder used
+ * `enc.id` (which the converter auto-suffixes `-encounter`), authored variants were
+ * keyed on the SCENE id, and EncounterArchitect's default storylets used
+ * `partial_victory`/`escaped`. Setter never matched consumer, so every encounter's
+ * post-reconvergence residue was dead. Canonical form: scene-id keyed (trailing
+ * `-encounter` stripped), camelCase outcome keys.
+ */
+const OUTCOME_ALIASES: Record<string, OutcomeKey> = {
+  victory: 'victory',
+  partialvictory: 'partialVictory',
+  partial_victory: 'partialVictory',
+  defeat: 'defeat',
+  defeated: 'defeat',
+  escape: 'escape',
+  escaped: 'escape',
+};
+
+const ENCOUNTER_FLAG_RE = /^encounter_(.+?)_(partial_victory|partialvictory|victory|defeated|defeat|escaped|escape)$/i;
+
+/** Scene-id form of an encounter id: the converter's auto `-encounter` suffix stripped. */
+export function canonicalEncounterFlagId(encounterId: string): string {
+  return encounterId.replace(/-encounter$/, '');
+}
+
+export function canonicalOutcomeKey(outcome: string): string {
+  return OUTCOME_ALIASES[outcome.toLowerCase()] ?? outcome;
+}
+
 export function encounterOutcomeFlag(encounterId: string, outcome: string): string {
-  return `encounter_${encounterId}_${outcome}`;
+  return `encounter_${canonicalEncounterFlagId(encounterId)}_${canonicalOutcomeKey(outcome)}`;
+}
+
+/** Rewrite a single flag name to canonical spelling; returns the input unchanged if it isn't an encounter-outcome flag. */
+export function canonicalizeEncounterOutcomeFlagName(flag: string): string {
+  const m = ENCOUNTER_FLAG_RE.exec(flag);
+  if (!m) return flag;
+  return encounterOutcomeFlag(m[1], m[2]);
+}
+
+/**
+ * Deep-walk the story and rewrite every encounter-outcome flag reference — variant
+ * conditions, setFlag consequences, storylet setsFlags, string conditions — to the
+ * canonical spelling, so setters and consumers agree no matter which layer authored
+ * them. Idempotent. Returns the number of rewrites.
+ */
+export function normalizeEncounterOutcomeFlags(story: Story): number {
+  let rewritten = 0;
+  const seen = new Set<object>();
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    const obj = node as Record<string, unknown>;
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof value === 'string' && (key === 'flag' || key === 'condition')) {
+        const canonical = canonicalizeEncounterOutcomeFlagName(value);
+        if (canonical !== value) {
+          obj[key] = canonical;
+          rewritten += 1;
+        }
+      } else if (value && typeof value === 'object') {
+        visit(value);
+      }
+    }
+  };
+  visit(story.episodes);
+  return rewritten;
 }
 
 export interface SeedEncounterOutcomeFlagsResult {
@@ -75,11 +144,11 @@ function presentOutcomes(enc: Encounter): OutcomeKey[] {
 
 /** True if any beat in the scene has a textVariant whose condition references an `encounter_<id>_` flag. */
 function sceneHasOutcomeVariant(scene: Scene, encounterId: string): boolean {
-  const prefix = `encounter_${encounterId}_`;
+  const prefix = `encounter_${canonicalEncounterFlagId(encounterId)}_`;
   const matches = (cond: unknown): boolean => {
     if (!cond || typeof cond !== 'object') return false;
     const c = cond as Record<string, unknown>;
-    if (typeof c.flag === 'string' && c.flag.startsWith(prefix)) return true;
+    if (typeof c.flag === 'string' && canonicalizeEncounterOutcomeFlagName(c.flag).startsWith(prefix)) return true;
     if (Array.isArray(c.conditions)) return c.conditions.some(matches);
     if (c.condition) return matches(c.condition);
     return false;

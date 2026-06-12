@@ -20,15 +20,18 @@ export interface ModelOption {
 
 export const DEFAULT_LLM_PROVIDER: GeneratorLlmProvider = 'anthropic';
 export const DEFAULT_LLM_MODELS = {
-  anthropic: 'claude-sonnet-4-20250514',
+  anthropic: 'claude-sonnet-4-6',
   openai: 'gpt-5',
   gemini: 'gemini-2.5-pro',
 } as const;
 
 export const FALLBACK_MODEL_OPTIONS: Record<GeneratorLlmProvider, ModelOption[]> = {
   anthropic: [
-    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-    { value: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
+    { value: 'claude-opus-4-8', label: 'Claude Opus 4.8', description: 'Most capable — best for planning/architecture.' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', description: 'Balanced speed/quality — best for prose and choices.' },
+    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', description: 'Fastest/cheapest — best for QA grading and prompting.' },
+    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4 (legacy)' },
+    { value: 'claude-opus-4-20250514', label: 'Claude Opus 4 (legacy)' },
     { value: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet' },
     { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
     { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },

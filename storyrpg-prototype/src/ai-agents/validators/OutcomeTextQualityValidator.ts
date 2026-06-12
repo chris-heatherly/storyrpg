@@ -1,5 +1,6 @@
 import type { Story } from '../../types';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
+import { isFallbackOutcomeText } from '../constants/choiceTextFallbacks';
 
 /**
  * Outcome-text quality (G10).
@@ -124,6 +125,19 @@ export class OutcomeTextQualityValidator extends BaseValidator {
           `Choice "${where}" outcomeTexts.${tier} leaks an authoring-scaffold stub: "${value.slice(0, 80)}".`,
           where,
           'Replace with authored fiction-first prose; do not restate the stakes annotation behind "you get what you reached for"/"it slips away from you".',
+        ));
+        continue;
+      }
+
+      // G12: the current deterministic fallback pool shipped verbatim on pivotal
+      // choices ("You come back with less than you brought." as the resolution of
+      // the player's first direct question to Victor). A fallback in the shipped
+      // story means the LLM tier was never authored — flag it for regen.
+      if (isFallbackOutcomeText(value)) {
+        issues.push(this.error(
+          `Choice "${where}" outcomeTexts.${tier} is the ChoiceAuthor fallback stub: "${value.slice(0, 80)}". The tier was never authored.`,
+          where,
+          'Re-run ChoiceAuthor for this choice so every tier carries scene-specific prose.',
         ));
         continue;
       }

@@ -12,8 +12,10 @@
  *                     violation. Fires only for hooks whose payoffEpisode === N.
  *   - dangling-payoff: a payoff in the episode references a promise that doesn't
  *                     exist in the ledger. Always safe to check (never a false
- *                     alarm). Within-episode plant refs (`within-ep*`) are not
- *                     ledger hooks and are excluded.
+ *                     alarm). Refs that are not ledger hooks by construction are
+ *                     excluded: within-episode plant refs (`within-ep*`) and
+ *                     structural-flag refs (`treatment_branch_`/`route_`/`tint:`),
+ *                     which the ledger never registers (see `isNonLedgerRef`).
  *   - plant-validity:  a promise with an explicit target must not point BACKWARD and
  *                     must stay within the season: sourceEpisode <= payoffEpisode <=
  *                     seasonLength. A same-episode target is valid (a within-episode
@@ -26,12 +28,21 @@
  * per-episode gate is Phase 4 (the incremental seal/resume runner).
  */
 
-import type { CallbackLedger, CallbackHook } from '../pipeline/callbackLedger';
+import { isStructuralFlag, type CallbackLedger, type CallbackHook } from '../pipeline/callbackLedger';
 import type { ValidationIssue, ValidationResult } from './BaseValidator';
 
-/** Synthetic prompt-only callback ids that are never ledger hooks. */
-function isIntraEpisodePlantRef(id: string): boolean {
-  return id.startsWith('within-ep');
+/**
+ * Callback ids that are NEVER ledger hooks, so a payoff referencing one is not a
+ * dangling cross-episode promise — it's a different (harmless) class of mislabel:
+ *  - `within-ep*`: synthetic prompt-only intra-episode plant refs.
+ *  - structural flags (`treatment_branch_`/`route_`/`tint:`): the ledger excludes
+ *    these by construction (CallbackLedger.recordFlagSet). A branch-axis flag is
+ *    paid off by the branch + reconvergence residue (a textVariant gated on the
+ *    flag), not by a callback line, so a `callbackHookId` pointing at one can never
+ *    resolve and must not abort the Season Canon seal.
+ */
+function isNonLedgerRef(id: string): boolean {
+  return id.startsWith('within-ep') || isStructuralFlag(id);
 }
 
 /** A promise is "satisfied" once it has been referenced (paid) at least once. */
@@ -70,8 +81,11 @@ export function validateNoDanglingPayoffs(
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const seen = new Set<string>();
-  for (const id of referencedHookIds) {
-    if (!id || seen.has(id) || isIntraEpisodePlantRef(id)) continue;
+  for (const rawId of referencedHookIds) {
+    // Canonicalize a bare `flag`/`score` name to its planted `flag:`/`score:` hook
+    // so a missing prefix on an otherwise-valid payoff isn't a dangling reference.
+    const id = ledger.resolveHookId(rawId);
+    if (!id || seen.has(id) || isNonLedgerRef(id)) continue;
     seen.add(id);
     if (!ledger.has(id)) {
       issues.push({

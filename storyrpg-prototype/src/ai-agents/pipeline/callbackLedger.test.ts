@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CallbackLedger } from './callbackLedger';
+import { CallbackLedger, canonicalizeHookId } from './callbackLedger';
 import type { Choice } from '../../types/choice';
 import type { TextVariant } from '../../types/content';
 
@@ -75,6 +75,61 @@ describe('CallbackLedger', () => {
     expect(hook!.consequenceTier).toBe('callback');
     expect(hook!.resolved).toBe(false);
     expect(hook!.payoffWindow.minEpisode).toBe(2);
+  });
+
+  it('unresolvedFor never lets the maxActiveHooks cap starve an explicitly-due promise', () => {
+    // Bite-Me G13 regression: a forward promise due THIS episode was pushed past
+    // the cap by lower-priority window-only flag hooks, so it never reached the
+    // prompt feed or the deterministic fallback — yet the (uncapped) promise-due
+    // gate still hard-failed the episode.
+    const ledger = new CallbackLedger({ config: { payoffThreshold: 2, defaultWindowSpan: 3, maxActiveHooks: 10 } });
+    // 12 window-only flag hooks eligible in episode 3 (more than the cap).
+    for (let i = 0; i < 12; i++) {
+      ledger.recordFlagSet({
+        choice: makeChoice({ id: `choice-flag-${i}`, consequences: [{ type: 'setFlag', flag: `flag_${i}`, value: true } as any] }),
+        flag: `flag_${i}`,
+        episode: 1,
+        sceneId: 's1-1',
+      });
+    }
+    // The hard obligation: a promise explicitly due in episode 3.
+    ledger.recordForwardPromise({
+      choice: makeChoice({ id: 'choice-write-magnolia-column', consequences: [{ type: 'setFlag', flag: 'magnolia_column_filed', value: true } as any] }),
+      episode: 1,
+      sceneId: 's1-5',
+      payoffEpisode: 3,
+      summary: 'In Episode 3, Mika will mention a food writer whose column got a thousand reads.',
+    });
+
+    const surfaced = ledger.unresolvedFor(3);
+    const dueIds = ledger.dueAt(3).map((h) => h.id);
+    expect(dueIds).toContain('later:choice-write-magnolia-column');
+    // Every gate-enforced due hook must appear in the realization set...
+    for (const id of dueIds) expect(surfaced.map((h) => h.id)).toContain(id);
+    // ...and due hooks are surfaced FIRST.
+    expect(surfaced[0].id).toBe('later:choice-write-magnolia-column');
+  });
+
+  it('carries the source choice prose onto the hook so a cross-episode fallback can source it', () => {
+    const ledger = new CallbackLedger();
+    const hook = ledger.recordForwardPromise({
+      choice: makeChoice({
+        id: 'choice-write-magnolia-column',
+        feedbackCue: { echoSummary: 'You wrote the safe piece. The other story stayed inside.' } as any,
+        reminderPlan: { immediate: 'The column fills the screen cleanly.', shortTerm: 'No blog post exists to quote back.' },
+        consequences: [{ type: 'setFlag', flag: 'magnolia_column_filed', value: true } as any],
+      }),
+      episode: 1,
+      sceneId: 's1-5',
+      payoffEpisode: 3,
+      summary: 'In Episode 3, Mika will mention a food writer.',
+    });
+    expect(hook!.proseSources?.echoSummary).toBe('You wrote the safe piece. The other story stayed inside.');
+    expect(hook!.proseSources?.immediate).toBe('The column fills the screen cleanly.');
+    // Round-trips through serialize/deserialize.
+    const revived = CallbackLedger.deserialize(ledger.serialize());
+    expect(revived.all().find((h) => h.id === hook!.id)?.proseSources?.echoSummary)
+      .toBe('You wrote the safe piece. The other story stayed inside.');
   });
 
   it('plants a score:<name> promise so a score-keyed payoff is not dangling', () => {
@@ -154,6 +209,41 @@ describe('CallbackLedger', () => {
     const matched = ledger.recordPayoffsFromVariants(variants);
     expect(matched).toEqual(['hook-1']);
     expect(ledger.all()[0].payoffCount).toBe(1);
+  });
+
+  it('resolveHookId canonicalizes a bare flag/score name to its planted hook', () => {
+    const ledger = new CallbackLedger();
+    ledger.add({ id: 'flag:treatment_seed_ep1_3', sourceEpisode: 1, sourceSceneId: 's1', sourceChoiceId: 'c1', flags: ['treatment_seed_ep1_3'], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 } });
+    ledger.add({ id: 'score:thorne_loyalty', sourceEpisode: 1, sourceSceneId: 's1', sourceChoiceId: 'c2', flags: [], conditionKeys: ['score:thorne_loyalty'], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 } });
+    expect(ledger.resolveHookId('treatment_seed_ep1_3')).toBe('flag:treatment_seed_ep1_3');
+    expect(ledger.resolveHookId('thorne_loyalty')).toBe('score:thorne_loyalty');
+    // An id that IS a hook, or matches nothing, is returned unchanged.
+    expect(ledger.resolveHookId('flag:treatment_seed_ep1_3')).toBe('flag:treatment_seed_ep1_3');
+    expect(ledger.resolveHookId('unknown_flag')).toBe('unknown_flag');
+  });
+
+  it('canonicalizeHookId (pure helper) prefixes a bare name against a known-id predicate', () => {
+    const known = new Set(['flag:treatment_seed_ep1_3', 'score:thorne_loyalty', 'within-ep2-planted_z']);
+    const has = (id: string): boolean => known.has(id);
+    // Bare flag/score name → its planted prefixed id (the SceneWriter parse-time fix).
+    expect(canonicalizeHookId('treatment_seed_ep1_3', has)).toBe('flag:treatment_seed_ep1_3');
+    expect(canonicalizeHookId('thorne_loyalty', has)).toBe('score:thorne_loyalty');
+    // Already-canonical ids and unknown ids pass through unchanged.
+    expect(canonicalizeHookId('flag:treatment_seed_ep1_3', has)).toBe('flag:treatment_seed_ep1_3');
+    expect(canonicalizeHookId('within-ep2-planted_z', has)).toBe('within-ep2-planted_z');
+    expect(canonicalizeHookId('never_planted', has)).toBe('never_planted');
+    expect(canonicalizeHookId('', has)).toBe('');
+  });
+
+  it('credits a payoff tagged with a bare flag name (callbackHookId missing the flag: prefix)', () => {
+    const ledger = new CallbackLedger();
+    ledger.add({ id: 'flag:treatment_seed_ep1_3', sourceEpisode: 1, sourceSceneId: 's1', sourceChoiceId: 'c1', flags: ['treatment_seed_ep1_3'], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 }, payoffCount: 0 });
+    // The variant gates on a DIFFERENT flag, so only the bare callbackHookId can credit the seed hook.
+    const matched = ledger.recordPayoffsFromVariants([
+      { condition: { type: 'flag', flag: 'treatment_seed_ep1_2', value: false }, text: 'A key card.', callbackHookId: 'treatment_seed_ep1_3' } as any,
+    ]);
+    expect(matched).toEqual(['flag:treatment_seed_ep1_3']);
+    expect(ledger.all().find((h) => h.id === 'flag:treatment_seed_ep1_3')!.payoffCount).toBe(1);
   });
 
   it('credits a forward-promise hook when its same-choice flag hook is honored (sibling payoff)', () => {

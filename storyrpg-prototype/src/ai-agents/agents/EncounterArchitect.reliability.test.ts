@@ -149,15 +149,56 @@ describe('runPhaseWithRetry', () => {
   });
 });
 
+/** Minimal valid Phase2Result for one opening-beat choice. */
+function makePhase2(choiceId: string): unknown {
+  const outcome = (eo: string) => ({
+    narrativeText: `The ${choiceId} gambit resolves; Eros gives ground in the hall, but the cost lands where Alex least expects.`,
+    goalTicks: 1,
+    threatTicks: 1,
+    isTerminal: true,
+    encounterOutcome: eo,
+  });
+  const situation = (suffix: string) => ({
+    setupText: `The hall shifts after the ${choiceId}-${suffix} turn; Eros recalibrates with dangerous patience and closes the distance.`,
+    choices: [{
+      id: `${choiceId}-${suffix}-c1`,
+      text: 'Press the advantage now',
+      approach: 'bold',
+      primarySkill: 'resolve',
+      outcomes: { success: outcome('victory'), complicated: outcome('partialVictory'), failure: outcome('defeat') },
+    }],
+  });
+  return { choiceId, afterSuccess: situation('s'), afterComplicated: situation('c'), afterFailure: situation('f') };
+}
+
 describe('executePhased telemetry', () => {
-  it('records phaseErrors and marks degraded when later phases fail', async () => {
+  // NO-BOILERPLATE MANDATE (2026-06-11): a total branch-phase loss used to ship
+  // a deterministic TEMPLATE encounter as success. It must now throw so the
+  // caller's regen ladder re-authors the encounter instead.
+  it('REJECTS when every later phase fails — no template fallback may ship', async () => {
     const architect = new EncounterArchitect(config) as any;
     const phase1Json = JSON.stringify(makePhase1());
-    // Phase 1 succeeds (opening beat); phases 2/3/4 always fail → degraded.
+    // Phase 1 succeeds (opening beat); phases 2/3/4 always fail.
     vi.spyOn(architect, 'callLLM').mockImplementation(async (messages: any) => {
       const prompt: string = messages?.[0]?.content ?? '';
       if (prompt.includes('OPENING BEAT')) return phase1Json;
       throw new Error('The operation was aborted'); // simulate timeout/abort
+    });
+
+    await expect(architect.executePhased(input)).rejects.toThrow(/refusing template-beat synthesis/);
+  });
+
+  it('records phaseErrors and marks degraded on a PARTIAL gap (phase 4 fails, branches OK)', async () => {
+    const architect = new EncounterArchitect(config) as any;
+    const phase1Json = JSON.stringify(makePhase1());
+    vi.spyOn(architect, 'callLLM').mockImplementation(async (messages: any) => {
+      const prompt: string = messages?.[0]?.content ?? '';
+      if (prompt.includes('OPENING BEAT')) return phase1Json;
+      if (prompt.includes('NEXT MOMENT')) {
+        const choiceId = /"choiceId": "(c\d+)"/.exec(prompt)?.[1] ?? 'c1';
+        return JSON.stringify(makePhase2(choiceId));
+      }
+      throw new Error('The operation was aborted'); // phase 4 fails
     });
 
     const res = await architect.executePhased(input);
@@ -167,7 +208,8 @@ describe('executePhased telemetry', () => {
     expect(tel.phase1Ok).toBe(true);
     expect(tel.degraded).toBe(true);
     expect(tel.mode).toBe('phased_with_gaps');
-    expect(tel.phase2.every((ok: boolean) => ok === false)).toBe(true);
+    expect(tel.phase2.every((ok: boolean) => ok === true)).toBe(true);
+    expect(tel.phase4Ok).toBe(false);
     expect(Array.isArray(tel.phaseErrors)).toBe(true);
     expect(tel.phaseErrors.length).toBeGreaterThan(0);
   });

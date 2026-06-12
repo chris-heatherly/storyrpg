@@ -26,6 +26,16 @@ import {
   GeneratorImageProvider,
   GeneratorLlmProvider,
 } from '../config/generatorLlmOptions';
+import {
+  DEFAULT_MODEL_FAMILY,
+  MODEL_FAMILY_PRESETS,
+  NARRATIVE_TASKS,
+  PipelineTask,
+  TaskModelAssignment,
+  TaskModelOverrides,
+  isPipelineTask,
+  resolveTaskAssignments,
+} from '../config/modelFamilies';
 
 export interface GeneratorNarrationSettings {
   enabled: boolean;
@@ -51,6 +61,8 @@ export const GENERATOR_STORAGE_KEYS = {
   elevenLabsApiKey: '@storyrpg_elevenlabs_api_key',
   llmProvider: '@storyrpg_llm_provider',
   llmModel: '@storyrpg_llm_model',
+  modelFamily: '@storyrpg_model_family',
+  taskModelOverrides: '@storyrpg_task_model_overrides',
   imageLlmProvider: '@storyrpg_image_llm_provider',
   imageLlmModel: '@storyrpg_image_llm_model',
   videoLlmProvider: '@storyrpg_video_llm_provider',
@@ -75,6 +87,27 @@ export const GENERATOR_STORAGE_KEYS = {
 
 function isGeneratorLlmProvider(value: string | null | undefined): value is GeneratorLlmProvider {
   return value === 'anthropic' || value === 'openai' || value === 'gemini';
+}
+
+/**
+ * Narrative-only override map. Image/video assignments live in their own
+ * dedicated image/video state, so we keep only architect/scene/choice/qa here
+ * and force each override's provider to the supplied family.
+ */
+function sanitizeNarrativeOverrides(
+  raw: unknown,
+  family: GeneratorLlmProvider,
+): TaskModelOverrides {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: TaskModelOverrides = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isPipelineTask(key) || !NARRATIVE_TASKS.includes(key)) continue;
+    const model = (value as { model?: unknown })?.model;
+    if (typeof model === 'string' && model.trim()) {
+      out[key] = { provider: family, model: model.trim() };
+    }
+  }
+  return out;
 }
 
 const INVALID_OPENAI_MODEL_SLUGS = new Set<string>([
@@ -132,6 +165,8 @@ async function saveValue(key: string, value: string | null): Promise<void> {
 interface ProxySettingsShape {
   llmProvider?: string;
   llmModel?: string;
+  modelFamily?: string;
+  taskModelOverrides?: TaskModelOverrides;
   imageLlmProvider?: string;
   imageLlmModel?: string;
   videoLlmProvider?: string;
@@ -190,6 +225,8 @@ function patchProxySettings(patch: Partial<ProxySettingsShape>): void {
 export function useGeneratorSettings() {
   const [llmProvider, setLlmProvider] = useState<GeneratorLlmProvider>(DEFAULT_LLM_PROVIDER);
   const [llmModel, setLlmModel] = useState<string>(DEFAULT_LLM_MODELS[DEFAULT_LLM_PROVIDER]);
+  const [modelFamily, setModelFamily] = useState<GeneratorLlmProvider>(DEFAULT_MODEL_FAMILY);
+  const [taskModelOverrides, setTaskModelOverrides] = useState<TaskModelOverrides>({});
   const [imageLlmProvider, setImageLlmProvider] = useState<GeneratorLlmProvider>(DEFAULT_LLM_PROVIDER);
   const [imageLlmModel, setImageLlmModel] = useState<string>(DEFAULT_LLM_MODELS[DEFAULT_LLM_PROVIDER]);
   const [videoLlmProvider, setVideoLlmProvider] = useState<GeneratorLlmProvider>(DEFAULT_LLM_PROVIDER);
@@ -225,6 +262,10 @@ export function useGeneratorSettings() {
       const p: GeneratorLlmProvider = isGeneratorLlmProvider(ps.llmProvider) ? ps.llmProvider : DEFAULT_LLM_PROVIDER;
       setLlmProvider(p);
       setLlmModel(ps.llmModel || DEFAULT_LLM_MODELS[p]);
+
+      const family: GeneratorLlmProvider = isGeneratorLlmProvider(ps.modelFamily) ? ps.modelFamily : p;
+      setModelFamily(family);
+      setTaskModelOverrides(sanitizeNarrativeOverrides(ps.taskModelOverrides, family));
 
       const ip: GeneratorLlmProvider = isGeneratorLlmProvider(ps.imageLlmProvider) ? ps.imageLlmProvider : p;
       setImageLlmProvider(ip);
@@ -297,6 +338,27 @@ export function useGeneratorSettings() {
           const resolvedLlmModel = resolveModelForProvider(resolvedProvider, storedLlmModel);
           if (isMounted) {
             setLlmModel(resolvedLlmModel);
+          }
+
+          // Model family + per-task narrative overrides. Migrate from the legacy
+          // single-provider when no family was persisted (existing users adopt
+          // the family preset for their current provider).
+          const [storedModelFamily, storedTaskOverrides] = await Promise.all([
+            AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.modelFamily),
+            AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.taskModelOverrides),
+          ]);
+          const resolvedFamily = isGeneratorLlmProvider(storedModelFamily)
+            ? storedModelFamily
+            : resolvedProvider;
+          let parsedOverrides: unknown = undefined;
+          if (storedTaskOverrides) {
+            try {
+              parsedOverrides = JSON.parse(storedTaskOverrides);
+            } catch (_) {}
+          }
+          if (isMounted) {
+            setModelFamily(resolvedFamily);
+            setTaskModelOverrides(sanitizeNarrativeOverrides(parsedOverrides, resolvedFamily));
           }
 
           const storedGenerationMode = await AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.generationMode);
@@ -562,6 +624,105 @@ export function useGeneratorSettings() {
     }
   }, []);
 
+  const persistTaskOverrides = useCallback(async (next: TaskModelOverrides) => {
+    patchProxySettings({ taskModelOverrides: next });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.taskModelOverrides, JSON.stringify(next));
+    } catch (error) {
+      log.debug('Failed to save task model overrides:', error);
+    }
+  }, []);
+
+  // Switching the model family resets all per-task overrides to the family's
+  // preset, and seeds the legacy narrative + image/video fields so existing
+  // consumers (StyleArchitect, source analysis, image/video dropdowns) stay
+  // coherent. Narrative tasks are locked to the family provider downstream.
+  const handleModelFamilyChange = useCallback(async (family: GeneratorLlmProvider) => {
+    const preset = MODEL_FAMILY_PRESETS[family];
+    const headlineModel = preset.assignments.architect.model;
+    const img = preset.assignments.image;
+    const vid = preset.assignments.video;
+    setModelFamily(family);
+    setTaskModelOverrides({});
+    setLlmProvider(family);
+    setLlmModel(headlineModel);
+    setImageLlmProvider(img.provider);
+    setImageLlmModel(img.model);
+    setVideoLlmProvider(vid.provider);
+    setVideoLlmModel(vid.model);
+    patchProxySettings({
+      modelFamily: family,
+      taskModelOverrides: {},
+      llmProvider: family,
+      llmModel: headlineModel,
+      imageLlmProvider: img.provider,
+      imageLlmModel: img.model,
+      videoLlmProvider: vid.provider,
+      videoLlmModel: vid.model,
+    });
+    try {
+      await AsyncStorage.multiSet([
+        [GENERATOR_STORAGE_KEYS.modelFamily, family],
+        [GENERATOR_STORAGE_KEYS.taskModelOverrides, JSON.stringify({})],
+        [GENERATOR_STORAGE_KEYS.llmProvider, family],
+        [GENERATOR_STORAGE_KEYS.llmModel, headlineModel],
+        [GENERATOR_STORAGE_KEYS.imageLlmProvider, img.provider],
+        [GENERATOR_STORAGE_KEYS.imageLlmModel, img.model],
+        [GENERATOR_STORAGE_KEYS.videoLlmProvider, vid.provider],
+        [GENERATOR_STORAGE_KEYS.videoLlmModel, vid.model],
+      ]);
+    } catch (error) {
+      log.debug('Failed to save model family:', error);
+    }
+  }, []);
+
+  // Change the model for a single task. Image/video delegate to their existing
+  // dedicated handlers (cross-provider, own persistence); narrative tasks store
+  // a model-only override with the provider locked to the family.
+  const handleTaskModelChange = useCallback(async (task: PipelineTask, model: string) => {
+    if (task === 'image') {
+      await handleImageLlmModelChange(model);
+      return;
+    }
+    if (task === 'video') {
+      await handleVideoLlmModelChange(model);
+      return;
+    }
+    setTaskModelOverrides((prev) => {
+      const next: TaskModelOverrides = { ...prev, [task]: { provider: modelFamily, model } };
+      void persistTaskOverrides(next);
+      return next;
+    });
+  }, [modelFamily, handleImageLlmModelChange, handleVideoLlmModelChange, persistTaskOverrides]);
+
+  // Reset a single task back to its family preset.
+  const resetTaskModel = useCallback(async (task: PipelineTask) => {
+    const preset = MODEL_FAMILY_PRESETS[modelFamily];
+    if (task === 'image') {
+      await handleImageLlmProviderChange(preset.assignments.image.provider);
+      await handleImageLlmModelChange(preset.assignments.image.model);
+      return;
+    }
+    if (task === 'video') {
+      await handleVideoLlmProviderChange(preset.assignments.video.provider);
+      await handleVideoLlmModelChange(preset.assignments.video.model);
+      return;
+    }
+    setTaskModelOverrides((prev) => {
+      const next: TaskModelOverrides = { ...prev };
+      delete next[task];
+      void persistTaskOverrides(next);
+      return next;
+    });
+  }, [
+    modelFamily,
+    handleImageLlmProviderChange,
+    handleImageLlmModelChange,
+    handleVideoLlmProviderChange,
+    handleVideoLlmModelChange,
+    persistTaskOverrides,
+  ]);
+
   const handleGenerationModeChange = useCallback(async (mode: GenerationMode) => {
     setGenerationMode(mode);
     patchProxySettings({ generationMode: mode });
@@ -777,9 +938,25 @@ export function useGeneratorSettings() {
     }
   }, [videoSettings]);
 
+  // The single source of truth handed to buildPipelineConfig. Narrative tasks
+  // come from the family preset merged with overrides (provider locked to the
+  // family); image/video reflect their dedicated cross-provider state.
+  const narrativeAssignments = resolveTaskAssignments(modelFamily, taskModelOverrides);
+  const effectiveTaskAssignments: Record<PipelineTask, TaskModelAssignment> = {
+    architect: narrativeAssignments.architect,
+    scene: narrativeAssignments.scene,
+    choice: narrativeAssignments.choice,
+    qa: narrativeAssignments.qa,
+    image: { provider: imageLlmProvider, model: imageLlmModel },
+    video: { provider: videoLlmProvider, model: videoLlmModel },
+  };
+
   return {
     llmProvider,
     llmModel,
+    modelFamily,
+    taskModelOverrides,
+    effectiveTaskAssignments,
     imageLlmProvider,
     imageLlmModel,
     videoLlmProvider,
@@ -805,6 +982,9 @@ export function useGeneratorSettings() {
     videoSettings,
     handleLlmProviderChange,
     handleLlmModelChange,
+    handleModelFamilyChange,
+    handleTaskModelChange,
+    resetTaskModel,
     handleImageLlmProviderChange,
     handleImageLlmModelChange,
     handleVideoLlmProviderChange,

@@ -419,6 +419,11 @@
       "message": ""
     },
     {
+      "type": "debug",
+      "phase": "encounter_outcome_variants",
+      "message": "Encounter outcome variants: 1 desync(s), 0 variant(s) authored."
+    },
+    {
       "type": "checkpoint",
       "phase": "final_story_contract",
       "message": "Final story contract passed (1 episode(s), 4 scene(s))"

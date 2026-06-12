@@ -13,19 +13,31 @@
  */
 
 import { AgentConfig } from '../config';
+import { formatForbiddenRevealsSection } from '../utils/forbiddenReveals';
 import { BaseAgent, AgentMessage, AgentResponse } from './BaseAgent';
 import { withTimeoutAbort, TimeoutError } from '../utils/withTimeout';
 import { shrinkClockToCoverage } from '../pipeline/encounterRemediation';
+import { deepenStructureRootWins } from '../utils/encounterDepthContract';
 
 /**
  * Distinctive, non-interpolated fragments of the deterministic fallback prose
  * (`buildDeterministicFallback`) and default storylets (`createDefaultStorylet`).
  * When any of these appears in an encounter's PLAYER-FACING prose, the encounter
  * shipped templated boilerplate instead of authored content (the Endsong climax
- * bug). EncounterQualityValidator scans for these and BLOCKS.
+ * bug).
  *
- * SINGLE SOURCE OF TRUTH: these mirror the literal strings in the fallback
- * builders below. `EncounterArchitect.templateSignatures.test.ts` asserts a
+ * NO-BOILERPLATE MANDATE (2026-06-11): template prose must never ship. The
+ * production fallback paths that returned `buildDeterministicFallback` output as
+ * a "successful" encounter are REMOVED — a total generation failure now surfaces
+ * as failure so the caller regenerates with feedback. `createDefaultStorylet`
+ * remains only as mid-loop gap-fill (keeps a partially-built structure playable
+ * between regen attempts); the generation-time template scan in
+ * ContentGenerationPhase refuses to ACCEPT any encounter while these fragments
+ * are present, and fails the episode rather than ship one. The final contract's
+ * EncounterQualityValidator scan stays as defense-in-depth.
+ *
+ * SINGLE SOURCE OF TRUTH: these mirror the literal strings in the builders
+ * below. `EncounterArchitect.templateSignatures.test.ts` asserts a
  * freshly-built deterministic fallback + default storylets actually contain
  * these fragments, so they can't silently drift. If you change the fallback
  * prose, update this list (the test will fail until you do).
@@ -263,6 +275,17 @@ export interface EncounterArchitectInput {
 
   // Genre/source-specific verbs that should shape tactical action design.
   storyVerbs?: StoryVerb[];
+
+  /**
+   * Compact summary of the episode's scenes BEFORE this encounter (G12: without it
+   * the architect re-staged the season premise from scratch — rewound the timeline
+   * to arrival night, met "strangers" the protagonist had known for three scenes,
+   * and seated the protagonist at the table as an NPC).
+   */
+  episodeSoFarSummary?: string;
+
+  /** G12: season ledger facts still withheld at this episode — must not be revealed/confirmed. */
+  forbiddenReveals?: import('../utils/forbiddenReveals').ForbiddenReveal[];
 }
 
 // ========================================
@@ -1445,6 +1468,38 @@ Some outcomes END the encounter:
 
 Terminal outcomes don't have nextSituation - they end the encounter.
 
+HARD RULES (violations fail validation):
+- SKILL VARIETY: no single skill may be the primarySkill of more than ~40% of the
+  choices in this encounter. Rotate approaches (social, observation, deception,
+  physical) so there is no one obviously-best skill.
+- NO ONE-CLICK WIN: a ROOT-level choice must NEVER have a terminal "victory" or
+  "partialVictory" outcome. Winning requires at least TWO choice layers (root →
+  nextSituation → terminal). "escape"/"defeat" may terminate earlier.
+  This applies to EVERY root choice, including an extra branch-gated one (e.g. a
+  4th choice carrying a \`conditions\` flag). Do NOT emit this shape — it is the
+  exact violation that fails the gate:
+  \`\`\`json
+  // ❌ FORBIDDEN — a gated 4th root choice that wins the set-piece in one click
+  {
+    "id": "c4",
+    "conditions": { "type": "flag", "flag": "treatment_branch_alpha", "value": true },
+    "outcomes": {
+      "success":     { "isTerminal": true, "encounterOutcome": "victory",        "consequences": [] },
+      "complicated": { "isTerminal": true, "encounterOutcome": "partialVictory",  "consequences": [] },
+      "failure":     { "isTerminal": true, "encounterOutcome": "defeat",          "consequences": [] }
+    }
+  }
+  \`\`\`
+  A gated root choice must route its success/partialVictory through a \`nextSituation\`
+  whose choices hold the terminal win (which then carries a consequence). Only the
+  "defeat" outcome may terminate at the root.
+- EVERY terminal outcome carries at least one consequence (setFlag / score /
+  relationship) — a costless, stateless exit is a defect.
+- THE GOAL CLOCK MUST BE FILLABLE: the sum of goalTicks along the best path must
+  be ≥ the goal clock's segments. If your tree can tick at most 5, the clock has
+  at most 5 segments — an objective the player can never visibly complete is a
+  defect.
+
 ## DEPTH LIMITS
 
 To prevent infinite trees:
@@ -1607,10 +1662,10 @@ Outcomes should include consequences that match the skill being tested:
       }
     }
 
-    // Legacy fallback: lean prompt → retry → deterministic
+    // Lean flow: lean prompt → retry with feedback. NO deterministic fallback —
+    // a total failure returns success:false so the caller's regen loop retries
+    // the whole build (no-boilerplate mandate; template prose must never ship).
     const minimumBeatCount = this.getMinimumRequiredBeatCount(input);
-    let lastError: string | undefined;
-    let lastRawResponse: string | undefined;
     const attemptSummaries: Array<{
       attempt: number;
       mode: string;
@@ -1640,41 +1695,24 @@ Outcomes should include consequences that match the skill being tested:
       degraded: this.detectDefaultStoryletCollisions(structure, input).length > 0,
     });
 
-    const leanResult = await this.tryLLMAttempt(input, 1, 'lean', minimumBeatCount, attemptSummaries, lastError, lastRawResponse);
+    const leanResult = await this.tryLLMAttempt(input, 1, 'lean', minimumBeatCount, attemptSummaries, undefined, undefined);
     if (leanResult.success && leanResult.data) {
       return { ...leanResult, metadata: { ...(leanResult.metadata ?? {}), encounterTelemetry: buildLeanTelemetry(1, leanResult.data) } };
     }
-    lastError = leanResult.error;
-    lastRawResponse = leanResult.rawResponse;
 
-    const retryResult = await this.tryLLMAttempt(input, 2, 'lean_retry', minimumBeatCount, attemptSummaries, lastError, lastRawResponse);
+    const retryResult = await this.tryLLMAttempt(input, 2, 'lean_retry', minimumBeatCount, attemptSummaries, leanResult.error, leanResult.rawResponse);
     if (retryResult.success && retryResult.data) {
       return { ...retryResult, metadata: { ...(retryResult.metadata ?? {}), encounterTelemetry: buildLeanTelemetry(2, retryResult.data) } };
     }
 
-    console.warn(`[EncounterArchitect] All LLM attempts failed for ${input.sceneId}. Building deterministic fallback.`);
-    try {
-      let structure = this.buildDeterministicFallback(input);
-      structure = this.normalizeStructure(structure, input);
-      this.validateStructure(structure, input);
-      const telemetry: EncounterTelemetry = {
-        sceneId: input.sceneId,
-        mode: 'deterministic',
-        phase1Ok: false,
-        phase2: [],
-        phase3Ran: false,
-        phase3Ok: false,
-        phase4Ok: false,
-        llmCallCount: 2, // Both lean attempts were made
-        msElapsed: Date.now() - execStart,
-        phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
-        degraded: true,
-      };
-      return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
-    } catch (fallbackError) {
-      const fbMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-      return { success: false, error: `All attempts exhausted including fallback: ${fbMsg}` };
-    }
+    // NO deterministic fallback (no-boilerplate mandate): template prose must
+    // never ship. Report failure so the caller's regen loop retries the whole
+    // build with this error fed back as guidance, and fails the episode at
+    // generation time if regeneration exhausts — instead of shipping boilerplate
+    // the final contract's template-collapse gate would abort the run for later.
+    const finalError = retryResult.error || leanResult.error || 'unknown error';
+    console.error(`[EncounterArchitect] All LLM attempts failed for ${input.sceneId}; refusing template fallback. Last error: ${finalError}`);
+    return { success: false, error: `All LLM attempts failed: ${finalError}` };
   }
 
   private async tryLLMAttempt(
@@ -2085,6 +2123,12 @@ RULES:
    * Deterministic fallback: builds a minimal but playable encounter from the
    * input data alone, with no LLM call. normalizeStructure fills all
    * structural fields (visual contracts, storylets, NPC states, etc).
+   *
+   * NOT CALLED IN PRODUCTION (no-boilerplate mandate, 2026-06-11): every path
+   * that shipped this template prose as a "successful" encounter was removed —
+   * generation now fails so the caller regenerates with feedback. Retained as
+   * the reference corpus for TEMPLATE_SIGNATURES (the sync test builds it to
+   * prove the detector matches the fallback prose verbatim).
    */
   private buildDeterministicFallback(input: EncounterArchitectInput): EncounterStructure {
     const protagonist = input.protagonistInfo.name || 'the protagonist';
@@ -2191,6 +2235,70 @@ RULES:
       } as EncounterBeat,
     ];
 
+    // A sustained set piece must ship ≥3 top-level beats (validateStructure
+    // enforces the floor), so the fallback splices an escalation beat between
+    // the confrontation and the decisive moment — otherwise the fallback
+    // itself fails validation and the whole episode aborts (endsong-g13 ep3).
+    if (this.isSustainedSetPieceInput(input)) {
+      const escalationBeat: EncounterBeat = {
+        id: 'beat-escalation',
+        phase: 'rising' as EscalationPhase,
+        name: 'The Escalation',
+        description: 'The pressure mounts — the first exchange settled nothing.',
+        setupText: `The first exchange settles nothing. ${npcName} comes again, harder, and ${protagonist} must hold the line as the situation escalates around ${objectPronoun}.`,
+        choices: [
+          {
+            id: 'be-c1',
+            text: `Meet the renewed assault head-on`,
+            approach: 'aggressive' as EncounterApproach,
+            impliedApproach: 'aggressive' as EncounterApproach,
+            primarySkill: skill1,
+            outcomes: {
+              success: { tier: 'success' as const, narrativeText: `${protagonist} breaks the momentum of the assault. ${npcName} falters.`, goalTicks: 2, threatTicks: 0, nextBeatId: 'beat-2' },
+              complicated: { tier: 'complicated' as const, narrativeText: `${protagonist} holds, but the effort costs ${objectPronoun} dearly.`, goalTicks: 1, threatTicks: 1, nextBeatId: 'beat-2' },
+              failure: { tier: 'failure' as const, narrativeText: `The line buckles. ${npcName} presses the advantage.`, goalTicks: 0, threatTicks: 2, nextBeatId: 'beat-2' },
+            },
+          },
+          {
+            id: 'be-c2',
+            text: `Fall back and regroup`,
+            approach: 'cautious' as EncounterApproach,
+            impliedApproach: 'cautious' as EncounterApproach,
+            primarySkill: skill2,
+            outcomes: {
+              success: { tier: 'success' as const, narrativeText: `${protagonist} trades ground for time and finds a stronger position.`, goalTicks: 2, threatTicks: 0, nextBeatId: 'beat-2' },
+              complicated: { tier: 'complicated' as const, narrativeText: `The retreat works, but something is left behind that ${protagonist} will miss.`, goalTicks: 1, threatTicks: 1, nextBeatId: 'beat-2' },
+              failure: { tier: 'failure' as const, narrativeText: `The withdrawal turns ragged. ${npcName} cuts off the path back.`, goalTicks: 0, threatTicks: 2, nextBeatId: 'beat-2' },
+            },
+          },
+          {
+            id: 'be-c3',
+            text: `Turn the chaos to your advantage`,
+            approach: 'clever' as EncounterApproach,
+            impliedApproach: 'clever' as EncounterApproach,
+            primarySkill: skill3,
+            outcomes: {
+              success: { tier: 'success' as const, narrativeText: `${protagonist} uses the confusion to shift the fight onto new terms.`, goalTicks: 2, threatTicks: 0, nextBeatId: 'beat-2' },
+              complicated: { tier: 'complicated' as const, narrativeText: `The improvisation buys room to breathe — and draws unwanted attention.`, goalTicks: 1, threatTicks: 1, nextBeatId: 'beat-2' },
+              failure: { tier: 'failure' as const, narrativeText: `The gambit collapses. ${npcName} was ready for it.`, goalTicks: 0, threatTicks: 2, nextBeatId: 'beat-2' },
+            },
+          },
+        ],
+      } as EncounterBeat;
+
+      // Route the opening beat into the escalation instead of straight to the
+      // resolution, then splice the escalation in between.
+      for (const choice of beats[0].choices || []) {
+        for (const tier of ['success', 'complicated', 'failure'] as const) {
+          const outcome = choice.outcomes?.[tier];
+          if (outcome?.nextBeatId === 'beat-2') {
+            outcome.nextBeatId = 'beat-escalation';
+          }
+        }
+      }
+      beats.splice(1, 0, escalationBeat);
+    }
+
     return {
       sceneId: input.sceneId,
       encounterType: input.encounterType,
@@ -2277,31 +2385,14 @@ RULES:
       )
     );
     if (structure.beats.length < 2 && !isTreeFormatEncounter) {
-      console.warn(`[EncounterArchitect] Only ${structure.beats.length} beat(s) returned by LLM (minimum 2); synthesizing a resolution beat (F2).`);
-      try {
-        const fallbackBeats = this.buildDeterministicFallback(input).beats;
-        if (structure.beats.length === 0) {
-          structure.beats = fallbackBeats;
-        } else {
-          const resolutionBeat = fallbackBeats[fallbackBeats.length - 1];
-          resolutionBeat.id = 'synthetic-resolution';
-          resolutionBeat.phase = 'resolution' as EscalationPhase;
-          (resolutionBeat as EncounterBeat).isTerminal = true;
-          // Route the existing beat's non-terminal outcomes into the new beat so
-          // it is reachable.
-          for (const choice of structure.beats[0].choices || []) {
-            for (const tier of ['success', 'complicated', 'failure'] as const) {
-              const outcome = choice.outcomes?.[tier];
-              if (outcome && !outcome.isTerminal && !outcome.nextSituation) {
-                outcome.nextBeatId = resolutionBeat.id;
-              }
-            }
-          }
-          structure.beats.push(resolutionBeat);
-        }
-      } catch (err) {
-        console.warn(`[EncounterArchitect] Failed to synthesize fallback beat: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      // No-boilerplate mandate: do NOT synthesize beats from the deterministic
+      // fallback (the old F2 backstop spliced TEMPLATE_SIGNATURES prose straight
+      // into the player path). A beat-starved flat encounter fails this ATTEMPT —
+      // the throw is caught by the attempt/phase retry ladder, which re-authors
+      // the encounter with this error fed back as guidance.
+      throw new Error(
+        `Flat encounter has only ${structure.beats.length} beat(s) after normalization (minimum 2); refusing template-beat synthesis — re-author with at least 2 beats.`
+      );
     }
 
     // Normalize each beat
@@ -2541,7 +2632,18 @@ RULES:
     // Convert flat nextBeatId encounters to tree-based nextSituation format.
     // This ensures both the main prompt and simplified fallback produce
     // encounters that use the tree rendering path in the UI.
-    this.convertFlatToTree(structure);
+    //
+    // EXCEPT sustained set pieces: conversion prunes every beat but the
+    // starting one, collapsing the structure to a single top-level beat —
+    // which validateStructure and EncounterSetPieceDepthValidator reject
+    // (they need ≥3 top-level beats, because the runtime converter emits one
+    // phase and one tension-curve point per top-level beat). Converting here
+    // made every attempt AND the deterministic fallback fail for sustained
+    // pieces (endsong-g13 ep3). The engine plays flat nextBeatId beats
+    // natively, so keep the flat multi-beat spine.
+    if (!this.isSustainedSetPieceInput(input)) {
+      this.convertFlatToTree(structure);
+    }
 
     if (!structure.payoffContext) {
       structure.payoffContext = this.buildDefaultPayoffContext(input);
@@ -2642,6 +2744,31 @@ RULES:
       console.warn(
         `[EncounterArchitect] Storylet "${fix.slot}" in ${structure.sceneId} routed to unplanned scene "${fix.from}" ` +
         `but the blueprint marks this scene as non-branching; converging to planned next scene "${fix.to}".`
+      );
+    }
+
+    // NO ONE-CLICK WIN — source-side structural guard (G13). The prompt forbids a
+    // ROOT-level terminal victory/partialVictory, yet the model keeps emitting a
+    // 4th root choice (a treatment_branch-gated "c4") whose success/complicated
+    // outcomes win the set-piece at depth 1 with zero consequences. Demote it into
+    // a two-step finish HERE — after convertFlatToTree, so the tree shape exists —
+    // before the draft is ever persisted, so the identical final-contract autofix
+    // (applyEncounterQualityGate → deepenRootTerminalWins) stays a redundant net
+    // rather than the only repair. Idempotent; a flat sustained-set-piece draft is
+    // detected as non-tree-routed and skipped (logged), still blocking downstream.
+    const rootWinFix = deepenStructureRootWins(
+      structure as unknown as Parameters<typeof deepenStructureRootWins>[0],
+    );
+    for (const lift of rootWinFix.lifted) {
+      console.info(
+        `[EncounterArchitect] ${structure.sceneId}: root terminal ${lift.outcome} on choice ${lift.choiceId} ` +
+        `demoted into a two-step finish (source-side one-click-win guard).`
+      );
+    }
+    for (const skip of rootWinFix.skipped) {
+      console.warn(
+        `[EncounterArchitect] ${structure.sceneId}: root terminal ${skip.outcome} on choice ${skip.choiceId} ` +
+        `left in place (flat-routed draft, embedded situation would be unplayable) — will be caught downstream.`
       );
     }
 
@@ -3116,7 +3243,7 @@ RULES:
           { type: 'score', name: 'confidence', change: 2 },
           { type: 'score', name: 'setbacks', change: 1 },
         ],
-        setsFlags: [{ flag: `encounter_${input.sceneId}_partial_victory`, value: true }],
+        setsFlags: [{ flag: `encounter_${input.sceneId}_partialVictory`, value: true }],
         nextSceneId: input.victoryNextSceneId,
       };
     }
@@ -3154,7 +3281,7 @@ RULES:
       consequences: [
         { type: 'score', name: 'resourcefulness', change: 2 },
       ],
-      setsFlags: [{ flag: `encounter_${input.sceneId}_escaped`, value: true }],
+      setsFlags: [{ flag: `encounter_${input.sceneId}_escape`, value: true }],
       nextSceneId: input.victoryNextSceneId,
     };
   }
@@ -3211,6 +3338,12 @@ ${storyVerbList}
 - **Genre**: ${input.storyContext.genre}
 - **Tone**: ${input.storyContext.tone}
 ${input.storyContext.userPrompt ? `- **User Instructions**: ${input.storyContext.userPrompt}\n` : ''}${input.memoryContext ? `\n## Pipeline Memory (Insights from Prior Generations)\n${input.memoryContext}\n` : ''}
+${input.episodeSoFarSummary ? `## Episode So Far (scenes BEFORE this encounter — continuity is MANDATORY)
+${input.episodeSoFarSummary}
+
+The encounter CONTINUES from the last scene above. Do NOT reset the timeline, re-introduce the protagonist's arrival, or treat characters the protagonist has already met as strangers. The protagonist is the player ("you") — never an NPC in this encounter.
+` : ''}${formatForbiddenRevealsSection(input.forbiddenReveals ?? [])}
+
 ## Scene Context
 - **Scene ID**: ${input.sceneId}
 - **Scene Name**: ${input.sceneName}
@@ -3694,7 +3827,7 @@ ${choiceSection}
       "consequences": [
         { "type": "score", "name": "resourcefulness", "change": 2 }
       ],
-      "setsFlags": [{ "flag": "encounter_${input.sceneId}_escaped", "value": true }],
+      "setsFlags": [{ "flag": "encounter_${input.sceneId}_escape", "value": true }],
       "nextSceneId": "${input.victoryNextSceneId || 'next-scene'}"
     }
   },
@@ -4154,31 +4287,11 @@ CRITICAL RULES:
     const phaseErrors: EncounterPhaseError[] = [];
 
     // ---- Phase 1: Opening beat ----
-    let phase1: Phase1Result;
-    try {
-      phase1 = await this.runPhase1(input, dynamicsBrief, phaseErrors);
-      console.log(`[EncounterArchitect] Phase 1 complete: ${phase1.openingBeat.choices.length} choices`);
-    } catch (p1Error) {
-      console.warn(`[EncounterArchitect] Phase 1 failed, using deterministic fallback: ${p1Error instanceof Error ? p1Error.message : p1Error}`);
-      let structure = this.buildDeterministicFallback(input);
-      structure = this.normalizeStructure(structure, input);
-      this.validateStructure(structure, input);
-      const telemetry: EncounterTelemetry = {
-        sceneId: input.sceneId,
-        mode: 'deterministic',
-        phase1Ok: false,
-        phase2: [],
-        phase3Ran: false,
-        phase3Ok: false,
-        phase4Ok: false,
-        llmCallCount: phaseErrors.length, // attempts actually issued
-        msElapsed: Date.now() - phasedStart,
-        phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
-        phaseErrors,
-        degraded: true,
-      };
-      return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
-    }
+    // NO deterministic fallback here (no-boilerplate mandate): a phase-1 failure
+    // throws so execute() falls through to the lean flow, and a total failure
+    // surfaces to the caller's regen loop — template prose must never ship.
+    const phase1 = await this.runPhase1(input, dynamicsBrief, phaseErrors);
+    console.log(`[EncounterArchitect] Phase 1 complete: ${phase1.openingBeat.choices.length} choices`);
 
     // ---- Phases 2, 3, 4 ----
     // Phase 2 runs at bounded concurrency (2) rather than full fan-out so the
@@ -4316,7 +4429,7 @@ CRITICAL RULES:
       : '';
 
     return `Generate the OPENING BEAT of a ${input.encounterType} encounter. Return ONLY valid JSON.
-
+${input.episodeSoFarSummary ? `\n## Episode So Far (continuity is MANDATORY — the encounter CONTINUES from the last scene; never reset time, re-stage arrivals, or treat known characters as strangers; the protagonist is "you", never an NPC)\n${input.episodeSoFarSummary}\n` : ''}${formatForbiddenRevealsSection(input.forbiddenReveals ?? [])}
 ## Scene
 - ID: ${input.sceneId}
 - Name: ${input.sceneName}

@@ -738,4 +738,85 @@ describe('buildPipelineConfig', () => {
 
     expect(config.imageGen?.storyboardV2?.maxPanelsPerSheet).toBe(12);
   });
+
+  it('maps each pipeline role from per-task assignments, including qaRunner', () => {
+    const config = buildPipelineConfig({
+      llmProvider: 'anthropic',
+      llmModel: 'claude-sonnet-4-6',
+      imageLlmProvider: 'anthropic',
+      imageLlmModel: 'claude-sonnet-4-6',
+      videoLlmProvider: 'anthropic',
+      videoLlmModel: 'claude-sonnet-4-6',
+      taskAssignments: {
+        architect: { provider: 'anthropic', model: 'claude-opus-4-8' },
+        scene: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+        choice: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+        qa: { provider: 'anthropic', model: 'claude-haiku-4-5' },
+        image: { provider: 'gemini', model: 'gemini-2.5-flash' },
+        video: { provider: 'openai', model: 'gpt-4o-mini' },
+      },
+      apiKey: 'anthropic-key',
+      openaiApiKey: 'openai-key',
+      geminiApiKey: 'gemini-key',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: '',
+      midapiToken: '',
+      imageProvider: 'nano-banana',
+      imageStrategy: 'all-beats',
+      panelMode: 'all-beats',
+      artStyle: '',
+      geminiSettings: {} as any,
+      midjourneySettings: {} as any,
+      generationSettings,
+      generationMode: 'advisory',
+      narrationSettings: { enabled: false } as any,
+      videoSettings: { enabled: false } as any,
+    });
+
+    expect(config.agents.storyArchitect.model).toBe('claude-opus-4-8');
+    expect(config.agents.storyArchitect.provider).toBe('anthropic');
+    expect(config.agents.sceneWriter.model).toBe('claude-sonnet-4-6');
+    expect(config.agents.choiceAuthor.model).toBe('claude-sonnet-4-6');
+    // QA decorrelates to a cheaper model within the family.
+    expect(config.agents.qaRunner?.model).toBe('claude-haiku-4-5');
+    expect(config.agents.qaRunner?.provider).toBe('anthropic');
+    expect(config.agents.qaRunner?.apiKey).toBe('anthropic-key');
+    expect(config.agents.qaRunner?.temperature).toBe(0.3);
+    // Image/video keep cross-provider freedom.
+    expect(config.agents.imagePlanner?.provider).toBe('gemini');
+    expect(config.agents.imagePlanner?.apiKey).toBe('gemini-key');
+    expect(config.agents.videoDirector?.provider).toBe('openai');
+    expect(config.agents.videoDirector?.apiKey).toBe('openai-key');
+  });
+
+  it('falls back qaRunner to the narrative model when no per-task assignments are given', () => {
+    const config = buildPipelineConfig({
+      llmProvider: 'anthropic',
+      llmModel: 'claude-opus-4-8',
+      imageLlmProvider: 'anthropic',
+      imageLlmModel: '',
+      videoLlmProvider: 'anthropic',
+      videoLlmModel: '',
+      apiKey: 'anthropic-key',
+      geminiApiKey: '',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: '',
+      midapiToken: '',
+      imageProvider: 'nano-banana',
+      imageStrategy: 'all-beats',
+      panelMode: 'all-beats',
+      artStyle: '',
+      geminiSettings: {} as any,
+      midjourneySettings: {} as any,
+      generationSettings,
+      generationMode: 'advisory',
+      narrationSettings: { enabled: false } as any,
+      videoSettings: { enabled: false } as any,
+    });
+
+    expect(config.agents.qaRunner?.provider).toBe('anthropic');
+    expect(config.agents.qaRunner?.model).toBe('claude-opus-4-8');
+  });
 });

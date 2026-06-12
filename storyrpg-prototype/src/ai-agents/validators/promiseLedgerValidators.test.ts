@@ -97,6 +97,36 @@ describe('validateNoDanglingPayoffs', () => {
     const ledger = ledgerWithHook({ sourceEpisode: 1 });
     expect(validateNoDanglingPayoffs(['within-ep1-f1'], ledger)).toHaveLength(0);
   });
+
+  it('excludes structural-flag refs the ledger never registers (bite-me-g14 2026-06-11)', () => {
+    // A textVariant tagged its branch-reconvergence residue with a callbackHookId
+    // pointing at a `treatment_branch_` axis flag. The ledger never plants these
+    // (recordFlagSet excludes them), so it can never resolve — but it's a mislabel,
+    // NOT a dangling cross-episode promise, and must not abort the Season Canon seal.
+    const ledger = ledgerWithHook({ sourceEpisode: 1 });
+    expect(validateNoDanglingPayoffs(
+      ['treatment_branch_mika_s_crossroad_read_gently_vs_read_cruelly'],
+      ledger,
+    )).toHaveLength(0);
+    // route_/tint: refs, and the `flag:`-prefixed form, are all excluded too.
+    expect(validateNoDanglingPayoffs(['route_loyal', 'tint:somber', 'flag:treatment_branch_x'], ledger)).toHaveLength(0);
+    // A genuinely unplanted (non-structural) bare name still dangles.
+    expect(validateNoDanglingPayoffs(['ghost'], ledger).map((i) => i.location)).toEqual(['payoff:ghost']);
+  });
+
+  it('resolves a bare flag-name payoff to its planted flag: hook (G14 prefix mismatch)', () => {
+    // The exact bite-me-g14 failure: the treatment plants `flag:treatment_seed_ep1_3`
+    // but a textVariant tags the payoff with the bare `treatment_seed_ep1_3`.
+    const ledger = new CallbackLedger();
+    ledger.add({
+      id: 'flag:treatment_seed_ep1_3', sourceEpisode: 1, sourceSceneId: 's1-1', sourceChoiceId: 'c1',
+      flags: ['treatment_seed_ep1_3'], summary: 'seed', payoffWindow: { minEpisode: 1, maxEpisode: 4 }, payoffCount: 0,
+    });
+    expect(validateNoDanglingPayoffs(['treatment_seed_ep1_3'], ledger)).toHaveLength(0);
+    // A genuinely unplanted bare name still dangles.
+    expect(validateNoDanglingPayoffs(['treatment_seed_ep1_9'], ledger).map((i) => i.location))
+      .toEqual(['payoff:treatment_seed_ep1_9']);
+  });
 });
 
 describe('validatePlantValidity', () => {

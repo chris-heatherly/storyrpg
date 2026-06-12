@@ -6,6 +6,9 @@ import {
   encounterOutcomeFlag,
   firstProseBeatId,
   applyOutcomeVariants,
+  canonicalEncounterFlagId,
+  canonicalizeEncounterOutcomeFlagName,
+  normalizeEncounterOutcomeFlags,
 } from './encounterOutcomeFlags';
 
 function storyWithEncounter(opts: {
@@ -83,6 +86,61 @@ describe('findEncounterOutcomeDesyncs', () => {
       reconvScene: { id: 's5', variants: [] },
     });
     expect(findEncounterOutcomeDesyncs(story)).toHaveLength(0);
+  });
+});
+
+describe('canonical flag spelling (G12)', () => {
+  it('strips the converter auto `-encounter` suffix from the id', () => {
+    expect(canonicalEncounterFlagId('treatment-enc-1-1-encounter')).toBe('treatment-enc-1-1');
+    expect(canonicalEncounterFlagId('enc-1')).toBe('enc-1');
+    expect(encounterOutcomeFlag('treatment-enc-1-1-encounter', 'escape')).toBe('encounter_treatment-enc-1-1_escape');
+  });
+
+  it('canonicalizes outcome aliases (partial_victory, escaped, defeated)', () => {
+    expect(canonicalizeEncounterOutcomeFlagName('encounter_s1-4_partial_victory')).toBe('encounter_s1-4_partialVictory');
+    expect(canonicalizeEncounterOutcomeFlagName('encounter_s1-4_escaped')).toBe('encounter_s1-4_escape');
+    expect(canonicalizeEncounterOutcomeFlagName('encounter_s1-4_defeated')).toBe('encounter_s1-4_defeat');
+    // Non-encounter flags pass through untouched.
+    expect(canonicalizeEncounterOutcomeFlagName('kylie_drank_the_dark_wine')).toBe('kylie_drank_the_dark_wine');
+    expect(canonicalizeEncounterOutcomeFlagName('blog_post_held_overnight')).toBe('blog_post_held_overnight');
+  });
+
+  it('normalizeEncounterOutcomeFlags rewrites variant conditions AND setters across the story', () => {
+    const story = storyWithEncounter({
+      outcomes: {
+        victory: { nextSceneId: 's5', consequences: [{ type: 'setFlag', flag: 'encounter_enc-scene-encounter_victory', value: true }] },
+        escape: { nextSceneId: 's5' },
+      },
+      reconvScene: {
+        id: 's5',
+        // The G12 shape: variant keyed on the SCENE id while the seeder used `<enc.id>` —
+        // dead at runtime until normalized to one spelling.
+        variants: [{ condition: { type: 'flag', flag: 'encounter_enc-scene-encounter_escaped', value: true }, text: 'You walked home fast.' }],
+      },
+    });
+    const rewrites = normalizeEncounterOutcomeFlags(story);
+    expect(rewrites).toBe(2);
+    const enc = (story.episodes[0].scenes[0] as any).encounter;
+    expect(enc.outcomes.victory.consequences[0].flag).toBe('encounter_enc-scene_victory');
+    const variant = (story.episodes[0].scenes[1] as any).beats[0].textVariants[0];
+    expect(variant.condition.flag).toBe('encounter_enc-scene_escape');
+    // Idempotent.
+    expect(normalizeEncounterOutcomeFlags(story)).toBe(0);
+  });
+
+  it('round-trip: scene-id-keyed variants now clear the desync after normalization', () => {
+    const story = storyWithEncounter({
+      outcomes: { victory: { nextSceneId: 's5' }, partialVictory: { nextSceneId: 's5' } },
+      reconvScene: {
+        id: 's5',
+        variants: [{ condition: { type: 'flag', flag: 'encounter_enc-1_partial_victory', value: true }, text: 'Favoring her ribs.' }],
+      },
+    });
+    // Even unnormalized, the detector now canonicalizes while matching:
+    expect(findEncounterOutcomeDesyncs(story)).toHaveLength(0);
+    normalizeEncounterOutcomeFlags(story);
+    const variant = (story.episodes[0].scenes[1] as any).beats[0].textVariants[0];
+    expect(variant.condition.flag).toBe('encounter_enc-1_partialVictory');
   });
 });
 

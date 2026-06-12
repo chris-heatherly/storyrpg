@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EncounterQualityValidator, applyEncounterQualityGate } from './EncounterQualityValidator';
+import { EncounterQualityValidator, applyEncounterQualityGate, scanEncounterTemplateProse } from './EncounterQualityValidator';
 import { TEMPLATE_SIGNATURES } from '../agents/EncounterArchitect';
 import type { Story } from '../../types';
 
@@ -74,6 +74,19 @@ describe('EncounterQualityValidator', () => {
 
   it('exposes a non-empty signature list', () => {
     expect(TEMPLATE_SIGNATURES.length).toBeGreaterThan(5);
+  });
+
+  it('scanEncounterTemplateProse (generation-time acceptance check) finds hits and clears on bespoke prose', () => {
+    // The same scan ContentGenerationPhase runs before ACCEPTING an encounter
+    // (no-boilerplate mandate): hits here trigger regen-with-feedback, and an
+    // exhausted regen with hits fails the episode at generation time.
+    expect(scanEncounterTemplateProse(bespokeEncounter(3))).toEqual([]);
+    const enc = bespokeEncounter(3);
+    enc.phases[0].beats[0].setupText = 'This is the moment that decides everything.';
+    (enc.outcomes as any).victory.outcomeText = 'An unexpected solution presents itself.';
+    const hits = scanEncounterTemplateProse(enc);
+    expect(hits).toContain('This is the moment that decides everything');
+    expect(hits).toContain('An unexpected solution presents itself');
   });
 
   it('detects template prose buried DEEP in a nextSituation branch (depth-limit regression)', () => {

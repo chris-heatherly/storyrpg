@@ -62,6 +62,14 @@ const TINT_TO_IDENTITY: Record<string, Partial<IdentityProfile>> = {
 };
 
 /**
+ * The canonical tint vocabulary — the ONLY tint flags that shift identity.
+ * Exported so the generator can constrain/normalize authored tints to this set
+ * (G12 shipped 28 tint flags, zero of which matched these keys, so the entire
+ * tint tier of the consequence budget was inert).
+ */
+export const KNOWN_TINT_FLAGS: readonly string[] = Object.keys(TINT_TO_IDENTITY);
+
+/**
  * Apply identity shifts from a set of consequences.
  * Called after each choice is made.
  */

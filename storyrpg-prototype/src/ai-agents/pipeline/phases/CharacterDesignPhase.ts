@@ -139,6 +139,42 @@ export class CharacterDesignPhase {
       message: `Created ${result.data.characters.length} character profiles`,
     });
 
+    // G12: a freeform treatment leaves brief.protagonist as documentParser's
+    // placeholder ("The Hero", he/him) while the bible carries the real identity
+    // (Kylie Marinescu, she/her). Every downstream consumer — SceneWriter/
+    // EncounterArchitect protagonist context, the pronoun resolver, the final
+    // contract — reads brief.protagonist, so the placeholder shipped he/him
+    // pronouns into encounter clocks and disarmed the pronoun repair entirely.
+    // Sync the brief from the bible's protagonist entry (single source of truth
+    // post-invariant) before anything else consumes it.
+    const bibleProtagonist = result.data.characters.find(c => c.role === 'protagonist');
+    if (bibleProtagonist?.name) {
+      const changes: string[] = [];
+      if (brief.protagonist.name !== bibleProtagonist.name) {
+        changes.push(`name "${brief.protagonist.name}" → "${bibleProtagonist.name}"`);
+        brief.protagonist.name = bibleProtagonist.name;
+      }
+      if (bibleProtagonist.id && brief.protagonist.id !== bibleProtagonist.id) {
+        changes.push(`id "${brief.protagonist.id}" → "${bibleProtagonist.id}"`);
+        brief.protagonist.id = bibleProtagonist.id;
+      }
+      const rawPronouns = (bibleProtagonist as { pronouns?: string }).pronouns?.trim().toLowerCase();
+      const biblePronouns = rawPronouns === 'he/him' || rawPronouns === 'she/her' || rawPronouns === 'they/them'
+        ? rawPronouns
+        : undefined;
+      if (biblePronouns && brief.protagonist.pronouns !== biblePronouns) {
+        changes.push(`pronouns "${brief.protagonist.pronouns}" → "${biblePronouns}"`);
+        brief.protagonist.pronouns = biblePronouns;
+      }
+      if (changes.length > 0) {
+        context.emit({
+          type: 'warning',
+          phase: 'character_design',
+          message: `brief.protagonist synced from character bible (placeholder or drift): ${changes.join('; ')}`,
+        });
+      }
+    }
+
     return result.data;
   }
 }

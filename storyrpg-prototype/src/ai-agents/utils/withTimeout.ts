@@ -82,7 +82,19 @@ export const PIPELINE_TIMEOUTS = {
   // Dedicated budget above llmAgent so a large blueprint isn't killed mid-
   // generation (the "StoryArchitect.execute timed out after 600s" failure).
   storyArchitect: 20 * 60_000,
-  encounterAgent: 10 * 60_000,
+  // EncounterArchitect.execute runs a MULTI-PHASE flow, so this outer budget must
+  // exceed the SUM of its internal phase timeouts, not a single call. The flow is
+  // phase 1 SEQUENTIAL (180s) → then phases 2/3/4 in parallel, where phase 2 fans
+  // out one call per opening-beat choice at concurrency 2. With the enforced
+  // minimum of 3 choices that's 2 sequential waves × 240s = 480s. So a clean run
+  // is already 180 + 480 = 660s — over the old 10-min cap — and one phase retry or
+  // a slower adaptive-thinking model pushes it higher. (The old 10-min budget was
+  // sized for the original 120s/90s phase timeouts that summed to ~420s; raising
+  // the phase timeouts to 180/240 without raising this cap is what made every
+  // 3-choice encounter time out at "600s".) A genuine hang is still caught per
+  // phase by each runPhaseWithRetry's own abort, so this only bounds the overall
+  // orchestration. Matched to storyArchitect's 20-min budget with headroom.
+  encounterAgent: 20 * 60_000,
   imageGeneration: 3 * 60_000,
   storyboard: 15 * 60_000,
   validateAndRegenerate: 5 * 60_000,

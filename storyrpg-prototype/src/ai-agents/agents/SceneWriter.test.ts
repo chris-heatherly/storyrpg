@@ -383,6 +383,93 @@ describe('SceneWriter structural guards', () => {
     expect(normalized.beats[2].nextBeatId).toBeUndefined();
   });
 
+  it('canonicalizes a bare textVariant callbackHookId to its planted flag: hook id', () => {
+    const writer = createWriter();
+
+    const normalized = (writer as any).normalizeContent(
+      {
+        sceneId: 'scene-7',
+        sceneName: 'The Reckoning',
+        beats: [
+          {
+            id: 'beat-1',
+            text: 'The corridor still smells of smoke.',
+            textVariants: [
+              {
+                // The bug (bite-me-g14): agent copies the condition flag NAME into
+                // callbackHookId instead of the planted `flag:`-prefixed hook id.
+                condition: { type: 'flag', flag: 'treatment_seed_ep1_3', value: true },
+                text: 'The key card you palmed back then still opens the door.',
+                callbackHookId: 'treatment_seed_ep1_3',
+              },
+              {
+                // An already-canonical id must pass through untouched.
+                condition: { type: 'flag', flag: 'protected_brightwell', value: true },
+                text: 'Brightwell meets your eye, remembering.',
+                callbackHookId: 'flag:protected_brightwell',
+              },
+            ],
+          },
+        ],
+        startingBeatId: 'beat-1',
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      {
+        sceneBlueprint: { id: 'scene-7', name: 'The Reckoning' },
+        unresolvedCallbacks: [
+          { id: 'flag:treatment_seed_ep1_3', sourceEpisode: 1, summary: 'You palmed the key card.', flags: ['treatment_seed_ep1_3'] },
+          { id: 'flag:protected_brightwell', sourceEpisode: 1, summary: 'You shielded Brightwell.', flags: ['protected_brightwell'] },
+        ],
+      }
+    );
+
+    const variants = normalized.beats[0].textVariants;
+    expect(variants[0].callbackHookId).toBe('flag:treatment_seed_ep1_3');
+    expect(variants[1].callbackHookId).toBe('flag:protected_brightwell');
+  });
+
+  it('drops a structural-flag callbackHookId (branch-axis mislabel) but keeps condition.flag', () => {
+    const writer = createWriter();
+
+    const normalized = (writer as any).normalizeContent(
+      {
+        sceneId: 'scene-1',
+        sceneName: 'The Sachet',
+        beats: [
+          {
+            id: 'beat-1',
+            text: 'Stela slides the sachet into your palm.',
+            textVariants: [
+              {
+                // The bug (bite-me-g14 2026-06-11): branch-reconvergence residue gated
+                // on a real seed flag was ALSO tagged with a callbackHookId pointing at
+                // a `treatment_branch_` axis flag — which the ledger never plants, so the
+                // dangling-payoff gate aborted the Season Canon seal.
+                condition: { type: 'flag', flag: 'treatment_seed_ep1_1', value: true },
+                text: "Stela's fingers brush the quartz at your hip when she slides the sachet into your palm.",
+                callbackHookId: 'treatment_branch_mika_s_crossroad_read_gently_vs_read_cruelly',
+              },
+            ],
+          },
+        ],
+        startingBeatId: 'beat-1',
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      { sceneBlueprint: { id: 'scene-1', name: 'The Sachet' } }
+    );
+
+    const variant = normalized.beats[0].textVariants[0];
+    expect(variant.callbackHookId).toBeUndefined();
+    // The legitimate branch-residue gating is preserved.
+    expect(variant.condition.flag).toBe('treatment_seed_ep1_1');
+  });
+
   it('normalizes optional sceneTakeaways and transitionIn metadata', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',

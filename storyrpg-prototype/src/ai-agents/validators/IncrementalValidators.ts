@@ -1801,6 +1801,9 @@ export function aggregateValidationResults(
   regenerationRequests: { scene: number; choices: number; encounter: number };
   totalIssues: { voice: number; stakes: number; sensitivity: number; continuity: number; encounter: number; craft: number };
   averageValidationTime: number;
+  /** Honesty label (G12): these are heuristic per-scene checks, NOT the LLM QA pass. */
+  mode: 'heuristic-incremental';
+  caveat: string;
 } {
   const regenerationRequests = { scene: 0, choices: 0, encounter: 0 };
   const totalIssues = { voice: 0, stakes: 0, sensitivity: 0, continuity: 0, encounter: 0, craft: 0 };
@@ -1827,5 +1830,10 @@ export function aggregateValidationResults(
     averageValidationTime: results.length > 0
       ? results.reduce((sum, r) => sum + r.validationTimeMs, 0) / results.length
       : 0,
+    mode: 'heuristic-incremental',
+    caveat:
+      'Per-scene heuristic checks only (no LLM): a clean aggregate does NOT certify prose quality, '
+      + 'pronoun/POV integrity in encounter JSON, or canon — those run at the final-story contract. '
+      + 'G12 shipped a broken encounter through an all-green incremental aggregate.',
   };
 }

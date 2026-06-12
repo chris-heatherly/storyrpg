@@ -17,6 +17,7 @@
  */
 
 import { DEFAULT_SKILLS } from '../../../constants/pipeline';
+import { buildForbiddenReveals } from '../../utils/forbiddenReveals';
 import { BEST_OF_N_DEFAULTS, INCREMENTAL_VALIDATION_DEFAULTS } from '../../../constants/validation';
 import { GrowthCurveEntry, buildGrowthTemplates } from '../../../engine/growthConsequenceBuilder';
 import { ThreadLedger } from '../../../types/narrativeThread';
@@ -54,6 +55,7 @@ import {
   SceneValidationResult,
   aggregateValidationResults,
 } from '../../validators';
+import { scanEncounterTemplateProse } from '../../validators/EncounterQualityValidator';
 import { CallbackLedger } from '../callbackLedger';
 import { UnresolvedCallbackForPrompt, recordScenePayoffs } from '../callbackOrchestration';
 import { capabilityNoteForProfile } from '../characterCanonFacts';
@@ -785,6 +787,14 @@ export class ContentGenerationPhase {
               return fact ? { infoId, fact } : undefined;
             })
             .filter((d): d is { infoId: string; fact: string } => Boolean(d)),
+          // G12 (forbidden reveals): the inverse of revealDirectives — ledger facts
+          // still withheld at this episode, so the writer cannot burn a season secret
+          // early (Carmen unmasked in ep2, the staged rescue confirmed in ep2, …).
+          forbiddenReveals: buildForbiddenReveals(
+            brief.seasonPlan?.informationLedger,
+            brief.episode?.number ?? 1,
+            sceneBlueprint.revealsInfoIds,
+          ),
           // B1 (Season Canon read-back): serve the sealed canon as authoritative
           // "do not contradict" context so prior-episode facts constrain this prose.
           establishedCanon: this.deps.establishedCanonForPrompt(brief.episode?.number),
@@ -2041,6 +2051,17 @@ export class ContentGenerationPhase {
           });
         }
 
+        // G12: episode-so-far summary — without it the architect re-staged the
+        // premise from scratch (timeline rewound to arrival night, established
+        // relationships erased, protagonist seated as an NPC).
+        const sceneOrder = blueprint.scenes || [];
+        const encounterSceneIdx = sceneOrder.findIndex((sc) => sc.id === sceneBlueprint.id);
+        const episodeSoFarSummary = encounterSceneIdx > 0
+          ? sceneOrder.slice(0, encounterSceneIdx)
+              .map((sc, i) => `${i + 1}. ${sc.name}${sc.location ? ` [${sc.location}]` : ''}: ${(sc.description || '').replace(/\s+/g, ' ').slice(0, 220)}`)
+              .join('\n')
+          : undefined;
+
         const encounterInput: EncounterArchitectInput = {
           sceneId: sceneBlueprint.id,
           sceneName: sceneBlueprint.name,
@@ -2106,6 +2127,12 @@ export class ContentGenerationPhase {
           isBranchPoint: plannedEnc?.isBranchPoint
             ?? (leadsToScenes.length > 0 ? new Set(leadsToScenes).size > 1 : undefined),
           priorStateContext,
+          episodeSoFarSummary,
+          forbiddenReveals: buildForbiddenReveals(
+            brief.seasonPlan?.informationLedger,
+            brief.episode?.number ?? 1,
+            sceneBlueprint.revealsInfoIds,
+          ),
           memoryContext: this.deps.cachedPipelineMemory || undefined,
           storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
           seasonAnchors: brief.seasonPlan?.anchors,
@@ -2167,35 +2194,66 @@ export class ContentGenerationPhase {
           .filter(c => c.id !== brief.protagonist.id)
           .map(c => ({ id: c.id, name: c.name }));
 
-        // EncounterArchitect.execute() uses phased generation with fallback:
-        //   Phase 1: Opening beat (120s timeout)
-        //   Phase 2a/2b/2c: Branch situations (3 parallel, 120s each)
-        //   Phase 3: Enrichment (90s)
-        //   Phase 4: Storylets (90s)
-        //   Legacy fallback: lean prompt → retry → deterministic
-        // A safety-net timeout is kept for truly pathological cases.
+        // EncounterArchitect.execute() uses phased generation:
+        //   Phase 1: Opening beat (180s timeout, sequential)
+        //   Phase 2: Branch situations — one call per opening-beat choice, run at
+        //            concurrency 2 (240s each, so ≥3 choices = 2 sequential waves)
+        //   Phase 3: Enrichment (180s, only when priorStateContext is present)
+        //   Phase 4: Storylets (180s) — phases 2/3/4 run in parallel after phase 1
+        //   Lean flow on phased failure: lean prompt → retry with feedback
+        // The outer PIPELINE_TIMEOUTS.encounterAgent budget must cover phase 1 PLUS
+        // the parallel block (dominated by phase 2's waves) — see withTimeout.ts.
+        // Each phase still aborts on its own timeout, so a true hang fails fast there.
+        //
+        // NO-BOILERPLATE MANDATE: the architect no longer ships a deterministic
+        // template fallback — a total failure surfaces as a throw/success:false.
+        // Give it one more FULL attempt with the failure fed back as guidance
+        // (each attempt already retries internally) before failing the episode
+        // at generation time, where a retry is cheap — never 90 minutes later
+        // at the final contract.
         let encounterResult: AgentResponse<EncounterStructure> | null = null;
-        try {
-          encounterResult = await withTimeout(
-            this.deps.encounterArchitect.execute(encounterInput, playerRelationships, allNpcInfos),
-            PIPELINE_TIMEOUTS.encounterAgent,
-            `EncounterArchitect.execute(${sceneBlueprint.id})`,
-            () => {
-              console.error(
-                `[Pipeline] EncounterArchitect safety-net timeout for ${sceneBlueprint.id}: ${JSON.stringify(encounterInputSummary)}`
-              );
+        let lastEncounterFailure: string | undefined;
+        const maxEncounterAttempts = 2;
+        for (let encAttempt = 1; encAttempt <= maxEncounterAttempts; encAttempt++) {
+          const attemptInput: EncounterArchitectInput = lastEncounterFailure
+            ? {
+                ...encounterInput,
+                storyContext: {
+                  ...encounterInput.storyContext,
+                  userPrompt: `${encounterInput.storyContext.userPrompt || ''}\n\nPREVIOUS ATTEMPT FAILED: ${lastEncounterFailure}\nAddress the failure and return the complete, valid encounter JSON.`,
+                },
+              }
+            : encounterInput;
+          try {
+            const attemptResult = await withTimeout(
+              this.deps.encounterArchitect.execute(attemptInput, playerRelationships, allNpcInfos),
+              PIPELINE_TIMEOUTS.encounterAgent,
+              `EncounterArchitect.execute(${sceneBlueprint.id}${encAttempt > 1 ? ` attempt-${encAttempt}` : ''})`,
+              () => {
+                console.error(
+                  `[Pipeline] EncounterArchitect safety-net timeout for ${sceneBlueprint.id}: ${JSON.stringify(encounterInputSummary)}`
+                );
+              }
+            );
+            if (attemptResult.success && attemptResult.data) {
+              encounterResult = attemptResult;
+              break;
             }
-          );
-        } catch (encErr) {
-          const encErrMsg = encErr instanceof Error ? encErr.message : String(encErr);
-          console.error(`[Pipeline] Encounter generation threw for ${sceneBlueprint.id}: ${encErrMsg}`);
+            lastEncounterFailure = attemptResult.error || 'EncounterArchitect returned no data';
+          } catch (encErr) {
+            lastEncounterFailure = encErr instanceof Error ? encErr.message : String(encErr);
+          }
+          console.error(`[Pipeline] Encounter generation attempt ${encAttempt}/${maxEncounterAttempts} failed for ${sceneBlueprint.id}: ${lastEncounterFailure}`);
           context.emit({
             type: 'warning',
             phase: 'encounters',
-            message: `Encounter generation failed for ${sceneBlueprint.id}: ${encErrMsg}`,
+            message: `Encounter generation attempt ${encAttempt}/${maxEncounterAttempts} failed for ${sceneBlueprint.id}: ${lastEncounterFailure}`,
           });
+        }
+
+        if (!encounterResult) {
           throw new PipelineError(
-            `Encounter generation failed for ${sceneBlueprint.id}: ${encErrMsg}`,
+            `Encounter generation failed for ${sceneBlueprint.id} after ${maxEncounterAttempts} full attempt(s): ${lastEncounterFailure}`,
             'encounters',
             {
               agent: 'EncounterArchitect',
@@ -2209,29 +2267,6 @@ export class ContentGenerationPhase {
           );
         }
 
-        if (encounterResult && !encounterResult.success && !encounterResult.data) {
-          const encFailMsg = `Encounter Architect failed on ${sceneBlueprint.id}: ${encounterResult.error}`;
-          console.error(`[Pipeline] ${encFailMsg}`);
-          context.emit({
-            type: 'warning',
-            phase: 'encounters',
-            message: encFailMsg,
-          });
-          throw new PipelineError(
-            encFailMsg,
-            'encounters',
-            {
-              agent: 'EncounterArchitect',
-              context: {
-                sceneId: sceneBlueprint.id,
-                sceneName: sceneBlueprint.name,
-                encounterType: sceneBlueprint.encounterType,
-                failureKind: 'content',
-              },
-            }
-          );
-        }
-        
         // Only register encounter + run validation if EncounterArchitect succeeded
         if (encounterResult?.success && encounterResult.data) {
           encounters.set(sceneBlueprint.id, encounterResult.data);
@@ -2324,9 +2359,25 @@ export class ContentGenerationPhase {
                 });
               }
 
-              // === KARPATHY LOOP: regenerate on a real failure OR a collision. ===
+              // NO-BOILERPLATE MANDATE: scan the full encounter tree for template
+              // prose at GENERATION time (the final contract's template-collapse
+              // gate runs this same scan 90 minutes later and hard-aborts the run;
+              // catching it here makes it a cheap per-scene regen instead). The
+              // substring scan is a superset of the phase-4 hash-match collisions:
+              // it also catches gap-filled default storylets and partially-edited
+              // template fragments anywhere in the tree.
+              let templateHits = scanEncounterTemplateProse(encounters.get(sceneBlueprint.id));
+              if (templateHits.length > 0) {
+                context.emit({
+                  type: 'warning',
+                  phase: 'encounter',
+                  message: `Encounter ${sceneBlueprint.id} contains ${templateHits.length} template-prose signature(s) — regeneration required (template prose must never ship)`,
+                });
+              }
+
+              // === KARPATHY LOOP: regenerate on a real failure, a collision, or template prose. ===
               if (
-                (sceneValidation.regenerationRequested === 'encounter' || phase4Collisions.length > 0) &&
+                (sceneValidation.regenerationRequested === 'encounter' || phase4Collisions.length > 0 || templateHits.length > 0) &&
                 incrementalConfig.encounterValidation &&
                 shouldAttemptRemediation(this.deps.remediationBudget)
               ) {
@@ -2351,11 +2402,14 @@ export class ContentGenerationPhase {
                   const collisionGuidance = phase4Collisions.length > 0
                     ? `\n\nThese outcomes shipped identical fallback prose and MUST be authored as distinct, outcome-specific scenes: ${phase4Collisions.join(', ')}.`
                     : '';
+                  const templateGuidance = templateHits.length > 0
+                    ? `\n\nThe previous attempt contained GENERIC TEMPLATE PROSE that must be replaced with bespoke content grounded in this scene's stakes, setting, and characters. Offending fragments: ${templateHits.slice(0, 5).map(t => `"${t}"`).join(', ')}. Author every player-facing string (setup, choices, outcomes, storylets) specifically for this encounter.`
+                    : '';
                   const regenEncounterInput: EncounterArchitectInput = {
                     ...encounterInput,
                     storyContext: {
                       ...encounterInput.storyContext,
-                      userPrompt: `${encounterInput.storyContext.userPrompt || ''}\n\nCRITICAL ENCOUNTER FIXES REQUIRED:\n${issueDescriptions}\n\nEnsure the encounter has ${!encounterValidation.hasVictoryPath ? 'a clear victory path, ' : ''}${!encounterValidation.hasDefeatPath ? 'a clear defeat path, ' : ''}proper skill checks, and complete outcome branches.${collisionGuidance}`,
+                      userPrompt: `${encounterInput.storyContext.userPrompt || ''}\n\nCRITICAL ENCOUNTER FIXES REQUIRED:\n${issueDescriptions}\n\nEnsure the encounter has ${!encounterValidation.hasVictoryPath ? 'a clear victory path, ' : ''}${!encounterValidation.hasDefeatPath ? 'a clear defeat path, ' : ''}proper skill checks, and complete outcome branches.${collisionGuidance}${templateGuidance}`,
                     },
                   };
 
@@ -2377,10 +2431,12 @@ export class ContentGenerationPhase {
 
                     const regenValidation = this.deps.incrementalValidator!.validators.encounter.validateEncounter(regenEncounterResult.data);
                     const regenCollisions = this.deps.getPhase4DefaultCollisions(regenEncounterResult.metadata);
+                    const regenTemplateHits = scanEncounterTemplateProse(regenEncounterResult.data);
 
                     if (regenValidation.passed ||
                         regenValidation.issues.length < encounterValidation.issues.length ||
-                        regenCollisions.length < phase4Collisions.length) {
+                        regenCollisions.length < phase4Collisions.length ||
+                        regenTemplateHits.length < templateHits.length) {
                       encounters.set(sceneBlueprint.id, regenEncounterResult.data);
                       this.deps.captureEncounterTelemetry(regenEncounterResult.metadata, sceneBlueprint.id);
                       // overallPassed is driven only by the real validator —
@@ -2404,11 +2460,13 @@ export class ContentGenerationPhase {
                       context.emit({
                         type: 'debug',
                         phase: 'encounters',
-                        message: `Encounter ${sceneBlueprint.id} regenerated (issues: ${encounterValidation.issues.length} -> ${regenValidation.issues.length}, collisions: ${phase4Collisions.length} -> ${regenCollisions.length})`,
+                        message: `Encounter ${sceneBlueprint.id} regenerated (issues: ${encounterValidation.issues.length} -> ${regenValidation.issues.length}, collisions: ${phase4Collisions.length} -> ${regenCollisions.length}, template hits: ${templateHits.length} -> ${regenTemplateHits.length})`,
                       });
                       phase4Collisions = regenCollisions;
-                      // Stop only once it both passes and is collision-free.
-                      if (regenValidation.passed && phase4Collisions.length === 0) { encounterAccepted = true; break; }
+                      templateHits = regenTemplateHits;
+                      // Stop only once it passes, is collision-free, AND carries
+                      // zero template prose (no-boilerplate mandate).
+                      if (regenValidation.passed && phase4Collisions.length === 0 && templateHits.length === 0) { encounterAccepted = true; break; }
                       Object.assign(encounterValidation, regenValidation);
                     } else {
                       context.emit({
@@ -2435,6 +2493,31 @@ export class ContentGenerationPhase {
                     ? `Encounter ${sceneBlueprint.id} regenerated; passed`
                     : `Encounter ${sceneBlueprint.id} regen exhausted; kept best available`,
                 });
+              }
+
+              // NO-BOILERPLATE MANDATE: an encounter with template prose may
+              // never ship. If regeneration exhausted (or never ran — budget
+              // dry / regen disabled) with signatures still present, fail the
+              // EPISODE here at generation time. Shipping it would guarantee a
+              // run-level abort at the final contract's template-collapse gate
+              // after every remaining episode had been paid for. Validation
+              // ISSUES without template prose keep the existing ship-with-
+              // advisory behavior — only boilerplate is a hard no-ship.
+              if (templateHits.length > 0) {
+                throw new PipelineError(
+                  `Encounter ${sceneBlueprint.id} still contains template prose after regeneration (${templateHits.slice(0, 3).map(t => `"${t.slice(0, 40)}…"`).join(', ')}). Template prose must never ship — failing at generation time.`,
+                  'encounters',
+                  {
+                    agent: 'EncounterArchitect',
+                    context: {
+                      sceneId: sceneBlueprint.id,
+                      sceneName: sceneBlueprint.name,
+                      encounterType: sceneBlueprint.encounterType,
+                      failureKind: 'content',
+                      templateSignatures: templateHits,
+                    },
+                  }
+                );
               }
             }
           }

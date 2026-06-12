@@ -50,11 +50,15 @@ describe('DivergenceValidator', () => {
               choice({
                 id: 'c-help',
                 consequences: [{ type: 'setFlag', flag: 'helped', value: true }],
+                // G12: divergence is measured by EXPERIENCE (rendered prose +
+                // felt state), not raw flags — give the branch distinct prose.
+                outcomeTexts: { success: 'You take her hand and pull her up.', partial: 'You reach; she hesitates.', failure: 'Your hand closes on air.' },
                 nextSceneId: 'mid',
               }),
               choice({
                 id: 'c-refuse',
                 consequences: [{ type: 'setFlag', flag: 'refused', value: true }],
+                outcomeTexts: { success: 'You step back into the crowd alone.', partial: 'You half-turn away.', failure: 'You freeze in place.' },
                 nextSceneId: 'mid',
               }),
             ],
@@ -131,5 +135,29 @@ describe('DivergenceValidator', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].message).toContain('cosmetic branching');
     expect(result.score).toBeLessThan(100);
+  });
+});
+
+describe('DivergenceValidator — G12 write-only flags are cosmetic', () => {
+  it('terminals distinguished ONLY by unread flags share an experience fingerprint', () => {
+    const scenes: Scene[] = [
+      scene({
+        id: 'start',
+        beats: [
+          beat({
+            id: 'b-start',
+            choices: [
+              // Identical prose, write-only flags — the g12 shape that gamed ratio 1.0.
+              choice({ id: 'c-a', consequences: [{ type: 'setFlag', flag: 'only_a', value: true }], outcomeTexts: { success: 'You nod.', partial: 'You nod.', failure: 'You nod.' } }),
+              choice({ id: 'c-b', consequences: [{ type: 'setFlag', flag: 'only_b', value: true }], outcomeTexts: { success: 'You nod.', partial: 'You nod.', failure: 'You nod.' } }),
+            ],
+          }),
+        ],
+      }),
+    ];
+    const result = new DivergenceValidator().validate({ episode: episode(scenes, 'start') });
+    expect(result.metrics.totalTerminals).toBe(2);
+    expect(result.metrics.distinctFingerprints).toBe(1); // experience: identical
+    expect(result.metrics.distinctStateFingerprints).toBe(2); // raw state: still distinct (telemetry)
   });
 });

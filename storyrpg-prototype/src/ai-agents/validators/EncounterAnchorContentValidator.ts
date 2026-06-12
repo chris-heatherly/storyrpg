@@ -170,6 +170,42 @@ export function collectReaderFacingTexts(scene: Scene): string[] {
 }
 
 /**
+ * Reader-facing encounter META texts that {@link collectReaderFacingTexts} does not
+ * cover: clock names/descriptions, stakes, encounter-level outcomes, and the nested
+ * choice-tree narrativeTexts. G12 shipped misgendered goalClock/stakes prose and
+ * third-person outcome/storylet prose in exactly these fields — the POV/pronoun
+ * scans need them. Kept separate from collectReaderFacingTexts so the anchor-
+ * depiction semantics there are unchanged.
+ */
+export function collectEncounterMetaTexts(scene: Scene): string[] {
+  const enc = scene.encounter as unknown as Record<string, unknown> | undefined;
+  if (!enc) return [];
+  const texts: string[] = [];
+  const KEYS = new Set([
+    'narrativeText', 'outcomeText', 'setupText', 'escalationText',
+    'description', 'victory', 'defeat', 'onSuccess', 'onFailure',
+  ]);
+  const seen = new Set<object>();
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (typeof value === 'string') {
+        if (KEYS.has(key) && isReaderFacingText(value)) texts.push(value);
+      } else if (value && typeof value === 'object') {
+        visit(value);
+      }
+    }
+  };
+  visit(enc);
+  return texts;
+}
+
+/**
  * Authored required beats bound to a planned encounter scene — both the scene-level
  * {@link PlannedScene.requiredBeats} and the encounter-level
  * {@link PlannedSceneEncounter.requiredBeats}. `connective`-tier beats are excluded

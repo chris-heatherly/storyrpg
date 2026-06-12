@@ -24,6 +24,8 @@
 import type { Story } from '../../types';
 import { findTemplateSignatures } from '../agents/EncounterArchitect';
 import { computeAuthoredCoverage, isClockUnderCovered, shrinkClockToCoverage } from '../pipeline/encounterRemediation';
+import { analyzeEncounterDepth, deepenRootTerminalWins, shrinkClockToAttainable } from '../utils/encounterDepthContract';
+import { isGateEnabled } from '../remediation/gateDefaults';
 import type { FinalStoryContractIssue } from './FinalStoryContractValidator';
 
 /** Per-scene encounter telemetry the pipeline can optionally supply. */
@@ -81,6 +83,30 @@ function collectEncounterProse(node: unknown, out: string[], depth = 0): void {
   }
 }
 
+/** All player-facing prose strings in an encounter tree (judge/scan input). */
+export function collectEncounterProseStrings(encounter: unknown): string[] {
+  const prose: string[] = [];
+  collectEncounterProse(encounter, prose);
+  return prose;
+}
+
+/**
+ * Template signatures present anywhere in an encounter's player-facing prose.
+ * Shared by this validator (final contract, defense-in-depth) and by
+ * ContentGenerationPhase's generation-time acceptance check (no-boilerplate
+ * mandate: an encounter is never ACCEPTED while any signature remains, so
+ * template prose can't survive to the final contract in the first place).
+ */
+export function scanEncounterTemplateProse(encounter: unknown): string[] {
+  const prose: string[] = [];
+  collectEncounterProse(encounter, prose);
+  const found = new Set<string>();
+  for (const text of prose) {
+    for (const sig of findTemplateSignatures(text)) found.add(sig);
+  }
+  return [...found];
+}
+
 export class EncounterQualityValidator {
   validate(input: EncounterQualityInput): EncounterQualityReport {
     const blockingIssues: FinalStoryContractIssue[] = [];
@@ -92,12 +118,7 @@ export class EncounterQualityValidator {
         if (!encounter) continue;
 
         // (1) Template-signature scan — reliable, telemetry-independent.
-        const prose: string[] = [];
-        collectEncounterProse(encounter, prose);
-        const found = new Set<string>();
-        for (const text of prose) {
-          for (const sig of findTemplateSignatures(text)) found.add(sig);
-        }
+        const found = new Set<string>(scanEncounterTemplateProse(encounter));
         if (found.size > 0) {
           blockingIssues.push({
             type: 'encounter_template_collapse',
@@ -116,6 +137,79 @@ export class EncounterQualityValidator {
         // inside outcomes (not counted as separate phases), so the coverage
         // heuristic would undercount and false-positive. A degraded encounter
         // genuinely lost those branches, so the undercount is real there.
+        // (3) Depth contract (G12): a root-level terminal victory makes the
+        // bottleneck set-piece winnable in one click; a goal clock no authored
+        // path can fill renders an objective that never completes. The clock
+        // half is autofixed (shrinkClockToAttainable) by applyEncounterQualityGate;
+        // the one-click win needs regen, so it blocks under the depth gate.
+        {
+          const depth = analyzeEncounterDepth(encounter as never);
+          for (const win of depth.oneClickWins) {
+            const issue = {
+              type: 'encounter_one_click_win' as const,
+              severity: (isGateEnabled('GATE_ENCOUNTER_SETPIECE_DEPTH') ? 'error' : 'warning') as 'error' | 'warning',
+              message: `Encounter in scene "${scene.id}" can be won in a single click: root choice "${win.choiceId}" is a terminal ${win.outcome}${win.hasConsequences ? '' : ' with zero consequences'}. The set-piece has no middle.`,
+              episodeId: episode.id,
+              episodeNumber: episode.number,
+              sceneId: scene.id,
+              validator: 'EncounterQualityValidator',
+              suggestion: 'Terminal victory/partialVictory must sit at least two choice layers deep, and every terminal must carry consequences.',
+            };
+            if (issue.severity === 'error') blockingIssues.push(issue);
+            else warnings.push(issue);
+          }
+          if (depth.maxGoalTicks > 0 && depth.goalSegments > depth.maxGoalTicks) {
+            warnings.push({
+              type: 'encounter_clock_coverage_gap',
+              severity: 'warning',
+              message: `Encounter in scene "${scene.id}" has a ${depth.goalSegments}-segment goal clock but the best authored path ticks only ${depth.maxGoalTicks} — the objective can never visibly complete. Autofix shrinks the clock to attainable.`,
+              episodeId: episode.id,
+              episodeNumber: episode.number,
+              sceneId: scene.id,
+              validator: 'EncounterQualityValidator',
+              suggestion: 'Author enough goalTicks across the tree, or let shrinkClockToAttainable size the clock honestly.',
+            });
+          }
+        }
+
+        // (4) Skill monoculture inside the encounter tree (G12: perception held
+        // 57% of slots across the season's encounters — "always pick perception"
+        // becomes the meta). Advisory; the architect prompt now caps this upstream.
+        {
+          const skillCounts = new Map<string, number>();
+          let slots = 0;
+          const seen = new Set<object>();
+          const tally = (node: unknown): void => {
+            if (!node || typeof node !== 'object' || seen.has(node)) return;
+            seen.add(node as object);
+            if (Array.isArray(node)) { for (const n of node) tally(n); return; }
+            const obj = node as Record<string, unknown>;
+            if (typeof obj.primarySkill === 'string' && obj.primarySkill.trim()) {
+              const k = obj.primarySkill.toLowerCase();
+              skillCounts.set(k, (skillCounts.get(k) ?? 0) + 1);
+              slots += 1;
+            }
+            for (const v of Object.values(obj)) if (v && typeof v === 'object') tally(v);
+          };
+          tally(encounter);
+          if (slots >= 6) {
+            const [topSkill, topCount] = [...skillCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+            const share = topCount / slots;
+            if (share > 0.4) {
+              warnings.push({
+                type: 'invalid_encounter',
+                severity: 'warning',
+                message: `Encounter in scene "${scene.id}": skill "${topSkill}" carries ${(share * 100).toFixed(0)}% of ${slots} choice slots — a single-skill meta. Cap any one skill at ~40% of encounter slots.`,
+                episodeId: episode.id,
+                episodeNumber: episode.number,
+                sceneId: scene.id,
+                validator: 'EncounterQualityValidator',
+                suggestion: 'Rotate primarySkill across the tree (persuasion/deception/investigation/etc.) so no single approach dominates.',
+              });
+            }
+          }
+        }
+
         const telemetry = input.telemetryBySceneId?.get(scene.id);
         if (telemetry?.degraded === true && isClockUnderCovered(encounter)) {
           const cov = computeAuthoredCoverage(encounter);
@@ -175,6 +269,31 @@ export function applyEncounterQualityGate(
       const degraded = telemetryBySceneId.get(scene.id)?.degraded === true;
       if (degraded && isClockUnderCovered(sceneEnc as Parameters<typeof isClockUnderCovered>[0])) {
         shrinkClockToCoverage(sceneEnc as Parameters<typeof shrinkClockToCoverage>[0]);
+      }
+      // G13 one-click-win pass (telemetry-independent): demote root-level
+      // terminal wins into a two-step finish so the depth contract holds without
+      // a regen. Runs BEFORE the clock shrink so the injected finish ticks are
+      // counted. Idempotent; flat (nextBeatId-routed) encounters are skipped and
+      // still block, since an embedded situation would be unplayable there.
+      const deepen = deepenRootTerminalWins(sceneEnc as never);
+      for (const lift of deepen.lifted) {
+        console.info(
+          `[EncounterQuality] scene ${scene.id}: root terminal ${lift.outcome} on choice ${lift.choiceId} demoted into a two-step finish`,
+        );
+      }
+      for (const skip of deepen.skipped) {
+        console.warn(
+          `[EncounterQuality] scene ${scene.id}: root terminal ${skip.outcome} on choice ${skip.choiceId} NOT repairable (flat-routed encounter) — will block`,
+        );
+      }
+      // G12 honest-clock pass (telemetry-independent): if no authored path can
+      // fill the goal clock, shrink it to the best attainable ticks so perfect
+      // play visibly completes the objective. Idempotent; no-op when healthy.
+      const shrink = shrinkClockToAttainable(sceneEnc as never);
+      if (shrink.goalShrunk) {
+        console.info(
+          `[EncounterQuality] scene ${scene.id}: goal clock shrunk ${shrink.goalFrom}→${shrink.goalTo} (best attainable ticks)`,
+        );
       }
     }
   }

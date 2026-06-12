@@ -78,7 +78,14 @@ import { useGenerationJobStore, PipelineEventData } from '../stores/generationJo
 import { useGeneratorSettings } from '../hooks/useGeneratorSettings';
 import { useAvailableModels } from '../hooks/useAvailableModels';
 import { ModelDropdown } from '../components/ModelDropdown';
-import { ConfirmDialog } from '../components/ui';
+import { ModelTaskSheet } from '../components/ModelTaskSheet';
+import { ConfirmDialog, SegmentedControl } from '../components/ui';
+import {
+  MODEL_FAMILY_PRESETS,
+  PIPELINE_TASKS,
+  modelLabel,
+} from '../config/modelFamilies';
+import type { GeneratorLlmProvider } from '../config/generatorLlmOptions';
 import { useGeneratorRunner } from '../hooks/useGeneratorRunner';
 import { useEndingModePlanner } from './generator/useEndingModePlanner';
 import { buildPipelineConfig, PipelineConfigExtras } from '../ai-agents/config/buildPipelineConfig';
@@ -504,8 +511,12 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     generationMode,
     narrationSettings,
     videoSettings,
-    handleLlmProviderChange,
-    handleLlmModelChange,
+    modelFamily,
+    taskModelOverrides,
+    effectiveTaskAssignments,
+    handleModelFamilyChange,
+    handleTaskModelChange,
+    resetTaskModel,
     handleImageLlmProviderChange,
     handleImageLlmModelChange,
     handleVideoLlmProviderChange,
@@ -530,6 +541,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
   const [showLoraSettings, setShowLoraSettings] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [showModelTaskSheet, setShowModelTaskSheet] = useState(false);
   // Keep STORY open by default (the required prompt/doc lives inside); start
   // all other optional buckets collapsed so the primary CTA is reachable
   // without a long scroll. The full wizard refactor (Tranche B) replaces this
@@ -1588,6 +1600,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
   const buildPipelineConfigInput = () => ({
     llmProvider,
     llmModel,
+    taskAssignments: effectiveTaskAssignments,
     imageLlmProvider,
     imageLlmModel,
     videoLlmProvider,
@@ -1643,8 +1656,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     primaryLocation: primaryLocationName,
     expandStyleFn: async (raw: string) => {
       const architect = new StyleArchitect({
-        provider: llmProvider,
-        model: llmModel,
+        provider: effectiveTaskAssignments.architect.provider,
+        model: effectiveTaskAssignments.architect.model,
         apiKey: selectedLlmApiKey,
         maxTokens: 1024,
         temperature: 0.4,
@@ -1883,6 +1896,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
           ...input,
           llmProvider: fallbackProvider,
           llmModel: DEFAULT_LLM_MODELS[fallbackProvider],
+          // Drop per-task assignments so the legacy provider-swap takes effect;
+          // the quota-exhausted OpenAI assignments must not override the fallback.
+          taskAssignments: undefined,
         };
         const fallbackConfig = buildPipelineConfig(fallbackInput, {
           artStyleProfileOverride: styleSetup.handoff.profile,
@@ -3094,23 +3110,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                 </View>
 
                 <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>TEXT GENERATION PROVIDER</Text>
-                  <View style={styles.segmentedControl}>
-                    <TouchableOpacity style={[styles.segment, llmProvider === 'anthropic' && styles.segmentActive]} onPress={() => handleLlmProviderChange('anthropic')}>
-                      <Text style={[styles.segmentText, llmProvider === 'anthropic' && styles.segmentTextActive]}>ANTHROPIC</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, llmProvider === 'openai' && styles.segmentActive]} onPress={() => handleLlmProviderChange('openai')}>
-                      <Text style={[styles.segmentText, llmProvider === 'openai' && styles.segmentTextActive]}>OPENAI</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, llmProvider === 'gemini' && styles.segmentActive]} onPress={() => handleLlmProviderChange('gemini')}>
-                      <Text style={[styles.segmentText, llmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <View style={styles.configItem}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <Text style={styles.configLabel}>TEXT MODEL</Text>
+                    <Text style={styles.configLabel}>MODEL FAMILY</Text>
                     <TouchableOpacity
                       onPress={() => refreshModels({ anthropicApiKey: apiKey, openaiApiKey, geminiApiKey, atlasCloudApiKey: atlasCloudApiKey })}
                       disabled={modelsScanLoading}
@@ -3122,13 +3123,50 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                       </Text>
                     </TouchableOpacity>
                   </View>
-	                  <ModelDropdown
-	                    options={availableModels[llmProvider].map(o => ({ value: o.value, label: o.label, subtitle: o.value }))}
-	                    value={llmModel}
-	                    onSelect={handleLlmModelChange}
-	                    placeholder="Select model…"
-	                  />
-	                </View>
+                  <SegmentedControl<GeneratorLlmProvider>
+                    options={[
+                      { value: 'anthropic', label: 'Claude' },
+                      { value: 'openai', label: 'OpenAI' },
+                      { value: 'gemini', label: 'Gemini' },
+                    ]}
+                    value={modelFamily}
+                    onChange={handleModelFamilyChange}
+                    ariaLabel="Model family"
+                  />
+                  <Text style={[styles.toggleActionHint, { marginTop: 8 }]}>
+                    {MODEL_FAMILY_PRESETS[modelFamily].tagline}
+                  </Text>
+
+                  <View style={styles.presetSummary}>
+                    {PIPELINE_TASKS.map((task) => {
+                      const a = effectiveTaskAssignments[task.id];
+                      const customized = !task.crossProvider && Boolean(taskModelOverrides[task.id]);
+                      return (
+                        <View key={task.id} style={styles.presetRow}>
+                          <Text style={styles.presetTask}>{task.label}</Text>
+                          <View style={styles.presetModelWrap}>
+                            <Text style={styles.presetModel} numberOfLines={1}>
+                              {task.crossProvider ? `${a.provider} · ` : ''}{modelLabel(a.provider, a.model)}
+                            </Text>
+                            {customized ? <Text style={styles.presetCustom}>CUSTOM</Text> : null}
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.inlineDisclosure}
+                    onPress={() => setShowModelTaskSheet(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Customize models per task"
+                  >
+                    <Settings size={16} color={TERMINAL.colors.primary} style={{ marginRight: 8 }} />
+                    <Text style={styles.configLabel}>CUSTOMIZE PER TASK</Text>
+                    <Text style={styles.advancedSettingsHint}>OPEN</Text>
+                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 8 }} />
+                  </TouchableOpacity>
+                </View>
 
                 <View style={styles.configItem}>
                   <Text style={styles.configLabel}>RUN OUTPUTS</Text>
@@ -4930,6 +4968,21 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         onClose={() => setShowAdvancedSettings(false)}
       />
 
+      <ModelTaskSheet
+        visible={showModelTaskSheet}
+        onClose={() => setShowModelTaskSheet(false)}
+        modelFamily={modelFamily}
+        assignments={effectiveTaskAssignments}
+        overrides={taskModelOverrides}
+        availableModels={availableModels}
+        onTaskModelChange={handleTaskModelChange}
+        onTaskProviderChange={(task, provider) => {
+          if (task === 'image') handleImageLlmProviderChange(provider);
+          else if (task === 'video') handleVideoLlmProviderChange(provider);
+        }}
+        onResetTask={resetTaskModel}
+      />
+
       {/*
         Background jobs bottom sheet. Surfaces the full ImageJobPanel /
         VideoJobPanel UIs on demand without forcing them to live at the
@@ -5138,6 +5191,50 @@ const styles = StyleSheet.create({
   styleDropdownValue: { color: 'white', fontSize: 13, fontWeight: '900', letterSpacing: 0.3 },
   styleDropdownHint: { color: TERMINAL.colors.muted, fontSize: 9, fontWeight: '700' },
   inlineDisclosure: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  presetSummary: {
+    marginTop: 12,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  presetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 7,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  presetTask: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: TERMINAL.colors.muted,
+    letterSpacing: 0.3,
+    flex: 1,
+    marginRight: 8,
+  },
+  presetModelWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 1,
+  },
+  presetModel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: 'white',
+    letterSpacing: 0.2,
+    flexShrink: 1,
+  },
+  presetCustom: {
+    fontSize: 8,
+    fontWeight: '800',
+    color: TERMINAL.colors.cyan,
+    letterSpacing: 0.5,
+    marginLeft: 6,
+  },
   advancedSettingsHint: {
     marginLeft: 'auto',
     fontSize: 9,

@@ -96,13 +96,21 @@ describe('canonicalizeProtagonistPronouns', () => {
 
   it('preserves capitalization at sentence start', () => {
     const story = storyWith([], [{ id: 'b1', narrativeText: 'His hands shook. Kylie steadied them.' }]);
-    // Sentence 1 has no protagonist name -> not repaired. Keep it conservative.
+    // Sentence 1 PRECEDES any protagonist mention -> no topic established -> conservative skip.
     canonicalizeProtagonistPronouns(story, KYLIE, []);
     expect(beat0(story).narrativeText).toBe('His hands shook. Kylie steadied them.');
+  });
 
-    const story2 = storyWith([], [{ id: 'b1', narrativeText: 'Kylie froze. His instinct was to run.' }]);
-    canonicalizeProtagonistPronouns(story2, KYLIE, []);
-    // Sentence 2 ("His instinct...") has no protagonist name -> conservative skip.
+  it('G12: repairs pronoun-only follow-on sentences under a protagonist topic', () => {
+    // "The night swallows Kylie. He orders second…" shipped in g12 because the
+    // follow-on sentence carries no name. Topic propagation repairs it.
+    const story = storyWith([], [{ id: 'b1', narrativeText: 'Kylie froze. His instinct was to run.' }]);
+    canonicalizeProtagonistPronouns(story, KYLIE, []);
+    expect(beat0(story).narrativeText).toBe('Kylie froze. Her instinct was to run.');
+
+    // An intervening other-gender NAME clears the topic — conservative again.
+    const story2 = storyWith([], [{ id: 'b1', narrativeText: 'Kylie froze. Victor stepped in. His instinct was to run.' }]);
+    canonicalizeProtagonistPronouns(story2, KYLIE, ['Victor']);
     expect(beat0(story2).narrativeText).toContain('His instinct');
   });
 });

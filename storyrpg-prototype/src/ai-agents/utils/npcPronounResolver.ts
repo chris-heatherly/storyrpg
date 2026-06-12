@@ -43,10 +43,13 @@ export interface NpcPronounScanResult {
 type Gender = 'm' | 'f';
 
 // Reader-facing text fields — the same surface canonicalizeProtagonistPronouns scans,
-// so this reaches encounter situation/outcome/reaction prose too.
+// so this reaches encounter situation/outcome/reaction prose too. G12 added the
+// encounter stakes/escalation leaves (Victor ran they/them through the whole ep2
+// encounter tree, including these fields).
 const TEXT_KEYS = new Set([
   'text', 'narrativeText', 'setupText', 'outcomeText', 'reactionText',
   'lockedText', 'description', 'visualMoment', 'primaryAction',
+  'escalationText', 'victory', 'defeat',
 ]);
 
 const SECOND_PERSON_RE = /\b(?:you|your|yours|yourself)\b/i;

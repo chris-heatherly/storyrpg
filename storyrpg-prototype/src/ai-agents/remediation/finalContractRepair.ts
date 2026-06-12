@@ -25,7 +25,20 @@ import { canonicalizeStoryWitnessReactions } from '../utils/witnessNpcResolver';
 /** Minimal shape this loop needs from a contract report (FinalStoryContractReport-compatible). */
 export interface ContractRepairReport {
   passed: boolean;
-  blockingIssues: Array<{ message?: string; category?: string; severity?: string }>;
+  blockingIssues: Array<{
+    message?: string;
+    category?: string;
+    severity?: string;
+    /** Issue class (e.g. 'treatment_fidelity_violation') — lets handlers route by type. */
+    type?: string;
+    /** Emitting validator (e.g. 'RequiredBeatRealizationValidator'). */
+    validator?: string;
+    /** The validator's repair suggestion — fed to LLM repair handlers as guidance. */
+    suggestion?: string;
+    /** Scene the finding points at — the unit of surgical repair. */
+    sceneId?: string;
+    episodeNumber?: number;
+  }>;
 }
 
 /**

@@ -9,6 +9,7 @@
  */
 
 import { AgentConfig, GenerationSettingsConfig } from '../config';
+import { FALLBACK_OUTCOME_TEXT_POOLS } from '../constants/choiceTextFallbacks';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import {
@@ -560,23 +561,7 @@ Before finalizing:
     // scene that falls back on several tiers does not produce a run of "You …" /
     // "It …" lines that reads as flat template output (and trips the
     // SentenceOpenerVarietyValidator).
-    const pools: Record<'success' | 'partial' | 'failure', string[]> = {
-      success: [
-        'The room settles around the choice, and it lands the way you meant it to.',
-        'Clean — you get the better version of what you were reaching for.',
-        'For once it goes your way, a little cleaner than you expected.',
-      ],
-      partial: [
-        'Ground gained, but not cleanly; the cost settles in behind it.',
-        'Some of it, not all — the rest leaves a mark you will carry.',
-        'It works, mostly, though something slips loose in the doing and you notice.',
-      ],
-      failure: [
-        'Not the way you hoped — and the difference is yours to hold.',
-        'The moment closes before you can catch it, and it gets away from you.',
-        'You come back with less than you brought.',
-      ],
-    };
+    const pools = FALLBACK_OUTCOME_TEXT_POOLS;
     const id = String(choice.id || choice.text || '');
     let hash = 0;
     for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
@@ -744,13 +729,14 @@ Before finalizing:
 
       // Auto-generate a tintFlag if the choice doesn't branch and none was provided
       if (!choice.nextSceneId && !choice.tintFlag) {
+        // Canonical identity-engine vocabulary only (G12: non-canonical tints are inert).
         const tintsByType: Record<string, string> = {
-          expression: 'tint:personal',
-          relationship: 'tint:connected',
-          strategic: 'tint:pragmatic',
-          dilemma: 'tint:conflicted',
+          expression: 'tint:emotion',
+          relationship: 'tint:teamwork',
+          strategic: 'tint:pragmatism',
+          dilemma: 'tint:sacrifice',
         };
-        choice.tintFlag = tintsByType[choiceSet.choiceType] || 'tint:decisive';
+        choice.tintFlag = tintsByType[choiceSet.choiceType] || 'tint:boldness';
         console.warn(`[ChoiceAuthor] Choice "${choice.id}" missing tintFlag — using fallback "${choice.tintFlag}"`);
       }
 
@@ -1407,8 +1393,14 @@ This is the echo, not the action itself. It ends the moment and flows into the n
 
 ## Tint Flag (for non-branching choices)
 
-Provide a \`tintFlag\` string like \`"tint:mercy"\`, \`"tint:reckless"\`, \`"tint:cunning"\`,
-\`"tint:honest"\`, \`"tint:defiant"\`, etc. that best characterises the tone this choice sets.
+Provide a \`tintFlag\` that best characterises the tone this choice sets. Use ONLY
+this canonical vocabulary (anything else is ignored by the identity engine):
+\`tint:mercy\`, \`tint:justice\`, \`tint:forgiveness\`, \`tint:punishment\`, \`tint:compassion\`,
+\`tint:vengeance\`, \`tint:idealism\`, \`tint:pragmatism\`, \`tint:sacrifice\`, \`tint:survival\`,
+\`tint:honor\`, \`tint:expedience\`, \`tint:caution\`, \`tint:boldness\`, \`tint:patience\`,
+\`tint:aggression\`, \`tint:diplomacy\`, \`tint:force\`, \`tint:independence\`, \`tint:leadership\`,
+\`tint:teamwork\`, \`tint:solitude\`, \`tint:emotion\`, \`tint:logic\`, \`tint:intuition\`,
+\`tint:calculation\`, \`tint:honesty\`, \`tint:deception\`, \`tint:truth\`, \`tint:manipulation\`.
 Branching choices (those with \`nextSceneId\`) do NOT need a \`tintFlag\`.
 
 ## Moral Contract (REQUIRED for dilemma choices)
@@ -1525,7 +1517,7 @@ Modifier example:
         "kind": "debt | suspicion | injury | lost_leverage | exposure | obligation | damaged_trust | position_shift",
         "description": "What playable story material failure creates."
       },
-      "tintFlag": "tint:bold",
+      "tintFlag": "tint:boldness",
       "moralContract": {
         "valueA": "protect the vulnerable",
         "valueB": "tell the truth",

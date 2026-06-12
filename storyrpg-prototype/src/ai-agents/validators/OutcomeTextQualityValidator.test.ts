@@ -82,3 +82,23 @@ describe('OutcomeTextQualityValidator', () => {
     expect(res.issues).toHaveLength(0);
   });
 });
+
+describe('OutcomeTextQualityValidator — G12 fallback pool', () => {
+  it('flags shipped ChoiceAuthor fallback stubs', () => {
+    const story = {
+      episodes: [{ id: 'ep1', scenes: [{ id: 's1', beats: [{ id: 'b1', choices: [{
+        id: 'c3',
+        text: 'Ask him outright who he is.',
+        outcomeTexts: {
+          success: 'For once it goes your way, a little cleaner than you expected.',
+          partial: 'It works, mostly, though something slips loose in the doing and you notice.',
+          failure: 'You come back with less than you brought.',
+        },
+      }] }] }] }],
+    } as any;
+    const result = new OutcomeTextQualityValidator().validate({ story });
+    const fallbackIssues = result.issues.filter((i) => i.message.includes('fallback stub'));
+    expect(fallbackIssues).toHaveLength(3);
+    expect(result.valid).toBe(false);
+  });
+});

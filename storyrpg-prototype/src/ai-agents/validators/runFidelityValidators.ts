@@ -114,6 +114,20 @@ function isTreatmentSourced(analysis: SourceMaterialAnalysis | undefined): boole
 }
 
 /**
+ * Extract the scene reference a §4 validator encoded in its issue `location`
+ * (`requiredBeat:ep2:s2-1:beat-1`, `scenePlan:ep1:treatment-enc-1-1`, …). The
+ * downstream judge-confirmation and scene-prose repair handlers are keyed on
+ * `sceneId`/`episodeNumber` — without these fields a finding can only abort,
+ * never be confirmed or repaired.
+ */
+const LOCATION_SCENE_RE = /:ep(\d+):([^:]+)/;
+function locationSceneRef(location?: string): { episodeNumber?: number; sceneId?: string } {
+  const m = location ? LOCATION_SCENE_RE.exec(location) : null;
+  if (!m) return {};
+  return { episodeNumber: Number(m[1]), sceneId: m[2] };
+}
+
+/**
  * Map a validator's `ValidationIssue`s (error/warning only) to fidelity findings.
  * `downgradeToWarning` forces every finding to `warning` severity — used to keep a
  * validator VISIBLE (its findings surface in the contract report) while its gate is
@@ -128,6 +142,7 @@ function toFindings(validator: string, issues: ValidationIssue[], downgradeToWar
       severity: downgradeToWarning ? 'warning' : issue.severity,
       message: issue.message,
       suggestion: issue.suggestion,
+      ...locationSceneRef(issue.location),
     });
   }
   return out;

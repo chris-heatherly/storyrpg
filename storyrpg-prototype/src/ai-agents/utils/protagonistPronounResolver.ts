@@ -44,6 +44,10 @@ export interface ProtagonistPronounResult {
 const TEXT_KEYS = new Set([
   'text', 'narrativeText', 'setupText', 'outcomeText', 'reactionText',
   'lockedText', 'description', 'visualMoment', 'primaryAction',
+  // G12: encounter stakes ("two suitors leaning toward him") and escalation prose
+  // are reader-facing but were never scanned — the misgendered clock/stakes text
+  // shipped untouched. `victory`/`defeat` are string leaves only on stakes.
+  'escalationText', 'victory', 'defeat',
 ]);
 
 type Gender = 'm' | 'f';
@@ -121,9 +125,29 @@ export function canonicalizeProtagonistPronouns(
     // Non-reflexive wrong-gender pronouns (he/him/his when canon is female).
     const nonReflexiveSource = target === 'f' ? '\\b(he|him|his)\\b' : '\\b(she|her|hers)\\b';
 
+    // Topic propagation (G12): "The night swallows Kylie. He orders second, …" — the
+    // follow-on sentence has the wrong-gender pronoun but no name, so a per-sentence
+    // name requirement skipped it. Track when the running topic is the protagonist
+    // (last named person was the protagonist, no other-gender name since) and repair
+    // pronoun-only follow-on sentences under that topic.
+    let protagonistTopic = false;
     return splitSentences(value)
       .map((sentence) => {
-        if (!nameRe.test(sentence)) return sentence;
+        if (otherRe && otherRe.test(sentence)) protagonistTopic = false;
+        else if (nameRe.test(sentence)) protagonistTopic = true;
+        if (!nameRe.test(sentence)) {
+          if (
+            protagonistTopic &&
+            wrongTest.test(sentence) &&
+            !(otherRe && otherRe.test(sentence))
+          ) {
+            return sentence.replace(new RegExp(WRONG_SOURCE[target], 'gi'), (m) => {
+              result.repaired += 1;
+              return mapPronoun(m, target);
+            });
+          }
+          return sentence;
+        }
         if (!wrongTest.test(sentence)) return sentence;
         // Ambiguous when another wrong-gender character is named in the sentence
         // ("Victor looks at him" — the "him" could be Victor). We never risk

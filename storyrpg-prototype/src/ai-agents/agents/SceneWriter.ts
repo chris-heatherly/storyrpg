@@ -11,6 +11,7 @@
  */
 
 import { AgentConfig, GenerationSettingsConfig } from '../config';
+import { formatForbiddenRevealsSection } from '../utils/forbiddenReveals';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import { buildResidueRequirementPromptSection } from '../pipeline/reconvergenceResidue';
@@ -33,6 +34,7 @@ import {
   buildStructuralContextSection,
 } from '../prompts/storytellingPrinciples';
 import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
+import { canonicalizeHookId, isStructuralFlag } from '../pipeline/callbackLedger';
 import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
 import { enumeratedItems } from '../utils/enumeratedObjective';
 import type { SceneTimelineHandoff } from '../utils/sceneTimeline';
@@ -190,6 +192,10 @@ export interface SceneWriterInput {
   // StoryArchitect from the season INFO ledger). When present, the prompt instructs the
   // writer to dramatize each reveal here. Empty/absent for scenes with no scheduled reveal.
   revealDirectives?: Array<{ infoId: string; fact: string }>;
+
+  // G12 (forbidden reveals): ledger facts still WITHHELD at this episode. The writer
+  // must not state/confirm them; setup-touch episodes may hint. Empty/absent ⇒ prompt unchanged.
+  forbiddenReveals?: import('../utils/forbiddenReveals').ForbiddenReveal[];
 
   // Scene specific guidance
   targetBeatCount: number; // Max beats per scene (cap)—engine may use fewer
@@ -922,6 +928,10 @@ Return exactly one complete SceneContent JSON object with:
   }
 
   private normalizeContent(content: SceneContent, input?: SceneWriterInput): SceneContent {
+    // Canonical hook ids the prompt advertised (already `flag:`/`score:`-prefixed).
+    // Used to normalize any bare callbackHookId the LLM emits on textVariants.
+    const knownHookIds = new Set((input?.unresolvedCallbacks || []).map(h => h.id));
+
     // Ensure scalar fields have defaults - use scene blueprint values if available
     if (!content.sceneId) {
       content.sceneId = input?.sceneBlueprint?.id || 'scene-1';
@@ -1041,6 +1051,26 @@ Return exactly one complete SceneContent JSON object with:
                 text: v[keys[0]]
               } as TextVariant;
             }
+          }
+          // AUTO-FIX: a callbackHookId pointing at a STRUCTURAL flag
+          // (`treatment_branch_`/`route_`/`tint:`) is always a mislabel — the ledger
+          // never registers these (they're paid off by the branch + reconvergence
+          // residue, i.e. the variant's own `condition.flag`, not a callback line).
+          // Drop the bogus callbackHookId (keeping condition.flag) so it can't trip
+          // the dangling-payoff gate (Season Canon abort, bite-me-g14 2026-06-11).
+          if (variant && variant.callbackHookId && isStructuralFlag(variant.callbackHookId)) {
+            delete variant.callbackHookId;
+          }
+          // AUTO-FIX: canonicalize a bare callbackHookId to its planted `flag:`/
+          // `score:` ledger id. Agents copy the condition flag name into
+          // callbackHookId instead of the prefixed hook id, which trips the
+          // dangling-payoff gate (Season Canon abort, bite-me-g14 2026-06-11).
+          // Normalize here, at parse time, against the hook ids the prompt showed.
+          if (variant && variant.callbackHookId && knownHookIds.size > 0) {
+            variant.callbackHookId = canonicalizeHookId(
+              variant.callbackHookId,
+              (id) => knownHookIds.has(id),
+            );
           }
           return variant;
         }).filter(v => v && v.text); // Remove empty/null variants
@@ -1507,7 +1537,7 @@ ${input.sceneBlueprint.keyBeats
   .map((beat) => `- ${stripAgentFacingPressureLabel(beat)}`)
   .join('\n')}
 ${buildRequiredBeatsSection(input.sceneBlueprint)}
-${this.buildRevealDirectivesSection(input)}
+${this.buildRevealDirectivesSection(input)}${formatForbiddenRevealsSection(input.forbiddenReveals ?? [])}
 ${this.buildEnumeratedObjectiveSection(input)}
 
 ${input.sceneBlueprint.choicePoint ? `

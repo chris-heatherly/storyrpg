@@ -24,10 +24,13 @@ export interface DivergenceInput {
 
 export interface DivergenceMetrics {
   totalTerminals: number;
+  /** Distinct EXPERIENCE fingerprints (rendered text + scores/relationships/tags). */
   distinctFingerprints: number;
   divergenceRatio: number;
   choicePointsEvaluated: number;
   cosmeticChoicePoints: number;
+  /** Distinct raw-state fingerprints (incl. write-only flags) — telemetry only. */
+  distinctStateFingerprints?: number;
 }
 
 export interface DivergenceResult extends ValidationResult {
@@ -46,9 +49,15 @@ export class DivergenceValidator extends BaseValidator {
     const sim = input.simulation || simulateEpisodePaths(input.episode);
     const terminals = sim.terminals;
 
+    // G12: count distinct EXPERIENCE fingerprints (rendered text + felt mechanical
+    // state), not raw flag-state — write-only flags made every terminal trivially
+    // distinct (ratio 1.0 on a run where 77/110 flags were never read by anything).
     const fingerprintCounts = new Map<string, number>();
+    const stateFingerprintCounts = new Map<string, number>();
     for (const t of terminals) {
-      fingerprintCounts.set(t.fingerprint, (fingerprintCounts.get(t.fingerprint) || 0) + 1);
+      const key = t.experienceFingerprint ?? t.fingerprint;
+      fingerprintCounts.set(key, (fingerprintCounts.get(key) || 0) + 1);
+      stateFingerprintCounts.set(t.fingerprint, (stateFingerprintCounts.get(t.fingerprint) || 0) + 1);
     }
 
     const distinct = fingerprintCounts.size;
@@ -62,6 +71,7 @@ export class DivergenceValidator extends BaseValidator {
       divergenceRatio,
       choicePointsEvaluated,
       cosmeticChoicePoints: 0,
+      distinctStateFingerprints: stateFingerprintCounts.size,
     };
 
     if (choicePointsEvaluated >= 2 && distinct <= 1 && total > 1) {
@@ -133,7 +143,7 @@ function analyzeDecisionPoints(
         set = new Set();
         choiceToFingerprints.set(choiceId, set);
       }
-      set.add(t.fingerprint);
+      set.add(t.experienceFingerprint ?? t.fingerprint);
     }
   }
 

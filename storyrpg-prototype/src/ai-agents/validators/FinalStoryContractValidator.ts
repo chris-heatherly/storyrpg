@@ -10,17 +10,19 @@ import { canonicalizeStoryWitnessReactions, canonicalizeStoryRelationshipConsequ
 import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory } from '../utils/protagonistPronounResolver';
 import { findNpcPronounInconsistencies } from '../utils/npcPronounResolver';
 import { OutcomeTextQualityValidator } from './OutcomeTextQualityValidator';
+import { FlagContractValidator } from './FlagContractValidator';
 import { SentenceOpenerVarietyValidator } from './SentenceOpenerVarietyValidator';
 import { ReferencedEventPresenceValidator } from './ReferencedEventPresenceValidator';
 import { ChoiceTypePlanConformanceValidator } from './ChoiceTypePlanConformanceValidator';
 import type { SeasonChoicePlan } from '../pipeline/seasonChoicePlan';
 import { SkillPlanConformanceValidator } from './SkillPlanConformanceValidator';
 import type { SeasonSkillPlan } from '../pipeline/seasonSkillPlan';
-import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs } from '../utils/encounterOutcomeFlags';
+import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs, normalizeEncounterOutcomeFlags } from '../utils/encounterOutcomeFlags';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isTreatmentFidelityFinding } from './treatmentFidelityGate';
 import { findBeatIdCollisions } from './beatIdCollisions';
-import { collectReaderFacingTexts } from './EncounterAnchorContentValidator';
+import { collectReaderFacingTexts, collectEncounterMetaTexts } from './EncounterAnchorContentValidator';
+import { stripProtagonistFromEncounters } from '../utils/encounterProtagonistGuard';
 import { PovClarityValidator } from './PovClarityValidator';
 
 /**
@@ -47,6 +49,7 @@ export type FinalStoryContractIssueType =
   | 'routing_contradiction'
   | 'beat_id_collision'
   | 'encounter_template_collapse'
+  | 'encounter_one_click_win'
   | 'encounter_clock_coverage_gap'
   | 'missing_requested_episode'
   | 'failed_incremental_validation'
@@ -56,11 +59,14 @@ export type FinalStoryContractIssueType =
   | 'ambiguous_protagonist_pronoun'
   | 'npc_pronoun_inconsistency'
   | 'outcome_text_stub'
+  | 'echo_summary_variant'
+  | 'unset_flag_condition'
   | 'promised_clue_absent'
   | 'choice_type_plan_nonconformance'
   | 'skill_plan_nonconformance'
   | 'sentence_opener_monotony'
   | 'encounter_pov_break'
+  | 'protagonist_as_npc'
   | 'encounter_outcome_desync'
   | 'continuity_error'
   | 'qa_blocker_present';
@@ -203,6 +209,33 @@ export class FinalStoryContractValidator {
       );
     }
 
+    // G12: the encounter generator cast the protagonist as an NPC — npcStates carried
+    // "Kylie Marinescu — wary" (rendered as a HUD badge) and relationship consequences
+    // paid affection to char-kylie-marinescu. Deterministic strip + a finding so the
+    // prose half (a second protagonist talking at the table) gets regen attention.
+    if (input.protagonist?.name) {
+      const strip = stripProtagonistFromEncounters(input.story, {
+        name: input.protagonist.name,
+        aliases: input.protagonist.aliases,
+      });
+      if (strip.npcStatesRemoved > 0 || strip.relationshipConsequencesRemoved > 0) {
+        console.info(
+          `[FinalStoryContract] protagonist-as-NPC strip: ${strip.npcStatesRemoved} npcState(s), ` +
+          `${strip.relationshipConsequencesRemoved} relationship consequence(s) at ${strip.locations.slice(0, 4).join(', ')}`,
+        );
+        issues.push({
+          type: 'protagonist_as_npc',
+          severity: 'warning',
+          message:
+            `Protagonist "${input.protagonist.name}" appeared as an encounter NPC ` +
+            `(${strip.npcStatesRemoved} npcState(s), ${strip.relationshipConsequencesRemoved} relationship target(s) — removed). ` +
+            'The encounter was likely generated without protagonist context; its prose may still address the protagonist as a separate character.',
+          validator: 'encounterProtagonistGuard',
+          suggestion: 'Regenerate the encounter with protagonist identity + episode-so-far context.',
+        });
+      }
+    }
+
     // W1: deterministically repair wrong-gender protagonist pronouns in player-facing
     // prose (the encounter generator drifted Kylie -> he/him). Pronouns are canon, so
     // the safe (protagonist-only-sentence) repair runs always — pure data correctness,
@@ -286,6 +319,84 @@ export class FinalStoryContractValidator {
           validator: 'OutcomeTextQualityValidator',
           suggestion: issue.suggestion,
         });
+      }
+    }
+
+    // G12: flag setter/consumer contract — conditions reading flags nothing sets
+    // (blog_post_timing class) mean authored variants/modifiers can never render.
+    // Deterministic; blocking when GATE_FLAG_CONTRACT is on, advisory otherwise.
+    {
+      const flagResult = new FlagContractValidator().validate({ story: input.story });
+      if (flagResult.issues.length > 0) {
+        console.info(
+          `[FinalStoryContract] flag contract: ${flagResult.metrics.unsetConditionFlags} unset-condition flag(s), ` +
+          `${flagResult.metrics.writeOnlyFlags} write-only flag(s) (of ${flagResult.metrics.settersTotal} setters / ${flagResult.metrics.consumersTotal} consumers)`,
+        );
+      }
+      const blockFlags = isGateEnabled('GATE_FLAG_CONTRACT');
+      for (const issue of flagResult.issues) {
+        issues.push({
+          type: 'unset_flag_condition',
+          severity: blockFlags && issue.severity === 'error' ? 'error' : 'warning',
+          message: issue.message,
+          validator: 'FlagContractValidator',
+          suggestion: issue.suggestion,
+        });
+      }
+    }
+
+    // G12: echo-summary-as-beat-variant. A textVariant whose text IS a choice's
+    // feedbackCue.echoSummary / reminderPlan line REPLACES the whole beat at runtime
+    // ("You asked the real question. Stela answered it." shipped as the entire text
+    // of four different beats). Deterministic exact-match against choice metadata;
+    // same leak class as design notes, so it blocks under GATE_DESIGN_NOTE_LEAK.
+    {
+      const metaStrings = new Set<string>();
+      const normMeta = (s: unknown): string =>
+        typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().toLowerCase() : '';
+      const noteMeta = (s: unknown): void => {
+        const n = normMeta(s);
+        if (n.length >= 8) metaStrings.add(n);
+      };
+      for (const ep of input.story.episodes || []) {
+        for (const scene of ep.scenes || []) {
+          for (const beat of scene.beats || []) {
+            for (const choice of (beat as unknown as { choices?: Array<Record<string, unknown>> }).choices || []) {
+              noteMeta((choice.feedbackCue as { echoSummary?: unknown } | undefined)?.echoSummary);
+              const rp = choice.reminderPlan as { immediate?: unknown; shortTerm?: unknown; longTerm?: unknown } | undefined;
+              noteMeta(rp?.immediate);
+              noteMeta(rp?.shortTerm);
+              noteMeta(rp?.longTerm);
+            }
+          }
+        }
+      }
+      if (metaStrings.size > 0) {
+        const blockLeak = isGateEnabled('GATE_DESIGN_NOTE_LEAK');
+        for (const ep of input.story.episodes || []) {
+          for (const scene of ep.scenes || []) {
+            for (const beat of scene.beats || []) {
+              for (const variant of (beat as { textVariants?: Array<{ text?: string }> }).textVariants || []) {
+                const v = normMeta(variant.text);
+                if (v && metaStrings.has(v)) {
+                  issues.push({
+                    type: 'echo_summary_variant',
+                    severity: blockLeak ? 'error' : 'warning',
+                    message:
+                      `Beat ${beat.id} has a textVariant whose entire text is a choice's echo-summary/reminder line ` +
+                      `("${String(variant.text).slice(0, 70)}…") — at runtime it REPLACES the beat's prose with a one-line feedback cue.`,
+                    episodeId: ep.id,
+                    sceneId: scene.id,
+                    beatId: beat.id,
+                    validator: 'FinalStoryContractValidator',
+                    suggestion:
+                      'Compose the callback into the base prose (base text + acknowledgment line) or author a full variant beat; never ship the feedback cue as the beat.',
+                  });
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -384,6 +495,8 @@ export class FinalStoryContractValidator {
     // outcome (always-on capability seeding), then detect reconvergences where ≥2
     // outcomes share a next scene that carries no outcome-conditioned text — the
     // prose cannot reflect what happened (the Endsong wall-breach → s3-5 desync).
+    // G12: normalize first — setters/consumers shipped with three flag spellings.
+    normalizeEncounterOutcomeFlags(input.story);
     seedEncounterOutcomeFlags(input.story);
     if (isGateEnabled('GATE_ENCOUNTER_OUTCOME_VARIANT')) {
       for (const desync of findEncounterOutcomeDesyncs(input.story)) {
@@ -470,13 +583,13 @@ export class FinalStoryContractValidator {
           // ("Kylie smiles back…") inside a second-person story. Advisory.
           if (protagonistName) {
             const povHits = povValidator.findThirdPersonProtagonistTexts(
-              collectReaderFacingTexts(scene),
+              [...collectReaderFacingTexts(scene), ...collectEncounterMetaTexts(scene)],
               protagonistName,
             );
             if (povHits.length > 0) {
               issues.push({
                 type: 'encounter_pov_break',
-                severity: 'warning',
+                severity: isGateEnabled('GATE_PROTAGONIST_PRONOUN') ? 'error' : 'warning',
                 message: `Encounter scene "${scene.name || scene.id}" narrates the protagonist in the third person in ${povHits.length} place(s) — a POV break in a second-person story. e.g. "${povHits[0]}"`,
                 episodeId: episode.id,
                 episodeNumber: episode.number,

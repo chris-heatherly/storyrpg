@@ -241,6 +241,126 @@ describe('injectFallbackCallbacks', () => {
     expect(variant.text).toContain('side door clicks open');
   });
 
+  it('realizes a cross-episode forward promise from hook prose without leaking the directive', () => {
+    // Bite-Me G13: the magnolia forward promise (planted ep1, due ep3) could not be
+    // realized in ep3 because its source choice was out of scope and its summary is
+    // a planning directive. The hook now carries the choice's reader-safe prose, and
+    // the directive ("In Episode 3, …") is rejected as injectable prose.
+    const ledger = new CallbackLedger();
+    ledger.recordForwardPromise({
+      choice: {
+        id: 'choice-write-magnolia-column',
+        text: 'Write the Magnolia column instead.',
+        feedbackCue: { echoSummary: 'You wrote the safe piece. The other story stayed inside.' },
+        reminderPlan: {
+          immediate: 'The Magnolia column fills the screen cleanly.',
+          shortTerm: 'No blog post exists for Victor to quote back.',
+        },
+        consequences: [{ type: 'setFlag', flag: 'magnolia_column_filed', value: true } as any],
+      } as any,
+      episode: 1,
+      sceneId: 's1-5',
+      payoffEpisode: 3,
+      summary: "In Episode 3, Mika will mention a food writer whose Bucharest column got a thousand reads — 'not bad for a start' — and Kylie will recognize the ceiling she chose.",
+    });
+
+    const sceneContents = [
+      { sceneId: 's3-1', beats: [{ id: 's3-1-beat-1', text: 'Morning.', textVariants: [] as any[] }] },
+      { sceneId: 's3-2', beats: [{ id: 's3-2-beat-1', text: 'The newsroom is quiet.', textVariants: [] as any[] }] },
+    ];
+    // No choiceSets in scope name choice-write-magnolia-column (it's an ep1 choice).
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 3,
+      sceneContents: sceneContents as any,
+      choiceSets: [] as any,
+    });
+
+    expect(injected).toBe(1);
+    // A cross-episode hook may land in any beat; find the realized variant.
+    const variant = sceneContents.flatMap((s) => s.beats).flatMap((b) => b.textVariants)[0];
+    expect(variant.callbackHookId).toBe('later:choice-write-magnolia-column');
+    expect(variant.condition).toMatchObject({ type: 'flag', flag: 'magnolia_column_filed', value: true });
+    // Realized from the choice's reader-safe echo, NOT the "In Episode 3, …" directive.
+    expect(variant.text).toContain('You wrote the safe piece.');
+    expect(variant.text).not.toContain('In Episode 3');
+    // The promise-due gate credits any payoffCount > 0 — now satisfied.
+    expect(ledger.all().find((h) => h.id === 'later:choice-write-magnolia-column')!.payoffCount).toBeGreaterThan(0);
+  });
+
+  it('G12: composes the injected variant with the beat base text instead of replacing it', () => {
+    const ledger = new CallbackLedger();
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          {
+            id: 'c1',
+            text: 'Stop pretending.',
+            consequences: [{ type: 'setFlag', flag: 'kylie_stops_pretending', value: true } as any],
+            reminderPlan: {
+              immediate: 'You asked the real question. Stela answered it.',
+              shortTerm: 'You asked the real question. Stela answered it.',
+            },
+          } as any,
+        ],
+      },
+    ];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+
+    const laterBeat = {
+      id: 'scene-2-beat-1',
+      text: 'Walking home alone in Bucharest — inexplicably, good. The streetlights hum over Lipscani and the night feels briefly, suspiciously kind.',
+      textVariants: [] as any[],
+    };
+    const sceneContents = [
+      { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+      { sceneId: 'scene-2', beats: [laterBeat] },
+    ];
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: sceneContents as any,
+      choiceSets: choiceSets as any,
+    });
+    expect(injected).toBe(1);
+    const variant = laterBeat.textVariants[0];
+    // The base prose survives; the callback is appended, not substituted.
+    expect(variant.text).toContain('Walking home alone in Bucharest');
+    expect(variant.text).toContain('You asked the real question.');
+  });
+
+  it('G12: never sources injected prose from the ChoiceAuthor reminder stubs', () => {
+    const ledger = new CallbackLedger();
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          {
+            id: 'c1',
+            text: 'Ask Stela directly.',
+            consequences: [{ type: 'setFlag', flag: 'asked_stela_directly', value: true } as any],
+            reminderPlan: {
+              immediate: 'The moment lands immediately.',
+              shortTerm: 'The next scene should remember this choice.',
+            },
+          } as any,
+        ],
+      },
+    ];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+    const laterBeat = { id: 'scene-2-beat-1', text: 'Base prose.', textVariants: [] as any[] };
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [
+        { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+        { sceneId: 'scene-2', beats: [laterBeat] },
+      ] as any,
+      choiceSets: choiceSets as any,
+    });
+    // No clean candidate -> hook skipped rather than stub injected.
+    expect(injected).toBe(0);
+    expect(laterBeat.textVariants).toHaveLength(0);
+  });
+
   it('does not double-realize a hook already referenced by an authored variant', () => {
     const ledger = new CallbackLedger();
     const choiceSets = [

@@ -50,6 +50,15 @@ export interface CallbackHook {
    */
   abandoned?: boolean;
   abandonReason?: string;
+  /**
+   * Reader-facing prose the source choice authored (its `feedbackCue.echoSummary`
+   * and `reminderPlan.immediate/shortTerm`), captured at registration so a
+   * cross-episode deterministic payoff can be sourced WITHOUT the choice being in
+   * the realizing episode's scope. The hook's own `summary` is planning-register
+   * (a forward-promise directive — "In Episode 3, Mika will mention …") and must
+   * never ship as prose; these are the clean fallbacks. See `pickCallbackProse`.
+   */
+  proseSources?: { echoSummary?: string; immediate?: string; shortTerm?: string };
   createdAt: string;
 }
 
@@ -79,6 +88,42 @@ export const DEFAULT_LEDGER_CONFIG: LedgerConfig = {
   defaultWindowSpan: 3,
   maxActiveHooks: 10,
 };
+
+/**
+ * Canonicalize a raw `callbackHookId` to a ledger id given a predicate that
+ * knows which ids exist. Flag/score hooks are keyed `flag:<name>` / `score:<name>`,
+ * but agents routinely tag a payoff with the BARE flag name (`treatment_seed_ep1_3`)
+ * instead of the planted id (`flag:treatment_seed_ep1_3`). When the raw id is not
+ * itself a known hook but a `flag:`/`score:`-prefixed form is, that prefixed hook is
+ * what the payoff means — return it. Otherwise the id is returned unchanged (a
+ * genuinely unknown id stays as-is so it can still be flagged dangling downstream).
+ *
+ * Pure: shared by the ledger's own `resolveHookId` (closure over its hook map) and
+ * by agents that only know the prompt's hook-id set (e.g. SceneWriter), so the bare
+ * id is canonicalized at the point textVariants are parsed, not just at the seam.
+ */
+export function canonicalizeHookId(rawId: string, isKnownHookId: (id: string) => boolean): string {
+  if (!rawId || isKnownHookId(rawId)) return rawId;
+  for (const prefix of ['flag:', 'score:']) {
+    if (isKnownHookId(prefix + rawId)) return prefix + rawId;
+  }
+  return rawId;
+}
+
+/**
+ * A flag whose name is COSMETIC (`tint:`) or STRUCTURAL (`route_`,
+ * `treatment_branch_`) rather than a trackable callback promise. The ledger never
+ * registers these (see `recordFlagSet` / `trackableFlagsOf`): a `route_`/branch flag
+ * records which divergent path the player took and is paid off BY CONSTRUCTION via
+ * the branch + reconvergence residue (a textVariant gated on the flag), not as a
+ * cross-episode callback line. So a `callbackHookId` pointing at one of these is
+ * always a mislabel — it can never resolve to a ledger hook. Accepts the bare flag
+ * name or a `flag:`-prefixed hook id.
+ */
+export function isStructuralFlag(flagOrHookId: string): boolean {
+  const flag = flagOrHookId.startsWith('flag:') ? flagOrHookId.slice('flag:'.length) : flagOrHookId;
+  return flag.startsWith('tint:') || flag.startsWith('route_') || flag.startsWith('treatment_branch_');
+}
 
 export interface SerializedCallbackLedger {
   version: 1;
@@ -130,6 +175,7 @@ export class CallbackLedger {
       ])),
       impactFactors: hook.impactFactors ?? existing?.impactFactors ?? [],
       consequenceTier: hook.consequenceTier ?? existing?.consequenceTier ?? 'callback',
+      proseSources: hook.proseSources ?? existing?.proseSources,
     };
     this.hooks.set(hook.id, merged);
     return merged;
@@ -147,8 +193,20 @@ export class CallbackLedger {
     const moment = params.choice.memorableMoment;
     if (!moment?.id || !moment?.summary) return undefined;
 
+    // G12: ChoiceAuthor emits generic moment ids ("choice-1"), so hooks from
+    // DIFFERENT episodes'/scenes' choices merged into one (later:choice-1 carried
+    // 14 flags spanning three episodes) and sibling-crediting marked unread flags
+    // resolved. Qualify the id when it would collide with a different source;
+    // an exact same-source re-record (resume/idempotent re-run) still merges.
+    const existing = this.hooks.get(moment.id);
+    const collides = existing
+      && (existing.sourceEpisode !== params.episode
+        || existing.sourceSceneId !== params.sceneId
+        || existing.sourceChoiceId !== params.choice.id);
+    const hookId = collides ? `${moment.id}@ep${params.episode}:${params.sceneId}` : moment.id;
+
     return this.add({
-      id: moment.id,
+      id: hookId,
       sourceEpisode: params.episode,
       sourceSceneId: params.sceneId,
       sourceChoiceId: params.choice.id,
@@ -157,6 +215,7 @@ export class CallbackLedger {
       impactFactors: params.choice.impactFactors ?? [],
       consequenceTier: params.choice.consequenceTier ?? this.inferConsequenceTier(params.choice),
       summary: moment.summary,
+      proseSources: this.proseSourcesOf(params.choice),
       payoffWindow: {
         minEpisode: params.episode + 1,
         maxEpisode: params.episode + this.config.defaultWindowSpan,
@@ -181,7 +240,7 @@ export class CallbackLedger {
     sceneId: string;
   }): CallbackHook | undefined {
     const { flag } = params;
-    if (!flag || flag.startsWith('tint:') || flag.startsWith('route_') || flag.startsWith('treatment_branch_')) return undefined;
+    if (!flag || isStructuralFlag(flag)) return undefined;
     const summary = params.choice.memorableMoment?.summary
       || (params.choice.text ? `Earlier choice: "${params.choice.text}" (sets ${flag}).` : `An earlier choice set ${flag}.`);
     return this.add({
@@ -194,6 +253,7 @@ export class CallbackLedger {
       impactFactors: params.choice.impactFactors ?? [],
       consequenceTier: 'callback',
       summary,
+      proseSources: this.proseSourcesOf(params.choice),
       payoffWindow: {
         // Eligible from the setting episode onward (same-episode payoff allowed).
         minEpisode: params.episode,
@@ -230,6 +290,7 @@ export class CallbackLedger {
       impactFactors: params.choice.impactFactors ?? [],
       consequenceTier: 'branchlet',
       summary,
+      proseSources: this.proseSourcesOf(params.choice),
       payoffWindow: {
         minEpisode: params.episode,
         maxEpisode: params.episode + this.config.defaultWindowSpan,
@@ -274,6 +335,7 @@ export class CallbackLedger {
       impactFactors: choice.impactFactors ?? [],
       consequenceTier: 'callback',
       summary: summary.trim(),
+      proseSources: this.proseSourcesOf(choice),
       payoffEpisode,
       payoffWindow:
         payoffEpisode != null
@@ -307,15 +369,27 @@ export class CallbackLedger {
    * `treatment_branch_*` is structural BRANCH-tier divergence (W5.2), paid off by
    * the branch + reconvergence residue — not a callback line — so it is excluded.
    */
+  /**
+   * Capture the choice's reader-facing prose (echo + immediate/short-term
+   * reminders) so a later episode's deterministic fallback can realize this hook
+   * without the source choice being in scope. Returns undefined when the choice
+   * authored no usable prose. See {@link CallbackHook.proseSources}.
+   */
+  private proseSourcesOf(choice: Choice): CallbackHook['proseSources'] {
+    const echoSummary = choice.feedbackCue?.echoSummary;
+    const immediate = choice.reminderPlan?.immediate;
+    const shortTerm = choice.reminderPlan?.shortTerm;
+    if (!echoSummary && !immediate && !shortTerm) return undefined;
+    return { echoSummary, immediate, shortTerm };
+  }
+
   trackableFlagsOf(choice: Choice): string[] {
     const flags: string[] = [];
     for (const consequence of choice.consequences ?? []) {
       if (
         consequence.type === 'setFlag' &&
         typeof consequence.flag === 'string' &&
-        !consequence.flag.startsWith('tint:') &&
-        !consequence.flag.startsWith('route_') &&
-        !consequence.flag.startsWith('treatment_branch_') &&
+        !isStructuralFlag(consequence.flag) &&
         consequence.value !== false
       ) {
         flags.push(consequence.flag);
@@ -340,9 +414,7 @@ export class CallbackLedger {
         consequence &&
         consequence.type === 'setFlag' &&
         typeof consequence.flag === 'string' &&
-        !consequence.flag.startsWith('tint:') &&
-        !consequence.flag.startsWith('route_') &&
-        !consequence.flag.startsWith('treatment_branch_') &&
+        !isStructuralFlag(consequence.flag) &&
         consequence.value !== false
       ) {
         flags.push(consequence.flag);
@@ -434,17 +506,27 @@ export class CallbackLedger {
         matched.push(hookId);
         credited.add(hookId);
         // Same decision → credit the choice's other hooks (e.g. the `later:<choice>`
-        // forward promise when its `flag:<flag>` twin is honored).
+        // forward promise when its `flag:<flag>` twin is honored). G12: "same
+        // decision" requires same episode AND scene, not just a (generic) choice id
+        // — `choice-1` exists in every scene, and id-only matching credited
+        // unrelated episodes' hooks as resolved.
         if (hook.sourceChoiceId) {
           for (const sib of this.hooks.values()) {
-            if (sib.id !== hookId && sib.sourceChoiceId === hook.sourceChoiceId) credit(sib.id);
+            if (
+              sib.id !== hookId &&
+              sib.sourceChoiceId === hook.sourceChoiceId &&
+              sib.sourceEpisode === hook.sourceEpisode &&
+              sib.sourceSceneId === hook.sourceSceneId
+            ) credit(sib.id);
           }
         }
       };
 
-      // 1. Direct hook reference.
-      if (variant.callbackHookId && this.hooks.has(variant.callbackHookId)) {
-        credit(variant.callbackHookId);
+      // 1. Direct hook reference (canonicalized: a bare `flag`/`score` name tags
+      // its planted `flag:`/`score:`-prefixed hook).
+      if (variant.callbackHookId) {
+        const refId = this.resolveHookId(variant.callbackHookId);
+        if (this.hooks.has(refId)) credit(refId);
       }
       // 2. Flag-conditional payoff: credit every hook gated on a flag the variant checks.
       const flags = this.flagsInCondition((variant as { condition?: unknown }).condition);
@@ -462,6 +544,16 @@ export class CallbackLedger {
   /**
    * Return unresolved hooks eligible for payoff in the given episode,
    * oldest first, capped at maxActiveHooks.
+   *
+   * Hooks EXPLICITLY due this episode (`payoffEpisode === episode`) are hard
+   * obligations the promise-due gate enforces uncapped via {@link dueAt}. They
+   * are surfaced FIRST and never dropped by the cap: otherwise a forward promise
+   * (e.g. `later:choice-write-magnolia-column`, due to pay off this episode) could
+   * be starved out of the realization path by lower-priority window-only flag
+   * hooks — invisible to both the prompt feed and the deterministic fallback —
+   * while `dueAt` still hard-fails the episode. The window-only remainder fills
+   * the rest of the budget oldest-first. (Bite-Me G13: 11 window hooks pushed the
+   * due magnolia promise to slice index 11 > cap 10, so it was never realized.)
    */
   unresolvedFor(episode: number): CallbackHook[] {
     const eligible = Array.from(this.hooks.values()).filter(
@@ -470,8 +562,11 @@ export class CallbackLedger {
         hook.payoffWindow.minEpisode <= episode &&
         hook.payoffWindow.maxEpisode >= episode,
     );
-    eligible.sort((a, b) => a.sourceEpisode - b.sourceEpisode);
-    return eligible.slice(0, this.config.maxActiveHooks);
+    const due = eligible.filter((hook) => hook.payoffEpisode === episode);
+    const rest = eligible
+      .filter((hook) => hook.payoffEpisode !== episode)
+      .sort((a, b) => a.sourceEpisode - b.sourceEpisode);
+    return [...due, ...rest].slice(0, Math.max(this.config.maxActiveHooks, due.length));
   }
 
   /**
@@ -489,6 +584,16 @@ export class CallbackLedger {
   /** Whether a hook id exists (for dangling-payoff detection). */
   has(hookId: string): boolean {
     return this.hooks.has(hookId);
+  }
+
+  /**
+   * Canonicalize a raw `callbackHookId` to the ledger's id scheme so the
+   * dangling-payoff gate doesn't abort on a prefix mismatch and the payoff credits
+   * the real planted hook. Delegates to the pure {@link canonicalizeHookId} (closing
+   * over this ledger's hook map); see that helper for the bare-flag-name rationale.
+   */
+  resolveHookId(rawId: string): string {
+    return canonicalizeHookId(rawId, (id) => this.hooks.has(id));
   }
 
   /**

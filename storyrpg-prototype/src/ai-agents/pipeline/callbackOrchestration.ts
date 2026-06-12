@@ -15,7 +15,8 @@ import type { Choice, ReminderPlan } from '../../types/choice';
 import type { TextVariant } from '../../types/content';
 import type { ConditionExpression } from '../../types/conditions';
 import { isUnsafeCallbackProse } from '../constants/metaProse';
-import type { CallbackLedger } from './callbackLedger';
+import { isFallbackReminderStub } from '../constants/choiceTextFallbacks';
+import type { CallbackHook, CallbackLedger } from './callbackLedger';
 
 /**
  * Parse an explicit FUTURE episode number out of a forward-promise string
@@ -56,6 +57,7 @@ export interface UnresolvedCallbackForPrompt {
 /** Minimal beat shape the harvest pass reads. */
 export interface HarvestBeat {
   id?: string;
+  text?: string;
   callbackHookIds?: string[];
   textVariants?: TextVariant[];
   choices?: Array<{ id: string; memorableMoment?: { id: string; summary: string; flags?: string[] } }>;
@@ -321,7 +323,7 @@ function pickCallbackProse(meta: CallbackProseMeta | undefined, summary: string)
   ];
   for (const raw of candidates) {
     const candidate = (raw ?? '').replace(/\s+/g, ' ').trim();
-    if (candidate && !isUnsafeCallbackProse(candidate)) return candidate;
+    if (candidate && !isUnsafeCallbackProse(candidate) && !isFallbackReminderStub(candidate)) return candidate;
   }
   return '';
 }
@@ -331,6 +333,21 @@ interface CallbackProseMeta {
   reminderPlan?: ReminderPlan;
   echoSummary?: string;
   text?: string;
+}
+
+/**
+ * Reader-facing prose carried on the hook itself, captured from the source choice
+ * at registration. Lets the fallback realize a CROSS-EPISODE hook whose source
+ * choice is not in this episode's `choiceMetaById` — the case that left
+ * forward-promise (`later:`) hooks unrealizable and tripped the promise-due gate.
+ */
+function hookProseMeta(hook: CallbackHook): CallbackProseMeta | undefined {
+  const ps = hook.proseSources;
+  if (!ps) return undefined;
+  return {
+    echoSummary: ps.echoSummary,
+    reminderPlan: { immediate: ps.immediate ?? '', shortTerm: ps.shortTerm ?? '' },
+  };
 }
 
 /**
@@ -397,7 +414,10 @@ export function injectFallbackCallbacks(
 
     // Resolve reader-facing prose once per hook. If no candidate survives the
     // meta-prose filter, skip the hook entirely rather than leak a planning note.
-    const meta = hook.sourceChoiceId ? choiceMetaById.get(hook.sourceChoiceId) : undefined;
+    // Prefer the choice's meta from THIS episode; for a cross-episode hook the
+    // source choice isn't in scope, so fall back to the prose captured on the hook.
+    const meta = (hook.sourceChoiceId ? choiceMetaById.get(hook.sourceChoiceId) : undefined)
+      ?? hookProseMeta(hook);
     const text = pickCallbackProse(meta, hook.summary);
     if (!text) continue;
 
@@ -416,9 +436,15 @@ export function injectFallbackCallbacks(
         if (!beatId) continue;
         if ((usedPerBeat.get(beatId) ?? 0) >= maxPerBeat) continue;
 
+        // G12: a matching TextVariant REPLACES the beat's base text at runtime, so
+        // injecting the bare callback line erased whole establishing beats ("You
+        // asked the real question. Stela answered it." shipped as the entire beat).
+        // Compose: base prose + callback acknowledgment, so the scene survives.
+        const baseText = typeof beat.text === 'string' ? beat.text.trim() : '';
+        const composedText = baseText ? `${baseText}\n\n${text}` : text;
         const variant: TextVariant = {
           condition: buildCallbackCondition(conditionKey),
-          text,
+          text: composedText,
           callbackHookId: hook.id,
           sourceChoiceId: hook.sourceChoiceId,
           reminderTag: AUTO_CALLBACK_REMINDER_TAG,

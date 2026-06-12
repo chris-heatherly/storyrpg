@@ -101,6 +101,11 @@ export const META_CALLBACK_REJECT_PATTERNS: RegExp[] = [
   /\bthe\s+(?:next|following|previous|prior|earlier|last|final|first)\s+scene\b/i,
   // Synthesized ledger stub: 'Earlier choice: "…" (sets …).'
   /\bearlier choice:/i,
+  // Forward-promise directive register: 'In Episode 3, Mika will mention …'.
+  // Fiction-first reader prose never names an episode number, so any such
+  // candidate is a planning note (a `reminderPlan.later` directive) — reject it
+  // so the callback realizer falls through to clean in-fiction prose.
+  /\bepisode[s]?\s+\d+\b/i,
   // Generic planning defaults the autofill emits.
   /\bshould remember this choice\b/i,
   /\bremember this (?:choice|moment)\b/i,

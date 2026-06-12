@@ -37,6 +37,22 @@ describe('CallbackLedger', () => {
     expect(ledger.recordFlagSet({ choice, flag: 'treatment_branch_scene_2a', episode: 1, sceneId: 's1' })).toBeUndefined();
   });
 
+  it('excludes encounter-outcome state flags from trackable callbacks (bite-me-g13 2026-06-12)', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({
+      consequences: [
+        { type: 'setFlag', flag: 'encounter_treatment-enc-1-1_partialVictory', value: true } as any,
+        { type: 'setFlag', flag: 'kylie_noticed', value: true } as any,
+      ],
+    });
+    const flags = ledger.trackableFlagsOf(choice);
+    expect(flags).toContain('kylie_noticed');
+    expect(flags).not.toContain('encounter_treatment-enc-1-1_partialVictory');
+    expect(
+      ledger.recordFlagSet({ choice, flag: 'encounter_treatment-enc-1-1_partialVictory', episode: 1, sceneId: 's1' }),
+    ).toBeUndefined();
+  });
+
   it('recordForwardPromise carries the choice gating flag so a conditional payoff is realizable', () => {
     const ledger = new CallbackLedger();
     const choice = makeChoice({

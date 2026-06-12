@@ -112,17 +112,28 @@ export function canonicalizeHookId(rawId: string, isKnownHookId: (id: string) =>
 
 /**
  * A flag whose name is COSMETIC (`tint:`) or STRUCTURAL (`route_`,
- * `treatment_branch_`) rather than a trackable callback promise. The ledger never
- * registers these (see `recordFlagSet` / `trackableFlagsOf`): a `route_`/branch flag
- * records which divergent path the player took and is paid off BY CONSTRUCTION via
- * the branch + reconvergence residue (a textVariant gated on the flag), not as a
- * cross-episode callback line. So a `callbackHookId` pointing at one of these is
- * always a mislabel — it can never resolve to a ledger hook. Accepts the bare flag
- * name or a `flag:`-prefixed hook id.
+ * `treatment_branch_`, `encounter_<id>_<outcome>`) rather than a trackable
+ * callback promise. The ledger never registers these (see `recordFlagSet` /
+ * `trackableFlagsOf`): a `route_`/branch flag records which divergent path the
+ * player took, and an `encounter_*` flag records how an encounter resolved
+ * (seeded by seedEncounterOutcomeFlags / EncounterArchitect `setsFlags`) —
+ * both are paid off BY CONSTRUCTION via the branch + reconvergence residue
+ * (a textVariant gated on the flag), not as a cross-episode callback line. So
+ * a `callbackHookId` pointing at one of these is always a mislabel — it can
+ * never resolve to a ledger hook (bite-me-g13 2026-06-12T18-45: SceneWriter
+ * authored correct outcome residue in s1-5 but copied the gating flag
+ * `encounter_treatment-enc-1-1_partialVictory` into callbackHookId → Season
+ * Canon dangling-payoff abort). Accepts the bare flag name or a
+ * `flag:`-prefixed hook id.
  */
 export function isStructuralFlag(flagOrHookId: string): boolean {
   const flag = flagOrHookId.startsWith('flag:') ? flagOrHookId.slice('flag:'.length) : flagOrHookId;
-  return flag.startsWith('tint:') || flag.startsWith('route_') || flag.startsWith('treatment_branch_');
+  return (
+    flag.startsWith('tint:') ||
+    flag.startsWith('route_') ||
+    flag.startsWith('treatment_branch_') ||
+    flag.startsWith('encounter_')
+  );
 }
 
 export interface SerializedCallbackLedger {

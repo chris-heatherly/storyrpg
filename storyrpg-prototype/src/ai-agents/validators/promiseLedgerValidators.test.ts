@@ -110,6 +110,12 @@ describe('validateNoDanglingPayoffs', () => {
     )).toHaveLength(0);
     // route_/tint: refs, and the `flag:`-prefixed form, are all excluded too.
     expect(validateNoDanglingPayoffs(['route_loyal', 'tint:somber', 'flag:treatment_branch_x'], ledger)).toHaveLength(0);
+    // Encounter-outcome state flags (bite-me-g13 2026-06-12T18-45): set by the
+    // encounter's outcome, paid by reconvergence residue — never ledger promises.
+    expect(validateNoDanglingPayoffs(
+      ['encounter_treatment-enc-1-1_partialVictory', 'flag:encounter_x_victory'],
+      ledger,
+    )).toHaveLength(0);
     // A genuinely unplanted (non-structural) bare name still dangles.
     expect(validateNoDanglingPayoffs(['ghost'], ledger).map((i) => i.location)).toEqual(['payoff:ghost']);
   });

@@ -470,6 +470,44 @@ describe('SceneWriter structural guards', () => {
     expect(variant.condition.flag).toBe('treatment_seed_ep1_1');
   });
 
+  it('drops an encounter-outcome callbackHookId mislabel but keeps the outcome gating (bite-me-g13 2026-06-12)', () => {
+    const writer = createWriter();
+
+    const normalized = (writer as any).normalizeContent(
+      {
+        sceneId: 's1-5',
+        sceneName: 'Morning After',
+        beats: [
+          {
+            id: 'beat-1',
+            text: 'Morning light through the kitchen window.',
+            textVariants: [
+              {
+                // The bug (bite-me-g13 2026-06-12T18-45): correct reconvergence
+                // residue gated on the encounter outcome flag, but the flag name
+                // was ALSO copied into callbackHookId — the ledger never plants
+                // encounter_* state flags, so Season Canon aborted on a dangling payoff.
+                condition: { type: 'flag', flag: 'encounter_treatment-enc-1-1_partialVictory', value: true },
+                text: 'Your scarf still smells of wet grass; a bruise blooms at your wrist.',
+                callbackHookId: 'encounter_treatment-enc-1-1_partialVictory',
+              },
+            ],
+          },
+        ],
+        startingBeatId: 'beat-1',
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      { sceneBlueprint: { id: 's1-5', name: 'Morning After' } }
+    );
+
+    const variant = normalized.beats[0].textVariants[0];
+    expect(variant.callbackHookId).toBeUndefined();
+    expect(variant.condition.flag).toBe('encounter_treatment-enc-1-1_partialVictory');
+  });
+
   it('normalizes optional sceneTakeaways and transitionIn metadata', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',

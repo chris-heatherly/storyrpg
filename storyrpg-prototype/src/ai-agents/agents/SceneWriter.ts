@@ -1722,7 +1722,7 @@ Create the scene content following the SceneContent schema. Include:
 8. scene-level sequenceIntent and beat-level sequenceIntent for every non-establishing beat in new multi-beat scenes
 9. coveragePlan for every non-establishing beat, including shot scale, angle, staging, visible/offscreen cast, relationship blocking, and continuity
 9. Optional visualContinuity metadata when it clarifies beat-to-beat flow; keep panelMode as "single" unless an explicit UX/config flag says otherwise
-10. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id
+10. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id. \`callbackHookId\` is ONLY for those listed ledger hooks — a variant gated on a state/outcome flag (\`encounter_*\`, \`route_*\`, \`treatment_branch_*\`, \`tint:*\`) keeps that flag in its condition and sets NO callbackHookId (✓ condition: "encounter_x_partialVictory" with no callbackHookId; ✗ callbackHookId: "encounter_x_partialVictory")
 11. sceneTakeaways and transitionIn when they clarify purpose and flow
 
 Respond with valid JSON matching the SceneContent type. Return raw JSON only: no markdown fences, no commentary, no trailing prose.

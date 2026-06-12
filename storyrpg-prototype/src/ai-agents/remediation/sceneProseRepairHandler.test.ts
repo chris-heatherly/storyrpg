@@ -35,7 +35,18 @@ function makeStory(): Story {
         id: 'ep-1', number: 1,
         scenes: [
           { id: 's1-4', name: 'Willow', beats: [{ id: 'b1', text: 'Kylie walks home through the park.' }, { id: 'b2', text: 'The night is quiet.' }] },
-          { id: 'treatment-enc-1-1', name: 'Encounter', beats: [], encounter: { id: 'enc' } },
+          {
+            id: 'treatment-enc-1-1', name: 'Encounter', beats: [],
+            encounter: {
+              id: 'enc',
+              phases: [{ beats: [{ id: 'p1', setupText: 'A sunset on the stoop, the door locks.', text: '' }] }],
+              storylets: [
+                { beats: [{ id: 'sv-1', text: 'Fog clings as she fumbles the key.' }] },
+                { beats: [{ id: 'sp-1', text: 'A taxi blares; she dives in.' }] },
+              ],
+            },
+          },
+          { id: 'treatment-enc-1-2', name: 'Empty Encounter', beats: [], encounter: { id: 'enc2' } },
         ],
       },
       {
@@ -117,11 +128,42 @@ describe('buildSceneProseRepairHandler', () => {
     expect(result.record).toMatchObject({ rule: 'final_contract_scene_prose', scope: 'scene', succeeded: true });
   });
 
-  it('skips scenes without beats (encounter-only scenes) and reports changed:false', async () => {
-    const critic = { execute: vi.fn() };
+  it('repairs an ENCOUNTER scene: rewrites encounter phase/storylet prose and merges it back', async () => {
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 'treatment-enc-1-1',
+          rewrittenBeats: [
+            { id: 'p1', text: 'The rooftop bar locks into place at sunset; Kylie catches both men watching her.' },
+            { id: 'sv-1', text: 'Cișmigiu at 1am: eight seconds of fog, a shadow, a scream, a rescue.' },
+          ],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
     const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
     const story = makeStory();
     const result = await handler({ story, blockingIssues: [signatureIssue('treatment-enc-1-1')] });
+
+    expect(result.changed).toBe(true);
+    expect(critic.execute).toHaveBeenCalledTimes(1);
+    // SceneCritic saw the flattened encounter prose beats (by their real ids).
+    const beatIds = critic.execute.mock.calls[0][0].scene.beats.map((b: { id: string }) => b.id);
+    expect(beatIds).toEqual(['p1', 'sv-1', 'sp-1']);
+    // Phase prose merged to setupText; storylet prose merged to text.
+    const enc = (story as any).episodes[0].scenes[1].encounter;
+    expect(enc.phases[0].beats[0].setupText).toContain('rooftop bar');
+    expect(enc.storylets[0].beats[0].text).toContain('Cișmigiu');
+    expect(result.record).toMatchObject({ rule: 'final_contract_scene_prose', succeeded: true });
+  });
+
+  it('skips an encounter scene with no rewritable prose and reports changed:false', async () => {
+    const critic = { execute: vi.fn() };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    const story = makeStory();
+    const result = await handler({ story, blockingIssues: [signatureIssue('treatment-enc-1-2')] });
     expect(result.changed).toBe(false);
     expect(critic.execute).not.toHaveBeenCalled();
   });

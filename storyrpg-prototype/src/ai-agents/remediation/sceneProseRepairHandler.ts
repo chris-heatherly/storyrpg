@@ -14,17 +14,24 @@
  * back into the assembled story, and let the repair loop RE-VALIDATE. The run
  * aborts only when repair rounds exhaust with the issue still present.
  *
- * Scope: prose-realization findings on scenes that carry beats — the classes
- * where "rewrite this scene's prose to dramatize the named moment" is the fix
- * (RequiredBeatRealization, SignatureDevicePresence). Structural/encounter
- * classes are handled elsewhere (StructuralValidator.autoFix; the encounter
- * no-boilerplate regen at generation time).
+ * Scope: prose-realization findings on scenes that carry rewritable prose — the
+ * classes where "rewrite this scene's prose to dramatize the named moment" is
+ * the fix (RequiredBeatRealization, SignatureDevicePresence). This includes
+ * ENCOUNTER scenes: their prose lives in `encounter.phases[].beats` /
+ * `encounter.storylets[].beats`, not `scene.beats`, so those beats are flattened
+ * for SceneCritic and the rewrite merged back to the surface it came from (a
+ * signature device staged inside a `treatment-enc-*` encounter is the common
+ * case — see mergeRewrittenEncounterBeatsIntoStory). The generation-time
+ * no-boilerplate regen catches TEMPLATE encounter prose; it does not catch
+ * fluent-but-unfaithful prose that summarized a staged signature away, which is
+ * why this backstop must cover encounters. Purely structural classes (e.g.
+ * AuthoredEpisodeConformance) remain out of scope (StructuralValidator.autoFix).
  */
 
 import type { Story } from '../../types/story';
 import type { SceneCritic } from '../agents/SceneCritic';
 import type { SceneContent } from '../agents/SceneWriter';
-import { mergeRewrittenBeatsIntoStory } from '../pipeline/continuityRepair';
+import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } from '../pipeline/continuityRepair';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
 import type { ContractRepairHandler, ContractRepairReport } from './finalContractRepair';
 
@@ -79,10 +86,56 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[]): string
   return lines.join('\n');
 }
 
+interface EncounterProseBeat {
+  id?: string;
+  text?: string;
+  setupText?: string;
+  escalationText?: string;
+}
 interface RepairableStoryScene {
   id?: string;
   name?: string;
   beats?: Array<{ id?: string; text?: string }>;
+  encounter?: {
+    phases?: Array<{ beats?: EncounterProseBeat[] }>;
+    storylets?: Array<{ beats?: EncounterProseBeat[] }> | Record<string, { beats?: EncounterProseBeat[] }>;
+  };
+}
+
+/**
+ * Flatten an encounter scene's prose beats into the flat `{id, text}` shape
+ * SceneCritic rewrites. Encounter prose lives in `encounter.phases[].beats`
+ * (text in `setupText`) and `encounter.storylets[].beats` (text in `text`),
+ * NOT `scene.beats`. Each surfaced beat keeps its real id so the rewrite merges
+ * straight back via mergeRewrittenEncounterBeatsIntoStory. Only beats that
+ * actually carry prose are surfaced (an empty bridge/choice beat has nothing to
+ * rewrite). This is what lets a SignatureDevicePresence finding on a
+ * `treatment-enc-*` scene be repaired instead of skipped.
+ */
+function gatherEncounterProseBeats(scene: RepairableStoryScene): Array<{ id?: string; text?: string }> {
+  const enc = scene.encounter;
+  if (!enc) return [];
+  const out: Array<{ id?: string; text?: string }> = [];
+  const collect = (beats: EncounterProseBeat[] | undefined): void => {
+    for (const b of beats || []) {
+      const prose = [b.text, b.setupText, b.escalationText].filter(Boolean).join(' ').trim();
+      if (prose) out.push({ id: b.id, text: prose });
+    }
+  };
+  for (const phase of enc.phases || []) collect(phase.beats);
+  const storylets = Array.isArray(enc.storylets) ? enc.storylets : Object.values(enc.storylets ?? {});
+  for (const storylet of storylets) collect(storylet?.beats);
+  return out;
+}
+
+/**
+ * The repairable prose beats for a scene: the flat scene beats when present,
+ * otherwise the encounter's phase/storylet prose beats. Empty only when the
+ * scene genuinely has no rewritable prose anywhere.
+ */
+function repairableBeatsFor(scene: RepairableStoryScene): Array<{ id?: string; text?: string }> {
+  if (scene.beats?.length) return scene.beats;
+  return gatherEncounterProseBeats(scene);
 }
 
 /** Find a scene by id across the assembled story's episodes. */
@@ -97,11 +150,14 @@ function findStoryScene(story: Story, sceneId: string, episodeNumber?: number): 
 }
 
 /** Adapt an assembled-story scene to the SceneContent shape SceneCritic reads. */
-function adaptSceneForCritic(scene: RepairableStoryScene): SceneContent {
+function adaptSceneForCritic(
+  scene: RepairableStoryScene,
+  beats: Array<{ id?: string; text?: string }>,
+): SceneContent {
   return {
     sceneId: scene.id ?? '',
     sceneName: scene.name ?? scene.id ?? '',
-    beats: scene.beats ?? [],
+    beats,
     moodProgression: [],
     charactersInvolved: [],
     keyMoments: [],
@@ -142,25 +198,35 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
     const repairedScenes: string[] = [];
     for (const [sceneId, issues] of groups) {
       const scene = findStoryScene(story, sceneId, issues[0]?.episodeNumber);
-      if (!scene || !scene.beats?.length) {
-        opts.emit?.(`Scene-prose contract repair: scene ${sceneId} not found or has no beats; skipping.`);
+      const repairableBeats = scene ? repairableBeatsFor(scene) : [];
+      if (!scene || repairableBeats.length === 0) {
+        opts.emit?.(`Scene-prose contract repair: scene ${sceneId} not found or has no rewritable prose; skipping.`);
         continue;
       }
+      // Encounter scenes carry prose in encounter.phases/storylets, not
+      // scene.beats — merge the rewrite back to the surface it came from.
+      const isEncounterScene = !scene.beats?.length;
       try {
         const critique = await withTimeout(
           critic.execute({
-            scene: adaptSceneForCritic(scene),
+            scene: adaptSceneForCritic(scene, repairableBeats),
             directorNotes: buildSceneRepairDirectorNotes(issues),
           }),
           PIPELINE_TIMEOUTS.llmAgent,
           `SceneCritic.contractRepair(${sceneId})`,
         );
         if (critique.success && critique.data) {
-          const merged = mergeRewrittenBeatsIntoStory(
-            story as never,
-            sceneId,
-            critique.data.rewrittenBeats as never,
-          );
+          const merged = isEncounterScene
+            ? mergeRewrittenEncounterBeatsIntoStory(
+                story as never,
+                sceneId,
+                critique.data.rewrittenBeats as never,
+              )
+            : mergeRewrittenBeatsIntoStory(
+                story as never,
+                sceneId,
+                critique.data.rewrittenBeats as never,
+              );
           if (merged > 0) {
             totalMerged += merged;
             repairedScenes.push(sceneId);

@@ -80,9 +80,24 @@ interface MergeableBeat {
   text?: string;
   textVariants?: unknown;
 }
+/**
+ * Encounter prose beats carry their text in different fields than flat scene
+ * beats: PHASE beats use `setupText`/`setupTextVariants`, STORYLET beats use
+ * `text`/`textVariants`. The merge must write back to the SAME field the beat
+ * reads from, or a rewrite into `text` would be invisible on a phase beat.
+ */
+interface MergeableEncounterBeat extends MergeableBeat {
+  setupText?: string;
+  setupTextVariants?: unknown;
+}
+interface MergeableEncounter {
+  phases?: Array<{ beats?: MergeableEncounterBeat[] }>;
+  storylets?: Array<{ beats?: MergeableEncounterBeat[] }> | Record<string, { beats?: MergeableEncounterBeat[] }>;
+}
 interface MergeableScene {
   id?: string;
   beats?: MergeableBeat[];
+  encounter?: MergeableEncounter;
 }
 interface MergeableStory {
   episodes?: Array<{ scenes?: MergeableScene[] }>;
@@ -173,6 +188,58 @@ export function mergeRewrittenBeatsIntoStory(
         if (typeof rewrite.text === 'string' && rewrite.text.trim()) beat.text = rewrite.text;
         if (rewrite.textVariants !== undefined) beat.textVariants = rewrite.textVariants;
         merged += 1;
+      }
+    }
+  }
+  return merged;
+}
+
+/**
+ * Encounter-scene counterpart to {@link mergeRewrittenBeatsIntoStory}. Encounter
+ * prose lives in `encounter.phases[].beats` and `encounter.storylets[].beats`,
+ * not `scene.beats`, so a SignatureDevicePresence/RequiredBeatRealization repair
+ * on a `treatment-enc-*` scene has to merge there. Each rewritten beat is matched
+ * by id and written back to the field that beat actually uses for prose — `text`
+ * for storylet beats, `setupText` for phase beats (and the matching `*Variants`).
+ * Returns the number of encounter beats updated. Mutates in place; unit-testable.
+ */
+export function mergeRewrittenEncounterBeatsIntoStory(
+  story: MergeableStory,
+  sceneId: string,
+  rewrittenBeats: MergeableBeat[] | undefined,
+): number {
+  if (!rewrittenBeats?.length) return 0;
+  const byId = new Map(rewrittenBeats.filter((b) => b.id).map((b) => [b.id as string, b]));
+  let merged = 0;
+  const applyToBeat = (beat: MergeableEncounterBeat): void => {
+    const rewrite = beat.id ? byId.get(beat.id) : undefined;
+    if (!rewrite || typeof rewrite.text !== 'string' || !rewrite.text.trim()) return;
+    // Write back to whichever field the beat reads its prose from. A phase beat
+    // with prose in `setupText` (and an empty/absent `text`) must NOT have the
+    // rewrite dropped into `text` where nothing renders it.
+    const usesSetupText =
+      (beat.text === undefined || beat.text === '') &&
+      typeof beat.setupText === 'string' && beat.setupText.length > 0;
+    if (usesSetupText) {
+      beat.setupText = rewrite.text;
+      if (rewrite.textVariants !== undefined) beat.setupTextVariants = rewrite.textVariants;
+    } else {
+      beat.text = rewrite.text;
+      if (rewrite.textVariants !== undefined) beat.textVariants = rewrite.textVariants;
+    }
+    merged += 1;
+  };
+  for (const episode of story.episodes ?? []) {
+    for (const scene of episode.scenes ?? []) {
+      if (scene.id !== sceneId || !scene.encounter) continue;
+      for (const phase of scene.encounter.phases ?? []) {
+        for (const beat of phase.beats ?? []) applyToBeat(beat);
+      }
+      const storylets = Array.isArray(scene.encounter.storylets)
+        ? scene.encounter.storylets
+        : Object.values(scene.encounter.storylets ?? {});
+      for (const storylet of storylets) {
+        for (const beat of storylet?.beats ?? []) applyToBeat(beat);
       }
     }
   }

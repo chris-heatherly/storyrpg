@@ -4,6 +4,7 @@ import {
   scenesNeedingRepair,
   buildContinuityRepairGuidance,
   mergeRewrittenBeatsIntoStory,
+  mergeRewrittenEncounterBeatsIntoStory,
   applyRewrittenBeatsToSceneContents,
   mergeRevalidatedContinuityIssues,
   type ContinuityFinding,
@@ -74,6 +75,58 @@ describe('mergeRewrittenBeatsIntoStory', () => {
     const story = { episodes: [{ scenes: [{ id: 's', beats: [{ id: 'b', text: 'orig' }] }] }] };
     mergeRewrittenBeatsIntoStory(story as any, 's', [{ id: 'b', text: '   ' }]);
     expect(story.episodes[0].scenes[0].beats[0].text).toBe('orig');
+  });
+});
+
+describe('mergeRewrittenEncounterBeatsIntoStory', () => {
+  const encounterStory = () => ({
+    episodes: [{ scenes: [{
+      id: 'treatment-enc-1-1',
+      beats: [], // encounter scenes carry no flat beats
+      encounter: {
+        phases: [{ beats: [{ id: 'beat-1', setupText: 'old phase prose', text: '' }] }],
+        storylets: [
+          { beats: [{ id: 'sv-1', text: 'old storylet prose', textVariants: [{ text: 'old variant' }] }] },
+          { beats: [{ id: 'sp-1', text: 'untouched' }] },
+        ],
+      },
+    }] }],
+  });
+
+  it('writes storylet rewrites to `text` and phase rewrites to `setupText`', () => {
+    const story = encounterStory();
+    const merged = mergeRewrittenEncounterBeatsIntoStory(story as any, 'treatment-enc-1-1', [
+      { id: 'beat-1', text: 'new phase prose' },
+      { id: 'sv-1', text: 'new storylet prose', textVariants: [] },
+    ]);
+    expect(merged).toBe(2);
+    const enc = story.episodes[0].scenes[0].encounter as any;
+    // Phase beat: prose written to setupText, NOT text.
+    expect(enc.phases[0].beats[0].setupText).toBe('new phase prose');
+    expect(enc.phases[0].beats[0].text).toBe('');
+    // Storylet beat: prose written to text, variants replaced.
+    expect(enc.storylets[0].beats[0].text).toBe('new storylet prose');
+    expect(enc.storylets[0].beats[0].textVariants).toEqual([]);
+    // Unmatched storylet beat untouched.
+    expect(enc.storylets[1].beats[0].text).toBe('untouched');
+  });
+
+  it('handles a record-shaped storylets map', () => {
+    const story = {
+      episodes: [{ scenes: [{
+        id: 'enc', beats: [],
+        encounter: { storylets: { sv: { beats: [{ id: 'sv-1', text: 'old' }] } } },
+      }] }],
+    };
+    const merged = mergeRewrittenEncounterBeatsIntoStory(story as any, 'enc', [{ id: 'sv-1', text: 'new' }]);
+    expect(merged).toBe(1);
+    expect((story.episodes[0].scenes[0].encounter.storylets as any).sv.beats[0].text).toBe('new');
+  });
+
+  it('does not overwrite with empty rewritten text', () => {
+    const story = encounterStory();
+    mergeRewrittenEncounterBeatsIntoStory(story as any, 'treatment-enc-1-1', [{ id: 'sv-1', text: '  ' }]);
+    expect(story.episodes[0].scenes[0].encounter.storylets[0].beats[0].text).toBe('old storylet prose');
   });
 });
 

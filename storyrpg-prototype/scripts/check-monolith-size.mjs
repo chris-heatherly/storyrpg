@@ -428,7 +428,12 @@ const baselines = {
   // adapter in pipeline/checkpointArtifactStore.ts; golden-parity tested by
   // FullStoryPipeline.runGraphParity.season.test.ts). Net shrink from deleting
   // the dead 101-line synthesizeActionFromBeat helper (zero references).
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9703,
+  // -140 (9703 -> 9563): Adoption A5+A7 (2026-06-11) — foundation phases run
+  // as graph steps via pipeline/episodeRunGraph.ts runFoundationOnGraph
+  // (flag-gated, golden parity), and repairWeakCliffhangerBeforeImages
+  // (191 lines) pure-moved to pipeline/cliffhangerRepair.ts behind a thin
+  // delegator.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9563,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

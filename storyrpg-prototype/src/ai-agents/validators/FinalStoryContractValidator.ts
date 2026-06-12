@@ -19,6 +19,7 @@ import { SkillPlanConformanceValidator } from './SkillPlanConformanceValidator';
 import type { SeasonSkillPlan } from '../pipeline/seasonSkillPlan';
 import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs, normalizeEncounterOutcomeFlags } from '../utils/encounterOutcomeFlags';
 import { isGateEnabled } from '../remediation/gateDefaults';
+import { isGateEnabledAt } from '../remediation/gateRegistry';
 import { isTreatmentFidelityFinding } from './treatmentFidelityGate';
 import { findBeatIdCollisions } from './beatIdCollisions';
 import { collectReaderFacingTexts, collectEncounterMetaTexts } from './EncounterAnchorContentValidator';
@@ -258,7 +259,7 @@ export class FinalStoryContractValidator {
             `ambiguous ${pronounFix.ambiguous.length} (of ${pronounFix.fieldsScanned} fields)`,
           );
         }
-        if (isGateEnabled('GATE_PROTAGONIST_PRONOUN')) {
+        if (isGateEnabledAt('GATE_PROTAGONIST_PRONOUN', 'season-final')) {
           for (const amb of pronounFix.ambiguous) {
             issues.push({
               type: 'ambiguous_protagonist_pronoun',
@@ -286,7 +287,7 @@ export class FinalStoryContractValidator {
           `[FinalStoryContract] NPC pronoun inconsistencies: ${npcScan.findings.length} (of ${npcScan.fieldsScanned} fields)`,
         );
       }
-      const blockNpcPronoun = isGateEnabled('GATE_NPC_PRONOUN');
+      const blockNpcPronoun = isGateEnabledAt('GATE_NPC_PRONOUN', 'season-final');
       for (const f of npcScan.findings) {
         issues.push({
           type: 'npc_pronoun_inconsistency',
@@ -310,7 +311,7 @@ export class FinalStoryContractValidator {
       if (otqResult.issues.length > 0) {
         console.info(`[FinalStoryContract] outcome-text quality: ${otqResult.issues.length} finding(s)`);
       }
-      const blockOtq = isGateEnabled('GATE_OUTCOME_TEXT_QUALITY');
+      const blockOtq = isGateEnabledAt('GATE_OUTCOME_TEXT_QUALITY', 'season-final');
       for (const issue of otqResult.issues) {
         issues.push({
           type: 'outcome_text_stub',
@@ -333,7 +334,7 @@ export class FinalStoryContractValidator {
           `${flagResult.metrics.writeOnlyFlags} write-only flag(s) (of ${flagResult.metrics.settersTotal} setters / ${flagResult.metrics.consumersTotal} consumers)`,
         );
       }
-      const blockFlags = isGateEnabled('GATE_FLAG_CONTRACT');
+      const blockFlags = isGateEnabledAt('GATE_FLAG_CONTRACT', 'season-final');
       for (const issue of flagResult.issues) {
         issues.push({
           type: 'unset_flag_condition',
@@ -372,7 +373,7 @@ export class FinalStoryContractValidator {
         }
       }
       if (metaStrings.size > 0) {
-        const blockLeak = isGateEnabled('GATE_DESIGN_NOTE_LEAK');
+        const blockLeak = isGateEnabledAt('GATE_DESIGN_NOTE_LEAK', 'season-final');
         for (const ep of input.story.episodes || []) {
           for (const scene of ep.scenes || []) {
             for (const beat of scene.beats || []) {
@@ -409,7 +410,7 @@ export class FinalStoryContractValidator {
       if (openerResult.issues.length > 0) {
         console.info(`[FinalStoryContract] sentence-opener variety: ${openerResult.issues.length} finding(s)`);
       }
-      const blockOpener = isGateEnabled('GATE_SENTENCE_OPENER_VARIETY');
+      const blockOpener = isGateEnabledAt('GATE_SENTENCE_OPENER_VARIETY', 'season-final');
       for (const issue of openerResult.issues) {
         issues.push({
           type: 'sentence_opener_monotony',
@@ -431,7 +432,7 @@ export class FinalStoryContractValidator {
       if (refResult.issues.length > 0) {
         console.info(`[FinalStoryContract] referenced-event presence: ${refResult.issues.length} finding(s)`);
       }
-      const blockRef = isGateEnabled('GATE_REFERENCED_EVENT_PRESENCE');
+      const blockRef = isGateEnabledAt('GATE_REFERENCED_EVENT_PRESENCE', 'season-final');
       for (const issue of refResult.issues) {
         issues.push({
           type: 'promised_clue_absent',
@@ -456,7 +457,7 @@ export class FinalStoryContractValidator {
       if (confResult.issues.length > 0) {
         console.info(`[FinalStoryContract] choice-type plan conformance: ${confResult.issues.length} finding(s)`);
       }
-      const blockConf = isGateEnabled('GATE_CHOICE_TYPE_CONFORMANCE');
+      const blockConf = isGateEnabledAt('GATE_CHOICE_TYPE_CONFORMANCE', 'season-final');
       for (const issue of confResult.issues) {
         issues.push({
           type: 'choice_type_plan_nonconformance',
@@ -479,7 +480,7 @@ export class FinalStoryContractValidator {
       if (skillConf.issues.length > 0) {
         console.info(`[FinalStoryContract] skill plan conformance: ${skillConf.issues.length} finding(s)`);
       }
-      const blockSkill = isGateEnabled('GATE_SKILL_PLAN_CONFORMANCE');
+      const blockSkill = isGateEnabledAt('GATE_SKILL_PLAN_CONFORMANCE', 'season-final');
       for (const issue of skillConf.issues) {
         issues.push({
           type: 'skill_plan_nonconformance',
@@ -498,7 +499,7 @@ export class FinalStoryContractValidator {
     // G12: normalize first — setters/consumers shipped with three flag spellings.
     normalizeEncounterOutcomeFlags(input.story);
     seedEncounterOutcomeFlags(input.story);
-    if (isGateEnabled('GATE_ENCOUNTER_OUTCOME_VARIANT')) {
+    if (isGateEnabledAt('GATE_ENCOUNTER_OUTCOME_VARIANT', 'season-final')) {
       for (const desync of findEncounterOutcomeDesyncs(input.story)) {
         issues.push({
           type: 'encounter_outcome_desync',
@@ -589,7 +590,7 @@ export class FinalStoryContractValidator {
             if (povHits.length > 0) {
               issues.push({
                 type: 'encounter_pov_break',
-                severity: isGateEnabled('GATE_PROTAGONIST_PRONOUN') ? 'error' : 'warning',
+                severity: isGateEnabledAt('GATE_PROTAGONIST_PRONOUN', 'season-final') ? 'error' : 'warning',
                 message: `Encounter scene "${scene.name || scene.id}" narrates the protagonist in the third person in ${povHits.length} place(s) — a POV break in a second-person story. e.g. "${povHits[0]}"`,
                 episodeId: episode.id,
                 episodeNumber: episode.number,
@@ -1053,7 +1054,7 @@ export class FinalStoryContractValidator {
       // it to blocking once an auto-repair path exists (default-off ⇒ unchanged).
       issues.push({
         type: 'qa_blocker_present',
-        severity: isGateEnabled('GATE_QA_CRITICAL_BLOCK') ? 'error' : 'warning',
+        severity: isGateEnabledAt('GATE_QA_CRITICAL_BLOCK', 'season-final') ? 'error' : 'warning',
         message: `QA report did not pass: ${qaReport.criticalIssues.join('; ') || `score ${qaReport.overallScore}`}`,
         validator: 'QARunner',
       });

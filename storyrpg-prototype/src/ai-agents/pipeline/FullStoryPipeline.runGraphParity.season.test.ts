@@ -12,7 +12,7 @@
  *      as the legacy loop, byte for byte — the run-graph path changes HOW the
  *      loop is scheduled/journaled, never WHAT is generated.
  *   2. The event sequence matches the same golden once the graph's own
- *      journal narration (phase `episode_run_graph`) is filtered out — the
+ *      journal narration (phase `run_graph`) is filtered out — the
  *      only observable difference is the added journal.
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -164,10 +164,13 @@ describe('FullStoryPipeline run-graph episode loop (parity with the legacy loop)
     expect(result.error ?? '').toBe('');
     expect(result.success).toBe(true);
 
-    // The graph actually ran: its journal narration is present...
-    const graphEvents = (result.events ?? []).filter((e) => e.phase === 'episode_run_graph');
+    // The graph actually ran: its journal narration covers the foundation
+    // steps (A5) and both episode steps (A2).
+    const graphEvents = (result.events ?? []).filter((e) => e.phase === 'run_graph');
     expect(graphEvents.map((e) => e.message)).toEqual(
       expect.arrayContaining([
+        expect.stringContaining('step_start: foundation-world'),
+        expect.stringContaining('step_complete: foundation-characters'),
         expect.stringContaining('step_start: episode-1'),
         expect.stringContaining('step_complete: episode-1'),
         expect.stringContaining('step_start: episode-2'),
@@ -187,7 +190,7 @@ describe('FullStoryPipeline run-graph episode loop (parity with the legacy loop)
     // are removed — the journal is ADDITIVE, nothing else may change.
     const eventLog = {
       events: normalizeEventsForSnapshot(
-        (result.events ?? []).filter((e) => e.phase !== 'episode_run_graph'),
+        (result.events ?? []).filter((e) => e.phase !== 'run_graph'),
       ),
       checkpoints: normalizeCheckpointsForSnapshot(result.checkpoints ?? []),
     };

@@ -131,7 +131,8 @@ import {
 } from './seasonChoicePlan';
 import { type SeasonSkillPlan } from './seasonSkillPlan';
 import { writeEpisodeCompletion, partitionResumableEpisodes } from './episodeCheckpoints';
-import { runEpisodeLoopOnGraph } from './episodeRunGraph';
+import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
+import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
 
 import { reconcileBriefStoryMetadata } from './briefStoryMetadata';
@@ -4888,33 +4889,65 @@ export class FullStoryPipeline {
         );
       }
 
+      // Adoption flag (A2/A5): run the foundation phases and the sequential
+      // episode loop on the run-graph runner. Default OFF; golden-parity
+      // tested both ways (FullStoryPipeline.runGraphParity.season.test.ts).
+      const runGraphEnabled =
+        this.config.generation?.runGraphEpisodeLoop === true || process.env.STORYRPG_RUN_GRAPH === '1';
+
       // 2. Build foundation (World & Characters)
       this.emit({ type: 'phase_start', phase: 'foundation', message: 'Building story foundation...' });
       this.emitPhaseProgress('foundation', 0, 2, 'foundation:steps', 'Preparing shared story foundation...');
-      
-      const worldBrief = createWorldBriefFromAnalysis(baseBrief, filteredAnalysis);
-      const resumedWorldBible = this.getResumeOutput<any>(resumeCheckpoint, 'world_bible');
-      const worldBible = resumedWorldBible
-        ? resumedWorldBible
-        : await this.measurePhase('multi_world_building', () => this.runWorldBuilding(worldBrief));
-      if (resumedWorldBible) {
-        this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared world foundation from checkpoint' });
-      } else {
-        this.addCheckpoint('World Bible', worldBible, false);
-      }
-      this.emitPhaseProgress('foundation', 1, 2, 'foundation:steps', 'World foundation complete');
 
+      const worldBrief = createWorldBriefFromAnalysis(baseBrief, filteredAnalysis);
       const characterBrief = createCharacterBriefFromAnalysis(baseBrief, filteredAnalysis);
+      const resumedWorldBible = this.getResumeOutput<any>(resumeCheckpoint, 'world_bible');
       const resumedCharacterBible = this.getResumeOutput<any>(resumeCheckpoint, 'character_bible');
-      const characterBible = resumedCharacterBible
-        ? resumedCharacterBible
-        : await this.measurePhase('multi_character_design', () => this.runCharacterDesign(characterBrief, worldBible));
-      if (resumedCharacterBible) {
-        this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared character foundation from checkpoint' });
+      let worldBible: any;
+      let characterBible: any;
+      if (runGraphEnabled) {
+        // A5: same builds, declared as a two-step graph chain with the resume
+        // payload seeded as artifacts (resume-by-construction replaces the
+        // ternaries below; hooks keep emit/checkpoint order byte-identical).
+        ({ worldBible, characterBible } = await runFoundationOnGraph<any, any>({
+          resumedWorldBible,
+          resumedCharacterBible,
+          buildWorldBible: () => this.measurePhase('multi_world_building', () => this.runWorldBuilding(worldBrief)),
+          buildCharacterBible: (world) => this.measurePhase('multi_character_design', () =>
+            this.runCharacterDesign(characterBrief, world)),
+          onWorldBuilt: (world) => this.addCheckpoint('World Bible', world, false),
+          onCharactersBuilt: (characters) => this.addCheckpoint('Character Bible', characters, false),
+          onWorldResumed: () =>
+            this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared world foundation from checkpoint' }),
+          onCharactersResumed: () =>
+            this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared character foundation from checkpoint' }),
+          afterWorld: () => this.emitPhaseProgress('foundation', 1, 2, 'foundation:steps', 'World foundation complete'),
+          afterCharacters: () =>
+            this.emitPhaseProgress('foundation', 2, 2, 'foundation:steps', 'Character foundation complete'),
+          emitDebug: (message) => this.emit({ type: 'debug', phase: 'run_graph', message }),
+        }));
       } else {
-        this.addCheckpoint('Character Bible', characterBible, false);
+        worldBible = resumedWorldBible
+          ? resumedWorldBible
+          : await this.measurePhase('multi_world_building', () => this.runWorldBuilding(worldBrief));
+        if (resumedWorldBible) {
+          this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared world foundation from checkpoint' });
+        } else {
+          this.addCheckpoint('World Bible', worldBible, false);
+        }
+        this.emitPhaseProgress('foundation', 1, 2, 'foundation:steps', 'World foundation complete');
+
+        const characterBrief = createCharacterBriefFromAnalysis(baseBrief, filteredAnalysis);
+        characterBible = resumedCharacterBible
+          ? resumedCharacterBible
+          : await this.measurePhase('multi_character_design', () => this.runCharacterDesign(characterBrief, worldBible));
+        if (resumedCharacterBible) {
+          this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared character foundation from checkpoint' });
+        } else {
+          this.addCheckpoint('Character Bible', characterBible, false);
+        }
+        this.emitPhaseProgress('foundation', 2, 2, 'foundation:steps', 'Character foundation complete');
       }
-      this.emitPhaseProgress('foundation', 2, 2, 'foundation:steps', 'Character foundation complete');
 
       // 2.5. Create output directory EARLY so images go to the right place (or resume existing one)
       const resumedOutputDir = this.getResumeOutput<{ outputDirectory: string }>(
@@ -5248,9 +5281,7 @@ export class FullStoryPipeline {
           return generated.episode ?? null;
         };
 
-        const runGraphLoopEnabled =
-          this.config.generation?.runGraphEpisodeLoop === true || process.env.STORYRPG_RUN_GRAPH === '1';
-        if (runGraphLoopEnabled) {
+        if (runGraphEnabled) {
           // Adoption A2: same body, scheduled/journaled by the run-graph
           // runner — see pipeline/episodeRunGraph.ts for the semantics.
           await runEpisodeLoopOnGraph({
@@ -5261,7 +5292,7 @@ export class FullStoryPipeline {
               load: <T,>(name: string) => loadEarlyDiagnosticSync<T>(outputDirectory, name),
             },
             processEpisode: (spec) => processPendingEpisode(spec, { writeWatermark: false }),
-            emitDebug: (message) => this.emit({ type: 'debug', phase: 'episode_run_graph', message }),
+            emitDebug: (message) => this.emit({ type: 'debug', phase: 'run_graph', message }),
           });
         } else {
           for (const spec of pendingEpisodeSpecs) {
@@ -8889,186 +8920,15 @@ export class FullStoryPipeline {
     choiceSets: ChoiceSet[],
     encounters?: Map<string, EncounterStructure>,
   ): Promise<void> {
-    const seasonEpisode = brief.seasonPlan?.episodes.find(e => e.episodeNumber === brief.episode.number);
-    const cliffhangerPlan = seasonEpisode?.cliffhangerPlan;
-    const totalEpisodes = brief.seasonPlan?.episodes.length || 1;
-    if (!cliffhangerPlan || brief.episode.number >= totalEpisodes) return;
-
-    const scenes = blueprint.scenes || [];
-    const terminalBlueprint = [...scenes].reverse().find(s => !s.leadsTo || s.leadsTo.length === 0)
-      || scenes[scenes.length - 1];
-    if (!terminalBlueprint || terminalBlueprint.isEncounter) return;
-
-    const finalSceneIndex = sceneContents.findIndex(sc => sc.sceneId === terminalBlueprint.id);
-    const finalScene = finalSceneIndex >= 0 ? sceneContents[finalSceneIndex] : undefined;
-    const finalBeat = finalScene?.beats?.[finalScene.beats.length - 1];
-    if (!finalScene || !finalBeat) return;
-
-    // G12: path-gated cliffhangers. When the episode's final choice point has no
-    // successor beat, each payoff bridges straight out of the episode — and the
-    // authored hook (the doormat scarf, the two DMs) lands inside ONE payoff
-    // branch, so half the players end the episode without the next episode's
-    // motivation. Detect terminal payoff fan-out and partial hook coverage; the
-    // repaired hook then lands on a shared CODA beat all payoffs flow through.
-    type BridgeBeat = (typeof finalScene.beats)[number] & {
-      isChoiceBridge?: boolean; nextSceneId?: string; nextBeatId?: string;
-      textVariants?: Array<{ text?: string }>;
-    };
-    const terminalPayoffs = (finalScene.beats || []).filter((b) => {
-      const bb = b as BridgeBeat;
-      return bb.isChoiceBridge && bb.nextSceneId && !bb.nextBeatId;
-    }) as BridgeBeat[];
-    const sharedTarget = terminalPayoffs.length >= 2
-      && new Set(terminalPayoffs.map(b => b.nextSceneId)).size === 1
-      ? terminalPayoffs[0].nextSceneId
-      : undefined;
-    const hookTokens = (cliffhangerPlan.hook || '').toLowerCase().split(/[^a-zà-žăâîșț0-9]+/).filter(t => t.length >= 4);
-    const carriesHook = (b: BridgeBeat): boolean => {
-      if (hookTokens.length === 0) return false;
-      const text = [b.text, ...((b.textVariants || []).map(v => v.text))].filter(Boolean).join(' ').toLowerCase();
-      const hits = hookTokens.filter(t => text.includes(t)).length;
-      return hits / hookTokens.length >= 0.3;
-    };
-    const hookCoverage = sharedTarget ? terminalPayoffs.filter(carriesHook).length : 0;
-    const pathGatedHook = Boolean(sharedTarget) && hookCoverage < terminalPayoffs.length;
-
-    const episode = this.assembleEpisode(
-      brief,
-      worldBible,
-      characterBible,
-      blueprint,
-      sceneContents,
-      choiceSets,
-      undefined,
-      encounters,
+    return repairWeakCliffhangerBeforeImagesImpl(
+      {
+        sceneWriterConfig: this.config.agents.sceneWriter,
+        emit: (event) => this.emit(event),
+        recordRemediationSafe: (record) => this.recordRemediationSafe(record),
+        assembleEpisode: this.assembleEpisode.bind(this),
+      },
+      brief, worldBible, characterBible, blueprint, sceneContents, choiceSets, encounters,
     );
-
-    const validator = new CliffhangerValidator(this.config.agents.sceneWriter);
-    const analysis = validator.quickAnalyze(episode, cliffhangerPlan);
-
-    // Cliffhanger soft-gate (default OFF; GATE_CLIFFHANGER=1). This is a NON-
-    // blocking soft-gate: it only decides whether to invoke the (already
-    // non-throwing) improveCliffhanger repair. Default path is unchanged —
-    // repair whenever quality is not 'good'/'excellent' (heuristic score < 62).
-    // With the flag ON, the score boundary is hysteresis-stabilized so a
-    // borderline draw in [57, 62) is treated as a pass and NO repair fires,
-    // trading a slightly more permissive gate for fewer noise-triggered LLM
-    // repairs. 62 is the 'good' threshold; 5 is the hysteresis margin.
-    const stabilizationOn = isGateEnabled('GATE_CLIFFHANGER');
-    const qualityNeedsRepair = stabilizationOn
-      ? stabilizeByHysteresis(analysis.score, 62, 5)
-      : analysis.quality !== 'good' && analysis.quality !== 'excellent';
-    // A hook that exists on only SOME terminal payoffs is a structural defect even
-    // when the quality score passes (the analyzer read the hook on the branch it
-    // sampled) — force the repair so the hook lands on the shared coda.
-    const needsRepair = qualityNeedsRepair || pathGatedHook;
-    if (!needsRepair) {
-      this.emit({
-        type: 'debug',
-        phase: 'cliffhanger_validation',
-        message: `Cliffhanger passed (${analysis.quality}, ${analysis.score}/100${stabilizationOn ? ', hysteresis-stabilized' : ''})`,
-      });
-      return;
-    }
-
-    this.emit({
-      type: 'regeneration_triggered',
-      phase: 'cliffhanger_repair',
-      message: `Repairing weak ${cliffhangerPlan.mappedStructuralRole} cliffhanger (${analysis.score}/100): ${analysis.suggestions.join('; ')}`,
-    });
-
-    const improvement = await withTimeout(
-      validator.improveCliffhanger(episode, cliffhangerPlan, analysis),
-      PIPELINE_TIMEOUTS.llmAgent,
-      `CliffhangerValidator.improveCliffhanger(${brief.episode.number})`,
-    );
-
-    if (!improvement.success || !improvement.data?.improvedText) {
-      this.emit({
-        type: 'warning',
-        phase: 'cliffhanger_repair',
-        message: `Cliffhanger repair failed: ${improvement.error || 'no improved text returned'}`,
-      });
-      // Soft-gate observability: record the (failed) repair attempt best-effort
-      // when stabilization is active. Never blocks; recordRemediationSafe swallows.
-      if (stabilizationOn) {
-        await this.recordRemediationSafe({
-          rule: 'cliffhanger_stabilized', scope: 'episode', attempted: 1,
-          succeeded: false, degraded: false, blocked: false, attempts: 1,
-          storyId: (brief.story as typeof brief.story & { id?: string })?.id,
-          details: `Cliffhanger repair failed for episode ${brief.episode.number} (score ${analysis.score}/100, quality ${analysis.quality})`,
-        });
-      }
-      return;
-    }
-
-    if (sharedTarget) {
-      // Shared coda: every terminal payoff now flows through one hook-bearing
-      // trunk beat before leaving the episode — no path misses the cliffhanger.
-      const codaId = `${finalScene.sceneId}-cliffhanger-coda`;
-      let coda = (finalScene.beats || []).find(b => b.id === codaId) as BridgeBeat | undefined;
-      if (!coda) {
-        coda = {
-          id: codaId,
-          text: improvement.data.improvedText,
-          isChoicePoint: false,
-          isChoiceBridge: true,
-          nextSceneId: sharedTarget,
-          visualMoment: improvement.data.improvedText.split(/[.!?]/)[0]?.trim(),
-          emotionalRead: cliffhangerPlan.emotionalCharge,
-          intensityTier: cliffhangerPlan.intensity === 'high' ? 'dominant' : 'supporting',
-        } as unknown as BridgeBeat;
-        finalScene.beats.push(coda as never);
-      } else {
-        coda.text = improvement.data.improvedText;
-      }
-      for (const p of terminalPayoffs) {
-        p.nextBeatId = codaId;
-        p.nextSceneId = undefined;
-        p.isChoiceBridge = false;
-      }
-      this.emit({
-        type: 'debug',
-        phase: 'cliffhanger_repair',
-        message: `Cliffhanger coda installed on ${finalScene.sceneId}: ${terminalPayoffs.length} payoff path(s) rewired through ${codaId} (hook coverage was ${hookCoverage}/${terminalPayoffs.length}).`,
-      });
-    } else {
-      finalBeat.text = improvement.data.improvedText;
-      finalBeat.visualMoment = finalBeat.visualMoment || improvement.data.improvedText.split(/[.!?]/)[0]?.trim();
-      finalBeat.emotionalRead = finalBeat.emotionalRead || cliffhangerPlan.emotionalCharge;
-      finalBeat.intensityTier = cliffhangerPlan.intensity === 'high' ? 'dominant' : (finalBeat.intensityTier || 'supporting');
-    }
-    finalBeat.mustShowDetail = finalBeat.mustShowDetail || cliffhangerPlan.hook;
-    finalScene.keyMoments = Array.from(new Set([...(finalScene.keyMoments || []), cliffhangerPlan.hook]));
-    finalScene.continuityNotes = Array.from(new Set([...(finalScene.continuityNotes || []), `Cliffhanger repaired: ${improvement.data.explanation}`]));
-
-    const repairedEpisode = this.assembleEpisode(
-      brief,
-      worldBible,
-      characterBible,
-      blueprint,
-      sceneContents,
-      choiceSets,
-      undefined,
-      encounters,
-    );
-    const repairedAnalysis = validator.quickAnalyze(repairedEpisode, cliffhangerPlan);
-    this.emit({
-      type: repairedAnalysis.quality === 'missing' || repairedAnalysis.quality === 'weak' ? 'warning' : 'phase_complete',
-      phase: 'cliffhanger_repair',
-      message: `Cliffhanger repair result: ${repairedAnalysis.quality} (${repairedAnalysis.score}/100)`,
-      data: { before: analysis, after: repairedAnalysis },
-    });
-    // Soft-gate observability: record the (successful) repair attempt best-effort
-    // when stabilization is active. Never blocks; recordRemediationSafe swallows.
-    if (stabilizationOn) {
-      await this.recordRemediationSafe({
-        rule: 'cliffhanger_stabilized', scope: 'episode', attempted: 1,
-        succeeded: true, degraded: false, blocked: false, attempts: 1,
-        storyId: (brief.story as typeof brief.story & { id?: string })?.id,
-        details: `Cliffhanger repaired for episode ${brief.episode.number}: ${analysis.score}/100 → ${repairedAnalysis.score}/100`,
-      });
-    }
   }
 
   private isEpisodeFinalScene(scene: SceneBlueprint, blueprint: EpisodeBlueprint): boolean {

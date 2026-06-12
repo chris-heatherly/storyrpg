@@ -21,7 +21,7 @@
  * that class of incident a failing unit test instead of a postmortem.
  */
 
-import { GATE_DEFAULTS } from './gateDefaults';
+import { GATE_DEFAULTS, isGateEnabled } from './gateDefaults';
 
 /** Where in the run the gate executes. */
 export type GatePlacement =
@@ -138,6 +138,50 @@ export const GATE_REGISTRY: GateSpec[] = [
   },
   { id: 'GATE_SIGNATURE_PRESENCE_STRICT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
 ];
+
+/** All registered gates that execute at the given placement. */
+export function gatesAtPlacement(placement: GatePlacement): GateSpec[] {
+  return GATE_REGISTRY.filter((g) => g.placement === placement);
+}
+
+const placementWarned = new Set<string>();
+
+/**
+ * Placement-aware gate check (adoption A6 — the registry's runtime teeth).
+ *
+ * Use this where a gate's check/enforcement EXECUTES, declaring the placement
+ * of the call site. Enablement resolution is identical to `isGateEnabled`
+ * (env override > rolled-out default) — behavior never changes — but when an
+ * ENABLED gate executes somewhere other than its registered placement, a
+ * one-shot console.warn surfaces the drift (mis-registered registry entry, or
+ * a gate that quietly moved). Disabled gates never warn: their placement is
+ * moot at runtime.
+ *
+ * Sites that merely CONSULT another placement's flag (e.g. the season-final
+ * contract asking whether the episode-level continuity remediation is armed
+ * to decide escalation) should keep plain `isGateEnabled`.
+ */
+export function isGateEnabledAt(flag: string, placement: GatePlacement): boolean {
+  const enabled = isGateEnabled(flag);
+  if (!enabled) return false;
+  const key = `${flag}@${placement}`;
+  if (!placementWarned.has(key)) {
+    const spec = GATE_REGISTRY.find((g) => g.id === flag);
+    if (!spec) {
+      placementWarned.add(key);
+      console.warn(`[gateRegistry] Gate "${flag}" executed at "${placement}" but is not in GATE_REGISTRY — classify it before shipping.`);
+    } else if (spec.placement !== placement) {
+      placementWarned.add(key);
+      console.warn(`[gateRegistry] Gate "${flag}" executed at "${placement}" but is registered at "${spec.placement}" — fix the registry entry or the call site.`);
+    }
+  }
+  return enabled;
+}
+
+/** Test hook: clear the one-shot placement-drift warning latch. */
+export function resetGatePlacementWarnings(): void {
+  placementWarned.clear();
+}
 
 export interface GateRegistryViolation {
   gateId: string;

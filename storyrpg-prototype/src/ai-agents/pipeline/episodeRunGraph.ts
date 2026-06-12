@@ -17,8 +17,96 @@
  */
 
 import type { Episode } from '../../types';
-import { runGraph, type StepDef } from './runGraph';
+import { MemoryArtifactStore, runGraph, type StepDef } from './runGraph';
 import { CheckpointArtifactStore, episodeArtifactId, type ArtifactStoreIO } from './checkpointArtifactStore';
+
+/**
+ * Foundation phases (world bible → character bible) as a two-step graph
+ * chain (adoption A5). The store is an in-memory one seeded from the
+ * job-state resume payload — the run directory doesn't exist yet at
+ * foundation time, and the EXISTING resume source for these phases is the
+ * job checkpoint's outputs, not run-dir files. Resume-by-construction: a
+ * seeded artifact skips its producer step exactly where the legacy code
+ * branched on `getResumeOutput(...)`.
+ *
+ * Observable ordering is preserved by construction: with the chain dependency
+ * the runner processes world (run OR skip) strictly before characters, and the
+ * hooks fire in the legacy slots: built → checkpoint hook, skipped → resumed
+ * hook, then the phase-progress hook either way.
+ */
+
+export async function runFoundationOnGraph<W, C>(opts: {
+  resumedWorldBible: W | undefined;
+  resumedCharacterBible: C | undefined;
+  buildWorldBible: () => Promise<W>;
+  buildCharacterBible: (worldBible: W) => Promise<C>;
+  /** Fires after a fresh build, before the phase-progress tick (legacy addCheckpoint slot). */
+  onWorldBuilt: (worldBible: W) => void;
+  onCharactersBuilt: (characterBible: C) => void;
+  /** Fires when the artifact was seeded and the step skipped (legacy "Resumed ..." debug slot). */
+  onWorldResumed: () => void;
+  onCharactersResumed: () => void;
+  /** Fires after each phase regardless of build/skip (legacy emitPhaseProgress slot). */
+  afterWorld: () => void;
+  afterCharacters: () => void;
+  emitDebug: (message: string) => void;
+}): Promise<{ worldBible: W; characterBible: C }> {
+  const store = new MemoryArtifactStore();
+  if (opts.resumedWorldBible !== undefined) await store.save('world_bible', opts.resumedWorldBible);
+  if (opts.resumedCharacterBible !== undefined) await store.save('character_bible', opts.resumedCharacterBible);
+
+  const steps: Array<StepDef<void>> = [
+    {
+      id: 'foundation-world',
+      inputs: [],
+      outputs: ['world_bible'],
+      run: async () => {
+        const worldBible = await opts.buildWorldBible();
+        opts.onWorldBuilt(worldBible);
+        opts.afterWorld();
+        return { world_bible: worldBible };
+      },
+    },
+    {
+      id: 'foundation-characters',
+      inputs: ['world_bible'],
+      outputs: ['character_bible'],
+      run: async (_ctx, inputs) => {
+        const characterBible = await opts.buildCharacterBible(inputs.world_bible as W);
+        opts.onCharactersBuilt(characterBible);
+        opts.afterCharacters();
+        return { character_bible: characterBible };
+      },
+    },
+  ];
+
+  const result = await runGraph({
+    steps,
+    store,
+    ctx: undefined,
+    concurrency: 1,
+    onEvent: (e) => {
+      if (e.type === 'step_skipped') {
+        if (e.stepId === 'foundation-world') {
+          opts.onWorldResumed();
+          opts.afterWorld();
+        } else {
+          opts.onCharactersResumed();
+          opts.afterCharacters();
+        }
+      }
+      if (e.type === 'wave_start') return;
+      opts.emitDebug(`${e.type}: ${e.stepId}${e.message ? ` — ${e.message}` : ''}`);
+    },
+  });
+
+  const failed = result.results.find((r) => r.status === 'failed');
+  if (failed) throw new Error(failed.error ?? `Foundation step ${failed.id} failed.`);
+  return {
+    worldBible: (await store.load('world_bible')) as W,
+    characterBible: (await store.load('character_bible')) as C,
+  };
+}
 
 export async function runEpisodeLoopOnGraph<S extends { episodeNumber: number }>(opts: {
   specs: S[];

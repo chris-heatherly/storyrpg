@@ -422,7 +422,13 @@ const baselines = {
   // moved to pipeline/draftImageGeneration.ts (pure move, memoized cluster,
   // public delegators keep storyGenerationService callers unchanged). Includes
   // the same-day repair-first seams (sceneCritic dep, +1). Goldens green.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9771,
+  // -68 (9771 -> 9703): Adoption A2 (2026-06-11) — the sequential episode-loop
+  // body became one closure shared by the legacy for-loop and the flag-gated
+  // run-graph chain (scheduling extracted to pipeline/episodeRunGraph.ts, store
+  // adapter in pipeline/checkpointArtifactStore.ts; golden-parity tested by
+  // FullStoryPipeline.runGraphParity.season.test.ts). Net shrink from deleting
+  // the dead 101-line synthesizeActionFromBeat helper (zero references).
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9703,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

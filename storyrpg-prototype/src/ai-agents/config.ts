@@ -186,6 +186,14 @@ export interface GenerationSettingsConfig {
 
   // Concurrency and guardrail settings
   episodeParallelismEnabled?: boolean;
+  /**
+   * Adoption A2 (run-graph decomposition): execute the sequential episode
+   * loop as a declared run-graph chain (pipeline/runGraph.ts) journaled into
+   * the checkpoint artifact store. Behavior-identical to the legacy loop
+   * (golden-parity tested); buys the runner's journal + surgical-invalidation
+   * semantics. Default OFF; also enabled via STORYRPG_RUN_GRAPH=1.
+   */
+  runGraphEpisodeLoop?: boolean;
   // NOTE: historical `sceneParallelismEnabled` was removed — scene generation
   // is still serial inside a single episode. Topological ordering via the
   // dependency graph is always on. Real wave-based parallelism is deferred

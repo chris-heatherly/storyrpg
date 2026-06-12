@@ -131,6 +131,7 @@ import {
 } from './seasonChoicePlan';
 import { type SeasonSkillPlan } from './seasonSkillPlan';
 import { writeEpisodeCompletion, partitionResumableEpisodes } from './episodeCheckpoints';
+import { runEpisodeLoopOnGraph } from './episodeRunGraph';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
 
 import { reconcileBriefStoryMetadata } from './briefStoryMetadata';
@@ -5105,7 +5106,15 @@ export class FullStoryPipeline {
           }
         }
       } else {
-        for (const spec of pendingEpisodeSpecs) {
+        // Sequential episode generation. The per-episode body is ONE closure
+        // shared by both execution paths below: the legacy for-loop, and the
+        // run-graph chain (adoption A2) that journals each episode as an
+        // artifact (resume/surgical-invalidation semantics owned by the
+        // runner). Same body either way — golden-parity tested.
+        const processPendingEpisode = async (
+          spec: (typeof pendingEpisodeSpecs)[number],
+          opts: { writeWatermark: boolean },
+        ): Promise<Episode | null> => {
           const i = spec.episodeNumber;
           await this.checkCancellation();
           this.currentEpisode = spec.idx + 1;
@@ -5203,7 +5212,9 @@ export class FullStoryPipeline {
           }
           // WS1a: watermark only after content + canon seal both succeeded, so
           // a resume never rehydrates an episode that failed its season gate.
-          if (generated.episode) {
+          // (In run-graph mode the artifact store writes the same watermark
+          // when the step's output persists — same files, same ordering.)
+          if (opts.writeWatermark && generated.episode) {
             await writeEpisodeCompletion({
               episode: generated.episode,
               episodeNumber: i,
@@ -5233,6 +5244,28 @@ export class FullStoryPipeline {
             const failMsg = generated.storyletFailures.join('; ');
             console.warn(`[Pipeline] Episode ${i}: Storylet image gaps (non-fatal, continuing): ${failMsg}`);
             this.emit({ type: 'warning', phase: `images_ep_${i}`, message: `Storylet image gaps (continuing): ${failMsg}` });
+          }
+          return generated.episode ?? null;
+        };
+
+        const runGraphLoopEnabled =
+          this.config.generation?.runGraphEpisodeLoop === true || process.env.STORYRPG_RUN_GRAPH === '1';
+        if (runGraphLoopEnabled) {
+          // Adoption A2: same body, scheduled/journaled by the run-graph
+          // runner — see pipeline/episodeRunGraph.ts for the semantics.
+          await runEpisodeLoopOnGraph({
+            specs: pendingEpisodeSpecs,
+            strict: this.config.validation.mode === 'strict',
+            io: {
+              save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
+              load: <T,>(name: string) => loadEarlyDiagnosticSync<T>(outputDirectory, name),
+            },
+            processEpisode: (spec) => processPendingEpisode(spec, { writeWatermark: false }),
+            emitDebug: (message) => this.emit({ type: 'debug', phase: 'episode_run_graph', message }),
+          });
+        } else {
+          for (const spec of pendingEpisodeSpecs) {
+            await processPendingEpisode(spec, { writeWatermark: true });
           }
         }
       }
@@ -8022,107 +8055,6 @@ export class FullStoryPipeline {
     return injectFallbackCallbacksImpl(this.callbackLedger, params);
   }
 
-  /**
-   * Synthesize specific action directions when primaryAction is missing or generic.
-   * Analyzes beat text to extract physical manifestations of the story moment.
-   */
-  private synthesizeActionFromBeat(beatText: string, emotionalRead: string, characterNames: string[]): {
-    synthesizedAction: string;
-    synthesizedGesture: string;
-    synthesizedBodyLanguage: string;
-  } {
-    const text = (beatText || '').toLowerCase();
-    const charName = characterNames.length > 0 ? characterNames[0] : 'Character';
-    const secondChar = characterNames.length > 1 ? characterNames[1] : '';
-
-    // Check for dialogue patterns - derive gesture from speaking
-    const isDialogue = text.includes('"') || text.includes('says') || text.includes('speaks') ||
-                       text.includes('tells') || text.includes('asks') || text.includes('replies');
-
-    // Check for emotional patterns
-    const isAngry = /\b(angry|furious|rage|seething|snaps?|shouts?|yells?)\b/.test(text);
-    const isSad = /\b(sad|tears?|crying|weeping|grief|mourning|heartbroken)\b/.test(text);
-    const isFearful = /\b(fear|afraid|terrified|scared|trembl|shaking)\b/.test(text);
-    const isLoving = /\b(love|tender|gentle|embrace|caress|soft)\b/.test(text);
-    const isShocked = /\b(shock|gasp|surprise|stun|disbelief|realiz)\b/.test(text);
-    const isThreatening = /\b(threat|menac|intimi|warn|danger|loom)\b/.test(text);
-    const isDefensive = /\b(defend|protect|shield|guard|back away|retreat)\b/.test(text);
-    const isConfronting = /\b(confront|accus|demand|challeng|face)\b/.test(text);
-
-    // Check for action verbs
-    const hasMovement = /\b(walks?|steps?|moves?|runs?|rushes?|approaches?|enters?|leaves?)\b/.test(text);
-    const hasTurning = /\b(turns?|spins?|whirls?|faces?|looks? away)\b/.test(text);
-    const hasReaching = /\b(reaches?|grabs?|takes?|holds?|touches?|grips?)\b/.test(text);
-    const hasPushing = /\b(pushes?|shoves?|pulls?|drags?)\b/.test(text);
-
-    let synthesizedAction = '';
-    let synthesizedGesture = '';
-    let synthesizedBodyLanguage = '';
-
-    // Synthesize based on detected patterns
-    if (isAngry) {
-      synthesizedAction = `${charName} confronts with visible tension — jaw set, shoulders squared`;
-      synthesizedGesture = 'Hands clenched into fists or gesturing sharply, finger pointing or palm-out stop gesture';
-      synthesizedBodyLanguage = `Weight forward aggressively, chin down, chest expanded, body angled toward ${secondChar || 'target'}`;
-    } else if (isFearful) {
-      synthesizedAction = `${charName} recoils or shrinks back — protective posture`;
-      synthesizedGesture = 'Hands raised defensively near chest, palms out, or arms wrapped around self';
-      synthesizedBodyLanguage = 'Weight on back foot, shoulders hunched, body angled away, ready to flee';
-    } else if (isSad) {
-      synthesizedAction = `${charName} shows visible grief — head bowed, shoulders dropped`;
-      synthesizedGesture = 'Hand covering mouth, pressing against chest, or wiping at face';
-      synthesizedBodyLanguage = 'Weight collapsed inward, spine curved, gaze downward';
-    } else if (isShocked) {
-      synthesizedAction = `${charName} freezes mid-motion in visible shock — eyes wide, body rigid`;
-      synthesizedGesture = 'Hand flying to mouth or chest, fingers spread in surprise';
-      synthesizedBodyLanguage = 'Weight suddenly shifted back, body frozen mid-action, spine straightened with tension';
-    } else if (isLoving) {
-      synthesizedAction = `${charName} leans toward ${secondChar || 'other'} with tender vulnerability`;
-      synthesizedGesture = 'Hand reaching out gently, fingertips grazing or about to touch';
-      synthesizedBodyLanguage = 'Weight forward, shoulders soft and open, head tilted with care';
-    } else if (isThreatening) {
-      synthesizedAction = `${charName} looms or advances with menacing intent`;
-      synthesizedGesture = 'Hands open but tense at sides, or one hand raised in warning';
-      synthesizedBodyLanguage = 'Weight forward, expanded posture, chin lowered, eyes fixed and intense';
-    } else if (isDefensive) {
-      synthesizedAction = `${charName} backs away or shields themselves`;
-      synthesizedGesture = 'Arms crossed or raised protectively, hands between self and threat';
-      synthesizedBodyLanguage = 'Weight shifting backward, shoulders rotating away, creating distance';
-    } else if (isConfronting) {
-      synthesizedAction = `${charName} faces ${secondChar || 'other'} directly with challenging stance`;
-      synthesizedGesture = 'Hands on hips, or gesturing emphatically, pointing or palm-up demanding';
-      synthesizedBodyLanguage = 'Weight centered but leaning forward, squared shoulders, direct eye contact';
-    } else if (isDialogue) {
-      synthesizedAction = `${charName} speaks with emotional weight — body reflects words`;
-      synthesizedGesture = 'Hands gesturing to emphasize points, or fidgeting with nearby object';
-      synthesizedBodyLanguage = emotionalRead
-        ? `Body showing: ${emotionalRead}. Weight shifted, posture reflecting emotional state`
-        : 'Natural conversational stance with weight on one foot, hands active';
-    } else if (hasMovement) {
-      synthesizedAction = `${charName} in motion — mid-stride or transitioning between positions`;
-      synthesizedGesture = 'Arms swinging naturally or reaching toward destination';
-      synthesizedBodyLanguage = 'Weight clearly distributed in motion, one foot leading, body angled in direction of travel';
-    } else if (hasTurning) {
-      synthesizedAction = `${charName} turns or pivots — caught in moment of change`;
-      synthesizedGesture = 'Arms adjusting balance, or hand trailing behind the turn';
-      synthesizedBodyLanguage = 'Weight shifting mid-rotation, shoulders and hips at different angles, torso twisted';
-    } else if (hasReaching) {
-      synthesizedAction = `${charName} reaches out — arm extended toward goal`;
-      synthesizedGesture = 'Fingers spread or closing around target, other hand bracing or balancing';
-      synthesizedBodyLanguage = 'Weight shifted toward reach, body stretched, clear intention in posture';
-    } else if (hasPushing) {
-      synthesizedAction = `${charName} exerts force — body engaged in push or pull`;
-      synthesizedGesture = 'Hands pressed against surface or gripping firmly';
-      synthesizedBodyLanguage = 'Weight committed to the action, legs braced, core engaged';
-    } else {
-      // Default fallback - still better than nothing
-      synthesizedAction = `${charName} caught in a moment of dramatic tension — body reveals inner state`;
-      synthesizedGesture = 'Hands engaged in meaningful activity — gripping, gesturing, or pressing against something';
-      synthesizedBodyLanguage = `Weight shifted to one side, asymmetric stance, ${emotionalRead ? `body showing: ${emotionalRead}` : 'posture reflecting emotional intensity'}`;
-    }
-
-    return { synthesizedAction, synthesizedGesture, synthesizedBodyLanguage };
-  }
 
   /**
    * Validate a generated image and return guidance for regeneration if needed.

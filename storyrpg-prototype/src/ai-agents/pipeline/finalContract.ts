@@ -246,7 +246,12 @@ export class FinalContract {
         initialReport: report as ContractRepairReport,
         handlers,
         revalidate: async (s) => (await runValidation(s)) as ContractRepairReport,
-        maxAttempts: 2,
+        // 3 rounds (was 2): with the scene-prose handler's 4-scene/round cap, a
+        // 6-scene failure spends rounds 1-2 giving every scene its first pass —
+        // the third round is what gives stubborn scenes a guided retry
+        // (bite-me-g13 14-36-20 exhausted 2 rounds with one scene never
+        // attempted). Rounds only run while still failing; canSpend caps spend.
+        maxAttempts: 3,
         canSpend: () => shouldAttemptRemediation(this.deps.remediationBudget),
       });
       report = outcome.report as FinalStoryContractReport;

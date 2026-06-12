@@ -168,6 +168,88 @@ describe('buildSceneProseRepairHandler', () => {
     expect(critic.execute).not.toHaveBeenCalled();
   });
 
+  // A finding whose message QUOTES the authored moment (the real validator shape) —
+  // lets the handler predict clearance with the local scoring mirror.
+  const momentIssue = (sceneId: string, episodeNumber: number, moment: string) => ({
+    type: 'treatment_fidelity_violation',
+    severity: 'error',
+    message: `Authored required beat is missing from the final prose of episode ${episodeNumber} scene "${sceneId}": "${moment}". The authored turn must be dramatized on-page, not dropped or truncated.`,
+    validator: 'RequiredBeatRealizationValidator',
+    suggestion: 'Dramatize this authored beat on-page in its scene.',
+    sceneId,
+    episodeNumber,
+  });
+  const MOMENT = 'Kylie posts the rooftop story to the blog before dawn while Mika watches the stairwell.';
+
+  it('verifies the merge against the scoring mirror and retries ONCE with the still-missing checklist', async () => {
+    const critic = {
+      execute: vi.fn()
+        // Attempt 1: fluent but incomplete — misses blog/dawn/Mika/stairwell.
+        .mockResolvedValueOnce({
+          success: true,
+          data: { sceneId: 's2-1', rewrittenBeats: [{ id: 'b1', text: 'Kylie posts the rooftop story.' }], critiqueNotes: [], overallCommentary: '' },
+        })
+        // Attempt 2: full dramatization.
+        .mockResolvedValueOnce({
+          success: true,
+          data: { sceneId: 's2-1', rewrittenBeats: [{ id: 'b1', text: 'Kylie posts the rooftop story to the blog before dawn while Mika watches the stairwell.' }], critiqueNotes: [], overallCommentary: '' },
+        }),
+    };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    const story = makeStory();
+    const result = await handler({ story, blockingIssues: [momentIssue('s2-1', 2, MOMENT)] });
+
+    expect(critic.execute).toHaveBeenCalledTimes(2);
+    // The retry's director notes name the words still missing after attempt 1
+    // (the checklist line, not the quoted finding which always carries the moment).
+    const retryNotes: string = critic.execute.mock.calls[1][0].directorNotes;
+    const checklist = retryNotes.split('\n').find((l: string) => l.includes('NON-NEGOTIABLE')) ?? '';
+    expect(checklist).toContain('blog');
+    expect(checklist).toContain('stairwell');
+    expect(checklist).not.toContain('rooftop'); // already landed in attempt 1
+    expect(result.changed).toBe(true);
+    expect(result.record).toMatchObject({ succeeded: true, attempts: 2 });
+    expect((story as any).episodes[1].scenes[0].beats[0].text).toContain('stairwell');
+  });
+
+  it('does not retry when the first rewrite already depicts the full moment', async () => {
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: { sceneId: 's2-1', rewrittenBeats: [{ id: 'b1', text: MOMENT }], critiqueNotes: [], overallCommentary: '' },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    const result = await handler({ story: makeStory(), blockingIssues: [momentIssue('s2-1', 2, MOMENT)] });
+    expect(critic.execute).toHaveBeenCalledTimes(1);
+    expect(result.record).toMatchObject({ succeeded: true, attempts: 1 });
+  });
+
+  it('prioritizes never-attempted scenes in later rounds instead of re-claiming slots', async () => {
+    // Two failing scenes, cap 1/round. Round 1 takes s1-4 (insertion order) and
+    // its rewrite does NOT clear; round 2 must pick s2-1 (never attempted),
+    // not retry s1-4 again.
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: { sceneId: 'x', rewrittenBeats: [{ id: 'b1', text: 'unrelated polish' }], critiqueNotes: [], overallCommentary: '' },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never, maxScenesPerRound: 1 });
+    const story = makeStory();
+    const blocking = [
+      momentIssue('s1-4', 1, 'A note about the crescent card is slipped under the door at midnight.'),
+      momentIssue('s2-1', 2, MOMENT),
+    ];
+    await handler({ story, blockingIssues: blocking }); // round 1: s1-4 (2 attempts, never clears)
+    const round1Scenes = critic.execute.mock.calls.map((c) => c[0].scene.sceneId);
+    expect(round1Scenes.every((s: string) => s === 's1-4')).toBe(true);
+
+    critic.execute.mockClear();
+    await handler({ story, blockingIssues: blocking }); // round 2: s2-1 first
+    expect(critic.execute.mock.calls[0][0].scene.sceneId).toBe('s2-1');
+  });
+
   it('survives a critic failure on one scene and still repairs the other', async () => {
     const critic = {
       execute: vi.fn()

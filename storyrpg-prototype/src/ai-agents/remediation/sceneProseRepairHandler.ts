@@ -34,6 +34,7 @@ import type { SceneContent } from '../agents/SceneWriter';
 import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } from '../pipeline/continuityRepair';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
 import type { ContractRepairHandler, ContractRepairReport } from './finalContractRepair';
+import { missingMomentTokens, momentDepicted, requiredMomentFromMessage } from './realizationScoring';
 
 /**
  * Validators whose blocking findings are fixable by a localized scene-prose
@@ -51,34 +52,66 @@ type RepairableIssue = ContractRepairReport['blockingIssues'][number];
 
 /**
  * Pick the blocking issues this handler can act on and group them by scene.
- * Caps at `maxScenes` scenes per round (insertion order) so a pathological
- * report can't fan out into unbounded LLM spend in one round.
+ * Caps at `maxScenes` scenes per round so a pathological report can't fan out
+ * into unbounded LLM spend in one round. Scenes NOT yet attempted in earlier
+ * rounds come first — without this, a stubborn scene from round 1 re-claims
+ * its slot every round and starves scenes that never got a first attempt
+ * (bite-me-g13 14-36-20: s3-1 was never repaired while treatment-enc-1-1 was
+ * attempted twice).
  */
 export function selectSceneProseRepairs(
   blockingIssues: RepairableIssue[],
   maxScenes = 4,
+  attemptedScenes?: ReadonlySet<string>,
 ): Map<string, RepairableIssue[]> {
-  const groups = new Map<string, RepairableIssue[]>();
+  const all = new Map<string, RepairableIssue[]>();
   for (const issue of blockingIssues ?? []) {
     if (!issue?.validator || !SCENE_PROSE_REPAIRABLE_VALIDATORS.has(issue.validator)) continue;
     if (!issue.sceneId) continue;
-    const existing = groups.get(issue.sceneId);
-    if (existing) {
-      existing.push(issue);
-    } else if (groups.size < maxScenes) {
-      groups.set(issue.sceneId, [issue]);
-    }
+    const existing = all.get(issue.sceneId);
+    if (existing) existing.push(issue);
+    else all.set(issue.sceneId, [issue]);
   }
+  const ordered = [...all.keys()].sort((a, b) => {
+    const aAttempted = attemptedScenes?.has(a) ? 1 : 0;
+    const bAttempted = attemptedScenes?.has(b) ? 1 : 0;
+    return aAttempted - bAttempted; // stable: insertion order within each tier
+  });
+  const groups = new Map<string, RepairableIssue[]>();
+  for (const sceneId of ordered.slice(0, maxScenes)) groups.set(sceneId, all.get(sceneId)!);
   return groups;
 }
 
-/** Director notes for the SceneCritic rewrite, built from the findings. */
-export function buildSceneRepairDirectorNotes(issues: RepairableIssue[]): string {
+/**
+ * Director notes for the SceneCritic rewrite, built from the findings. When the
+ * scene's current prose is provided, each finding gets a NON-NEGOTIABLE
+ * checklist: the full authored moment plus the exact content words the prose
+ * does not yet carry. The validator that re-checks this scene is a keyword-
+ * overlap heuristic, so a rewrite that paraphrases away the proper nouns
+ * ("the park" for "Cișmigiu") will NOT clear the gate even if it reads well —
+ * the notes say so explicitly. (bite-me-g13 14-36-20: the critic dramatized
+ * one anchor of a two-anchor signature and the scene kept failing.)
+ */
+export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], sceneProseText?: string): string {
   const lines: string[] = [
     'The final-story contract flagged this scene. Fix EVERY issue below by rewriting the scene\'s beat prose — dramatize each named moment ON-PAGE with concrete action, dialogue, and sensory detail. Do not summarize, allude to, or skip the staged moment.',
   ];
   for (const issue of issues) {
     lines.push(`- ${issue.message ?? 'unspecified finding'}${issue.suggestion ? ` (fix: ${issue.suggestion})` : ''}`);
+    if (sceneProseText !== undefined) {
+      const moment = requiredMomentFromMessage(issue.message);
+      if (moment) {
+        const missing = missingMomentTokens(issue.validator, moment, sceneProseText);
+        if (missing.length > 0) {
+          lines.push(
+            `  NON-NEGOTIABLE: dramatize EVERY part of that authored moment, not just one piece of it. ` +
+            `These content words from the authored moment are still absent from the scene and MUST appear ` +
+            `in the rewritten prose (verbatim or inflected — keep proper nouns like place names exactly): ` +
+            missing.join(', '),
+          );
+        }
+      }
+    }
   }
   lines.push(
     'Keep beat ids, choice points, speakers, and established plot intact. Weave the missing moment into the existing beats (extend or rewrite beat text/textVariants); never contradict events already on the page.',
@@ -138,6 +171,41 @@ function repairableBeatsFor(scene: RepairableStoryScene): Array<{ id?: string; t
   return gatherEncounterProseBeats(scene);
 }
 
+/**
+ * The scene's prose as the realization validators scan it (scene name + flat
+ * beat text/variants + encounter phase/storylet text/setupText/escalationText/
+ * variants) — the haystack for predicting whether a finding will clear.
+ */
+function sceneProseForScoring(scene: RepairableStoryScene): string {
+  type ProseBeat = EncounterProseBeat & { textVariants?: Array<{ text?: string }> };
+  const parts: string[] = [scene.name ?? ''];
+  const collect = (beats: ProseBeat[] | undefined): void => {
+    for (const b of beats || []) {
+      parts.push(b.text ?? '', b.setupText ?? '', b.escalationText ?? '');
+      for (const variant of b.textVariants || []) parts.push(variant?.text ?? '');
+    }
+  };
+  collect(scene.beats as ProseBeat[] | undefined);
+  const enc = scene.encounter;
+  if (enc) {
+    for (const phase of enc.phases || []) collect(phase.beats as ProseBeat[] | undefined);
+    const storylets = Array.isArray(enc.storylets) ? enc.storylets : Object.values(enc.storylets ?? {});
+    for (const storylet of storylets) collect(storylet?.beats as ProseBeat[] | undefined);
+  }
+  return parts.filter(Boolean).join(' ');
+}
+
+/** Predict the re-validation: does the scene's prose now depict every flagged moment? */
+function allMomentsDepicted(scene: RepairableStoryScene, issues: RepairableIssue[]): boolean {
+  const prose = sceneProseForScoring(scene);
+  return issues.every((issue) => {
+    const moment = requiredMomentFromMessage(issue.message);
+    // No extractable moment → can't predict; treat as cleared (the loop's full
+    // re-validation is still the source of truth).
+    return !moment || momentDepicted(issue.validator, moment, prose);
+  });
+}
+
 /** Find a scene by id across the assembled story's episodes. */
 function findStoryScene(story: Story, sceneId: string, episodeNumber?: number): RepairableStoryScene | undefined {
   for (const episode of (story as { episodes?: Array<{ number?: number; scenes?: RepairableStoryScene[] }> }).episodes ?? []) {
@@ -184,8 +252,11 @@ export interface SceneProseRepairOptions {
  * successful rewrite clears the finding on the next validation pass.
  */
 export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): ContractRepairHandler {
+  // Persists across repair rounds (the handler is built once per contract
+  // enforcement), so later rounds prioritize scenes never attempted yet.
+  const attemptedScenes = new Set<string>();
   return async ({ story, blockingIssues }) => {
-    const groups = selectSceneProseRepairs(blockingIssues, opts.maxScenesPerRound ?? 4);
+    const groups = selectSceneProseRepairs(blockingIssues, opts.maxScenesPerRound ?? 4, attemptedScenes);
     if (groups.size === 0) return { story, changed: false };
 
     const critic = opts.critic();
@@ -195,43 +266,58 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
     }
 
     let totalMerged = 0;
+    let criticCalls = 0;
     const repairedScenes: string[] = [];
+    const clearedScenes: string[] = [];
     for (const [sceneId, issues] of groups) {
       const scene = findStoryScene(story, sceneId, issues[0]?.episodeNumber);
-      const repairableBeats = scene ? repairableBeatsFor(scene) : [];
-      if (!scene || repairableBeats.length === 0) {
+      const initialBeats = scene ? repairableBeatsFor(scene) : [];
+      if (!scene || initialBeats.length === 0) {
         opts.emit?.(`Scene-prose contract repair: scene ${sceneId} not found or has no rewritable prose; skipping.`);
         continue;
       }
+      attemptedScenes.add(sceneId);
       // Encounter scenes carry prose in encounter.phases/storylets, not
       // scene.beats — merge the rewrite back to the surface it came from.
       const isEncounterScene = !scene.beats?.length;
       try {
-        const critique = await withTimeout(
-          critic.execute({
-            scene: adaptSceneForCritic(scene, repairableBeats),
-            directorNotes: buildSceneRepairDirectorNotes(issues),
-          }),
-          PIPELINE_TIMEOUTS.llmAgent,
-          `SceneCritic.contractRepair(${sceneId})`,
-        );
-        if (critique.success && critique.data) {
-          const merged = isEncounterScene
-            ? mergeRewrittenEncounterBeatsIntoStory(
-                story as never,
-                sceneId,
-                critique.data.rewrittenBeats as never,
-              )
-            : mergeRewrittenBeatsIntoStory(
-                story as never,
-                sceneId,
-                critique.data.rewrittenBeats as never,
-              );
-          if (merged > 0) {
-            totalMerged += merged;
-            repairedScenes.push(sceneId);
-            opts.emit?.(`Scene-prose contract repair: rewrote ${merged} beat(s) in ${sceneId} for ${issues.length} blocking finding(s).`);
+        // Up to two critic passes per scene per round: the first works from a
+        // checklist of the moment's still-missing content words; if the merged
+        // result STILL would not clear the validator's keyword check (mirrored
+        // locally — no LLM cost), one immediate retry runs with the freshly
+        // recomputed missing-word list. Without this, a partial dramatization
+        // burned an entire repair round before re-validation caught it.
+        let sceneMerged = 0;
+        let predictedClear = false;
+        for (let attempt = 1; attempt <= 2 && !predictedClear; attempt++) {
+          const beats = repairableBeatsFor(scene); // re-read: attempt 2 sees attempt 1's merge
+          const critique = await withTimeout(
+            critic.execute({
+              scene: adaptSceneForCritic(scene, beats),
+              directorNotes: buildSceneRepairDirectorNotes(issues, sceneProseForScoring(scene)),
+            }),
+            PIPELINE_TIMEOUTS.llmAgent,
+            `SceneCritic.contractRepair(${sceneId}#${attempt})`,
+          );
+          criticCalls += 1;
+          if (critique.success && critique.data) {
+            sceneMerged += isEncounterScene
+              ? mergeRewrittenEncounterBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never)
+              : mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never);
           }
+          predictedClear = allMomentsDepicted(scene, issues);
+          if (!predictedClear && attempt === 1) {
+            opts.emit?.(`Scene-prose contract repair: ${sceneId} still missing authored content after rewrite — retrying with the remaining checklist.`);
+          }
+        }
+        if (sceneMerged > 0) {
+          totalMerged += sceneMerged;
+          repairedScenes.push(sceneId);
+          if (predictedClear) clearedScenes.push(sceneId);
+          opts.emit?.(
+            `Scene-prose contract repair: rewrote ${sceneMerged} beat(s) in ${sceneId} for ${issues.length} blocking finding(s)` +
+            ` (${predictedClear ? 'now depicts every flagged moment' : 'authored content STILL incomplete after retry'}).`,
+          );
         }
       } catch (err) {
         opts.emit?.(`Scene-prose contract repair for ${sceneId} failed (keeping original): ${err instanceof Error ? err.message : String(err)}`);
@@ -246,11 +332,11 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         rule: 'final_contract_scene_prose',
         scope: 'scene',
         attempted: groups.size,
-        succeeded: true,
-        degraded: repairedScenes.length < groups.size,
+        succeeded: clearedScenes.length === groups.size,
+        degraded: clearedScenes.length < groups.size,
         blocked: false,
-        attempts: 1,
-        details: `Rewrote ${totalMerged} beat(s) across ${repairedScenes.join(', ')} from contract findings`,
+        attempts: criticCalls,
+        details: `Rewrote ${totalMerged} beat(s) across ${repairedScenes.join(', ')}; ${clearedScenes.length}/${groups.size} scene(s) predicted to clear`,
       },
     };
   };

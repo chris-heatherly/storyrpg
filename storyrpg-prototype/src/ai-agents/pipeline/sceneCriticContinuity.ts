@@ -38,6 +38,8 @@ import {
   type ContinuityFinding,
 } from './continuityRepair';
 import { isGateEnabled } from '../remediation/gateDefaults';
+import { rewriteLosesRequiredMoment } from '../remediation/sceneRealizationGuard';
+import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
 import type { PipelineEvent } from './events';
@@ -95,14 +97,25 @@ export class SceneCriticContinuity {
 
     for (const scene of targets) {
       try {
+        // The voice polish must not paraphrase away the scene's authored
+        // realization contract (requiredBeats/signatureMoment, tagged onto the
+        // SceneContent at acceptance) — the season-final validators block on
+        // those exact moments. Tell the critic up front…
+        const contractSection = buildRequiredBeatsSection(scene);
         const critique = await this.deps.sceneCritic.execute({
           scene,
           characterBible,
+          ...(contractSection
+            ? {
+                directorNotes:
+                  `PRESERVE AUTHORED CONTENT: your rewrite must keep every staged moment below fully on-page — do not paraphrase away proper nouns, places, times, or staged actions.\n${contractSection}`,
+              }
+            : {}),
         });
         if (!critique.success || !critique.data) continue;
         const rewrittenById = new Map(critique.data.rewrittenBeats.map(b => [b.id, b]));
         if (rewrittenById.size === 0) continue;
-        scene.beats = scene.beats.map(b => {
+        const proposedBeats = scene.beats.map(b => {
           const replacement = rewrittenById.get(b.id);
           if (!replacement) return b;
           return {
@@ -112,6 +125,20 @@ export class SceneCriticContinuity {
             speakerMood: replacement.speakerMood || b.speakerMood,
           };
         });
+        // …and verify afterwards (deterministic, free): refuse a polish that
+        // LOSES a depicted authored moment (GATE_SCENE_REQUIRED_BEAT_CHECK).
+        if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
+          const lost = rewriteLosesRequiredMoment(scene, scene.beats, proposedBeats);
+          if (lost) {
+            this.deps.emit({
+              type: 'warning',
+              phase: 'scene_critic',
+              message: `SceneCritic rewrite of ${scene.sceneId} dropped the authored ${lost.tier} moment ("${lost.moment.slice(0, 80)}…") — keeping the original prose`,
+            });
+            continue;
+          }
+        }
+        scene.beats = proposedBeats;
         this.deps.emit({
           type: 'checkpoint',
           phase: 'scene_critic',
@@ -197,15 +224,33 @@ export class SceneCriticContinuity {
         );
         if (critique.success && critique.data) {
           const rewrittenBeats = critique.data.rewrittenBeats;
+          // Snapshot the prose surfaces the merge can touch, so a rewrite that
+          // LOSES an authored required moment can be rolled back (the merge
+          // only ever overwrites text/textVariants by beat id, so restoring
+          // the snapshot through the same merge is a complete undo).
+          const proseSnapshot = (scene.beats ?? []).map(b => ({
+            id: b.id,
+            text: b.text,
+            textVariants: (b as { textVariants?: Array<{ text?: string }> }).textVariants,
+          }));
           const merged = mergeRewrittenBeatsIntoStory(story as never, sceneId, rewrittenBeats as never);
           if (merged > 0) {
             // Mirror the rewrite into the in-memory sceneContents too, so the
             // post-repair re-check (which re-reads sceneContents, not the assembled
             // story) sees the repaired prose rather than the original.
             applyRewrittenBeatsToSceneContents(sceneContents as never, sceneId, rewrittenBeats as never);
-            rewrittenSceneIds.add(sceneId);
-            repaired.push({ sceneId, beatIds: flaggedBeatIds, merged });
-            this.deps.emit({ type: 'debug', phase: 'continuity_repair', message: `Repaired ${merged} beat(s) in ${sceneId} for character-consistency continuity.` });
+            const lost = isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')
+              ? rewriteLosesRequiredMoment(scene, proseSnapshot, scene.beats)
+              : undefined;
+            if (lost) {
+              mergeRewrittenBeatsIntoStory(story as never, sceneId, proseSnapshot as never);
+              applyRewrittenBeatsToSceneContents(sceneContents as never, sceneId, proseSnapshot as never);
+              this.deps.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity repair of ${sceneId} dropped the authored ${lost.tier} moment ("${lost.moment.slice(0, 80)}…") — reverted to the original prose.` });
+            } else {
+              rewrittenSceneIds.add(sceneId);
+              repaired.push({ sceneId, beatIds: flaggedBeatIds, merged });
+              this.deps.emit({ type: 'debug', phase: 'continuity_repair', message: `Repaired ${merged} beat(s) in ${sceneId} for character-consistency continuity.` });
+            }
           }
         }
       } catch (err) {

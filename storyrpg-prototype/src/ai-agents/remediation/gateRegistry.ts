@@ -81,6 +81,7 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_CLIFFHANGER', placement: 'episode', kind: 'soft', defaultOn: true },
 
   // ── Repair / judge infrastructure (the routes other gates rely on) ──
+  { id: 'GATE_SCENE_REQUIRED_BEAT_CHECK', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_FINAL_CONTRACT_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true },
   { id: 'GATE_FINAL_CONTRACT_SCENE_REGEN', placement: 'season-final', kind: 'infra', defaultOn: true },
   { id: 'GATE_FIDELITY_JUDGE_CONFIRM', placement: 'season-final', kind: 'infra', defaultOn: true },

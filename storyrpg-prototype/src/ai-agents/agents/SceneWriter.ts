@@ -409,6 +409,14 @@ export interface SceneContent {
   isBottleneck?: boolean;
   isConvergencePoint?: boolean;
 
+  // Authored realization contract, copied from the SceneBlueprint when the
+  // scene is accepted (GATE_SCENE_REQUIRED_BEAT_CHECK). Travels WITH the
+  // content so every downstream rewrite pass (SceneCritic polish, POV/voice
+  // regen swap, continuity repair) can verify it isn't paraphrasing an
+  // authored moment away — the season-final realization validators block on it.
+  requiredBeats?: Array<{ tier?: string; mustDepict?: string }>;
+  signatureMoment?: string;
+
   // Threads planted/paid off in this scene (Phase 5.3).
   plantedThreadIds?: string[];
   paidOffThreadIds?: string[];

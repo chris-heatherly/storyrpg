@@ -36,7 +36,12 @@ import { EpisodeBlueprint, SceneBlueprint } from '../../agents/StoryArchitect';
 import { TwistPlan } from '../../agents/TwistArchitect';
 import { WorldBible } from '../../agents/WorldBuilder';
 import { RemediationBudget, shouldAttemptRemediation } from '../../remediation/RemediationBudget';
-import { gateEnabledPredicate } from '../../remediation/gateDefaults';
+import { gateEnabledPredicate, isGateEnabled } from '../../remediation/gateDefaults';
+import {
+  missingRequiredMoments,
+  realizationRetryFeedback,
+  rewriteLosesRequiredMoment,
+} from '../../remediation/sceneRealizationGuard';
 import { RemediationLedgerRecord } from '../../remediation/remediationLedger';
 import { isChoiceRegenImprovement, shouldRegenChoices } from '../../remediation/regenChoicesPolicy';
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
@@ -1048,7 +1053,69 @@ export class ContentGenerationPhase {
         sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
         sceneContent.locationId = sceneSettingContext.locationId;
         sceneContent.settingContext = sceneSettingContext;
-        
+        // Carry the authored realization contract WITH the content so every
+        // later rewrite pass can verify it isn't paraphrasing a moment away.
+        sceneContent.requiredBeats = sceneBlueprint.requiredBeats;
+        sceneContent.signatureMoment = sceneBlueprint.signatureMoment;
+
+        // Scene-time realization check (GATE_SCENE_REQUIRED_BEAT_CHECK):
+        // verify the freshly written prose depicts every authored
+        // requiredBeat/signatureMoment using the same scoring the season-final
+        // validators apply (deterministic, no LLM). An under-realized scene
+        // gets ONE immediate SceneWriter retry whose feedback names the exact
+        // missing content words — a retry here costs one scene; the same miss
+        // at the final contract costs the whole run (bite-me-g13).
+        if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
+          const missing = missingRequiredMoments(sceneBlueprint, sceneContent.beats);
+          if (missing.length > 0) {
+            context.emit({
+              type: 'regeneration_triggered',
+              phase: 'scenes',
+              message: `Scene ${sceneBlueprint.id} under-realizes ${missing.length} authored moment(s) — retrying with realization feedback`,
+              data: { missing: missing.map(m => ({ tier: m.tier, missingTokens: m.missingTokens })) },
+            });
+            try {
+              const realizationRetry = await withTimeout(
+                this.deps.sceneWriter.execute({
+                  ...sceneWriterInput,
+                  storyContext: {
+                    ...sceneWriterInput.storyContext,
+                    userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\n${realizationRetryFeedback(missing)}`,
+                  },
+                }),
+                PIPELINE_TIMEOUTS.llmAgent,
+                `SceneWriter.execute(${sceneBlueprint.id} realization-retry)`,
+              );
+              if (realizationRetry.success && realizationRetry.data) {
+                const retryMissing = missingRequiredMoments(sceneBlueprint, realizationRetry.data.beats);
+                if (retryMissing.length < missing.length) {
+                  // Retry realized more of the contract — adopt it in place
+                  // (sceneContent stays the canonical object the rest of the
+                  // loop and the push use; re-apply the normalization).
+                  Object.assign(sceneContent, realizationRetry.data);
+                  sceneContent.sceneId = sceneBlueprint.id;
+                  sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
+                  sceneContent.locationId = sceneSettingContext.locationId;
+                  sceneContent.settingContext = sceneSettingContext;
+                  sceneContent.requiredBeats = sceneBlueprint.requiredBeats;
+                  sceneContent.signatureMoment = sceneBlueprint.signatureMoment;
+                }
+                context.emit({
+                  type: retryMissing.length === 0 ? 'debug' : 'warning',
+                  phase: 'scenes',
+                  message: `Realization retry for ${sceneBlueprint.id}: ${missing.length} → ${retryMissing.length} under-realized moment(s)${retryMissing.length > 0 ? ' (final contract may still flag this scene)' : ''}`,
+                });
+              }
+            } catch (err) {
+              context.emit({
+                type: 'warning',
+                phase: 'scenes',
+                message: `Realization retry for ${sceneBlueprint.id} failed (keeping original): ${err instanceof Error ? err.message : String(err)}`,
+              });
+            }
+          }
+        }
+
         // Add branch metadata for visual differentiation
         const isSceneBottleneck = blueprint.bottleneckScenes?.includes(sceneBlueprint.id) || sceneBlueprint.purpose === 'bottleneck';
         const incomingToScene = blueprint.scenes.filter(s => s.leadsTo?.includes(sceneBlueprint.id));
@@ -1670,6 +1737,24 @@ export class ContentGenerationPhase {
               revisedContent.sceneName = revisedContent.sceneName || sceneBlueprint.name;
               revisedContent.locationId = sceneSettingContext.locationId;
               revisedContent.settingContext = sceneSettingContext;
+              revisedContent.requiredBeats = sceneBlueprint.requiredBeats;
+              revisedContent.signatureMoment = sceneBlueprint.signatureMoment;
+
+              // Realization guard: a POV/voice rewrite must not LOSE an
+              // authored moment the current prose depicts — the season-final
+              // realization validators block on it and a voice win is not
+              // worth a contract abort. Deterministic check, no LLM.
+              if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
+                const lost = rewriteLosesRequiredMoment(sceneBlueprint, sceneContent.beats, revisedContent.beats);
+                if (lost) {
+                  context.emit({
+                    type: 'warning',
+                    phase: 'scenes',
+                    message: `Scene regen for ${sceneBlueprint.id} dropped the authored ${lost.tier} moment ("${lost.moment.slice(0, 80)}…") — keeping the original prose`,
+                  });
+                  break;
+                }
+              }
 
               const revisedValidation = await this.deps.incrementalValidator.validateScene(
                 revisedContent,

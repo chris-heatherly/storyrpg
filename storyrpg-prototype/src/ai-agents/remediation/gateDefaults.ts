@@ -90,6 +90,19 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // No-op unless GATE_FINAL_CONTRACT_REPAIR is also on.
   GATE_FINAL_CONTRACT_SCENE_REGEN: true,
 
+  // Scene-time required-beat realization check (2026-06-12, bite-me-g13 root
+  // cause). The treatment binds requiredBeats/signatureMoment to scenes and
+  // SceneWriter gets them as a prompt checklist — but nothing verified
+  // realization until the season-final contract ~90 min later, and the
+  // generation-time rewrite passes (SceneCritic polish, POV/voice regen swap)
+  // could paraphrase a realized moment away unnoticed. When ON: (a) a freshly
+  // written scene that under-realizes its authored moments gets ONE immediate
+  // SceneWriter retry with the exact missing content words as feedback
+  // (deterministic mirror of the final validators — no extra LLM to detect);
+  // (b) polish/regen rewrites that would LOSE a depicted authored moment are
+  // reverted (free). Remediation-only: can retry or preserve, never abort.
+  GATE_SCENE_REQUIRED_BEAT_CHECK: true,
+
   // Judge confirmation for HEURISTIC fidelity findings (WS3, 2026-06-11 audit).
   // RequiredBeatRealization / SignatureDevicePresence are keyword-overlap
   // heuristics; before one of their findings blocks the contract, one bounded

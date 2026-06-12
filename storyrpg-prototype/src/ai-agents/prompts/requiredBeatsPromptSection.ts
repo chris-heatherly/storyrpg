@@ -26,10 +26,16 @@
 
 import type { RequiredBeat } from '../../types/scenePlan';
 
-/** Subset of a scene a required-beats section needs. */
+/**
+ * Subset of a scene a required-beats section needs. Structurally loose on
+ * purpose: both the SceneBlueprint (full RequiredBeat[]) and a SceneContent
+ * tagged with its realization contract (loose `{tier?, mustDepict?}` copies)
+ * satisfy it — the builder runtime-filters empty mustDepict and falls back to
+ * 'authored' framing for unknown tiers.
+ */
 export interface RequiredBeatsSource {
   /** Authored units the scene must depict (ordered). */
-  requiredBeats?: RequiredBeat[];
+  requiredBeats?: Array<Partial<RequiredBeat> | { tier?: string; mustDepict?: string }>;
   /** A single staged signature device/image the prose MUST show. */
   signatureMoment?: string;
 }
@@ -64,8 +70,9 @@ export function buildRequiredBeatsSection(scene: RequiredBeatsSource | undefined
   const checklist = beats.length
     ? beats
         .map((beat, idx) => {
-          const framing = TIER_FRAMING[beat.tier] ?? TIER_FRAMING.authored;
-          return `${idx + 1}. [${beat.tier}] ${beat.mustDepict.trim()} — ${framing}`;
+          const tier = (beat.tier ?? 'authored') as RequiredBeat['tier'];
+          const framing = TIER_FRAMING[tier] ?? TIER_FRAMING.authored;
+          return `${idx + 1}. [${tier}] ${beat.mustDepict!.trim()} — ${framing}`;
         })
         .join('\n')
     : '';

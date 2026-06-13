@@ -160,7 +160,24 @@ export function reconcileChoiceSetBeatIds(
     if (!cs.sceneId) continue;
     const beats = beatsByScene.get(cs.sceneId);
     if (!beats || beats.length === 0) continue;
-    if (beats.some((b) => b.id === cs.beatId)) continue; // already linked
+    const matchedBeat = beats.find((b) => b.id === cs.beatId);
+    // Assembly only attaches a choice set to a beat when that beat is the marked
+    // choice point AND the choiceMap has `${sceneId}::${beat.id}` (assembly.ts).
+    // So the set is correctly linked ONLY when its beatId names a choice-point
+    // beat. Leave it alone in two aligned cases:
+    //  - it already names the (or a) marked choice-point beat;
+    //  - the scene marks NO choice-point beat at all (nothing to move to — the
+    //    last-beat fallback in choice-point detection stands in, and re-pointing
+    //    can't help since assembly attaches choices to no beat regardless).
+    const hasMarkedChoicePoint = beats.some((b) => b.isChoicePoint);
+    if (matchedBeat?.isChoicePoint) continue;
+    if (matchedBeat && !hasMarkedChoicePoint) continue;
+    // Otherwise the set is mis-linked and assembly would DROP its choices: the
+    // beatId either names no beat (rename drift — bite-me-g13 ep3 s3-1) or names a
+    // NON-choice-point beat while the choice point moved elsewhere (bite-me-g14
+    // ep2 s2-1: set keyed "beat-3", but the post-rewrite choice point is "beat-4",
+    // so the branch shipped choiceless and "reached none of [s2-2, s2-3]").
+    // Re-point at an UNCLAIMED choice-point beat (else the last beat).
     const sceneClaimed = claimed.get(cs.sceneId) ?? new Set<string>();
     const lastBeat = beats[beats.length - 1];
     const candidate =

@@ -78,6 +78,38 @@ describe('reconcileChoiceSetBeatIds (post-rewrite beatId drift)', () => {
     expect(choiceSets[0].beatId).toBe('beat-3');
   });
 
+  it('re-points a set keyed to a beat that EXISTS but is no longer the choice point (bite-me-g14 ep2 s2-1)', () => {
+    // ChoiceAuthor keyed s2-1's branch choices to "beat-3" (the choice point at
+    // authoring time); a later rewrite kept the beat ids but MOVED isChoicePoint to
+    // "beat-4". "beat-3" still exists, so the rename-drift check (no matching beat)
+    // never fired — but assembly only attaches choices to the marked choice-point
+    // beat, so "beat-4" got no entry and s2-1 shipped choiceless, "reaching none of
+    // [s2-2, s2-3]". The set must re-point onto the real choice-point beat.
+    const sceneContents = [
+      {
+        sceneId: 's2-1',
+        beats: [
+          { id: 'beat-1' },
+          { id: 'beat-2' },
+          { id: 'beat-3' }, // was the choice point; the rewrite demoted it
+          { id: 'beat-4', isChoicePoint: true },
+        ],
+      },
+    ];
+    const choiceSets = [{ sceneId: 's2-1', beatId: 'beat-3' }];
+    expect(reconcileChoiceSetBeatIds(sceneContents, choiceSets)).toBe(1);
+    expect(choiceSets[0].beatId).toBe('beat-4');
+  });
+
+  it('leaves a non-choice-point-keyed set alone when the scene marks no choice point', () => {
+    // No beat is isChoicePoint — assembly attaches choices to no beat regardless, so
+    // re-pointing can't help. Must not thrash a set that names a real (if non-CP) beat.
+    const sceneContents = [{ sceneId: 's', beats: [{ id: 'b1' }, { id: 'b2' }] }];
+    const choiceSets = [{ sceneId: 's', beatId: 'b1' }];
+    expect(reconcileChoiceSetBeatIds(sceneContents, choiceSets)).toBe(0);
+    expect(choiceSets[0].beatId).toBe('b1');
+  });
+
   it('falls back to the last beat when no beat is marked isChoicePoint', () => {
     const sceneContents = [{ sceneId: 's1', beats: [{ id: 's1-a' }, { id: 's1-b' }] }];
     const choiceSets = [{ sceneId: 's1', beatId: 'stale' }];

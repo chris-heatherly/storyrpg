@@ -75,6 +75,8 @@ import {
   extractPlantsFromChoiceSet,
   extractTintPlantsFromChoiceSet,
   mergeUnresolvedForScene,
+  resolveSceneBranchAxes,
+  resolveSceneTreatmentSeeds,
 } from '../episodePlantContext';
 import { PipelineError } from '../errors';
 import { GenerationPlan, markSceneActive, setSceneBeats } from '../generationPlan';
@@ -153,6 +155,17 @@ export interface ContentGenerationPhaseDeps {
   // --- Helpers shared with other monolith regions (injected closures) ---
   assertSceneDependencyInvariants: (blueprint: EpisodeBlueprint, sceneContents: SceneContent[]) => void;
   buildBranchFallbackChoiceSet: (
+    sceneBlueprint: SceneBlueprint,
+    choiceBeat: GeneratedBeat | undefined
+  ) => ChoiceSet | undefined;
+  /**
+   * A minimal deterministic choice set for a single-target (non-branch) scene
+   * whose ChoiceAuthor failed. Unlike {@link buildBranchFallbackChoiceSet} this
+   * does NOT require ≥2 leadsTo targets, so a seed-bearing choice point still
+   * gets choices it can plant its on-page contract onto. Returns undefined when
+   * there is no choice-point beat to anchor to.
+   */
+  buildDeterministicChoiceSet: (
     sceneBlueprint: SceneBlueprint,
     choiceBeat: GeneratedBeat | undefined
   ) => ChoiceSet | undefined;
@@ -1346,6 +1359,26 @@ export class ContentGenerationPhase {
               }
             }
 
+            // The treatment-seed / ending-axis / info-reveal on-page contracts must be
+            // planted on whatever choice set ultimately ships for this scene — the
+            // authored one OR a deterministic fallback. Factor it so both paths agree:
+            // before this, the failure path planted NONE of them, so a seed-bearing scene
+            // whose ChoiceAuthor failed hard-aborted the episode at GATE_TREATMENT_SEED_ONPAGE
+            // (bite-me-g14 ep2 s2-4: 4 seeds declared, choices never authored).
+            const applyOnPageContracts = (choices: ChoiceSet['choices']): void => {
+              // §3.3/GAP-C: SET authored consequence seeds (treatment_seed_*) so a later
+              // authored precondition reading the seed can be true. No-op off treatment runs.
+              emitSceneTreatmentSeeds(sceneBlueprint, choices);
+              // Ending reachability: SET the season's ending-axis flags (treatment_branch_*)
+              // so the finale's ending-route logic can read them and each named ending is
+              // mechanically reachable. No-op off treatment runs.
+              emitSceneBranchAxes(sceneBlueprint, choices);
+              // Step 3 (info-reveal): SET the detectable <id>_reveal flag for each INFO
+              // reveal assigned to this scene, so the schedule validator can confirm the
+              // reveal landed. No-op when the scene has no assigned reveals.
+              emitSceneInfoReveals(sceneBlueprint, choices);
+            };
+
             if (!choiceResult.success || !choiceResult.data) {
               // ChoiceAuthor failed after retries AND per-target regeneration — only now
               // fall back to deterministic templated choices. The scene ships without
@@ -1354,27 +1387,32 @@ export class ContentGenerationPhase {
               console.error(`[Pipeline] ❌ ${caFailMsg}`);
               context.emit({ type: 'warning', phase: 'choices', message: caFailMsg });
               // Branch-aware fallback: a choiceless BRANCH POINT would unrealize the branch
-              // and hard-abort the episode at GATE_BRANCH_FANOUT. Synthesize a deterministic
-              // choice set routed across the leadsTo targets so the branch is structurally
-              // realized (degraded prose, logged) rather than aborting the whole episode.
-              const branchFallback = this.deps.buildBranchFallbackChoiceSet(sceneBlueprint, choicePointBeat);
-              if (branchFallback) {
-                choiceSets.push(branchFallback);
-                context.emit({ type: 'warning', phase: 'choices', message: `Inserted deterministic branch fallback for ${sceneBlueprint.id} (${branchFallback.choices.length} routed choice(s)) to preserve the planned branch.` });
+              // and hard-abort at GATE_BRANCH_FANOUT, so route across leadsTo. A single-target
+              // scene that nonetheless declares an on-page contract (treatment seed / ending
+              // axis / info reveal) needs a deterministic set too — otherwise the contract is
+              // declared-but-never-set and the episode hard-aborts at GATE_TREATMENT_SEED_ONPAGE
+              // even though the scene leads nowhere to branch (bite-me-g14 ep2 s2-4).
+              const declaresOnPageContract =
+                resolveSceneTreatmentSeeds(sceneBlueprint).length > 0 ||
+                resolveSceneBranchAxes(sceneBlueprint).length > 0 ||
+                (sceneBlueprint.revealsInfoIds ?? []).length > 0;
+              const fallbackChoiceSet =
+                this.deps.buildBranchFallbackChoiceSet(sceneBlueprint, choicePointBeat)
+                ?? (declaresOnPageContract
+                  ? this.deps.buildDeterministicChoiceSet(sceneBlueprint, choicePointBeat)
+                  : undefined);
+              if (fallbackChoiceSet) {
+                // Plant the on-page contracts on the deterministic fallback too — the
+                // success path is not the only place these obligations must be honored.
+                applyOnPageContracts(fallbackChoiceSet.choices);
+                choiceSets.push(fallbackChoiceSet);
+                // Record the fallback's planted flags so later scenes can pay them off,
+                // exactly as the authored path does below.
+                episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: fallbackChoiceSet.choices }, this.deps.callbackLedger));
+                context.emit({ type: 'warning', phase: 'choices', message: `Inserted deterministic fallback choice set for ${sceneBlueprint.id} (${fallbackChoiceSet.choices.length} choice(s)) and planted its on-page contracts after ChoiceAuthor failed.` });
               }
             } else {
-            // §3.3/GAP-C: deterministically SET authored consequence seeds on-page —
-            // attach a setFlag(treatment_seed_*) to a choice so a later authored
-            // precondition reading the seed can be true. No-op off treatment runs.
-            emitSceneTreatmentSeeds(sceneBlueprint, choiceResult.data.choices);
-            // Ending reachability: SET the season's ending-axis flags (treatment_branch_*)
-            // on-page so the finale's ending-route logic can read them and each named
-            // ending is mechanically reachable. No-op off treatment runs.
-            emitSceneBranchAxes(sceneBlueprint, choiceResult.data.choices);
-            // Step 3 (info-reveal): SET the detectable info_<id>_reveal flag for each INFO
-            // reveal assigned to this scene (Step 1), so the schedule validator can confirm
-            // the reveal landed. No-op when the scene has no assigned reveals.
-            emitSceneInfoReveals(sceneBlueprint, choiceResult.data.choices);
+            applyOnPageContracts(choiceResult.data.choices);
             // Branch fan-out repair: a multi-target branch point (leadsTo.size>1) whose
             // authored choices all route to ONE target leaves the other branch orphaned
             // and hard-aborts the episode at GATE_BRANCH_FANOUT (the bite-me-gen-8 s1-1

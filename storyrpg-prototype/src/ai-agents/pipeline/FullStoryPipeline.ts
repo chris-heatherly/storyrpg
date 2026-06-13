@@ -4233,6 +4233,8 @@ export class FullStoryPipeline {
       getCharacterArcTracker: () => this.getCharacterArcTracker(),
       assertSceneDependencyInvariants: this.assertSceneDependencyInvariants.bind(this),
       buildBranchFallbackChoiceSet: this.buildBranchFallbackChoiceSet.bind(this),
+      buildDeterministicChoiceSet: (sceneBlueprint, choiceBeat) =>
+        choiceBeat ? this.createFallbackSceneEpisodeChoiceSet(sceneBlueprint, choiceBeat) : undefined,
       buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
       buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
       buildEncounterPriorStateContext: this.buildEncounterPriorStateContext.bind(this),

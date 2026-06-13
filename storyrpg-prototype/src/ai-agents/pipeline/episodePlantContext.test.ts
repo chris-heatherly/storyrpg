@@ -18,6 +18,7 @@ import {
 } from './episodePlantContext';
 import type { Choice } from '../../types/choice';
 import type { CallbackLedger } from './callbackLedger';
+import { TreatmentSeedOnPageValidator } from '../validators/TreatmentSeedOnPageValidator';
 
 // Stub ledger exposing only the method the module uses.
 const ledger = {
@@ -328,5 +329,40 @@ describe('emitSceneInfoReveals (Step 3)', () => {
     expect(emitSceneInfoReveals({ id: 's3' }, none)).toBe(none);
     expect((none[0].consequences ?? []).length).toBe(0);
     expect(emitSceneInfoReveals({ id: 's3', revealsInfoIds: ['info-A'] }, [])).toEqual([]);
+  });
+});
+
+// Regression: ContentGenerationPhase's ChoiceAuthor-failure path used to plant the
+// on-page contracts ONLY on the authored (success) choices. A single-target
+// (non-branch) scene that declared treatment seeds but whose ChoiceAuthor failed
+// therefore shipped a deterministic fallback (or no choices) with the seeds NEVER set,
+// and the episode hard-aborted at GATE_TREATMENT_SEED_ONPAGE (bite-me-g14 ep2 s2-4:
+// 4 seeds declared on the choicePoint, no choices authored). The fix runs the same
+// emitters on the fallback choice set. This locks the realized invariant: once the
+// fallback choices carry the emitted setFlags, TreatmentSeedOnPageValidator passes.
+describe('failure-path treatment-seed realization (bite-me-g14 ep2 s2-4 regression)', () => {
+  const SEEDS = ['treatment_seed_ep2_1', 'treatment_seed_ep2_2', 'treatment_seed_ep2_3', 'treatment_seed_ep2_4'];
+  const blueprint = { scenes: [{ choicePoint: { setsTreatmentSeeds: SEEDS } }] } as any;
+  // A minimal stand-in for the deterministic fallback choice set's choices.
+  const fallbackChoices = (): Choice[] => [
+    { id: 'c1', text: 'Act on the pressure now.', consequences: [] } as unknown as Choice,
+    { id: 'c2', text: 'Hold back and read the danger.', consequences: [] } as unknown as Choice,
+  ];
+
+  it('a fallback choice set with NO emit leaves every declared seed unset (the bug)', () => {
+    const episode = { scenes: [{ beats: [{ choices: fallbackChoices() }] }] } as any;
+    const result = new TreatmentSeedOnPageValidator().validateEpisode(episode, blueprint, { blocking: true });
+    expect(result.valid).toBe(false);
+    expect(result.metrics.missingSeeds).toBe(4);
+  });
+
+  it('emitting the seeds onto the fallback choices satisfies the on-page validator (the fix)', () => {
+    const choices = fallbackChoices();
+    emitSceneTreatmentSeeds(blueprint.scenes[0], choices);
+    const episode = { scenes: [{ beats: [{ choices }] }] } as any;
+    const result = new TreatmentSeedOnPageValidator().validateEpisode(episode, blueprint, { blocking: true });
+    expect(result.valid).toBe(true);
+    expect(result.metrics.setSeeds).toBe(4);
+    expect(result.metrics.missingSeeds).toBe(0);
   });
 });

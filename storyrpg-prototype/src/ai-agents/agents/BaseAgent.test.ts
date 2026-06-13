@@ -137,3 +137,52 @@ describe('BaseAgent truncation-loss signal (L4)', () => {
     expect(parsed.themes[1]).toContain('a partial one');
   });
 });
+
+describe('BaseAgent truncation shadow counter (WS5)', () => {
+  it('fires the static truncation observer when recovery drops content', () => {
+    const events: Array<{ agentName: string; provider: string }> = [];
+    BaseAgent.setTruncationObserver((e) => events.push(e));
+    try {
+      const agent = new TestAgent();
+      // An array cut mid-object: recovery drops the trailing partial element.
+      const parsed = agent.parse<{ scenes: Array<{ id: string }> }>(
+        '{"scenes":[{"id":"s1"},{"id":"s2"},{"id":"s3","te',
+      );
+      expect(parsed.scenes.length).toBeGreaterThanOrEqual(2);
+      expect(agent.wasLastResponseTruncated()).toBe(true);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0]).toEqual({ agentName: 'Test Agent', provider: 'anthropic' });
+    } finally {
+      BaseAgent.setTruncationObserver(undefined);
+    }
+  });
+
+  it('does not fire the observer on a clean parse', () => {
+    const events: unknown[] = [];
+    BaseAgent.setTruncationObserver((e) => events.push(e));
+    try {
+      const agent = new TestAgent();
+      agent.parse('{"ok":true}');
+      expect(agent.wasLastResponseTruncated()).toBe(false);
+      expect(events).toEqual([]);
+    } finally {
+      BaseAgent.setTruncationObserver(undefined);
+    }
+  });
+
+  it('a throwing observer never breaks the parse', () => {
+    BaseAgent.setTruncationObserver(() => {
+      throw new Error('observer bug');
+    });
+    try {
+      const agent = new TestAgent();
+      const parsed = agent.parse<{ scenes: Array<{ id: string }> }>(
+        '{"scenes":[{"id":"s1"},{"id":"s2","te',
+      );
+      expect(parsed.scenes.length).toBeGreaterThanOrEqual(1);
+      expect(agent.wasLastResponseTruncated()).toBe(true);
+    } finally {
+      BaseAgent.setTruncationObserver(undefined);
+    }
+  });
+});

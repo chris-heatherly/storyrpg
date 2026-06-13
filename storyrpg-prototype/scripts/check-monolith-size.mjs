@@ -433,7 +433,13 @@ const baselines = {
   // (flag-gated, golden parity), and repairWeakCliffhangerBeforeImages
   // (191 lines) pure-moved to pipeline/cliffhangerRepair.ts behind a thin
   // delegator.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9563,
+  // -127 (9563 -> 9436): WS1+WS2.1 (2026-06-12) — plan-time fidelity fail-fast
+  // call added (+~30), then the five context-assembly builders
+  // (buildEncounterPriorStateContext / buildChoiceAuthorNpcs /
+  // buildCompactWorldContext / deriveStoryVerbsForBrief / inferBranchType)
+  // pure-moved to pipeline/contextAssembly.ts behind thin delegators
+  // (goldens byte-identical).
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9436,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6568,

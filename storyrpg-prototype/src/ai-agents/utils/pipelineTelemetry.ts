@@ -44,6 +44,13 @@ export interface LlmLedgerAgentRow {
   totalOutputTokens: number;
   /** Number of calls that actually reported usage; calls - usageReported = gaps. */
   usageReported: number;
+  /**
+   * Responses whose JSON parse recovered from truncation by DROPPING content
+   * (landmine L4 — silent loss). Shadow data for the retry-on-truncation
+   * decision (WS5): a non-zero count here means this agent shipped incomplete
+   * output that looked like a successful parse.
+   */
+  truncatedResponses: number;
 }
 
 /**
@@ -63,6 +70,8 @@ export interface LlmLedger {
     totalOutputTokens: number;
     /** Calls where the provider reported usage; the rest are gaps. */
     usageReported: number;
+    /** Total lossy truncation recoveries across all agents (landmine L4). */
+    truncatedResponses: number;
   };
   byAgent: LlmLedgerAgentRow[];
   phases: PhaseMetric[];
@@ -72,6 +81,8 @@ export class PipelineTelemetry {
   private readonly phaseStarts = new Map<string, number>();
   private readonly phaseMetrics: PhaseMetric[] = [];
   private readonly providerCallMetrics: ProviderCallMetric[] = [];
+  /** Lossy truncation recoveries, keyed `agentName::provider` (see WS5 shadow counter). */
+  private readonly truncationCounts = new Map<string, number>();
 
   startPhase(phase: string): void {
     this.phaseStarts.set(phase, Date.now());
@@ -89,6 +100,12 @@ export class PipelineTelemetry {
 
   observeProviderCall(metric: ProviderCallMetric): void {
     this.providerCallMetrics.push(metric);
+  }
+
+  /** Record one lossy truncation recovery for an agent (BaseAgent observer). */
+  observeTruncation(agentName: string, provider: ProviderCallMetric['provider']): void {
+    const key = `${agentName}::${provider}`;
+    this.truncationCounts.set(key, (this.truncationCounts.get(key) ?? 0) + 1);
   }
 
   getPhaseMetrics(): PhaseMetric[] {
@@ -168,6 +185,7 @@ export class PipelineTelemetry {
           totalInputTokens: 0,
           totalOutputTokens: 0,
           usageReported: 0,
+          truncatedResponses: 0,
         };
         byAgent.set(key, row);
       }
@@ -186,6 +204,7 @@ export class PipelineTelemetry {
     for (const row of byAgent.values()) {
       row.avgDurationMs = Math.round(row.totalDurationMs / row.calls);
       row.avgQueueWaitMs = Math.round(row.totalQueueWaitMs / row.calls);
+      row.truncatedResponses = this.truncationCounts.get(`${row.agentName}::${row.provider}`) ?? 0;
     }
 
     const totals = {
@@ -204,6 +223,7 @@ export class PipelineTelemetry {
         0,
       ),
       usageReported: this.providerCallMetrics.filter((m) => m.usage).length,
+      truncatedResponses: [...this.truncationCounts.values()].reduce((s, n) => s + n, 0),
     };
     totals.failures = totals.calls - totals.successes;
     totals.avgDurationMs = Math.round(totals.totalDurationMs / totals.calls);

@@ -49,6 +49,7 @@ import { RequiredBeatRealizationValidator } from './RequiredBeatRealizationValid
 import { SceneTransitionContinuityValidator } from './SceneTransitionContinuityValidator';
 import { CharacterIntroductionValidator } from './CharacterIntroductionValidator';
 import { isGateEnabled } from '../remediation/gateDefaults';
+import { isGateEnabledAt } from '../remediation/gateRegistry';
 import {
   SevenPointAnchorConformanceValidator,
   seasonPlanToAnchorConformanceInput,
@@ -309,4 +310,88 @@ export function runFidelityValidators(input: RunFidelityValidatorsInput): RunFid
  */
 export function runFidelityValidatorsShadow(input: RunFidelityValidatorsInput): FidelityFinding[] {
   return collectFidelityFindings(input, () => true, true);
+}
+
+// ========================================
+// Plan-time placement (WS1, AGENT_ARCHITECTURE_PLAN_2026-06-12)
+// ========================================
+
+export interface PlanTimeFidelityResult {
+  /** All findings from the plan-checkable validators (errors + warnings). */
+  findings: FidelityFinding[];
+  /** Error-severity findings that should fail the run BEFORE generation. */
+  blockingErrors: FidelityFinding[];
+  treatmentSourced: boolean;
+}
+
+const EMPTY_PLAN_TIME: PlanTimeFidelityResult = {
+  findings: [],
+  blockingErrors: [],
+  treatmentSourced: false,
+};
+
+/**
+ * The two §4 validators whose inputs are plan-vs-treatment only (no generated
+ * story): AuthoredEpisodeConformance (episode count/order/title) and
+ * SevenPointAnchorConformance (beat→episode anchors). Both previously gated
+ * ONLY at the season-final contract, where a deterministic plan mismatch
+ * killed the whole run after the full generation spend (median 73 min in the
+ * 2026-06-11 audit). This check runs the SAME validators at `plan` placement —
+ * before any prose is generated — so the same mismatch fails in milliseconds.
+ *
+ * The season-final dispatch in {@link runFidelityValidators} stays in place as
+ * a regression net: the validators are deterministic over inputs that should
+ * not change mid-run, so after a clean plan-time pass the net only fires if
+ * something mutated the plan during generation (which is exactly the case
+ * worth catching late).
+ *
+ * Mirrors §4.6 semantics: on a non-treatment run the final contract downgrades
+ * fidelity findings to advisory, so plan-time reports no blocking errors there
+ * either. Each validator is guarded — a throw degrades to no findings, never
+ * aborts planning.
+ */
+export function runPlanTimeFidelityChecks(input: {
+  seasonPlan?: SeasonPlan;
+  sourceAnalysis?: SourceMaterialAnalysis;
+}): PlanTimeFidelityResult {
+  const { seasonPlan, sourceAnalysis } = input;
+  const treatmentSourced = isTreatmentSourced(sourceAnalysis);
+  if (!treatmentSourced || !seasonPlan || !sourceAnalysis) return EMPTY_PLAN_TIME;
+
+  const findings: FidelityFinding[] = [];
+  const guard = (fn: () => FidelityFinding[]): void => {
+    try {
+      findings.push(...fn());
+    } catch {
+      // A validator failure must not abort planning; degrade to no findings.
+    }
+  };
+
+  if (isGateEnabledAt(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance, 'plan')) {
+    guard(() => {
+      const result = new AuthoredEpisodeConformanceValidator().validate({
+        treatment: treatmentFromAnalysis(sourceAnalysis),
+        seasonPlan,
+      });
+      return toFindings('AuthoredEpisodeConformanceValidator', result.issues);
+    });
+  }
+
+  const beatEpisodeAnchors = sourceAnalysis.treatmentSeasonGuidance?.beatEpisodeAnchors as
+    | Partial<Record<SevenPointBeat, number>>
+    | undefined;
+  if (isGateEnabledAt(TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance, 'plan') && beatEpisodeAnchors) {
+    guard(() => {
+      const result = new SevenPointAnchorConformanceValidator().validate(
+        seasonPlanToAnchorConformanceInput(seasonPlan, beatEpisodeAnchors),
+      );
+      return toFindings('SevenPointAnchorConformanceValidator', result.issues);
+    });
+  }
+
+  return {
+    findings,
+    blockingErrors: findings.filter((f) => f.severity === 'error'),
+    treatmentSourced,
+  };
 }

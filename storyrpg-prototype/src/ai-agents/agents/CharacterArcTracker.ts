@@ -16,7 +16,7 @@
 
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
-import { SeasonBible, IdentityProfile } from '../../types';
+import { IdentityProfile } from '../../types';
 import { EpisodeBlueprint } from './StoryArchitect';
 import { CharacterBible } from './CharacterDesigner';
 import type {
@@ -70,7 +70,12 @@ export interface CharacterArcTargets {
 
 export interface CharacterArcTrackerInput {
   episodeBlueprint: EpisodeBlueprint;
-  seasonBible: SeasonBible;
+  /**
+   * The season arc plan the prompt reasons over. Today this is the
+   * SeasonPlannerAgent plan blob (the pipeline never produces a SeasonBible);
+   * the prompt serializes it verbatim.
+   */
+  seasonArcPlan?: object;
   characterBible: CharacterBible;
   /** Current identity profile at the start of the episode, if known. */
   startingIdentity?: Partial<IdentityProfile>;
@@ -193,14 +198,23 @@ Return ONLY JSON.
     const startingIdentity = input.startingIdentity
       ? `\n## Starting Identity\n${JSON.stringify(input.startingIdentity, null, 2)}\n`
       : '';
-    const arcPlan = (input.seasonBible as unknown as Record<string, unknown>) || {};
+    const arcPlan = (input.seasonArcPlan as Record<string, unknown>) || {};
     const sceneSummary = input.episodeBlueprint.scenes
       .map(s => `- ${s.id} (${s.purpose}): ${s.description}`)
+      .join('\n');
+    // Relationship targets must name real NPC ids (rule 3) — give the model
+    // the roster to pick from, protagonist excluded.
+    const npcRoster = input.characterBible.characters
+      .filter(c => c.role !== 'protagonist')
+      .map(c => `- ${c.id} (${c.name}${c.role ? `, ${c.role}` : ''})`)
       .join('\n');
     return `# Episode ${input.episodeIndex} of ${input.totalEpisodes}: ${input.episodeBlueprint.episodeId}
 
 ## Scene Summary
 ${sceneSummary}
+
+## NPC Roster (use these EXACT ids for relationship targets)
+${npcRoster || '(no NPCs)'}
 
 ## Season Arc Plan
 ${JSON.stringify(arcPlan, null, 2)}
@@ -231,14 +245,17 @@ Emit CharacterArcTargets per the REQUIRED JSON STRUCTURE above. Return ONLY JSON
             }))
         : [],
       relationshipTargets: Array.isArray(targets.relationshipTargets)
-        ? targets.relationshipTargets.map(r => ({
-            npcId: r.npcId,
-            trustDelta: typeof r.trustDelta === 'number' ? r.trustDelta : undefined,
-            respectDelta: typeof r.respectDelta === 'number' ? r.respectDelta : undefined,
-            bondDelta: typeof r.bondDelta === 'number' ? r.bondDelta : undefined,
-            trajectory: r.trajectory || '',
-            rationale: r.rationale || '',
-          }))
+        ? targets.relationshipTargets
+            .map(r => ({ ...r, npcId: this.resolveNpcId(r.npcId, input.characterBible) }))
+            .filter((r): r is typeof r & { npcId: string } => r.npcId !== undefined)
+            .map(r => ({
+              npcId: r.npcId,
+              trustDelta: typeof r.trustDelta === 'number' ? r.trustDelta : undefined,
+              respectDelta: typeof r.respectDelta === 'number' ? r.respectDelta : undefined,
+              bondDelta: typeof r.bondDelta === 'number' ? r.bondDelta : undefined,
+              trajectory: r.trajectory || '',
+              rationale: r.rationale || '',
+            }))
         : [],
       milestones: Array.isArray(targets.milestones)
         ? targets.milestones.map((m, idx) => ({
@@ -250,5 +267,20 @@ Emit CharacterArcTargets per the REQUIRED JSON STRUCTURE above. Return ONLY JSON
           }))
         : [],
     };
+  }
+
+  /**
+   * A relationship target must reference a real character-bible NPC. Accepts
+   * the canonical id, or a display name (case-insensitive) rewritten to the
+   * id; anything else is dropped.
+   */
+  private resolveNpcId(npcId: unknown, bible: CharacterBible): string | undefined {
+    if (typeof npcId !== 'string' || !npcId) return undefined;
+    const characters = bible.characters ?? [];
+    if (characters.some(c => c.id === npcId && c.role !== 'protagonist')) return npcId;
+    const byName = characters.find(
+      c => c.role !== 'protagonist' && c.name?.toLowerCase() === npcId.toLowerCase(),
+    );
+    return byName?.id;
   }
 }

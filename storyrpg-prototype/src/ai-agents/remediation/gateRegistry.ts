@@ -120,11 +120,11 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_ENDING_REACHABILITY', placement: 'season-final', kind: 'blocking', defaultOn: false },
 
   // ── §4 treatment-fidelity dispatch ──
-  {
-    id: 'GATE_AUTHORED_EPISODE_CONFORMANCE', placement: 'season-final', kind: 'blocking', defaultOn: true,
-    policyException:
-      'Deterministic episode-list conformance (count/order/title vs the authored treatment) — no false-positive surface and no prose to repair. Planned fix: relocate to plan placement, where a mismatch fails before any generation is spent.',
-  },
+  // WS1 (2026-06-12): relocated from season-final to plan placement — the
+  // validator's inputs are plan-vs-treatment only, so a mismatch now fails
+  // before any generation is spent (runPlanTimeFidelityChecks). The
+  // season-final dispatch remains as a regression net for mid-run plan drift.
+  { id: 'GATE_AUTHORED_EPISODE_CONFORMANCE', placement: 'plan', kind: 'blocking', defaultOn: true },
   {
     id: 'GATE_ENCOUNTER_ANCHOR_CONTENT', placement: 'season-final', kind: 'blocking', defaultOn: true,
     policyException:
@@ -132,11 +132,9 @@ export const GATE_REGISTRY: GateSpec[] = [
   },
   { id: 'GATE_INFORMATION_LEDGER_SCHEDULE', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_SIGNATURE_DEVICE_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
-  {
-    id: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE', placement: 'season-final', kind: 'blocking', defaultOn: true,
-    policyException:
-      'Deterministic beat→episode anchor conformance against the season plan — structural, not prose; nothing to regen. Planned fix: relocate to plan placement (anchors are fully known before generation).',
-  },
+  // WS1 (2026-06-12): relocated from season-final to plan placement — anchors
+  // are fully known before generation (see GATE_AUTHORED_EPISODE_CONFORMANCE).
+  { id: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_SIGNATURE_PRESENCE_STRICT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
 ];
 

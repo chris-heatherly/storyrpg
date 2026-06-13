@@ -164,11 +164,14 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // rollout flag (treatmentFidelityGate.ts); with every flag unset they never gate.
   // §4.6: when the source is an authored treatment, FinalStoryContractValidator does
   // NOT downgrade these findings to warnings (validateFidelityFindings).
-  { validator: 'AuthoredEpisodeConformanceValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_AUTHORED_EPISODE_CONFORMANCE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
+  // WS1 (2026-06-12): primary dispatch relocated to PLAN placement (fail-fast
+  // before generation via runPlanTimeFidelityChecks); the final dispatch
+  // remains as a regression net for mid-run plan drift.
+  { validator: 'AuthoredEpisodeConformanceValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_AUTHORED_EPISODE_CONFORMANCE', dispatchedFrom: 'FullStoryPipeline (runPlanTimeFidelityChecks pre-generation; enforceFinalStoryContract as net)' },
   { validator: 'EncounterAnchorContentValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_ENCOUNTER_ANCHOR_CONTENT', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
   { validator: 'InformationLedgerScheduleValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_INFORMATION_LEDGER_SCHEDULE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
   { validator: 'SignatureDevicePresenceValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_SIGNATURE_DEVICE_PRESENCE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
-  { validator: 'SevenPointAnchorConformanceValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
+  { validator: 'SevenPointAnchorConformanceValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE', dispatchedFrom: 'FullStoryPipeline (runPlanTimeFidelityChecks pre-generation; enforceFinalStoryContract as net)' },
 
   // --- Gen-4 audit follow-ups (default-off; the metric is always recorded) ---
   // Dead-branch: a planned multi-target branch point whose choices collapsed to a

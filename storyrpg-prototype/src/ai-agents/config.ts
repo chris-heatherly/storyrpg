@@ -274,6 +274,18 @@ export interface GenerationSettingsConfig {
    * (=0 is a kill-switch over a config-on). See pipeline/threadTwistPlanning.ts.
    */
   enableThreadAndTwistPlanning?: boolean;
+  /**
+   * Character-arc tracking wiring (WS0, AGENT_ARCHITECTURE_PLAN_2026-06-12).
+   * When true, CharacterArcTracker authors per-episode identity/relationship
+   * targets right after each episode blueprint is finalized; ChoiceAuthor then
+   * receives `arcTargets` hints and the narrative diagnostics arc_delta check
+   * (ArcDeltaValidator) validates REAL targets instead of skipping. DEFAULT
+   * OFF pending a live validation run — with the flag unset, behavior is
+   * byte-identical to before (no agent calls, prompts unchanged).
+   * Env: STORYRPG_CHARACTER_ARC_TRACKING=1 to enable (=0 is a kill-switch
+   * over a config-on). See pipeline/characterArcPlanning.ts.
+   */
+  enableCharacterArcTracking?: boolean;
 }
 
 // Video generation settings (Veo via Gemini API)
@@ -1116,6 +1128,9 @@ export function loadConfig(): PipelineConfig {
       // Thread/Twist planning: DEFAULT OFF (opt-in) — set STORYRPG_THREAD_TWIST_PLANNING=1 to enable.
       enableThreadAndTwistPlanning:
         (env.EXPO_PUBLIC_STORYRPG_THREAD_TWIST_PLANNING ?? env.STORYRPG_THREAD_TWIST_PLANNING) === '1',
+      // Character-arc tracking: DEFAULT OFF (opt-in) — set STORYRPG_CHARACTER_ARC_TRACKING=1 to enable.
+      enableCharacterArcTracking:
+        (env.EXPO_PUBLIC_STORYRPG_CHARACTER_ARC_TRACKING ?? env.STORYRPG_CHARACTER_ARC_TRACKING) === '1',
     },
     memory: {
       enabled: env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' || env.CLAUDE_MEMORY === 'true' || defaultConfig.provider === 'anthropic',

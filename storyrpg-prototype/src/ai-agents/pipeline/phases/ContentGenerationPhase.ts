@@ -99,6 +99,13 @@ import {
   sceneActiveThreads,
   sceneTwistDirectives,
 } from '../threadTwistPlanning';
+import {
+  CharacterArcTrackerLike,
+  isCharacterArcTrackingEnabled,
+  planEpisodeArcTargets,
+  toChoiceAuthorArcTargets,
+} from '../characterArcPlanning';
+import type { CharacterArcTargets } from '../../agents/CharacterArcTracker';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import { PipelineContext } from './index';
 
@@ -122,6 +129,7 @@ export interface ContentGenerationPhaseDeps {
   encounterArchitect: Pick<EncounterArchitect, 'execute'>;
   getThreadPlanner: () => ThreadPlannerLike;
   getTwistArchitect: () => TwistArchitectLike;
+  getCharacterArcTracker: () => CharacterArcTrackerLike;
 
   // --- Run-scoped state (accessor-backed) ---
   /** Assigned by this phase (fresh runner per episode). */
@@ -135,6 +143,7 @@ export interface ContentGenerationPhaseDeps {
   readonly cachedPipelineMemory: string | null;
   readonly callbackLedger: CallbackLedger;
   readonly dependencySchedulerStats: { hasCycle: boolean; waveCount: number; fallbackToSerial: boolean };
+  readonly episodeArcTargets: Map<number, CharacterArcTargets>;
   readonly episodeTwistPlans: Map<number, TwistPlan>;
   readonly generationPlan: GenerationPlan | null;
   readonly remediationBudget: RemediationBudget | null;
@@ -339,6 +348,37 @@ export class ContentGenerationPhase {
           twistPlan,
           seasonThreadCount: this.deps.seasonThreadLedger.threads.length,
         }).catch(() => undefined);
+      }
+    }
+
+    // Character-arc tracking (WS0 wiring): author this episode's identity/
+    // relationship targets after the blueprint is final, before scene prose.
+    // All logic lives in characterArcPlanning (monolith ratchet). Default-off;
+    // the agent fails open.
+    if (isCharacterArcTrackingEnabled(context.config.generation)) {
+      const atEpisode = episodeNumber ?? brief.episode.number;
+      const { arcTargets } = await planEpisodeArcTargets({
+        enabled: true,
+        characterArcTracker: this.deps.getCharacterArcTracker(),
+        episodeBlueprint: blueprint,
+        characterBible,
+        seasonArcPlan: brief.seasonPlan,
+        episodeIndex: atEpisode,
+        totalEpisodes: brief.seasonPlan?.episodes?.length ?? atEpisode,
+        seasonAnchors: brief.seasonPlan?.anchors,
+        seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+        episodeStructuralRole: brief.seasonPlan?.episodes.find((e) => e.episodeNumber === atEpisode)?.structuralRole,
+        characterArchitecture: brief.multiEpisode?.sourceAnalysis?.characterArchitecture,
+        emitWarning: (message) => context.emit({ type: 'warning', phase: 'content', message }),
+      });
+      if (arcTargets) {
+        this.deps.episodeArcTargets.set(atEpisode, arcTargets);
+        if (outputDirectory) {
+          await saveEarlyDiagnostic(outputDirectory, `episode-${atEpisode}-arc-targets.json`, {
+            generatedAt: new Date().toISOString(),
+            arcTargets,
+          }).catch(() => undefined);
+        }
       }
     }
 
@@ -1243,6 +1283,11 @@ export class ContentGenerationPhase {
                 };
               })(),
               consequenceBudgetTarget: { callback: 60, tint: 25, branchlet: 10, branch: 5 },
+              // Character-arc tracking (default-off): planned identity/relationship
+              // movement, mapped to hint shape. Undefined when the flag is off.
+              arcTargets: toChoiceAuthorArcTargets(
+                this.deps.episodeArcTargets.get(episodeNumber ?? brief.episode.number),
+              ),
               seasonAnchors: brief.seasonPlan?.anchors,
               seasonSevenPoint: brief.seasonPlan?.sevenPoint,
               episodeStructuralRole: brief.seasonPlan?.episodes.find(

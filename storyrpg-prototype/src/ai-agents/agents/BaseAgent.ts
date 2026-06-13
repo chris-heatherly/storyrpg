@@ -107,6 +107,12 @@ export interface LlmTransportRequest {
 
 export type LlmTransportOverride = (request: LlmTransportRequest) => Promise<string>;
 
+/** Fired when truncation recovery DROPS content (silent-loss landmine L4). */
+export interface TruncationObservation {
+  agentName: string;
+  provider: 'anthropic' | 'openai' | 'gemini';
+}
+
 export interface LlmCallObservation {
   agentName: string;
   provider: 'anthropic' | 'openai' | 'gemini';
@@ -167,6 +173,28 @@ export abstract class BaseAgent {
   /** Whether the last parseJSON() dropped content during truncation recovery. */
   public wasLastResponseTruncated(): boolean {
     return this.lastResponseTruncated;
+  }
+
+  // Truncation shadow counter (WS5, AGENT_ARCHITECTURE_PLAN_2026-06-12).
+  // Truncation recovery is SILENT data loss unless the caller polls
+  // wasLastResponseTruncated() — and most don't. This observer fires at the
+  // moment recovery drops content, so the pipeline can ledger the count per
+  // agent (09-llm-ledger.json) and surface a warning. The shadow data decides
+  // whether the next slice (retry-on-truncation / fail-fast) is worth its cost.
+  private static _truncationObserver?: (event: TruncationObservation) => void;
+
+  static setTruncationObserver(observer?: (event: TruncationObservation) => void): void {
+    BaseAgent._truncationObserver = observer;
+  }
+
+  /** Mark the in-flight parse as lossy-truncated and notify the observer. */
+  protected markResponseTruncated(): void {
+    this.lastResponseTruncated = true;
+    try {
+      BaseAgent._truncationObserver?.({ agentName: this.name, provider: this.config.provider });
+    } catch {
+      // Observation must never break a parse.
+    }
   }
 
   // Shared circuit breaker — prevents retry storms when the proxy/Anthropic is down.
@@ -1486,7 +1514,7 @@ Do not use markdown code blocks around the JSON.
         // Truncate after the last complete object
         const truncated = json.slice(0, lastCompletePos + 1);
         const droppedChars = json.length - truncated.length;
-        this.lastResponseTruncated = true;
+        this.markResponseTruncated();
         log.warn(
           `[${this.name}] Truncation recovery DROPPED ~${droppedChars} chars of content ` +
             `(recovered to last complete object). Output is incomplete — likely missing trailing ` +
@@ -1525,7 +1553,7 @@ Do not use markdown code blocks around the JSON.
           if (truncateAt > 0) {
             const truncated = json.slice(0, truncateAt).replace(/,\s*$/, '');
             const droppedChars = json.length - truncated.length;
-            this.lastResponseTruncated = true;
+            this.markResponseTruncated();
             log.warn(
               `[${this.name}] Truncation recovery DROPPED ~${droppedChars} chars of content ` +
                 `(cut an incomplete property). Output is incomplete — likely missing trailing ` +
@@ -1546,7 +1574,7 @@ Do not use markdown code blocks around the JSON.
     // objects/arrays. Result: valid JSON with only the final value truncated —
     // far better than discarding the entire response.
     if (quoteCount % 2 === 1) {
-      this.lastResponseTruncated = true;
+      this.markResponseTruncated();
       const safe = json.replace(/\\+$/, (m) => (m.length % 2 ? m.slice(1) : m));
       return `${safe}"`;
     }

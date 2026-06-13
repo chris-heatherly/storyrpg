@@ -161,3 +161,18 @@ describe('SSE stream usage -> ledger (end-to-end)', () => {
     expect(ledger.totals.totalOutputTokens).toBe(42);
   });
 });
+
+describe('truncation shadow counter (WS5)', () => {
+  it('aggregates truncation counts into the per-agent rows and totals', async () => {
+    const { PipelineTelemetry } = await import('./pipelineTelemetry');
+    const t = new PipelineTelemetry();
+    t.observeProviderCall({ agentName: 'Scene Writer', provider: 'anthropic', success: true, durationMs: 10, queueWaitMs: 0, attempt: 1 });
+    t.observeProviderCall({ agentName: 'Choice Author', provider: 'anthropic', success: true, durationMs: 10, queueWaitMs: 0, attempt: 1 });
+    t.observeTruncation('Scene Writer', 'anthropic');
+    t.observeTruncation('Scene Writer', 'anthropic');
+    const ledger = t.getLlmLedger();
+    expect(ledger?.totals.truncatedResponses).toBe(2);
+    expect(ledger?.byAgent.find((r) => r.agentName === 'Scene Writer')?.truncatedResponses).toBe(2);
+    expect(ledger?.byAgent.find((r) => r.agentName === 'Choice Author')?.truncatedResponses).toBe(0);
+  });
+});

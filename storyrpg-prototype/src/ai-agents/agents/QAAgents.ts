@@ -114,6 +114,18 @@ export function deriveContinuityScore(
   return Math.max(0, Math.min(100, 100 - counts.errors * 25 - counts.warnings * 8 - counts.suggestions * 2));
 }
 
+/**
+ * SECOND-OPINION LLM audit, NOT the primary continuity gate (WS6,
+ * AGENT_ARCHITECTURE_PLAN_2026-06-12). The deterministic validators
+ * (FlagContract, ReferencedEventPresence, SceneTransitionContinuity,
+ * ChoiceCoverage, the scene-graph checks, …) run automatically and
+ * incrementally and are the enforcement surface for continuity defects.
+ * This agent re-judges the same territory via LLM as a confirmation pass —
+ * use it when debugging validator findings or hunting defect classes the
+ * deterministic checks don't model (cross-scene knowledge, cause-effect
+ * plausibility). Its findings feed QA reports; it should never be the only
+ * thing standing between a continuity defect and a shipped story.
+ */
 export class ContinuityChecker extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Continuity Checker', config);

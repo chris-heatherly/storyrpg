@@ -26,6 +26,7 @@ import { SeasonCanon } from './seasonCanon';
 import { CallbackLedger, type SerializedCallbackLedger } from './callbackLedger';
 import type { ThreadLedger } from '../../types/narrativeThread';
 import type { TwistPlan } from '../agents/TwistArchitect';
+import type { CharacterArcTargets } from '../agents/CharacterArcTracker';
 import type { SeasonChoicePlan } from './seasonChoicePlan';
 import type { SeasonSkillPlan } from './seasonSkillPlan';
 import type { EpisodeStateSnapshot } from './episodeStateSnapshot';
@@ -47,6 +48,8 @@ export interface SeasonNarrativeState {
   threadLedger: ThreadLedger;
   /** Per-episode twist plans (thread payoffs, setup/payoff timing). */
   episodeTwistPlans: Map<number, TwistPlan>;
+  /** Per-episode character-arc targets (arc tracking; empty when the flag is off). */
+  episodeArcTargets: Map<number, CharacterArcTargets>;
   /** E1: season-level choice-type budget; episodes draw their slice from it. */
   choicePlan?: SeasonChoicePlan;
   /** Season skill-progression plan; per-episode targets. */
@@ -89,6 +92,7 @@ export function createRunState(): PipelineRunState {
       callbackLedger: new CallbackLedger(),
       threadLedger: { threads: [] },
       episodeTwistPlans: new Map(),
+      episodeArcTargets: new Map(),
     },
     episode: {
       sceneValidationResults: [],
@@ -115,6 +119,7 @@ export interface SerializedSeasonState {
   callbackLedger: SerializedCallbackLedger;
   threadLedger: ThreadLedger;
   episodeTwistPlans: Array<[number, TwistPlan]>;
+  episodeArcTargets: Array<[number, CharacterArcTargets]>;
   choicePlan?: SeasonChoicePlan;
   skillPlan?: SeasonSkillPlan;
   priorEpisodeSnapshot?: EpisodeStateSnapshot;
@@ -131,6 +136,7 @@ export function serializeSeasonState(season: SeasonNarrativeState): SerializedSe
     callbackLedger: season.callbackLedger.serialize(),
     threadLedger: season.threadLedger,
     episodeTwistPlans: [...season.episodeTwistPlans.entries()],
+    episodeArcTargets: [...season.episodeArcTargets.entries()],
     choicePlan: season.choicePlan,
     skillPlan: season.skillPlan,
     priorEpisodeSnapshot: season.priorEpisodeSnapshot,

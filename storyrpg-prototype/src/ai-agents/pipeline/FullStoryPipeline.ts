@@ -28,7 +28,6 @@ import {
 import { TEXT_LIMITS } from '../../constants/validation';
 import { WorldBuilder, WorldBible } from '../agents/WorldBuilder';
 import { CharacterDesigner, CharacterBible, CharacterProfile } from '../agents/CharacterDesigner';
-import { resolveCharacterProfile } from '../utils/characterProfileResolver';
 import { StoryArchitect, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
@@ -88,7 +87,6 @@ import type { GeneratedImage } from '../images/imageTypes';
 import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/VideoDirectorAgent';
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
-import { deriveStoryVerbs } from '../utils/storyVerbs';
 import { buildFashionStyleSummary } from '../images/characterFashionStyle';
 import { resolvePlayerTemplatesInObject } from '../utils/playerTemplateResolver';
 import { applyPromptContract, sanitizeStyleContaminationText } from '../images/imagePromptContracts';
@@ -145,6 +143,14 @@ import { SeasonCanon } from './seasonCanon';
 import { createRunState, type PipelineRunState } from './runState';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
+import { runPlanTimeFidelityChecks } from '../validators/runFidelityValidators';
+import {
+  buildChoiceAuthorNpcs,
+  buildCompactWorldContext,
+  buildEncounterPriorStateContext,
+  deriveStoryVerbsForBrief,
+  inferBranchType,
+} from './contextAssembly';
 import { applySpinePlantMap, deriveSpinePlantMap } from './spinePlantMap';
 import { extractEpisodeKnowledge, collectReferencedFlags } from './knowledgeExtraction';
 
@@ -152,6 +158,8 @@ import { runEpisodeChargeMaterializationForSeason } from './episodeChargeMateria
 
 import { ThreadPlanner } from '../agents/ThreadPlanner';
 import { TwistArchitect, type TwistPlan } from '../agents/TwistArchitect';
+import { CharacterArcTracker, type CharacterArcTargets } from '../agents/CharacterArcTracker';
+import { simulateEpisodeArcDeltas } from './characterArcPlanning';
 import type { ThreadLedger } from '../../types/narrativeThread';
 import { buildSceneTimelineLabels } from './sceneNumbering';
 import { characterCapabilityWorldFacts } from './characterCanonFacts';
@@ -737,6 +745,8 @@ export class FullStoryPipeline {
   private set seasonThreadLedger(v: ThreadLedger) { this.runState.season.threadLedger = v; }
   private get episodeTwistPlans(): Map<number, TwistPlan> { return this.runState.season.episodeTwistPlans; }
   private set episodeTwistPlans(v: Map<number, TwistPlan>) { this.runState.season.episodeTwistPlans = v; }
+  private get episodeArcTargets(): Map<number, CharacterArcTargets> { return this.runState.season.episodeArcTargets; }
+  private set episodeArcTargets(v: Map<number, CharacterArcTargets>) { this.runState.season.episodeArcTargets = v; }
   // Lazily constructed so a flag-off run never instantiates the agents.
   private _threadPlanner?: ThreadPlanner;
   private _twistArchitect?: TwistArchitect;
@@ -747,6 +757,11 @@ export class FullStoryPipeline {
   private getTwistArchitect(): TwistArchitect {
     if (!this._twistArchitect) this._twistArchitect = new TwistArchitect(this.config.agents.storyArchitect);
     return this._twistArchitect;
+  }
+  private _characterArcTracker?: CharacterArcTracker;
+  private getCharacterArcTracker(): CharacterArcTracker {
+    if (!this._characterArcTracker) this._characterArcTracker = new CharacterArcTracker(this.config.agents.storyArchitect);
+    return this._characterArcTracker;
   }
   // Season Canon (P4): durable frozen facts + the snapshot carried forward across
   // sequentially-generated episodes.
@@ -824,6 +839,18 @@ export class FullStoryPipeline {
         },
       ),
     );
+    // WS5 truncation shadow counter: every lossy truncation recovery (landmine
+    // L4 — content silently dropped from a "successful" parse) is ledgered per
+    // agent in 09-llm-ledger.json and surfaced as a run warning. This shadow
+    // data decides whether retry-on-truncation is worth building.
+    BaseAgent.setTruncationObserver((t) => {
+      this.telemetry.observeTruncation(t.agentName, t.provider);
+      this.emit({
+        type: 'warning',
+        phase: 'llm_truncation',
+        message: `${t.agentName} response was truncated and lossy-recovered — output may be missing trailing content (L4).`,
+      });
+    });
     // A5: default image worker mode ON. The per-provider throttle in
     // ImageGenerationService now enforces its own rate limits per provider,
     // so running beat image work concurrently is safe and much faster.
@@ -4201,6 +4228,7 @@ export class FullStoryPipeline {
       encounterArchitect: this.encounterArchitect,
       getThreadPlanner: () => this.getThreadPlanner(),
       getTwistArchitect: () => this.getTwistArchitect(),
+      getCharacterArcTracker: () => this.getCharacterArcTracker(),
       assertSceneDependencyInvariants: this.assertSceneDependencyInvariants.bind(this),
       buildBranchFallbackChoiceSet: this.buildBranchFallbackChoiceSet.bind(this),
       buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
@@ -4250,6 +4278,7 @@ export class FullStoryPipeline {
       callbackLedger: { get: () => this.callbackLedger },
       dependencySchedulerStats: { get: () => this.dependencySchedulerStats },
       episodeTwistPlans: { get: () => this.episodeTwistPlans },
+      episodeArcTargets: { get: () => this.episodeArcTargets },
       generationPlan: { get: () => this.generationPlan },
       remediationBudget: { get: () => this.remediationBudget },
       seasonChoicePlan: { get: () => this.seasonChoicePlan },
@@ -4794,6 +4823,34 @@ export class FullStoryPipeline {
 
     if (!analysis || !analysis.episodeBreakdown || analysis.episodeBreakdown.length === 0) {
       throw new Error('Invalid source analysis: no episode breakdown provided');
+    }
+
+    // WS1 (contracts upstream): the two plan-checkable §4 fidelity gates
+    // (authored episode conformance, seven-point anchor conformance) run HERE,
+    // before any generation is spent. A deterministic plan-vs-treatment
+    // mismatch previously survived to the season-final contract and killed the
+    // run after the full generation spend. Warnings surface; errors fail fast.
+    // The season-final dispatch stays as a regression net for mid-run drift.
+    {
+      const planFidelity = runPlanTimeFidelityChecks({
+        seasonPlan: baseBrief.seasonPlan,
+        sourceAnalysis: baseBrief.multiEpisode?.sourceAnalysis ?? analysis,
+      });
+      for (const f of planFidelity.findings) {
+        if (f.severity !== 'error') {
+          this.emit({ type: 'warning', phase: 'plan_fidelity', message: `[${f.validator}] ${f.message}` });
+        }
+      }
+      if (planFidelity.blockingErrors.length > 0) {
+        const summary = planFidelity.blockingErrors
+          .map((f) => `[${f.validator}] ${f.message}`)
+          .join('; ');
+        throw new PipelineError(
+          `Plan-time treatment-fidelity check failed before generation: ${summary}`,
+          'plan_fidelity',
+          { context: { blockingErrors: planFidelity.blockingErrors } },
+        );
+      }
     }
     
     if (episodeRange.start < 1) {
@@ -5923,6 +5980,21 @@ export class FullStoryPipeline {
           // behavior is unchanged.
           threadLedger: this.seasonThreadLedger.threads.length > 0 ? this.seasonThreadLedger : undefined,
           twistPlan: this.episodeTwistPlans.get(i),
+          // Character-arc tracking (default-off): hand ArcDelta the REAL
+          // CharacterArcTracker targets plus deterministic best-effort observed
+          // deltas simulated from the authored choice sets. Undefined otherwise —
+          // the historical skipped behavior is unchanged.
+          arcTargets: this.episodeArcTargets.get(i),
+          ...(() => {
+            if (!this.episodeArcTargets.get(i)) return {};
+            const simulated = simulateEpisodeArcDeltas(choiceSets);
+            if (!simulated) return {};
+            return {
+              startIdentity: {},
+              endIdentity: simulated.endIdentity,
+              relationshipDeltas: simulated.relationshipDeltas,
+            };
+          })(),
           callbackLedger: this.callbackLedger.serialize(),
           // #26C: declared cast (ids AND display names — charactersInvolved mixes both forms).
           knownEntityIds: (characterBible.characters ?? []).flatMap((c) => [c.id, c.name]).filter(Boolean),
@@ -8956,109 +9028,15 @@ export class FullStoryPipeline {
     npcsInvolved: Array<{ id: string; name: string }>,
     flagsAlreadySet?: ReadonlySet<string>
   ): EncounterArchitectInput['priorStateContext'] {
-    const relevantFlags: Array<{ name: string; description: string; alreadySet?: boolean }> = [];
-    const relevantRelationships: Array<{
-      npcId: string; npcName: string;
-      dimension: 'trust' | 'affection' | 'respect' | 'fear';
-      operator: '==' | '!=' | '>' | '<' | '>=' | '<=';
-      threshold: number; description: string;
-      authored?: boolean;
-      currentMaxValue?: number;
-    }> = [];
-    const significantChoices: string[] = [];
-
-    // Parse encounterSetupContext directives authored by the StoryArchitect.
-    // Format: "flag:<name> — <description>" or "relationship:<id>.<dim> <op> <n> — <description>"
-    if (encounterScene.encounterSetupContext?.length) {
-      for (const directive of encounterScene.encounterSetupContext) {
-        if (directive.startsWith('flag:')) {
-          const rest = directive.slice('flag:'.length);
-          const dashIdx = rest.indexOf(' — ');
-          const flagName = dashIdx !== -1 ? rest.slice(0, dashIdx).trim() : rest.trim();
-          const flagDesc = dashIdx !== -1 ? rest.slice(dashIdx + 3).trim() : directive;
-          relevantFlags.push({
-            name: flagName,
-            description: flagDesc,
-            alreadySet: flagsAlreadySet?.has(flagName) ?? false,
-          });
-        } else if (directive.startsWith('relationship:')) {
-          // e.g. "relationship:hindley.trust < -20 — description"
-          const rest = directive.slice('relationship:'.length);
-          const dashIdx = rest.indexOf(' — ');
-          const expr = dashIdx !== -1 ? rest.slice(0, dashIdx).trim() : rest.trim();
-          const desc = dashIdx !== -1 ? rest.slice(dashIdx + 3).trim() : directive;
-          // Parse "npcId.dimension operator threshold"
-          const match = expr.match(/^([^.]+)\.(\w+)\s*([<>=!]+)\s*(-?\d+)/);
-          if (match) {
-            const [, npcId, dimension, operator, thresholdStr] = match;
-            const npc = npcsInvolved.find(n => n.id === npcId);
-            const dims = ['trust', 'affection', 'respect', 'fear'] as const;
-            const dim = dims.find(d => d === dimension);
-            if (dim) {
-              relevantRelationships.push({
-                npcId,
-                npcName: npc?.name || npcId,
-                dimension: dim,
-                operator: operator as '==' | '!=' | '>' | '<' | '>=' | '<=',
-                threshold: parseInt(thresholdStr, 10),
-                description: desc,
-                authored: true,
-              });
-            }
-          }
-        }
-        // Any directive not matching flag:/relationship: becomes a significant choice hint
-        else {
-          significantChoices.push(directive);
-        }
-      }
-    }
-
-    // Always include all blueprint-level suggestedFlags as potential payoff context
-    // (the StoryArchitect defines these as flags the episode tracks).
-    for (const flag of blueprint.suggestedFlags || []) {
-      if (!relevantFlags.some(f => f.name === flag.name)) {
-        relevantFlags.push({
-          name: flag.name,
-          description: flag.description,
-          alreadySet: flagsAlreadySet?.has(flag.name) ?? false,
-        });
-      }
-    }
-
-    // Only synthesize default relationship thresholds when the blueprint provided none at all.
-    // This keeps relationship payoffs feeling authored instead of boilerplate.
-    const RELATIONSHIP_DIMS = ['trust', 'affection', 'respect', 'fear'] as const;
-    if (relevantRelationships.length === 0) {
-      for (const npc of npcsInvolved) {
-        for (const dim of RELATIONSHIP_DIMS) {
-          const maxVal = this.incrementalValidator?.getRelationshipUpperBound(npc.id, dim) ?? 0;
-          relevantRelationships.push({
-            npcId: npc.id,
-            npcName: npc.name,
-            dimension: dim,
-            operator: '>=',
-            threshold: dim === 'fear' ? 40 : 20, // Sensible defaults
-            description: `${npc.name}'s ${dim} level — consider authoring a variant when this value is high enough to matter`,
-            authored: false,
-            currentMaxValue: maxVal,
-          });
-        }
-      }
-    } else {
-      // Annotate authored relationships with current achievable values
-      for (const rel of relevantRelationships) {
-        if (rel.currentMaxValue === undefined) {
-          rel.currentMaxValue = this.incrementalValidator?.getRelationshipUpperBound(rel.npcId, rel.dimension) ?? 0;
-        }
-      }
-    }
-
-    if (!relevantFlags.length && !relevantRelationships.length && !significantChoices.length) {
-      return undefined;
-    }
-
-    return { relevantFlags, relevantRelationships, significantChoices };
+    return buildEncounterPriorStateContext(
+      encounterScene,
+      blueprint,
+      npcsInvolved,
+      flagsAlreadySet,
+      this.incrementalValidator
+        ? (npcId, dimension) => this.incrementalValidator!.getRelationshipUpperBound(npcId, dimension)
+        : undefined,
+    );
   }
 
   /**
@@ -9130,119 +9108,26 @@ export class FullStoryPipeline {
     }
   }
 
-  /**
-   * Build enriched NPC descriptions for ChoiceAuthor with voice and physical details.
-   */
   private buildChoiceAuthorNpcs(
     npcIds: string[],
     characterBible: CharacterBible
   ): Array<{ id: string; name: string; pronouns: 'he/him' | 'she/her' | 'they/them'; description: string; voiceNotes?: string; physicalDescription?: string }> {
-    return npcIds.map(npcId => {
-      const profile = resolveCharacterProfile(characterBible.characters, npcId);
-      return {
-        id: npcId,
-        name: profile?.name || npcId,
-        pronouns: (profile?.pronouns || 'he/him') as 'he/him' | 'she/her' | 'they/them',
-        description: profile?.overview || '',
-        voiceNotes: profile?.voiceProfile?.writingGuidance,
-        physicalDescription: profile?.physicalDescription,
-      };
-    });
+    return buildChoiceAuthorNpcs(npcIds, characterBible);
   }
 
   private deriveStoryVerbsForBrief(brief: FullCreativeBrief, worldBible?: WorldBible) {
-    return deriveStoryVerbs({
-      genre: brief.story.genre,
-      tone: brief.story.tone,
-      sourceSummary: brief.story.synopsis,
-      worldContext: worldBible ? this.buildCompactWorldContext(worldBible) : undefined,
-    });
+    return deriveStoryVerbsForBrief(brief, worldBible);
   }
 
-  /**
-   * Build a compact world brief for agents that need broader world context.
-   * Keeps token cost low by summarizing rather than dumping full bible.
-   */
   private buildCompactWorldContext(worldBible: WorldBible, locationDescription?: string): string {
-    const parts: string[] = [];
-    if (locationDescription) parts.push(locationDescription);
-    if (worldBible.worldRules.length > 0) {
-      parts.push(`World rules: ${worldBible.worldRules.slice(0, 5).join('. ')}`);
-    }
-    if (worldBible.tensions.length > 0) {
-      parts.push(`Tensions: ${worldBible.tensions.slice(0, 3).join('. ')}`);
-    }
-    if (worldBible.factions && worldBible.factions.length > 0) {
-      parts.push(`Factions: ${worldBible.factions.slice(0, 4).map(f => f.name + (f.overview ? ` (${f.overview.substring(0, 60)})` : '')).join('; ')}`);
-    }
-    if (worldBible.customs && worldBible.customs.length > 0) {
-      parts.push(`Customs: ${worldBible.customs.slice(0, 3).join('. ')}`);
-    }
-    return parts.join('\n');
+    return buildCompactWorldContext(worldBible, locationDescription);
   }
 
-  /**
-   * Infer branch type from scene blueprint context
-   * Used for visual differentiation (lighting, color, mood)
-   */
   private inferBranchType(
     sceneBlueprint: SceneBlueprint,
     blueprint: EpisodeBlueprint
   ): 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption' {
-    // Check mood keywords
-    const moodLower = sceneBlueprint.mood.toLowerCase();
-    
-    // Dark indicators
-    if (moodLower.includes('dark') || moodLower.includes('grim') || 
-        moodLower.includes('ominous') || moodLower.includes('dread') ||
-        moodLower.includes('desperate') || moodLower.includes('bleak')) {
-      return 'dark';
-    }
-    
-    // Hopeful indicators
-    if (moodLower.includes('hopeful') || moodLower.includes('bright') ||
-        moodLower.includes('warm') || moodLower.includes('optimistic') ||
-        moodLower.includes('triumphant') || moodLower.includes('joyful')) {
-      return 'hopeful';
-    }
-    
-    // Tragic indicators
-    if (moodLower.includes('tragic') || moodLower.includes('mournful') ||
-        moodLower.includes('grief') || moodLower.includes('loss') ||
-        moodLower.includes('funeral') || moodLower.includes('death')) {
-      return 'tragic';
-    }
-    
-    // Redemption indicators
-    if (moodLower.includes('redemption') || moodLower.includes('forgiveness') ||
-        moodLower.includes('reconciliation') || moodLower.includes('second chance') ||
-        moodLower.includes('healing')) {
-      return 'redemption';
-    }
-    
-    // Check scene purpose for additional context
-    if (sceneBlueprint.purpose === 'bottleneck') {
-      // Bottlenecks tend to be more intense/darker
-      if (moodLower.includes('tense') || moodLower.includes('conflict')) {
-        return 'dark';
-      }
-    }
-    
-    // Check if this is on a branch path (not a bottleneck)
-    // Non-bottleneck scenes after choices might have stronger tonal variation
-    const isOnBranch = sceneBlueprint.purpose === 'branch' || 
-      (!blueprint.bottleneckScenes?.includes(sceneBlueprint.id) && 
-       blueprint.scenes.some(s => s.leadsTo?.includes(sceneBlueprint.id) && s.choicePoint));
-    
-    if (isOnBranch) {
-      // Branch scenes should have more distinct tones
-      // Default to slightly darker for tension
-      if (moodLower.includes('tense') || moodLower.includes('suspense')) {
-        return 'dark';
-      }
-    }
-    
-    return 'neutral';
+    return inferBranchType(sceneBlueprint, blueprint);
   }
 
   /**

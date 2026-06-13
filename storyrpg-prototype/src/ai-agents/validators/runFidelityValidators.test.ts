@@ -138,3 +138,41 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
     expect(result.fidelityFindings).toEqual([]);
   });
 });
+
+describe('runPlanTimeFidelityChecks (WS1 plan placement)', () => {
+  it('fails a misanchored treatment plan BEFORE generation (default-ON gate)', async () => {
+    const { runPlanTimeFidelityChecks } = await import('./runFidelityValidators');
+    const result = runPlanTimeFidelityChecks({
+      seasonPlan: misanchoredSeasonPlan(),
+      sourceAnalysis: treatmentAnalysis(),
+    });
+    expect(result.treatmentSourced).toBe(true);
+    expect(result.blockingErrors.some((f) => f.validator === 'SevenPointAnchorConformanceValidator')).toBe(true);
+  });
+
+  it('reports nothing on a non-treatment run (mirrors the §4.6 advisory downgrade)', async () => {
+    const { runPlanTimeFidelityChecks } = await import('./runFidelityValidators');
+    const result = runPlanTimeFidelityChecks({
+      seasonPlan: misanchoredSeasonPlan(),
+      sourceAnalysis: { sourceFormat: 'source_material', episodeBreakdown: [] } as unknown as SourceMaterialAnalysis,
+    });
+    expect(result).toEqual({ findings: [], blockingErrors: [], treatmentSourced: false });
+  });
+
+  it('env "0" kill-switch disables the plan-time gates', async () => {
+    const { runPlanTimeFidelityChecks } = await import('./runFidelityValidators');
+    for (const flag of ALL_FLAGS) process.env[flag] = '0';
+    const result = runPlanTimeFidelityChecks({
+      seasonPlan: misanchoredSeasonPlan(),
+      sourceAnalysis: treatmentAnalysis(),
+    });
+    expect(result.findings).toEqual([]);
+    expect(result.blockingErrors).toEqual([]);
+  });
+
+  it('is a no-op without a season plan', async () => {
+    const { runPlanTimeFidelityChecks } = await import('./runFidelityValidators');
+    const result = runPlanTimeFidelityChecks({ sourceAnalysis: treatmentAnalysis() });
+    expect(result.blockingErrors).toEqual([]);
+  });
+});

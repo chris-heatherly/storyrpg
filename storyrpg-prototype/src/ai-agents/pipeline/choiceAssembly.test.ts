@@ -6,6 +6,7 @@ import {
   normalizeConsequences,
   routeFallbackChoicesAcrossTargets,
   repairBranchFanOut,
+  reconcileChoiceSetBeatIds,
   bakeWitnessReactionsIntoOutcomeTexts,
 } from './choiceAssembly';
 
@@ -52,6 +53,75 @@ describe('repairBranchFanOut (under-fanned branch point recovery)', () => {
   it('is a no-op for a single-target (non-branch) scene or too few choices', () => {
     expect(repairBranchFanOut([{ id: 'a', nextSceneId: 's2' }], ['s2'])).toBe(false);
     expect(repairBranchFanOut([{ id: 'a', nextSceneId: 's2' }], ['s2', 's3'])).toBe(false); // 1 choice, can't cover 2
+  });
+});
+
+describe('reconcileChoiceSetBeatIds (post-rewrite beatId drift)', () => {
+  it('re-points a branch point choice set whose beatId drifted out of the scene (bite-me-g13 ep3 s3-1)', () => {
+    // ChoiceAuthor keyed s3-1's branch choices to "beat-3"; a later rewrite pass
+    // renamed the scene's beats to "s3-1-b*", orphaning the link. Without this the
+    // branch point assembles choiceless and aborts at GATE_BRANCH_FANOUT.
+    const sceneContents = [
+      { sceneId: 's3-1', beats: [{ id: 's3-1-b1' }, { id: 's3-1-b2' }, { id: 's3-1-b3', isChoicePoint: true }] },
+    ];
+    const choiceSets = [{ sceneId: 's3-1', beatId: 'beat-3' }];
+    expect(reconcileChoiceSetBeatIds(sceneContents, choiceSets)).toBe(1);
+    expect(choiceSets[0].beatId).toBe('s3-1-b3');
+  });
+
+  it('is a no-op when every choice set already matches a beat (golden parity)', () => {
+    const sceneContents = [
+      { sceneId: 's2-1', beats: [{ id: 'beat-1' }, { id: 'beat-3', isChoicePoint: true }] },
+    ];
+    const choiceSets = [{ sceneId: 's2-1', beatId: 'beat-3' }];
+    expect(reconcileChoiceSetBeatIds(sceneContents, choiceSets)).toBe(0);
+    expect(choiceSets[0].beatId).toBe('beat-3');
+  });
+
+  it('falls back to the last beat when no beat is marked isChoicePoint', () => {
+    const sceneContents = [{ sceneId: 's1', beats: [{ id: 's1-a' }, { id: 's1-b' }] }];
+    const choiceSets = [{ sceneId: 's1', beatId: 'stale' }];
+    expect(reconcileChoiceSetBeatIds(sceneContents, choiceSets)).toBe(1);
+    expect(choiceSets[0].beatId).toBe('s1-b');
+  });
+
+  it('never steals a choice-point beat already claimed by an aligned choice set', () => {
+    // Two choice points; one set is aligned (s-cp1), the other drifted. The drifted
+    // set must land on the UNCLAIMED choice point (s-cp2), not the claimed one.
+    const sceneContents = [
+      {
+        sceneId: 's',
+        beats: [{ id: 's-cp1', isChoicePoint: true }, { id: 's-mid' }, { id: 's-cp2', isChoicePoint: true }],
+      },
+    ];
+    const choiceSets = [
+      { sceneId: 's', beatId: 's-cp1' }, // aligned — claims s-cp1
+      { sceneId: 's', beatId: 'drifted' }, // must go to s-cp2
+    ];
+    expect(reconcileChoiceSetBeatIds(sceneContents, choiceSets)).toBe(1);
+    expect(choiceSets[0].beatId).toBe('s-cp1');
+    expect(choiceSets[1].beatId).toBe('s-cp2');
+  });
+
+  it('leaves a drifted set untouched when no unclaimed choice-point/last beat remains', () => {
+    // Single choice point already claimed; the only other beats are non-choice and
+    // the last beat is the claimed one — nothing safe to re-point to.
+    const sceneContents = [
+      { sceneId: 's', beats: [{ id: 's-mid' }, { id: 's-cp', isChoicePoint: true }] },
+    ];
+    const choiceSets = [
+      { sceneId: 's', beatId: 's-cp' }, // claims s-cp (the last beat)
+      { sceneId: 's', beatId: 'drifted' }, // no safe target
+    ];
+    expect(reconcileChoiceSetBeatIds(sceneContents, choiceSets)).toBe(0);
+    expect(choiceSets[1].beatId).toBe('drifted');
+  });
+
+  it('ignores choice sets without a sceneId (legacy beatId-only keying)', () => {
+    const sceneContents = [{ sceneId: 's', beats: [{ id: 's-b1', isChoicePoint: true }] }];
+    const choiceSets = [{ beatId: 'whatever' }];
+    expect(reconcileChoiceSetBeatIds(sceneContents, choiceSets)).toBe(0);
+    expect(choiceSets[0].beatId).toBe('whatever');
   });
 });
 

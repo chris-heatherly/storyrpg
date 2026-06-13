@@ -32,7 +32,7 @@ import { ChoiceSet } from '../agents/ChoiceAuthor';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import { ImageAgentTeam } from '../agents/image-team/ImageAgentTeam';
 import { convertEncounterStructureToEncounter } from '../converters';
-import { assembleChoiceForStory } from './choiceAssembly';
+import { assembleChoiceForStory, reconcileChoiceSetBeatIds } from './choiceAssembly';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 import { sceneTimelineMetaForScene } from '../utils/sceneTimeline';
 import { CHARACTER_DEFAULTS, DEFAULT_SKILLS } from '../../constants/pipeline';
@@ -95,6 +95,17 @@ export class Assembly {
     storyCoverUrl?: string,
     videoResults?: Map<string, string>
   ): Story {
+    // Re-sync any choice set whose beatId drifted from its scene's beats during a
+    // post-authoring rewrite pass, BEFORE the `${sceneId}::${beatId}` choiceMap is
+    // built — else a drifted branch point assembles choiceless (GATE_BRANCH_FANOUT).
+    const reSynced = reconcileChoiceSetBeatIds(sceneContents, choiceSets);
+    if (reSynced > 0) {
+      this.deps.emit({
+        type: 'warning',
+        phase: 'assembly',
+        message: `Re-synced ${reSynced} choice set(s) whose beatId drifted from the assembled scene's beats (would otherwise have dropped the choices).`,
+      });
+    }
     const contentMap = new Map(sceneContents.map(sc => [sc.sceneId, sc]));
     const choiceMap = new Map(choiceSets.map(cs => [cs.sceneId ? `${cs.sceneId}::${cs.beatId}` : cs.beatId, cs]));
     const beatImages = imageResults?.beatImages || new Map<string, string>();
@@ -342,6 +353,17 @@ export class Assembly {
     },
     videoResults?: Map<string, string>
   ): Episode {
+    // Re-sync any choice set whose beatId drifted from its scene's beats during a
+    // post-authoring rewrite pass, BEFORE the `${sceneId}::${beatId}` choiceMap is
+    // built — else a drifted branch point assembles choiceless (GATE_BRANCH_FANOUT).
+    const reSynced = reconcileChoiceSetBeatIds(sceneContents, choiceSets);
+    if (reSynced > 0) {
+      this.deps.emit({
+        type: 'warning',
+        phase: 'assembly',
+        message: `Re-synced ${reSynced} choice set(s) whose beatId drifted from the assembled scene's beats (would otherwise have dropped the choices).`,
+      });
+    }
     const contentMap = new Map(sceneContents.map(sc => [sc.sceneId, sc]));
     const choiceMap = new Map(choiceSets.map(cs => [cs.sceneId ? `${cs.sceneId}::${cs.beatId}` : cs.beatId, cs]));
     const beatImages = imageResults?.beatImages || new Map<string, string>();

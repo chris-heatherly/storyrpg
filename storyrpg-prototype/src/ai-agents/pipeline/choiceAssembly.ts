@@ -115,6 +115,67 @@ export function repairBranchFanOut<T extends { nextSceneId?: string; text?: stri
 }
 
 /**
+ * Re-point each choice set's `beatId` at its scene's ACTUAL choice-point beat when
+ * the recorded id has drifted out of sync with the scene content.
+ *
+ * A choice set is keyed to the choice-point beat id that existed when ChoiceAuthor
+ * ran. Several post-authoring rewrite passes (the scene-time realization retry's
+ * `Object.assign`, SceneCritic polish, POV regeneration, continuity repair) REPLACE
+ * a scene's beats array with freshly-id'd beats but do not re-key the scene's choice
+ * set. Assembly links choices to beats strictly by `${sceneId}::${beatId}`
+ * (assembly.ts), so a drifted beatId silently drops the choices — and for a branch
+ * point that unrealizes the planned branch and hard-aborts the episode at
+ * GATE_BRANCH_FANOUT (the bite-me-g13 ep3 s3-1 case: choice set beatId "beat-3" but
+ * the assembled scene's choice-point beat is "s3-1-b3", so s3-1 shipped choiceless
+ * and "reached none of [s3-2, s3-3]").
+ *
+ * For every choice set whose recorded beatId no longer matches any beat in its
+ * scene, re-point it at an UNCLAIMED choice-point beat (the marked `isChoicePoint`
+ * beat, else the last beat) — never one already claimed by an aligned choice set, so
+ * a scene with multiple choice points is not mis-linked. Choice sets that still match
+ * a beat are untouched, making this a no-op on aligned runs (golden parity). Mutates
+ * `choiceSets` in place; returns the number of re-pointed sets.
+ */
+export function reconcileChoiceSetBeatIds(
+  sceneContents: Array<{ sceneId: string; beats?: Array<{ id: string; isChoicePoint?: boolean }> }>,
+  choiceSets: Array<{ sceneId?: string; beatId: string }>,
+): number {
+  const beatsByScene = new Map(sceneContents.map((sc) => [sc.sceneId, sc.beats ?? []]));
+  // Beat ids already correctly claimed by an aligned choice set, per scene — never
+  // steal one of these when re-pointing a drifted set.
+  const claimed = new Map<string, Set<string>>();
+  const claim = (sceneId: string, beatId: string) => {
+    const set = claimed.get(sceneId) ?? new Set<string>();
+    set.add(beatId);
+    claimed.set(sceneId, set);
+  };
+  for (const cs of choiceSets) {
+    if (!cs.sceneId) continue;
+    const beats = beatsByScene.get(cs.sceneId);
+    if (beats?.some((b) => b.id === cs.beatId)) claim(cs.sceneId, cs.beatId);
+  }
+
+  let repaired = 0;
+  for (const cs of choiceSets) {
+    if (!cs.sceneId) continue;
+    const beats = beatsByScene.get(cs.sceneId);
+    if (!beats || beats.length === 0) continue;
+    if (beats.some((b) => b.id === cs.beatId)) continue; // already linked
+    const sceneClaimed = claimed.get(cs.sceneId) ?? new Set<string>();
+    const lastBeat = beats[beats.length - 1];
+    const candidate =
+      beats.find((b) => b.isChoicePoint && !sceneClaimed.has(b.id)) ??
+      (sceneClaimed.has(lastBeat.id) ? undefined : lastBeat);
+    if (candidate && candidate.id !== cs.beatId) {
+      cs.beatId = candidate.id;
+      claim(cs.sceneId, candidate.id);
+      repaired += 1;
+    }
+  }
+  return repaired;
+}
+
+/**
  * Normalize a Consequence object to fix common LLM field-name deviations.
  */
 export function normalizeConsequence(c: Consequence): Consequence {

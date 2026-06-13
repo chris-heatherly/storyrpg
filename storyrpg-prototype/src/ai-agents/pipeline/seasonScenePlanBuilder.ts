@@ -161,6 +161,131 @@ function appendRequiredBeats(scene: PlannedScene, beats: RequiredBeat[]): void {
   scene.requiredBeats = [...existing, ...beats];
 }
 
+/** Stopwords stripped before turn↔scene content-overlap (mirrors the validator). */
+const BIND_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'with', 'into', 'onto', 'from', 'that',
+  'this', 'then', 'than', 'them', 'they', 'their', 'there', 'here', 'have', 'has',
+  'had', 'will', 'would', 'about', 'over', 'under', 'when', 'where', 'while',
+  'your', 'you', 'her', 'his', 'him', 'she', 'for', 'are', 'was', 'were', 'been',
+  'who', 'whom', 'what', 'which', 'scene', 'episode', 'turn',
+]);
+
+/** Content tokens (≥4 chars, not a stopword), lowercased. */
+function bindTokens(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length >= 4 && !BIND_STOPWORDS.has(t));
+}
+
+/**
+ * The text a scene exposes for matching an authored turn against it — its
+ * author-meaningful framing (title + dramatic purpose + locations + stakes,
+ * plus the encounter description when present). On the deterministic builder
+ * path these are generic ("setup scene 1", role-derived purpose) and carry no
+ * per-turn signal, which is why {@link alignTurnsToScenes} falls back to
+ * positional binding when no scene out-scores the rest.
+ */
+function sceneMatchText(scene: PlannedScene): string {
+  return [
+    scene.title,
+    scene.dramaticPurpose,
+    ...(scene.locations ?? []),
+    scene.stakes,
+    scene.encounter?.description,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** Fraction of a turn's content tokens that appear in a scene's match text. */
+function turnSceneOverlap(turnTokens: string[], sceneTokenSet: Set<string>): number {
+  if (turnTokens.length === 0) return 0;
+  const hits = turnTokens.filter((t) => sceneTokenSet.has(t)).length;
+  return hits / turnTokens.length;
+}
+
+/**
+ * Assign each authored turn to the content scene that actually dramatizes it,
+ * preserving authored order. Returns `assignment[t] = sceneIndex`.
+ *
+ * Authored turns are ordered and the LLM scene plan authors scenes in roughly
+ * that same order, but it freely inserts connective scenes (an arrival, a
+ * debrief) that map to NO authored turn. Pure positional binding (turn t → scene
+ * t) then cascades off-by-one the moment such a scene appears, landing the
+ * "bookshop" turn on the "nightclub" scene (bite-me-g13). We instead pick the
+ * order-preserving assignment that maximizes total turn↔scene token overlap via
+ * a monotonic DP — turns keep their order, scenes strictly increase, and the
+ * connective scenes are simply skipped.
+ *
+ * When no scene carries a lexical signal (the deterministic path, generic
+ * titles), every overlap is 0 and we fall back to exact positional binding so
+ * that path's output is byte-identical to before. When there are more turns than
+ * scenes, the surplus piles onto the last scene (legacy "never drop a turn").
+ */
+function alignTurnsToScenes(turns: string[], targets: PlannedScene[]): number[] {
+  const n = turns.length;
+  const m = targets.length;
+  if (n === 0 || m === 0) return [];
+
+  const positional = (): number[] => turns.map((_, t) => Math.min(t, m - 1));
+
+  // More turns than scenes, or no room for a 1:1 distinct assignment: keep the
+  // legacy positional pile-on-last behavior.
+  if (n > m) return positional();
+
+  const turnTokens = turns.map(bindTokens);
+  const sceneTokenSets = targets.map((s) => new Set(bindTokens(sceneMatchText(s))));
+  const score = (t: number, s: number): number => turnSceneOverlap(turnTokens[t], sceneTokenSets[s]);
+
+  // No discriminating signal anywhere → reproduce positional binding exactly.
+  let maxSingle = 0;
+  for (let t = 0; t < n; t += 1) {
+    for (let s = 0; s < m; s += 1) maxSingle = Math.max(maxSingle, score(t, s));
+  }
+  if (maxSingle === 0) return positional();
+
+  // Monotonic DP: f[i][j] = best total score placing the first i turns into the
+  // first j scenes (each turn a distinct scene, scene indices strictly
+  // increasing). f[i][j] = max(skip scene j, place turn i-1 at scene j-1).
+  const NEG = -1;
+  const f: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(NEG));
+  for (let j = 0; j <= m; j += 1) f[0][j] = 0;
+  for (let i = 1; i <= n; i += 1) {
+    for (let j = i; j <= m; j += 1) {
+      const skip = f[i][j - 1];
+      const place = f[i - 1][j - 1] >= 0 ? f[i - 1][j - 1] + score(i - 1, j - 1) : NEG;
+      // Prefer placement on ties so each turn binds to the earliest scene that
+      // ties its best score (keeps the assignment compact and deterministic).
+      f[i][j] = place >= skip ? place : skip;
+    }
+  }
+
+  // Backtrack to recover the chosen scene for each turn.
+  const assignment = new Array<number>(n).fill(-1);
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    const skip = f[i][j - 1];
+    const place = f[i - 1][j - 1] >= 0 ? f[i - 1][j - 1] + score(i - 1, j - 1) : NEG;
+    if (place >= skip) {
+      assignment[i - 1] = j - 1;
+      i -= 1;
+      j -= 1;
+    } else {
+      j -= 1;
+    }
+  }
+  // Safety: any turn left unplaced (shouldn't happen for n<=m) falls back to its
+  // positional slot so no turn is ever dropped.
+  for (let t = 0; t < n; t += 1) {
+    if (assignment[t] < 0) assignment[t] = Math.min(t, m - 1);
+  }
+  return assignment;
+}
+
 /**
  * Deterministically bind an episode's authored content to its scenes — the single
  * source of truth shared by both the deterministic builder ({@link buildEpisodeScenes})
@@ -208,11 +333,16 @@ export function bindAuthoredTurnsToScenes(ep: SeasonEpisode, scenes: PlannedScen
   const contentScenes = scenes.filter((s) => s.narrativeRole !== 'release');
   const targets = contentScenes.length > 0 ? contentScenes : scenes;
 
-  // 1. Positional turn → content-scene binding (one per slot; leftovers pile last).
+  // 1. Content-matched turn → scene binding. Each authored turn binds to the
+  //    content scene that actually dramatizes it (order-preserving best overlap),
+  //    not its positional slot — see {@link alignTurnsToScenes}. Falls back to
+  //    exact positional binding when the scenes carry no per-turn signal
+  //    (deterministic path) so that path is unchanged.
   if (turns.length > 0) {
+    const assignment = alignTurnsToScenes(turns, targets);
     const perScene: RequiredBeat[][] = targets.map(() => []);
     for (let t = 0; t < turns.length; t += 1) {
-      const slot = Math.min(t, targets.length - 1);
+      const slot = assignment[t];
       const scene = targets[slot];
       const beatIndex = (scene.requiredBeats?.length ?? 0) + perScene[slot].length;
       perScene[slot].push(requiredBeatFromTurn(scene.id, beatIndex, turns[t]));

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { buildSeasonScenePlan, scenesForEpisode, edgesForEpisode } from './seasonScenePlanBuilder';
+import { buildSeasonScenePlan, scenesForEpisode, edgesForEpisode, bindAuthoredTurnsToScenes } from './seasonScenePlanBuilder';
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
+import type { PlannedScene } from '../../types/scenePlan';
 import type { StructuralRole } from '../../types/sourceAnalysis';
 
 function episode(
@@ -260,6 +261,48 @@ describe('buildSeasonScenePlan', () => {
     expect(allBeats).toHaveLength(9);
     // Scene count grew beyond the estimate (and the normal 8 cap) to fit them.
     expect(scenes.length).toBeGreaterThan(3);
+  });
+
+  it('binds each authored turn to the scene that dramatizes it, not its positional slot (bite-me-g13 off-by-one)', () => {
+    // The LLM scene plan authors a connective opening scene ("arrival") that maps to
+    // NO authored turn, which used to cascade every turn one scene early — landing the
+    // bookshop turn on the nightclub scene. Content-matched binding fixes the alignment.
+    const richScene = (id: string, title: string, dramaticPurpose: string, location: string): PlannedScene => ({
+      id,
+      episodeNumber: 1,
+      order: 0,
+      kind: 'standard',
+      title,
+      dramaticPurpose,
+      narrativeRole: 'development',
+      locations: [location],
+      npcsInvolved: [],
+      setsUp: [],
+      paysOff: [],
+    });
+    const scenes: PlannedScene[] = [
+      richScene('s1-1', 'Veronica\'s Address', 'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.', 'apartment courtyard'),
+      richScene('s1-2', 'American Shoes', 'Mika adopts Kylie at the door of the Vâlcescu Club and swaps her shoes.', 'Vâlcescu Club door'),
+      richScene('s1-3', 'The Stone That Wants You', 'At the Lipscani bookshop Stela presses rose quartz into Kylie\'s hand.', 'Lumina Books, Lipscani'),
+    ];
+    const ep = episode(1, ['hook'], {
+      treatmentGuidance: {
+        episodeTurns: [
+          'Mika adopts Kylie at the door of the Vâlcescu Club and swaps out her American shoes.',
+          'At a Lipscani bookshop, Stela presses a chunk of rose quartz into Kylie\'s hand.',
+        ],
+      },
+    } as Partial<SeasonEpisode>);
+
+    bindAuthoredTurnsToScenes(ep, scenes);
+
+    const beatScene = (needle: string): string | undefined =>
+      scenes.find((s) => (s.requiredBeats ?? []).some((b) => b.mustDepict.includes(needle)))?.id;
+    // The Vâlcescu turn lands on the Vâlcescu scene; the bookshop turn on the bookshop scene.
+    expect(beatScene('Vâlcescu Club')).toBe('s1-2');
+    expect(beatScene('rose quartz')).toBe('s1-3');
+    // The connective arrival scene carries no authored turn.
+    expect(scenes.find((s) => s.id === 's1-1')?.requiredBeats ?? []).toHaveLength(0);
   });
 
   it('slices edges that touch a given episode', () => {

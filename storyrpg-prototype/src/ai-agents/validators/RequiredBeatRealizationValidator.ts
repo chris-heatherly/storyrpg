@@ -100,12 +100,46 @@ function overlapScore(needle: string, haystack: string): number {
   return hits / needed.length;
 }
 
+/**
+ * Treatments mark a beat's load-bearing entities with markdown emphasis — the
+ * bite-me three-dates beat is *"Three terrible dates fail in a row — *The Lawyer*,
+ * *The Founder*, *The Filmmaker* — each one fed straight into the blog…"*. Such a
+ * beat is a CONJUNCTION of named sub-events; whole-beat token overlap dilutes the
+ * named entities with connective summary words ("terrible", "fail", "straight",
+ * "group", "reacts") that legitimately never appear in dramatized prose, so it
+ * scores below threshold and false-flags a fully-dramatized scene (bite-me-g13
+ * s2-1). Returns the emphasized spans only when there are ≥2 of them (a single
+ * emphasis is not an enumeration and gets no free pass).
+ */
+function emphasizedSpans(mustDepict: string): string[] {
+  const spans = [...mustDepict.matchAll(/\*+([^*]+?)\*+/g)]
+    .map((m) => m[1].trim())
+    .filter((s) => s.length > 0);
+  return spans.length >= 2 ? spans : [];
+}
+
+/** A single emphasized span is depicted if its content words all appear in prose. */
+function spanPresent(span: string, prose: string): boolean {
+  if (normalize(prose).includes(normalize(span))) return true;
+  return overlapScore(span, prose) >= 1; // every content token of the named entity present
+}
+
 /** Verbatim substring (normalized) OR sufficient content-word overlap. */
 function beatDepicted(mustDepict: string, prose: string): boolean {
   const normalizedBeat = normalize(mustDepict);
   if (normalizedBeat.length === 0) return true;
   if (normalize(prose).includes(normalizedBeat)) return true;
-  return overlapScore(mustDepict, prose) >= PRESENCE_MIN_SCORE;
+  if (overlapScore(mustDepict, prose) >= PRESENCE_MIN_SCORE) return true;
+  // Enumeration credit: a beat that emphasizes ≥2 named entities is depicted when
+  // ALL of them land on-page. This is strictly additive (it can only mark MORE
+  // beats depicted) and is scoped to emphasis-bearing beats, so it cannot reopen
+  // the G10 partial-drop hole — that miss (Endsong s1-6, "…reaches for Lysandra,
+  // declares her blood the key… before withdrawing wounded") carries NO markdown
+  // emphasis and is unaffected. The LLM judge remains the backstop for the
+  // non-enumeration paraphrase case.
+  const spans = emphasizedSpans(mustDepict);
+  if (spans.length >= 2 && spans.every((span) => spanPresent(span, prose))) return true;
+  return false;
 }
 
 /** All reader-facing prose on a single beat (text + variant texts). */

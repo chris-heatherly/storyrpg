@@ -182,6 +182,46 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('PASS: an emphasized enumeration beat is depicted when all named entities land (bite-me-g13 s2-1 false positive)', () => {
+    // Whole-beat overlap scores this ~0.29 (diluted by "terrible/fail/straight/group/
+    // reacts" which never appear in dramatized prose) and used to false-flag a fully
+    // dramatized scene. The ≥2 emphasized entities all land → depicted, no judge needed.
+    const THREE_DATES =
+      'Three terrible dates fail in a row — *The Lawyer*, *The Founder*, *The Filmmaker* — each one fed straight into the blog while the friend group reacts.';
+    const result = run({
+      plan: plan([plannedScene('s2-1', 2, { requiredBeats: [requiredBeat('rb1', THREE_DATES, 'authored')] })]),
+      story: story([
+        episode(2, [
+          generatedScene('s2-1', [
+            beat('b1', 'You meet The Lawyer under chandeliers; he corrects the waiter and orders sparkling water.'),
+            beat('b2', 'Dating After Dusk gets its first casualty. The Founder describes intimacy as scalable.'),
+            beat('b3', 'The Filmmaker brings a scarf and the phrase "your heartbreak has texture." Mika applauds.'),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('FAIL: an emphasized enumeration beat still fails when a named entity is dropped (no free pass)', () => {
+    const THREE_DATES =
+      'Three terrible dates fail in a row — *The Lawyer*, *The Founder*, *The Filmmaker* — each one fed straight into the blog while the friend group reacts.';
+    const result = run({
+      plan: plan([plannedScene('s2-1', 2, { requiredBeats: [requiredBeat('rb1', THREE_DATES, 'authored')] })]),
+      story: story([
+        episode(2, [
+          // The Filmmaker date is missing — enumeration credit must NOT fire.
+          generatedScene('s2-1', [
+            beat('b1', 'You meet The Lawyer under chandeliers; he corrects the waiter.'),
+            beat('b2', 'The Founder describes intimacy as scalable and becomes a blog post.'),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(false);
+  });
+
   it('valid when the plan carries no authored standard beats', () => {
     const result = run({
       plan: plan([plannedScene('s1-1', 1, {})]),

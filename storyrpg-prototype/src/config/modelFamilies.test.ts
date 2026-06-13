@@ -8,7 +8,7 @@ import {
 } from './modelFamilies';
 import { FALLBACK_MODEL_OPTIONS, GeneratorLlmProvider } from './generatorLlmOptions';
 
-const FAMILIES: GeneratorLlmProvider[] = ['anthropic', 'openai', 'gemini'];
+const FAMILIES: GeneratorLlmProvider[] = ['anthropic', 'openai', 'gemini', 'openrouter'];
 
 describe('modelFamilies presets', () => {
   it('assigns every pipeline task in every family', () => {

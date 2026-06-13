@@ -57,6 +57,7 @@ export interface GeneratorVideoSettings {
 export const GENERATOR_STORAGE_KEYS = {
   anthropicApiKey: '@storyrpg_anthropic_api_key',
   openaiApiKey: '@storyrpg_openai_api_key',
+  openRouterApiKey: '@storyrpg_openrouter_api_key',
   llmGeminiApiKey: '@storyrpg_llm_gemini_api_key',
   elevenLabsApiKey: '@storyrpg_elevenlabs_api_key',
   llmProvider: '@storyrpg_llm_provider',
@@ -86,7 +87,7 @@ export const GENERATOR_STORAGE_KEYS = {
 } as const;
 
 function isGeneratorLlmProvider(value: string | null | undefined): value is GeneratorLlmProvider {
-  return value === 'anthropic' || value === 'openai' || value === 'gemini';
+  return value === 'anthropic' || value === 'openai' || value === 'gemini' || value === 'openrouter';
 }
 
 /**
@@ -233,6 +234,7 @@ export function useGeneratorSettings() {
   const [videoLlmModel, setVideoLlmModel] = useState<string>(DEFAULT_LLM_MODELS[DEFAULT_LLM_PROVIDER]);
   const [apiKey, setApiKey] = useState('');
   const [openaiApiKey, setOpenaiApiKey] = useState('');
+  const [openRouterApiKey, setOpenRouterApiKey] = useState('');
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [elevenLabsApiKey, setElevenLabsApiKey] = useState('');
   const [atlasCloudApiKey, setAtlasCloudApiKey] = useState('');
@@ -373,6 +375,7 @@ export function useGeneratorSettings() {
         const [
           storedAnthropicKey,
           storedOpenaiApiKey,
+          storedOpenRouterApiKey,
           storedLlmGeminiKey,
           storedElevenLabsApiKey,
           storedImageLlmProvider,
@@ -396,6 +399,7 @@ export function useGeneratorSettings() {
         ] = await Promise.all([
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.anthropicApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.openaiApiKey),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.openRouterApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmGeminiApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.elevenLabsApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.imageLlmProvider),
@@ -423,6 +427,7 @@ export function useGeneratorSettings() {
         // API keys always come from AsyncStorage (never stored on proxy for security)
         if (storedAnthropicKey) setApiKey(storedAnthropicKey);
         if (storedOpenaiApiKey) setOpenaiApiKey(storedOpenaiApiKey);
+        if (storedOpenRouterApiKey) setOpenRouterApiKey(storedOpenRouterApiKey);
         if (storedGeminiKey || storedLlmGeminiKey) {
           setGeminiApiKey(storedGeminiKey || storedLlmGeminiKey || '');
         }
@@ -760,6 +765,15 @@ export function useGeneratorSettings() {
     }
   }, []);
 
+  const handleOpenRouterApiKeyChange = useCallback(async (key: string) => {
+    setOpenRouterApiKey(key);
+    try {
+      await saveValue(GENERATOR_STORAGE_KEYS.openRouterApiKey, key.trim() ? key : null);
+    } catch (error) {
+      log.debug('Failed to save OpenRouter API key:', error);
+    }
+  }, []);
+
   const handleElevenLabsApiKeyChange = useCallback(async (key: string) => {
     setElevenLabsApiKey(key);
     try {
@@ -963,6 +977,7 @@ export function useGeneratorSettings() {
     videoLlmModel,
     apiKey,
     openaiApiKey,
+    openRouterApiKey,
     geminiApiKey,
     elevenLabsApiKey,
     atlasCloudApiKey,
@@ -992,6 +1007,7 @@ export function useGeneratorSettings() {
     handleGenerationModeChange,
     handleApiKeyChange,
     handleOpenaiApiKeyChange,
+    handleOpenRouterApiKeyChange,
     handleGeminiApiKeyChange,
     handleElevenLabsApiKeyChange,
     handleAtlasCloudApiKeyChange,

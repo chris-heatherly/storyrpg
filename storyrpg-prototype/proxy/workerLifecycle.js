@@ -1258,6 +1258,10 @@ function createWorkerLifecycle({
       process.env.OPENAI_API_KEY
       || process.env.EXPO_PUBLIC_OPENAI_API_KEY
       || '';
+    const envOpenRouterKey =
+      process.env.OPENROUTER_API_KEY
+      || process.env.EXPO_PUBLIC_OPENROUTER_API_KEY
+      || '';
     const envGeminiKey =
       process.env.EXPO_PUBLIC_GEMINI_API_KEY
       || process.env.GEMINI_API_KEY
@@ -1275,6 +1279,8 @@ function createWorkerLifecycle({
           agentCfg.apiKey = envAnthropicKey;
         } else if (agentCfg.provider === 'openai' && isMissingApiKey(agentCfg.apiKey)) {
           agentCfg.apiKey = envOpenAiKey;
+        } else if (agentCfg.provider === 'openrouter' && isMissingApiKey(agentCfg.apiKey)) {
+          agentCfg.apiKey = envOpenRouterKey;
         }
       }
     }

@@ -1,5 +1,5 @@
 export type GenerationMode = 'strict' | 'advisory' | 'disabled';
-export type GeneratorLlmProvider = 'anthropic' | 'openai' | 'gemini';
+export type GeneratorLlmProvider = 'anthropic' | 'openai' | 'gemini' | 'openrouter';
 export type GeneratorImageProvider = 'nano-banana' | 'atlas-cloud' | 'midapi' | 'dall-e' | 'stable-diffusion';
 
 /**
@@ -23,6 +23,7 @@ export const DEFAULT_LLM_MODELS = {
   anthropic: 'claude-sonnet-4-6',
   openai: 'gpt-5',
   gemini: 'gemini-2.5-pro',
+  openrouter: 'x-ai/grok-4.3',
 } as const;
 
 export const FALLBACK_MODEL_OPTIONS: Record<GeneratorLlmProvider, ModelOption[]> = {
@@ -52,6 +53,18 @@ export const FALLBACK_MODEL_OPTIONS: Record<GeneratorLlmProvider, ModelOption[]>
     { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
     { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
     { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+  ],
+  // OpenRouter routes to many vendors; model ids are `vendor/model` slugs.
+  // These non-big-three defaults are a fallback list — the live catalog is
+  // fetched from https://openrouter.ai/api/v1/models when a key is supplied.
+  openrouter: [
+    { value: 'deepseek/deepseek-v4-pro', label: 'DeepSeek V4 Pro', description: 'Strong reasoning/planning — best for architecture.' },
+    { value: 'x-ai/grok-4.3', label: 'Grok 4.3', description: 'Fast, agentic, good prose — balanced default.' },
+    { value: 'x-ai/grok-4.20', label: 'Grok 4.20', description: 'Top-tier reasoning + tool calling.' },
+    { value: 'mistralai/mistral-medium-3.5', label: 'Mistral Medium 3.5', description: 'Dense 128B — tonally sensitive choices.' },
+    { value: 'qwen/qwen3.7-max', label: 'Qwen 3.7 Max', description: 'Agent-centric, strong coding/structure.' },
+    { value: 'qwen/qwen3.6-flash', label: 'Qwen 3.6 Flash', description: 'Cheapest/fastest — best for QA grading.' },
+    { value: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash', description: 'Efficient MoE — cheap prompting/grading.' },
   ],
 };
 

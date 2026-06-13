@@ -62,7 +62,7 @@ export interface AvailableModelsState {
   scannedAt: number | null;
   loading: boolean;
   error: string | null;
-  refresh: (keys?: { anthropicApiKey?: string; geminiApiKey?: string; atlasCloudApiKey?: string }) => Promise<void>;
+  refresh: (keys?: { anthropicApiKey?: string; openaiApiKey?: string; geminiApiKey?: string; openRouterApiKey?: string; atlasCloudApiKey?: string }) => Promise<void>;
 }
 
 export function useAvailableModels(): AvailableModelsState {
@@ -84,6 +84,9 @@ export function useAvailableModels(): AvailableModelsState {
       gemini: result.providers.gemini?.length
         ? result.providers.gemini
         : FALLBACK_MODEL_OPTIONS.gemini,
+      openrouter: result.providers.openrouter?.length
+        ? result.providers.openrouter
+        : FALLBACK_MODEL_OPTIONS.openrouter,
     };
     setModels(merged);
     setAtlasCloudModels(
@@ -117,7 +120,7 @@ export function useAvailableModels(): AvailableModelsState {
     };
   }, [applyResult]);
 
-  const refresh = useCallback(async (keys?: { anthropicApiKey?: string; openaiApiKey?: string; geminiApiKey?: string; atlasCloudApiKey?: string }) => {
+  const refresh = useCallback(async (keys?: { anthropicApiKey?: string; openaiApiKey?: string; geminiApiKey?: string; openRouterApiKey?: string; atlasCloudApiKey?: string }) => {
     setLoading(true);
     setError(null);
     try {

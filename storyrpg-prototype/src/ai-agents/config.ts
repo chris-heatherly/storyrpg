@@ -77,7 +77,7 @@ export { DEFAULT_IMAGE_QA_CONFIG } from './config/imageQaConfig';
 export type { ArtStyleProfile } from './images/artStyleProfile';
 
 export interface AgentConfig {
-  provider: 'anthropic' | 'openai' | 'gemini';
+  provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
   model: string;
   apiKey: string;
   maxTokens: number;
@@ -987,18 +987,23 @@ export function loadConfig(): PipelineConfig {
     if (provider === 'openai') {
       return env.EXPO_PUBLIC_OPENAI_API_KEY || env.OPENAI_API_KEY || '';
     }
+    if (provider === 'openrouter') {
+      return env.EXPO_PUBLIC_OPENROUTER_API_KEY || env.OPENROUTER_API_KEY || '';
+    }
     return env.EXPO_PUBLIC_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY || '';
   };
   const defaultConfig: AgentConfig = {
-    provider: (env.EXPO_PUBLIC_LLM_PROVIDER || env.LLM_PROVIDER as 'anthropic' | 'openai' | 'gemini') || 'anthropic',
+    provider: (env.EXPO_PUBLIC_LLM_PROVIDER || env.LLM_PROVIDER as AgentConfig['provider']) || 'anthropic',
     model: env.EXPO_PUBLIC_LLM_MODEL || env.LLM_MODEL || 'claude-sonnet-4-6',
     apiKey:
       env.EXPO_PUBLIC_ANTHROPIC_API_KEY ||
       env.EXPO_PUBLIC_OPENAI_API_KEY ||
       env.EXPO_PUBLIC_GEMINI_API_KEY ||
+      env.EXPO_PUBLIC_OPENROUTER_API_KEY ||
       env.ANTHROPIC_API_KEY ||
       env.OPENAI_API_KEY ||
       env.GEMINI_API_KEY ||
+      env.OPENROUTER_API_KEY ||
       '',
     maxTokens: 4096,
     temperature: 0.8,

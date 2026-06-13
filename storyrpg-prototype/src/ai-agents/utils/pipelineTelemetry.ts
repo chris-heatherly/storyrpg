@@ -1,6 +1,6 @@
 export interface ProviderCallMetric {
   agentName: string;
-  provider: 'anthropic' | 'openai' | 'gemini';
+  provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
   success: boolean;
   durationMs: number;
   queueWaitMs: number;
@@ -29,7 +29,7 @@ export interface PhaseMetric {
  */
 export interface LlmLedgerAgentRow {
   agentName: string;
-  provider: 'anthropic' | 'openai' | 'gemini';
+  provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
   calls: number;
   successes: number;
   failures: number;

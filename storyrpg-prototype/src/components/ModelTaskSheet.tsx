@@ -38,6 +38,7 @@ const PROVIDER_OPTIONS: { value: GeneratorLlmProvider; label: string }[] = [
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'openai', label: 'OpenAI' },
   { value: 'gemini', label: 'Gemini' },
+  { value: 'openrouter', label: 'OpenRouter' },
 ];
 
 export function ModelTaskSheet({

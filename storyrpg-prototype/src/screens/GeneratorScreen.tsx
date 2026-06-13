@@ -494,6 +494,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     videoLlmModel,
     apiKey,
     openaiApiKey,
+    openRouterApiKey,
     geminiApiKey,
     elevenLabsApiKey,
     atlasCloudApiKey,
@@ -1475,13 +1476,16 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       ? geminiApiKey.trim()
       : llmProvider === 'openai'
         ? openaiApiKey.trim()
+      : llmProvider === 'openrouter'
+        ? openRouterApiKey.trim()
       : apiKey.trim()
   );
-  const resolveLlmProviderKey = useCallback((provider: 'anthropic' | 'openai' | 'gemini') => {
+  const resolveLlmProviderKey = useCallback((provider: GeneratorLlmProvider) => {
     if (provider === 'gemini') return geminiApiKey.trim();
     if (provider === 'openai') return openaiApiKey.trim();
+    if (provider === 'openrouter') return openRouterApiKey.trim();
     return apiKey.trim();
-  }, [apiKey, geminiApiKey, openaiApiKey]);
+  }, [apiKey, geminiApiKey, openaiApiKey, openRouterApiKey]);
   const isOpenAiQuotaError = useCallback((err: unknown): boolean => {
     const msg = err instanceof Error ? err.message : String(err ?? '');
     const lower = msg.toLowerCase();
@@ -1607,6 +1611,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     videoLlmModel,
     apiKey,
     openaiApiKey,
+    openRouterApiKey,
     geminiApiKey,
     elevenLabsApiKey,
     atlasCloudApiKey,
@@ -3113,7 +3118,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                     <Text style={styles.configLabel}>MODEL FAMILY</Text>
                     <TouchableOpacity
-                      onPress={() => refreshModels({ anthropicApiKey: apiKey, openaiApiKey, geminiApiKey, atlasCloudApiKey: atlasCloudApiKey })}
+                      onPress={() => refreshModels({ anthropicApiKey: apiKey, openaiApiKey, geminiApiKey, openRouterApiKey, atlasCloudApiKey: atlasCloudApiKey })}
                       disabled={modelsScanLoading}
                       style={{ flexDirection: 'row', alignItems: 'center', opacity: modelsScanLoading ? 0.5 : 1 }}
                     >
@@ -3128,6 +3133,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                       { value: 'anthropic', label: 'Claude' },
                       { value: 'openai', label: 'OpenAI' },
                       { value: 'gemini', label: 'Gemini' },
+                      { value: 'openrouter', label: 'OpenRouter' },
                     ]}
                     value={modelFamily}
                     onChange={handleModelFamilyChange}

@@ -79,9 +79,9 @@ export interface AgentResponse<T> {
 }
 
 export class LLMQuotaError extends Error {
-  public readonly provider: 'gemini' | 'anthropic' | 'openai' | 'unknown';
+  public readonly provider: 'gemini' | 'anthropic' | 'openai' | 'openrouter' | 'unknown';
 
-  constructor(message: string, provider: 'gemini' | 'anthropic' | 'openai' | 'unknown' = 'unknown') {
+  constructor(message: string, provider: 'gemini' | 'anthropic' | 'openai' | 'openrouter' | 'unknown' = 'unknown') {
     super(message);
     this.name = 'LLMQuotaError';
     this.provider = provider;
@@ -115,7 +115,7 @@ export interface LlmGuardrailConfig {
  */
 export interface LlmTransportRequest {
   agentName: string;
-  provider: 'anthropic' | 'openai' | 'gemini';
+  provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
   model: string;
   messages: AgentMessage[];
 }
@@ -125,12 +125,12 @@ export type LlmTransportOverride = (request: LlmTransportRequest) => Promise<str
 /** Fired when truncation recovery DROPS content (silent-loss landmine L4). */
 export interface TruncationObservation {
   agentName: string;
-  provider: 'anthropic' | 'openai' | 'gemini';
+  provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
 }
 
 export interface LlmCallObservation {
   agentName: string;
-  provider: 'anthropic' | 'openai' | 'gemini';
+  provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
   success: boolean;
   durationMs: number;
   queueWaitMs: number;
@@ -220,7 +220,7 @@ export abstract class BaseAgent {
   private static readonly CIRCUIT_BREAKER_THRESHOLD = 5;
   private static readonly CIRCUIT_BREAKER_COOLDOWN_MS = 60_000;
   private static _globalSemaphore: AsyncSemaphore | null = null;
-  private static _providerSemaphores = new Map<'anthropic' | 'openai' | 'gemini', AsyncSemaphore>();
+  private static _providerSemaphores = new Map<'anthropic' | 'openai' | 'gemini' | 'openrouter', AsyncSemaphore>();
   private static _guardrails: LlmGuardrailConfig = {
     maxGlobalInFlight: 4,
     maxPerProviderInFlight: 2,
@@ -317,6 +317,7 @@ export abstract class BaseAgent {
     BaseAgent._providerSemaphores.set('anthropic', new AsyncSemaphore(BaseAgent._guardrails.maxPerProviderInFlight));
     BaseAgent._providerSemaphores.set('openai', new AsyncSemaphore(BaseAgent._guardrails.maxPerProviderInFlight));
     BaseAgent._providerSemaphores.set('gemini', new AsyncSemaphore(BaseAgent._guardrails.maxPerProviderInFlight));
+    BaseAgent._providerSemaphores.set('openrouter', new AsyncSemaphore(BaseAgent._guardrails.maxPerProviderInFlight));
   }
 
   static setLlmCallObserver(observer?: (observation: LlmCallObservation) => void): void {
@@ -945,14 +946,40 @@ Do not use markdown code blocks around the JSON.
     return '';
   }
 
+  /**
+   * Endpoint + auth headers for an OpenAI-wire-compatible provider. OpenRouter
+   * speaks the same `/chat/completions` API as OpenAI (Bearer auth,
+   * `response_format` json_schema, SSE `delta.content`, `usage.*_tokens`), so it
+   * rides the exact same {@link callOpenAI} / {@link callOpenAIStreaming} path —
+   * only the base URL and a couple of recommended attribution headers differ.
+   */
+  private openAiCompatibleTarget(): { url: string; headers: Record<string, string> } {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${this.config.apiKey}`,
+    };
+    if (this.config.provider === 'openrouter') {
+      // Optional but recommended by OpenRouter for usage attribution/rankings.
+      headers['HTTP-Referer'] = 'https://storyrpg.app';
+      headers['X-Title'] = 'StoryRPG';
+      return { url: 'https://openrouter.ai/api/v1/chat/completions', headers };
+    }
+    return { url: 'https://api.openai.com/v1/chat/completions', headers };
+  }
+
   private async callOpenAI(
     messages: AgentMessage[],
     signal?: AbortSignal,
     usageOut?: { inputTokens?: number; outputTokens?: number },
     jsonSchema?: StructuredJsonSchema,
   ): Promise<string> {
-    const model = this.config.model || 'gpt-5';
-    const isReasoningModel = /^(gpt-5|o1|o3|o4)/i.test(model);
+    const isOpenRouter = this.config.provider === 'openrouter';
+    const providerLabel = isOpenRouter ? 'OpenRouter' : 'OpenAI';
+    const model = this.config.model || (isOpenRouter ? 'x-ai/grok-4.3' : 'gpt-5');
+    // Reasoning-class request shaping (max_completion_tokens / reasoning_effort,
+    // no temperature) is OpenAI-specific. OpenRouter normalizes max_tokens +
+    // temperature across all its models, so keep it on the standard path.
+    const isReasoningModel = !isOpenRouter && /^(gpt-5|o1|o3|o4)/i.test(model);
     const reasoningEffort = this.config.openaiReasoningEffort || 'medium';
     const body: Record<string, unknown> = {
       model,
@@ -1019,12 +1046,10 @@ Do not use markdown code blocks around the JSON.
       return await this.callOpenAIStreaming(body, model, isReasoningModel, signal, usageOut);
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const target = this.openAiCompatibleTarget();
+    const response = await fetch(target.url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.config.apiKey}`,
-      },
+      headers: target.headers,
       ...(signal ? { signal } : {}),
       body: JSON.stringify(body),
     });
@@ -1032,7 +1057,7 @@ Do not use markdown code blocks around the JSON.
     const text = await response.text();
 
     if (!response.ok) {
-      throw new Error(`OpenAI API error: ${response.status} - ${text}`);
+      throw new Error(`${providerLabel} API error: ${response.status} - ${text}`);
     }
 
     try {
@@ -1058,7 +1083,7 @@ Do not use markdown code blocks around the JSON.
           );
         }
         throw new Error(
-          `OpenAI returned empty content (finish_reason=${finishReason ?? 'unknown'}). Model=${model}. Response: ${text.substring(0, 500)}`,
+          `${providerLabel} returned empty content (finish_reason=${finishReason ?? 'unknown'}). Model=${model}. Response: ${text.substring(0, 500)}`,
         );
       }
 
@@ -1066,8 +1091,8 @@ Do not use markdown code blocks around the JSON.
     } catch (parseError) {
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       // If we already threw a descriptive error above, rethrow it verbatim.
-      if (msg.startsWith('OpenAI returned empty content')) throw parseError;
-      throw new Error(`Failed to parse OpenAI response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
+      if (msg.includes('returned empty content')) throw parseError;
+      throw new Error(`Failed to parse ${providerLabel} response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
     }
   }
 
@@ -1090,14 +1115,13 @@ Do not use markdown code blocks around the JSON.
       else signal.addEventListener('abort', onOuterAbort, { once: true });
     }
 
+    const providerLabel = this.config.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI';
+    const target = this.openAiCompatibleTarget();
     let response: Response;
     try {
-      response = await fetch('https://api.openai.com/v1/chat/completions', {
+      response = await fetch(target.url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.config.apiKey}`,
-        },
+        headers: target.headers,
         signal: controller.signal,
         body: JSON.stringify(body),
       });
@@ -1109,7 +1133,7 @@ Do not use markdown code blocks around the JSON.
     if (!response.ok) {
       const text = await response.text().catch(() => '');
       if (signal) signal.removeEventListener('abort', onOuterAbort);
-      throw new Error(`OpenAI API error: ${response.status} - ${text}`);
+      throw new Error(`${providerLabel} API error: ${response.status} - ${text}`);
     }
 
     let result;
@@ -1141,7 +1165,7 @@ Do not use markdown code blocks around the JSON.
             `Lower REASONING EFFORT in the OPENAI ADVANCED panel, raise maxTokens, or switch to a non-reasoning model like gpt-4o / gpt-4.1.`,
         );
       }
-      throw new Error(`OpenAI returned empty content (stream). Model=${model}.`);
+      throw new Error(`${providerLabel} returned empty content (stream). Model=${model}.`);
     }
     return content;
   }

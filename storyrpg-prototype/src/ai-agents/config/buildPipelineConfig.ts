@@ -46,6 +46,7 @@ export interface BuildPipelineConfigInput {
   taskAssignments?: Record<PipelineTask, TaskModelAssignment>;
   apiKey: string;
   openaiApiKey?: string;
+  openRouterApiKey?: string;
   geminiApiKey: string;
   elevenLabsApiKey: string;
   atlasCloudApiKey: string;
@@ -77,6 +78,9 @@ function getSelectedLlmApiKey(input: BuildPipelineConfigInput): string {
   if (input.llmProvider === 'openai') {
     return (input.openaiApiKey || input.apiKey || '').trim();
   }
+  if (input.llmProvider === 'openrouter') {
+    return (input.openRouterApiKey || '').trim();
+  }
 
   return input.apiKey.trim();
 }
@@ -94,6 +98,9 @@ function getScopedLlmApiKey(
   }
   if (provider === 'openai') {
     return (input.openaiApiKey || input.apiKey || '').trim();
+  }
+  if (provider === 'openrouter') {
+    return (input.openRouterApiKey || '').trim();
   }
 
   return input.apiKey.trim();

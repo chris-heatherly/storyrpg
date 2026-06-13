@@ -212,6 +212,7 @@ export function GeneratorCredentialsSection({ styles }: { styles: SettingsStyles
   const {
     apiKey,
     openaiApiKey,
+    openRouterApiKey,
     geminiApiKey,
     atlasCloudApiKey,
     midapiToken,
@@ -220,6 +221,7 @@ export function GeneratorCredentialsSection({ styles }: { styles: SettingsStyles
     loraTrainingSettings,
     handleApiKeyChange,
     handleOpenaiApiKeyChange,
+    handleOpenRouterApiKeyChange,
     handleGeminiApiKeyChange,
     handleAtlasCloudApiKeyChange,
     handleMidapiTokenChange,
@@ -231,6 +233,7 @@ export function GeneratorCredentialsSection({ styles }: { styles: SettingsStyles
   const credentialValues = [
     apiKey,
     openaiApiKey,
+    openRouterApiKey,
     geminiApiKey,
     atlasCloudApiKey,
     midapiToken,
@@ -303,6 +306,13 @@ export function GeneratorCredentialsSection({ styles }: { styles: SettingsStyles
             value={geminiApiKey}
             onChangeText={handleGeminiApiKeyChange}
             placeholder="AIzaSy... used for Gemini text, images, and video"
+          />
+          <CredentialInput
+            styles={styles}
+            label={`OPENROUTER API KEY ${openRouterApiKey ? '✓' : '*'}`}
+            value={openRouterApiKey}
+            onChangeText={handleOpenRouterApiKeyChange}
+            placeholder="sk-or-... routes to DeepSeek, Grok, Mistral, Qwen, etc."
           />
           <CredentialInput
             styles={styles}

@@ -138,6 +138,42 @@ async function scanOpenAIModels(apiKey) {
   }
 }
 
+async function scanOpenRouterModels(apiKey) {
+  if (!apiKey) return [];
+  try {
+    const resp = await fetch('https://openrouter.ai/api/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!resp.ok) {
+      console.warn(`[ModelScan] OpenRouter API returned ${resp.status}: ${resp.statusText}`);
+      return [];
+    }
+    const body = await resp.json();
+    const models = (body.data || [])
+      .filter((m) => {
+        // Text LLMs only — skip image/video/audio-output and embedding models.
+        const id = (m.id || '').toLowerCase();
+        if (!id || id.includes('embed')) return false;
+        const outputs = m.architecture?.output_modalities;
+        if (Array.isArray(outputs) && outputs.length > 0 && !outputs.includes('text')) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => (a.id || '').localeCompare(b.id || ''))
+      .map((m) => ({
+        value: m.id,
+        label: m.name || formatModelLabel(m.id),
+        description: m.description ? String(m.description).slice(0, 160) : null,
+      }));
+    console.log(`[ModelScan] OpenRouter: found ${models.length} models`);
+    return models;
+  } catch (err) {
+    console.warn('[ModelScan] OpenRouter scan failed:', err.message);
+    return [];
+  }
+}
+
 // Complete Atlas Cloud text-to-image catalog (kept in sync with
 // https://www.atlascloud.ai/models/list?type=Text-to-Image). When the API
 // /v1/models endpoint returns a list we merge with this so models the API
@@ -252,11 +288,17 @@ async function performScan(overrideKeys) {
     process.env.OPENAI_API_KEY ||
     process.env.EXPO_PUBLIC_OPENAI_API_KEY ||
     '';
+  const openRouterKey =
+    overrideKeys?.openRouterApiKey ||
+    process.env.OPENROUTER_API_KEY ||
+    process.env.EXPO_PUBLIC_OPENROUTER_API_KEY ||
+    '';
 
-  const [anthropic, openai, gemini, atlasCloud] = await Promise.all([
+  const [anthropic, openai, gemini, openrouter, atlasCloud] = await Promise.all([
     scanAnthropicModels(anthropicKey),
     scanOpenAIModels(openaiKey),
     scanGeminiModels(geminiKey),
+    scanOpenRouterModels(openRouterKey),
     scanAtlasCloudModels(atlasKey),
   ]);
 
@@ -266,6 +308,7 @@ async function performScan(overrideKeys) {
       anthropic: anthropic.length > 0 ? anthropic : null,
       openai: openai.length > 0 ? openai : null,
       gemini: gemini.length > 0 ? gemini : null,
+      openrouter: openrouter.length > 0 ? openrouter : null,
       atlasCloud: atlasCloud.length > 0 ? atlasCloud : null,
     },
   };
@@ -299,6 +342,7 @@ function registerModelScanRoutes(app, options = {}) {
         anthropicApiKey: req.body?.anthropicApiKey,
         openaiApiKey: req.body?.openaiApiKey,
         geminiApiKey: req.body?.geminiApiKey,
+        openRouterApiKey: req.body?.openRouterApiKey,
         atlasCloudApiKey: req.body?.atlasCloudApiKey,
       };
       console.log('[ModelScan] Forced scan requested');

@@ -88,6 +88,7 @@ export interface ModelFamilyPreset {
 const anthropic = (model: string): TaskModelAssignment => ({ provider: 'anthropic', model });
 const openai = (model: string): TaskModelAssignment => ({ provider: 'openai', model });
 const gemini = (model: string): TaskModelAssignment => ({ provider: 'gemini', model });
+const openrouter = (model: string): TaskModelAssignment => ({ provider: 'openrouter', model });
 
 /**
  * Cost/benefit-optimal model per task, per family. The expensive flagship goes
@@ -132,6 +133,23 @@ export const MODEL_FAMILY_PRESETS: Record<GeneratorLlmProvider, ModelFamilyPrese
       qa: gemini('gemini-2.5-flash'),
       image: gemini('gemini-2.5-flash'),
       video: gemini('gemini-2.5-flash'),
+    },
+  },
+  // Cross-vendor "best-of" via OpenRouter — deliberately avoids the
+  // Anthropic / OpenAI / Gemini families (those have their own presets) so the
+  // QA judge is fully decorrelated from the author. Model ids are OpenRouter
+  // `vendor/model` slugs.
+  openrouter: {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    tagline: 'DeepSeek plans, Grok writes, Mistral picks, Qwen grades.',
+    assignments: {
+      architect: openrouter('deepseek/deepseek-v4-pro'),
+      scene: openrouter('x-ai/grok-4.3'),
+      choice: openrouter('mistralai/mistral-medium-3.5'),
+      qa: openrouter('qwen/qwen3.6-flash'),
+      image: openrouter('deepseek/deepseek-v4-flash'),
+      video: openrouter('deepseek/deepseek-v4-flash'),
     },
   },
 };

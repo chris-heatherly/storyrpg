@@ -142,6 +142,30 @@ describe('BaseAgent truncation-loss signal (L4)', () => {
     expect(parsed.themes[0]).toBe('a complete one');
     expect(parsed.themes[1]).toContain('a partial one');
   });
+
+  it('recovers a SceneWriter response cut right after `"text":"` (dangling open quote)', () => {
+    const agent = new TestAgent();
+    // bite-me-g14 s1-6: the response was truncated mid-string so the last
+    // non-whitespace char is a `"` (the just-opened value quote). handleTruncation
+    // used to early-return on `endsWith('"')` and assume the JSON was complete,
+    // rethrowing "Unterminated string in JSON". Now the dangling string is closed,
+    // the incomplete trailing beat is dropped, and the completed beats survive.
+    const parsed = agent.parse<{ sceneId: string; beats: Array<{ id: string; text: string }> }>(
+      '{"sceneId":"s1-6","name":"release scene 6","beats":[{"id":"b1","text":"She opened the door."},{"id":"b2","text":"',
+    );
+    expect(parsed.sceneId).toBe('s1-6');
+    expect(parsed.beats[0]).toEqual({ id: 'b1', text: 'She opened the door.' });
+    expect(agent.wasLastResponseTruncated()).toBe(true);
+  });
+
+  it('recovers when the cut lands on a bare opening value quote with no prior beats', () => {
+    const agent = new TestAgent();
+    const parsed = agent.parse<{ sceneId: string; beats: unknown[] }>(
+      '{"sceneId":"s1-6","name":"n","beats":[{"id":"b1","text":"',
+    );
+    expect(parsed.sceneId).toBe('s1-6');
+    expect(Array.isArray(parsed.beats)).toBe(true);
+  });
 });
 
 describe('BaseAgent truncation shadow counter (WS5)', () => {

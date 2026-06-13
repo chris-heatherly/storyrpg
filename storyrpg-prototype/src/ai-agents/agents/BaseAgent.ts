@@ -1560,17 +1560,37 @@ Do not use markdown code blocks around the JSON.
   }
 
   /**
+   * True when `json` has an even number of unescaped `"` — i.e. every string is
+   * closed. An odd count means a string was left open (the response was cut
+   * mid-string), which {@link handleTruncation} must recover rather than treat
+   * as complete. Pure; mirrors the escape handling of the recovery loop below.
+   */
+  private hasBalancedJsonQuotes(json: string): boolean {
+    let quotes = 0;
+    for (let i = 0; i < json.length; i++) {
+      if (json[i] === '"' && (i === 0 || json[i - 1] !== '\\')) quotes++;
+    }
+    return quotes % 2 === 0;
+  }
+
+  /**
    * Handle truncated JSON responses (when max_tokens is reached)
    * Finds the last complete element and truncates there
    */
   private handleTruncation(json: string): string {
     // Check if the JSON appears truncated (ends mid-string or mid-value)
     const trimmed = json.trim();
-    
-    // If it ends with a complete structure, no truncation handling needed
-    if (trimmed.endsWith('}') || trimmed.endsWith(']') || trimmed.endsWith('"') || 
-        trimmed.endsWith('true') || trimmed.endsWith('false') || trimmed.endsWith('null') ||
-        /\d$/.test(trimmed)) {
+
+    // Only short-circuit when the JSON ends on a STRUCTURAL closer (`}`/`]`) AND
+    // every string is closed (even unescaped-quote parity). handleTruncation is
+    // only ever reached AFTER the initial JSON.parse already failed, so a naive
+    // "ends with a quote / digit / keyword → assume complete" check is wrong: a
+    // response truncated mid-string commonly ends on a dangling `"` (the cut
+    // landed right after an opening or escaped quote), and treating that as
+    // complete skips ALL recovery and rethrows "Unterminated string in JSON"
+    // (the bite-me-g14 SceneWriter s1-6 abort). A trailing scalar (`"`, digit,
+    // true/false/null) is NOT a completeness signal; only `}`/`]` is.
+    if ((trimmed.endsWith('}') || trimmed.endsWith(']')) && this.hasBalancedJsonQuotes(trimmed)) {
       return json;
     }
 

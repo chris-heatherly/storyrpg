@@ -11,7 +11,7 @@
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
-import { ChoiceType, Consequence } from '../../types';
+import { buildBranchSkeleton, type BranchSkeleton } from '../utils/branchTopology';
 import type {
   StoryAnchors,
   SevenPointStructure,
@@ -125,222 +125,207 @@ export class BranchManager extends BaseAgent {
 
   protected getAgentSpecificPrompt(): string {
     return `
-## Your Role: Branch Manager
+## Your Role: Branch Manager (Annotation Pass)
 
-You are the narrative flow architect who ensures branching stories remain coherent and satisfying. You analyze scene graphs, track state implications, and validate that all paths lead to meaningful outcomes.
+The branch STRUCTURE — every distinct path through the scene graph and every
+reconvergence point — has already been computed deterministically from the
+scene graph and is given to you below. Do NOT re-derive it, second-guess it, or
+add/remove paths or reconvergence points.
 
-(The BRANCH-AND-BOTTLENECK framework — bottleneck scenes, branch zones,
-reconvergence rules, distinct-experience rule — is already provided in the
-shared system prompt. Apply it here; do NOT repeat the framework definitions.
-Your job is to USE those principles to analyze a concrete scene graph.)
+Your job is purely to ANNOTATE that structure with language:
+- For each given path: a short evocative name, a one-line description of what
+  makes it distinct, and its narrative theme.
+- For each given reconvergence point: a sentence of narrative acknowledgment
+  (how the story should nod to the different incoming paths) and, where
+  relevant, how to reconcile differing state at that point.
+- A few actionable recommendations for the episode's branch design.
 
-## State Tracking Responsibilities
+(The BRANCH-AND-BOTTLENECK framework is in the shared system prompt — apply its
+principles when judging what makes a path distinct and how reconvergence should
+read. Do not repeat the framework definitions.)
 
-### Track All Variables
-- Flags: Boolean state (true/false)
-- Scores: Numeric values that can increase/decrease
-- Tags: Identity markers the player can gain/lose
-- Relationships: Trust, affection, respect, fear with NPCs
-
-### State Implications
-- Every choice that sets state must have that state used later
-- Orphan state (set but never read) is a design smell
-- Contradictory state must be impossible through proper conditions
-
-## Validation Checks
-
-1. **No Dead Ends**: Every scene must lead somewhere (unless it's an ending)
-2. **No Orphan Branches**: Every branch must eventually reconverge
-3. **No Unreachable Scenes**: Every scene must be reachable from start
-4. **State Consistency**: No contradictory state combinations possible
-5. **Bottleneck Accessibility**: All bottlenecks reachable from all valid paths
-
-## Analysis Output
-
-For each branch path:
-- Identify the complete scene sequence
-- List all state changes along the path
-- Note the narrative theme/flavor of this path
-
-For reconvergence points:
-- Identify which branches converge
-- Specify how state differences are reconciled
-- Suggest narrative acknowledgment text
-
-For validation:
-- Report any structural issues
-- Suggest fixes for problems found
-- Recommend improvements
+Return ONLY the requested annotation JSON, keyed by the exact ids / scene ids
+provided. Never invent ids that were not given to you.
 `;
   }
 
   async execute(input: BranchManagerInput): Promise<AgentResponse<BranchAnalysis>> {
-    const prompt = this.buildPrompt(input);
+    console.info(`[BranchManager] Analyzing branch structure for episode: ${input.episodeId}`);
 
-    console.log(`[BranchManager] Analyzing branch structure for episode: ${input.episodeId}`);
+    // 1. Deterministic skeleton — correct by construction, cannot fail to parse.
+    const skeleton = buildBranchSkeleton(input.scenes, input.startingSceneId);
+    const analysis = this.assembleDeterministic(skeleton, input);
+
+    if (skeleton.pathsTruncated) {
+      console.warn(`[BranchManager] Path enumeration hit cap for ${input.episodeId}; annotating a representative subset.`);
+    }
+
+    // 2. Best-effort LLM ANNOTATION over the skeleton. The output is small and
+    //    flat (labels + prose keyed by deterministic ids), so the parse-failure
+    //    surface is tiny. If it fails we keep the deterministic skeleton with
+    //    fallback labels — the structure downstream consumers rely on is intact.
+    if (skeleton.reconvergence.length === 0 && skeleton.paths.length <= 1) {
+      // Linear episode — no branches or reconvergence worth annotating. Skip the
+      // LLM round-trip entirely (saves a call and removes its failure surface).
+      console.info(`[BranchManager] No branches/reconvergence for ${input.episodeId}; skipping annotation call.`);
+      return { success: true, data: analysis };
+    }
 
     try {
-      const response = await this.callLLM([
-        { role: 'user', content: prompt }
-      ]);
-
-      console.log(`[BranchManager] Received response (${response.length} chars)`);
-
-      let analysis: BranchAnalysis;
-      try {
-        analysis = this.parseJSON<BranchAnalysis>(response);
-      } catch (parseError) {
-        console.error(`[BranchManager] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
-        throw parseError;
-      }
-
-      // Normalize the output
-      analysis = this.normalizeAnalysis(analysis, input);
-
-      console.log(`[BranchManager] Found ${analysis.branchPaths?.length || 0} paths, ${analysis.reconvergencePoints?.length || 0} reconvergence points, ${analysis.validationIssues?.length || 0} issues`);
-
-      return {
-        success: true,
-        data: analysis,
-        rawResponse: response,
-      };
+      const prompt = this.buildAnnotationPrompt(input, skeleton);
+      // Schema-strict output: the small, flat annotation shape is enforced at the
+      // provider (Anthropic forced tool use / OpenAI json_schema), so the parse
+      // surface is near-zero. Degrades to text+parseJSON where unsupported.
+      const response = await this.callLLM(
+        [{ role: 'user', content: prompt }],
+        4,
+        { jsonSchema: { name: 'branch_annotations', description: 'Annotations for the deterministic branch structure', schema: BRANCH_ANNOTATION_SCHEMA } },
+      );
+      const annotations = this.parseJSON<BranchAnnotationPayload>(response);
+      this.applyAnnotations(analysis, annotations);
+      console.info(`[BranchManager] Annotated ${analysis.branchPaths.length} paths, ${analysis.reconvergencePoints.length} reconvergence points, ${analysis.validationIssues.length} issues`);
+      return { success: true, data: analysis, rawResponse: response };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[BranchManager] Error:`, errorMsg);
-      return {
-        success: false,
-        error: errorMsg,
-      };
+      // NOT a failure: the deterministic structure stands; only the prose flavor
+      // is missing. Returning success keeps reconvergence residue and branch
+      // labels working off the skeleton instead of dropping them entirely.
+      console.warn(`[BranchManager] Annotation pass failed (non-critical); using deterministic skeleton: ${errorMsg}`);
+      return { success: true, data: analysis };
     }
   }
 
-  private normalizeAnalysis(analysis: BranchAnalysis, input: BranchManagerInput): BranchAnalysis {
-    // Ensure episodeId
-    if (!analysis.episodeId) {
-      analysis.episodeId = input.episodeId;
-    }
+  /**
+   * Build the full {@link BranchAnalysis} from the deterministic skeleton, with
+   * fallback labels and no LLM prose. Annotations are merged in afterward.
+   */
+  private assembleDeterministic(skeleton: BranchSkeleton, input: BranchManagerInput): BranchAnalysis {
+    const nameOf = new Map(input.scenes.map((s) => [s.id, s.name] as const));
+    const label = (id: string) => nameOf.get(id) || id;
 
-    // Ensure branchPaths is an array
-    if (!analysis.branchPaths) {
-      analysis.branchPaths = [];
-    } else if (!Array.isArray(analysis.branchPaths)) {
-      analysis.branchPaths = [analysis.branchPaths as unknown as BranchPath];
-    }
+    const branchPaths: BranchPath[] = skeleton.paths.map((p) => ({
+      id: p.id,
+      name: `${label(p.startSceneId)} → ${label(p.endSceneId)}`,
+      description: `Path through ${p.sceneSequence.length} scenes.`,
+      startSceneId: p.startSceneId,
+      endSceneId: p.endSceneId,
+      sceneSequence: p.sceneSequence,
+      stateChanges: [],
+    }));
 
-    // Normalize each branch path
-    for (let i = 0; i < analysis.branchPaths.length; i++) {
-      const path = analysis.branchPaths[i];
-      if (!path.id) {
-        path.id = `branch-${i + 1}`;
-      }
-      if (!path.sceneSequence) {
-        path.sceneSequence = [];
-      } else if (!Array.isArray(path.sceneSequence)) {
-        path.sceneSequence = [path.sceneSequence as unknown as string];
-      }
-      if (!path.stateChanges) {
-        path.stateChanges = [];
-      } else if (!Array.isArray(path.stateChanges)) {
-        path.stateChanges = [path.stateChanges as unknown as StateChange];
-      }
-    }
+    const reconvergencePoints: ReconvergencePoint[] = skeleton.reconvergence.map((r) => ({
+      sceneId: r.sceneId,
+      incomingBranches: r.incomingPathIds,
+      stateReconciliation: [],
+      narrativeAcknowledgment: '',
+    }));
 
-    // Ensure reconvergencePoints is an array
-    if (!analysis.reconvergencePoints) {
-      analysis.reconvergencePoints = [];
-    } else if (!Array.isArray(analysis.reconvergencePoints)) {
-      analysis.reconvergencePoints = [analysis.reconvergencePoints as unknown as ReconvergencePoint];
-    }
-
-    // Normalize each reconvergence point
-    for (const point of analysis.reconvergencePoints) {
-      if (!point.incomingBranches) {
-        point.incomingBranches = [];
-      } else if (!Array.isArray(point.incomingBranches)) {
-        point.incomingBranches = [point.incomingBranches as unknown as string];
-      }
-      if (!point.stateReconciliation) {
-        point.stateReconciliation = [];
-      } else if (!Array.isArray(point.stateReconciliation)) {
-        point.stateReconciliation = [point.stateReconciliation as unknown as StateReconciliation];
+    // Deterministic state-tracking map: which scenes set which authored flags
+    // (treatment seeds + ending/branch axes). `usedInScenes` is left empty —
+    // concrete reads are not known until ChoiceAuthor runs, and no consumer
+    // depends on this field. Honest-by-construction, no LLM guessing.
+    const setBy = new Map<string, Set<string>>();
+    for (const scene of input.scenes) {
+      const cp = scene.choicePoint;
+      if (!cp) continue;
+      for (const flag of [...(cp.setsTreatmentSeeds || []), ...(cp.setsBranchAxes || [])]) {
+        if (!setBy.has(flag)) setBy.set(flag, new Set());
+        setBy.get(flag)!.add(scene.id);
       }
     }
+    const stateTrackingMap: StateTrackingEntry[] = [...setBy.entries()].map(([variable, scenes]) => ({
+      variable,
+      type: 'flag',
+      setInScenes: [...scenes],
+      usedInScenes: [],
+      possibleValues: ['true', 'false'],
+    }));
 
-    // Ensure stateTrackingMap is an array
-    if (!analysis.stateTrackingMap) {
-      analysis.stateTrackingMap = [];
-    } else if (!Array.isArray(analysis.stateTrackingMap)) {
-      analysis.stateTrackingMap = [analysis.stateTrackingMap as unknown as StateTrackingEntry];
-    }
-
-    // Normalize state tracking entries
-    for (const entry of analysis.stateTrackingMap) {
-      if (!entry.setInScenes) {
-        entry.setInScenes = [];
-      } else if (!Array.isArray(entry.setInScenes)) {
-        entry.setInScenes = [entry.setInScenes as unknown as string];
-      }
-      if (!entry.usedInScenes) {
-        entry.usedInScenes = [];
-      } else if (!Array.isArray(entry.usedInScenes)) {
-        entry.usedInScenes = [entry.usedInScenes as unknown as string];
-      }
-      if (!entry.possibleValues) {
-        entry.possibleValues = [];
-      } else if (!Array.isArray(entry.possibleValues)) {
-        entry.possibleValues = [entry.possibleValues as unknown as string];
+    // Deterministic validation: unreachable scenes. (Dead-end detection requires
+    // the episode's endingSceneId, which the pipeline's deterministic topology
+    // pass already reports separately — we don't duplicate it here, and we skip
+    // unreachable reporting when path enumeration was capped, to avoid false
+    // positives from a truncated path set.)
+    const validationIssues: ValidationIssue[] = [];
+    if (!skeleton.pathsTruncated) {
+      const reachable = new Set<string>();
+      for (const p of skeleton.paths) for (const sid of p.sceneSequence) reachable.add(sid);
+      for (const scene of input.scenes) {
+        if (!reachable.has(scene.id)) {
+          validationIssues.push({
+            severity: 'error',
+            type: 'unreachable_scene',
+            description: `Scene ${scene.id} ("${scene.name}") is not reachable from ${input.startingSceneId}.`,
+            affectedScenes: [scene.id],
+            suggestedFix: 'Add an incoming edge from a reachable scene, or remove the scene.',
+          });
+        }
       }
     }
 
-    // Ensure validationIssues is an array
-    if (!analysis.validationIssues) {
-      analysis.validationIssues = [];
-    } else if (!Array.isArray(analysis.validationIssues)) {
-      analysis.validationIssues = [analysis.validationIssues as unknown as ValidationIssue];
-    }
-
-    // Normalize validation issues
-    for (const issue of analysis.validationIssues) {
-      if (!issue.affectedScenes) {
-        issue.affectedScenes = [];
-      } else if (!Array.isArray(issue.affectedScenes)) {
-        issue.affectedScenes = [issue.affectedScenes as unknown as string];
-      }
-    }
-
-    // Ensure recommendations is an array
-    if (!analysis.recommendations) {
-      analysis.recommendations = [];
-    } else if (!Array.isArray(analysis.recommendations)) {
-      analysis.recommendations = [analysis.recommendations as unknown as string];
-    }
-
-    return analysis;
+    return {
+      episodeId: input.episodeId,
+      branchPaths,
+      reconvergencePoints,
+      stateTrackingMap,
+      validationIssues,
+      recommendations: [],
+    };
   }
 
-  private buildPrompt(input: BranchManagerInput): string {
-    const scenesList = input.scenes.map(scene => {
-      const choiceInfo = scene.choicePoint
-        ? `\n    Choice: ${scene.choicePoint.type} - ${scene.choicePoint.description}`
-        : '';
-      return `  - ${scene.id}: "${scene.name}" (${scene.purpose})
-    Leads to: [${scene.leadsTo.join(', ')}]${choiceInfo}`;
-    }).join('\n');
+  /** Merge LLM annotations onto the deterministic analysis, keyed by id / sceneId. */
+  private applyAnnotations(analysis: BranchAnalysis, ann: BranchAnnotationPayload): void {
+    const nonEmpty = (s: unknown): s is string => typeof s === 'string' && s.trim().length > 0;
 
-    const flagsList = input.availableFlags
-      .map(f => `- ${f.name}: ${f.description}`)
+    if (Array.isArray(ann?.pathAnnotations)) {
+      const byId = new Map(analysis.branchPaths.map((p) => [p.id, p] as const));
+      for (const a of ann.pathAnnotations) {
+        const path = a && byId.get(a.id);
+        if (!path) continue; // ignore ids the LLM invented
+        if (nonEmpty(a.name)) path.name = a.name;
+        if (nonEmpty(a.description)) path.description = a.description;
+        if (nonEmpty(a.narrativeTheme)) path.narrativeTheme = a.narrativeTheme;
+      }
+    }
+
+    if (Array.isArray(ann?.reconvergenceAnnotations)) {
+      const bySceneId = new Map(analysis.reconvergencePoints.map((r) => [r.sceneId, r] as const));
+      for (const a of ann.reconvergenceAnnotations) {
+        const point = a && bySceneId.get(a.sceneId);
+        if (!point) continue;
+        if (nonEmpty(a.narrativeAcknowledgment)) point.narrativeAcknowledgment = a.narrativeAcknowledgment;
+        if (Array.isArray(a.stateReconciliation)) {
+          point.stateReconciliation = a.stateReconciliation
+            .filter((sr) => sr && (nonEmpty(sr.stateVariable) || nonEmpty(sr.howToHandle)))
+            .map((sr) => ({
+              stateVariable: sr.stateVariable || '',
+              possibleValues: Array.isArray(sr.possibleValues) ? sr.possibleValues : [],
+              howToHandle: sr.howToHandle || '',
+            }));
+        }
+      }
+    }
+
+    if (Array.isArray(ann?.recommendations)) {
+      analysis.recommendations = ann.recommendations.filter(nonEmpty);
+    }
+  }
+
+  private buildAnnotationPrompt(input: BranchManagerInput, skeleton: BranchSkeleton): string {
+    const nameOf = new Map(input.scenes.map((s) => [s.id, s.name] as const));
+    const label = (id: string) => `${id}${nameOf.has(id) ? ` ("${nameOf.get(id)}")` : ''}`;
+
+    const pathsList = skeleton.paths
+      .map((p) => `  - ${p.id}: ${p.sceneSequence.map(label).join(' → ')}`)
       .join('\n');
 
-    const scoresList = input.availableScores
-      .map(s => `- ${s.name}: ${s.description}`)
-      .join('\n');
-
-    const tagsList = input.availableTags
-      .map(t => `- ${t.name}: ${t.description}`)
+    const reconvList = skeleton.reconvergence
+      .map((r) => `  - ${label(r.sceneId)} — paths converging here: [${r.incomingPathIds.join(', ')}]`)
       .join('\n');
 
     return `
-Analyze the branch structure for the following episode:
+Annotate the branch structure for this episode. The structure below was computed
+deterministically from the scene graph — treat it as fixed and authoritative.
 
 ## Story Context
 - **Title**: ${input.storyContext.title}
@@ -350,89 +335,104 @@ Analyze the branch structure for the following episode:
 ## Episode
 - **ID**: ${input.episodeId}
 - **Title**: ${input.episodeTitle}
-- **Starting Scene**: ${input.startingSceneId}
-- **Bottleneck Scenes**: [${input.bottleneckScenes.join(', ')}]
 
-## Scene Graph
-${scenesList}
+## Paths (annotate each by its exact id)
+${pathsList || '  (none)'}
 
-## Available State Variables
+## Reconvergence points (annotate each by its exact sceneId)
+${reconvList || '  (none)'}
 
-**Flags**:
-${flagsList || 'None defined'}
-
-**Scores**:
-${scoresList || 'None defined'}
-
-**Tags**:
-${tagsList || 'None defined'}
-
-## Required JSON Structure
+## Required JSON (annotation only — do NOT add or remove paths/points)
 
 {
-  "episodeId": "${input.episodeId}",
-  "branchPaths": [
+  "pathAnnotations": [
     {
-      "id": "branch-1",
-      "name": "Path name",
-      "description": "What makes this path distinct",
-      "startSceneId": "scene-id",
-      "endSceneId": "scene-id",
-      "sceneSequence": ["scene-1", "scene-2"],
-      "stateChanges": [
-        {
-          "type": "flag",
-          "name": "flag_name",
-          "change": true,
-          "sceneId": "scene-id",
-          "significance": "major"
-        }
-      ],
-      "narrativeTheme": "Theme of this path"
+      "id": "path-1",
+      "name": "Short evocative name for this route",
+      "description": "One line on what makes this path distinct",
+      "narrativeTheme": "The theme/flavor of this path"
     }
   ],
-  "reconvergencePoints": [
+  "reconvergenceAnnotations": [
     {
       "sceneId": "scene-id",
-      "incomingBranches": ["branch-1", "branch-2"],
+      "narrativeAcknowledgment": "One sentence the story can use to nod to the different incoming paths",
       "stateReconciliation": [
-        {
-          "stateVariable": "variable_name",
-          "possibleValues": ["value1", "value2"],
-          "howToHandle": "Description of reconciliation"
-        }
-      ],
-      "narrativeAcknowledgment": "How the story acknowledges different paths"
+        { "stateVariable": "flag_or_relationship", "possibleValues": ["value1", "value2"], "howToHandle": "How to reconcile" }
+      ]
     }
   ],
-  "stateTrackingMap": [
-    {
-      "variable": "variable_name",
-      "type": "flag",
-      "setInScenes": ["scene-1"],
-      "usedInScenes": ["scene-3"],
-      "possibleValues": ["true", "false"]
-    }
-  ],
-  "validationIssues": [
-    {
-      "severity": "warning",
-      "type": "orphan_branch",
-      "description": "Description of the issue",
-      "affectedScenes": ["scene-id"],
-      "suggestedFix": "How to fix it"
-    }
-  ],
-  "recommendations": ["Improvement suggestions"]
+  "recommendations": ["Actionable branch-design suggestions"]
 }
 
-CRITICAL REQUIREMENTS:
-1. Identify ALL distinct paths through the episode
-2. Identify ALL reconvergence points where branches meet
-3. Track ALL state changes and where they're used
-4. Report ALL validation issues (dead ends, unreachable scenes, etc.)
-5. Provide actionable recommendations
-6. Return ONLY valid JSON, no markdown, no extra text
+RULES:
+1. Use ONLY the path ids and scene ids listed above — never invent new ones.
+2. Provide one annotation entry per path and per reconvergence point.
+3. stateReconciliation is optional per point; include it only where paths plausibly differ in state.
+4. Return ONLY valid JSON, no markdown, no extra text.
 `;
   }
+}
+
+/** JSON Schema for {@link BranchAnnotationPayload} — enforced provider-side. */
+const BRANCH_ANNOTATION_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    pathAnnotations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          name: { type: 'string' },
+          description: { type: 'string' },
+          narrativeTheme: { type: 'string' },
+        },
+        required: ['id'],
+      },
+    },
+    reconvergenceAnnotations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          sceneId: { type: 'string' },
+          narrativeAcknowledgment: { type: 'string' },
+          stateReconciliation: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                stateVariable: { type: 'string' },
+                possibleValues: { type: 'array', items: { type: 'string' } },
+                howToHandle: { type: 'string' },
+              },
+            },
+          },
+        },
+        required: ['sceneId'],
+      },
+    },
+    recommendations: { type: 'array', items: { type: 'string' } },
+  },
+};
+
+/** Small, flat payload the annotation LLM call returns (keyed by deterministic ids). */
+interface BranchAnnotationPayload {
+  pathAnnotations?: Array<{
+    id: string;
+    name?: string;
+    description?: string;
+    narrativeTheme?: string;
+  }>;
+  reconvergenceAnnotations?: Array<{
+    sceneId: string;
+    narrativeAcknowledgment?: string;
+    stateReconciliation?: Array<{
+      stateVariable?: string;
+      possibleValues?: string[];
+      howToHandle?: string;
+    }>;
+  }>;
+  recommendations?: string[];
 }

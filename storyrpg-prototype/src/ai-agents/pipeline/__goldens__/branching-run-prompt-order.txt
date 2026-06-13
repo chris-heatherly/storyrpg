@@ -5,7 +5,7 @@
 4: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=8240648a0d464b77
 5: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=b2b66acbce74a050
 6: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=b2b66acbce74a050
-7: Branch Manager [anthropic/claude-sonnet-4-6] msgs=2 prompt=417d53fd334a5c87
+7: Branch Manager [anthropic/claude-sonnet-4-6] msgs=2 prompt=239858c67de0be59
 8: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=a7bd9d6badbe6720
 9: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=a7bd9d6badbe6720
 10: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=4a35c44a66d80b21
@@ -20,8 +20,8 @@
 19: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=af0b6b88229b1eee
 20: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=4daf71f803f283e6
 21: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=a19d8fab1bc58b4c
-22: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=d3adf929d76db266
-23: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=d3adf929d76db266
+22: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=9159b6d2f51d0316
+23: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=9159b6d2f51d0316
 24: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=b79408827f1ddca6
 25: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=b79408827f1ddca6
 26: Outcome Variant Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=959bef285486230b

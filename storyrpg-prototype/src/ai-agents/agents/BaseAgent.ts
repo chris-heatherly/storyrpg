@@ -44,6 +44,21 @@ export interface AgentMessage {
   content: string | Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } } | { type: 'image_url'; image_url: { url: string } }>;
 }
 
+/**
+ * Opt-in schema-strict JSON output for a single {@link BaseAgent.callLLM} call.
+ * When provided, the agent forces the provider to return JSON matching `schema`:
+ * Anthropic via forced tool use (`tool_choice`), OpenAI via `response_format`
+ * `json_schema`. Other providers (and the proxy/web path when the model returns
+ * plain text) degrade gracefully to text parsing — the prompt still carries the
+ * shape, so `parseJSON` recovers it. `schema` is a JSON Schema object.
+ */
+export interface StructuredJsonSchema {
+  /** Tool/schema name (must match `^[a-zA-Z0-9_-]+$` for the provider APIs). */
+  name: string;
+  description?: string;
+  schema: Record<string, unknown>;
+}
+
 export interface AgentResponse<T> {
   success: boolean;
   data?: T;
@@ -371,7 +386,7 @@ Do not use markdown code blocks around the JSON.
   /**
    * Call the LLM with the given messages (with retry for transient errors)
    */
-  protected async callLLM(messages: AgentMessage[], retries: number = 4, options?: { useMemory?: boolean; signal?: AbortSignal }): Promise<string> {
+  protected async callLLM(messages: AgentMessage[], retries: number = 4, options?: { useMemory?: boolean; signal?: AbortSignal; jsonSchema?: StructuredJsonSchema }): Promise<string> {
     const existingSystemMessage = messages.find((m) => m.role === 'system');
     const otherMessages = messages.filter((m) => m.role !== 'system');
 
@@ -421,11 +436,11 @@ Do not use markdown code blocks around the JSON.
         if (this.config.provider === 'anthropic' && options?.useMemory) {
           result = await this.callAnthropicWithMemory(fullMessages, usageCapture);
         } else if (this.config.provider === 'anthropic') {
-          result = await this.callAnthropic(fullMessages, signal, usageCapture);
+          result = await this.callAnthropic(fullMessages, signal, usageCapture, options?.jsonSchema);
         } else if (this.config.provider === 'gemini') {
           result = await this.callGemini(fullMessages, signal, usageCapture);
         } else {
-          result = await this.callOpenAI(fullMessages, signal, usageCapture);
+          result = await this.callOpenAI(fullMessages, signal, usageCapture, options?.jsonSchema);
         }
         // Success — reset circuit breaker
         if (BaseAgent._cbConsecutiveFailures > 0) {
@@ -541,6 +556,7 @@ Do not use markdown code blocks around the JSON.
     messages: AgentMessage[],
     signal?: AbortSignal,
     usageOut?: { inputTokens?: number; outputTokens?: number },
+    jsonSchema?: StructuredJsonSchema,
   ): Promise<string> {
     const systemMessage = messages.find((m) => m.role === 'system');
     const otherMessages = messages.filter((m) => m.role !== 'system');
@@ -587,6 +603,20 @@ Do not use markdown code blocks around the JSON.
       body.temperature = this.config.temperature;
     }
 
+    // Schema-strict JSON via forced tool use: the model must call the single
+    // provided tool, whose `input_schema` IS the requested JSON Schema, so the
+    // tool_use `input` is guaranteed schema-valid (no markdown, no truncated
+    // free-text JSON to repair). Streaming is disabled for these calls — the
+    // payloads are small and the buffered path's tool_use extraction is simpler.
+    if (jsonSchema) {
+      body.tools = [{
+        name: jsonSchema.name,
+        description: jsonSchema.description ?? 'Return the result as structured JSON.',
+        input_schema: jsonSchema.schema,
+      }];
+      body.tool_choice = { type: 'tool', name: jsonSchema.name };
+    }
+
     // Hint proxy timeout policy for long-running calls.
     // 60s connect timeout is too aggressive for some Anthropic calls (world/story planning),
     // causing repeat 502 timeout/abort failures even when the service is reachable.
@@ -601,7 +631,7 @@ Do not use markdown code blocks around the JSON.
 
     // LEVER A: stream the response on the node/direct path. In web runtime the
     // proxy buffers and returns plain JSON, so streaming there would break it.
-    const useStream = shouldStreamLLM(isWebRuntime());
+    const useStream = !jsonSchema && shouldStreamLLM(isWebRuntime());
     if (useStream) {
       body.stream = true;
       return await this.callAnthropicStreaming(body, signal, usageOut);
@@ -649,7 +679,6 @@ Do not use markdown code blocks around the JSON.
 
     try {
       const data = JSON.parse(text);
-      const outputText = data.content[0].text;
       const stopReason = data.stop_reason;
       const outputTokens = data.usage?.output_tokens ?? '?';
       const inputTokens = data.usage?.input_tokens ?? '?';
@@ -665,7 +694,18 @@ Do not use markdown code blocks around the JSON.
       if (stopReason === 'max_tokens') {
         console.warn(`[${this.name}] ⚠️ RESPONSE TRUNCATED — stop_reason is max_tokens (limit: ${this.config.maxTokens}). Response will be incomplete JSON.`);
       }
-      return outputText;
+      // Schema-strict path: return the forced tool's `input` (already valid JSON)
+      // serialized so the caller's parseJSON sees an object. Falls back to text
+      // if the response somehow carries no tool_use block (e.g. a proxy that
+      // strips `tools`) — the prompt still asks for JSON, so parseJSON recovers.
+      if (jsonSchema && Array.isArray(data.content)) {
+        const toolBlock = data.content.find((b: any) => b?.type === 'tool_use' && b?.input !== undefined);
+        if (toolBlock) return JSON.stringify(toolBlock.input);
+      }
+      const textBlock = Array.isArray(data.content)
+        ? data.content.find((b: any) => typeof b?.text === 'string')
+        : undefined;
+      return textBlock?.text ?? data.content[0]?.text ?? '';
     } catch (parseError) {
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       throw new Error(`Failed to parse Anthropic response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
@@ -909,6 +949,7 @@ Do not use markdown code blocks around the JSON.
     messages: AgentMessage[],
     signal?: AbortSignal,
     usageOut?: { inputTokens?: number; outputTokens?: number },
+    jsonSchema?: StructuredJsonSchema,
   ): Promise<string> {
     const model = this.config.model || 'gpt-5';
     const isReasoningModel = /^(gpt-5|o1|o3|o4)/i.test(model);
@@ -938,7 +979,13 @@ Do not use markdown code blocks around the JSON.
         };
       }),
     };
-    if (this.config.openaiForceJsonResponse !== false) {
+    if (jsonSchema) {
+      // Schema-strict JSON output (overrides the loose json_object default).
+      body.response_format = {
+        type: 'json_schema',
+        json_schema: { name: jsonSchema.name, schema: jsonSchema.schema },
+      };
+    } else if (this.config.openaiForceJsonResponse !== false) {
       body.response_format = { type: 'json_object' };
     }
     if (isReasoningModel) {
@@ -964,7 +1011,8 @@ Do not use markdown code blocks around the JSON.
     }
 
     // LEVER A: stream on the node/direct path; the web/proxy path stays buffered.
-    const useStream = shouldStreamLLM(isWebRuntime());
+    // Schema-strict calls stay buffered (small payload, simpler extraction).
+    const useStream = !jsonSchema && shouldStreamLLM(isWebRuntime());
     if (useStream) {
       body.stream = true;
       body.stream_options = { include_usage: true };

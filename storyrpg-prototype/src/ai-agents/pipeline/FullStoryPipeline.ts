@@ -897,7 +897,9 @@ export class FullStoryPipeline {
     // maxTokens 32000 (was 16384): the structure-analysis JSON for rich multi-episode treatments was hitting the 16384 cap mid-string (truncated → unparseable).
     const sourceMaterialConfig = { ...this.config.agents.storyArchitect, maxTokens: 32000 };
     this.sourceMaterialAnalyzer = new SourceMaterialAnalyzer(sourceMaterialConfig);
-    this.branchManager = new BranchManager(planningConfig);
+    // BranchManager only annotates a deterministic skeleton now, so it rides the
+    // cheaper branch/QA-tier model when configured; falls back to planningConfig.
+    this.branchManager = new BranchManager(this.config.agents.branchManager ?? planningConfig);
     if (this.config.sceneCritic?.enabled) {
       this.sceneCritic = new SceneCritic(this.config.agents.sceneWriter);
     }

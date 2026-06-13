@@ -1,14 +1,16 @@
-import { describe, expect, it } from 'vitest';
-import { AgentResponse, BaseAgent } from './BaseAgent';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AgentResponse, BaseAgent, type StructuredJsonSchema, type AgentMessage } from './BaseAgent';
+import type { AgentConfig } from '../config';
 
 class TestAgent extends BaseAgent {
-  constructor() {
+  constructor(config?: Partial<AgentConfig>) {
     super('Test Agent', {
       provider: 'anthropic',
       model: 'test-model',
       apiKey: 'test-key',
       maxTokens: 1024,
       temperature: 0,
+      ...config,
     });
   }
 
@@ -22,6 +24,10 @@ class TestAgent extends BaseAgent {
 
   cachedSystem(text: string) {
     return this.buildCachedSystemField(text);
+  }
+
+  callStructured(messages: AgentMessage[], schema: StructuredJsonSchema) {
+    return this.callLLM(messages, 0, { jsonSchema: schema });
   }
 
   async execute(): Promise<AgentResponse<unknown>> {
@@ -184,5 +190,75 @@ describe('BaseAgent truncation shadow counter (WS5)', () => {
     } finally {
       BaseAgent.setTruncationObserver(undefined);
     }
+  });
+});
+
+describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const schema: StructuredJsonSchema = {
+    name: 'demo',
+    description: 'demo schema',
+    schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+  };
+
+  it('Anthropic: forces tool use (non-streaming) and returns the tool_use input as JSON', async () => {
+    let captured: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
+      captured = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          content: [{ type: 'tool_use', name: 'demo', input: { ok: true, note: 'hi' } }],
+          stop_reason: 'tool_use',
+          usage: { input_tokens: 5, output_tokens: 3 },
+        }),
+      } as any;
+    }));
+
+    const out = await new TestAgent().callStructured([{ role: 'user', content: 'go' }], schema);
+
+    expect(captured.tools).toHaveLength(1);
+    expect(captured.tools[0]).toMatchObject({ name: 'demo', input_schema: schema.schema });
+    expect(captured.tool_choice).toEqual({ type: 'tool', name: 'demo' });
+    expect(captured.stream).toBeUndefined(); // structured calls do not stream
+    expect(JSON.parse(out)).toEqual({ ok: true, note: 'hi' });
+  });
+
+  it('Anthropic: falls back to text when the response carries no tool_use block', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        content: [{ type: 'text', text: '{"ok":true}' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }),
+    } as any)));
+
+    const out = await new TestAgent().callStructured([{ role: 'user', content: 'go' }], schema);
+    expect(JSON.parse(out)).toEqual({ ok: true });
+  });
+
+  it('OpenAI: sets response_format json_schema (non-streaming)', async () => {
+    let captured: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
+      captured = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }], usage: {} }),
+      } as any;
+    }));
+
+    const out = await new TestAgent({ provider: 'openai', model: 'gpt-4o' }).callStructured(
+      [{ role: 'user', content: 'go' }],
+      schema,
+    );
+
+    expect(captured.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'demo', schema: schema.schema } });
+    expect(captured.stream).toBeUndefined();
+    expect(JSON.parse(out)).toEqual({ ok: true });
   });
 });

@@ -205,6 +205,9 @@ export function buildPipelineConfig(
       // Lower temperature for consistent grading; decorrelated from the author
       // when a distinct QA model is assigned (within the same family).
       qaRunner: buildAgentConfig('qa', { maxTokens: 4096, temperature: 0.3 }),
+      // BranchManager only annotates a deterministic skeleton now — light enough
+      // to ride the cheaper QA-tier model assignment (annotation temperature).
+      branchManager: buildAgentConfig('qa', { maxTokens: 4096, temperature: 0.7 }),
       imagePlanner: buildAgentConfig('image', { maxTokens: 8192, temperature: 0.7 }),
       videoDirector: buildAgentConfig('video', { maxTokens: 8192, temperature: 0.7 }),
     },

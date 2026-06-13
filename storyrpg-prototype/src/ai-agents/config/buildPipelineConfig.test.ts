@@ -119,6 +119,11 @@ describe('buildPipelineConfig', () => {
     expect(config.agents.videoDirector?.provider).toBe('anthropic');
     expect(config.agents.videoDirector?.model).toBe('claude-3-5-haiku-20241022');
     expect(config.agents.videoDirector?.apiKey).toBe('anthropic-key');
+    // BranchManager rides the QA-tier assignment with annotation temperature.
+    expect(config.agents.branchManager?.provider).toBe('anthropic');
+    expect(config.agents.branchManager?.model).toBe('claude-sonnet-4-20250514');
+    expect(config.agents.branchManager?.temperature).toBe(0.7);
+    expect(config.agents.branchManager?.maxTokens).toBe(4096);
     expect(config.imageGen?.requireCharacterRefsForVisibleCharacters).toBe(true);
     expect(config.imageGen?.minRefsPerVisibleCharacter).toBe(1);
     expect(config.imageGen?.allowTextOnlyCharacterImages).toBe(false);

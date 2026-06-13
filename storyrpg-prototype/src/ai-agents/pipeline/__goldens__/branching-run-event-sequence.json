@@ -126,11 +126,6 @@
       "message": "Open scene-3 with path-conditional residue so the reconvergence does not erase the choice."
     },
     {
-      "type": "debug",
-      "phase": "branch_reconvergence",
-      "message": "Reconvergence at \"scene-3\" needs state reconciliation for: took_passage, npc-1.trust"
-    },
-    {
       "type": "phase_start",
       "phase": "content",
       "message": "Phase 4: Writing scene content"

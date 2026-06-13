@@ -762,6 +762,13 @@ export interface PipelineConfig {
      * the content. See docs/PROJECT_AUDIT_2026-05-28.md.
      */
     qaRunner?: AgentConfig;
+    /**
+     * Branch-annotation config. Since BranchManager only annotates a
+     * deterministic skeleton now, it defaults to the cheaper QA-tier model
+     * (overridable via EXPO_PUBLIC_BRANCH_LLM_MODEL). Falls back to the planning
+     * config when unset.
+     */
+    branchManager?: AgentConfig;
   };
   // Validation configuration
   validation: ValidationConfig;
@@ -1029,6 +1036,18 @@ export function loadConfig(): PipelineConfig {
         model: env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model,
         apiKey: resolveProviderApiKey(((env.EXPO_PUBLIC_QA_LLM_PROVIDER || env.QA_LLM_PROVIDER) as AgentConfig['provider']) || defaultConfig.provider),
         temperature: 0.3, // Lower temp for more consistent grading
+      },
+      branchManager: {
+        ...defaultConfig,
+        // BranchManager now only ANNOTATES a deterministic skeleton (path
+        // names + reconvergence prose) — a light task that doesn't need the
+        // planning tier. Defaults to the cheaper QA model when one is set
+        // (BRANCH override wins), else the main model (no behavior change).
+        provider: ((env.EXPO_PUBLIC_BRANCH_LLM_PROVIDER || env.BRANCH_LLM_PROVIDER || env.EXPO_PUBLIC_QA_LLM_PROVIDER || env.QA_LLM_PROVIDER) as AgentConfig['provider']) || defaultConfig.provider,
+        model: env.EXPO_PUBLIC_BRANCH_LLM_MODEL || env.BRANCH_LLM_MODEL || env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model,
+        apiKey: resolveProviderApiKey(((env.EXPO_PUBLIC_BRANCH_LLM_PROVIDER || env.BRANCH_LLM_PROVIDER || env.EXPO_PUBLIC_QA_LLM_PROVIDER || env.QA_LLM_PROVIDER) as AgentConfig['provider']) || defaultConfig.provider),
+        maxTokens: 4096, // Annotation output is small; no need for the planning budget.
+        temperature: 0.7,
       },
       imagePlanner: {
         provider: ((env.EXPO_PUBLIC_IMAGE_LLM_PROVIDER || env.IMAGE_LLM_PROVIDER) as AgentConfig['provider']) || defaultConfig.provider,

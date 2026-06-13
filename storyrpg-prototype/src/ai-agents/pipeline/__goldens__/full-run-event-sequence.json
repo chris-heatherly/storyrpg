@@ -126,11 +126,6 @@
       "message": "Found 1 paths, 0 reconvergence points, 0 issues"
     },
     {
-      "type": "debug",
-      "phase": "branch_recommendations",
-      "message": "Let scene-2 acknowledge the choice through what Mara carries with her."
-    },
-    {
       "type": "phase_start",
       "phase": "content",
       "message": "Phase 4: Writing scene content"

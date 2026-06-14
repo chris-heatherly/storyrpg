@@ -339,6 +339,7 @@ export class Assembly {
           }
         : undefined,
     };
+    this.reportOrphanedChoiceSets(scenes, choiceSets, blueprint, 'micro_episode_season_final_validation');
     this.deps.validateMicroEpisodeSeason(story, { phase: 'micro_episode_season_final_validation' });
 
     return story;
@@ -580,6 +581,8 @@ export class Assembly {
       });
     }
 
+    this.reportOrphanedChoiceSets(scenes, choiceSets, blueprint, 'assembly');
+
     // Use first scene's background as episode cover
     const episodeCover = scenes.length > 0 ? sceneImages.get(this.deps.getEpisodeScopedSceneId(brief, scenes[0].id)) || '' : '';
 
@@ -598,5 +601,61 @@ export class Assembly {
       unlockConditions: seasonEpisode?.unlockConditions,
       coverImage: episodeCover
     };
+  }
+
+  /**
+   * Post-assembly invariant: every authored choice set must have ATTACHED to a
+   * rendered beat. A choice set keyed `${sceneId}::${beatId}` that no assembled
+   * beat carries is ORPHANED — its choices silently vanished. This is the single
+   * failure class behind a string of branch-collapse aborts (beatId rename drift,
+   * a choice point that moved off its beat, and a lost `isChoicePoint` flag): each
+   * was a choice set that existed but never linked, and the drop was invisible
+   * until a downstream branch validator aborted with no pointer to the cause.
+   *
+   * This surfaces the drop AT assembly with the exact `sceneId::beatId`, and calls
+   * out the severe case (a choice set on a planned multi-target branch point, which
+   * is a guaranteed dead branch). Diagnostic only — it emits a warning and never
+   * changes output, so it is a no-op on clean runs (golden parity).
+   */
+  private reportOrphanedChoiceSets(
+    scenes: Scene[],
+    choiceSets: ChoiceSet[],
+    blueprint: EpisodeBlueprint,
+    phase: string,
+  ): void {
+    if (choiceSets.length === 0) return;
+    const consumed = new Set<string>();
+    for (const scene of scenes) {
+      for (const beat of scene.beats ?? []) {
+        if (Array.isArray(beat.choices) && beat.choices.length > 0) {
+          consumed.add(`${scene.id}::${beat.id}`);
+        }
+      }
+    }
+    const orphans = choiceSets.filter(
+      (cs) => cs.sceneId && !consumed.has(`${cs.sceneId}::${cs.beatId}`),
+    );
+    if (orphans.length === 0) return;
+
+    const branchPointSceneIds = new Set(
+      blueprint.scenes
+        .filter((s) => new Set((s.leadsTo ?? []).filter(Boolean)).size > 1)
+        .map((s) => s.id),
+    );
+    const key = (cs: ChoiceSet) => `${cs.sceneId}::${cs.beatId}`;
+    const branchOrphans = orphans.filter((cs) => cs.sceneId && branchPointSceneIds.has(cs.sceneId));
+    const message =
+      `${orphans.length} authored choice set(s) never attached to a rendered beat ` +
+      `(choices silently dropped): ${orphans.map(key).join(', ')}` +
+      (branchOrphans.length > 0
+        ? ` — ${branchOrphans.length} on a planned branch point (guaranteed dead branch): ${branchOrphans.map(key).join(', ')}`
+        : '');
+    console.warn(`[Pipeline] ORPHANED CHOICE SETS: ${message}`);
+    this.deps.emit({
+      type: 'warning',
+      phase,
+      message,
+      data: { orphanedChoiceSets: orphans.map(key), branchPointOrphans: branchOrphans.map(key) },
+    });
   }
 }

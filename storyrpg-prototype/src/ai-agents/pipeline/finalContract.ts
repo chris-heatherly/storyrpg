@@ -20,7 +20,7 @@ import { Story, NPCTier, RelationshipDimension, Consequence } from '../../types'
 import { EpisodeBlueprint } from '../agents/StoryArchitect';
 import { CharacterBible } from '../agents/CharacterDesigner';
 import { SceneContent } from '../agents/SceneWriter';
-import { ChoiceSet } from '../agents/ChoiceAuthor';
+import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { EncounterStructure, EncounterTelemetry } from '../agents/EncounterArchitect';
 import { QAReport } from '../agents/QAAgents';
 import {
@@ -34,6 +34,7 @@ import { runFidelityValidators } from '../validators/runFidelityValidators';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
 import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairReport } from '../remediation/finalContractRepair';
 import { buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
+import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
 import { SceneCritic } from '../agents/SceneCritic';
 import { FidelityRealizationJudge, confirmHeuristicFidelityFindings } from '../validators/fidelityRealizationJudge';
 import { RemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
@@ -234,6 +235,21 @@ export class FinalContract {
                 return this.deps.sceneCritic ?? new SceneCritic(this.deps.config.agents.sceneWriter);
               } catch (err) {
                 console.warn(`[Pipeline] Scene-prose contract repair: SceneCritic unavailable — ${err instanceof Error ? err.message : String(err)}`);
+                return null;
+              }
+            },
+            emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+          }),
+        );
+      }
+      if (isGateEnabled('GATE_FINAL_CONTRACT_OUTCOME_REGEN')) {
+        handlers.push(
+          buildOutcomeTextRepairHandler({
+            author: () => {
+              try {
+                return new ChoiceAuthor(this.deps.config.agents.choiceAuthor);
+              } catch (err) {
+                console.warn(`[Pipeline] Outcome-text contract repair: ChoiceAuthor unavailable — ${err instanceof Error ? err.message : String(err)}`);
                 return null;
               }
             },

@@ -90,6 +90,15 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // No-op unless GATE_FINAL_CONTRACT_REPAIR is also on.
   GATE_FINAL_CONTRACT_SCENE_REGEN: true,
 
+  // Outcome-text repair: a blocking OutcomeTextQuality `outcome_text_stub` finding
+  // (a choice whose outcome tier is the ChoiceAuthor deterministic stub) drives a
+  // bounded per-choice LLM re-author (ChoiceAuthor.reauthorOutcomeTexts) +
+  // re-validation instead of a season abort. Same safety shape as the scene-regen
+  // handler: only on an already-failing contract, capped per round, budget-guarded,
+  // replaces a stub only with real authored prose. No-op unless
+  // GATE_FINAL_CONTRACT_REPAIR is also on.
+  GATE_FINAL_CONTRACT_OUTCOME_REGEN: true,
+
   // Scene-time required-beat realization check (2026-06-12, bite-me-g13 root
   // cause). The treatment binds requiredBeats/signatureMoment to scenes and
   // SceneWriter gets them as a prompt checklist — but nothing verified

@@ -570,6 +570,54 @@ Before finalizing:
   }
 
   /**
+   * Focused LLM re-author of a choice's outcome tiers — the final-contract repair
+   * seam for `outcome_text_stub` findings. When ChoiceAuthor failed (or partially
+   * authored) and a choice shipped with the deterministic stub prose, this rewrites
+   * ONLY the named tiers from the choice's own text + stakes triangle, as a small
+   * structured call (3 short strings) that succeeds far more reliably than re-running
+   * full choice authoring. Returns the authored tiers; the caller replaces a stub only
+   * when the new text is non-empty and not itself a stub. Never throws into the loop —
+   * a parse/transport failure surfaces as an empty result so the stub simply remains.
+   */
+  async reauthorOutcomeTexts(ctx: {
+    choiceText: string;
+    stakes?: { want?: string; cost?: string; identity?: string };
+    sceneName?: string;
+    needTiers: Array<'success' | 'partial' | 'failure'>;
+  }): Promise<Partial<Record<'success' | 'partial' | 'failure', string>>> {
+    const tiers = ctx.needTiers.length ? ctx.needTiers : (['success', 'partial', 'failure'] as const);
+    const stakesLines = ctx.stakes
+      ? `WANT (what the player is reaching for): ${ctx.stakes.want ?? 'unstated'}\nCOST (what it risks): ${ctx.stakes.cost ?? 'unstated'}`
+      : '';
+    const prompt = `You are revising the outcome prose for ONE choice in an interactive story. The previous outcomes were placeholder stubs; replace them with scene-specific fiction.
+
+CHOICE the player takes: "${ctx.choiceText}"
+${ctx.sceneName ? `SCENE: ${ctx.sceneName}\n` : ''}${stakesLines}
+
+Write a 1–3 sentence fiction-first outcome for each requested tier. Each MUST:
+- dramatize what concretely happens in the fiction (action, sensory detail, a line of dialogue if it fits) — never restate the choice or the want/cost annotation;
+- be distinct from the other tiers and begin with a different opening word;
+- never mention stats, dice, percentages, DCs, or any game mechanic;
+- success = the cleaner version of what they reached for; partial = some of it lands but the cost settles in; failure = they miss it and the cost lands.
+
+Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example: {"success":"…","partial":"…","failure":"…"}. No prose outside the JSON.`;
+
+    try {
+      const raw = await this.callLLM([{ role: 'user', content: prompt }], 2);
+      const parsed = this.parseJSON<Record<string, unknown>>(raw);
+      const out: Partial<Record<'success' | 'partial' | 'failure', string>> = {};
+      for (const tier of tiers) {
+        const value = parsed?.[tier];
+        if (typeof value === 'string' && value.trim().length >= 12) out[tier] = value.trim();
+      }
+      return out;
+    } catch (err) {
+      console.warn(`[ChoiceAuthor] reauthorOutcomeTexts failed (stub kept): ${err instanceof Error ? err.message : String(err)}`);
+      return {};
+    }
+  }
+
+  /**
    * Backstop for outcome-text distinctness: if any two tiers (or a tier and the choice
    * label) are identical after normalization, re-derive the colliding tier(s) from the
    * distinct fallbacks so no stub outcome ships. Mutates the choice in place.

@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { ChoiceAuthor } from './ChoiceAuthor';
+import { BaseAgent } from './BaseAgent';
 
 const config = {
   provider: 'anthropic' as const,
@@ -491,5 +492,33 @@ describe('ChoiceAuthor.buildPrompt (requiredBranchTargets quality bar)', () => {
     const prompt = (author as any).buildPrompt(makeInput());
     expect(prompt).not.toContain('REQUIRED BRANCHING');
     expect(prompt).not.toContain('SAME quality bar as first-pass choices');
+  });
+});
+
+describe('ChoiceAuthor.reauthorOutcomeTexts (final-contract stub repair)', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+
+  it('parses the LLM JSON and returns the requested tiers, dropping too-short ones', async () => {
+    BaseAgent.setLlmTransportOverride(async () => JSON.stringify({
+      success: 'The lock turns and the heavy door swings inward on a dim hall.',
+      partial: 'It opens, but a board groans and somewhere above a chair scrapes back.',
+      failure: 'no', // below the 12-char floor — filtered out, leaving the stub in place
+    }));
+    const author = new ChoiceAuthor(config);
+    const out = await author.reauthorOutcomeTexts({
+      choiceText: 'Force the door',
+      stakes: { want: 'get inside', cost: 'be heard' },
+      needTiers: ['success', 'partial', 'failure'],
+    });
+    expect(out.success).toContain('door swings inward');
+    expect(out.partial).toContain('board groans');
+    expect(out.failure).toBeUndefined();
+  });
+
+  it('returns {} (stub kept) when the LLM output cannot be parsed', async () => {
+    BaseAgent.setLlmTransportOverride(async () => 'not json at all, just an apology');
+    const author = new ChoiceAuthor(config);
+    const out = await author.reauthorOutcomeTexts({ choiceText: 'x', needTiers: ['success'] });
+    expect(out).toEqual({});
   });
 });

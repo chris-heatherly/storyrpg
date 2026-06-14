@@ -84,6 +84,7 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_SCENE_REQUIRED_BEAT_CHECK', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_FINAL_CONTRACT_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true },
   { id: 'GATE_FINAL_CONTRACT_SCENE_REGEN', placement: 'season-final', kind: 'infra', defaultOn: true },
+  { id: 'GATE_FINAL_CONTRACT_OUTCOME_REGEN', placement: 'season-final', kind: 'infra', defaultOn: true },
   { id: 'GATE_FIDELITY_JUDGE_CONFIRM', placement: 'season-final', kind: 'infra', defaultOn: true },
   { id: 'GATE_RECONVERGENCE_RESIDUE_REPAIR', placement: 'episode', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_TREATMENT_SOURCED_ARM', placement: 'season-final', kind: 'infra', defaultOn: true },

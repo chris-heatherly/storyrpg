@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, afterEach } from 'vitest';
+import { BaseAgent } from './BaseAgent';
 
 import { CharacterDesigner, normalizeFashionStyle } from './CharacterDesigner';
 
@@ -143,5 +144,49 @@ describe('CharacterDesigner relationship-dimension backfill (1.4)', () => {
   it('leaves background NPCs untouched', () => {
     const bible = normalize([{ id: 'extra', name: 'Extra', pronouns: 'they/them', tier: 'background' }]);
     expect(bible.characters[0].initialStats).toBeUndefined();
+  });
+});
+
+describe('CharacterDesigner.fillMissingCharacters (incomplete-cast backfill)', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+  const designer: any = new CharacterDesigner({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });
+  const req = (id: string, name: string) => ({ id, name, role: 'supporting', importance: 'minor', briefDescription: `${name} desc` });
+  const input = () => ({
+    charactersToCreate: [req('char-a', 'A'), req('char-b', 'B'), req('char-c', 'C')],
+    storyContext: { title: 'T', genre: 'Drama', tone: 'Tense', themes: ['trust'], userPrompt: 'p' },
+  });
+
+  it('re-requests only the missing character(s) and merges them in', async () => {
+    let calls = 0;
+    let promptedIds = '';
+    BaseAgent.setLlmTransportOverride(async (r) => {
+      calls += 1;
+      promptedIds = r.messages.map((m) => String(m.content)).join('\n');
+      return JSON.stringify({ characters: [{ id: 'char-c', name: 'C', pronouns: 'they/them', tier: 'core' }], keyDynamics: [], gaps: [], doNotForget: [] });
+    });
+    const bible: any = { characters: [{ id: 'char-a', name: 'A' }, { id: 'char-b', name: 'B' }], keyDynamics: [], gaps: [], doNotForget: [] };
+
+    await designer.fillMissingCharacters(bible, input());
+
+    expect(calls).toBe(1); // one focused backfill call
+    expect(promptedIds).toContain('char-c'); // re-requested the missing one
+    expect(promptedIds).not.toContain('char-a'); // NOT the ones already present
+    expect(bible.characters.map((c: any) => c.id).sort()).toEqual(['char-a', 'char-b', 'char-c']);
+  });
+
+  it('is a no-op (no LLM call) when every requested character is present', async () => {
+    let calls = 0;
+    BaseAgent.setLlmTransportOverride(async () => { calls += 1; return '{}'; });
+    const bible: any = { characters: [{ id: 'char-a', name: 'A' }, { id: 'char-b', name: 'B' }, { id: 'char-c', name: 'C' }] };
+    await designer.fillMissingCharacters(bible, input());
+    expect(calls).toBe(0);
+    expect(bible.characters).toHaveLength(3);
+  });
+
+  it('leaves the bible incomplete (does not throw) when the backfill call fails', async () => {
+    BaseAgent.setLlmTransportOverride(async () => { throw new Error('transport boom'); });
+    const bible: any = { characters: [{ id: 'char-a', name: 'A' }], keyDynamics: [], gaps: [], doNotForget: [] };
+    await expect(designer.fillMissingCharacters(bible, input())).resolves.toBeUndefined();
+    expect(bible.characters.map((c: any) => c.id)).toEqual(['char-a']); // unchanged; validation surfaces the gap
   });
 });

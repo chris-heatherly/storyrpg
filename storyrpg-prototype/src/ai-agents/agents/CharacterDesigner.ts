@@ -448,6 +448,11 @@ Before finalizing:
       // or drop casing. We fuzzy-match each returned character back to the
       // requested id so downstream references stay valid.
       this.alignCharacterIds(characterBible, input);
+      // When the LLM authored fewer characters than requested (a large cast that
+      // truncated, or a couple simply omitted), re-request ONLY the missing ones in
+      // a focused, much smaller call and merge them in — rather than failing the
+      // whole bible. No-op when every requested character is present.
+      await this.fillMissingCharacters(characterBible, input);
       this.preserveInputFashionStyle(characterBible, input);
 
       this.validateCharacterBible(characterBible, input);
@@ -486,6 +491,55 @@ Before finalizing:
         success: false,
         error: errorMsg,
       };
+    }
+  }
+
+  /**
+   * Backfill characters the first pass did not return. A full bible for a large
+   * cast is heavy output that weaker models truncate (dropping the trailing
+   * profiles) or simply leave a couple of characters out of — which then throws
+   * "Missing requested character" and fails the whole bible. This re-requests ONLY
+   * the missing characters in a focused, much smaller call (so it fits and parses)
+   * and merges the returned profiles in. One attempt; a failure leaves the bible
+   * as-is so validateCharacterBible still surfaces the gap. No-op (no LLM call)
+   * when every requested character is already present — so a clean first pass,
+   * including every golden/_transportOverride run, is unaffected. Mutates
+   * `characterBible.characters` in place.
+   */
+  private async fillMissingCharacters(
+    characterBible: CharacterBible,
+    input: CharacterDesignerInput,
+  ): Promise<void> {
+    if (!Array.isArray(characterBible.characters)) characterBible.characters = [];
+    const present = new Set(characterBible.characters.map((c) => c.id));
+    const missing = input.charactersToCreate.filter((c) => !present.has(c.id));
+    if (missing.length === 0) return;
+
+    console.warn(
+      `[CharacterDesigner] ${missing.length}/${input.charactersToCreate.length} requested character(s) missing after the first pass ` +
+        `(${missing.map((c) => c.id).join(', ')}) — re-requesting just those in a focused call.`,
+    );
+    const subInput: CharacterDesignerInput = { ...input, charactersToCreate: missing };
+    try {
+      const response = await this.callLLM([{ role: 'user', content: this.buildPrompt(subInput) }]);
+      let patch = this.parseJSON<CharacterBible>(response);
+      patch = this.normalizeCharacterBible(patch);
+      this.alignCharacterIds(patch, subInput);
+      const wanted = new Set(missing.map((c) => c.id));
+      let filled = 0;
+      for (const ch of patch.characters ?? []) {
+        if (wanted.has(ch.id) && !present.has(ch.id)) {
+          characterBible.characters.push(ch);
+          present.add(ch.id);
+          filled += 1;
+        }
+      }
+      console.log(`[CharacterDesigner] Backfilled ${filled}/${missing.length} missing character(s).`);
+    } catch (err) {
+      console.warn(
+        `[CharacterDesigner] Missing-character re-request failed (${err instanceof Error ? err.message : String(err)}); ` +
+          `leaving the bible incomplete for validation to surface.`,
+      );
     }
   }
 

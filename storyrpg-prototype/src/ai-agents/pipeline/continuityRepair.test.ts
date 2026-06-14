@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   selectRepairableContinuityFindings,
   scenesNeedingRepair,
@@ -75,6 +75,26 @@ describe('mergeRewrittenBeatsIntoStory', () => {
     const story = { episodes: [{ scenes: [{ id: 's', beats: [{ id: 'b', text: 'orig' }] }] }] };
     mergeRewrittenBeatsIntoStory(story as any, 's', [{ id: 'b', text: '   ' }]);
     expect(story.episodes[0].scenes[0].beats[0].text).toBe('orig');
+  });
+
+  it('reports rewrites whose id matched NO beat (drifted ids) via onUnmatched', () => {
+    const story = { episodes: [{ scenes: [{ id: 'scene-4', beats: [{ id: 'beat-4-3', text: 'old' }] }] }] };
+    const unmatched: string[][] = [];
+    const merged = mergeRewrittenBeatsIntoStory(
+      story as any,
+      'scene-4',
+      [{ id: 'beat-4-3', text: 'new prose' }, { id: 'drifted-id', text: 'lost' }],
+      (ids) => unmatched.push(ids),
+    );
+    expect(merged).toBe(1);
+    expect(unmatched).toEqual([['drifted-id']]); // the rewrite that landed nowhere is surfaced
+  });
+
+  it('does NOT call onUnmatched when every rewrite matched (the clean path)', () => {
+    const story = { episodes: [{ scenes: [{ id: 's', beats: [{ id: 'b', text: 'old' }] }] }] };
+    const onUnmatched = vi.fn();
+    mergeRewrittenBeatsIntoStory(story as any, 's', [{ id: 'b', text: 'new' }], onUnmatched);
+    expect(onUnmatched).not.toHaveBeenCalled();
   });
 });
 

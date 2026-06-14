@@ -12,12 +12,32 @@
  * Pure + unit-testable.
  */
 
+import { findUnconsumed } from './reliabilityGuards';
+
 export interface ContinuityFinding {
   severity: 'error' | 'warning' | 'suggestion';
   type: 'contradiction' | 'impossible_knowledge' | 'timeline_error' | 'state_conflict' | 'missing_setup';
   location?: { sceneId?: string; beatId?: string; choiceId?: string };
   description?: string;
   suggestedFix?: string;
+}
+
+/**
+ * A SceneCritic rewrite is applied by matching `beat.id`. A rewrite whose id
+ * matches NO target beat (the scene drifted/renamed its beat ids after the
+ * critique) is silently dropped — the repair looks like it ran but changed
+ * nothing, so the final-contract gate keeps failing with no signal. Surface those
+ * unmatched rewrite ids to the optional callback so the caller can warn. No-op
+ * when every rewrite matched (the clean path) or no callback is supplied.
+ */
+function reportUnmatchedRewrites(
+  rewrittenBeats: MergeableBeat[],
+  consumedBeatIds: ReadonlySet<string>,
+  onUnmatched?: (unmatchedRewriteIds: string[]) => void,
+): void {
+  if (!onUnmatched) return;
+  const unmatched = findUnconsumed(rewrittenBeats, consumedBeatIds, (b) => b.id).map((b) => b.id as string);
+  if (unmatched.length > 0) onUnmatched(unmatched);
 }
 
 /**
@@ -121,9 +141,11 @@ export function applyRewrittenBeatsToSceneContents(
   sceneContents: MergeableSceneContent[] | undefined,
   sceneId: string,
   rewrittenBeats: MergeableBeat[] | undefined,
+  onUnmatched?: (unmatchedRewriteIds: string[]) => void,
 ): number {
   if (!rewrittenBeats?.length) return 0;
   const byId = new Map(rewrittenBeats.filter((b) => b.id).map((b) => [b.id as string, b]));
+  const consumed = new Set<string>();
   let merged = 0;
   for (const scene of sceneContents ?? []) {
     if (scene.sceneId !== sceneId) continue;
@@ -132,9 +154,11 @@ export function applyRewrittenBeatsToSceneContents(
       if (!rewrite) continue;
       if (typeof rewrite.text === 'string' && rewrite.text.trim()) beat.text = rewrite.text;
       if (rewrite.textVariants !== undefined) beat.textVariants = rewrite.textVariants;
+      consumed.add(beat.id as string);
       merged += 1;
     }
   }
+  reportUnmatchedRewrites(rewrittenBeats, consumed, onUnmatched);
   return merged;
 }
 
@@ -175,9 +199,11 @@ export function mergeRewrittenBeatsIntoStory(
   story: MergeableStory,
   sceneId: string,
   rewrittenBeats: MergeableBeat[] | undefined,
+  onUnmatched?: (unmatchedRewriteIds: string[]) => void,
 ): number {
   if (!rewrittenBeats?.length) return 0;
   const byId = new Map(rewrittenBeats.filter((b) => b.id).map((b) => [b.id as string, b]));
+  const consumed = new Set<string>();
   let merged = 0;
   for (const episode of story.episodes ?? []) {
     for (const scene of episode.scenes ?? []) {
@@ -187,10 +213,12 @@ export function mergeRewrittenBeatsIntoStory(
         if (!rewrite) continue;
         if (typeof rewrite.text === 'string' && rewrite.text.trim()) beat.text = rewrite.text;
         if (rewrite.textVariants !== undefined) beat.textVariants = rewrite.textVariants;
+        consumed.add(beat.id as string);
         merged += 1;
       }
     }
   }
+  reportUnmatchedRewrites(rewrittenBeats, consumed, onUnmatched);
   return merged;
 }
 
@@ -207,9 +235,11 @@ export function mergeRewrittenEncounterBeatsIntoStory(
   story: MergeableStory,
   sceneId: string,
   rewrittenBeats: MergeableBeat[] | undefined,
+  onUnmatched?: (unmatchedRewriteIds: string[]) => void,
 ): number {
   if (!rewrittenBeats?.length) return 0;
   const byId = new Map(rewrittenBeats.filter((b) => b.id).map((b) => [b.id as string, b]));
+  const consumed = new Set<string>();
   let merged = 0;
   const applyToBeat = (beat: MergeableEncounterBeat): void => {
     const rewrite = beat.id ? byId.get(beat.id) : undefined;
@@ -227,6 +257,7 @@ export function mergeRewrittenEncounterBeatsIntoStory(
       beat.text = rewrite.text;
       if (rewrite.textVariants !== undefined) beat.textVariants = rewrite.textVariants;
     }
+    consumed.add(beat.id as string);
     merged += 1;
   };
   for (const episode of story.episodes ?? []) {
@@ -243,5 +274,6 @@ export function mergeRewrittenEncounterBeatsIntoStory(
       }
     }
   }
+  reportUnmatchedRewrites(rewrittenBeats, consumed, onUnmatched);
   return merged;
 }

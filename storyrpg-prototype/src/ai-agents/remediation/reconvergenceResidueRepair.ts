@@ -134,6 +134,7 @@ export async function runReconvergenceResidueGate<T extends ResidueValidationRes
             sceneContents as never,
             sceneId,
             rewrittenBeats as never,
+            (ids) => emit({ type: 'warning', phase, message: `Residue repair of ${sceneId}: ${ids.length} rewritten beat(s) [${ids.join(', ')}] matched no beat (drifted ids) — not applied.` }),
           );
           if (merged > 0) {
             repairedSceneIds.push(sceneId);

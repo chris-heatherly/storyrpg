@@ -301,9 +301,15 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
           );
           criticCalls += 1;
           if (critique.success && critique.data) {
+            // Surface rewrites that matched NO beat (drifted ids) — otherwise the
+            // repair looks like it ran while the gate keeps failing, with no signal.
+            const warnUnmatched = (ids: string[]) => opts.emit?.(
+              `Scene-prose contract repair: ${ids.length} rewritten beat(s) [${ids.join(', ')}] in ${sceneId} matched no beat ` +
+              `(drifted beat ids) — those rewrites were NOT applied.`,
+            );
             sceneMerged += isEncounterScene
-              ? mergeRewrittenEncounterBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never)
-              : mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never);
+              ? mergeRewrittenEncounterBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched)
+              : mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched);
           }
           predictedClear = allMomentsDepicted(scene, issues);
           if (!predictedClear && attempt === 1) {

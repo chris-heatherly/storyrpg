@@ -233,7 +233,10 @@ export class SceneCriticContinuity {
             text: b.text,
             textVariants: (b as { textVariants?: Array<{ text?: string }> }).textVariants,
           }));
-          const merged = mergeRewrittenBeatsIntoStory(story as never, sceneId, rewrittenBeats as never);
+          const merged = mergeRewrittenBeatsIntoStory(
+            story as never, sceneId, rewrittenBeats as never,
+            (ids) => this.deps.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity repair of ${sceneId}: ${ids.length} rewritten beat(s) [${ids.join(', ')}] matched no beat (drifted ids) — not applied.` }),
+          );
           if (merged > 0) {
             // Mirror the rewrite into the in-memory sceneContents too, so the
             // post-repair re-check (which re-reads sceneContents, not the assembled

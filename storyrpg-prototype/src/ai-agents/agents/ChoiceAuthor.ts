@@ -476,19 +476,18 @@ Before finalizing:
     console.log(`[ChoiceAuthor] Creating choices for beat: ${input.beatId}`);
 
     try {
-      const response = await this.callLLM([
+      const firstResponse = await this.callLLM([
         { role: 'user', content: prompt }
       ]);
 
-      console.log(`[ChoiceAuthor] Received response (${response.length} chars)`);
+      console.log(`[ChoiceAuthor] Received response (${firstResponse.length} chars)`);
 
-      let choiceSet: ChoiceSet;
-      try {
-        choiceSet = this.parseJSON<ChoiceSet>(response);
-      } catch (parseError) {
-        console.error(`[ChoiceAuthor] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
-        throw parseError;
-      }
+      // Parse, with one focused compact retry: a full choice set is heavy output that
+      // weaker models truncate mid-JSON, and re-running the SAME oversized prompt (the
+      // phase-level retry) tends to truncate again. A retry that asks for the same
+      // content in a more COMPACT form is far more likely to fit and parse.
+      const { choiceSet: parsedSet, response } = await this.parseChoiceSetWithCompactRetry(input, prompt, firstResponse);
+      let choiceSet: ChoiceSet = parsedSet;
 
       // Normalize arrays that the LLM might return as strings or undefined
       // Pass the input so we can use blueprint stakes as fallback
@@ -535,6 +534,44 @@ Before finalizing:
         error: errorMsg,
       };
     }
+  }
+
+  /**
+   * Parse the choice-set JSON, with ONE focused compact retry. A full choice set is
+   * the agent's heaviest output (3–5 choices × {stakes, consequences, three 1–3
+   * sentence outcome tiers}), and weaker models truncate it mid-JSON — which either
+   * throws (unterminated string) or parses to a set with DROPPED choices (parseJSON's
+   * truncation recovery). Re-running the same oversized prompt (the phase-level retry)
+   * tends to truncate again; a retry that asks for the SAME content more COMPACTLY is
+   * far more likely to fit and parse. Only fires on a failure/truncation, so a clean
+   * first response (including every golden/_transportOverride run) keeps the
+   * single-call path. A still-failing compact retry rethrows, so execute() fails and
+   * the phase falls back exactly as before.
+   */
+  private async parseChoiceSetWithCompactRetry(
+    input: ChoiceAuthorInput,
+    basePrompt: string,
+    firstResponse: string,
+  ): Promise<{ choiceSet: ChoiceSet; response: string }> {
+    try {
+      const choiceSet = this.parseJSON<ChoiceSet>(firstResponse);
+      if (!this.wasLastResponseTruncated()) {
+        return { choiceSet, response: firstResponse };
+      }
+      console.warn(`[ChoiceAuthor] ${input.beatId}: response parsed but truncation dropped content — retrying with a compact-output directive.`);
+    } catch (parseError) {
+      const msg = parseError instanceof Error ? parseError.message : String(parseError);
+      console.warn(`[ChoiceAuthor] ${input.beatId}: JSON parse failed (${msg.slice(0, 120)}) — retrying with a compact-output directive.`);
+    }
+    const compactPrompt =
+      `${basePrompt}\n\n` +
+      `IMPORTANT: your previous response could not be parsed as complete JSON — it was almost ` +
+      `certainly too long and got cut off. Re-emit the COMPLETE choice set as ONE valid JSON object, ` +
+      `but keep it COMPACT so the whole thing fits: each outcomeTexts tier ONE crisp sentence, every ` +
+      `other string field tight, no commentary or trailing prose. Return only the JSON.`;
+    const response = await this.callLLM([{ role: 'user', content: compactPrompt }]);
+    const choiceSet = this.parseJSON<ChoiceSet>(response); // rethrows on failure → execute() fails → phase falls back
+    return { choiceSet, response };
   }
 
   /**

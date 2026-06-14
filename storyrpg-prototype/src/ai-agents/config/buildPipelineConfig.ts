@@ -212,7 +212,11 @@ export function buildPipelineConfig(
       // rich scenes mid-JSON — the s1-6 "Unterminated string" abort. Truncation now
       // degrades gracefully, but the higher ceiling avoids dropping trailing beats.
       sceneWriter: buildAgentConfig('scene', { maxTokens: 8192, temperature: 0.85 }),
-      choiceAuthor: buildAgentConfig('choice', { maxTokens: 4096, temperature: 0.75 }),
+      // 8192 (was 4096): a full choice set (3–5 choices, each with a stakes triangle,
+      // consequences, and THREE 1–3 sentence outcome tiers) is heavy output that
+      // truncated mid-JSON on weaker models → parse-failure fallbacks. The compact
+      // re-author retry (ChoiceAuthor) is the second line; this is the headroom.
+      choiceAuthor: buildAgentConfig('choice', { maxTokens: 8192, temperature: 0.75 }),
       // Lower temperature for consistent grading; decorrelated from the author
       // when a distinct QA model is assigned (within the same family).
       qaRunner: buildAgentConfig('qa', { maxTokens: 4096, temperature: 0.3 }),

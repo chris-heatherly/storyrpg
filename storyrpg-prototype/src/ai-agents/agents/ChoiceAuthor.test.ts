@@ -522,3 +522,35 @@ describe('ChoiceAuthor.reauthorOutcomeTexts (final-contract stub repair)', () =>
     expect(out).toEqual({});
   });
 });
+
+describe('ChoiceAuthor.parseChoiceSetWithCompactRetry (reliability)', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+  const GOOD = '{"beatId":"beat-1","choices":[{"id":"c1","text":"A"},{"id":"c2","text":"B"}]}';
+
+  it('takes the single-call path on a clean first response (no retry)', async () => {
+    let calls = 0;
+    BaseAgent.setLlmTransportOverride(async () => { calls += 1; return GOOD; });
+    const author: any = new ChoiceAuthor(config);
+    const out = await author.parseChoiceSetWithCompactRetry(makeInput(), 'PROMPT', GOOD);
+    expect(out.choiceSet.choices).toHaveLength(2);
+    expect(calls).toBe(0); // first response was clean → no compact retry call
+  });
+
+  it('retries compactly when the first response is truncated, and the retry succeeds', async () => {
+    let calls = 0;
+    let retryPrompt = '';
+    BaseAgent.setLlmTransportOverride(async (req) => {
+      calls += 1;
+      retryPrompt = req.messages.map((m) => String(m.content)).join('\n');
+      return GOOD;
+    });
+    const author: any = new ChoiceAuthor(config);
+    // Truncated mid-string: parseJSON recovers (drops content) and flags truncation → retry fires.
+    const truncated = '{"beatId":"beat-1","choices":[{"id":"c1","text":"truncated mid';
+    const out = await author.parseChoiceSetWithCompactRetry(makeInput(), 'BASE_PROMPT', truncated);
+    expect(out.choiceSet.choices).toHaveLength(2);
+    expect(calls).toBe(1); // exactly one compact retry
+    expect(retryPrompt).toContain('keep it COMPACT'); // the retry carries the compact-output directive
+    expect(retryPrompt).toContain('BASE_PROMPT'); // built on top of the original prompt
+  });
+});

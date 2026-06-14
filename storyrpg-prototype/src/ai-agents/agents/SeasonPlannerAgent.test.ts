@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { SeasonPlannerAgent } from './SeasonPlannerAgent';
+import { BaseAgent } from './BaseAgent';
 import { extractTreatmentFromMarkdown } from '../utils/treatmentExtraction';
 
 function makePlanner() {
@@ -416,5 +417,32 @@ describe('SeasonPlannerAgent 7-point spine gate (tier 1)', () => {
     });
     const result = await planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, sevenPointBlocking: true });
     expect(result.success).toBe(true);
+  });
+});
+
+describe('SeasonPlannerAgent.refetchMissingPlanFields (truncated-plan recovery)', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+
+  it('re-fetches just the missing critical fields and merges them in', async () => {
+    let prompt = '';
+    BaseAgent.setLlmTransportOverride(async (req) => {
+      prompt = req.messages.map((m) => String(m.content)).join('\n');
+      return JSON.stringify({ arcs: [{ id: 'arc-1' }], episodeEncounters: [{ ep: 1 }] });
+    });
+    const agent: any = makePlanner();
+    const planData: any = { crossEpisodeBranches: [], episodeEndingRoutes: [] }; // arcs + episodeEncounters missing
+    await agent.refetchMissingPlanFields(planData, ['arcs', 'episodeEncounters'], makeAnalysis(), undefined);
+
+    expect(planData.arcs).toEqual([{ id: 'arc-1' }]);
+    expect(planData.episodeEncounters).toEqual([{ ep: 1 }]);
+    expect(prompt).toContain('arcs, episodeEncounters'); // focused on exactly the missing keys
+  });
+
+  it('leaves planData unchanged (no throw) when the re-fetch fails', async () => {
+    BaseAgent.setLlmTransportOverride(async () => { throw new Error('boom'); });
+    const agent: any = makePlanner();
+    const planData: any = {};
+    await expect(agent.refetchMissingPlanFields(planData, ['arcs'], makeAnalysis(), undefined)).resolves.toBeUndefined();
+    expect(planData.arcs).toBeUndefined(); // deterministic fill will cover it downstream
   });
 });

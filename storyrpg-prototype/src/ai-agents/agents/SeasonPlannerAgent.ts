@@ -222,7 +222,8 @@ Your plans must define:
       const criticalFields = ['arcs', 'episodeEncounters', 'crossEpisodeBranches', 'episodeEndingRoutes'];
       const missingCritical = criticalFields.filter(f => !(f in planData));
       if (missingCritical.length > 0) {
-        console.warn(`[SeasonPlanner] WARNING: LLM response may be truncated — missing fields: ${missingCritical.join(', ')}. Response length: ${response.length} chars. Falling back for missing data.`);
+        console.warn(`[SeasonPlanner] WARNING: LLM response may be truncated — missing fields: ${missingCritical.join(', ')}. Response length: ${response.length} chars. Re-fetching just those before any deterministic fallback.`);
+        await this.refetchMissingPlanFields(planData, missingCritical, sourceAnalysis, preferences);
       }
     } catch (error) {
       console.warn(`[SeasonPlanner] LLM planning failed, using fallback:`, error);
@@ -469,6 +470,46 @@ Your plans must define:
     } catch (error) {
       console.warn('[SeasonPlanner] Scene-plan authoring failed; keeping deterministic spine:', error);
       return null;
+    }
+  }
+
+  /**
+   * Re-fetch just the critical plan fields the first pass dropped (a truncated /
+   * incomplete LLM plan), in one focused call, and merge them in — before the
+   * deterministic fallback fills them with placeholders. The season plan is the
+   * highest-leverage artifact (its cross-episode branching / encounter planning
+   * cascades through the whole run), so recovering the authored fields beats
+   * shipping deterministic stand-ins. One attempt; on failure the missing fields
+   * fall through to the deterministic fill as before. No-op (no LLM call) when
+   * nothing is missing, so a complete first pass — incl. golden runs — is
+   * unaffected. Mutates `planData` in place.
+   */
+  private async refetchMissingPlanFields(
+    planData: MutablePlanData,
+    missing: string[],
+    analysis: SourceMaterialAnalysis,
+    preferences?: SeasonPlannerInput['preferences'],
+  ): Promise<void> {
+    if (missing.length === 0) return;
+    try {
+      const focused =
+        `${this.buildPlanningPrompt(analysis, preferences)}\n\n` +
+        `IMPORTANT: your previous response OMITTED these required top-level fields (it was likely ` +
+        `too long and got cut off): ${missing.join(', ')}. Re-emit ONLY those fields now, COMPLETE ` +
+        `and compact, as a single JSON object whose keys are exactly [${missing.join(', ')}]. No other ` +
+        `keys, no prose outside the JSON.`;
+      const response = await this.callLLM([{ role: 'user', content: focused }]);
+      const patch = this.parseJSON<Record<string, unknown>>(response);
+      let filled = 0;
+      for (const field of missing) {
+        if (patch && field in patch && patch[field] != null) {
+          (planData as Record<string, unknown>)[field] = patch[field];
+          filled += 1;
+        }
+      }
+      console.log(`[SeasonPlanner] Re-fetched ${filled}/${missing.length} missing plan field(s).`);
+    } catch (err) {
+      console.warn(`[SeasonPlanner] Missing-field re-fetch failed (deterministic fill will cover it): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

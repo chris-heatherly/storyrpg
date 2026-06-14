@@ -285,4 +285,35 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
     expect(captured.stream).toBeUndefined();
     expect(JSON.parse(out)).toEqual({ ok: true });
   });
+
+  it('OpenRouter: dispatches to its OWN endpoint + headers, never the OpenAI path', async () => {
+    let url = '';
+    let headers: Record<string, string> = {};
+    let body: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (u: string, init: any) => {
+      url = u;
+      headers = init.headers;
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }], usage: {} }),
+      } as any;
+    }));
+
+    const out = await new TestAgent({ provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' }).callStructured(
+      [{ role: 'user', content: 'go' }],
+      schema,
+    );
+
+    // Separate path: OpenRouter endpoint + attribution headers, NOT api.openai.com.
+    expect(url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(headers['HTTP-Referer']).toBe('https://storyrpg.app');
+    expect(headers['X-Title']).toBe('StoryRPG');
+    // No OpenAI reasoning-class shaping leaks in — plain max_tokens + temperature.
+    expect(body.max_completion_tokens).toBeUndefined();
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(body.model).toBe('deepseek/deepseek-v4-pro');
+    expect(JSON.parse(out)).toEqual({ ok: true });
+  });
 });

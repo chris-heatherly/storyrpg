@@ -38,6 +38,8 @@ const ANTHROPIC_API_URL = isWebRuntime()
   ? `${PROXY_CONFIG.getProxyUrl()}/v1/messages`  // Local proxy
   : 'https://api.anthropic.com/v1/messages';  // Direct API for native
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+// OpenRouter is its own provider/endpoint — never routed through the OpenAI path.
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 export interface AgentMessage {
   role: 'system' | 'user' | 'assistant';
@@ -440,6 +442,8 @@ Do not use markdown code blocks around the JSON.
           result = await this.callAnthropic(fullMessages, signal, usageCapture, options?.jsonSchema);
         } else if (this.config.provider === 'gemini') {
           result = await this.callGemini(fullMessages, signal, usageCapture);
+        } else if (this.config.provider === 'openrouter') {
+          result = await this.callOpenRouter(fullMessages, signal, usageCapture, options?.jsonSchema);
         } else {
           result = await this.callOpenAI(fullMessages, signal, usageCapture, options?.jsonSchema);
         }
@@ -946,40 +950,14 @@ Do not use markdown code blocks around the JSON.
     return '';
   }
 
-  /**
-   * Endpoint + auth headers for an OpenAI-wire-compatible provider. OpenRouter
-   * speaks the same `/chat/completions` API as OpenAI (Bearer auth,
-   * `response_format` json_schema, SSE `delta.content`, `usage.*_tokens`), so it
-   * rides the exact same {@link callOpenAI} / {@link callOpenAIStreaming} path —
-   * only the base URL and a couple of recommended attribution headers differ.
-   */
-  private openAiCompatibleTarget(): { url: string; headers: Record<string, string> } {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.config.apiKey}`,
-    };
-    if (this.config.provider === 'openrouter') {
-      // Optional but recommended by OpenRouter for usage attribution/rankings.
-      headers['HTTP-Referer'] = 'https://storyrpg.app';
-      headers['X-Title'] = 'StoryRPG';
-      return { url: 'https://openrouter.ai/api/v1/chat/completions', headers };
-    }
-    return { url: 'https://api.openai.com/v1/chat/completions', headers };
-  }
-
   private async callOpenAI(
     messages: AgentMessage[],
     signal?: AbortSignal,
     usageOut?: { inputTokens?: number; outputTokens?: number },
     jsonSchema?: StructuredJsonSchema,
   ): Promise<string> {
-    const isOpenRouter = this.config.provider === 'openrouter';
-    const providerLabel = isOpenRouter ? 'OpenRouter' : 'OpenAI';
-    const model = this.config.model || (isOpenRouter ? 'x-ai/grok-4.3' : 'gpt-5');
-    // Reasoning-class request shaping (max_completion_tokens / reasoning_effort,
-    // no temperature) is OpenAI-specific. OpenRouter normalizes max_tokens +
-    // temperature across all its models, so keep it on the standard path.
-    const isReasoningModel = !isOpenRouter && /^(gpt-5|o1|o3|o4)/i.test(model);
+    const model = this.config.model || 'gpt-5';
+    const isReasoningModel = /^(gpt-5|o1|o3|o4)/i.test(model);
     const reasoningEffort = this.config.openaiReasoningEffort || 'medium';
     const body: Record<string, unknown> = {
       model,
@@ -1046,10 +1024,12 @@ Do not use markdown code blocks around the JSON.
       return await this.callOpenAIStreaming(body, model, isReasoningModel, signal, usageOut);
     }
 
-    const target = this.openAiCompatibleTarget();
-    const response = await fetch(target.url, {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
-      headers: target.headers,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.config.apiKey}`,
+      },
       ...(signal ? { signal } : {}),
       body: JSON.stringify(body),
     });
@@ -1057,7 +1037,7 @@ Do not use markdown code blocks around the JSON.
     const text = await response.text();
 
     if (!response.ok) {
-      throw new Error(`${providerLabel} API error: ${response.status} - ${text}`);
+      throw new Error(`OpenAI API error: ${response.status} - ${text}`);
     }
 
     try {
@@ -1083,7 +1063,7 @@ Do not use markdown code blocks around the JSON.
           );
         }
         throw new Error(
-          `${providerLabel} returned empty content (finish_reason=${finishReason ?? 'unknown'}). Model=${model}. Response: ${text.substring(0, 500)}`,
+          `OpenAI returned empty content (finish_reason=${finishReason ?? 'unknown'}). Model=${model}. Response: ${text.substring(0, 500)}`,
         );
       }
 
@@ -1091,8 +1071,8 @@ Do not use markdown code blocks around the JSON.
     } catch (parseError) {
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       // If we already threw a descriptive error above, rethrow it verbatim.
-      if (msg.includes('returned empty content')) throw parseError;
-      throw new Error(`Failed to parse ${providerLabel} response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
+      if (msg.startsWith('OpenAI returned empty content')) throw parseError;
+      throw new Error(`Failed to parse OpenAI response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
     }
   }
 
@@ -1115,13 +1095,14 @@ Do not use markdown code blocks around the JSON.
       else signal.addEventListener('abort', onOuterAbort, { once: true });
     }
 
-    const providerLabel = this.config.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI';
-    const target = this.openAiCompatibleTarget();
     let response: Response;
     try {
-      response = await fetch(target.url, {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        headers: target.headers,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.apiKey}`,
+        },
         signal: controller.signal,
         body: JSON.stringify(body),
       });
@@ -1133,7 +1114,7 @@ Do not use markdown code blocks around the JSON.
     if (!response.ok) {
       const text = await response.text().catch(() => '');
       if (signal) signal.removeEventListener('abort', onOuterAbort);
-      throw new Error(`${providerLabel} API error: ${response.status} - ${text}`);
+      throw new Error(`OpenAI API error: ${response.status} - ${text}`);
     }
 
     let result;
@@ -1165,7 +1146,168 @@ Do not use markdown code blocks around the JSON.
             `Lower REASONING EFFORT in the OPENAI ADVANCED panel, raise maxTokens, or switch to a non-reasoning model like gpt-4o / gpt-4.1.`,
         );
       }
-      throw new Error(`${providerLabel} returned empty content (stream). Model=${model}.`);
+      throw new Error(`OpenAI returned empty content (stream). Model=${model}.`);
+    }
+    return content;
+  }
+
+  /**
+   * OpenRouter transport — a SEPARATE path from OpenAI/Anthropic/Gemini that does
+   * not touch or gate them. OpenRouter exposes an OpenAI-wire `/chat/completions`
+   * API (Bearer auth, `response_format`, SSE `delta.content`, `usage.*_tokens`),
+   * so the request/response SHAPE matches OpenAI — but it is its own provider with
+   * its own endpoint, attribution headers, model-id namespace (`vendor/model`),
+   * and dispatch branch. It deliberately omits OpenAI's reasoning-class shaping
+   * (`max_completion_tokens` / `reasoning_effort`): OpenRouter normalizes plain
+   * `max_tokens` + `temperature` across every vendor it routes to.
+   */
+  private async callOpenRouter(
+    messages: AgentMessage[],
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+    jsonSchema?: StructuredJsonSchema,
+  ): Promise<string> {
+    const model = this.config.model || 'x-ai/grok-4.3';
+    const body: Record<string, unknown> = {
+      model,
+      messages: messages.map((m) => {
+        if (typeof m.content === 'string') {
+          return { role: m.role, content: m.content };
+        }
+        return {
+          role: m.role,
+          content: m.content.map(part => {
+            if (part.type === 'text') return part;
+            if (part.type === 'image_url') return part;
+            if (part.type === 'image') {
+              return {
+                type: 'image_url',
+                image_url: { url: `data:${part.source.media_type};base64,${part.source.data}` },
+              };
+            }
+            return null;
+          }).filter(Boolean),
+        };
+      }),
+      max_tokens: this.config.maxTokens,
+      temperature: this.config.temperature,
+    };
+    if (jsonSchema) {
+      body.response_format = {
+        type: 'json_schema',
+        json_schema: { name: jsonSchema.name, schema: jsonSchema.schema },
+      };
+    } else if (this.config.openaiForceJsonResponse !== false) {
+      body.response_format = { type: 'json_object' };
+    }
+
+    const useStream = !jsonSchema && shouldStreamLLM(isWebRuntime());
+    if (useStream) {
+      body.stream = true;
+      body.stream_options = { include_usage: true };
+      return await this.callOpenRouterStreaming(body, model, signal, usageOut);
+    }
+
+    const response = await fetch(OPENROUTER_API_URL, {
+      method: 'POST',
+      headers: this.openRouterHeaders(),
+      ...(signal ? { signal } : {}),
+      body: JSON.stringify(body),
+    });
+
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`OpenRouter API error: ${response.status} - ${text}`);
+    }
+
+    try {
+      const data = JSON.parse(text);
+      if (usageOut) {
+        if (typeof data.usage?.prompt_tokens === 'number') usageOut.inputTokens = data.usage.prompt_tokens;
+        if (typeof data.usage?.completion_tokens === 'number') usageOut.outputTokens = data.usage.completion_tokens;
+      }
+      const choice = data.choices?.[0];
+      const content: string = choice?.message?.content ?? '';
+      const finishReason: string | undefined = choice?.finish_reason;
+      if (!content || content.trim().length === 0) {
+        throw new Error(
+          `OpenRouter returned empty content (finish_reason=${finishReason ?? 'unknown'}). Model=${model}. Response: ${text.substring(0, 500)}`,
+        );
+      }
+      return content;
+    } catch (parseError) {
+      const msg = parseError instanceof Error ? parseError.message : String(parseError);
+      if (msg.startsWith('OpenRouter returned empty content')) throw parseError;
+      throw new Error(`Failed to parse OpenRouter response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
+    }
+  }
+
+  /** OpenRouter auth + attribution headers (recommended for usage rankings). */
+  private openRouterHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${this.config.apiKey}`,
+      'HTTP-Referer': 'https://storyrpg.app',
+      'X-Title': 'StoryRPG',
+    };
+  }
+
+  /** OpenRouter streaming transport (node/direct path only). */
+  private async callOpenRouterStreaming(
+    body: Record<string, unknown>,
+    model: string,
+    signal?: AbortSignal,
+    usageOut?: { inputTokens?: number; outputTokens?: number },
+  ): Promise<string> {
+    const controller = new AbortController();
+    const onOuterAbort = () => controller.abort((signal as { reason?: unknown })?.reason);
+    if (signal) {
+      if (signal.aborted) controller.abort((signal as { reason?: unknown }).reason);
+      else signal.addEventListener('abort', onOuterAbort, { once: true });
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(OPENROUTER_API_URL, {
+        method: 'POST',
+        headers: this.openRouterHeaders(),
+        signal: controller.signal,
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+      throw err;
+    }
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+      throw new Error(`OpenRouter API error: ${response.status} - ${text}`);
+    }
+
+    let result;
+    try {
+      result = await readSSEStream(response.body as any, openaiSseHandler, {
+        signal,
+        onIdleAbort: () => controller.abort(new Error('stream idle timeout')),
+      });
+    } finally {
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+    }
+
+    if (usageOut) {
+      if (typeof result.usage?.inputTokens === 'number') usageOut.inputTokens = result.usage.inputTokens;
+      if (typeof result.usage?.outputTokens === 'number') usageOut.outputTokens = result.usage.outputTokens;
+    }
+    log.debug(
+      `[${this.name}] OpenRouter stream: ${result.usage?.inputTokens ?? '?'} input tokens, ` +
+        `${result.usage?.outputTokens ?? '?'} output tokens ` +
+        `(first-byte ${result.firstByteMs}ms, total ${result.totalMs}ms)`,
+    );
+
+    const content = result.text;
+    if (!content || content.trim().length === 0) {
+      throw new Error(`OpenRouter returned empty content (stream). Model=${model}.`);
     }
     return content;
   }

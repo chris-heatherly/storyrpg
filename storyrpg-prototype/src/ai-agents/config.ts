@@ -992,19 +992,24 @@ export function loadConfig(): PipelineConfig {
     }
     return env.EXPO_PUBLIC_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY || '';
   };
+  const defaultProvider: AgentConfig['provider'] =
+    (env.EXPO_PUBLIC_LLM_PROVIDER || env.LLM_PROVIDER as AgentConfig['provider']) || 'anthropic';
   const defaultConfig: AgentConfig = {
-    provider: (env.EXPO_PUBLIC_LLM_PROVIDER || env.LLM_PROVIDER as AgentConfig['provider']) || 'anthropic',
+    provider: defaultProvider,
     model: env.EXPO_PUBLIC_LLM_MODEL || env.LLM_MODEL || 'claude-sonnet-4-6',
+    // OpenRouter resolves its key in isolation — its key never falls back to the
+    // legacy providers' shared chain, and theirs never serve OpenRouter. Keeps
+    // OpenRouter a fully separate path that cannot mediate/gate the others.
     apiKey:
-      env.EXPO_PUBLIC_ANTHROPIC_API_KEY ||
-      env.EXPO_PUBLIC_OPENAI_API_KEY ||
-      env.EXPO_PUBLIC_GEMINI_API_KEY ||
-      env.EXPO_PUBLIC_OPENROUTER_API_KEY ||
-      env.ANTHROPIC_API_KEY ||
-      env.OPENAI_API_KEY ||
-      env.GEMINI_API_KEY ||
-      env.OPENROUTER_API_KEY ||
-      '',
+      defaultProvider === 'openrouter'
+        ? resolveProviderApiKey('openrouter')
+        : env.EXPO_PUBLIC_ANTHROPIC_API_KEY ||
+          env.EXPO_PUBLIC_OPENAI_API_KEY ||
+          env.EXPO_PUBLIC_GEMINI_API_KEY ||
+          env.ANTHROPIC_API_KEY ||
+          env.OPENAI_API_KEY ||
+          env.GEMINI_API_KEY ||
+          '',
     maxTokens: 4096,
     temperature: 0.8,
     openaiReasoningEffort: openaiSettingsFromEnv.reasoningEffort,

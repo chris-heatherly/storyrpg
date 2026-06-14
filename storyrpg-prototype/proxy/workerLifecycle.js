@@ -1252,7 +1252,6 @@ function createWorkerLifecycle({
     const envAnthropicKey =
       process.env.ANTHROPIC_API_KEY
       || process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY
-      || process.env.OPENROUTER_API_KEY
       || '';
     const envOpenAiKey =
       process.env.OPENAI_API_KEY

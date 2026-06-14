@@ -207,7 +207,11 @@ export function buildPipelineConfig(
   return {
     agents: {
       storyArchitect: buildAgentConfig('architect', { maxTokens: 8192, temperature: 0.7 }),
-      sceneWriter: buildAgentConfig('scene', { maxTokens: 4096, temperature: 0.85 }),
+      // 8192 (matching the architect/image tiers), not 4096: SceneWriter emits the
+      // heaviest output (a full multi-beat scene), so the tighter budget truncated
+      // rich scenes mid-JSON — the s1-6 "Unterminated string" abort. Truncation now
+      // degrades gracefully, but the higher ceiling avoids dropping trailing beats.
+      sceneWriter: buildAgentConfig('scene', { maxTokens: 8192, temperature: 0.85 }),
       choiceAuthor: buildAgentConfig('choice', { maxTokens: 4096, temperature: 0.75 }),
       // Lower temperature for consistent grading; decorrelated from the author
       // when a distinct QA model is assigned (within the same family).

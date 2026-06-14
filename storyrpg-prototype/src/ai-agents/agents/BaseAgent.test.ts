@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentResponse, BaseAgent, type StructuredJsonSchema, type AgentMessage } from './BaseAgent';
 import type { AgentConfig } from '../config';
+import { setLLMStreamingEnabled } from './streamLLM';
 
 class TestAgent extends BaseAgent {
   constructor(config?: Partial<AgentConfig>) {
@@ -28,6 +29,10 @@ class TestAgent extends BaseAgent {
 
   callStructured(messages: AgentMessage[], schema: StructuredJsonSchema) {
     return this.callLLM(messages, 0, { jsonSchema: schema });
+  }
+
+  callPlain(messages: AgentMessage[]) {
+    return this.callLLM(messages, 0);
   }
 
   async execute(): Promise<AgentResponse<unknown>> {
@@ -284,6 +289,56 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
     expect(captured.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'demo', schema: schema.schema } });
     expect(captured.stream).toBeUndefined();
     expect(JSON.parse(out)).toEqual({ ok: true });
+  });
+
+  it('Gemini: requests native JSON mode (responseMimeType) so output is parseable, not markdown-wrapped', async () => {
+    setLLMStreamingEnabled(false); // force the buffered path so we can read the request body
+    try {
+      let body: any = null;
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
+        body = JSON.parse(init.body);
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            candidates: [{ content: { parts: [{ text: '{"ok":true}' }] } }],
+            usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+          }),
+        } as any;
+      }));
+
+      const out = await new TestAgent({ provider: 'gemini', model: 'gemini-2.5-pro' }).callPlain(
+        [{ role: 'user', content: 'go' }],
+      );
+
+      expect(body.generationConfig.responseMimeType).toBe('application/json');
+      expect(JSON.parse(out)).toEqual({ ok: true });
+    } finally {
+      setLLMStreamingEnabled(true);
+    }
+  });
+
+  it('Gemini: omits JSON mode when the agent opts out (openaiForceJsonResponse=false)', async () => {
+    setLLMStreamingEnabled(false);
+    try {
+      let body: any = null;
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
+        body = JSON.parse(init.body);
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: 'plain prose' }] } }], usageMetadata: {} }),
+        } as any;
+      }));
+
+      await new TestAgent({ provider: 'gemini', model: 'gemini-2.5-pro', openaiForceJsonResponse: false }).callPlain(
+        [{ role: 'user', content: 'go' }],
+      );
+
+      expect(body.generationConfig.responseMimeType).toBeUndefined();
+    } finally {
+      setLLMStreamingEnabled(true);
+    }
   });
 
   it('OpenRouter: dispatches to its OWN endpoint + headers, never the OpenAI path', async () => {

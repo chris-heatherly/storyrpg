@@ -1347,6 +1347,17 @@ Do not use markdown code blocks around the JSON.
       generationConfig: {
         temperature: this.config.temperature,
         maxOutputTokens: this.config.maxTokens,
+        // Gemini's native JSON mode: constrains the model to emit a single valid
+        // JSON value — no markdown fences, no prose preamble — which the narrative
+        // agents (SceneWriter/ChoiceAuthor/StoryArchitect) all expect. Without it
+        // Gemini returns markdown-wrapped or preamble-prefixed JSON that intermittently
+        // defeats parseJSON (the recurring SceneWriter/ChoiceAuthor parse failures).
+        // Mirrors the OpenAI `response_format: json_object` path and shares its opt-out
+        // flag, so an agent that wants free-form prose (openaiForceJsonResponse=false)
+        // still gets plain text.
+        ...(this.config.openaiForceJsonResponse !== false
+          ? { responseMimeType: 'application/json' }
+          : {}),
       },
     };
 

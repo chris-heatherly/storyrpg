@@ -220,41 +220,9 @@ export class Assembly {
           routeContext: genBeat.routeContext,
         };
 
-        // Attach choices whenever a choice set EXISTS for this beat — not only when
-        // genBeat.isChoicePoint is set. A choiceMap entry is created exclusively for a
-        // real choice point, so its presence is the source of truth. Gating on the
-        // flag too silently drops choices when an auto-marked / fallback choice point's
-        // isChoicePoint was set AFTER the scene checkpoint was saved (so the assembled
-        // copy never sees it) — shipping a branch point choiceless (bite-me-g14 ep2 s2-1).
-        if (choiceMap.has(`${sceneBlueprint.id}::${genBeat.id}`)) {
-          const choiceSet = choiceMap.get(`${sceneBlueprint.id}::${genBeat.id}`);
-          if (choiceSet) {
-            beat.choices = choiceSet.choices.map((gc, ci) => {
-              let nextSceneId = gc.nextSceneId;
-
-              // Guard: prevent backward navigation to current scene or scenes
-              // that precede it in the episode (which would cause loops).
-              if (nextSceneId) {
-                const targetIdx = blueprint.scenes.findIndex(s => s.id === nextSceneId);
-                const currentIdx = blueprint.scenes.findIndex(s => s.id === sceneBlueprint.id);
-                if (targetIdx >= 0 && targetIdx <= currentIdx) {
-                  const leadsTo = sceneBlueprint.leadsTo || [];
-                  const corrected = leadsTo[ci % leadsTo.length] || leadsTo[0];
-                  if (corrected) {
-                    console.warn(
-                      `[Pipeline] assembleStory: choice "${gc.id}" in scene "${sceneBlueprint.id}" ` +
-                      `routes backward to "${nextSceneId}" (idx ${targetIdx} <= ${currentIdx}). ` +
-                      `Auto-correcting to "${corrected}".`
-                    );
-                    nextSceneId = corrected;
-                  }
-                }
-              }
-
-              return assembleChoiceForStory(gc, nextSceneId);
-            });
-          }
-        }
+        // Attach choices through the shared resolver (source of truth = choice-set
+        // presence, plus the backward-navigation guard). See assembleBeatChoices.
+        beat.choices = this.assembleBeatChoices(sceneBlueprint, blueprint, genBeat.id, choiceMap);
 
         return beat;
       });
@@ -532,9 +500,9 @@ export class Assembly {
           sequenceIntent: (gb as any).sequenceIntent,
           isChoiceBridge: gb.isChoiceBridge,
           routeContext: gb.routeContext,
-          // Attach whenever a choice set exists for this beat (source of truth), not
-          // only when gb.isChoicePoint survived to assembly. See assembleStory above.
-          choices: choiceMap.get(`${sb.id}::${gb.id}`)?.choices.map(c => assembleChoiceForStory(c))
+          // Shared choice resolver (source of truth = choice-set presence) — same
+          // path as assembleStory, including the backward-navigation guard.
+          choices: this.assembleBeatChoices(sb, blueprint, gb.id, choiceMap)
         })),
         encounter,
         sequenceIntent: (content as any).sequenceIntent || (sb as any).sequenceIntent,
@@ -601,6 +569,48 @@ export class Assembly {
       unlockConditions: seasonEpisode?.unlockConditions,
       coverImage: episodeCover
     };
+  }
+
+  /**
+   * Resolve the rendered choices for one beat — THE single place both assembleStory
+   * and assembleEpisode attach choices. These two ~180-line methods had diverged and
+   * each needed the same choice-attachment fixes applied separately (beatId drift,
+   * moved choice point, lost isChoicePoint flag); routing both through here means a
+   * fix lands once. Attaches whenever a choice set EXISTS for `${sceneId}::${beatId}`
+   * — the map entry is created exclusively for a real choice point, so its presence
+   * is the source of truth (gating on a possibly-lost isChoicePoint flag silently
+   * drops the choices). Re-points any choice that routes BACKWARD (to the current
+   * scene or an earlier one, which would loop) onto a forward leadsTo target. Returns
+   * undefined when no choice set exists for the beat.
+   */
+  private assembleBeatChoices(
+    sceneBlueprint: SceneBlueprint,
+    blueprint: EpisodeBlueprint,
+    beatId: string,
+    choiceMap: Map<string, ChoiceSet>,
+  ): Beat['choices'] {
+    const choiceSet = choiceMap.get(`${sceneBlueprint.id}::${beatId}`);
+    if (!choiceSet) return undefined;
+    const currentIdx = blueprint.scenes.findIndex(s => s.id === sceneBlueprint.id);
+    return choiceSet.choices.map((gc, ci) => {
+      let nextSceneId = gc.nextSceneId;
+      if (nextSceneId) {
+        const targetIdx = blueprint.scenes.findIndex(s => s.id === nextSceneId);
+        if (targetIdx >= 0 && targetIdx <= currentIdx) {
+          const leadsTo = sceneBlueprint.leadsTo || [];
+          const corrected = leadsTo[ci % leadsTo.length] || leadsTo[0];
+          if (corrected) {
+            console.warn(
+              `[Pipeline] assembly: choice "${gc.id}" in scene "${sceneBlueprint.id}" ` +
+              `routes backward to "${nextSceneId}" (idx ${targetIdx} <= ${currentIdx}). ` +
+              `Auto-correcting to "${corrected}".`,
+            );
+            nextSceneId = corrected;
+          }
+        }
+      }
+      return assembleChoiceForStory(gc, nextSceneId);
+    });
   }
 
   /**

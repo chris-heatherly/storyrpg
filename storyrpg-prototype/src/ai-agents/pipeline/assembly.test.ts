@@ -21,6 +21,31 @@ function makeAssembly() {
 const sceneWith = (id: string, beats: Array<{ id: string; choices?: unknown[] }>) => ({ id, beats });
 const linearBlueprint = (id: string, leadsTo: string[]) => ({ scenes: [{ id, leadsTo }] });
 
+describe('Assembly.assembleBeatChoices (shared attachment for both assembly paths)', () => {
+  const assembly = new Assembly({ emit: () => {} } as unknown as AssemblyDeps);
+  const attach = (sceneBlueprint: any, blueprint: any, beatId: string, choiceMap: Map<string, any>) =>
+    (assembly as any).assembleBeatChoices(sceneBlueprint, blueprint, beatId, choiceMap);
+
+  it('returns undefined when no choice set exists for the beat', () => {
+    expect(attach({ id: 's2', leadsTo: ['s3'] }, linearBlueprint('s2', ['s3']), 'b1', new Map())).toBeUndefined();
+  });
+
+  it('attaches the choice set and preserves forward nextSceneId', () => {
+    const map = new Map([['s2::b1', { choices: [{ id: 'c1', text: 'go', nextSceneId: 's3' }] }]]);
+    const blueprint = { scenes: [{ id: 's1' }, { id: 's2' }, { id: 's3' }] };
+    const out = attach({ id: 's2', leadsTo: ['s3'] }, blueprint, 'b1', map);
+    expect(out).toHaveLength(1);
+    expect(out[0].nextSceneId).toBe('s3');
+  });
+
+  it('re-points a choice that routes BACKWARD onto a forward leadsTo target', () => {
+    const map = new Map([['s2::b1', { choices: [{ id: 'c1', text: 'back', nextSceneId: 's1' }] }]]);
+    const blueprint = { scenes: [{ id: 's1' }, { id: 's2' }, { id: 's3' }] };
+    const out = attach({ id: 's2', leadsTo: ['s3'] }, blueprint, 'b1', map);
+    expect(out[0].nextSceneId).toBe('s3'); // corrected from the backward 's1'
+  });
+});
+
 describe('Assembly.reportOrphanedChoiceSets', () => {
   it('does not warn when the choice set attached to a rendered beat', () => {
     const { report, emit } = makeAssembly();

@@ -251,6 +251,26 @@ describe('CallbackLedger', () => {
     expect(canonicalizeHookId('', has)).toBe('');
   });
 
+  it('strips a SPURIOUS flag:/score: prefix when the planted hook is registered bare (bite-me-g14 ep3)', () => {
+    // The ledger holds the narrative callback-hook `accepted-stelas-protection` BARE,
+    // but the agent tagged the payoff `flag:accepted-stelas-protection`. The intended
+    // hook is the bare one — resolve to it instead of dangling.
+    const known = new Set(['accepted-stelas-protection', 'score:thorne_loyalty']);
+    const has = (id: string): boolean => known.has(id);
+    expect(canonicalizeHookId('flag:accepted-stelas-protection', has)).toBe('accepted-stelas-protection');
+    expect(canonicalizeHookId('score:accepted-stelas-protection', has)).toBe('accepted-stelas-protection');
+    // Exact match still wins; a prefix with no bare counterpart is left unchanged.
+    expect(canonicalizeHookId('score:thorne_loyalty', has)).toBe('score:thorne_loyalty');
+    expect(canonicalizeHookId('flag:never_planted', has)).toBe('flag:never_planted');
+  });
+
+  it('resolveHookId resolves a spuriously-prefixed payoff to the planted bare hook', () => {
+    const ledger = new CallbackLedger();
+    ledger.add({ id: 'accepted-stelas-protection', sourceEpisode: 2, sourceSceneId: 's2-1', sourceChoiceId: 'c1', flags: [], summary: 'Stela offers her warding', payoffWindow: { minEpisode: 2, maxEpisode: 4 } });
+    expect(ledger.resolveHookId('flag:accepted-stelas-protection')).toBe('accepted-stelas-protection');
+    expect(ledger.has(ledger.resolveHookId('flag:accepted-stelas-protection'))).toBe(true);
+  });
+
   it('credits a payoff tagged with a bare flag name (callbackHookId missing the flag: prefix)', () => {
     const ledger = new CallbackLedger();
     ledger.add({ id: 'flag:treatment_seed_ep1_3', sourceEpisode: 1, sourceSceneId: 's1', sourceChoiceId: 'c1', flags: ['treatment_seed_ep1_3'], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 }, payoffCount: 0 });

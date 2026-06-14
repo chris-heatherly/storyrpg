@@ -92,11 +92,17 @@ export const DEFAULT_LEDGER_CONFIG: LedgerConfig = {
 /**
  * Canonicalize a raw `callbackHookId` to a ledger id given a predicate that
  * knows which ids exist. Flag/score hooks are keyed `flag:<name>` / `score:<name>`,
- * but agents routinely tag a payoff with the BARE flag name (`treatment_seed_ep1_3`)
- * instead of the planted id (`flag:treatment_seed_ep1_3`). When the raw id is not
- * itself a known hook but a `flag:`/`score:`-prefixed form is, that prefixed hook is
- * what the payoff means — return it. Otherwise the id is returned unchanged (a
- * genuinely unknown id stays as-is so it can still be flagged dangling downstream).
+ * but agents routinely mismatch the prefix BOTH ways:
+ *   - drop it: tag a payoff with the BARE flag name (`treatment_seed_ep1_3`) instead
+ *     of the planted id (`flag:treatment_seed_ep1_3`); or
+ *   - add a spurious one: tag a payoff for a BARE callback-hook promise
+ *     (`accepted-stelas-protection`) as `flag:accepted-stelas-protection` (bite-me-g14
+ *     ep3 Season Canon abort: the ledger holds the bare hook, so the prefixed ref
+ *     resolved to nothing).
+ * In either case the intended hook is the one form (bare or `flag:`/`score:`-prefixed)
+ * that the ledger actually knows — return it. When neither form is known the id is
+ * returned unchanged (a genuinely unknown id stays as-is so it can still be flagged
+ * dangling downstream).
  *
  * Pure: shared by the ledger's own `resolveHookId` (closure over its hook map) and
  * by agents that only know the prompt's hook-id set (e.g. SceneWriter), so the bare
@@ -104,8 +110,17 @@ export const DEFAULT_LEDGER_CONFIG: LedgerConfig = {
  */
 export function canonicalizeHookId(rawId: string, isKnownHookId: (id: string) => boolean): string {
   if (!rawId || isKnownHookId(rawId)) return rawId;
+  // Missing prefix: a bare name whose planted hook is `flag:`/`score:`-prefixed.
   for (const prefix of ['flag:', 'score:']) {
     if (isKnownHookId(prefix + rawId)) return prefix + rawId;
+  }
+  // Spurious prefix: a `flag:`/`score:` ref whose planted hook is registered BARE
+  // (an agent prefixed a narrative callback-hook id that is not a state flag).
+  for (const prefix of ['flag:', 'score:']) {
+    if (rawId.startsWith(prefix)) {
+      const bare = rawId.slice(prefix.length);
+      if (isKnownHookId(bare)) return bare;
+    }
   }
   return rawId;
 }

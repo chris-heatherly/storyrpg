@@ -21,6 +21,7 @@ import type { Story } from '../../types/story';
 import type { RemediationLedgerRecord } from './remediationLedger';
 import { StructuralValidator } from '../validators/StructuralValidator';
 import { canonicalizeStoryWitnessReactions } from '../utils/witnessNpcResolver';
+import { buildDesignNoteLeakStripHandler } from './designNoteLeakHandler';
 
 /** Minimal shape this loop needs from a contract report (FinalStoryContractReport-compatible). */
 export interface ContractRepairReport {
@@ -146,5 +147,9 @@ export function buildDeterministicContractHandlers(): ContractRepairHandler[] {
         record: { rule: 'final_contract_witness', scope: 'autofix', attempted: touched, succeeded: true, degraded: r.dropped > 0, blocked: false, attempts: 1 },
       };
     },
+    // Design-note leak (echo_summary_variant): strip beat textVariants that are a
+    // verbatim feedback-cue/reminder one-liner, so a meta-narration leak repairs
+    // instead of hard-aborting (the GATE_DESIGN_NOTE_LEAK planned fix).
+    buildDesignNoteLeakStripHandler(),
   ];
 }

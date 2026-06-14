@@ -70,11 +70,10 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_WITNESS_ID_INTEGRITY', placement: 'episode', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_RELATIONSHIP_ID_INTEGRITY', placement: 'episode', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_WITNESS_SCENE_PRESENCE', placement: 'episode', kind: 'blocking', defaultOn: true, repair: 'autofix' },
-  {
-    id: 'GATE_DESIGN_NOTE_LEAK', placement: 'season-final', kind: 'blocking', defaultOn: true,
-    policyException:
-      'Deterministic detector with a zero-false-positive shadow profile (2026-06-06 corpus); a design-note leak is an unshippable fiction-first violation. Planned fix: add meta-narration stripping to the scene-prose repair handler so hits repair instead of aborting.',
-  },
+  // echo_summary_variant leaks now REPAIR (buildDesignNoteLeakStripHandler strips the
+  // bogus feedback-cue textVariant) instead of aborting — the planned fix the prior
+  // policyException referenced is implemented.
+  { id: 'GATE_DESIGN_NOTE_LEAK', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
 
   // ── Wave 3: bounded LLM soft-gates (never abort) ──
   { id: 'GATE_JUDGE_STABILIZATION', placement: 'episode', kind: 'soft', defaultOn: true },

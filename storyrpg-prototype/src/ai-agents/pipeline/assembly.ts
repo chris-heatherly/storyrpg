@@ -220,7 +220,13 @@ export class Assembly {
           routeContext: genBeat.routeContext,
         };
 
-        if (genBeat.isChoicePoint) {
+        // Attach choices whenever a choice set EXISTS for this beat — not only when
+        // genBeat.isChoicePoint is set. A choiceMap entry is created exclusively for a
+        // real choice point, so its presence is the source of truth. Gating on the
+        // flag too silently drops choices when an auto-marked / fallback choice point's
+        // isChoicePoint was set AFTER the scene checkpoint was saved (so the assembled
+        // copy never sees it) — shipping a branch point choiceless (bite-me-g14 ep2 s2-1).
+        if (choiceMap.has(`${sceneBlueprint.id}::${genBeat.id}`)) {
           const choiceSet = choiceMap.get(`${sceneBlueprint.id}::${genBeat.id}`);
           if (choiceSet) {
             beat.choices = choiceSet.choices.map((gc, ci) => {
@@ -525,7 +531,9 @@ export class Assembly {
           sequenceIntent: (gb as any).sequenceIntent,
           isChoiceBridge: gb.isChoiceBridge,
           routeContext: gb.routeContext,
-          choices: gb.isChoicePoint ? choiceMap.get(`${sb.id}::${gb.id}`)?.choices.map(c => assembleChoiceForStory(c)) : undefined
+          // Attach whenever a choice set exists for this beat (source of truth), not
+          // only when gb.isChoicePoint survived to assembly. See assembleStory above.
+          choices: choiceMap.get(`${sb.id}::${gb.id}`)?.choices.map(c => assembleChoiceForStory(c))
         })),
         encounter,
         sequenceIntent: (content as any).sequenceIntent || (sb as any).sequenceIntent,

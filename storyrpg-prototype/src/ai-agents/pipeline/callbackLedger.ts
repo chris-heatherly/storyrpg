@@ -478,7 +478,10 @@ export class CallbackLedger {
    * Auto-resolves when payoffCount >= payoffThreshold.
    */
   recordPayoff(hookId: string): CallbackHook | undefined {
-    const hook = this.hooks.get(hookId);
+    // Canonicalize first: a caller may pass a prefix-drifted id (bare vs `flag:`/
+    // `score:`) — resolveHookId maps it to the planted hook (and is a no-op for an
+    // already-canonical or genuinely-unknown id), so the payoff isn't dropped silently.
+    const hook = this.hooks.get(this.resolveHookId(hookId));
     if (!hook) return undefined;
     hook.payoffCount += 1;
     if (hook.payoffCount >= this.config.payoffThreshold) {

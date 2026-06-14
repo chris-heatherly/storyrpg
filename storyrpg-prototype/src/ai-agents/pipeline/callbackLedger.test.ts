@@ -207,6 +207,18 @@ describe('CallbackLedger', () => {
     expect(ledger.all()[0].payoffCount).toBe(2);
   });
 
+  it('recordPayoff canonicalizes a prefix-drifted id so the payoff is not dropped', () => {
+    const ledger = new CallbackLedger();
+    // Planted with a `flag:` prefix; paid off with the bare name (and vice versa).
+    ledger.add({ id: 'flag:treatment_seed_ep1', sourceEpisode: 1, sourceSceneId: 's1', sourceChoiceId: 'c1', flags: ['treatment_seed_ep1'], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 } });
+    // Bare planted hook, paid off WITH a spurious prefix.
+    ledger.add({ id: 'accepted-stelas-protection', sourceEpisode: 1, sourceSceneId: 's2', sourceChoiceId: 'c2', flags: [], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 } });
+
+    expect(ledger.recordPayoff('treatment_seed_ep1')?.id).toBe('flag:treatment_seed_ep1');
+    expect(ledger.recordPayoff('flag:accepted-stelas-protection')?.id).toBe('accepted-stelas-protection');
+    expect(ledger.recordPayoff('never-planted')).toBeUndefined();
+  });
+
   it('records payoffs from text variants that reference existing hook ids', () => {
     const ledger = new CallbackLedger();
     ledger.add({

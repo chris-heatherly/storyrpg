@@ -3118,7 +3118,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                     <Text style={styles.configLabel}>MODEL FAMILY</Text>
                     <TouchableOpacity
-                      onPress={() => refreshModels({ anthropicApiKey: apiKey, openaiApiKey, geminiApiKey, openRouterApiKey, atlasCloudApiKey: atlasCloudApiKey })}
+                      onPress={() => refreshModels({ anthropicApiKey: apiKey, openaiApiKey, geminiApiKey, atlasCloudApiKey: atlasCloudApiKey, ...(modelFamily === 'openrouter' ? { openRouterApiKey } : {}) })}
                       disabled={modelsScanLoading}
                       style={{ flexDirection: 'row', alignItems: 'center', opacity: modelsScanLoading ? 0.5 : 1 }}
                     >

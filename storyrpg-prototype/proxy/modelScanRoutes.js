@@ -288,11 +288,12 @@ async function performScan(overrideKeys) {
     process.env.OPENAI_API_KEY ||
     process.env.EXPO_PUBLIC_OPENAI_API_KEY ||
     '';
-  const openRouterKey =
-    overrideKeys?.openRouterApiKey ||
-    process.env.OPENROUTER_API_KEY ||
-    process.env.EXPO_PUBLIC_OPENROUTER_API_KEY ||
-    '';
+  // OpenRouter is OPT-IN only: probe its /models endpoint solely when the caller
+  // EXPLICITLY passes an OpenRouter key (i.e. the user is on the OpenRouter family
+  // and clicked Scan). Unlike the other providers it does NOT fall back to the
+  // ambient OPENROUTER_API_KEY env, so a key left in .env never makes the proxy
+  // call OpenRouter on startup / auto-rescan while a different provider is selected.
+  const openRouterKey = overrideKeys?.openRouterApiKey || '';
 
   const [anthropic, openai, gemini, openrouter, atlasCloud] = await Promise.all([
     scanAnthropicModels(anthropicKey),

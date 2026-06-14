@@ -33,6 +33,7 @@ import {
   buildEpisodeScenes,
   sevenPointTextForEpisode,
   toSceneEncounter,
+  MIN_SCENES_PER_EPISODE,
 } from './seasonScenePlanBuilder';
 import { SceneSpineValidator } from '../validators/SceneSpineValidator';
 
@@ -313,10 +314,24 @@ function budgetIntentFor(rs: RawScene, isEncounter: boolean): BudgetIntent {
  * Normalize a raw LLM scene-plan response into a validated SeasonScenePlan, or
  * return null if it can't be made valid (caller falls back to deterministic).
  */
-export function normalizeAuthoredScenePlan(raw: unknown, plan: SeasonPlan): SeasonScenePlan | null {
+export function normalizeAuthoredScenePlan(
+  raw: unknown,
+  plan: SeasonPlan,
+  opts: {
+    /**
+     * Minimum scenes an authored episode must carry; an episode below this floor
+     * is rebuilt deterministically (same mechanism as a model-skipped episode).
+     * Opt-in — omit (or 0) to preserve prior behavior. Standard-mode runs pass
+     * {@link MIN_SCENES_PER_EPISODE} so a branchable episode is never under-sized;
+     * sceneEpisodes mode and unit tests pass nothing.
+     */
+    minScenesPerEpisode?: number;
+  } = {},
+): SeasonScenePlan | null {
   if (!raw || typeof raw !== 'object') return null;
   const episodesRaw = (raw as { episodes?: unknown }).episodes;
   if (!Array.isArray(episodesRaw)) return null;
+  const minScenesPerEpisode = opts.minScenesPerEpisode ?? 0;
 
   const rawByEpisode = new Map<number, RawScene[]>();
   for (const epRaw of episodesRaw) {
@@ -337,7 +352,19 @@ export function normalizeAuthoredScenePlan(raw: unknown, plan: SeasonPlan): Seas
       scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointTextForEpisode(plan, ep)));
       continue;
     }
-    scenesByEpisode.set(ep.episodeNumber, normalizeEpisodeScenes(ep, rawScenes));
+    const normalized = normalizeEpisodeScenes(ep, rawScenes);
+    // Floor guard: an authored episode below the structural minimum (the model
+    // returned e.g. only a setup + an encounter) is too small to carry a
+    // scene-graph branch and hard-aborts at branch validation downstream
+    // (bite-me-g13 2026-06-13: ep1 came back as 2 scenes). Rebuild THAT episode
+    // from the deterministic spine — the same gap-fill mechanism used for a
+    // skipped episode — so adequately-sized authored episodes are untouched and
+    // golden parity holds (only fires when the floor is requested AND violated).
+    if (normalized.length < minScenesPerEpisode) {
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointTextForEpisode(plan, ep)));
+      continue;
+    }
+    scenesByEpisode.set(ep.episodeNumber, normalized);
   }
 
   // Flatten and clean the cross-scene graph.

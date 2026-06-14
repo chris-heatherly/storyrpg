@@ -28,7 +28,7 @@ import type {
 import type { StructuralRole } from '../../types/sourceAnalysis';
 import { SCENE_BUDGET_WEIGHT, ENCOUNTER_BUDGET_WEIGHT } from '../../types/scenePlan';
 
-const MIN_SCENES_PER_EPISODE = 3;
+export const MIN_SCENES_PER_EPISODE = 3;
 const MAX_SCENES_PER_EPISODE = 8;
 /**
  * When an episode carries more authored turns than the normal scene cap, we let

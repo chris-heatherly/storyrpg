@@ -166,6 +166,61 @@ describe('normalizeAuthoredScenePlan', () => {
     const sp = normalizeAuthoredScenePlan(raw, p)!;
     expect(sp.byEpisode[2]?.length).toBeGreaterThanOrEqual(3); // deterministic fallback for ep 2
   });
+
+  it('preserves an under-sized authored episode when no scene floor is requested (opt-in)', () => {
+    const p = plan([episode(1, ['hook'])]);
+    const raw = {
+      episodes: [
+        {
+          episodeNumber: 1,
+          scenes: [
+            { id: 's1-1', kind: 'standard', title: 'A', narrativeRole: 'setup' },
+            { id: 's1-2', kind: 'standard', title: 'B', narrativeRole: 'development' },
+          ],
+        },
+      ],
+    };
+    const sp = normalizeAuthoredScenePlan(raw, p)!;
+    expect(sp.byEpisode[1]).toEqual(['s1-1', 's1-2']); // unchanged — floor is off by default
+  });
+
+  it('rebuilds an under-sized authored episode deterministically when a scene floor is requested', () => {
+    // bite-me-g13 2026-06-13: the model authored ep1 as setup + encounter (2 scenes),
+    // too small to carry a scene-graph branch. With the floor on, that episode is
+    // rebuilt from the deterministic spine instead of shipping a branchless episode.
+    const p = plan([episode(1, ['hook'])]);
+    const raw = {
+      episodes: [
+        {
+          episodeNumber: 1,
+          scenes: [
+            { id: 's1-1', kind: 'standard', title: 'A', narrativeRole: 'setup' },
+            { id: 'treatment-enc-1-1', kind: 'encounter', title: 'Clash', narrativeRole: 'turn' },
+          ],
+        },
+      ],
+    };
+    const sp = normalizeAuthoredScenePlan(raw, p, { minScenesPerEpisode: 3 })!;
+    expect(sp.byEpisode[1]!.length).toBeGreaterThanOrEqual(3); // rebuilt to the floor
+  });
+
+  it('leaves an adequately-sized authored episode untouched when a scene floor is requested', () => {
+    const p = plan([episode(1, ['hook'])]);
+    const raw = {
+      episodes: [
+        {
+          episodeNumber: 1,
+          scenes: [
+            { id: 's1-1', kind: 'standard', title: 'A', narrativeRole: 'setup' },
+            { id: 's1-2', kind: 'standard', title: 'B', narrativeRole: 'development' },
+            { id: 's1-3', kind: 'standard', title: 'C', narrativeRole: 'payoff' },
+          ],
+        },
+      ],
+    };
+    const sp = normalizeAuthoredScenePlan(raw, p, { minScenesPerEpisode: 3 })!;
+    expect(sp.byEpisode[1]).toEqual(['s1-1', 's1-2', 's1-3']); // authored ids survive
+  });
 });
 
 describe('buildScenePlanPrompt', () => {

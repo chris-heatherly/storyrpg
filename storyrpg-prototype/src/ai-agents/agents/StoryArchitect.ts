@@ -28,6 +28,7 @@ import { PLACEHOLDER_STAKES, isPlaceholderStake } from '../constants/placeholder
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType, NarrativeSequenceIntent, StakesLayers } from '../../types';
 import type { ArcEpisodeTurnout, CliffhangerPlan, InformationLedgerEntry, SeasonPromiseArchitecture } from '../../types/seasonPlan';
 import { assignInfoRevealsToScenes } from '../pipeline/infoRevealAssignment';
+import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { assignBlueprintTimeline, normalizeTimeOfDay, type SceneTimeOfDay } from '../utils/sceneTimeline';
 import type { ResidueRequirement } from '../pipeline/reconvergenceResidue';
 import type { PlannedScene, SetupPayoffEdge, SceneNarrativeRole, RequiredBeat } from '../../types/scenePlan';
@@ -1112,6 +1113,65 @@ export class StoryArchitect extends BaseAgent {
     console.warn(
       `[StoryArchitect] Repaired scene-graph branching by turning "${candidate.id}" into a branch scene with leadsTo: ${futureSceneIds.join(', ')}`
     );
+  }
+
+  /**
+   * Does this episode have to carry a real scene-graph branch? True by default;
+   * linear-bottleneck and sceneEpisodes modes are exempt. Mirrors the gate the
+   * content-time {@link SceneGraphBranchValidator} enforces.
+   */
+  private episodeRequiresSceneGraphBranch(): boolean {
+    return this.sceneGraphBranching.required
+      && !this.sceneGraphBranching.allowLinearBottleneckEpisodes
+      && this.episodeStructureMode !== 'sceneEpisodes';
+  }
+
+  /**
+   * Plan-time blueprint adequacy check. A branching-required episode whose
+   * blueprint is too small to carry a branch (or has no valid branch scene even
+   * after {@link repairSceneGraphBranchCoverage}) will hard-abort at content-time
+   * scene-graph branching validation — but only AFTER the expensive scene/choice/
+   * encounter pass. Detect it here, right after the repair pipeline, so the
+   * caller can regenerate (freeform path) or fail fast (deterministic elaborate
+   * path) before that work is wasted.
+   *
+   * Returns adequate=true for exempt episodes, and for branchable episodes whose
+   * repair already produced a valid branch — so it only fires on genuinely
+   * under-sized/branchless blueprints (golden parity).
+   */
+  private assessBlueprintBranchAdequacy(blueprint: EpisodeBlueprint): {
+    adequate: boolean;
+    sceneCount: number;
+    validBranchCount: number;
+    reason: string;
+  } {
+    const sceneCount = blueprint.scenes?.length ?? 0;
+    const validBranchCount = (blueprint.scenes || []).filter(scene =>
+      scene.choicePoint?.branches &&
+      scene.choicePoint.type !== 'expression' &&
+      new Set(scene.leadsTo || []).size >= 2
+    ).length;
+
+    if (!this.episodeRequiresSceneGraphBranch()) {
+      return { adequate: true, sceneCount, validBranchCount, reason: '' };
+    }
+    if (sceneCount < MIN_SCENES_PER_EPISODE) {
+      return {
+        adequate: false,
+        sceneCount,
+        validBranchCount,
+        reason: `only ${sceneCount} scene(s) — a branch needs at least ${MIN_SCENES_PER_EPISODE} (one branch scene plus two distinct downstream targets)`,
+      };
+    }
+    if (validBranchCount < this.sceneGraphBranching.minPerEpisode) {
+      return {
+        adequate: false,
+        sceneCount,
+        validBranchCount,
+        reason: `${validBranchCount} valid branch scene(s); need at least ${this.sceneGraphBranching.minPerEpisode} (a non-expression choicePoint with branches=true and two distinct leadsTo targets)`,
+      };
+    }
+    return { adequate: true, sceneCount, validBranchCount, reason: '' };
   }
 
   private collectAuthoredResidue(guidance: TreatmentEpisodeGuidance | undefined): string[] {
@@ -2229,6 +2289,24 @@ ${sceneEpisodeMode}
       this.assignInfoReveals(blueprint, input);
       this.assignSceneTimeline(blueprint);
       this.ensureCharacterIntroductionBeats(blueprint, input);
+
+      // Plan-time adequacy gate. This path is deterministic (no LLM), so a
+      // re-run produces the same blueprint — regeneration cannot help. If the
+      // planned scene plan was too small to carry a required branch, fail fast
+      // here (before the content pass) with an attributed message rather than
+      // hard-aborting later at content-time branch validation. The root cause is
+      // upstream in the season scene-plan allocation; the message deliberately
+      // avoids the phase-loop branch-retry keywords so it isn't retried in vain.
+      const elaborateAdequacy = this.assessBlueprintBranchAdequacy(blueprint);
+      if (!elaborateAdequacy.adequate) {
+        return {
+          success: false,
+          error:
+            `[BlueprintAdequacyGate] Episode ${input.episodeNumber} planned scene plan is under-sized for required branch coverage: ${elaborateAdequacy.reason}. ` +
+            `Regenerate the season scene plan so this episode carries an adequately-sized, branchable blueprint before content generation.`,
+        };
+      }
+
       return { success: true, data: blueprint, rawResponse: '' };
     }
 
@@ -2594,6 +2672,20 @@ REQUIREMENTS:
       }
 
       this.validateBlueprint(blueprint, input);
+
+      // Plan-time adequacy backstop (freeform path). validateBlueprint already
+      // throws on <3 scenes and repairSceneGraphBranchCoverage forces a branch
+      // once there are ≥3 scenes, so this only fires if those didn't take — in
+      // which case we want a regeneration, never a shipped blueprint. The
+      // "must have at least" wording makes classifyBlueprintFailure treat it as a
+      // hard/retryable structural error, and "scene-graph branching" lets the
+      // EpisodeArchitecturePhase loop re-author too.
+      const adequacy = this.assessBlueprintBranchAdequacy(blueprint);
+      if (!adequacy.adequate) {
+        throw new Error(
+          `Blueprint must have at least ${MIN_SCENES_PER_EPISODE} scenes with a real scene-graph branching choice point: ${adequacy.reason}.`,
+        );
+      }
 
       return {
         success: true,

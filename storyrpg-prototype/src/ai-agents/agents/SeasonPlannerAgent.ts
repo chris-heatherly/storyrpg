@@ -69,7 +69,7 @@ import {
 } from '../prompts/storytellingPrinciples';
 import { clampSceneCount } from '../../constants/pipeline';
 import { isSceneFirstPlanningEnabled } from '../config/sceneFirstPlanning';
-import { buildSeasonScenePlan, scenesForEpisode } from '../pipeline/seasonScenePlanBuilder';
+import { buildSeasonScenePlan, scenesForEpisode, MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { reconcileBeatAnchors } from '../pipeline/beatAnchorReconciliation';
 import { buildScenePlanPrompt, normalizeAuthoredScenePlan } from '../pipeline/authorScenePlan';
 import { synthesizeTreatmentGuidance } from '../pipeline/synthesizeTreatmentGuidance';
@@ -243,7 +243,14 @@ Your plans must define:
       isSceneFirstPlanningEnabled(preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard') &&
       seasonPlan.scenePlan
     ) {
-      const authored = await this.authorScenePlanLLM(seasonPlan);
+      // Standard-mode episodes must stay branchable, so hold the LLM-authored
+      // spine to the deterministic per-episode scene floor; sceneEpisodes mode
+      // legitimately runs single-scene episodes and is exempt.
+      const isSceneEpisodes = preferences?.episodeStructureMode === 'sceneEpisodes';
+      const authored = await this.authorScenePlanLLM(
+        seasonPlan,
+        isSceneEpisodes ? {} : { minScenesPerEpisode: MIN_SCENES_PER_EPISODE },
+      );
       if (authored) {
         seasonPlan.scenePlan = authored;
         for (const ep of seasonPlan.episodes) {
@@ -446,12 +453,15 @@ Your plans must define:
    * null on any failure (truncated/invalid JSON, spine validation errors) so the
    * caller keeps the deterministic spine. See {@link normalizeAuthoredScenePlan}.
    */
-  private async authorScenePlanLLM(plan: SeasonPlan): Promise<SeasonScenePlan | null> {
+  private async authorScenePlanLLM(
+    plan: SeasonPlan,
+    opts: { minScenesPerEpisode?: number } = {},
+  ): Promise<SeasonScenePlan | null> {
     try {
       const prompt = buildScenePlanPrompt(plan);
       const response = await this.callLLM([{ role: 'user', content: prompt }]);
       const raw = this.parseJSON(response);
-      const normalized = normalizeAuthoredScenePlan(raw, plan);
+      const normalized = normalizeAuthoredScenePlan(raw, plan, opts);
       if (!normalized) {
         console.warn('[SeasonPlanner] Authored scene plan failed normalization/validation; keeping deterministic spine.');
       }

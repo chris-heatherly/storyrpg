@@ -1664,3 +1664,117 @@ describe('StoryArchitect.buildTransitionPressureChange', () => {
     expect(result).toContain('reverses into');
   });
 });
+
+// -----------------------------------------------------------------------
+// Plan-time blueprint branch-adequacy guard
+// -----------------------------------------------------------------------
+
+describe('StoryArchitect blueprint branch-adequacy guard', () => {
+  const branchScene = (id: string, leadsTo: string[]) => ({
+    id,
+    isEncounter: false,
+    leadsTo,
+    choicePoint: { type: 'strategic', branches: true, stakes: {}, description: 'A fork.', optionHints: [] },
+  });
+  const linearScene = (id: string, leadsTo: string[]) => ({
+    id,
+    isEncounter: false,
+    leadsTo,
+    choicePoint: { type: 'expression', branches: false, stakes: {}, description: 'A beat.', optionHints: [] },
+  });
+
+  it('flags an under-sized (2-scene) branching-required blueprint as inadequate', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint: any = { scenes: [linearScene('s1-1', ['enc-1']), { id: 'enc-1', isEncounter: true, leadsTo: [] }] };
+
+    const verdict = (architect as any).assessBlueprintBranchAdequacy(blueprint);
+
+    expect(verdict.adequate).toBe(false);
+    expect(verdict.sceneCount).toBe(2);
+    expect(verdict.reason).toContain('only 2 scene');
+  });
+
+  it('passes a 3-scene blueprint that carries a real branch', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint: any = {
+      scenes: [branchScene('s1-1', ['s1-2', 'enc-1']), linearScene('s1-2', ['enc-1']), { id: 'enc-1', isEncounter: true, leadsTo: [] }],
+    };
+
+    const verdict = (architect as any).assessBlueprintBranchAdequacy(blueprint);
+
+    expect(verdict.adequate).toBe(true);
+    expect(verdict.validBranchCount).toBe(1);
+  });
+
+  it('flags a big-enough but branchless blueprint as inadequate', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint: any = {
+      scenes: [linearScene('s1-1', ['s1-2']), linearScene('s1-2', ['s1-3']), linearScene('s1-3', [])],
+    };
+
+    const verdict = (architect as any).assessBlueprintBranchAdequacy(blueprint);
+
+    expect(verdict.adequate).toBe(false);
+    expect(verdict.validBranchCount).toBe(0);
+    expect(verdict.reason).toContain('valid branch scene');
+  });
+
+  it('exempts linear-bottleneck episodes (never fires)', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const blueprint: any = { scenes: [linearScene('s1-1', ['enc-1']), { id: 'enc-1', isEncounter: true, leadsTo: [] }] };
+
+    expect((architect as any).assessBlueprintBranchAdequacy(blueprint).adequate).toBe(true);
+  });
+
+  it('exempts sceneEpisodes mode (never fires)', () => {
+    const architect = new StoryArchitect(config, { episodeStructureMode: 'sceneEpisodes' } as any);
+    const blueprint: any = { scenes: [linearScene('s1-1', [])] };
+
+    expect((architect as any).assessBlueprintBranchAdequacy(blueprint).adequate).toBe(true);
+  });
+
+  // Elaborate (deterministic, no-LLM) path: the guard fails fast before content gen.
+  const plannedStandard = (id: string, order: number, role: string) => ({
+    id, episodeNumber: 1, order, kind: 'standard', title: id, dramaticPurpose: `Purpose ${id}`, narrativeRole: role,
+  });
+  const plannedEncounter = (id: string, order: number) => ({
+    id, episodeNumber: 1, order, kind: 'encounter', title: id, dramaticPurpose: `Encounter ${id}`, narrativeRole: 'turn',
+    encounter: { type: 'social', difficulty: 'moderate', relevantSkills: [], isBranchPoint: false },
+  });
+
+  it('elaborate path fails fast with an attributed message on a 2-scene plan', async () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      episodeNumber: 1,
+      seasonPlanDirectives: { plannedScenes: [plannedStandard('s1-1', 0, 'setup'), plannedEncounter('treatment-enc-1-1', 1)] } as any,
+    });
+
+    const result = await architect.execute(input);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('BlueprintAdequacyGate');
+    expect(result.error).toContain('Episode 1');
+  });
+
+  it('elaborate path succeeds and branches on an adequately-sized (3-scene) plan', async () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      episodeNumber: 1,
+      seasonPlanDirectives: {
+        plannedScenes: [
+          plannedStandard('s1-1', 0, 'setup'),
+          plannedStandard('s1-2', 1, 'development'),
+          plannedEncounter('treatment-enc-1-1', 2),
+        ],
+      } as any,
+    });
+
+    const result = await architect.execute(input);
+
+    expect(result.success).toBe(true);
+    const validBranch = (result.data!.scenes || []).filter(
+      (s: any) => s.choicePoint?.branches && s.choicePoint.type !== 'expression' && new Set(s.leadsTo || []).size >= 2,
+    );
+    expect(validBranch.length).toBeGreaterThanOrEqual(1);
+  });
+});

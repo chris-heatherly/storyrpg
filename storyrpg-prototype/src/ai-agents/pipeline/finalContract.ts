@@ -143,10 +143,25 @@ export class FinalContract {
     // validators/runFidelityValidators.ts; this is one delegating call.
     const fidelity = runFidelityValidators({ story: input.story, seasonPlan: input.brief.seasonPlan, sourceAnalysis: input.brief.multiEpisode?.sourceAnalysis });
 
+    // Heuristic fidelity findings (RequiredBeatRealization / SignatureDevicePresence /
+    // …) are RE-RUN inside runValidation on the CURRENT story, NOT frozen here — else
+    // the scene-prose repair could rewrite the prose forever and re-validation would
+    // keep returning the pre-repair misses (the bite-me-g14 abort: repair ran 3 rounds,
+    // rewrote every flagged scene, "still failing" — because the findings never tracked
+    // the rewrites). `refutedFidelityKeys` carries the JUDGE's refutations (paraphrases
+    // it confirmed are dramatized) across re-validation so a re-run heuristic can't
+    // re-block a finding the judge already cleared. Keyed stably per finding.
+    const refutedFidelityKeys = new Set<string>();
+    const fidelityKey = (i: { validator?: string; sceneId?: string; message?: string }): string =>
+      `${i.validator ?? ''}::${i.sceneId ?? ''}::${i.message ?? ''}`;
+
     // One validation pass = FinalStoryContractValidator + the encounter-quality
     // gate (merged in place). Factored into a closure so the Wave-4 repair loop can
     // re-validate a repaired story with identical inputs.
     const runValidation = async (story: Story): Promise<FinalStoryContractReport> => {
+      // Re-run the heuristic fidelity validators on THIS (possibly repaired) story so
+      // a scene-prose rewrite is actually seen (cheap — no LLM). See refutedFidelityKeys.
+      const freshFidelity = runFidelityValidators({ story, seasonPlan: input.brief.seasonPlan, sourceAnalysis: input.brief.multiEpisode?.sourceAnalysis });
       const r = await new FinalStoryContractValidator().validate({
         story,
         protagonist: input.brief.protagonist
@@ -161,8 +176,8 @@ export class FinalContract {
         bestPracticesReport: input.bestPracticesReport,
         validSkills: Object.keys(story.initialState?.skills || {}),
         mode: this.deps.config.validation.mode,
-        fidelityFindings: fidelity.fidelityFindings,
-        treatmentSourced: fidelity.treatmentSourced,
+        fidelityFindings: freshFidelity.fidelityFindings,
+        treatmentSourced: freshFidelity.treatmentSourced,
         // L2 conformance: each generated episode realizes the season plan's per-episode
         // choice-type budget and leans on its planned skills (balance itself is validated
         // at plan time, over the whole season).
@@ -175,6 +190,16 @@ export class FinalContract {
         applyEncounterQualityGate(r, story, this.deps.allEncounterTelemetry);
       } catch (encErr) {
         console.warn(`[Pipeline] EncounterQualityValidator failed (non-fatal): ${(encErr as Error).message}`);
+      }
+      // Re-apply the fidelity judge's refutations: a paraphrase it already confirmed
+      // dramatized must not re-block when the re-run heuristic re-flags it. A rewrite
+      // only ADDS staged content, so a refuted (content-present) finding stays valid.
+      if (refutedFidelityKeys.size > 0 && r.blockingIssues?.length) {
+        const kept = r.blockingIssues.filter((i) => !refutedFidelityKeys.has(fidelityKey(i)));
+        if (kept.length !== r.blockingIssues.length) {
+          r.blockingIssues = kept;
+          r.passed = kept.length === 0;
+        }
       }
       return r;
     };
@@ -190,6 +215,9 @@ export class FinalContract {
     // Conservative on failure (judge unavailable/error → everything stays
     // blocking, byte-identical to today). Gated; can only downgrade.
     if (!report.passed && isGateEnabled('GATE_FIDELITY_JUDGE_CONFIRM')) {
+      // Snapshot blocking keys so we can tell which the judge refuted (it downgrades
+      // in place), and carry those refutations into re-validation.
+      const beforeJudge = new Set(report.blockingIssues.map(fidelityKey));
       const outcome = await confirmHeuristicFidelityFindings({
         report,
         story: input.story,
@@ -203,6 +231,10 @@ export class FinalContract {
         },
         emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
       });
+      // Findings that left blocking = judge-refuted; remember them so re-validation
+      // (which re-runs the heuristics fresh) does not re-block them.
+      const afterJudge = new Set(report.blockingIssues.map(fidelityKey));
+      for (const k of beforeJudge) if (!afterJudge.has(k)) refutedFidelityKeys.add(k);
       if (outcome.judged > 0) {
         this.deps.emit({
           type: 'checkpoint',

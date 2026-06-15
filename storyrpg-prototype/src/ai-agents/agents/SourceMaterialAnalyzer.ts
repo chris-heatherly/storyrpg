@@ -522,6 +522,35 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
   }
 
   /**
+   * Parse an analysis JSON response, with ONE focused compact retry. The structure
+   * analysis and the single-call episode breakdown are heavy LAST-RESORT outputs (no
+   * further fallback): a malformed (an unescaped quote → "Expected ',' or '}'") or
+   * truncated parse propagates to execute() → success:false → the whole run aborts
+   * before generation even starts. A retry asking for the SAME content COMPACTLY and
+   * strictly-escaped is far more likely to parse. Only fires on failure/truncation, so
+   * a clean first response — including every golden/_transportOverride run — keeps the
+   * single-call path; a still-failing retry rethrows, preserving the existing abort.
+   */
+  private async parseAnalysisWithCompactRetry<T>(basePrompt: string, firstResponse: string, label: string): Promise<T> {
+    try {
+      const parsed = this.parseJSON<T>(firstResponse);
+      if (!this.wasLastResponseTruncated()) return parsed;
+      console.warn(`[SourceMaterialAnalyzer] ${label}: response parsed but truncation dropped content — retrying with a compact-output directive.`);
+    } catch (parseError) {
+      const msg = parseError instanceof Error ? parseError.message : String(parseError);
+      console.warn(`[SourceMaterialAnalyzer] ${label}: JSON parse failed (${msg.slice(0, 120)}) — retrying with a compact, strictly-valid JSON directive.`);
+    }
+    const compactPrompt =
+      `${basePrompt}\n\n` +
+      `IMPORTANT: your previous response was not valid JSON (a malformed or over-long object — likely an unescaped ` +
+      `quote inside a string, or it was cut off). Re-emit the COMPLETE result as ONE strictly-valid JSON object: ` +
+      `escape every double-quote inside a string value as \\", no raw line breaks inside strings, no trailing commas, ` +
+      `and keep every field tight so the whole object fits. Return only the JSON.`;
+    const response = await this.callLLM([{ role: 'user', content: compactPrompt }]);
+    return this.parseJSON<T>(response); // rethrows on failure → caller's catch → execute() returns success:false
+  }
+
+  /**
    * First pass: Analyze overall story structure
    */
   private async analyzeStoryStructure(
@@ -746,7 +775,7 @@ Return ONLY valid JSON.
 `;
 
     const response = await this.callLLM([{ role: 'user', content: prompt }]);
-    return this.parseJSON<StoryStructureAnalysis>(response);
+    return this.parseAnalysisWithCompactRetry<StoryStructureAnalysis>(prompt, response, 'structure analysis');
   }
 
   /**
@@ -1087,7 +1116,7 @@ Return ONLY valid JSON.
 `;
 
     const response = await this.callLLM([{ role: 'user', content: prompt }]);
-    return this.parseJSON<EpisodeBreakdownResponse>(response);
+    return this.parseAnalysisWithCompactRetry<EpisodeBreakdownResponse>(prompt, response, 'single-call episode breakdown');
   }
 
   /**

@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
+import { BaseAgent } from './BaseAgent';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -1218,5 +1219,29 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
     expect(breakdown.episodes.map((ep: any) => ep.title)).toEqual([
       'Wrapped 1', 'Wrapped 2', 'Wrapped 3', 'Wrapped 4', 'Wrapped 5', 'Wrapped 6',
     ]);
+  });
+});
+
+describe('SourceMaterialAnalyzer.parseAnalysisWithCompactRetry (last-resort parse recovery)', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+  const analyzer: any = new SourceMaterialAnalyzer({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });
+  const GOOD = '{"genre":"drama","themes":["voice"]}';
+
+  it('takes the single-call path on a clean first response (no retry)', async () => {
+    let calls = 0;
+    BaseAgent.setLlmTransportOverride(async () => { calls += 1; return GOOD; });
+    const out = await analyzer.parseAnalysisWithCompactRetry('BASE', GOOD, 'structure analysis');
+    expect(out.genre).toBe('drama');
+    expect(calls).toBe(0);
+  });
+
+  it('retries compactly when the first response is truncated, and the retry succeeds', async () => {
+    let prompt = '';
+    BaseAgent.setLlmTransportOverride(async (req: any) => { prompt = req.messages.map((m: any) => String(m.content)).join('\n'); return GOOD; });
+    const truncated = '{"genre":"drama","themes":["voi'; // truncated mid-string → parseJSON recovers + flags truncation → retry
+    const out = await analyzer.parseAnalysisWithCompactRetry('BASE_PROMPT', truncated, 'structure analysis');
+    expect(out.genre).toBe('drama');
+    expect(prompt).toContain('strictly-valid JSON');
+    expect(prompt).toContain('BASE_PROMPT');
   });
 });

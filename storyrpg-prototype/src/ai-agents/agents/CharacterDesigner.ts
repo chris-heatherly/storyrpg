@@ -427,13 +427,12 @@ Before finalizing:
 
       console.log(`[CharacterDesigner] Received response (${response.length} chars)`);
 
-      let characterBible: CharacterBible;
-      try {
-        characterBible = this.parseJSON<CharacterBible>(response);
-      } catch (parseError) {
-        console.error(`[CharacterDesigner] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
-        throw parseError;
-      }
+      // Parse, with ONE focused compact retry: a full character bible is heavy output
+      // that weaker models occasionally emit as malformed JSON (an unescaped quote
+      // mid-string → "Expected ',' or '}'" at position N) or truncate. Re-running with a
+      // strict-escaping/compact directive is far more likely to parse than failing the
+      // whole phase on a single bad response.
+      let characterBible: CharacterBible = await this.parseCharacterBibleWithCompactRetry(input, prompt, response);
 
       // Debug: Log output characters
       console.log(`[CharacterDesigner] Output characters from LLM:`,
@@ -492,6 +491,39 @@ Before finalizing:
         error: errorMsg,
       };
     }
+  }
+
+  /**
+   * Parse the character-bible JSON, with ONE focused compact retry. A full bible is
+   * heavy output that weaker models occasionally emit as MALFORMED JSON (an unescaped
+   * quote inside a string → "Expected ',' or '}'" mid-document) or truncate. Re-running
+   * the same oversized prompt (the phase retry) tends to fail the same way; a retry that
+   * asks for the SAME content COMPACTLY and strictly-escaped is far more likely to parse.
+   * Only fires on a failure/truncation, so a clean first response — including every
+   * golden/_transportOverride run — keeps the single-call path. A still-failing retry
+   * rethrows so execute() fails and the phase falls back exactly as before.
+   */
+  private async parseCharacterBibleWithCompactRetry(
+    input: CharacterDesignerInput,
+    basePrompt: string,
+    firstResponse: string,
+  ): Promise<CharacterBible> {
+    try {
+      const bible = this.parseJSON<CharacterBible>(firstResponse);
+      if (!this.wasLastResponseTruncated()) return bible;
+      console.warn(`[CharacterDesigner] response parsed but truncation dropped content — retrying with a compact-output directive.`);
+    } catch (parseError) {
+      const msg = parseError instanceof Error ? parseError.message : String(parseError);
+      console.warn(`[CharacterDesigner] JSON parse failed (${msg.slice(0, 120)}) — retrying with a compact, strictly-valid JSON directive.`);
+    }
+    const compactPrompt =
+      `${basePrompt}\n\n` +
+      `IMPORTANT: your previous response was not valid JSON (a malformed or over-long object — likely an unescaped ` +
+      `quote inside a string, or it was cut off). Re-emit the COMPLETE character bible as ONE strictly-valid JSON ` +
+      `object: escape every double-quote inside a string value as \\", put no raw line breaks inside strings, no ` +
+      `trailing commas, and keep every field tight so the whole object fits. Return only the JSON.`;
+    const response = await this.callLLM([{ role: 'user', content: compactPrompt }]);
+    return this.parseJSON<CharacterBible>(response); // rethrows on failure → execute() fails → phase falls back
   }
 
   /**

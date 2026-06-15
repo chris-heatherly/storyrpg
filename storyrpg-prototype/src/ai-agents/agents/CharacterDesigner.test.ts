@@ -190,3 +190,32 @@ describe('CharacterDesigner.fillMissingCharacters (incomplete-cast backfill)', (
     expect(bible.characters.map((c: any) => c.id)).toEqual(['char-a']); // unchanged; validation surfaces the gap
   });
 });
+
+describe('CharacterDesigner.parseCharacterBibleWithCompactRetry (malformed/truncated recovery)', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+  const designer: any = new CharacterDesigner({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });
+  const input = () => ({
+    charactersToCreate: [{ id: 'char-a', name: 'A', role: 'lead', importance: 'major', briefDescription: 'A desc' }],
+    storyContext: { title: 'T', genre: 'Drama', tone: 'Tense', themes: ['x'], userPrompt: 'p' },
+  });
+  const GOOD = '{"characters":[{"id":"char-a","name":"A"}],"keyDynamics":[],"gaps":[],"doNotForget":[]}';
+
+  it('takes the single-call path on a clean first response (no retry)', async () => {
+    let calls = 0;
+    BaseAgent.setLlmTransportOverride(async () => { calls += 1; return GOOD; });
+    const out = await designer.parseCharacterBibleWithCompactRetry(input(), 'BASE_PROMPT', GOOD);
+    expect(out.characters).toHaveLength(1);
+    expect(calls).toBe(0); // clean first response → no compact retry
+  });
+
+  it('retries compactly when the first response is truncated, and the retry succeeds', async () => {
+    let prompt = '';
+    BaseAgent.setLlmTransportOverride(async (req) => { prompt = req.messages.map((m) => String(m.content)).join('\n'); return GOOD; });
+    // Truncated mid-string: parseJSON recovers + flags truncation → retry fires.
+    const truncated = '{"characters":[{"id":"char-a","name":"truncated mid';
+    const out = await designer.parseCharacterBibleWithCompactRetry(input(), 'BASE_PROMPT', truncated);
+    expect(out.characters).toHaveLength(1);
+    expect(prompt).toContain('strictly-valid JSON'); // the retry carries the compact directive
+    expect(prompt).toContain('BASE_PROMPT');
+  });
+});

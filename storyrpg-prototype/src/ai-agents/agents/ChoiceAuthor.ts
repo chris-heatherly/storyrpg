@@ -1675,7 +1675,7 @@ CRITICAL REQUIREMENTS:
 14. Meaningful choices must include at least one impact factor from outcome, process, information, relationship, identity
 15. When provided Story Verbs fit the moment, set storyVerb to one of them
 16. Choices gated by conditions, prior flags, items, identity, relationships, tags, skills, or callback hooks should include affordanceSource
-17. Add witnessReactions when named NPCs observe a moral, relational, deceptive, violent, or loyalty-testing choice
+17. Whenever a named NPC is present in this scene, ADD witnessReactions to each relationship, dilemma, deceptive, moral, violent, or loyalty-testing choice — name the witnessing NPC and give a concrete one-line in-the-moment reaction (a look, a shift in posture, a quiet aside). This is the NPC visibly registering the player's decision as it lands. Only omit it when no named NPC is present to witness.
 18. Stat-check failure should create playable fiction; use failureResidue when the failure changes debt, suspicion, injury, leverage, exposure, obligation, trust, or position
 19. Every important stat check should have at least two skill surfaces: prepared advantage, outcome texture, failure residue, branch residue, or prior passive insight setup
 20. Return ONLY valid JSON, no markdown, no extra text

@@ -717,6 +717,26 @@ describe('SceneWriter structural guards', () => {
     expect(prompt).toMatch(/do NOT invent a SECOND, competing terminal object/i);
   });
 
+  it('renders the HOLD-THESE-LINES invariant block when the blueprint carries invariants', () => {
+    const writer = createWriter();
+    const base = {
+      sceneBlueprint: {
+        id: 's2-6', name: 'The Debrief', description: 'Morning after.', location: 'apartment',
+        mood: 'warm', purpose: 'release', narrativeFunction: 'Close ep2.', dramaticQuestion: 'How brave?',
+        wantVsNeed: 'voice vs adoration', conflictEngine: 'Two suitors.', npcsPresent: [], keyBeats: [], leadsTo: [],
+      },
+      storyContext: { title: 'Bite Me', genre: 'romance', tone: 'noir', worldContext: 'Bucharest.' },
+      protagonistInfo: { name: 'Kylie', pronouns: 'she/her', description: 'A food writer.' },
+      npcs: [], targetBeatCount: 4, dialogueHeavy: false,
+    } as any;
+    const withInv = (writer as any).buildPrompt({ ...base, sceneBlueprint: { ...base.sceneBlueprint, invariants: ['does not go home with him'] } });
+    expect(withInv).toContain('HOLD THESE LINES');
+    expect(withInv).toContain('The protagonist does not go home with him.');
+    // No invariants → the block is absent (and adds no stray content).
+    const without = (writer as any).buildPrompt(base);
+    expect(without).not.toContain('HOLD THESE LINES');
+  });
+
   it('leaves the prompt unchanged (no required-beats checklist) for from-scratch scenes', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',

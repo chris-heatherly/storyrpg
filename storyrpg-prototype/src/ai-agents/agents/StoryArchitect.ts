@@ -30,6 +30,7 @@ import type { ArcEpisodeTurnout, CliffhangerPlan, InformationLedgerEntry, Season
 import { assignInfoRevealsToScenes } from '../pipeline/infoRevealAssignment';
 import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { assignBlueprintTimeline, normalizeTimeOfDay, type SceneTimeOfDay } from '../utils/sceneTimeline';
+import { extractEpisodeInvariants } from '../utils/episodeInvariants';
 import type { ResidueRequirement } from '../pipeline/reconvergenceResidue';
 import type { PlannedScene, SetupPayoffEdge, SceneNarrativeRole, RequiredBeat } from '../../types/scenePlan';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
@@ -432,6 +433,10 @@ export interface SceneBlueprint {
   // scenes the treatment is silent on — the SceneWriter prompt is then unchanged.
   requiredBeats?: RequiredBeat[];
   signatureMoment?: string;
+  // Treatment invariants — lines the prose must HOLD (events the episode states must
+  // NOT happen, e.g. "she does not go home with him"). Advisory SceneWriter guidance;
+  // empty for from-scratch runs and episodes with no stated negative constraint.
+  invariants?: string[];
 
   // Key beats to hit
   keyBeats: string[];
@@ -2328,6 +2333,14 @@ ${sceneEpisodeMode}
       .slice()
       .sort((a, b) => a.order - b.order);
 
+    // Treatment invariants (lines the prose must HOLD) extracted from the episode
+    // synopsis + turnout — empty unless the treatment states an action-negation.
+    const episodeInvariants = extractEpisodeInvariants(
+      [input.episodeSynopsis, input.seasonPlanDirectives?.treatmentGuidance?.endingTurnout]
+        .filter(Boolean)
+        .join('. '),
+    );
+
     const sceneIds = planned.map((s) => s.id);
     const scenes: SceneBlueprint[] = planned.map((p, idx) => {
       const isEncounter = p.kind === 'encounter';
@@ -2339,6 +2352,7 @@ ${sceneEpisodeMode}
         location: p.locations?.[0] || input.currentLocation,
         timeOfDay: normalizeTimeOfDay(p.timeOfDay),
         timeJumpFromPrevious: p.timeJump,
+        ...(episodeInvariants.length ? { invariants: episodeInvariants } : {}),
         mood: p.narrativeRole === 'release' ? 'reflective' : isEncounter ? 'tense' : 'charged',
         purpose: this.purposeForRole(p.narrativeRole, isEncounter),
         dramaticQuestion: p.dramaticPurpose,

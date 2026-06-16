@@ -1572,7 +1572,11 @@ ${input.sceneBlueprint.keyBeats
   .filter((beat) => !isAgentFacingPressureNote(beat))
   .map((beat) => `- ${stripAgentFacingPressureLabel(beat)}`)
   .join('\n')}
-${buildRequiredBeatsSection(input.sceneBlueprint)}
+${buildRequiredBeatsSection(input.sceneBlueprint)}${input.sceneBlueprint.invariants?.length ? `### HOLD THESE LINES — treatment invariants (do NOT depict the negated event)
+The treatment is emphatic that these do NOT happen this episode. Do not write prose
+(or imply, in aftermath or a character's memory) that the negated event occurred:
+${input.sceneBlueprint.invariants.map((inv) => `- The protagonist ${inv}.`).join('\n')}
+` : ''}
 ${this.buildRevealDirectivesSection(input)}${formatForbiddenRevealsSection(input.forbiddenReveals ?? [])}
 ${this.buildEnumeratedObjectiveSection(input)}
 

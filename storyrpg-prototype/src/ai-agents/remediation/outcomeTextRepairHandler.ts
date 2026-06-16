@@ -32,6 +32,7 @@ export interface OutcomeReauthorAgent {
     choiceText: string;
     stakes?: { want?: string; cost?: string; identity?: string };
     sceneName?: string;
+    sceneLocation?: string;
     needTiers: OutcomeTier[];
   }): Promise<Partial<Record<OutcomeTier, string>>>;
 }
@@ -46,10 +47,26 @@ interface ChoiceLike {
 export interface StubOutcomeTarget {
   choice: ChoiceLike;
   sceneName?: string;
+  sceneLocation?: string;
   needTiers: OutcomeTier[];
 }
 
 const TIERS: OutcomeTier[] = ['success', 'partial', 'failure'];
+
+/**
+ * Best-effort setting hint for the re-author prompt. Assembled scenes carry no
+ * structured `location`, so derive an establishing snippet from the scene's first
+ * beat (its `text`, else its `visualMoment`) — enough for the re-author to keep
+ * outcome prose physically consistent with the place (no indoor furniture in a
+ * park, etc.). Returns undefined when no establishing prose is available.
+ */
+function deriveSceneSetting(scene: unknown): string | undefined {
+  const beats = (scene as { beats?: Array<{ text?: string; visualMoment?: string }> })?.beats;
+  const first = Array.isArray(beats) ? beats[0] : undefined;
+  const source = (first?.text || first?.visualMoment || '').trim();
+  if (source.length < 12) return undefined;
+  return source.length > 200 ? `${source.slice(0, 200)}…` : source;
+}
 
 /**
  * Walk the assembled story for choices whose outcome tiers are the deterministic
@@ -59,9 +76,9 @@ const TIERS: OutcomeTier[] = ['success', 'partial', 'failure'];
  */
 export function collectStubOutcomeChoices(story: Story): StubOutcomeTarget[] {
   const targets: StubOutcomeTarget[] = [];
-  const visit = (node: unknown, sceneName?: string): void => {
+  const visit = (node: unknown, sceneName?: string, sceneLocation?: string): void => {
     if (Array.isArray(node)) {
-      for (const item of node) visit(item, sceneName);
+      for (const item of node) visit(item, sceneName, sceneLocation);
       return;
     }
     if (!node || typeof node !== 'object') return;
@@ -70,14 +87,16 @@ export function collectStubOutcomeChoices(story: Story): StubOutcomeTarget[] {
       const choice = obj as ChoiceLike;
       const needTiers = TIERS.filter((t) => isFallbackOutcomeText(choice.outcomeTexts?.[t]));
       if (needTiers.length > 0 && (choice.text || choice.id)) {
-        targets.push({ choice, sceneName, needTiers });
+        targets.push({ choice, sceneName, sceneLocation, needTiers });
       }
     }
-    for (const v of Object.values(obj)) if (v && typeof v === 'object') visit(v, sceneName);
+    for (const v of Object.values(obj)) if (v && typeof v === 'object') visit(v, sceneName, sceneLocation);
   };
   const episodes = (story as { episodes?: Array<{ scenes?: Array<{ name?: string }> }> }).episodes ?? [];
   for (const ep of episodes) {
-    for (const scene of ep.scenes ?? []) visit(scene, (scene as { name?: string }).name);
+    for (const scene of ep.scenes ?? []) {
+      visit(scene, (scene as { name?: string }).name, deriveSceneSetting(scene));
+    }
   }
   return targets;
 }
@@ -125,6 +144,7 @@ export function buildOutcomeTextRepairHandler(opts: OutcomeTextRepairOptions): C
             choiceText: String(t.choice.text || t.choice.id || 'the choice'),
             stakes: t.choice.stakes,
             sceneName: t.sceneName,
+            sceneLocation: t.sceneLocation,
             needTiers: t.needTiers,
           }),
           PIPELINE_TIMEOUTS.llmAgent,

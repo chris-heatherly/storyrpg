@@ -35,6 +35,21 @@ describe('collectStubOutcomeChoices', () => {
     const targets = collectStubOutcomeChoices(story);
     expect(targets.map((t) => t.choice.id)).toEqual(['e1']);
   });
+
+  it('derives a scene setting hint from the establishing beat for the re-author prompt', () => {
+    const story = {
+      episodes: [{ number: 1, scenes: [{
+        id: 's1', name: 'Cișmigiu',
+        beats: [
+          { id: 'b1', text: 'You walk through Cișmigiu Gardens. At 1am the fog hangs low between the willows.' },
+          { id: 'b2', choices: [{ id: 'c1', text: 'Scramble away', outcomeTexts: { success: STUB_SUCCESS } }] },
+        ],
+      }] }],
+    } as unknown as Story;
+    const targets = collectStubOutcomeChoices(story);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].sceneLocation).toContain('Cișmigiu Gardens');
+  });
 });
 
 describe('buildOutcomeTextRepairHandler', () => {

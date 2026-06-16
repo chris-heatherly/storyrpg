@@ -10,10 +10,10 @@
 9: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=a7bd9d6badbe6720
 10: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=4a35c44a66d80b21
 11: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=4a35c44a66d80b21
-12: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=ba6dd1999f2b27ff
+12: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=2272e0a64b3526e5
 13: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=a9a87c0956882cf8
 14: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=442eff147ddb6097
-15: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=5bda4c56e84689c1
+15: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=2d7c236b243610ef
 16: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=9de514cd8b411c4a
 17: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=9c9c2c067e350413
 18: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=1b923b6bff9adfbd

@@ -620,19 +620,24 @@ Before finalizing:
     choiceText: string;
     stakes?: { want?: string; cost?: string; identity?: string };
     sceneName?: string;
+    sceneLocation?: string;
     needTiers: Array<'success' | 'partial' | 'failure'>;
   }): Promise<Partial<Record<'success' | 'partial' | 'failure', string>>> {
     const tiers = ctx.needTiers.length ? ctx.needTiers : (['success', 'partial', 'failure'] as const);
     const stakesLines = ctx.stakes
       ? `WANT (what the player is reaching for): ${ctx.stakes.want ?? 'unstated'}\nCOST (what it risks): ${ctx.stakes.cost ?? 'unstated'}`
       : '';
+    const settingLine = ctx.sceneLocation
+      ? `SETTING (the outcome MUST stay physically consistent with this place — only reference objects/surroundings that plausibly exist here): ${ctx.sceneLocation}\n`
+      : '';
     const prompt = `You are revising the outcome prose for ONE choice in an interactive story. The previous outcomes were placeholder stubs; replace them with scene-specific fiction.
 
 CHOICE the player takes: "${ctx.choiceText}"
-${ctx.sceneName ? `SCENE: ${ctx.sceneName}\n` : ''}${stakesLines}
+${ctx.sceneName ? `SCENE: ${ctx.sceneName}\n` : ''}${settingLine}${stakesLines}
 
 Write a 1–3 sentence fiction-first outcome for each requested tier. Each MUST:
 - dramatize what concretely happens in the fiction (action, sensory detail, a line of dialogue if it fits) — never restate the choice or the want/cost annotation;
+- stay grounded in the SETTING above — do not introduce furniture or surroundings from a different kind of place (e.g. no indoor furniture in an outdoor scene);
 - be distinct from the other tiers and begin with a different opening word;
 - never mention stats, dice, percentages, DCs, or any game mechanic;
 - success = the cleaner version of what they reached for; partial = some of it lands but the cost settles in; failure = they miss it and the cost lands.
@@ -1461,6 +1466,11 @@ Write them in second person, present tense, grounded in the specific scene:
 - **success**: The action lands cleanly. The protagonist achieves what they wanted.
 - **partial**: A complication arises — partial success, unexpected cost, or a twist.
 - **failure**: The action backfires or falls flat. Something goes wrong.
+
+STAY IN THIS SETTING — **${input.sceneBlueprint.location}**. Every outcome must be
+physically consistent with this place: only reference objects, surfaces, and surroundings
+that plausibly exist here. Do NOT borrow furniture or scenery from a different kind of
+location (e.g. never put a coffee table, rug, or sofa in an outdoor park or street scene).
 
 VARY THE SENTENCE OPENERS. The reader is "you", so second person is correct — but do
 NOT stack subject-first "You …" declaratives. Never let two consecutive sentences in a

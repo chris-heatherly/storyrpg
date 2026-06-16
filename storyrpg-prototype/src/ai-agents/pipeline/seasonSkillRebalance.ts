@@ -29,9 +29,9 @@ import { normalizeStatCheck } from '../../engine/resolutionEngine';
  * A check is only reassigned within its type's set so the new skill still fits the action.
  */
 const RELEVANT_SKILLS: Record<string, readonly string[]> = {
-  relationship: ['persuasion', 'deception', 'intimidation'],
+  relationship: ['persuasion', 'deception', 'intimidation', 'perception'],
   strategic: ['investigation', 'perception', 'stealth', 'athletics', 'survival'],
-  dilemma: ['survival', 'investigation', 'perception', 'athletics', 'persuasion'],
+  dilemma: ['survival', 'investigation', 'athletics', 'intimidation', 'deception'],
 };
 
 const DOMINANCE_CAP = 0.3;

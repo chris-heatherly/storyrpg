@@ -299,10 +299,13 @@ export class ChoiceAuthor extends BaseAgent {
   private static readonly SKILL_DOMINANCE_MIN_SAMPLE = 4;
   // Candidate skills per choice type, ordered to lead away from the historical
   // persuasion-first default. Selection picks the least-used among these.
+  // persuasion is confined to `relationship` (it was previously in `dilemma` too,
+  // which let it carry ~40-46% of all stat-check weight); the other types pull
+  // from the wider skill set so checks spread across all eight canonical skills.
   private static readonly RELEVANT_SKILLS: Record<string, string[]> = {
-    relationship: ['persuasion', 'deception', 'intimidation'],
+    relationship: ['persuasion', 'deception', 'intimidation', 'perception'],
     strategic: ['investigation', 'perception', 'stealth', 'athletics', 'survival'],
-    dilemma: ['survival', 'investigation', 'perception', 'athletics', 'persuasion'],
+    dilemma: ['survival', 'investigation', 'athletics', 'intimidation', 'deception'],
   };
 
   /**

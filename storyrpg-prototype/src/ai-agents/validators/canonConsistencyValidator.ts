@@ -53,13 +53,38 @@ export function validateKnowledgeConsistency(
   return issues;
 }
 
+/**
+ * Flag a numeric fact that regressed across episodes — a tracked monotonic metric
+ * (e.g. a blog view count) that a later episode declared moving the wrong way. The
+ * SeasonCanon already kept the constraint-respecting value and logged the breach;
+ * here we surface it. ADVISORY (warning, not error): a number going the wrong way is
+ * a craft/continuity smell worth surfacing, but the canon self-heals by keeping the
+ * correct value, so it must not hard-block a season.
+ */
+export function validateNumericMonotonicity(canon: SeasonCanon): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  for (const v of canon.numericViolationsLog()) {
+    const dir = v.monotonic === 'increasing' ? 'must not decrease' : 'must not increase';
+    issues.push({
+      severity: 'warning',
+      message: `Numeric regression: episode ${v.episode} set "${v.statement}" to ${v.incomingValue.toLocaleString('en-US')}, but it ${dir} (already established at ${v.keptValue.toLocaleString('en-US')}). Canon kept ${v.keptValue.toLocaleString('en-US')}.`,
+      location: `numeric:${v.id}`,
+      suggestion: `Restate the figure as ${v.keptValue.toLocaleString('en-US')} or higher to stay consistent with prior episodes.`,
+    });
+  }
+  return issues;
+}
+
 export interface CanonConsistencyInput {
   canon: SeasonCanon;
   claims: KnowledgeClaim[];
 }
 
 export function validateCanonConsistency(input: CanonConsistencyInput): ValidationResult {
-  const issues = validateKnowledgeConsistency(input.claims, input.canon);
+  const issues = [
+    ...validateKnowledgeConsistency(input.claims, input.canon),
+    ...validateNumericMonotonicity(input.canon),
+  ];
   return {
     valid: issues.every((i) => i.severity !== 'error'),
     score: issues.length === 0 ? 100 : Math.max(0, 100 - issues.length * 20),

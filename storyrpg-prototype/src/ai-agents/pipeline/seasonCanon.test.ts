@@ -28,6 +28,77 @@ describe('SeasonCanon sealing + immutability', () => {
     expect(f.statement).toBe('first');
   });
 
+  it('carries a numeric monotonic fact forward to the max (increasing) on re-declare', () => {
+    const canon = new SeasonCanon();
+    canon.sealEpisode(1, {
+      worldFacts: [{ id: 'metric:views', statement: 'views count stands at 84,000', numericValue: 84000, monotonic: 'increasing' }],
+    });
+    canon.sealEpisode(2, {
+      worldFacts: [{ id: 'metric:views', statement: 'views count stands at 90,147', numericValue: 90147, monotonic: 'increasing' }],
+    });
+    const f = canon.worldFactsAsOf(2).find((x) => x.id === 'metric:views')!;
+    expect(f.numericValue).toBe(90147);
+    expect(f.statement).toContain('90,147');
+    expect(f.establishedEpisode).toBe(1); // first-established stays
+    expect(canon.numericViolationsLog()).toHaveLength(0);
+  });
+
+  it('records a violation (and keeps the higher value) when an increasing fact regresses', () => {
+    const canon = new SeasonCanon();
+    canon.sealEpisode(2, {
+      worldFacts: [{ id: 'metric:views', statement: 'views count stands at 90,147', numericValue: 90147, monotonic: 'increasing' }],
+    });
+    canon.sealEpisode(3, {
+      worldFacts: [{ id: 'metric:views', statement: 'views count stands at 50,000', numericValue: 50000, monotonic: 'increasing' }],
+    });
+    const f = canon.worldFactsAsOf(3).find((x) => x.id === 'metric:views')!;
+    expect(f.numericValue).toBe(90147); // regression rejected
+    const violations = canon.numericViolationsLog();
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ id: 'metric:views', keptValue: 90147, incomingValue: 50000, episode: 3 });
+  });
+
+  it('keeps the min for a decreasing monotonic fact', () => {
+    const canon = new SeasonCanon();
+    canon.sealEpisode(1, {
+      worldFacts: [{ id: 'metric:fuel', statement: 'fuel at 100', numericValue: 100, monotonic: 'decreasing' }],
+    });
+    canon.sealEpisode(2, {
+      worldFacts: [{ id: 'metric:fuel', statement: 'fuel at 40', numericValue: 40, monotonic: 'decreasing' }],
+    });
+    expect(canon.worldFactsAsOf(2).find((x) => x.id === 'metric:fuel')!.numericValue).toBe(40);
+    canon.sealEpisode(3, {
+      worldFacts: [{ id: 'metric:fuel', statement: 'fuel at 70', numericValue: 70, monotonic: 'decreasing' }],
+    });
+    expect(canon.worldFactsAsOf(3).find((x) => x.id === 'metric:fuel')!.numericValue).toBe(40); // increase rejected
+    expect(canon.numericViolationsLog()).toHaveLength(1);
+  });
+
+  it('leaves non-numeric re-declares append-only (first establishment stands)', () => {
+    const canon = new SeasonCanon();
+    canon.sealEpisode(1, { worldFacts: [{ id: 'metric:views', statement: 'views at 84,000', numericValue: 84000, monotonic: 'increasing' }] });
+    // A later re-declare WITHOUT numeric metadata must not disturb the frozen value.
+    canon.sealEpisode(2, { worldFacts: [{ id: 'metric:views', statement: 'views mentioned again' }] });
+    const f = canon.worldFactsAsOf(2).find((x) => x.id === 'metric:views')!;
+    expect(f.numericValue).toBe(84000);
+    expect(f.statement).toBe('views at 84,000');
+  });
+
+  it('canonForPrompt surfaces the no-regression constraint on a numeric fact', () => {
+    const canon = new SeasonCanon();
+    canon.sealEpisode(1, { worldFacts: [{ id: 'metric:views', statement: 'blog views', numericValue: 90147, monotonic: 'increasing' }] });
+    expect(canon.canonForPrompt(1)).toContain('at least 90,147 (must not regress)');
+  });
+
+  it('round-trips numeric facts + violations through serialize/deserialize', () => {
+    const canon = new SeasonCanon();
+    canon.sealEpisode(1, { worldFacts: [{ id: 'metric:views', statement: 'v', numericValue: 90147, monotonic: 'increasing' }] });
+    canon.sealEpisode(2, { worldFacts: [{ id: 'metric:views', statement: 'v', numericValue: 50000, monotonic: 'increasing' }] });
+    const restored = SeasonCanon.deserialize(canon.serialize());
+    expect(restored.worldFactsAsOf(2).find((x) => x.id === 'metric:views')!.numericValue).toBe(90147);
+    expect(restored.numericViolationsLog()).toHaveLength(1);
+  });
+
   it('knowledge respects as-of episode', () => {
     const canon = new SeasonCanon();
     canon.sealEpisode(3, { knowledge: [{ characterId: 'c', factId: 'k', summary: 's' }] });

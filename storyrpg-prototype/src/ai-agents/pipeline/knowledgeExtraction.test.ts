@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { extractEpisodeKnowledge, collectReferencedFlags, factSlug } from './knowledgeExtraction';
+import {
+  extractEpisodeKnowledge,
+  collectReferencedFlags,
+  factSlug,
+  extractMonotonicMetrics,
+} from './knowledgeExtraction';
 
 describe('factSlug', () => {
   it('is a stable deterministic slug', () => {
@@ -34,6 +39,50 @@ describe('extractEpisodeKnowledge', () => {
     const r = extractEpisodeKnowledge({ episodeNumber: 1, protagonistId: 'protagonist' });
     expect(r.deltas.knowledge).toEqual([]);
     expect(r.claims).toEqual([]);
+  });
+});
+
+describe('extractMonotonicMetrics', () => {
+  it('extracts a grouped view count and keys it on a stable id', () => {
+    expect(extractMonotonicMetrics('The blog hit 90,147 views overnight.')).toEqual([
+      { id: 'metric:views', metric: 'views', value: 90147, statement: 'views count stands at 90,147' },
+    ]);
+  });
+
+  it('keeps the highest value when a metric appears more than once', () => {
+    const m = extractMonotonicMetrics('500 views in the morning, then 12,300 views by night.');
+    expect(m).toEqual([{ id: 'metric:views', metric: 'views', value: 12300, statement: 'views count stands at 12,300' }]);
+  });
+
+  it('matches a number a couple words before the noun (followers)', () => {
+    const m = extractMonotonicMetrics('She now has 2,000 loyal followers.');
+    expect(m[0]).toMatchObject({ id: 'metric:followers', value: 2000 });
+  });
+
+  it('does not match an unrelated quantity (conservative — no fabrication)', () => {
+    expect(extractMonotonicMetrics('Fifty thousand readers cheered.')).toEqual([]); // spelled-out not parsed
+    expect(extractMonotonicMetrics('There were 50 soldiers at the gate.')).toEqual([]);
+  });
+});
+
+describe('extractEpisodeKnowledge — numeric metrics', () => {
+  it('emits a numeric monotonic worldFact from timeline + scene text', () => {
+    const r = extractEpisodeKnowledge({
+      episodeNumber: 2,
+      protagonistId: 'protagonist',
+      timelineEvents: [{ event: 'The post climbed to 90,147 views', when: 'Scene 1' }],
+    });
+    const metric = r.deltas.worldFacts?.find((f) => f.id === 'metric:views');
+    expect(metric).toMatchObject({ id: 'metric:views', numericValue: 90147, monotonic: 'increasing' });
+  });
+
+  it('scans sceneText for metrics too', () => {
+    const r = extractEpisodeKnowledge({
+      episodeNumber: 1,
+      protagonistId: 'protagonist',
+      sceneText: 'Her readership crossed 84,000 readers that week.',
+    });
+    expect(r.deltas.worldFacts?.find((f) => f.id === 'metric:readers')).toMatchObject({ numericValue: 84000 });
   });
 });
 

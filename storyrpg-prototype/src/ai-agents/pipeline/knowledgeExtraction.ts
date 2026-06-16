@@ -25,6 +25,12 @@ export interface EpisodeKnowledgeInputs {
   timelineEvents?: Array<{ event: string; when: string }>;
   /** Flags this episode's beats/choices gate on (the basis for knowledge claims). */
   referencedFlags?: string[];
+  /**
+   * Optional free prose (e.g. concatenated scene text) scanned alongside timeline
+   * events for recurring quantified metrics. Conservative: only clearly quantified,
+   * clearly recurring metrics are emitted (see extractMonotonicMetrics).
+   */
+  sceneText?: string;
 }
 
 export interface EpisodeKnowledgeResult {
@@ -37,6 +43,74 @@ export interface EpisodeKnowledgeResult {
 /** Deterministic slug for a factId (stable across episodes for the same statement). */
 export function factSlug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'fact';
+}
+
+/**
+ * A recurring quantified metric pulled from prose: a number immediately followed by
+ * a tracked count noun (views/readers/followers/subscribers). These are the metrics
+ * that regress across episodes when each episode re-guesses the figure, so each is
+ * emitted as a worldFact with a STABLE id (keyed on the metric noun, not the value)
+ * + numericValue + monotonic:'increasing'. The stable id makes the same metric across
+ * episodes collide on id in sealEpisode and trip the max/min constraint.
+ */
+export interface MonotonicMetric {
+  id: string;
+  metric: string;
+  value: number;
+  statement: string;
+}
+
+/**
+ * Metric nouns we treat as monotonically-increasing audience counts. Deliberately a
+ * small, explicit allowlist — broadening this is the main false-positive risk (a
+ * one-off in-fiction quantity like "50 soldiers" must NOT be tracked), so we only
+ * match nouns that are unambiguously cumulative audience metrics.
+ *
+ * LIMITATION: this is a pattern matcher, not semantic understanding. It only fires on
+ * "<number> <noun>" adjacency for these nouns and cannot tell a real metric from a
+ * coincidental phrasing; that is the conservative trade chosen over a generic
+ * extractor that might fabricate constraints from arbitrary numbers in prose.
+ */
+const MONOTONIC_METRIC_NOUNS = ['views', 'readers', 'followers', 'subscribers'] as const;
+
+/** Parse a possibly-grouped integer like "90,147" or "84000" → number (or undefined). */
+function parseGroupedInt(raw: string): number | undefined {
+  const cleaned = raw.replace(/,/g, '');
+  if (!/^\d+$/.test(cleaned)) return undefined;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * Scan prose for `<number> <metric-noun>` and emit one MonotonicMetric per noun
+ * (the HIGHEST value seen for that noun this episode — within an episode the latest/
+ * largest figure is the one canon should carry). Returns [] when nothing matches.
+ *
+ * Only digit-form numbers are recognized; spelled-out numbers ("fifty thousand") are
+ * intentionally NOT parsed — coercing prose number-words risks fabrication, and the
+ * cross-episode constraint surfaced in the prompt is what steers the writer away from
+ * a spelled-out regression in the first place.
+ */
+export function extractMonotonicMetrics(text: string): MonotonicMetric[] {
+  if (!text) return [];
+  const best = new Map<string, number>();
+  for (const noun of MONOTONIC_METRIC_NOUNS) {
+    // number (with optional grouping) followed within a couple words by the noun.
+    const re = new RegExp(`(\\d[\\d,]*)\\s+(?:\\w+\\s+){0,2}${noun}\\b`, 'gi');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const value = parseGroupedInt(m[1]);
+      if (value === undefined) continue;
+      const prev = best.get(noun);
+      if (prev === undefined || value > prev) best.set(noun, value);
+    }
+  }
+  return [...best.entries()].map(([metric, value]) => ({
+    id: `metric:${metric}`,
+    metric,
+    value,
+    statement: `${metric} count stands at ${value.toLocaleString('en-US')}`,
+  }));
 }
 
 export function extractEpisodeKnowledge(input: EpisodeKnowledgeInputs): EpisodeKnowledgeResult {
@@ -54,6 +128,25 @@ export function extractEpisodeKnowledge(input: EpisodeKnowledgeInputs): EpisodeK
     if (seenWF.has(id)) continue;
     seenWF.add(id);
     worldFacts.push({ id, statement: t.when ? `${t.when}: ${t.event}` : t.event });
+  }
+
+  // Recurring quantified metrics (view/reader/follower/subscriber counts) → numeric
+  // monotonic worldFacts with a STABLE id, so the same metric collides on id across
+  // episodes and sealEpisode enforces the no-regression constraint. Scanned from the
+  // timeline event text plus any supplied scene prose.
+  const metricCorpus = [
+    ...(input.timelineEvents ?? []).map((t) => t?.event ?? ''),
+    input.sceneText ?? '',
+  ].join('\n');
+  for (const metric of extractMonotonicMetrics(metricCorpus)) {
+    if (seenWF.has(metric.id)) continue;
+    seenWF.add(metric.id);
+    worldFacts.push({
+      id: metric.id,
+      statement: metric.statement,
+      numericValue: metric.value,
+      monotonic: 'increasing',
+    });
   }
 
   // Knowledge: what each character knows → who-knows-what facts (bounded by roster).

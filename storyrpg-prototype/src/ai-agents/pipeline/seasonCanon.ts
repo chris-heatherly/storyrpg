@@ -25,6 +25,32 @@ export interface CanonWorldFact {
   id: string;
   statement: string;
   establishedEpisode: number;
+  /**
+   * Optional quantified value for a recurring metric (e.g. a blog view count).
+   * When present with `monotonic`, re-declaring the same id across episodes is no
+   * longer ignored: the value is carried forward under a max/min constraint so a
+   * tracked number cannot silently regress. Absent on ordinary text-only facts.
+   */
+  numericValue?: number;
+  /** Direction the numeric value is allowed to move across episodes. */
+  monotonic?: 'increasing' | 'decreasing';
+}
+
+/**
+ * A recorded breach of a numeric monotonic constraint: a later episode declared a
+ * value that moves the wrong way (e.g. a lower view count for an 'increasing' fact).
+ * Surfaced (not silently overwritten) so the canon-consistency gate can flag it.
+ */
+export interface CanonNumericViolation {
+  id: string;
+  statement: string;
+  monotonic: 'increasing' | 'decreasing';
+  /** The value already frozen in canon (kept; the incoming value is rejected). */
+  keptValue: number;
+  /** The offending value that violated the constraint. */
+  incomingValue: number;
+  /** Episode that introduced the offending value. */
+  episode: number;
 }
 
 /** A discrete fact a character KNOWS, established as of an episode. */
@@ -49,7 +75,12 @@ export interface CanonRelationshipEntry {
 
 /** Structured facts extracted from a validated episode, ready to freeze. */
 export interface EpisodeCanonDeltas {
-  worldFacts?: Array<{ id: string; statement: string }>;
+  worldFacts?: Array<{
+    id: string;
+    statement: string;
+    numericValue?: number;
+    monotonic?: 'increasing' | 'decreasing';
+  }>;
   knowledge?: Array<{ characterId: string; factId: string; summary: string }>;
   arcStates?: Array<{ characterId: string; state: string }>;
   relationships?: Array<{ a: string; b: string; dimension: string; value: number }>;
@@ -63,6 +94,7 @@ export interface SerializedSeasonCanon {
   knowledge: CanonKnowledgeEntry[];
   characters: CanonCharacterState[];
   relationships: CanonRelationshipEntry[];
+  numericViolations?: CanonNumericViolation[];
 }
 
 export function relationshipPairKey(a: string, b: string): string {
@@ -78,6 +110,7 @@ export class SeasonCanon {
   private knowledge: CanonKnowledgeEntry[] = [];
   private characters = new Map<string, CanonCharacterState>();
   private relationships = new Map<string, CanonRelationshipEntry>(); // key: pairKey + '::' + dimension
+  private numericViolations: CanonNumericViolation[] = [];
 
   constructor(options?: { storyId?: string }) {
     this.storyId = options?.storyId;
@@ -100,10 +133,47 @@ export class SeasonCanon {
       throw new CanonSealError(`Episode ${episode} is already sealed; sealed episodes are immutable.`);
     }
     for (const wf of deltas.worldFacts ?? []) {
-      // Append-only: ignore a re-declared id (the first establishment stands).
-      if (!this.worldFacts.some((f) => f.id === wf.id)) {
-        this.worldFacts.push({ id: wf.id, statement: wf.statement, establishedEpisode: episode });
+      const existing = this.worldFacts.find((f) => f.id === wf.id);
+      const isNumericMonotonic = typeof wf.numericValue === 'number' && wf.monotonic !== undefined;
+      if (!existing) {
+        // First establishment of this id stands (append-only).
+        this.worldFacts.push({
+          id: wf.id,
+          statement: wf.statement,
+          establishedEpisode: episode,
+          ...(isNumericMonotonic ? { numericValue: wf.numericValue, monotonic: wf.monotonic } : {}),
+        });
+        continue;
       }
+      // A numeric monotonic fact whose id already exists is NOT ignored: carry the
+      // value forward under the constraint (keep max for 'increasing', min for
+      // 'decreasing'). A violating value is recorded, not silently written.
+      if (
+        isNumericMonotonic &&
+        existing.monotonic !== undefined &&
+        typeof existing.numericValue === 'number'
+      ) {
+        const incoming = wf.numericValue as number;
+        const constraint = existing.monotonic;
+        const violates =
+          constraint === 'increasing' ? incoming < existing.numericValue : incoming > existing.numericValue;
+        if (violates) {
+          this.numericViolations.push({
+            id: existing.id,
+            statement: existing.statement,
+            monotonic: constraint,
+            keptValue: existing.numericValue,
+            incomingValue: incoming,
+            episode,
+          });
+          // Keep the constraint-respecting value already in canon (reject incoming).
+        } else if (incoming !== existing.numericValue) {
+          // Advance the frozen value and refresh the statement to reflect it.
+          existing.numericValue = incoming;
+          existing.statement = wf.statement;
+        }
+      }
+      // Non-numeric (or incomplete) re-declares stay append-only: the first stands.
     }
     for (const k of deltas.knowledge ?? []) {
       if (!this.knowledge.some((e) => e.characterId === k.characterId && e.factId === k.factId)) {
@@ -144,6 +214,11 @@ export class SeasonCanon {
 
   worldFactsAsOf(episode: number): CanonWorldFact[] {
     return this.worldFacts.filter((f) => f.establishedEpisode <= episode);
+  }
+
+  /** Recorded numeric-monotonic constraint breaches (a tracked number regressed). */
+  numericViolationsLog(): CanonNumericViolation[] {
+    return [...this.numericViolations];
   }
 
   /** Latest sealed arc state per character as of (<=) an episode. */
@@ -190,7 +265,16 @@ export class SeasonCanon {
     const rels = this.relationshipsAsOf(cap);
     if (facts.length === 0 && know.length === 0 && arcs.length === 0 && rels.length === 0) return '';
     const lines: string[] = ['ESTABLISHED CANON — do not contradict:'];
-    for (const f of facts) lines.push(`- [ep${f.establishedEpisode}] ${f.statement}`);
+    for (const f of facts) {
+      if (typeof f.numericValue === 'number' && f.monotonic) {
+        const bound = f.monotonic === 'increasing'
+          ? `at least ${f.numericValue.toLocaleString('en-US')} (must not regress)`
+          : `at most ${f.numericValue.toLocaleString('en-US')} (must not regress)`;
+        lines.push(`- [ep${f.establishedEpisode}] ${f.statement} — ${bound}`);
+      } else {
+        lines.push(`- [ep${f.establishedEpisode}] ${f.statement}`);
+      }
+    }
     for (const e of know) lines.push(`- [ep${e.asOfEpisode}] ${e.characterId} knows: ${e.summary}`);
     for (const a of arcs) lines.push(`- [ep${a.episode}] ${a.characterId} arc state: ${a.state}`);
     for (const r of rels) {
@@ -209,6 +293,7 @@ export class SeasonCanon {
       knowledge: [...this.knowledge],
       characters: [...this.characters.values()],
       relationships: [...this.relationships.values()],
+      numericViolations: [...this.numericViolations],
     };
   }
 
@@ -220,6 +305,7 @@ export class SeasonCanon {
     canon.knowledge = [...(parsed.knowledge ?? [])];
     for (const c of parsed.characters ?? []) canon.characters.set(c.id, c);
     for (const r of parsed.relationships ?? []) canon.relationships.set(`${r.pairKey}::${r.dimension}`, r);
+    canon.numericViolations = [...(parsed.numericViolations ?? [])];
     return canon;
   }
 }

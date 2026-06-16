@@ -71,6 +71,23 @@ export interface LedgerConfig {
   maxActiveHooks: number;
 }
 
+/**
+ * Tone-callback (tint) hook id prefix. Personality `tint:` flags used to be
+ * dropped entirely by {@link isStructuralFlag} (so 10 per season were write-only),
+ * but a tint IS a real, in-fiction signal of how the player has been behaving and
+ * deserves the occasional light acknowledgment. We track it as a LOWER-priority
+ * "tone callback" under its own id namespace (`tone:<tint-name>`) so:
+ *   - it is distinct from a `flag:`/`score:` narrative hook in `unresolvedFor`
+ *     ordering (tone hooks sort AFTER narrative hooks so they never crowd out a
+ *     real payoff — see {@link CallbackLedger.unresolvedFor}); and
+ *   - its hook id is NOT itself `tint:`-prefixed, so `isStructuralFlag` (and the
+ *     promise-ledger dangling gate / SceneWriter strip that lean on it) still
+ *     treat a raw `tint:` callbackHookId from the LLM as a non-ledger mislabel,
+ *     exactly as before. The deterministic injector plants the `tone:` hook and
+ *     tags the variant with it, so a tone payoff resolves to a real ledger hook.
+ */
+export const TONE_HOOK_PREFIX = 'tone:';
+
 type CallbackHookInput = Omit<
   CallbackHook,
   'payoffCount' | 'resolved' | 'createdAt' | 'conditionKeys' | 'impactFactors' | 'consequenceTier'
@@ -86,7 +103,12 @@ type CallbackHookInput = Omit<
 export const DEFAULT_LEDGER_CONFIG: LedgerConfig = {
   payoffThreshold: 2,
   defaultWindowSpan: 3,
-  maxActiveHooks: 10,
+  // Raised from 10 so a meaningful fraction of the ~38 flags a season sets can
+  // surface across an episode (they were write-only — only ~9 ever referenced).
+  // This is the SIZE of the active pool fed to prompts / the deterministic
+  // injector; flooding a single scene is prevented separately by the per-scene
+  // injection cap in `injectFallbackCallbacks`, not by this number.
+  maxActiveHooks: 24,
 };
 
 /**
@@ -149,6 +171,26 @@ export function isStructuralFlag(flagOrHookId: string): boolean {
     flag.startsWith('treatment_branch_') ||
     flag.startsWith('encounter_')
   );
+}
+
+/**
+ * A cosmetic personality `tint:` flag (`tint:mercy`, `tint:boldness`, …). These
+ * stay STRUCTURAL for {@link isStructuralFlag} (so the dangling-payoff gate and
+ * the SceneWriter strip keep treating a raw `tint:` callbackHookId as a non-ledger
+ * mislabel — the LLM is told not to tag them). But — unlike `route_`/branch/
+ * `encounter_` flags, which are paid off BY CONSTRUCTION — a tint records a
+ * recurring behavioral lean worth a light periodic acknowledgment, so we DO track
+ * it, as a lower-priority "tone callback" under the `tone:` hook namespace. See
+ * {@link recordTintSet} / {@link trackableTintsOf}.
+ */
+export function isTintFlag(flag: string): boolean {
+  const bare = flag.startsWith('flag:') ? flag.slice('flag:'.length) : flag;
+  return bare.startsWith('tint:');
+}
+
+/** True when a hook is a (lower-priority) tone callback seeded from a `tint:` flag. */
+function isToneHook(hook: CallbackHook): boolean {
+  return hook.id.startsWith(TONE_HOOK_PREFIX);
 }
 
 export interface SerializedCallbackLedger {
@@ -322,6 +364,71 @@ export class CallbackLedger {
         maxEpisode: params.episode + this.config.defaultWindowSpan,
       },
     });
+  }
+
+  /**
+   * Seed a LOWER-priority "tone callback" hook for a cosmetic `tint:` flag a
+   * choice sets (`tint:mercy`, `tint:boldness`, …). Tints used to be dropped by
+   * {@link recordFlagSet} (via `isStructuralFlag`), so the ~10 personality flags a
+   * season sets were write-only — never acknowledged in later prose. This brings
+   * them into the inject->payoff loop as a distinct, de-prioritized category:
+   *   - the hook id is `tone:<tint-name>` (NOT `tint:`-prefixed), so it is a real
+   *     ledger hook the injector can tag and the dangling gate won't reject; while
+   *   - `unresolvedFor` sorts tone hooks AFTER narrative hooks so they never crowd
+   *     out a real flag/promise payoff (and the per-scene injection cap keeps tone
+   *     acknowledgments sparse so prose doesn't get repetitive).
+   * Tier `sceneTint`. Keyed on the tint name so repeated sets merge. Returns the
+   * hook, or undefined when `flag` is not a `tint:` flag.
+   */
+  recordTintSet(params: {
+    choice: Choice;
+    flag: string;
+    episode: number;
+    sceneId: string;
+  }): CallbackHook | undefined {
+    const { flag } = params;
+    if (!flag || !isTintFlag(flag)) return undefined;
+    const tone = flag.slice('tint:'.length); // e.g. "mercy"
+    return this.add({
+      id: `${TONE_HOOK_PREFIX}${tone}`,
+      sourceEpisode: params.episode,
+      sourceSceneId: params.sceneId,
+      sourceChoiceId: params.choice.id,
+      // Gate the acknowledgment on the real runtime `tint:` flag (what the engine
+      // actually sets); the hook id is the de-prioritized `tone:` namespace.
+      flags: [flag],
+      conditionKeys: [flag],
+      impactFactors: params.choice.impactFactors ?? [],
+      consequenceTier: 'sceneTint',
+      // A clean in-fiction summary derived from the tone — never a raw-flag stub —
+      // so the injector's prose fallback (pickCallbackProse) has a safe candidate.
+      summary: toneAcknowledgmentProse(tone),
+      proseSources: this.proseSourcesOf(params.choice),
+      payoffWindow: {
+        // Eligible from the setting episode onward (same-episode payoff allowed).
+        minEpisode: params.episode,
+        maxEpisode: params.episode + this.config.defaultWindowSpan,
+      },
+    });
+  }
+
+  /**
+   * Cosmetic `tint:` flags a choice sets (the tone-callback axis of
+   * {@link trackableFlagsOf}, which deliberately EXCLUDES them). Set, not cleared.
+   */
+  trackableTintsOf(choice: Choice): string[] {
+    const tints: string[] = [];
+    for (const consequence of choice.consequences ?? []) {
+      if (
+        consequence.type === 'setFlag' &&
+        typeof consequence.flag === 'string' &&
+        isTintFlag(consequence.flag) &&
+        consequence.value !== false
+      ) {
+        tints.push(consequence.flag);
+      }
+    }
+    return tints;
   }
 
   /**
@@ -594,7 +701,14 @@ export class CallbackLedger {
     const due = eligible.filter((hook) => hook.payoffEpisode === episode);
     const rest = eligible
       .filter((hook) => hook.payoffEpisode !== episode)
-      .sort((a, b) => a.sourceEpisode - b.sourceEpisode);
+      // Tone (`tint:`) callbacks are de-prioritized: they sort AFTER narrative
+      // hooks (flag/score/promise) so a tone acknowledgment never crowds a real
+      // payoff out of the capped active pool. Within each band, oldest first.
+      .sort((a, b) => {
+        const toneDelta = Number(isToneHook(a)) - Number(isToneHook(b));
+        if (toneDelta !== 0) return toneDelta;
+        return a.sourceEpisode - b.sourceEpisode;
+      });
     return [...due, ...rest].slice(0, Math.max(this.config.maxActiveHooks, due.length));
   }
 
@@ -697,6 +811,59 @@ export class CallbackLedger {
     }
     return ledger;
   }
+}
+
+/**
+ * A short, clean, in-fiction acknowledgment of a recurring `tint:` behavioral
+ * lean, used as a tone hook's `summary` (and so as the injector's deterministic
+ * prose fallback). Deliberately:
+ *   - names NO scene/flag/episode and contains no system math, so it passes the
+ *     meta-prose / fallback-stub reject filters cleanly; and
+ *   - keys off the tone WORD so different tints read differently (mercy vs.
+ *     boldness), and the per-scene injection cap keeps any single page sparse —
+ *     together these are the anti-repetition guard.
+ * Unknown/unmapped tones fall back to a generic-but-clean line.
+ */
+export function toneAcknowledgmentProse(tone: string): string {
+  const word = (tone || '').replace(/[-_]+/g, ' ').trim().toLowerCase();
+  // A small curated map for the common ChoiceAuthor tints (see ChoiceAuthor's
+  // tint vocabulary). Each is a fragment of behavioral continuity, not a recap.
+  const lines: Record<string, string> = {
+    mercy: 'There is a softness in how you move now — the kind that spares before it strikes.',
+    compassion: 'You carry the habit of gentleness into the room with you.',
+    forgiveness: 'You have let things go before; it shows in how lightly you hold this.',
+    justice: 'You weigh this the way you weigh everything lately — by what is owed.',
+    punishment: 'You have a reckoner\'s eye now, quick to mark what must be answered for.',
+    vengeance: 'Something in you keeps its own ledger, and it has not forgotten.',
+    idealism: 'You still reach for the better version of things, even here.',
+    pragmatism: 'You take the measure of what will actually work, the way you have learned to.',
+    sacrifice: 'You have given things up before; the willingness sits ready in you.',
+    survival: 'You move like someone who has learned what it costs to keep going.',
+    honor: 'You hold to your own line, the way you have all along.',
+    expedience: 'You reach for the shortest path, as has become your habit.',
+    caution: 'You step the way you have been stepping lately — carefully, watching the ground.',
+    boldness: 'You move first, the way you have been moving — sure, ahead of the doubt.',
+    patience: 'You let the moment come to you, unhurried as you have become.',
+    aggression: 'You press, the way you have been pressing — forward, leaving no slack.',
+    diplomacy: 'You reach for the words before the blade, as you have been doing.',
+    force: 'You lead with weight now; it has become the shape of you.',
+    independence: 'You keep your own counsel, the way you have learned to.',
+    leadership: 'Others look to you now — a thing you have made true, choice by choice.',
+    teamwork: 'You move with the others in mind, the way you have come to.',
+    solitude: 'You keep to your own edges, as has become your way.',
+    emotion: 'You let yourself feel it through, the way you have stopped apologizing for.',
+    logic: 'You reason it out cool and clean, as you have been doing.',
+    intuition: 'You trust the pull in your gut, the way it has earned.',
+    honesty: 'You tell it straight now; it has become reflex.',
+    truth: 'You hold to the plain fact of things, as you have all along.',
+    deception: 'You keep a second face ready, the way you have learned to.',
+    manipulation: 'You read the angles first now — an old habit, well practiced.',
+  };
+  if (lines[word]) return lines[word];
+  // Clean generic fallback for an unmapped tone — still scrubs the system origin.
+  return word
+    ? `The ${word} in how you have been moving carries into this moment too.`
+    : 'The way you have been carrying yourself follows you into this moment.';
 }
 
 function normalizeHook(hook: CallbackHook): CallbackHook {

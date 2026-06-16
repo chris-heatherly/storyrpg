@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { CallbackLedger, canonicalizeHookId } from './callbackLedger';
+import {
+  CallbackLedger,
+  canonicalizeHookId,
+  isTintFlag,
+  toneAcknowledgmentProse,
+  TONE_HOOK_PREFIX,
+} from './callbackLedger';
+import { isUnsafeCallbackProse } from '../constants/metaProse';
+import { isFallbackReminderStub } from '../constants/choiceTextFallbacks';
 import type { Choice } from '../../types/choice';
 import type { TextVariant } from '../../types/content';
 
@@ -75,6 +83,70 @@ describe('CallbackLedger', () => {
     expect(hook!.flags).not.toContain('treatment_branch_s1_2');
     // add() folds flags into conditionKeys so the inject->payoff loop surfaces them.
     expect(hook!.conditionKeys).toContain('accepted_mika_key_card');
+  });
+
+  it('tracks a tint: flag as a lower-priority, referenceable tone callback (tints no longer write-only)', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({
+      id: 'spare-the-herald',
+      text: 'Let the herald go.',
+      consequences: [{ type: 'setFlag', flag: 'tint:mercy', value: true } as any],
+    });
+    // trackableTintsOf surfaces the tint; trackableFlagsOf still excludes it.
+    expect(ledger.trackableTintsOf(choice)).toEqual(['tint:mercy']);
+    expect(ledger.trackableFlagsOf(choice)).not.toContain('tint:mercy');
+
+    const hook = ledger.recordTintSet({ choice, flag: 'tint:mercy', episode: 1, sceneId: 's1' });
+    expect(hook).toBeDefined();
+    // Hook id is the de-prioritized `tone:` namespace, NOT `tint:`-prefixed, so it is
+    // a real ledger hook the injector can tag (and the dangling gate won't reject).
+    expect(hook!.id).toBe(`${TONE_HOOK_PREFIX}mercy`);
+    expect(ledger.has(`${TONE_HOOK_PREFIX}mercy`)).toBe(true);
+    // Gated on the real runtime tint flag.
+    expect(hook!.flags).toContain('tint:mercy');
+    // Its summary is a CLEAN in-fiction acknowledgment (passes the reject filters),
+    // so the deterministic injector has a safe prose candidate.
+    expect(isUnsafeCallbackProse(hook!.summary)).toBe(false);
+    expect(isFallbackReminderStub(hook!.summary)).toBe(false);
+    // A non-tint flag is not a tone hook.
+    expect(ledger.recordTintSet({ choice, flag: 'door_open', episode: 1, sceneId: 's1' })).toBeUndefined();
+  });
+
+  it('isTintFlag recognizes tint flags (bare or flag:-prefixed) and nothing else', () => {
+    expect(isTintFlag('tint:boldness')).toBe(true);
+    expect(isTintFlag('flag:tint:boldness')).toBe(true);
+    expect(isTintFlag('route_left')).toBe(false);
+    expect(isTintFlag('kylie_noticed')).toBe(false);
+  });
+
+  it('toneAcknowledgmentProse yields clean, tone-varied prose with no system leakage', () => {
+    const mercy = toneAcknowledgmentProse('mercy');
+    const boldness = toneAcknowledgmentProse('boldness');
+    // Different tones read differently (anti-repetition).
+    expect(mercy).not.toBe(boldness);
+    for (const line of [mercy, boldness, toneAcknowledgmentProse('some-unmapped-tone'), toneAcknowledgmentProse('')]) {
+      expect(line.length).toBeGreaterThan(0);
+      expect(isUnsafeCallbackProse(line)).toBe(false);
+      expect(isFallbackReminderStub(line)).toBe(false);
+      // No raw flag identifiers, scene refs, or episode numbers.
+      expect(line).not.toMatch(/tint:|\bscene\b|\bepisode\b/i);
+    }
+  });
+
+  it('unresolvedFor sorts tone (tint) hooks AFTER narrative hooks so they never crowd a real payoff', () => {
+    const ledger = new CallbackLedger();
+    // A tone hook sourced in ep1 (older) and a narrative flag hook sourced in ep1.
+    ledger.recordTintSet({
+      choice: makeChoice({ id: 'tone-choice', consequences: [{ type: 'setFlag', flag: 'tint:mercy', value: true } as any] }),
+      flag: 'tint:mercy', episode: 1, sceneId: 's1',
+    });
+    ledger.recordFlagSet({
+      choice: makeChoice({ id: 'flag-choice', consequences: [{ type: 'setFlag', flag: 'door_open', value: true } as any] }),
+      flag: 'door_open', episode: 1, sceneId: 's1',
+    });
+    const ids = ledger.unresolvedFor(2).map((h) => h.id);
+    // narrative hook first, tone hook last regardless of source-episode tie.
+    expect(ids.indexOf('flag:door_open')).toBeLessThan(ids.indexOf('tone:mercy'));
   });
 
   it('records a memorableMoment as a hook and infers flags when absent', () => {

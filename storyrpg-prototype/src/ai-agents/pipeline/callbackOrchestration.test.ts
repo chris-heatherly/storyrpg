@@ -62,7 +62,10 @@ describe('harvestEpisodeCallbacks', () => {
     expect((beat as { callbackHookIds?: string[] }).callbackHookIds).toContain('hook-A');
   });
 
-  it('seeds a hook for a trackable set-flag consequence, skipping tint/route flags (1.1)', () => {
+  it('seeds a narrative flag hook AND a lower-priority tone hook for a tint flag, skipping route flags', () => {
+    // Behavior intentionally changed: cosmetic `tint:` flags are no longer dropped —
+    // they now seed a de-prioritized `tone:` callback so the season's personality
+    // flags stop being write-only. Structural `route_` flags remain excluded.
     const ledger = new CallbackLedger();
     const { newHooks } = harvestEpisodeCallbacks(ledger, {
       episodeNumber: 1,
@@ -72,14 +75,37 @@ describe('harvestEpisodeCallbacks', () => {
           sceneId: 'scene-1',
           choices: [
             { id: 'c1', consequences: [{ type: 'setFlag', flag: 'door_open', value: true }] },
-            { id: 'c2', consequences: [{ type: 'setFlag', flag: 'tint:bold', value: true }] }, // cosmetic -> skipped
+            { id: 'c2', consequences: [{ type: 'setFlag', flag: 'tint:bold', value: true }] }, // cosmetic -> tone hook
             { id: 'c3', consequences: [{ type: 'setFlag', flag: 'route_left', value: true }] }, // structural -> skipped
           ],
         },
       ],
     });
-    expect(newHooks).toBe(1);
-    expect(ledger.size()).toBe(1);
+    // door_open (flag:) + tint:bold (tone:) = 2 hooks; route_left excluded.
+    expect(newHooks).toBe(2);
+    expect(ledger.size()).toBe(2);
+    expect(ledger.all().map((h) => h.id)).toEqual(expect.arrayContaining(['flag:door_open', 'tone:bold']));
+    expect(ledger.all().some((h) => h.id.startsWith('route'))).toBe(false);
+  });
+
+  it('still excludes structural route_/treatment_branch_/encounter_ flags from any hook seeding', () => {
+    const ledger = new CallbackLedger();
+    const { newHooks } = harvestEpisodeCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [],
+      choiceSets: [
+        {
+          sceneId: 'scene-1',
+          choices: [
+            { id: 'c1', consequences: [{ type: 'setFlag', flag: 'route_left', value: true }] },
+            { id: 'c2', consequences: [{ type: 'setFlag', flag: 'treatment_branch_2a', value: true }] },
+            { id: 'c3', consequences: [{ type: 'setFlag', flag: 'encounter_x_partialVictory', value: true }] },
+          ],
+        },
+      ],
+    });
+    expect(newHooks).toBe(0);
+    expect(ledger.size()).toBe(0);
   });
 });
 
@@ -356,9 +382,16 @@ describe('injectFallbackCallbacks', () => {
       ] as any,
       choiceSets: choiceSets as any,
     });
-    // No clean candidate -> hook skipped rather than stub injected.
-    expect(injected).toBe(0);
-    expect(laterBeat.textVariants).toHaveLength(0);
+    // Behavior intentionally changed (part C): rather than dropping the hook, the
+    // realizer now falls through the meta reminder stubs to a CLEAN deterministic
+    // acknowledgment derived from the choice — but never the stub itself.
+    expect(injected).toBe(1);
+    const variant = laterBeat.textVariants[0];
+    expect(variant.text).not.toContain('The moment lands immediately.');
+    expect(variant.text).not.toContain('should remember this choice');
+    // Base prose preserved; clean derived continuity beat appended.
+    expect(variant.text).toContain('Base prose.');
+    expect(variant.text).toContain('earlier');
   });
 
   it('does not double-realize a hook already referenced by an authored variant', () => {
@@ -424,7 +457,7 @@ describe('injectFallbackCallbacks', () => {
     expect(laterBeat.textVariants).toHaveLength(0);
   });
 
-  it('skips injection when every prose candidate is agent-facing meta (no leak)', () => {
+  it('never injects an agent-facing meta reminder, even when realizing via the derived fallback (no leak)', () => {
     const ledger = new CallbackLedger();
     const choiceSets = [
       {
@@ -456,9 +489,14 @@ describe('injectFallbackCallbacks', () => {
       choiceSets: choiceSets as any,
     });
 
-    // No clean candidate -> no injection, no leaked design note.
-    expect(injected).toBe(0);
-    expect(laterBeat.textVariants).toHaveLength(0);
+    // Behavior intentionally changed (part C): the meta scene-references are still
+    // rejected, but the hook now realizes via the clean derived fallback instead of
+    // being dropped. Critically, NONE of the leaked planning text reaches prose.
+    expect(injected).toBe(1);
+    const variant = laterBeat.textVariants[0];
+    expect(variant.text).not.toContain('In the next scene');
+    expect(variant.text).not.toContain('In the caravan scene');
+    expect(variant.text).not.toMatch(/\bscene\b/i);
   });
 
   it('falls through a meta reminderPlan to a clean echoSummary', () => {
@@ -494,6 +532,137 @@ describe('injectFallbackCallbacks', () => {
 
     expect(injected).toBe(1);
     expect(laterBeat.textVariants[0].text).toContain('shared cup');
+  });
+});
+
+describe('injectFallbackCallbacks — tone (tint) callbacks, per-scene cap, derived prose', () => {
+  it('realizes a tint flag as a clean tone acknowledgment in a later scene', () => {
+    const ledger = new CallbackLedger();
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          {
+            id: 'c1',
+            text: 'Let the herald go.',
+            consequences: [{ type: 'setFlag', flag: 'tint:mercy', value: true } as any],
+          } as any,
+        ],
+      },
+    ];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+    // The tone hook exists and is referenceable.
+    expect(ledger.has('tone:mercy')).toBe(true);
+
+    const laterBeat = { id: 'scene-2-beat-1', text: 'The road bends north.', textVariants: [] as any[] };
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [
+        { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+        { sceneId: 'scene-2', beats: [laterBeat] },
+      ] as any,
+      choiceSets: choiceSets as any,
+    });
+    expect(injected).toBe(1);
+    const variant = laterBeat.textVariants[0];
+    // Tagged with the tone hook id; gated on the real tint flag.
+    expect(variant.callbackHookId).toBe('tone:mercy');
+    expect(variant.condition).toMatchObject({ type: 'flag', flag: 'tint:mercy', value: true });
+    // Clean in-fiction prose; never leaks the raw tint flag.
+    expect(variant.text).toContain('The road bends north.');
+    expect(variant.text).not.toMatch(/tint:/i);
+  });
+
+  it('honors the per-scene injection cap so many hooks distribute instead of flooding one scene', () => {
+    const ledger = new CallbackLedger();
+    // Six trackable flag hooks set in scene-1, all eligible in ep1.
+    const choices = Array.from({ length: 6 }, (_, i) => ({
+      id: `c${i}`,
+      text: `Decision ${i}.`,
+      consequences: [{ type: 'setFlag', flag: `flag_${i}`, value: true } as any],
+      reminderPlan: { immediate: `Echo ${i} carries forward.`, shortTerm: `Echo ${i} lingers.` },
+    }));
+    const choiceSets = [{ sceneId: 'scene-1', choices: choices as any }];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+
+    // One downstream scene with 5 beats; per-scene cap = 2, per-beat cap = 1.
+    const beats = Array.from({ length: 5 }, (_, i) => ({ id: `s2-b${i}`, text: 'base', textVariants: [] as any[] }));
+    const sceneContents = [
+      { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+      { sceneId: 'scene-2', beats },
+    ];
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: sceneContents as any,
+      choiceSets: choiceSets as any,
+      maxPerScene: 2,
+      maxPerBeat: 1,
+    });
+    // Capped at 2 in the single downstream scene even though 6 hooks were eligible.
+    expect(injected).toBe(2);
+    const totalVariants = beats.reduce((n, b) => n + b.textVariants.length, 0);
+    expect(totalVariants).toBe(2);
+  });
+
+  it('spreads injections across MULTIPLE scenes (larger active pool + per-scene cap)', () => {
+    const ledger = new CallbackLedger();
+    const choices = Array.from({ length: 6 }, (_, i) => ({
+      id: `c${i}`,
+      text: `Decision ${i}.`,
+      consequences: [{ type: 'setFlag', flag: `flag_${i}`, value: true } as any],
+      reminderPlan: { immediate: `Echo ${i} carries forward.`, shortTerm: `Echo ${i} lingers.` },
+    }));
+    const choiceSets = [{ sceneId: 'scene-1', choices: choices as any }];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+
+    const sceneContents = [
+      { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+      { sceneId: 'scene-2', beats: [{ id: 's2-b0', text: 'a', textVariants: [] as any[] }, { id: 's2-b1', text: 'b', textVariants: [] as any[] }] },
+      { sceneId: 'scene-3', beats: [{ id: 's3-b0', text: 'c', textVariants: [] as any[] }, { id: 's3-b1', text: 'd', textVariants: [] as any[] }] },
+    ];
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: sceneContents as any,
+      choiceSets: choiceSets as any,
+      maxPerScene: 2,
+      maxPerBeat: 1,
+    });
+    // 2 scenes × cap 2 = 4 placed (was previously bounded by maxActiveHooks=10; the
+    // raised pool means availability isn't the bottleneck — distribution is).
+    expect(injected).toBe(4);
+  });
+
+  it('realizes a stub-only flag hook via the clean derived acknowledgment (no longer dropped)', () => {
+    const ledger = new CallbackLedger();
+    // A choice with NO authored reminderPlan/echo — its only prose source is the
+    // synthesized `Earlier choice: "…" (sets …)` stub the filter rejects.
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          { id: 'c1', text: 'Take the back stairs.', consequences: [{ type: 'setFlag', flag: 'took_back_stairs', value: true } as any] } as any,
+        ],
+      },
+    ];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+
+    const laterBeat = { id: 'scene-2-beat-1', text: 'Inside, the lobby is empty.', textVariants: [] as any[] };
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [
+        { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+        { sceneId: 'scene-2', beats: [laterBeat] },
+      ] as any,
+      choiceSets: choiceSets as any,
+    });
+    expect(injected).toBe(1);
+    const variant = laterBeat.textVariants[0];
+    expect(variant.callbackHookId).toBe('flag:took_back_stairs');
+    // Base prose preserved; clean derived continuity beat appended; no raw stub.
+    expect(variant.text).toContain('Inside, the lobby is empty.');
+    expect(variant.text).not.toContain('Earlier choice:');
+    expect(variant.text).not.toContain('sets took_back_stairs');
+    expect(variant.text).not.toMatch(/\bscene\b/i);
   });
 });
 

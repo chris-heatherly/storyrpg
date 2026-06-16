@@ -305,6 +305,36 @@ describe('buildSeasonScenePlan', () => {
     expect(scenes.find((s) => s.id === 's1-1')?.requiredBeats ?? []).toHaveLength(0);
   });
 
+  it('distributes the cold open and consequence seeds as advisory seed beats', () => {
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 4,
+      treatmentGuidance: {
+        episodeTurns: ['Mika adopts Kylie at the Vâlcescu Club door.'],
+        coldOpenFunction: 'A FaceTime to her niece Sadie ("are there vampires in Romania?").',
+        consequenceSeeds: [
+          'Mika\'s house negroni one shade too dark.',
+          'The stray dog in the courtyard, watching.',
+        ],
+      },
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
+    const seedBeats = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'seed'));
+    expect(seedBeats).toHaveLength(3); // cold open + 2 consequence seeds
+    expect(seedBeats.some((b) => b.mustDepict.includes('vampires in Romania'))).toBe(true);
+    expect(seedBeats.some((b) => b.mustDepict.includes('negroni'))).toBe(true);
+    expect(seedBeats.some((b) => b.mustDepict.includes('stray dog'))).toBe(true);
+    // The cold open lands on the opening scene.
+    expect((scenes[0].requiredBeats ?? []).some((b) => b.tier === 'seed' && b.mustDepict.includes('vampires in Romania'))).toBe(true);
+  });
+
+  it('emits no seed beats when the treatment carries no cold open / consequence seeds (golden-stable)', () => {
+    const ep = episode(1, ['hook'], {
+      treatmentGuidance: { episodeTurns: ['A single turn.'] },
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
+    expect(scenes.flatMap((s) => (s.requiredBeats ?? [])).every((b) => b.tier !== 'seed')).toBe(true);
+  });
+
   it('slices edges that touch a given episode', () => {
     const p = plan([episode(1, ['hook']), episode(2, ['climax'])], {
       consequenceChains: [

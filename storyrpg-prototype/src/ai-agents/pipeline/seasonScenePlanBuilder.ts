@@ -208,6 +208,26 @@ function turnSceneOverlap(turnTokens: string[], sceneTokenSet: Set<string>): num
 }
 
 /**
+ * Index of the scene whose match-text best overlaps `text`, or -1 when nothing
+ * overlaps (the deterministic path's generic titles carry no signal). Used to
+ * route a distributed seed plant (cold open / consequence seed) to the scene that
+ * most plausibly dramatizes it.
+ */
+function bestMatchSceneIndex(text: string, sceneTokenSets: Array<Set<string>>): number {
+  const toks = bindTokens(text);
+  let best = -1;
+  let bestScore = 0;
+  for (let i = 0; i < sceneTokenSets.length; i += 1) {
+    const s = turnSceneOverlap(toks, sceneTokenSets[i]);
+    if (s > bestScore) {
+      bestScore = s;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/**
  * Assign each authored turn to the content scene that actually dramatizes it,
  * preserving authored order. Returns `assignment[t] = sceneIndex`.
  *
@@ -365,6 +385,51 @@ export function bindAuthoredTurnsToScenes(ep: SeasonEpisode, scenes: PlannedScen
           sourceTurn: visualAnchor,
           mustDepict: visualAnchor,
           tier: 'signature',
+        },
+      ]);
+    }
+  }
+
+  // 3. Seed plants (ADVISORY, tier:'seed'). The episode turns above are the spine;
+  //    the treatment also authors a cold open and a list of consequence seeds (the
+  //    too-dark negroni, the courtyard dog, the readership number — the texture and
+  //    setup wires that pay off in later episodes). These were previously carried on
+  //    treatmentGuidance but never decomposed into beats, so the authors never saw
+  //    them and dropped them. Distribute them as advisory seed beats: the cold open
+  //    to the opening scene, each consequence seed to its best-match content scene
+  //    (round-robin when the deterministic path offers no lexical signal). Gated on
+  //    field presence so episodes the treatment is silent on stay byte-identical.
+  const seedSpecs: Array<{ text: string; toOpening: boolean }> = [];
+  const coldOpen = guidance?.coldOpenFunction?.trim();
+  if (coldOpen) seedSpecs.push({ text: coldOpen, toOpening: true });
+  for (const seed of guidance?.consequenceSeeds ?? []) {
+    const text = seed?.trim();
+    if (text) seedSpecs.push({ text, toOpening: false });
+  }
+  if (seedSpecs.length > 0) {
+    const openingScene = targets.find((s) => s.narrativeRole === 'setup') ?? targets[0];
+    const sceneTokenSets = targets.map((s) => new Set(bindTokens(sceneMatchText(s))));
+    let roundRobin = 0;
+    for (const spec of seedSpecs) {
+      let scene: PlannedScene;
+      if (spec.toOpening) {
+        scene = openingScene;
+      } else {
+        const matchIdx = bestMatchSceneIndex(spec.text, sceneTokenSets);
+        if (matchIdx >= 0) {
+          scene = targets[matchIdx];
+        } else {
+          scene = targets[roundRobin % targets.length];
+          roundRobin += 1;
+        }
+      }
+      const beatIndex = scene.requiredBeats?.length ?? 0;
+      appendRequiredBeats(scene, [
+        {
+          id: `${scene.id}-seed${beatIndex + 1}`,
+          sourceTurn: spec.text,
+          mustDepict: spec.text,
+          tier: 'seed',
         },
       ]);
     }

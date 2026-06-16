@@ -192,22 +192,19 @@ interface AuthoredBeatExpectation {
   text: string;
 }
 
-function isAuthoredStandardBeat(beat: RequiredBeat): boolean {
-  return beat.tier === 'authored' && Boolean(beat.mustDepict?.trim());
-}
-
 /**
- * Collect every authored-tier required beat from STANDARD scenes (the gap). Encounter
- * scenes are skipped (EncounterAnchorContentValidator covers them); signature/connective
- * tiers are skipped (signature → SignatureDevicePresenceValidator; connective → invention).
+ * Collect required beats of a given tier from STANDARD scenes. Encounter scenes are
+ * skipped (EncounterAnchorContentValidator covers them). `authored` beats are blocking
+ * (the gap); `seed` beats are advisory (cold-open / consequence-seed / info-ledger plants
+ * distributed from treatmentGuidance — counted, never blocking).
  */
-function collectAuthoredBeats(plan: SeasonScenePlan): AuthoredBeatExpectation[] {
+function collectStandardBeats(plan: SeasonScenePlan, tier: RequiredBeat['tier']): AuthoredBeatExpectation[] {
   const out: AuthoredBeatExpectation[] = [];
   const seen = new Set<string>();
   for (const scene of plan.scenes) {
     if (scene.kind === 'encounter') continue;
     for (const beat of scene.requiredBeats || []) {
-      if (!isAuthoredStandardBeat(beat)) continue;
+      if (beat.tier !== tier || !beat.mustDepict?.trim()) continue;
       const text = beat.mustDepict.trim();
       const key = `${scene.id}::${normalize(text)}`;
       if (seen.has(key)) continue;
@@ -236,9 +233,10 @@ export class RequiredBeatRealizationValidator extends BaseValidator {
    */
   validate(input: RequiredBeatRealizationInput): ValidationResult {
     const issues: ValidationIssue[] = [];
-    const beats = collectAuthoredBeats(input.plan);
+    const beats = collectStandardBeats(input.plan, 'authored');
+    const seedBeats = collectStandardBeats(input.plan, 'seed');
 
-    if (beats.length === 0) {
+    if (beats.length === 0 && seedBeats.length === 0) {
       return { valid: true, score: 100, issues: [], suggestions: [] };
     }
 
@@ -281,6 +279,30 @@ export class RequiredBeatRealizationValidator extends BaseValidator {
           `Authored required beat is missing from the final prose of episode ${beat.episodeNumber} scene "${beat.sceneId}": "${beat.text}". The authored turn must be dramatized on-page, not dropped or truncated.`,
           where,
           'Dramatize this authored beat on-page in its scene — show the staged turn the treatment fixed; do not stop the scene before it occurs.',
+        ));
+      }
+    }
+
+    // Advisory pass: cold-open / consequence-seed / information-ledger plants distributed
+    // from treatmentGuidance. A missing seed is a WARNING (counted, never blocking) — the
+    // detail is finer-grained than a turn and may legitimately land in a sibling scene.
+    for (const beat of seedBeats) {
+      if (
+        generatedEpisodeNumbers.size > 0
+        && typeof beat.episodeNumber === 'number'
+        && !generatedEpisodeNumbers.has(beat.episodeNumber)
+      ) {
+        continue;
+      }
+      const sceneText = sceneProseById.get(beat.sceneId);
+      // Seeds may drift to a sibling scene, so check the whole episode, not just the bound scene.
+      const haystack = `${sceneText ?? ''}\n${episodeProseByNumber.get(beat.episodeNumber) ?? ''}`;
+      if (haystack.trim().length === 0) continue;
+      if (!beatDepicted(beat.text, haystack)) {
+        issues.push(this.warning(
+          `Treatment plant not found on-page in episode ${beat.episodeNumber} (bound to scene "${beat.sceneId}"): "${beat.text}". A cold open, recurring object, or information-ledger tell from the treatment was dropped.`,
+          `seedBeat:ep${beat.episodeNumber}:${beat.sceneId}:${beat.beatId}`,
+          'Plant this seed on-page somewhere in the episode — it sets up a later payoff; advisory, so the scene need not be re-authored if it genuinely cannot carry it.',
         ));
       }
     }

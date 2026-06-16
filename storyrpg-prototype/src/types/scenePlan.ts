@@ -78,6 +78,11 @@ export type SceneNarrativeRole =
  *  - `signature`  — a staged device/image the prose MUST show (e.g. the joined-
  *                   blood archive floor); never invented away, never inverted.
  *  - `authored`   — an authored episode turn that must occur, in order, undropped.
+ *  - `seed`       — an authored cold-open / consequence-seed / information-ledger
+ *                   plant distributed from `treatmentGuidance`. The prose SHOULD
+ *                   land it if the scene can carry it, but it is ADVISORY — counted,
+ *                   never blocking — because it is finer-grained than a turn and may
+ *                   legitimately sit in a sibling scene.
  *  - `connective` — tissue the model may freely author around the fixed beats
  *                   (the band that preserves legitimate inference).
  */
@@ -89,7 +94,7 @@ export interface RequiredBeat {
   /** What the generated prose must depict to honor this beat. */
   mustDepict: string;
   /** How fixed this beat is — see {@link RequiredBeat}. */
-  tier: 'signature' | 'authored' | 'connective';
+  tier: 'signature' | 'authored' | 'seed' | 'connective';
 }
 
 /**

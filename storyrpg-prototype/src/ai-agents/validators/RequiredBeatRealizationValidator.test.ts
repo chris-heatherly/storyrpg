@@ -230,4 +230,23 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.score).toBe(100);
   });
+
+  it('ADVISORY: a dropped seed beat is a non-blocking warning, not an error', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', 'A FaceTime to her niece Sadie about vampires in Romania', 'seed')] })]),
+      story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'She dresses for the club, fastening her grandmother\'s gold chain.')])])]),
+    });
+    expect(result.valid).toBe(true); // seed misses never block
+    expect(result.issues.some((i) => i.severity === 'warning')).toBe(true);
+    expect(result.issues.every((i) => i.severity !== 'error')).toBe(true);
+  });
+
+  it('seed beat depicted on-page produces no warning', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', 'A FaceTime to her niece Sadie about vampires in Romania', 'seed')] })]),
+      story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'On FaceTime, her niece Sadie asks if there are vampires in Romania.')])])]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
 });

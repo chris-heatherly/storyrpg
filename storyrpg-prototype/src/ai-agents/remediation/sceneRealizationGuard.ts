@@ -59,8 +59,11 @@ export function requiredMomentsFor(source: SceneContractSource | undefined): Req
     if (!moment) continue;
     const tier = beat.tier ?? 'authored';
     // Connective beats are free tissue the writer may author around — the
-    // validators don't enforce them and neither do we.
-    if (tier === 'connective') continue;
+    // validators don't enforce them and neither do we. Seed beats (distributed
+    // treatment plants) are ADVISORY: the season-final RequiredBeatRealization
+    // pass warns on a dropped seed, but we never trigger a scene-time regen for
+    // one (it may legitimately land in a sibling scene).
+    if (tier === 'connective' || tier === 'seed') continue;
     moments.push({
       moment,
       tier,

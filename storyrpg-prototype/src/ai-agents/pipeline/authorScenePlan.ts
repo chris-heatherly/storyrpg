@@ -349,10 +349,10 @@ export function normalizeAuthoredScenePlan(
     const rawScenes = rawByEpisode.get(ep.episodeNumber);
     if (!rawScenes || rawScenes.length === 0) {
       // Gap fill: deterministic scenes for an episode the model skipped.
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointTextForEpisode(plan, ep)));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointTextForEpisode(plan, ep), plan.informationLedger));
       continue;
     }
-    const normalized = normalizeEpisodeScenes(ep, rawScenes);
+    const normalized = normalizeEpisodeScenes(ep, rawScenes, plan.informationLedger);
     // Floor guard: an authored episode below the structural minimum (the model
     // returned e.g. only a setup + an encounter) is too small to carry a
     // scene-graph branch and hard-aborts at branch validation downstream
@@ -361,7 +361,7 @@ export function normalizeAuthoredScenePlan(
     // skipped episode — so adequately-sized authored episodes are untouched and
     // golden parity holds (only fires when the floor is requested AND violated).
     if (normalized.length < minScenesPerEpisode) {
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointTextForEpisode(plan, ep)));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointTextForEpisode(plan, ep), plan.informationLedger));
       continue;
     }
     scenesByEpisode.set(ep.episodeNumber, normalized);
@@ -411,7 +411,11 @@ export function normalizeAuthoredScenePlan(
 }
 
 /** Normalize one episode's raw scenes, guaranteeing encounter coverage. */
-function normalizeEpisodeScenes(ep: SeasonEpisode, rawScenes: RawScene[]): PlannedScene[] {
+function normalizeEpisodeScenes(
+  ep: SeasonEpisode,
+  rawScenes: RawScene[],
+  infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
+): PlannedScene[] {
   const encountersById = new Map((ep.plannedEncounters ?? []).map((e) => [e.id, e]));
   const usedEncounterIds = new Set<string>();
   const actLabel = ep.treatmentGuidance?.actLabel;
@@ -508,7 +512,7 @@ function normalizeEpisodeScenes(ep: SeasonEpisode, rawScenes: RawScene[]): Plann
   // treatment-sourced run carries discrete requiredBeats + a signatureMoment
   // regardless of what the model returned (§3.2 / §5). Shared with the
   // deterministic path via the same helper.
-  bindAuthoredTurnsToScenes(ep, built);
+  bindAuthoredTurnsToScenes(ep, built, infoLedger);
   return built;
 }
 

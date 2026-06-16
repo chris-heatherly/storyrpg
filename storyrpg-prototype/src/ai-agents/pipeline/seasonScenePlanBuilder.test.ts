@@ -346,6 +346,19 @@ describe('buildSeasonScenePlan', () => {
     expect(sceneOf('Vâlcescu Club')?.locations).toEqual(['Vâlcescu Club']);
   });
 
+  it('distributes information-ledger entries touching the episode as advisory seed beats', () => {
+    const ep = episode(1, ['hook'], { estimatedSceneCount: 4, treatmentGuidance: { episodeTurns: ['A turn.'] } });
+    const informationLedger = [
+      { id: 'INFO-E', label: 'The blog is the thing Victor cannot control; he keeps his face out of every frame', description: 'An unphotographable man.', introducedEpisode: 1, setupTouchEpisodes: [2, 3] },
+      { id: 'INFO-G', label: 'A Strigoi Mama watches the line', description: 'Older entity.', introducedEpisode: 8, setupTouchEpisodes: [] },
+    ] as any;
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep], { informationLedger })), 1);
+    const seedBeats = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'seed'));
+    // INFO-E touches ep1 (introduced) → planted; INFO-G (ep8 only) → absent.
+    expect(seedBeats.some((b) => b.mustDepict.includes('keeps his face out of every frame'))).toBe(true);
+    expect(seedBeats.some((b) => b.mustDepict.includes('Strigoi Mama'))).toBe(false);
+  });
+
   it('emits no seed beats when the treatment carries no cold open / consequence seeds (golden-stable)', () => {
     const ep = episode(1, ['hook'], {
       treatmentGuidance: { episodeTurns: ['A single turn.'] },

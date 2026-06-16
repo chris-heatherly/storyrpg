@@ -356,7 +356,11 @@ function alignTurnsToScenes(turns: string[], targets: PlannedScene[]): number[] 
  * passes freshly-built scenes) and additive for the LLM path (which may carry
  * model-authored beats already). No-op when the episode is not treatment-sourced.
  */
-export function bindAuthoredTurnsToScenes(ep: SeasonEpisode, scenes: PlannedScene[]): void {
+export function bindAuthoredTurnsToScenes(
+  ep: SeasonEpisode,
+  scenes: PlannedScene[],
+  infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
+): void {
   if (scenes.length === 0) return;
   const guidance = ep.treatmentGuidance;
   // Primary source is the authored `episodeTurns` list (ENDSONG-style treatments).
@@ -435,6 +439,19 @@ export function bindAuthoredTurnsToScenes(ep: SeasonEpisode, scenes: PlannedScen
     const text = seed?.trim();
     if (text) seedSpecs.push({ text, toOpening: false });
   }
+  // Information-ledger plants for THIS episode (WS12L). Each ledger entry the episode
+  // introduces or touches (the vampire reveal's "unphotographable" property, a model
+  // going missing, a friend's tell) becomes an advisory seed so the author actually
+  // plants the foreshadow — the per-episode info movement was carried in the season
+  // plan but never decomposed into beats. Best-match distributed like consequence seeds.
+  for (const entry of infoLedger ?? []) {
+    const touches =
+      entry.introducedEpisode === ep.episodeNumber
+      || (entry.setupTouchEpisodes ?? []).includes(ep.episodeNumber);
+    if (!touches) continue;
+    const plant = (entry.label || entry.description?.split(/(?<=[.!?])\s/)[0] || '').trim();
+    if (plant) seedSpecs.push({ text: plant, toOpening: false });
+  }
   if (seedSpecs.length > 0) {
     const openingScene = targets.find((s) => s.narrativeRole === 'setup') ?? targets[0];
     const sceneTokenSets = targets.map((s) => new Set(bindTokens(sceneMatchText(s))));
@@ -473,7 +490,11 @@ export function sevenPointTextForEpisode(plan: SeasonPlan, ep: SeasonEpisode): s
 }
 
 /** Build the ordered list of scenes for a single episode. */
-export function buildEpisodeScenes(ep: SeasonEpisode, sevenPointText: string | undefined): PlannedScene[] {
+export function buildEpisodeScenes(
+  ep: SeasonEpisode,
+  sevenPointText: string | undefined,
+  infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
+): PlannedScene[] {
   const encounters = ep.plannedEncounters ?? [];
   const turns = ep.treatmentGuidance?.episodeTurns ?? [];
   const actLabel = ep.treatmentGuidance?.actLabel;
@@ -577,7 +598,7 @@ export function buildEpisodeScenes(ep: SeasonEpisode, sevenPointText: string | u
 
   // Bind authored turns + the signature device deterministically (shared with the
   // LLM-authored path). This is the single source of truth for turn→scene binding.
-  bindAuthoredTurnsToScenes(ep, scenes);
+  bindAuthoredTurnsToScenes(ep, scenes, infoLedger);
 
   return scenes;
 }
@@ -613,7 +634,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     const sevenPointText = role && role !== 'rising' && role !== 'falling'
       ? sevenPoint?.[role]
       : undefined;
-    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointText));
+    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointText, plan.informationLedger));
   }
 
   // Resolve setup/payoff edges from the season's cross-episode structures.

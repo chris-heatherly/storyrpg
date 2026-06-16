@@ -4,6 +4,7 @@ import {
   collectReferencedFlags,
   factSlug,
   extractMonotonicMetrics,
+  episodeProseCorpus,
 } from './knowledgeExtraction';
 
 describe('factSlug', () => {
@@ -62,6 +63,28 @@ describe('extractMonotonicMetrics', () => {
   it('does not match an unrelated quantity (conservative — no fabrication)', () => {
     expect(extractMonotonicMetrics('Fifty thousand readers cheered.')).toEqual([]); // spelled-out not parsed
     expect(extractMonotonicMetrics('There were 50 soldiers at the gate.')).toEqual([]);
+  });
+});
+
+describe('episodeProseCorpus', () => {
+  it('gathers beat text + choice outcome texts into one corpus the metric extractor can read', () => {
+    const episode = {
+      scenes: [
+        { beats: [
+          { text: 'The post detonates.', choices: [{ outcomeTexts: { success: 'The counter hits 90,147 views.' } }] },
+          { text: 'She refreshes the page.' },
+        ] },
+      ],
+    };
+    const corpus = episodeProseCorpus(episode);
+    expect(corpus).toContain('The post detonates.');
+    expect(corpus).toContain('90,147 views');
+    expect(extractMonotonicMetrics(corpus)[0]).toMatchObject({ id: 'metric:views', value: 90147 });
+  });
+
+  it('is empty-safe for a missing or sceneless episode', () => {
+    expect(episodeProseCorpus(undefined)).toBe('');
+    expect(episodeProseCorpus({})).toBe('');
   });
 });
 

@@ -207,3 +207,20 @@ export function collectReferencedFlags(episode: FlagCondishEpisode | undefined):
   }
   return [...flags];
 }
+
+/**
+ * Concatenate an assembled episode's reader-facing prose (beat text + choice outcome
+ * texts) into one corpus string for {@link extractMonotonicMetrics}. Lets the live
+ * pipeline feed real prose to the metric extractor so blog-readership and similar
+ * counts become monotonic canon facts (the bite-me 90K→50K regression).
+ */
+export function episodeProseCorpus(
+  episode: { scenes?: Array<{ beats?: Array<{ text?: string; choices?: Array<{ outcomeTexts?: Record<string, string> }> }> }> } | undefined,
+): string {
+  return (episode?.scenes ?? [])
+    .flatMap((sc) => (sc.beats ?? []).flatMap((b) => [
+      b?.text ?? '',
+      ...(b?.choices ?? []).flatMap((c) => Object.values(c.outcomeTexts ?? {})),
+    ]))
+    .join(' ');
+}

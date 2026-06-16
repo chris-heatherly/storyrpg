@@ -152,7 +152,7 @@ import {
   inferBranchType,
 } from './contextAssembly';
 import { applySpinePlantMap, deriveSpinePlantMap } from './spinePlantMap';
-import { extractEpisodeKnowledge, collectReferencedFlags } from './knowledgeExtraction';
+import { extractEpisodeKnowledge, collectReferencedFlags, episodeProseCorpus } from './knowledgeExtraction';
 
 import { runEpisodeChargeMaterializationForSeason } from './episodeChargeMaterialization';
 
@@ -5263,6 +5263,7 @@ export class FullStoryPipeline {
               protagonistId: 'protagonist', // matches the flag-knowledge sealed by extractCanonDeltasFromEpisode
               characterKnowledge: this.buildContinuityCharacterKnowledge(characterBible),
               referencedFlags: collectReferencedFlags(generated.episode as any),
+              sceneText: episodeProseCorpus(generated.episode as any), // WS7: readership counts → monotonic canon facts
             });
             const seasonLengthForArc = analysis.totalEstimatedEpisodes || this.totalEpisodes;
             const arcAndRelationship = this.extractArcAndRelationshipDeltas(

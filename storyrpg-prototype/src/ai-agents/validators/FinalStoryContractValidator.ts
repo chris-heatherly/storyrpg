@@ -8,7 +8,7 @@ import { MechanicsLeakageValidator, type MechanicsLeakageText } from './Mechanic
 import { gateDesignNoteLeak, isEscalatedIssue } from './issueEscalation';
 import { canonicalizeStoryWitnessReactions, canonicalizeStoryRelationshipConsequences } from '../utils/witnessNpcResolver';
 import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory } from '../utils/protagonistPronounResolver';
-import { findNpcPronounInconsistencies } from '../utils/npcPronounResolver';
+import { findNpcPronounInconsistencies, findInternalPronounConflicts } from '../utils/npcPronounResolver';
 import { OutcomeTextQualityValidator } from './OutcomeTextQualityValidator';
 import { FlagContractValidator } from './FlagContractValidator';
 import { SentenceOpenerVarietyValidator } from './SentenceOpenerVarietyValidator';
@@ -295,6 +295,21 @@ export class FinalStoryContractValidator {
           message: `NPC "${f.npcName}" is referred to with an inconsistent pronoun ("${f.wrongPronoun}") vs. its canon gender: "${f.sentence}".`,
           validator: 'npcPronounResolver',
           suggestion: `Use ${f.npcName}'s canon pronouns; reserve they/them for NPCs whose roster pronouns are they/them.`,
+        });
+      }
+
+      // Roster-INDEPENDENT scan: catches UNDECLARED characters narrated with conflicting
+      // genders (Bite-Me-G15's Stela drifted they→he→she with no roster entry, so the
+      // roster scan above was blind to her). Always advisory (detection only, never
+      // blocking) — there is no canon pronoun to rewrite toward.
+      const internalConflicts = findInternalPronounConflicts(input.story);
+      for (const c of internalConflicts) {
+        issues.push({
+          type: 'npc_pronoun_inconsistency',
+          severity: 'warning',
+          message: `Character "${c.name}" is referred to with conflicting pronoun genders (${c.genders.join('/')}): e.g. ${c.examples.map((e) => `"${e}"`).join(' vs. ')}.`,
+          validator: 'npcPronounResolver',
+          suggestion: `Declare "${c.name}" in the cast with fixed pronouns, or correct the prose so the character keeps one set of pronouns.`,
         });
       }
     }

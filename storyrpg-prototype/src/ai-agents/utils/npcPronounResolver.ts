@@ -216,3 +216,96 @@ export function findNpcPronounInconsistencies(
   walk(story, '');
   return result;
 }
+
+export interface InternalPronounConflict {
+  /** The recurring name referred to with conflicting pronoun genders. */
+  name: string;
+  /** The genders observed for this name across the prose ('m' | 'f' | 'n' for they). */
+  genders: string[];
+  /** One example sentence per observed gender (for the advisory message). */
+  examples: string[];
+}
+
+// Capitalized words that are NOT names (sentence-openers, pronouns, articles, etc.) so the
+// internal scan does not treat them as characters.
+const NAME_STOPWORDS = new Set([
+  'The', 'You', 'Your', 'Yours', 'She', 'Her', 'Hers', 'His', 'Him', 'They', 'Them', 'Their',
+  'And', 'But', 'For', 'Not', 'With', 'When', 'Then', 'That', 'This', 'There', 'Here', 'What',
+  'How', 'Why', 'Who', 'Where', 'One', 'Two', 'Three', 'Now', 'Yes', 'Maybe', 'Across', 'Inside',
+  'Outside', 'Above', 'Below', 'After', 'Before', 'Monday', 'Tuesday', 'Wednesday', 'Thursday',
+  'Friday', 'Saturday', 'Sunday', 'Mr', 'Mrs', 'Ms', 'Dr',
+]);
+
+/**
+ * Roster-INDEPENDENT pronoun-consistency detector. {@link findNpcPronounInconsistencies}
+ * only checks names that are in the NPC roster with a known gender; an UNDECLARED character
+ * (the dominant cause of drift — e.g. Bite-Me-G15's Stela, narrated as they → he → she
+ * across one episode with no roster entry) is invisible to it. This scan instead infers a
+ * name's gender from each clean reference and flags any recurring name observed with ≥2
+ * conflicting genders. Advisory only (detection, never auto-rewrite) — the same precision
+ * guards as the roster scan keep multi-person / second-person / speech-tag sentences out.
+ */
+export function findInternalPronounConflicts(story: Story): InternalPronounConflict[] {
+  // Pass 1: collect candidate names = capitalized tokens (≥3 letters) that recur in prose.
+  const nameCounts = new Map<string, number>();
+  const sentences: Array<{ text: string }> = [];
+  const collect = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const child of node) collect(child);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    for (const [key, val] of Object.entries(node as Record<string, unknown>)) {
+      if (key === 'npcs') continue;
+      if (typeof val === 'string' && TEXT_KEYS.has(key)) {
+        for (const s of splitSentences(val)) {
+          sentences.push({ text: s });
+          for (const m of s.matchAll(/\b([A-Z][a-z]{2,})\b/g)) {
+            const tok = m[1];
+            if (NAME_STOPWORDS.has(tok)) continue;
+            nameCounts.set(tok, (nameCounts.get(tok) ?? 0) + 1);
+          }
+        }
+      } else if (val && typeof val === 'object') {
+        collect(val);
+      }
+    }
+  };
+  collect(story);
+  const candidates = new Set([...nameCounts.entries()].filter(([, c]) => c >= 2).map(([n]) => n));
+  if (candidates.size === 0) return [];
+
+  // Pass 2: per candidate name, record the gender of each clean single-referent sentence.
+  const observed = new Map<string, Map<string, string>>(); // name -> gender -> example
+  for (const { text: sentence } of sentences) {
+    if (SECOND_PERSON_RE.test(sentence) || ALT_REFERENT_RE.test(sentence) || SPEECH_TAG_RE.test(sentence)) continue;
+    const namesHere = [...candidates].filter((n) => new RegExp(`\\b${escapeRegExp(n)}\\b`).test(sentence));
+    if (namesHere.length !== 1) continue; // ambiguous referent
+    const name = namesHere[0];
+    const nameIdx = sentence.search(new RegExp(`\\b${escapeRegExp(name)}\\b`));
+
+    let gender: string | undefined;
+    let pronounIdx = -1;
+    const fHit = WRONG_BINARY.m.exec(sentence); // she/her family
+    const mHit = WRONG_BINARY.f.exec(sentence); // he/him family
+    if (fHit && (!mHit || fHit.index < mHit.index)) { gender = 'f'; pronounIdx = fHit.index; }
+    else if (mHit) { gender = 'm'; pronounIdx = mHit.index; }
+    else if (THEY_RE.test(sentence) && !PLURAL_CUE_RE.test(sentence)) {
+      const tHit = THEY_RE.exec(sentence);
+      if (tHit) { gender = 'n'; pronounIdx = tHit.index; }
+    }
+    if (!gender || nameIdx < 0 || nameIdx >= pronounIdx) continue; // name must precede pronoun
+
+    if (!observed.has(name)) observed.set(name, new Map());
+    const byGender = observed.get(name)!;
+    if (!byGender.has(gender)) byGender.set(gender, sentence.trim());
+  }
+
+  const conflicts: InternalPronounConflict[] = [];
+  for (const [name, byGender] of observed) {
+    if (byGender.size >= 2) {
+      conflicts.push({ name, genders: [...byGender.keys()], examples: [...byGender.values()] });
+    }
+  }
+  return conflicts;
+}

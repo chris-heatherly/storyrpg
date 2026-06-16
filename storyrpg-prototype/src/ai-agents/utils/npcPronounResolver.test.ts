@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findNpcPronounInconsistencies } from './npcPronounResolver';
+import { findNpcPronounInconsistencies, findInternalPronounConflicts } from './npcPronounResolver';
 import type { Story } from '../../types';
 
 const ROSTER = [
@@ -124,5 +124,30 @@ describe('findNpcPronounInconsistencies', () => {
     );
     expect(res.findings).toHaveLength(1);
     expect(res.findings[0].npcId).toBe('char-lysandra-brightwell');
+  });
+});
+
+describe('findInternalPronounConflicts (roster-independent)', () => {
+  it('flags an undeclared character narrated with conflicting genders (Stela case)', () => {
+    // Stela is NOT in the roster, so findNpcPronounInconsistencies cannot see her.
+    const conflicts = findInternalPronounConflicts(
+      storyWith([
+        'Mika watches as Stela tilts her head, weighing the offer.',
+        'Stela cracks a smile; his eyes never warm, though.',
+      ]),
+    );
+    const stela = conflicts.find((c) => c.name === 'Stela');
+    expect(stela).toBeDefined();
+    expect(stela!.genders).toEqual(expect.arrayContaining(['f', 'm']));
+  });
+
+  it('does not flag a character referred to consistently', () => {
+    const conflicts = findInternalPronounConflicts(
+      storyWith([
+        'Mika tilts her head, weighing the offer.',
+        'Mika cracks a smile; her eyes never warm, though.',
+      ]),
+    );
+    expect(conflicts.find((c) => c.name === 'Mika')).toBeUndefined();
   });
 });

@@ -847,6 +847,117 @@ describe('StoryArchitect scene-graph branch repair', () => {
     expect(new Set(blueprint.scenes[0].leadsTo).size).toBe(2);
     expect(blueprint.scenes[0].leadsTo).toEqual(['scene-2', 'scene-3']);
   });
+
+  // Build an N-scene linear blueprint (each scene leads to the next, last is
+  // terminal). `bottleneckIndices` mark scenes whose purpose is 'bottleneck';
+  // everything else is a plain 'transition'. No choicePoints by default.
+  const linearBlueprint = (count: number, bottleneckIndices: number[] = []): any => ({
+    episodeId: 'episode-1',
+    title: 'Linear',
+    synopsis: '',
+    arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+    themes: [],
+    startingSceneId: 's1',
+    bottleneckScenes: [],
+    suggestedFlags: [],
+    suggestedScores: [],
+    suggestedTags: [],
+    narrativePromises: [],
+    scenes: Array.from({ length: count }, (_, i) => ({
+      id: `s${i + 1}`,
+      name: `Scene ${i + 1}`,
+      description: `Scene ${i + 1}.`,
+      location: 'somewhere',
+      mood: 'neutral',
+      purpose: bottleneckIndices.includes(i) ? 'bottleneck' : 'transition',
+      dramaticQuestion: '',
+      wantVsNeed: '',
+      conflictEngine: '',
+      npcsPresent: [],
+      narrativeFunction: '',
+      keyBeats: [],
+      leadsTo: i < count - 1 ? [`s${i + 2}`] : [],
+    })),
+  });
+
+  const validBranchScenes = (blueprint: any) =>
+    blueprint.scenes.filter(
+      (s: any) =>
+        s.choicePoint?.branches &&
+        s.choicePoint.type !== 'expression' &&
+        new Set(s.leadsTo || []).size >= 2 &&
+        !s.isEncounter,
+    );
+
+  it('routes the far branch arm to a later reconvergence scene instead of the immediate next two (deeper divergence)', () => {
+    const architect = new StoryArchitect(config);
+    // 5 linear scenes: enough room for the far arm to skip ahead, but below the
+    // 2-branch floor so exactly one branch is synthesized.
+    const blueprint = linearBlueprint(5);
+
+    (architect as any).repairSceneGraphBranchCoverage(blueprint);
+
+    const branches = validBranchScenes(blueprint);
+    expect(branches).toHaveLength(1);
+    // Near arm is the immediate next scene; far arm skips ahead (NOT the trivial
+    // next-two ['s2','s3']) so the arms diverge before reconverging.
+    expect(branches[0].leadsTo).toEqual(['s2', 's4']);
+    expect(branches[0].leadsTo).not.toEqual(['s2', 's3']);
+  });
+
+  it('reconverges the far arm at a downstream bottleneck scene when one exists', () => {
+    const architect = new StoryArchitect(config);
+    // s4 is a bottleneck — the far arm should target it as the designed merge point.
+    const blueprint = linearBlueprint(5, [3]);
+
+    (architect as any).repairSceneGraphBranchCoverage(blueprint);
+
+    const branches = validBranchScenes(blueprint);
+    expect(branches).toHaveLength(1);
+    expect(branches[0].leadsTo).toEqual(['s2', 's4']);
+  });
+
+  it('honors an opted-in branch floor of 2 on a big-enough (≥6-scene) episode', () => {
+    // The default floor stays 1 (golden-stable); a story opts into richer
+    // branching via minSceneGraphBranchesPerEpisode.
+    const architect = new StoryArchitect(config, {
+      minSceneGraphBranchesPerEpisode: 2,
+    } as any);
+    const blueprint = linearBlueprint(6);
+
+    (architect as any).repairSceneGraphBranchCoverage(blueprint);
+
+    // Two distinct, valid reconvergent branch points are synthesized.
+    const branches = validBranchScenes(blueprint);
+    expect(branches.length).toBeGreaterThanOrEqual(2);
+    // Branch points must be distinct scenes.
+    expect(new Set(branches.map((s: any) => s.id)).size).toBe(branches.length);
+    // Every branch target stays reachable (no orphaned/unreachable scenes): BFS
+    // from the start reaches all scenes.
+    const byId = new Map(blueprint.scenes.map((s: any) => [s.id, s]));
+    const seen = new Set<string>([blueprint.startingSceneId]);
+    const queue = [blueprint.startingSceneId];
+    while (queue.length) {
+      const cur = byId.get(queue.shift()!) as any;
+      for (const next of cur?.leadsTo || []) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          queue.push(next);
+        }
+      }
+    }
+    expect(seen.size).toBe(blueprint.scenes.length);
+  });
+
+  it('keeps the floor at 1 (single branch) on a small (3-scene) episode that cannot carry a second', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint = linearBlueprint(3);
+
+    (architect as any).repairSceneGraphBranchCoverage(blueprint);
+
+    // Only one branch is feasible (only s1 sits before the final two scenes).
+    expect(validBranchScenes(blueprint)).toHaveLength(1);
+  });
 });
 
 describe('StoryArchitect transition repair', () => {

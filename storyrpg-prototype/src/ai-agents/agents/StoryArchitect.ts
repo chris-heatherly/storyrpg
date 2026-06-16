@@ -39,6 +39,17 @@ import { ThemePressureValidator } from '../validators/ThemePressureValidator';
 import { SceneTurnContractValidator } from '../validators/SceneTurnContractValidator';
 import { EpisodePressureArchitectureValidator } from '../validators/EpisodePressureArchitectureValidator';
 
+/**
+ * Smallest episode (by scene count) that should be asked to carry a SECOND
+ * scene-graph branch. Below this, a single branch-and-bottleneck is all the
+ * scene budget can support without starving scenes; at or above it there is
+ * room for an arm to diverge for a span and reconverge, then branch again.
+ * The default branch floor scales 1→2 at this threshold (see
+ * {@link StoryArchitect.effectiveMinBranchesPerEpisode}); an explicit
+ * `minSceneGraphBranchesPerEpisode` override is always respected when higher.
+ */
+const BRANCH_FLOOR_2_MIN_SCENES = 6;
+
 // Input types
 export interface StoryArchitectInput {
   // Story context
@@ -1030,45 +1041,130 @@ export class StoryArchitect extends BaseAgent {
     }
   }
 
+  /**
+   * Effective scene-graph branch floor for an episode of `sceneCount` scenes.
+   * The implicit default stays at 1 (golden-stable); a story opts into richer
+   * branching by setting `minSceneGraphBranchesPerEpisode` (e.g. 2). When opted
+   * in, the floor is still capped to what a large-enough episode can host
+   * ({@link BRANCH_FLOOR_2_MIN_SCENES}) so a small episode is never forced to
+   * carry a second branch-and-bottleneck. Callers further cap this by
+   * {@link feasibleBranchSlotCount} so validation never demands more branches
+   * than the graph can structurally carry / the repair can synthesize.
+   *
+   * The companion improvement — {@link synthesizeBranchForCandidate}'s deeper,
+   * later-reconverging routing (vs. the old next-2-scenes skip-insert) — applies
+   * unconditionally whenever the repair synthesizes a branch, independent of the
+   * floor.
+   */
+  private effectiveMinBranchesPerEpisode(sceneCount: number): number {
+    const configured = this.sceneGraphBranching.minPerEpisode;
+    // Only cap an OPTED-IN floor (>1) by episode size; never auto-raise the default.
+    if (configured > 1 && sceneCount < BRANCH_FLOOR_2_MIN_SCENES) return 1;
+    return configured;
+  }
+
+  /**
+   * How many distinct, valid scene-graph branch points this scene list can carry.
+   * A branch point must be a non-encounter scene with at least two distinct
+   * downstream scenes to route to, so only scenes before the final two indices
+   * are eligible. We cap the demanded floor by this so a raised default never
+   * causes a spurious hard-abort on a graph that simply has no room.
+   */
+  private feasibleBranchSlotCount(scenes: SceneBlueprint[]): number {
+    return scenes.filter((scene, index) => index < scenes.length - 2 && !scene.isEncounter).length;
+  }
+
   private repairSceneGraphBranchCoverage(blueprint: EpisodeBlueprint): void {
     if (!this.sceneGraphBranching.required || this.sceneGraphBranching.allowLinearBottleneckEpisodes) return;
     const scenes = blueprint.scenes || [];
     if (scenes.length < 3) return;
 
-    const validBranchCount = scenes.filter(scene =>
-      scene.choicePoint?.branches &&
-      scene.choicePoint.type !== 'expression' &&
+    const isValidBranchScene = (scene: SceneBlueprint): boolean =>
+      Boolean(scene.choicePoint?.branches) &&
+      scene.choicePoint?.type !== 'expression' &&
       new Set(scene.leadsTo || []).size >= 2 &&
-      !scene.isEncounter
-    ).length;
-    if (validBranchCount >= this.sceneGraphBranching.minPerEpisode) return;
+      !scene.isEncounter;
+
+    // Raise the floor to 2 on big-enough episodes, but never above what the graph
+    // can carry — otherwise validation would hard-abort a blueprint repair can't fix.
+    const targetFloor = Math.min(
+      this.effectiveMinBranchesPerEpisode(scenes.length),
+      this.feasibleBranchSlotCount(scenes),
+    );
 
     const sceneIndex = new Map(scenes.map((scene, index) => [scene.id, index]));
-    const candidate = scenes.find((scene, index) =>
-      index < scenes.length - 2 &&
-      !scene.isEncounter &&
-      scene.choicePoint &&
-      scene.choicePoint.type !== 'expression'
-    ) || scenes.find((scene, index) =>
-      index < scenes.length - 2 &&
-      !scene.isEncounter &&
-      scene.choicePoint
-    ) || scenes.find((scene, index) =>
-      index < scenes.length - 2 &&
-      !scene.isEncounter
-    );
-    if (!candidate) return;
+
+    // Synthesize branches one at a time until the floor is met. Each pass grabs a
+    // fresh eligible candidate (one not already a valid branch) so we never double
+    // up on the same scene, and bails the moment no candidate / no deep-enough
+    // routing remains — falling back to the existing graph rather than corrupting it.
+    let guard = scenes.length; // hard upper bound; one branch per scene at most
+    while (scenes.filter(isValidBranchScene).length < targetFloor && guard-- > 0) {
+      const synthesized = this.synthesizeBranchForCandidate(scenes, sceneIndex);
+      if (!synthesized) break;
+    }
+  }
+
+  /**
+   * Turn the best still-linear scene into a reconvergent scene-graph branch.
+   * Returns the chosen scene id on success, or null when no eligible candidate /
+   * valid two-target routing exists (caller then falls back to the current graph).
+   *
+   * Routing: instead of fanning out to the immediate next two scenes (which merge
+   * one step later — a trivially shallow branch), one arm takes the next scene and
+   * the other arm SKIPS AHEAD to a later reconvergence scene (a downstream
+   * bottleneck/encounter where possible, else ≥2 steps ahead). The skipped span
+   * stays reachable through the near arm's existing linear chain, so the two arms
+   * diverge for a real stretch before reconverging — with no orphaned or
+   * unreachable scenes. When no deeper target is available (e.g. a 3-scene
+   * episode) it falls back to the original next-two behavior.
+   */
+  private synthesizeBranchForCandidate(
+    scenes: SceneBlueprint[],
+    sceneIndex: Map<string, number>,
+  ): string | null {
+    const isAlreadyBranch = (scene: SceneBlueprint): boolean =>
+      Boolean(scene.choicePoint?.branches) &&
+      scene.choicePoint?.type !== 'expression' &&
+      new Set(scene.leadsTo || []).size >= 2 &&
+      !scene.isEncounter;
+
+    const eligible = (scene: SceneBlueprint, index: number): boolean =>
+      index < scenes.length - 2 && !scene.isEncounter && !isAlreadyBranch(scene);
+
+    const candidate =
+      scenes.find((scene, index) => eligible(scene, index) && scene.choicePoint && scene.choicePoint.type !== 'expression') ||
+      scenes.find((scene, index) => eligible(scene, index) && scene.choicePoint) ||
+      scenes.find((scene, index) => eligible(scene, index));
+    if (!candidate) return null;
 
     const candidateIndex = sceneIndex.get(candidate.id) ?? 0;
-    const futureSceneIds = scenes
+    const downstream = scenes
       .slice(candidateIndex + 1)
       .map((scene) => scene.id)
-      .filter((id, index, arr) => arr.indexOf(id) === index)
-      .slice(0, 2);
-    if (futureSceneIds.length < 2) return;
+      .filter((id, index, arr) => arr.indexOf(id) === index);
+    if (downstream.length < 2) return null;
+
+    // Near arm: the immediately-next scene (keeps the linear chain intact so the
+    // skipped span stays reachable). Far arm: a later reconvergence scene.
+    const nearArmId = downstream[0];
+    // Prefer a downstream bottleneck/encounter as the reconvergence (far) arm; it
+    // is the designed merge point. Skip the near arm itself (index 0) so the arms
+    // are distinct and the far arm genuinely skips ahead.
+    const deeperTargetId =
+      downstream.slice(1).find((id) => {
+        const scene = scenes[sceneIndex.get(id) ?? -1];
+        return scene && (scene.isEncounter || scene.purpose === 'bottleneck');
+      }) ||
+      // No marked merge point: reconverge at a scene ≥2 steps ahead when possible
+      // (deeper divergence), else fall back to the immediate next-two behavior.
+      (downstream.length >= 3 ? downstream[2] : downstream[1]);
+
+    const targetIds = Array.from(new Set([nearArmId, deeperTargetId])).slice(0, 2);
+    if (targetIds.length < 2) return null;
 
     candidate.purpose = 'branch';
-    candidate.leadsTo = futureSceneIds;
+    candidate.leadsTo = targetIds;
     if (!candidate.choicePoint || candidate.choicePoint.type === 'expression') {
       candidate.choicePoint = {
         // 1.2: a routing branch needs `branches: true`, not type `dilemma`.
@@ -1097,7 +1193,7 @@ export class StoryArchitect extends BaseAgent {
 
     candidate.choicePoint.type = candidate.choicePoint.type === 'expression' ? 'strategic' : candidate.choicePoint.type;
     candidate.choicePoint.branches = true;
-    candidate.choicePoint.optionHints = futureSceneIds.map((targetId) => {
+    candidate.choicePoint.optionHints = targetIds.map((targetId) => {
       const target = scenes.find((scene) => scene.id === targetId);
       return target ? `Move toward ${target.name}` : `Move toward ${targetId}`;
     });
@@ -1111,8 +1207,9 @@ export class StoryArchitect extends BaseAgent {
       : [`The route chosen in ${candidate.name} changes what context the player carries forward.`];
 
     console.warn(
-      `[StoryArchitect] Repaired scene-graph branching by turning "${candidate.id}" into a branch scene with leadsTo: ${futureSceneIds.join(', ')}`
+      `[StoryArchitect] Repaired scene-graph branching by turning "${candidate.id}" into a branch scene with leadsTo: ${targetIds.join(', ')}`
     );
+    return candidate.id;
   }
 
   /**
@@ -1163,12 +1260,19 @@ export class StoryArchitect extends BaseAgent {
         reason: `only ${sceneCount} scene(s) — a branch needs at least ${MIN_SCENES_PER_EPISODE} (one branch scene plus two distinct downstream targets)`,
       };
     }
-    if (validBranchCount < this.sceneGraphBranching.minPerEpisode) {
+    // Effective floor (default 1, raised to 2 on big-enough episodes), capped by
+    // what the graph can structurally carry so this never demands more branches
+    // than repairSceneGraphBranchCoverage could have synthesized.
+    const requiredBranches = Math.min(
+      this.effectiveMinBranchesPerEpisode(sceneCount),
+      this.feasibleBranchSlotCount(blueprint.scenes || []),
+    );
+    if (validBranchCount < requiredBranches) {
       return {
         adequate: false,
         sceneCount,
         validBranchCount,
-        reason: `${validBranchCount} valid branch scene(s); need at least ${this.sceneGraphBranching.minPerEpisode} (a non-expression choicePoint with branches=true and two distinct leadsTo targets)`,
+        reason: `${validBranchCount} valid branch scene(s); need at least ${requiredBranches} (a non-expression choicePoint with branches=true and two distinct leadsTo targets)`,
       };
     }
     return { adequate: true, sceneCount, validBranchCount, reason: '' };
@@ -3861,9 +3965,13 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         scene.choicePoint.type !== 'expression' &&
         new Set(scene.leadsTo || []).size >= 2
       ).length;
-      if (branchPointCount < this.sceneGraphBranching.minPerEpisode) {
+      const requiredBranches = Math.min(
+        this.effectiveMinBranchesPerEpisode(blueprint.scenes.length),
+        this.feasibleBranchSlotCount(blueprint.scenes),
+      );
+      if (branchPointCount < requiredBranches) {
         issues.push(
-          `Only ${branchPointCount} scene-graph branch choicePoint(s); need at least ${this.sceneGraphBranching.minPerEpisode}. ` +
+          `Only ${branchPointCount} scene-graph branch choicePoint(s); need at least ${requiredBranches}. ` +
           `Add a non-expression choicePoint with branches=true and 2 distinct leadsTo targets that later reconverge.`
         );
       }
@@ -4018,9 +4126,15 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         scene.choicePoint.type !== 'expression' &&
         new Set(scene.leadsTo || []).size >= 2
       ).length;
-      if (validBranchPointCount < this.sceneGraphBranching.minPerEpisode) {
+      // Cap by feasibility so a raised default floor never throws on a graph too
+      // small to carry it (repairSceneGraphBranchCoverage is bounded the same way).
+      const requiredBranches = Math.min(
+        this.effectiveMinBranchesPerEpisode(blueprint.scenes.length),
+        this.feasibleBranchSlotCount(blueprint.scenes),
+      );
+      if (validBranchPointCount < requiredBranches) {
         throw new Error(
-          `Insufficient scene-graph branching: ${validBranchPointCount}/${this.sceneGraphBranching.minPerEpisode} valid branch point(s). ` +
+          `Insufficient scene-graph branching: ${validBranchPointCount}/${requiredBranches} valid branch point(s). ` +
           `At least one non-expression choicePoint must set branches=true and lead to 2+ distinct future scenes.`
         );
       }

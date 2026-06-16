@@ -1009,13 +1009,37 @@ describe('StoryArchitect scene-graph branch repair', () => {
     expect(Math.max(...targetIdx)).toBeLessThanOrEqual(2); // never lands past s3 (index 2)
   });
 
-  it('bails (no synthesized branch) when the only candidate would skip an immediately-next mandatory beat', () => {
+  it('prefers a SAFE branch point — branches at the mandatory scene itself rather than skipping it', () => {
     const architect = new StoryArchitect(config);
     const blueprint = linearBlueprint(5);
-    // s2 — the scene right after the only eligible candidate s1 — is mandatory.
+    // s2 (index 1) is mandatory; the safe branch point is s2 itself (its own beat plays
+    // on both arms; its next scene s3 carries no beat to skip).
     blueprint.scenes[1].requiredBeats = [mandatoryBeat('s2')];
     const sceneIndex = new Map<string, number>(blueprint.scenes.map((s: any, i: number) => [s.id, i]));
-    expect((architect as any).synthesizeBranchForCandidate(blueprint.scenes, sceneIndex)).toBeNull();
+    const id = (architect as any).synthesizeBranchForCandidate(blueprint.scenes, sceneIndex);
+    expect(id).toBe('s2');
+  });
+
+  it('still synthesizes a branch when EVERY content scene carries an authored beat (dense treatment episode — must not fail blueprint adequacy)', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint = linearBlueprint(5);
+    // The production regression: a treatment episode binds an authored turn to every
+    // content scene, so no skip-safe branch window exists. The repair must still produce
+    // a (shallow) branch rather than zero coverage, which hard-aborts at the adequacy gate.
+    blueprint.scenes.forEach((s: any, i: number) => { s.requiredBeats = [mandatoryBeat(`s${i + 1}`)]; });
+
+    (architect as any).repairSceneGraphBranchCoverage(blueprint);
+
+    expect(validBranchScenes(blueprint).length).toBeGreaterThanOrEqual(1);
+    // Reachability preserved (no orphaned scenes) even on the forced fallback branch.
+    const byId = new Map(blueprint.scenes.map((s: any) => [s.id, s]));
+    const seen = new Set<string>([blueprint.startingSceneId]);
+    const queue = [blueprint.startingSceneId];
+    while (queue.length) {
+      const cur = byId.get(queue.shift()!) as any;
+      for (const next of cur?.leadsTo || []) if (!seen.has(next)) { seen.add(next); queue.push(next); }
+    }
+    expect(seen.size).toBe(blueprint.scenes.length);
   });
 });
 

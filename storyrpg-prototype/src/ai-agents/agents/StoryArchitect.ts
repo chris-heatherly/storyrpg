@@ -1134,13 +1134,30 @@ export class StoryArchitect extends BaseAgent {
       new Set(scene.leadsTo || []).size >= 2 &&
       !scene.isEncounter;
 
+    // A scene carrying an authored/signature required beat is a MANDATORY sequential
+    // beat (e.g. the ep2 Victor-booth plot turn). The far arm must NOT skip past one,
+    // or a player on that arm bypasses a fixed turn (the Victor-OR-Radu binary bug).
+    const carriesMandatoryBeat = (scene: SceneBlueprint | undefined): boolean =>
+      Boolean(scene) && (scene!.requiredBeats || []).some((b) => b?.tier === 'authored' || b?.tier === 'signature');
+
     const eligible = (scene: SceneBlueprint, index: number): boolean =>
       index < scenes.length - 2 && !scene.isEncounter && !isAlreadyBranch(scene);
+    // A SAFE branch point is one whose immediately-next scene carries no mandatory beat,
+    // so the far arm can skip it without bypassing a plot turn. We prefer these.
+    const safe = (scene: SceneBlueprint, index: number): boolean =>
+      eligible(scene, index) && !carriesMandatoryBeat(scenes[index + 1]);
 
+    // Prefer a safe branch point; fall back to ANY eligible scene. In a dense
+    // treatment episode where every content scene carries an authored turn no safe
+    // point exists — a shallow branch that skips a turn is still better than failing
+    // blueprint adequacy with zero branch coverage (which hard-aborts generation).
     const candidate =
-      scenes.find((scene, index) => eligible(scene, index) && scene.choicePoint && scene.choicePoint.type !== 'expression') ||
-      scenes.find((scene, index) => eligible(scene, index) && scene.choicePoint) ||
-      scenes.find((scene, index) => eligible(scene, index));
+      scenes.find((s, i) => safe(s, i) && s.choicePoint && s.choicePoint.type !== 'expression') ||
+      scenes.find((s, i) => safe(s, i) && s.choicePoint) ||
+      scenes.find((s, i) => safe(s, i)) ||
+      scenes.find((s, i) => eligible(s, i) && s.choicePoint && s.choicePoint.type !== 'expression') ||
+      scenes.find((s, i) => eligible(s, i) && s.choicePoint) ||
+      scenes.find((s, i) => eligible(s, i));
     if (!candidate) return null;
 
     const candidateIndex = sceneIndex.get(candidate.id) ?? 0;
@@ -1154,17 +1171,13 @@ export class StoryArchitect extends BaseAgent {
     // skipped span stays reachable). Far arm: a later reconvergence scene.
     const nearArmId = downstream[0];
 
-    // A scene carrying an authored/signature required beat is a MANDATORY sequential
-    // beat (e.g. the ep2 Victor-booth plot turn). The far arm must NOT skip past one,
-    // or a player on that arm bypasses a fixed turn (the Victor-OR-Radu binary bug).
-    // Reconverge no later than the first downstream mandatory-beat scene; if the very
-    // next scene is itself mandatory there is nothing safe to skip here, so bail and
-    // let the caller leave the episode linear (the adequacy gate tolerates that).
-    const carriesMandatoryBeat = (scene: SceneBlueprint | undefined): boolean =>
-      Boolean(scene) && (scene!.requiredBeats || []).some((b) => b?.tier === 'authored' || b?.tier === 'signature');
+    // Reconverge no later than the first downstream mandatory-beat scene so the far
+    // arm never skips a plot turn. When the immediate next scene is itself mandatory
+    // (firstMandatoryPos === 0 — the dense-episode fallback above), no safe window
+    // exists; route over the full span (best-effort shallow branch) rather than
+    // returning zero coverage and failing the adequacy gate.
     const firstMandatoryPos = downstream.findIndex((id) => carriesMandatoryBeat(scenes[sceneIndex.get(id) ?? -1]));
-    const farBoundary = firstMandatoryPos === -1 ? downstream.length - 1 : firstMandatoryPos;
-    if (farBoundary < 1) return null;
+    const farBoundary = firstMandatoryPos >= 1 ? firstMandatoryPos : downstream.length - 1;
 
     // Prefer a downstream bottleneck/encounter (the designed merge point) within the
     // safe window [1..farBoundary]; else reconverge ≥2 steps ahead when the window

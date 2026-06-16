@@ -2065,11 +2065,31 @@ export class ContentGenerationPhase {
           ...(sceneBlueprint.encounterRelevantSkills || []),
           ...(plannedEnc?.relevantSkills || []),
         ].map((skill) => skill.trim()).filter(Boolean)));
+        // Only characters that were actually DESIGNED (exist in the character bible)
+        // and are not clearly off-page relations may be FORCED present in the encounter.
+        // The season roster over-harvests names from treatment prose — e.g. Kylie's
+        // 7-year-old niece Sadie in Boston, a FaceTime/photo only — and the unfiltered
+        // union forced EncounterArchitect to stage her at the Bucharest rooftop with full
+        // relationship dimensions. An undeclared or remote name can still be REFERENCED in
+        // prose; it just won't be a required present NPC. (Ties into the WS1 cast gap.)
+        const OFF_PAGE_RELATION = /\b(niece|nephew|grandchild|in Boston|back home|overseas|abroad|long[- ]distance|via (?:face\s?time|phone|video)|on the phone|photo on (?:her|the) desk)\b/i;
+        const isStageablePresent = (npcId: string): boolean => {
+          const profile = resolveCharacterProfile(characterBible.characters, npcId);
+          if (!profile) return false; // undeclared name — never force-stage it (reference only)
+          const briefNpc = brief.npcs.find((n) => n.id === npcId || n.name === npcId);
+          const text = [
+            profile.role,
+            profile.description,
+            (briefNpc as { relationshipToProtagonist?: string } | undefined)?.relationshipToProtagonist,
+            briefNpc?.description,
+          ].filter(Boolean).join(' ');
+          return !OFF_PAGE_RELATION.test(text);
+        };
         const encounterRequiredNpcIds = Array.from(new Set([
           ...(sceneBlueprint.encounterRequiredNpcIds || []),
           ...(plannedEnc?.npcsInvolved || []),
           ...(sceneBlueprint.npcsPresent || []),
-        ]));
+        ])).filter(isStageablePresent);
         
         // NOTE: encounterRelevantSkills are passed to the architect as *prompt
         // hints* (see availableSkills/encounterRelevantSkills inputs below), but

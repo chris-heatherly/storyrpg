@@ -1154,12 +1154,14 @@ export function loadConfig(): PipelineConfig {
       seasonCanonBlocking: (env.EXPO_PUBLIC_SEASON_CANON_BLOCKING ?? env.SEASON_CANON_BLOCKING) !== '0',
       // 7-point spine gate: blocking on by default (opt-out) — set SEVEN_POINT_BLOCKING=0 to disable.
       sevenPointBlocking: (env.EXPO_PUBLIC_SEVEN_POINT_BLOCKING ?? env.SEVEN_POINT_BLOCKING) !== '0',
-      // Thread/Twist planning: DEFAULT OFF (opt-in) — set STORYRPG_THREAD_TWIST_PLANNING=1 to enable.
+      // Thread/Twist planning: DEFAULT ON (opt-out) — set STORYRPG_THREAD_TWIST_PLANNING=0 to disable.
+      // Populates the ThreadPlanner ledger so the setup_payoff / twist_quality diagnostics run.
       enableThreadAndTwistPlanning:
-        (env.EXPO_PUBLIC_STORYRPG_THREAD_TWIST_PLANNING ?? env.STORYRPG_THREAD_TWIST_PLANNING) === '1',
-      // Character-arc tracking: DEFAULT OFF (opt-in) — set STORYRPG_CHARACTER_ARC_TRACKING=1 to enable.
+        (env.EXPO_PUBLIC_STORYRPG_THREAD_TWIST_PLANNING ?? env.STORYRPG_THREAD_TWIST_PLANNING) !== '0',
+      // Character-arc tracking: DEFAULT ON (opt-out) — set STORYRPG_CHARACTER_ARC_TRACKING=0 to disable.
+      // Populates CharacterArcTracker targets so the arc_delta diagnostic runs.
       enableCharacterArcTracking:
-        (env.EXPO_PUBLIC_STORYRPG_CHARACTER_ARC_TRACKING ?? env.STORYRPG_CHARACTER_ARC_TRACKING) === '1',
+        (env.EXPO_PUBLIC_STORYRPG_CHARACTER_ARC_TRACKING ?? env.STORYRPG_CHARACTER_ARC_TRACKING) !== '0',
     },
     memory: {
       enabled: env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' || env.CLAUDE_MEMORY === 'true' || defaultConfig.provider === 'anthropic',

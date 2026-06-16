@@ -130,6 +130,9 @@ async function buildPipeline() {
     requireSceneGraphBranching: false,
     allowLinearBottleneckEpisodes: true,
     enableThreadAndTwistPlanning: true,
+    // CharacterArcTracker is default-ON in production but pinned OFF here to
+    // match the season golden (no scripted arc fixture yet).
+    enableCharacterArcTracking: false,
     // THE ONLY DIFFERENCE from the legacy characterization test:
     runGraphEpisodeLoop: true,
   };

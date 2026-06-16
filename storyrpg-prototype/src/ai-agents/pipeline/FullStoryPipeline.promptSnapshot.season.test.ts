@@ -128,10 +128,14 @@ async function buildPipeline() {
     minEncountersLong: 0,
     requireSceneGraphBranching: false,
     allowLinearBottleneckEpisodes: true,
-    // Season-scoped coverage: exercise the ThreadPlanner/TwistArchitect seam
-    // (default-off in production) so the ContentGeneration extraction proves
-    // the planning call order and prompt assembly survive the move.
+    // Season-scoped coverage: exercise the ThreadPlanner/TwistArchitect seam so
+    // the ContentGeneration extraction proves the planning call order and prompt
+    // assembly survive the move. CharacterArcTracker is now default-ON in
+    // production but pinned OFF here (no scripted fixture for it yet — adding
+    // full-pipeline arc coverage is a follow-up); pinning both keeps the golden
+    // independent of the production defaults.
     enableThreadAndTwistPlanning: true,
+    enableCharacterArcTracking: false,
   };
   config.debug = false;
   return new FullStoryPipeline(config);

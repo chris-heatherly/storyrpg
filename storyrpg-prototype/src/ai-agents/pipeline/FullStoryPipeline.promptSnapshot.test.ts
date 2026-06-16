@@ -125,6 +125,11 @@ async function buildPipeline() {
     minEncountersLong: 0,
     requireSceneGraphBranching: false,
     allowLinearBottleneckEpisodes: true,
+    // ThreadPlanner/TwistArchitect/CharacterArcTracker are now default-ON in
+    // production. This baseline characterizes the core generation path without
+    // them; pin them OFF so the golden is independent of the production default.
+    enableThreadAndTwistPlanning: false,
+    enableCharacterArcTracking: false,
   };
   config.debug = false;
   return new FullStoryPipeline(config);

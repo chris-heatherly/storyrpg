@@ -1148,17 +1148,28 @@ export class StoryArchitect extends BaseAgent {
     // Near arm: the immediately-next scene (keeps the linear chain intact so the
     // skipped span stays reachable). Far arm: a later reconvergence scene.
     const nearArmId = downstream[0];
-    // Prefer a downstream bottleneck/encounter as the reconvergence (far) arm; it
-    // is the designed merge point. Skip the near arm itself (index 0) so the arms
-    // are distinct and the far arm genuinely skips ahead.
+
+    // A scene carrying an authored/signature required beat is a MANDATORY sequential
+    // beat (e.g. the ep2 Victor-booth plot turn). The far arm must NOT skip past one,
+    // or a player on that arm bypasses a fixed turn (the Victor-OR-Radu binary bug).
+    // Reconverge no later than the first downstream mandatory-beat scene; if the very
+    // next scene is itself mandatory there is nothing safe to skip here, so bail and
+    // let the caller leave the episode linear (the adequacy gate tolerates that).
+    const carriesMandatoryBeat = (scene: SceneBlueprint | undefined): boolean =>
+      Boolean(scene) && (scene!.requiredBeats || []).some((b) => b?.tier === 'authored' || b?.tier === 'signature');
+    const firstMandatoryPos = downstream.findIndex((id) => carriesMandatoryBeat(scenes[sceneIndex.get(id) ?? -1]));
+    const farBoundary = firstMandatoryPos === -1 ? downstream.length - 1 : firstMandatoryPos;
+    if (farBoundary < 1) return null;
+
+    // Prefer a downstream bottleneck/encounter (the designed merge point) within the
+    // safe window [1..farBoundary]; else reconverge ≥2 steps ahead when the window
+    // allows, else at the boundary itself.
     const deeperTargetId =
-      downstream.slice(1).find((id) => {
+      downstream.slice(1, farBoundary + 1).find((id) => {
         const scene = scenes[sceneIndex.get(id) ?? -1];
         return scene && (scene.isEncounter || scene.purpose === 'bottleneck');
       }) ||
-      // No marked merge point: reconverge at a scene ≥2 steps ahead when possible
-      // (deeper divergence), else fall back to the immediate next-two behavior.
-      (downstream.length >= 3 ? downstream[2] : downstream[1]);
+      downstream[Math.min(2, farBoundary)];
 
     const targetIds = Array.from(new Set([nearArmId, deeperTargetId])).slice(0, 2);
     if (targetIds.length < 2) return null;

@@ -993,6 +993,30 @@ describe('StoryArchitect scene-graph branch repair', () => {
     // Only one branch is feasible (only s1 sits before the final two scenes).
     expect(validBranchScenes(blueprint)).toHaveLength(1);
   });
+
+  const mandatoryBeat = (id: string) => ({ id: `${id}-rb1`, sourceTurn: 'plot turn', mustDepict: 'plot turn', tier: 'authored' as const });
+
+  it('never routes a synthesized far arm PAST a scene carrying an authored beat (the Victor-OR-Radu fix)', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint = linearBlueprint(5);
+    // s3 (index 2) holds the mandatory plot-turn beat — the far arm must reconverge at
+    // or before it, never skip it.
+    blueprint.scenes[2].requiredBeats = [mandatoryBeat('s3')];
+    const sceneIndex = new Map<string, number>(blueprint.scenes.map((s: any, i: number) => [s.id, i]));
+    const id = (architect as any).synthesizeBranchForCandidate(blueprint.scenes, sceneIndex);
+    const branch = blueprint.scenes.find((s: any) => s.id === id);
+    const targetIdx = (branch?.leadsTo || []).map((t: string) => sceneIndex.get(t) as number);
+    expect(Math.max(...targetIdx)).toBeLessThanOrEqual(2); // never lands past s3 (index 2)
+  });
+
+  it('bails (no synthesized branch) when the only candidate would skip an immediately-next mandatory beat', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint = linearBlueprint(5);
+    // s2 — the scene right after the only eligible candidate s1 — is mandatory.
+    blueprint.scenes[1].requiredBeats = [mandatoryBeat('s2')];
+    const sceneIndex = new Map<string, number>(blueprint.scenes.map((s: any, i: number) => [s.id, i]));
+    expect((architect as any).synthesizeBranchForCandidate(blueprint.scenes, sceneIndex)).toBeNull();
+  });
 });
 
 describe('StoryArchitect transition repair', () => {

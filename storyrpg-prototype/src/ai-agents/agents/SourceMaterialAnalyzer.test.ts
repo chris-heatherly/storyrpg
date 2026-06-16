@@ -775,6 +775,22 @@ The public challenge changes sceneEpisode 3's access and reconverges at the regi
     );
   });
 
+  it('stamps a swept off-page relation with a marker description so it is never staged present', () => {
+    const analyzer = new SourceMaterialAnalyzer({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 100, temperature: 0 });
+    const classify = (name: string, src?: string) => (analyzer as any).classifyOffPageDescription(name, src);
+
+    // Remote relation in the treatment → marker description carrying the off-page word.
+    const remote = classify('Sadie', "Her niece Sadie (7) in Boston, whose photo sits on her desk.");
+    expect(remote).toMatch(/off-page/i);
+    expect(remote).toMatch(/niece/i); // the marker the present-cast filter keys on
+
+    // A present character → empty description (stageable).
+    expect(classify('Mika', 'Mika runs the door at the Vâlcescu Club.')).toBe('');
+    // No source text / name absent → empty.
+    expect(classify('Sadie', undefined)).toBe('');
+    expect(classify('Ghost', 'Nobody by that name appears here.')).toBe('');
+  });
+
   it('marks refreshed treatments as authored treatment input and preserves treatment episode count, titles, and guidance', () => {
     const analyzer = new SourceMaterialAnalyzer({
       provider: 'anthropic',

@@ -1302,6 +1302,7 @@ Return ONLY valid JSON.
       protagonistName: structure.protagonist.name,
       breakdownEpisodes: effectiveBreakdownEpisodes,
       supportingCharacters: structure.characterArchitecture?.supportingCharacters,
+      sourceText: input.sourceText,
     });
 
     const characterArchitecture = this.normalizeCharacterArchitecture(
@@ -1637,6 +1638,26 @@ Return ONLY valid JSON.
    * preserving existing entries and only appending missing ones (up to the
    * {@link MAX_SWEPT_MAJOR_CHARACTERS} cap).
    */
+  // Off-page relation markers — a swept name described this way in the treatment is
+  // referenced (FaceTime/photo), never physically present. MUST stay in sync with the
+  // present-cast filter in ContentGenerationPhase.isStageablePresent (same markers).
+  private static readonly OFF_PAGE_RELATION =
+    /\b(niece|nephew|grandchild|in Boston|back home|overseas|abroad|long[- ]distance|via (?:face\s?time|phone|video)|on the phone|photo (?:on|sits on) (?:her|the) desk)\b/i;
+
+  /**
+   * If the treatment text describes `name` near an off-page marker (within a small
+   * window of its first mention), return a description carrying that marker so the
+   * present-cast filter excludes them from physical staging. Else '' (present).
+   */
+  private classifyOffPageDescription(name: string, sourceText?: string): string {
+    if (!sourceText) return '';
+    const at = sourceText.toLowerCase().indexOf(name.toLowerCase());
+    if (at < 0) return '';
+    const window = sourceText.slice(Math.max(0, at - 60), at + 200);
+    const marker = SourceMaterialAnalyzer.OFF_PAGE_RELATION.exec(window);
+    return marker ? `Off-page relation — referenced only (${marker[0]}), not physically present in scenes.` : '';
+  }
+
   private sweepNamedCharacters(
     majorCharacters: Array<{
       id: string;
@@ -1651,6 +1672,7 @@ Return ONLY valid JSON.
       protagonistName: string;
       breakdownEpisodes: Array<{ mainCharacters: string[]; episodeNumber: number }>;
       supportingCharacters?: Array<Partial<CharacterArchitecture['supportingCharacters'][number]>>;
+      sourceText?: string;
     },
   ): void {
     // Index the existing cast (plus the protagonist) by both case-insensitive
@@ -1689,11 +1711,15 @@ Return ONLY valid JSON.
       // A bare name carries no role/importance signal, so default to the
       // gentlest tier ('supporting') via the shared normalizers; downstream
       // architecture/bible passes can still promote it.
+      // If the treatment describes this name as a REMOTE/off-page relation (a niece
+      // in Boston, a FaceTime/photo contact), stamp that into the description so the
+      // encounter present-cast filter (ContentGenerationPhase.isStageablePresent)
+      // never stages them as physically present — they can still be referenced.
       majorCharacters.push({
         id,
         name,
         role: this.normalizeRole('supporting'),
-        description: '',
+        description: this.classifyOffPageDescription(name, context.sourceText),
         importance: this.normalizeImportance('supporting'),
         firstAppearance: this.findFirstAppearance(name, context.breakdownEpisodes),
         fashionStyle: normalizeCharacterFashionStyle(undefined),

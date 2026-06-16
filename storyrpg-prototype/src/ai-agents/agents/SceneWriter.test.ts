@@ -383,6 +383,51 @@ describe('SceneWriter structural guards', () => {
     expect(normalized.beats[2].nextBeatId).toBeUndefined();
   });
 
+  it('promotes a turn beat to dominant when the writer returns no dominant beat', () => {
+    const writer = createWriter();
+
+    const normalized = (writer as any).normalizeContent({
+      sceneId: 'scene-peakless',
+      sceneName: 'The Quiet Corridor',
+      beats: [
+        { id: 'b1', text: 'She walks the long corridor, counting the doors.', nextBeatId: 'b2', intensityTier: 'rest' },
+        { id: 'b2', text: 'A figure steps from the shadows and blocks her path.', nextBeatId: 'b3', intensityTier: 'supporting', isKeyStoryBeat: true },
+        { id: 'b3', text: 'She decides whether to run or hold her ground.', intensityTier: 'supporting', isChoicePoint: true },
+      ],
+      startingBeatId: 'b1',
+      moodProgression: ['tense'],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    });
+
+    const dominants = normalized.beats.filter((b: any) => b.intensityTier === 'dominant');
+    expect(dominants).toHaveLength(1);
+    // The key-story beat is the turn, so it gets promoted (not the rest beat).
+    expect(dominants[0].id).toBe('b2');
+  });
+
+  it('leaves an existing dominant beat untouched', () => {
+    const writer = createWriter();
+
+    const normalized = (writer as any).normalizeContent({
+      sceneId: 'scene-has-peak',
+      sceneName: 'The Reveal',
+      beats: [
+        { id: 'b1', text: 'The room is silent before the announcement lands.', nextBeatId: 'b2', intensityTier: 'rest' },
+        { id: 'b2', text: 'The truth detonates across the table.', intensityTier: 'dominant', isChoicePoint: true },
+      ],
+      startingBeatId: 'b1',
+      moodProgression: ['tense'],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    });
+
+    const dominants = normalized.beats.filter((b: any) => b.intensityTier === 'dominant');
+    expect(dominants.map((b: any) => b.id)).toEqual(['b2']);
+  });
+
   it('canonicalizes a bare textVariant callbackHookId to its planted flag: hook id', () => {
     const writer = createWriter();
 

@@ -1098,6 +1098,12 @@ Return exactly one complete SceneContent JSON object with:
     // and skip the setup that branch scenes need for pacing, QA, and image coverage.
     this.ensureMinimumChoiceSceneBeats(content, input);
 
+    // Every scene needs an emotional peak. The LLM occasionally returns no
+    // dominant-tier beat (the intensity_distribution diagnostic flags these as
+    // "no clear emotional peak"). Deterministically promote the scene's turn beat
+    // to dominant so the scene always has a high point.
+    this.ensureDominantBeat(content);
+
     // Re-run visual contract normalization in case we synthesized structural beats.
     for (const beat of content.beats) {
       this.ensureBeatVisualContract(beat);
@@ -1266,6 +1272,28 @@ Return exactly one complete SceneContent JSON object with:
     content.continuityNotes.push(
       `Auto-expanded underspecified choice scene from ${existingLeadIns.length + (choiceSeed ? 1 : 0)} to ${minimumBeats} beats.`
     );
+  }
+
+  /**
+   * Guarantee at least one `dominant`-tier beat per scene. The LLM is asked for
+   * 1-2 dominant beats but sometimes returns none, leaving the scene without an
+   * emotional peak. When that happens we promote the scene's turn beat — the
+   * climax/key-story beat, else the choice point, else the middle beat — to
+   * `dominant`. No-op when a dominant beat already exists. Mirrors the turn-beat
+   * selection used for shotType/coverage so the promoted beat is the same one the
+   * rest of the pipeline already treats as the peak.
+   */
+  private ensureDominantBeat(content: SceneContent): void {
+    const beats = content.beats;
+    if (!Array.isArray(beats) || beats.length === 0) return;
+    if (beats.some((b) => b.intensityTier === 'dominant')) return;
+
+    const turnBeat =
+      beats.find((b) => b.isClimaxBeat || b.isKeyStoryBeat) ||
+      beats.find((b) => b.isChoicePoint) ||
+      beats[Math.floor(beats.length / 2)] ||
+      beats[0];
+    if (turnBeat) turnBeat.intensityTier = 'dominant';
   }
 
   private buildSyntheticLeadInTexts(

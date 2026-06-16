@@ -1222,6 +1222,107 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
   });
 });
 
+describe('SourceMaterialAnalyzer named-character sweep', () => {
+  const analyzer: any = new SourceMaterialAnalyzer({
+    provider: 'anthropic',
+    model: 'test',
+    apiKey: 'test',
+    maxTokens: 1000,
+    temperature: 0,
+  });
+
+  const baseStructure = () => ({
+    genre: 'drama',
+    tone: 'tense',
+    themes: ['loyalty'],
+    setting: { timePeriod: 'now', location: 'City', worldDetails: 'streets' },
+    protagonist: { name: 'Avery', description: 'The lead.', arc: 'Learns to trust.' },
+    // Thin cast: the structure pass only volunteered the antagonist.
+    majorCharacters: [
+      { name: 'Damon', role: 'antagonist', description: 'The rival.', importance: 'core' },
+    ],
+    characterArchitecture: {
+      protagonist: {},
+      supportingCharacters: [
+        { characterName: 'Ines', pressureRole: 'mentor', screenTimeTier: 'major' },
+        { characterName: 'Rey', pressureRole: 'temptation', screenTimeTier: 'supporting' },
+      ],
+    },
+    keyLocations: [],
+    directLanguageFragments: { dialogue: [], prose: [], terminology: [] },
+    adaptationGuidance: { narrativeVoice: 'plain', keyThemesToPreserve: ['loyalty'], iconicMoments: [] },
+    storyArcs: [{ name: 'Arc', description: 'The arc.', chapters: 'all' }],
+    majorPlotPoints: [
+      { description: 'It begins.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
+      { description: 'It ends.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+    ],
+    estimatedScope: { complexity: 'simple', estimatedEpisodes: 1, reasoning: 'short' },
+    writingStyleGuide: { source: 'inferred_from_material', summary: 'plain prose' },
+    endingAnalysis: { detectedMode: 'single', reasoning: 'one', explicitEndings: [] },
+  });
+
+  const baseBreakdown = () => ({
+    episodes: [
+      {
+        episodeNumber: 1,
+        title: 'One',
+        synopsis: 'Things happen.',
+        sourceChapters: 'all',
+        plotPoints: ['It begins.', 'It ends.'],
+        // Per-episode main characters name a best friend the structure pass omitted.
+        mainCharacters: ['Avery', 'Bex', 'Damon'],
+        locations: ['City'],
+        narrativeArc: { setup: 'a', conflict: 'b', resolution: 'c' },
+        structuralRole: ['hook', 'plotTurn1', 'climax', 'resolution'],
+      },
+    ],
+    totalEpisodes: 1,
+    breakdownNotes: 'one episode',
+  });
+
+  it('adds named characters from supportingCharacters and per-episode mainCharacters that the structure pass omitted', () => {
+    const analysis = analyzer.assembleAnalysis(
+      { title: 'Sweep', sourceText: 'Some prose.', userPrompt: 'A drama.' },
+      baseStructure(),
+      baseBreakdown(),
+    );
+
+    const names = analysis.majorCharacters.map((c: any) => c.name);
+    // Existing entry preserved.
+    expect(names).toContain('Damon');
+    // Swept in from characterArchitecture.supportingCharacters.
+    expect(names).toContain('Ines');
+    expect(names).toContain('Rey');
+    // Swept in from the per-episode mainCharacters list.
+    expect(names).toContain('Bex');
+    // The protagonist is never added to majorCharacters.
+    expect(names).not.toContain('Avery');
+
+    const ines = analysis.majorCharacters.find((c: any) => c.name === 'Ines');
+    expect(ines.id).toBe('char-ines');
+    expect(ines.importance).toBe('supporting');
+  });
+
+  it('does not duplicate a character already present (case-insensitive) and caps the cast', () => {
+    const structure = baseStructure();
+    // Damon already exists; the breakdown lists him with different casing.
+    structure.majorCharacters[0].name = 'Damon';
+    const breakdown = baseBreakdown();
+    breakdown.episodes[0].mainCharacters = ['Avery', 'damon', 'Bex', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
+
+    const analysis = analyzer.assembleAnalysis(
+      { title: 'Sweep', sourceText: 'Some prose.', userPrompt: 'A drama.' },
+      structure,
+      breakdown,
+    );
+
+    const damons = analysis.majorCharacters.filter((c: any) => c.name.toLowerCase() === 'damon');
+    expect(damons).toHaveLength(1);
+    // Cap holds the total at 8.
+    expect(analysis.majorCharacters.length).toBeLessThanOrEqual(8);
+  });
+});
+
 describe('SourceMaterialAnalyzer.parseAnalysisWithCompactRetry (last-resort parse recovery)', () => {
   afterEach(() => BaseAgent.setLlmTransportOverride(null));
   const analyzer: any = new SourceMaterialAnalyzer({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });

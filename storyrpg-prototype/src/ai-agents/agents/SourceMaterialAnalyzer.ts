@@ -1287,6 +1287,23 @@ Return ONLY valid JSON.
       fashionStyle: normalizeCharacterFashionStyle(char.fashionStyle),
     }));
     const protagonistId = `char-${slugify(structure.protagonist.name)}`;
+
+    // Named-character sweep: the structure pass' `majorCharacters` is the only
+    // place the cast list is born, and a thin LLM response (e.g. only the love
+    // interest + antagonist) starves the character bible even when the treatment
+    // names a fuller ensemble. Reconcile against the other named-character
+    // signals already present in the analysis — per-episode `mainCharacters`
+    // lists and the `characterArchitecture.supportingCharacters[].characterName`
+    // entries — and synthesize a `majorCharacters` row for any named character
+    // not already represented (case-insensitive name + slugified-id match).
+    // Existing entries are preserved untouched; we only ADD the missing ones,
+    // capped so the cast can grow to a reasonable ensemble without runaway.
+    this.sweepNamedCharacters(majorCharacters, {
+      protagonistName: structure.protagonist.name,
+      breakdownEpisodes: effectiveBreakdownEpisodes,
+      supportingCharacters: structure.characterArchitecture?.supportingCharacters,
+    });
+
     const characterArchitecture = this.normalizeCharacterArchitecture(
       structure.characterArchitecture,
       {
@@ -1603,6 +1620,86 @@ Return ONLY valid JSON.
     const start = Math.max(1, Math.floor(arcIndex * episodesPerArc) + 1);
     const end = Math.min(totalEpisodes, Math.floor((arcIndex + 1) * episodesPerArc));
     return { start, end };
+  }
+
+  /**
+   * Maximum size the cast may reach after the named-character sweep. The sweep
+   * only adds characters that already appear by name elsewhere in the analysis,
+   * but we cap the total so a noisy episode breakdown (every walk-on listed) can
+   * not balloon the bible.
+   */
+  private static readonly MAX_SWEPT_MAJOR_CHARACTERS = 8;
+
+  /**
+   * Reconcile the LLM's `majorCharacters` list against the other named-character
+   * signals already present in the analysis, synthesizing rows for any named
+   * character the structure pass omitted. Mutates `majorCharacters` in place,
+   * preserving existing entries and only appending missing ones (up to the
+   * {@link MAX_SWEPT_MAJOR_CHARACTERS} cap).
+   */
+  private sweepNamedCharacters(
+    majorCharacters: Array<{
+      id: string;
+      name: string;
+      role: 'antagonist' | 'ally' | 'mentor' | 'love_interest' | 'rival' | 'neutral';
+      description: string;
+      importance: 'core' | 'supporting' | 'background';
+      firstAppearance: number;
+      fashionStyle?: CharacterFashionStyle;
+    }>,
+    context: {
+      protagonistName: string;
+      breakdownEpisodes: Array<{ mainCharacters: string[]; episodeNumber: number }>;
+      supportingCharacters?: Array<Partial<CharacterArchitecture['supportingCharacters'][number]>>;
+    },
+  ): void {
+    // Index the existing cast (plus the protagonist) by both case-insensitive
+    // name and slugified id so a sweep candidate that only differs in casing or
+    // surrounding whitespace is treated as already-present, never duplicated.
+    const seenNames = new Set<string>();
+    const seenIds = new Set<string>();
+    const remember = (name: string) => {
+      seenNames.add(name.trim().toLowerCase());
+      seenIds.add(`char-${slugify(name)}`);
+    };
+    remember(context.protagonistName);
+    for (const char of majorCharacters) {
+      seenNames.add(char.name.trim().toLowerCase());
+      seenIds.add(char.id);
+    }
+
+    // Collect candidate names in a stable order: supportingCharacters first
+    // (they carry an intended pressure role), then per-episode mainCharacters.
+    const candidateNames: string[] = [];
+    for (const supporting of context.supportingCharacters || []) {
+      const name = supporting?.characterName;
+      if (typeof name === 'string' && name.trim()) candidateNames.push(name.trim());
+    }
+    for (const ep of context.breakdownEpisodes) {
+      for (const name of ep.mainCharacters || []) {
+        if (typeof name === 'string' && name.trim()) candidateNames.push(name.trim());
+      }
+    }
+
+    for (const name of candidateNames) {
+      if (majorCharacters.length >= SourceMaterialAnalyzer.MAX_SWEPT_MAJOR_CHARACTERS) break;
+      const key = name.toLowerCase();
+      const id = `char-${slugify(name)}`;
+      if (seenNames.has(key) || seenIds.has(id)) continue;
+      // A bare name carries no role/importance signal, so default to the
+      // gentlest tier ('supporting') via the shared normalizers; downstream
+      // architecture/bible passes can still promote it.
+      majorCharacters.push({
+        id,
+        name,
+        role: this.normalizeRole('supporting'),
+        description: '',
+        importance: this.normalizeImportance('supporting'),
+        firstAppearance: this.findFirstAppearance(name, context.breakdownEpisodes),
+        fashionStyle: normalizeCharacterFashionStyle(undefined),
+      });
+      remember(name);
+    }
   }
 
   private normalizeRole(role: string): 'antagonist' | 'ally' | 'mentor' | 'love_interest' | 'rival' | 'neutral' {

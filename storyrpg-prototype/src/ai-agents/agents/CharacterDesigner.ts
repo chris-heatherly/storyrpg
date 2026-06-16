@@ -19,6 +19,7 @@ import type {
 } from '../../types/sourceAnalysis';
 import type { InformationLedgerEntry } from '../../types/seasonPlan';
 import { resolveAuthoredContext } from '../utils/documentSectionSlice';
+import { slugify } from '../utils/idUtils';
 
 // Input types
 export interface CharacterDesignerInput {
@@ -456,6 +457,16 @@ Before finalizing:
 
       this.validateCharacterBible(characterBible, input);
 
+      // Make `bible.gaps` actionable. The first pass writes any missing
+      // archetypes (love interest / mentor / antagonist / best friend) into
+      // `gaps`, but nothing downstream ever reads it — so a thin roster ships a
+      // cast with no antagonist/mentor even though the model flagged the hole.
+      // Synthesize a minimal request for each flagged-and-uncovered archetype
+      // and route it through fillMissingCharacters() so it gets a full record
+      // (pronouns, voiceProfile, …). Bounded to a single pass; no-op when gaps
+      // is empty or every named archetype is already covered.
+      await this.backfillGapArchetypes(characterBible, input);
+
       // Run quality checks and attempt revision if needed
       const qualityIssues = this.collectQualityIssues(characterBible, input);
       if (qualityIssues.length > 0) {
@@ -573,6 +584,79 @@ Before finalizing:
           `leaving the bible incomplete for validation to surface.`,
       );
     }
+  }
+
+  /**
+   * Archetypes the gap-backfill recognizes, in priority order. Each maps a set
+   * of keyword triggers (matched against `bible.gaps` text) to the request
+   * `role` used when synthesizing a replacement, and to the keywords that mark
+   * the archetype as ALREADY covered by the designed roster (so we never
+   * duplicate an antagonist/mentor that exists under a different label).
+   */
+  private static readonly GAP_ARCHETYPES: Array<{
+    label: string;
+    triggers: string[];
+    role: CharacterDesignerInput['charactersToCreate'][number]['role'];
+    coveredBy: string[];
+  }> = [
+    { label: 'Antagonist', triggers: ['antagonist', 'villain', 'adversary'], role: 'antagonist', coveredBy: ['antagonist', 'villain'] },
+    { label: 'Mentor', triggers: ['mentor', 'guide', 'teacher'], role: 'ally', coveredBy: ['mentor', 'teacher', 'guide'] },
+    { label: 'Love interest', triggers: ['love interest', 'romantic', 'love-interest'], role: 'ally', coveredBy: ['love', 'romantic'] },
+    { label: 'Best friend', triggers: ['best friend', 'confidant', 'sidekick'], role: 'ally', coveredBy: ['friend', 'confidant', 'sidekick', 'ally'] },
+  ];
+
+  /**
+   * Single, bounded backfill pass that turns `bible.gaps` into real characters.
+   * For each recognized archetype the model named in `gaps` whose role is NOT
+   * already present in the designed roster, synthesize a minimal
+   * `charactersToCreate` request and route it through fillMissingCharacters()
+   * so it receives a full record. Mutates `characterBible.characters` in place.
+   * Bounded (one pass, no recursion) and dedup-guarded so it can neither loop
+   * nor create a character that already exists.
+   */
+  private async backfillGapArchetypes(
+    characterBible: CharacterBible,
+    input: CharacterDesignerInput,
+  ): Promise<void> {
+    const gaps = Array.isArray(characterBible.gaps) ? characterBible.gaps : [];
+    if (gaps.length === 0) return;
+    const gapText = gaps.join(' \n ').toLowerCase();
+    if (!gapText.trim()) return;
+
+    // What the roster already covers, read from each character's role label.
+    const rosterRoles = (characterBible.characters || [])
+      .map((c) => `${c.role || ''} ${c.importance || ''}`.toLowerCase())
+      .join(' ');
+    const existingIds = new Set((characterBible.characters || []).map((c) => c.id));
+
+    const synthesized: CharacterDesignerInput['charactersToCreate'] = [];
+    for (const archetype of CharacterDesigner.GAP_ARCHETYPES) {
+      // Only act when the gap text actually names this archetype.
+      if (!archetype.triggers.some((t) => gapText.includes(t))) continue;
+      // Skip if the roster already covers the role under any label.
+      if (archetype.coveredBy.some((k) => rosterRoles.includes(k))) continue;
+
+      const id = `char-${slugify(archetype.label)}`;
+      if (existingIds.has(id) || synthesized.some((s) => s.id === id)) continue;
+
+      synthesized.push({
+        id,
+        name: archetype.label,
+        role: archetype.role,
+        importance: 'supporting',
+        briefDescription: `${archetype.label} the story's cast is missing; the character bible flagged this gap.`,
+      });
+    }
+
+    if (synthesized.length === 0) return;
+    console.warn(
+      `[CharacterDesigner] bible.gaps named ${synthesized.length} uncovered archetype(s) ` +
+        `(${synthesized.map((s) => s.name).join(', ')}) — backfilling via the missing-character machinery.`,
+    );
+    // Reuse fillMissingCharacters: charactersToCreate is the synthesized set, so
+    // every entry is "missing" and gets fully designed in one focused call.
+    const backfillInput: CharacterDesignerInput = { ...input, charactersToCreate: synthesized };
+    await this.fillMissingCharacters(characterBible, backfillInput);
   }
 
   private buildPrompt(input: CharacterDesignerInput): string {

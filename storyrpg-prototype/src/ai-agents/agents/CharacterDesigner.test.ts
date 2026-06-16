@@ -191,6 +191,63 @@ describe('CharacterDesigner.fillMissingCharacters (incomplete-cast backfill)', (
   });
 });
 
+describe('CharacterDesigner.backfillGapArchetypes (gaps → real characters)', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+  const designer: any = new CharacterDesigner({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });
+  const input = () => ({
+    charactersToCreate: [
+      { id: 'char-avery', name: 'Avery', role: 'protagonist', importance: 'major', briefDescription: 'lead' },
+    ],
+    storyContext: { title: 'T', genre: 'Drama', tone: 'Tense', themes: ['trust'], userPrompt: 'p' },
+  });
+
+  it('synthesizes and designs a flagged-and-uncovered archetype (antagonist)', async () => {
+    let prompted = '';
+    BaseAgent.setLlmTransportOverride(async (r) => {
+      prompted = r.messages.map((m) => String(m.content)).join('\n');
+      return JSON.stringify({
+        characters: [{ id: 'char-antagonist', name: 'Antagonist', pronouns: 'they/them', role: 'antagonist', tier: 'supporting' }],
+        keyDynamics: [], gaps: [], doNotForget: [],
+      });
+    });
+    // Roster has only the protagonist; gaps names a missing antagonist.
+    const bible: any = {
+      characters: [{ id: 'char-avery', name: 'Avery', role: 'protagonist' }],
+      keyDynamics: [], gaps: ['The story is missing a clear antagonist.'], doNotForget: [],
+    };
+
+    await designer.backfillGapArchetypes(bible, input());
+
+    expect(prompted).toContain('char-antagonist'); // routed through the focused fill call
+    expect(bible.characters.map((c: any) => c.id)).toContain('char-antagonist');
+  });
+
+  it('is a no-op when the gap archetype is already covered by the roster', async () => {
+    let calls = 0;
+    BaseAgent.setLlmTransportOverride(async () => { calls += 1; return '{}'; });
+    const bible: any = {
+      // An antagonist already exists under that role label.
+      characters: [
+        { id: 'char-avery', name: 'Avery', role: 'protagonist' },
+        { id: 'char-rival', name: 'Rival', role: 'antagonist' },
+      ],
+      keyDynamics: [], gaps: ['Could use a stronger antagonist.'], doNotForget: [],
+    };
+    await designer.backfillGapArchetypes(bible, input());
+    expect(calls).toBe(0);
+    expect(bible.characters).toHaveLength(2);
+  });
+
+  it('is a no-op (no LLM call) when gaps is empty', async () => {
+    let calls = 0;
+    BaseAgent.setLlmTransportOverride(async () => { calls += 1; return '{}'; });
+    const bible: any = { characters: [{ id: 'char-avery', name: 'Avery', role: 'protagonist' }], keyDynamics: [], gaps: [], doNotForget: [] };
+    await designer.backfillGapArchetypes(bible, input());
+    expect(calls).toBe(0);
+    expect(bible.characters).toHaveLength(1);
+  });
+});
+
 describe('CharacterDesigner.parseCharacterBibleWithCompactRetry (malformed/truncated recovery)', () => {
   afterEach(() => BaseAgent.setLlmTransportOverride(null));
   const designer: any = new CharacterDesigner({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });

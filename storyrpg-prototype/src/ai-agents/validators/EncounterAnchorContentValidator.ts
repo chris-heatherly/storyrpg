@@ -209,14 +209,17 @@ export function collectEncounterMetaTexts(scene: Scene): string[] {
  * Authored required beats bound to a planned encounter scene — both the scene-level
  * {@link PlannedScene.requiredBeats} and the encounter-level
  * {@link PlannedSceneEncounter.requiredBeats}. `connective`-tier beats are excluded
- * (that band is the model's to invent freely).
+ * (that band is the model's to invent freely); `seed`-tier beats (distributed
+ * cold-open / consequence-seed / information-ledger plants) are ADVISORY and likewise
+ * excluded here — a dropped seed warns at the season-final realization pass, it never
+ * blocks an encounter anchor (consistent with the standard-scene path, WS12B).
  */
 function authoredRequiredBeats(scene: PlannedScene): RequiredBeat[] {
   const all = [...(scene.requiredBeats ?? []), ...(scene.encounter?.requiredBeats ?? [])];
   const seen = new Set<string>();
   const out: RequiredBeat[] = [];
   for (const rb of all) {
-    if (rb.tier === 'connective') continue;
+    if (rb.tier === 'connective' || rb.tier === 'seed') continue;
     const key = rb.id || rb.mustDepict;
     if (seen.has(key)) continue;
     seen.add(key);

@@ -198,6 +198,27 @@ describe('EncounterAnchorContentValidator — exemptions (legitimate inference s
     const errs = errorsOf(story, { scenePlan: scenePlanOf([planned]) });
     expect(errs).toHaveLength(0);
   });
+
+  it('does NOT block a seed-tier plant on an encounter anchor (advisory — the contract-abort regression)', () => {
+    const planned = plannedEncounter({
+      encounter: {
+        type: 'social',
+        difficulty: 'hard',
+        relevantSkills: [],
+        isBranchPoint: false,
+        centralConflict: 'the rooftop and the rescue',
+        requiredBeats: [
+          { id: 'enc-3-1-seed4', sourceTurn: 'The stray dog in the courtyard, watching.', mustDepict: 'The stray dog in the courtyard, watching.', tier: 'seed' },
+          { id: 'enc-3-1-seed5', sourceTurn: "Stela's Hunter Clan & Wards", mustDepict: "Stela's Hunter Clan & Wards", tier: 'seed' },
+        ],
+      },
+    });
+    const story = storyWith([
+      sceneWithBeats('enc-3-1', ['The rooftop and the rescue play out under a bruised sky.']),
+    ]);
+    const errs = errorsOf(story, { scenePlan: scenePlanOf([planned]) });
+    expect(errs).toHaveLength(0); // seeds never block — they only warn at the season-final realization pass
+  });
 });
 
 describe('EncounterAnchorContentValidator — storylet depiction (Gen-4 R1)', () => {

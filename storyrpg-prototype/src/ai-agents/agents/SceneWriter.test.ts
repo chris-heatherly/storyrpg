@@ -692,6 +692,31 @@ describe('SceneWriter structural guards', () => {
     expect(prompt.indexOf('Darian assaults')).toBeLessThan(prompt.indexOf('instinctive rescue leap'));
   });
 
+  it('forbids a competing terminal cliffhanger object when a cliffhanger plan is supplied', () => {
+    const writer = createWriter();
+    const input = {
+      sceneBlueprint: {
+        id: 's3-6', name: 'An Uninvited Gift', description: 'The walk home.', location: 'apartment',
+        mood: 'unease', purpose: 'release', narrativeFunction: 'Close the weekend.',
+        dramaticQuestion: 'Who is courting her honestly?', wantVsNeed: 'safety vs desire',
+        conflictEngine: 'Two suitors.', npcsPresent: [], keyBeats: [], leadsTo: [],
+      },
+      storyContext: { title: 'Bite Me', genre: 'romance', tone: 'noir', worldContext: 'Bucharest.' },
+      protagonistInfo: { name: 'Kylie', pronouns: 'she/her', description: 'A food writer.' },
+      npcs: [], targetBeatCount: 4, dialogueHeavy: false,
+      cliffhangerPlan: {
+        style: 'serialized_tv', mappedStructuralRole: 'rising', type: 'mystery', intensity: 'high',
+        hook: 'A hand-knit scarf on her doormat, a note: "Thought you\'d be cold. — R."',
+        setup: 'Radu was seeded all episode.', resolvedEpisodeTension: 'She felt lucky.',
+        newOpenQuestion: 'Which man is honest?', emotionalCharge: 'lucky tilting to unease',
+        nextEpisodePressure: 'The mountain weekend.',
+      },
+    } as any;
+    const prompt = (writer as any).buildPrompt(input);
+    expect(prompt).toContain('single closing image');
+    expect(prompt).toMatch(/do NOT invent a SECOND, competing terminal object/i);
+  });
+
   it('leaves the prompt unchanged (no required-beats checklist) for from-scratch scenes', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',

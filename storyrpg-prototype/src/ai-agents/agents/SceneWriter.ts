@@ -1682,6 +1682,7 @@ If this scene has no outgoing scene, write the last beat as serialized-TV craft:
 2. Land the planned shock/emotional/reveal/danger/legacy hook as a concrete event or realization.
 3. End with forward pressure, but do not rely on ellipses or a generic question as the whole hook.
 4. Make the visual contract show the hook: the object, face, gesture, arrival, absence, or rupture the reader should remember.
+5. The planned hook IS the episode's single closing image. Do NOT invent a SECOND, competing terminal object or delivery (a different gift, parcel, package, letter, or item arriving on the same doorstep/counter/threshold) — that contradicts the planned hook. If the hook is an object that arrives, that object is the only one; the final choice, if any, operates on the planned hook itself, not a substitute.
 ` : ''}
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)

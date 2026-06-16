@@ -53,6 +53,30 @@ describe('BaseAgent JSON repair', () => {
       title: 'Dating After Dusk',
     });
   });
+
+  it('recovers a complete JSON object followed by trailing non-whitespace content', () => {
+    const agent = new TestAgent();
+    // The World Builder failure: a complete object, then a stray comment/second value.
+    const parsed = agent.parse<{ worldRules: string[] }>(
+      '{"worldRules":["Strigoi require an invitation","Strigoi cast no reflection"]}\n\nNote: I have followed the schema exactly.',
+    );
+    expect(parsed.worldRules).toHaveLength(2);
+  });
+
+  it('recovers when the model appends a second JSON object after the first', () => {
+    const agent = new TestAgent();
+    const parsed = agent.parse<{ a: number; nested: { b: string } }>(
+      '{"a":1,"nested":{"b":"brace } inside a string is fine"}} {"ignored":true}',
+    );
+    expect(parsed).toEqual({ a: 1, nested: { b: 'brace } inside a string is fine' } });
+  });
+
+  it('still falls through to structural repair for a truncated (unbalanced) object', () => {
+    const agent = new TestAgent();
+    // No balanced value exists; the extractor returns null and repair handles it.
+    const parsed = agent.parse<{ title: string }>('{"title":"The Locked Wing"');
+    expect(parsed.title).toBe('The Locked Wing');
+  });
 });
 
 describe('BaseAgent.classifyLlmError (retry classification)', () => {

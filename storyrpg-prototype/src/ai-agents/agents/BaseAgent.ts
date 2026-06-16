@@ -1550,17 +1550,62 @@ Do not use markdown code blocks around the JSON.
     } catch (firstError) {
       log.debug(`[${this.name}] Initial JSON parse failed, attempting repair...`);
 
-      // Second attempt: try repairing common JSON errors
+      // Second attempt: a COMPLETE JSON value followed by trailing non-whitespace
+      // (a model appends commentary, a second object, or a stray code fence — the
+      // "Unexpected non-whitespace character after JSON at position N" failure).
+      // Extract the first balanced top-level value and ignore the trailing junk.
+      const balanced = this.extractFirstBalancedJson(cleaned);
+      if (balanced && balanced.length < cleaned.length) {
+        try {
+          const result = JSON.parse(balanced) as T;
+          log.debug(`[${this.name}] Recovered JSON by dropping ${cleaned.length - balanced.length} trailing chars`);
+          return result;
+        } catch {
+          // fall through to structural repair
+        }
+      }
+
+      // Third attempt: try repairing common JSON errors (truncation, missing brace)
       try {
         const repaired = this.repairJSON(cleaned);
         const result = JSON.parse(repaired) as T;
         log.debug(`[${this.name}] JSON repair successful`);
         return result;
       } catch (repairError) {
-        // Both attempts failed - throw original error with context
+        // All attempts failed - throw original error with context
         throw new Error(`Failed to parse JSON response: ${firstError}\nResponse: ${response.slice(0, 500)}...`);
       }
     }
+  }
+
+  /**
+   * Return the first balanced top-level JSON object/array in `text` (from its first
+   * `{`/`[` to the matching close), ignoring anything after it — or null when no
+   * balanced value exists (e.g. the response was truncated mid-object, which the
+   * structural repair path handles instead). String contents and escapes are
+   * respected so braces inside string values never miscount the depth.
+   */
+  private extractFirstBalancedJson(text: string): string | null {
+    const start = text.search(/[{[]/);
+    if (start < 0) return null;
+    const open = text[start];
+    const close = open === '{' ? '}' : ']';
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === open) depth += 1;
+      else if (ch === close) {
+        depth -= 1;
+        if (depth === 0) return text.slice(start, i + 1);
+      }
+    }
+    return null;
   }
 
   /**

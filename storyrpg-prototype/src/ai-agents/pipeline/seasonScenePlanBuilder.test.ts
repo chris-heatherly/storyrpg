@@ -327,6 +327,25 @@ describe('buildSeasonScenePlan', () => {
     expect((scenes[0].requiredBeats ?? []).some((b) => b.tier === 'seed' && b.mustDepict.includes('vampires in Romania'))).toBe(true);
   });
 
+  it('pins a scene setting to the location its authored turn names (no collapse-to-first)', () => {
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 4,
+      locations: ['Vâlcescu Club', 'Cișmigiu Gardens', 'Lumina Books'],
+      treatmentGuidance: {
+        episodeTurns: [
+          'The Dusk Club gathers at the Vâlcescu Club door.',
+          'Walking home through Cișmigiu Gardens at 1am, a shadow strikes.',
+        ],
+      },
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
+    const sceneOf = (needle: string) =>
+      scenes.find((s) => (s.requiredBeats ?? []).some((b) => b.mustDepict.includes(needle)));
+    // The Cișmigiu turn's scene is set to Cișmigiu Gardens, not the first location.
+    expect(sceneOf('Cișmigiu')?.locations).toEqual(['Cișmigiu Gardens']);
+    expect(sceneOf('Vâlcescu Club')?.locations).toEqual(['Vâlcescu Club']);
+  });
+
   it('emits no seed beats when the treatment carries no cold open / consequence seeds (golden-stable)', () => {
     const ep = episode(1, ['hook'], {
       treatmentGuidance: { episodeTurns: ['A single turn.'] },

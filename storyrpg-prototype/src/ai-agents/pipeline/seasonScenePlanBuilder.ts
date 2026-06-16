@@ -208,6 +208,30 @@ function turnSceneOverlap(turnTokens: string[], sceneTokenSet: Set<string>): num
 }
 
 /**
+ * The episode location whose name a beat's text names, or undefined. Used to pin a
+ * scene's setting to the place its authored turn actually happens — the deterministic
+ * builder collapses every scene to the episode's FIRST location (so the bite-me-g15
+ * ep3 "noticer collects" turn at the estate rendered in "The Black Car"). We require a
+ * distinctive name token (≥5 chars, lowercased, diacritics stripped consistently on
+ * both sides) so a generic "club"/"room" never triggers a false override; the location
+ * with the most matching tokens wins.
+ */
+function matchBeatLocation(text: string | undefined, locations: string[]): string | undefined {
+  if (!text || locations.length === 0) return undefined;
+  const textTokens = new Set(bindTokens(text));
+  let best: string | undefined;
+  let bestScore = 0;
+  for (const loc of locations) {
+    const hits = bindTokens(loc).filter((t) => t.length >= 5 && textTokens.has(t)).length;
+    if (hits > bestScore) {
+      bestScore = hits;
+      best = loc;
+    }
+  }
+  return bestScore > 0 ? best : undefined;
+}
+
+/**
  * Index of the scene whose match-text best overlaps `text`, or -1 when nothing
  * overlaps (the deterministic path's generic titles carry no signal). Used to
  * route a distributed seed plant (cold open / consequence seed) to the scene that
@@ -366,6 +390,11 @@ export function bindAuthoredTurnsToScenes(ep: SeasonEpisode, scenes: PlannedScen
       const scene = targets[slot];
       const beatIndex = (scene.requiredBeats?.length ?? 0) + perScene[slot].length;
       perScene[slot].push(requiredBeatFromTurn(scene.id, beatIndex, turns[t]));
+      // Pin the scene's setting to the place its authored turn names (when it names a
+      // declared episode location), overriding the deterministic collapse-to-first.
+      // Only the LAST naming turn per scene wins (rare; a scene maps to ~1 turn).
+      const namedLocation = matchBeatLocation(turns[t], ep.locations ?? []);
+      if (namedLocation) scene.locations = [namedLocation];
     }
     targets.forEach((scene, i) => appendRequiredBeats(scene, perScene[i]));
   }

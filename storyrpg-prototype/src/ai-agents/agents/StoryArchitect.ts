@@ -1503,6 +1503,36 @@ export class StoryArchitect extends BaseAgent {
     }
   }
 
+  /**
+   * Surface the treatment's intended choice menus to ChoiceAuthor across ALL choice
+   * scenes. {@link repairTreatmentMajorChoicePressure} fully reshapes only ONE authored
+   * choice scene; the rest get empty `optionHints` and ChoiceAuthor improvises, so the
+   * generated decisions drift from the treatment (the dark-wine drink/sip/refuse, the
+   * Ileana powder-room reach, the Sunday-breakfast blog fork all vanished). This fills
+   * each remaining choice scene's empty `optionHints` from the treatment's
+   * `majorChoicePressures` positionally (split into the authored option menu) and records
+   * `alternativePaths` as expected residue. Additive (never overwrites an authored 2+
+   * menu) and gated on guidance presence — a no-op for non-treatment runs.
+   */
+  private seedChoiceMenusFromTreatment(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    const pressures = (guidance?.majorChoicePressures || []).filter(
+      (pressure) => this.splitAuthoredChoiceOptions(pressure).length >= 2,
+    );
+    if (pressures.length === 0) return;
+    const altResidue = guidance?.alternativePaths || [];
+    const choiceScenes = (blueprint.scenes || []).filter((s) => s.choicePoint && !s.isEncounter);
+    for (let i = 0; i < choiceScenes.length && i < pressures.length; i += 1) {
+      const cp = choiceScenes[i].choicePoint!;
+      if ((cp.optionHints?.length ?? 0) >= 2) continue; // already carries an authored menu
+      cp.optionHints = this.splitAuthoredChoiceOptions(pressures[i]);
+      if (!cp.description?.trim()) cp.description = `Authored treatment choice: ${pressures[i]}`;
+      if (altResidue.length) {
+        cp.expectedResidue = Array.from(new Set([...(cp.expectedResidue || []), ...altResidue]));
+      }
+    }
+  }
+
   private ensureDramaticAuditMinimums(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const guidance = input.seasonPlanDirectives?.treatmentGuidance;
     const audit = blueprint.dramaticAudit || {} as DramaticStructureAudit;
@@ -2385,6 +2415,7 @@ ${sceneEpisodeMode}
       this.repairSceneGraphBranchCoverage(blueprint);
       this.repairTreatmentDramaticAudit(blueprint, input);
       this.repairTreatmentMajorChoicePressure(blueprint, input);
+      this.seedChoiceMenusFromTreatment(blueprint, input);
       this.repairTreatmentForwardPressure(blueprint, input.seasonPlanDirectives?.treatmentGuidance);
       this.repairTreatmentResidue(blueprint, input);
       this.ensureDramaticAuditMinimums(blueprint, input);
@@ -2749,6 +2780,7 @@ REQUIREMENTS:
       this.repairSceneGraphBranchCoverage(blueprint);
       this.repairTreatmentDramaticAudit(blueprint, input);
       this.repairTreatmentMajorChoicePressure(blueprint, input);
+      this.seedChoiceMenusFromTreatment(blueprint, input);
       this.repairTreatmentForwardPressure(blueprint, input.seasonPlanDirectives?.treatmentGuidance);
       this.repairTreatmentResidue(blueprint, input);
       this.ensureDramaticAuditMinimums(blueprint, input);

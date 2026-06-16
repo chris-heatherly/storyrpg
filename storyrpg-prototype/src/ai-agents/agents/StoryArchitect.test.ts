@@ -119,6 +119,41 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
     expect(result).toContain('Do not frame this as grinding');
   });
 
+  it('seeds empty choice-scene optionHints from the treatment menu, leaving authored menus intact', () => {
+    const input = makeInput({
+      seasonPlanDirectives: {
+        treatmentGuidance: {
+          majorChoicePressures: [
+            'Drink the dark wine fully, sip it and set it down, or refuse it and ask for the white.',
+            'Kiss him in the maze, take his hand and hold the line, or step back.',
+          ],
+          alternativePaths: ['Drinking the dark wine plants a quiet new appetite in later episodes.'],
+        },
+      },
+    });
+    const blueprint: any = {
+      scenes: [
+        { id: 's3-3', isEncounter: false, choicePoint: { type: 'expression', stakes: {}, optionHints: [] } },
+        { id: 's3-4', isEncounter: false, choicePoint: { type: 'dilemma', stakes: {}, optionHints: ['Keep your own menu.', 'And a second.'] } },
+      ],
+    };
+    (architect as any).seedChoiceMenusFromTreatment(blueprint, input);
+
+    // First (empty) choice scene gets the first authored menu (drink/sip/refuse).
+    expect(blueprint.scenes[0].choicePoint.optionHints.length).toBeGreaterThanOrEqual(2);
+    expect(blueprint.scenes[0].choicePoint.optionHints.join(' ')).toMatch(/wine|sip|refuse/i);
+    expect(blueprint.scenes[0].choicePoint.expectedResidue.join(' ')).toMatch(/new appetite/i);
+    // The scene that already had an authored 2+ menu is left untouched.
+    expect(blueprint.scenes[1].choicePoint.optionHints).toEqual(['Keep your own menu.', 'And a second.']);
+  });
+
+  it('seedChoiceMenusFromTreatment is a no-op without treatment guidance', () => {
+    const input = makeInput({ seasonPlanDirectives: undefined });
+    const blueprint: any = { scenes: [{ id: 's1', isEncounter: false, choicePoint: { type: 'expression', stakes: {}, optionHints: [] } }] };
+    (architect as any).seedChoiceMenusFromTreatment(blueprint, input);
+    expect(blueprint.scenes[0].choicePoint.optionHints).toEqual([]);
+  });
+
   it('includes authored treatment guidance as concrete choice and path directives', () => {
     const input = makeInput({
       seasonPlanDirectives: {

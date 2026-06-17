@@ -71,7 +71,19 @@ export interface MonotonicMetric {
  * coincidental phrasing; that is the conservative trade chosen over a generic
  * extractor that might fabricate constraints from arbitrary numbers in prose.
  */
-const MONOTONIC_METRIC_NOUNS = ['views', 'readers', 'followers', 'subscribers'] as const;
+// Blog-readership synonyms are unified under ONE canonical id ('metric:readership') so a
+// regression is caught even when episodes switch wording (g17 used "views" in ep1/2 but the
+// ep3 counter has NO noun at all). followers/subscribers stay per-noun (a distinct social
+// metric a story may track independently of readership).
+const READERSHIP_NOUNS = ['views', 'reads', 'readers', 'hits'] as const;
+const OTHER_MONOTONIC_NOUNS = ['followers', 'subscribers'] as const;
+const READERSHIP_ID = 'metric:readership';
+
+// Unambiguous counter-increment verb phrases that introduce a readership number WITHOUT a
+// metric noun (g17 ep3: "the number … clicks over. 50,001"). Guarded by a magnitude floor
+// (see READERSHIP_VERB_FLOOR) so an in-fiction small quantity ("passes 3 guards") is ignored.
+const COUNTER_VERB_RE = /\b(?:clicks over(?:\s+to)?|ticks up(?:\s+to)?|climbs to|crosses|passes|rockets?\s+(?:up\s+)?to|jumps to|hits)\b[^\d]{0,12}(\d[\d,]*)/gi;
+const READERSHIP_VERB_FLOOR = 1000;
 
 /** Parse a possibly-grouped integer like "90,147" or "84000" → number (or undefined). */
 function parseGroupedInt(raw: string): number | undefined {
@@ -93,20 +105,33 @@ function parseGroupedInt(raw: string): number | undefined {
  */
 export function extractMonotonicMetrics(text: string): MonotonicMetric[] {
   if (!text) return [];
-  const best = new Map<string, number>();
-  for (const noun of MONOTONIC_METRIC_NOUNS) {
-    // number (with optional grouping) followed within a couple words by the noun.
+  // metric-id → { metric label, highest value seen }.
+  const best = new Map<string, { metric: string; value: number }>();
+  const note = (id: string, metric: string, value: number): void => {
+    const prev = best.get(id);
+    if (!prev || value > prev.value) best.set(id, { metric, value });
+  };
+  const scanNoun = (noun: string, id: string, metric: string): void => {
     const re = new RegExp(`(\\d[\\d,]*)\\s+(?:\\w+\\s+){0,2}${noun}\\b`, 'gi');
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
       const value = parseGroupedInt(m[1]);
-      if (value === undefined) continue;
-      const prev = best.get(noun);
-      if (prev === undefined || value > prev) best.set(noun, value);
+      if (value !== undefined) note(id, metric, value);
     }
+  };
+  // Readership synonyms → one unified metric so cross-episode wording drift still compares.
+  for (const noun of READERSHIP_NOUNS) scanNoun(noun, READERSHIP_ID, 'readership');
+  // followers/subscribers stay per-noun.
+  for (const noun of OTHER_MONOTONIC_NOUNS) scanNoun(noun, `metric:${noun}`, noun);
+  // Noun-less counter-increment phrasing → readership (magnitude-guarded against small in-fiction quantities).
+  let vm: RegExpExecArray | null;
+  COUNTER_VERB_RE.lastIndex = 0;
+  while ((vm = COUNTER_VERB_RE.exec(text)) !== null) {
+    const value = parseGroupedInt(vm[1]);
+    if (value !== undefined && value >= READERSHIP_VERB_FLOOR) note(READERSHIP_ID, 'readership', value);
   }
-  return [...best.entries()].map(([metric, value]) => ({
-    id: `metric:${metric}`,
+  return [...best.entries()].map(([id, { metric, value }]) => ({
+    id,
     metric,
     value,
     statement: `${metric} count stands at ${value.toLocaleString('en-US')}`,

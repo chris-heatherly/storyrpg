@@ -386,12 +386,22 @@ export function bindAuthoredTurnsToScenes(
   //    not its positional slot — see {@link alignTurnsToScenes}. Falls back to
   //    exact positional binding when the scenes carry no per-turn signal
   //    (deterministic path) so that path is unchanged.
+  //
+  //    Bind spine turns to STANDARD prose scenes only — an ENCOUNTER scene's content is
+  //    its anchor/signature (bound in step 2 below), and it physically cannot dramatize an
+  //    unrelated spine turn. bite-me-g18 aborted the whole pipeline because the "At Sunday
+  //    breakfast Victor reframes the blog…" turn aligned onto the midnight-maze encounter,
+  //    so EncounterAnchorContentValidator (blocking, no encounter-repair) demanded a
+  //    Sunday-breakfast beat the maze can never depict. Encounters still get their signature
+  //    (step 2) and advisory seeds (step 3); only authored spine turns are kept off them.
+  const turnTargetsRaw = targets.filter((s) => s.kind !== 'encounter');
+  const turnTargets = turnTargetsRaw.length > 0 ? turnTargetsRaw : targets;
   if (turns.length > 0) {
-    const assignment = alignTurnsToScenes(turns, targets);
-    const perScene: RequiredBeat[][] = targets.map(() => []);
+    const assignment = alignTurnsToScenes(turns, turnTargets);
+    const perScene: RequiredBeat[][] = turnTargets.map(() => []);
     for (let t = 0; t < turns.length; t += 1) {
       const slot = assignment[t];
-      const scene = targets[slot];
+      const scene = turnTargets[slot];
       const beatIndex = (scene.requiredBeats?.length ?? 0) + perScene[slot].length;
       perScene[slot].push(requiredBeatFromTurn(scene.id, beatIndex, turns[t]));
       // Pin the scene's setting to the place its authored turn names (when it names a
@@ -400,7 +410,7 @@ export function bindAuthoredTurnsToScenes(
       const namedLocation = matchBeatLocation(turns[t], ep.locations ?? []);
       if (namedLocation) scene.locations = [namedLocation];
     }
-    targets.forEach((scene, i) => appendRequiredBeats(scene, perScene[i]));
+    turnTargets.forEach((scene, i) => appendRequiredBeats(scene, perScene[i]));
   }
 
   // 2. Signature device → the episode's anchor scene.

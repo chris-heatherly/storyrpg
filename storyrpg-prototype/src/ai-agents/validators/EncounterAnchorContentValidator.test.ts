@@ -277,3 +277,41 @@ describe('EncounterAnchorContentValidator — episode-scoped depiction (Gen-4 R1
     expect(errs).toHaveLength(0);
   });
 });
+
+describe('EncounterAnchorContentValidator — thematic central conflict (bite-me-g18 maze FP)', () => {
+  const THEMATIC_CONFLICT =
+    'The maze is the Lie made physical. Being chosen by a beautiful man in a beautiful place feels exactly '
+    + 'like being known and safe, and the surrender to that feeling happens in the one setting designed to '
+    + 'make her lose the thread. The kiss is the moment her appetite finally outvotes her noticing — precisely '
+    + 'the staged surrender his whole curated world exists to produce.';
+  const mazeAnchor = plannedEncounter({
+    encounter: {
+      type: 'romantic', difficulty: 'hard', relevantSkills: ['perception'], isBranchPoint: true,
+      centralConflict: THEMATIC_CONFLICT,
+      requiredBeats: [{
+        id: 'enc-3-1-sig', sourceTurn: 'the maze kiss',
+        mustDepict: 'The hedge maze at midnight — candlelight, the smell of cold boxwood, the kiss where Kylie decides she wants this man.',
+        tier: 'signature',
+      }],
+    },
+  } as Partial<PlannedScene>);
+
+  it('does NOT block on the thematic conflict when the concrete signature IS depicted', () => {
+    const story = storyWith([
+      sceneWithBeats('enc-3-1', [
+        'Candlelight flickers along the cold boxwood hedges of the midnight maze.',
+        'Victor\'s hand finds yours and the kiss lands — you decide, against every instinct, that you want this man.',
+      ]),
+    ]);
+    const errs = errorsOf(story, { scenePlan: scenePlanOf([mazeAnchor]) });
+    expect(errs.filter((m) => /central conflict/.test(m))).toHaveLength(0);
+  });
+
+  it('STILL blocks when neither the conflict nor the signature is realized (generic prose)', () => {
+    const story = storyWith([
+      sceneWithBeats('enc-3-1', ['A fight breaks out. You parry, strike, and the guard falls back.']),
+    ]);
+    const errs = errorsOf(story, { scenePlan: scenePlanOf([mazeAnchor]) });
+    expect(errs.some((m) => /central conflict|signature|does not depict/.test(m))).toBe(true);
+  });
+});

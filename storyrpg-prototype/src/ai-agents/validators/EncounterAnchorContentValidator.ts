@@ -313,9 +313,22 @@ export class EncounterAnchorContentValidator extends BaseValidator {
         .flatMap(s => collectReaderFacingTexts(s))
         .join('\n');
 
-      // 2) Central conflict depicted.
+      // 2) Central conflict depicted. A central conflict is THEMATIC ("the kiss is the moment
+      // her appetite finally outvotes her noticing — the surrender Victor stages") — so a
+      // token-overlap test against that abstract sentence FALSE-POSITIVES even when the scene
+      // fully realizes it (bite-me-g18 maze: kiss/surrender/maze/candle all on-page, overlap
+      // still < 0.34). The encounter's SIGNATURE moment is the CONCRETE staging of that same
+      // pressure; when the signature is depicted, the conflict it exists to stage is realized.
+      // Credit either path, so the thematic-overlap miss alone no longer hard-blocks. (The
+      // concrete required-beat checks below stay strict.)
       const centralConflict = planned.encounter?.centralConflict ?? '';
-      if (centralConflict.trim().length > 0 && !isDepicted(centralConflict, haystack, minScore)) {
+      const signatureMoment = authoredRequiredBeats(planned).find((rb) => rb.tier === 'signature')?.mustDepict;
+      const signatureDepicted = Boolean(signatureMoment?.trim()) && isDepicted(signatureMoment, haystack, minScore);
+      if (
+        centralConflict.trim().length > 0
+        && !isDepicted(centralConflict, haystack, minScore)
+        && !signatureDepicted
+      ) {
         issues.push(this.error(
           `Authored encounter anchor "${planned.title || planned.id}" (Ep ${planned.episodeNumber}) does not depict its central conflict on-page: "${centralConflict.trim()}".`,
           loc,

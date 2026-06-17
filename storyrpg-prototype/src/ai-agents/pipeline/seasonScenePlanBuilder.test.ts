@@ -385,3 +385,33 @@ describe('buildSeasonScenePlan', () => {
     expect(edgesForEpisode(sp, 2).length).toBe(1);
   });
 });
+
+describe('bindAuthoredTurnsToScenes — encounter scenes get no spine turns (bite-me-g18)', () => {
+  const mkScene = (id: string, kind: 'standard' | 'encounter', narrativeRole: string): PlannedScene => ({
+    id, episodeNumber: 3, order: 0, kind, title: id, dramaticPurpose: 'x',
+    narrativeRole, locations: [], npcsInvolved: [], setsUp: [], paysOff: [],
+  } as unknown as PlannedScene);
+
+  it('binds authored turns ONLY to standard scenes, never the encounter anchor', () => {
+    const ep = episode(3, ['midpoint'], {
+      treatmentGuidance: {
+        episodeTurns: [
+          'At the club the night locks into place.',
+          'In the hedge maze at midnight the kiss happens.',
+          'At Sunday breakfast Victor reframes the blog as a privacy problem.',
+        ],
+      },
+    } as Partial<SeasonEpisode>);
+    const scenes = [mkScene('s3-1', 'standard', 'setup'), mkScene('enc-3-1', 'encounter', 'turn'), mkScene('s3-4', 'standard', 'turn')];
+    bindAuthoredTurnsToScenes(ep, scenes);
+    const enc = scenes.find((s) => s.kind === 'encounter')!;
+    // The encounter anchor carries NO authored spine turn (g18: the Sunday-breakfast turn
+    // landed here and made EncounterAnchorContentValidator demand an un-depictable beat).
+    expect((enc.requiredBeats ?? []).filter((b) => b.tier === 'authored')).toHaveLength(0);
+    // The turns are still bound — on the standard prose scenes that can dramatize them.
+    const authoredOnStd = scenes
+      .filter((s) => s.kind !== 'encounter')
+      .flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'authored'));
+    expect(authoredOnStd.length).toBeGreaterThan(0);
+  });
+});

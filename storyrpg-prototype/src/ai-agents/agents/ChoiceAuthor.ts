@@ -811,7 +811,7 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
       }
 
       const setsRouteFlag = choice.consequences?.some(
-        consequence => consequence.type === 'setFlag' && consequence.flag.startsWith('route_') && consequence.value !== false
+        consequence => consequence.type === 'setFlag' && typeof consequence.flag === 'string' && consequence.flag.startsWith('route_') && consequence.value !== false
       );
       if (setsRouteFlag && choice.nextSceneId) {
         console.warn(
@@ -949,7 +949,7 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
     const shouldAssignRouteFlags = routeFlags.length >= 2 || Boolean(input.sceneBlueprint.choicePoint?.branches);
     const hasRouteFlagConsequence = choiceSet.choices.some(choice =>
       choice.consequences?.some(
-        consequence => consequence.type === 'setFlag' && consequence.flag.startsWith('route_') && consequence.value !== false
+        consequence => consequence.type === 'setFlag' && typeof consequence.flag === 'string' && consequence.flag.startsWith('route_') && consequence.value !== false
       )
     );
     if (shouldAssignRouteFlags && routeFlags.length > 0 && !hasRouteFlagConsequence) {
@@ -991,6 +991,7 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
     const alreadyHasBranchConsequence = choiceSet.choices.some(choice =>
       choice.consequences?.some(
         c => c.type === 'setFlag'
+          && typeof c.flag === 'string'
           && (c.flag.startsWith('route_') || c.flag.startsWith('treatment_branch_'))
           && c.value !== false,
       ),
@@ -1964,7 +1965,7 @@ CRITICAL REQUIREMENTS:
       // Dilemma choices should set tint flags (e.g., "tint:mercy", "tint:justice")
       const setsTintFlag = choiceSet.choices.some(c =>
         c.consequences?.some(con =>
-          con.type === 'setFlag' && con.flag.startsWith('tint:')
+          con.type === 'setFlag' && typeof con.flag === 'string' && con.flag.startsWith('tint:')
         )
       );
       if (!setsTintFlag) {

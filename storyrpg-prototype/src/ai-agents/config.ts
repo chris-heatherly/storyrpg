@@ -1041,6 +1041,11 @@ export function loadConfig(): PipelineConfig {
       choiceAuthor: {
         ...defaultConfig,
         model: env.EXPO_PUBLIC_CHOICE_LLM_MODEL || env.CHOICE_LLM_MODEL || defaultConfig.model,
+        // WS0.4 (extended after the g17 watched smoke run): ChoiceAuthor emits dense per-choice
+        // JSON (consequences, outcomeTexts, reminderPlan, witnessReactions) and truncated
+        // repeatedly on a verbose provider (gemini-2.5-pro) at the 4096 default, failing whole
+        // choice sets. Give it the same env-overridable headroom as SceneWriter.
+        maxTokens: Number.parseInt(env.EXPO_PUBLIC_CHOICE_MAX_TOKENS || env.CHOICE_MAX_TOKENS || '8192', 10) || 8192,
         temperature: 0.75, // Balanced for meaningful choices
       },
       qaRunner: {

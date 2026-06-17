@@ -46,6 +46,13 @@ import { missingMomentTokens, momentDepicted, requiredMomentFromMessage } from '
 const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   'RequiredBeatRealizationValidator',
   'SignatureDevicePresenceValidator',
+  // EncounterAnchorContentValidator names a concrete authored moment (central conflict /
+  // required beat) the encounter prose failed to dramatize, and carries the encounter
+  // sceneId — exactly the shape this handler repairs. The handler already rewrites encounter
+  // prose (gatherEncounterProseBeats + mergeRewrittenEncounterBeatsIntoStory), so an
+  // encounter-anchor miss now becomes a bounded scene-prose repair instead of a hard abort
+  // (bite-me-g18). This retires the GATE_ENCOUNTER_ANCHOR_CONTENT policyException.
+  'EncounterAnchorContentValidator',
 ]);
 
 type RepairableIssue = ContractRepairReport['blockingIssues'][number];

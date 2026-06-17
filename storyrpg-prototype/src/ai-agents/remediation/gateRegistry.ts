@@ -137,11 +137,10 @@ export const GATE_REGISTRY: GateSpec[] = [
   // before any generation is spent (runPlanTimeFidelityChecks). The
   // season-final dispatch remains as a regression net for mid-run plan drift.
   { id: 'GATE_AUTHORED_EPISODE_CONFORMANCE', placement: 'plan', kind: 'blocking', defaultOn: true },
-  {
-    id: 'GATE_ENCOUNTER_ANCHOR_CONTENT', placement: 'season-final', kind: 'blocking', defaultOn: true,
-    policyException:
-      'Encounter-scene prose realization; the scene-prose repair handler currently skips encounter scenes. Planned fix: extend the judge-confirmation set + add an encounter-regen repair route, then drop this exception.',
-  },
+  // Repair-first: the fidelity judge refutes FPs (it is a treatment-fidelity finding) and the
+  // scene-prose repair handler now re-authors the encounter's phase/storylet prose to depict a
+  // confirmed-missing central conflict / required beat (bite-me-g18), so this no longer hard-aborts.
+  { id: 'GATE_ENCOUNTER_ANCHOR_CONTENT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
   { id: 'GATE_INFORMATION_LEDGER_SCHEDULE', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_SIGNATURE_DEVICE_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
   // WS1 (2026-06-12): relocated from season-final to plan placement — anchors

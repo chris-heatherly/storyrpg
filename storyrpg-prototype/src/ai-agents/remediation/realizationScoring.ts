@@ -92,13 +92,19 @@ export function missingMomentTokens(validator: string | undefined, moment: strin
 }
 
 /**
- * Pull the quoted authored moment out of a realization finding message. Both
- * validators emit the same shape:
+ * Pull the quoted authored moment out of a realization finding message. The
+ * RequiredBeat / Signature validators emit:
  *   `… scene "<id>": "<MOMENT>". The authored turn must be dramatized …`
  *   `… scene "<id>": "<MOMENT>". The staged signature moment must be depicted …`
+ * and EncounterAnchorContentValidator (now also routed to the scene-prose repair):
+ *   `… does not depict its central conflict on-page: "<MOMENT>".`
+ *   `… does not depict required beat <id> (<tier>): "<MOMENT>".`
  */
 export function requiredMomentFromMessage(message: string | undefined): string | undefined {
   if (!message) return undefined;
-  const match = /: "([\s\S]*)"\. The (?:authored turn|staged signature moment) must be/.exec(message);
-  return match?.[1]?.trim() || undefined;
+  const turn = /: "([\s\S]*)"\. The (?:authored turn|staged signature moment) must be/.exec(message);
+  if (turn?.[1]) return turn[1].trim();
+  // EncounterAnchorContent forms: the moment is the FINAL quoted span at end of message.
+  const anchor = /does not depict (?:its central conflict on-page|required beat [^:]+): "([\s\S]*)"\.\s*$/.exec(message);
+  return anchor?.[1]?.trim() || undefined;
 }

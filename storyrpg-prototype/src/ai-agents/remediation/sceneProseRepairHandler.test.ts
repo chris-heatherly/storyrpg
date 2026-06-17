@@ -276,3 +276,14 @@ describe('buildSceneProseRepairHandler', () => {
     expect(result.changed).toBe(false);
   });
 });
+
+describe('selectSceneProseRepairs — EncounterAnchorContent is repairable (bite-me-g18)', () => {
+  it('selects an EncounterAnchorContentValidator finding by its encounter sceneId', () => {
+    const groups = selectSceneProseRepairs([
+      { validator: 'EncounterAnchorContentValidator', sceneId: 'treatment-enc-3-1', message: 'does not depict its central conflict…' } as never,
+      { validator: 'AuthoredEpisodeConformanceValidator', sceneId: 'x', message: 'episode mismatch' } as never,
+    ]);
+    expect(groups.has('treatment-enc-3-1')).toBe(true);
+    expect(groups.has('x')).toBe(false); // non-prose validator stays excluded
+  });
+})

@@ -63,3 +63,14 @@ describe('missingMomentTokens', () => {
     expect(missingMomentTokens('RequiredBeatRealizationValidator', moment, '')).toContain('signature');
   });
 });
+
+describe('requiredMomentFromMessage — EncounterAnchorContent forms (bite-me-g18)', () => {
+  it('extracts the central-conflict moment', () => {
+    const msg = 'Authored encounter anchor "The hedge maze…" (Ep 3) does not depict its central conflict on-page: "The kiss is the moment her appetite outvotes her noticing.".';
+    expect(requiredMomentFromMessage(msg)).toBe('The kiss is the moment her appetite outvotes her noticing.');
+  });
+  it('extracts the required-beat moment', () => {
+    const msg = 'Authored encounter anchor "The hedge maze…" (Ep 3) does not depict required beat enc-3-1-rb1 (authored): "At Sunday breakfast Victor reframes the blog.".';
+    expect(requiredMomentFromMessage(msg)).toBe('At Sunday breakfast Victor reframes the blog.');
+  });
+})

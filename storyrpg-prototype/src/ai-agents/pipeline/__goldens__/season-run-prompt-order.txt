@@ -2,9 +2,9 @@
 1: World Builder [anthropic/claude-sonnet-4-6] msgs=2 prompt=4ea386ee8b7d32b2
 2: Character Designer [anthropic/claude-sonnet-4-6] msgs=2 prompt=05519de7c6155081
 3: Character Designer [anthropic/claude-sonnet-4-6] msgs=2 prompt=061480c56881b8a2
-4: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=b8b1a31b73f69a64
-5: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=1732882aaac95618
-6: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=1732882aaac95618
+4: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=17ff559d2e93b61f
+5: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=199933c54da43eef
+6: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=199933c54da43eef
 7: Thread Planner [anthropic/claude-sonnet-4-6] msgs=2 prompt=e6a7af0998fc63d0
 8: Twist Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=8a1e792990a49bb3
 9: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=10cfa9537adf51c2
@@ -19,9 +19,9 @@
 18: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=f36f67865f9cbfd4
 19: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=85c8fa3cd1b04272
 20: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=85c8fa3cd1b04272
-21: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=6ea7dd15d2994dd5
-22: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=36adeeaef4d8f663
-23: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=36adeeaef4d8f663
+21: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=c06c96c8731e7dfc
+22: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=807ba5ece68dbfa0
+23: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=807ba5ece68dbfa0
 24: Thread Planner [anthropic/claude-sonnet-4-6] msgs=2 prompt=af2021974a6a125c
 25: Twist Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=44e530ea2419d5ce
 26: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=6e05e599655ccf68

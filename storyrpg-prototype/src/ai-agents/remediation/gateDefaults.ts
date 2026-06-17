@@ -252,6 +252,14 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // confirmed misses drive the GATE_FINAL_CONTRACT_SCENE_REGEN per-scene rewrite instead of
   // an immediate abort. The run aborts only when repair rounds exhaust. Reversible via =0.
   GATE_REQUIRED_BEAT_REALIZATION: true,
+  // bite-me-g16 audit: a treatment SEED plant (cold-open / consequence-seed / info-ledger
+  // tell — e.g. "the stray dog in the courtyard, watching") was dropped on-page yet its
+  // Episode-3 payoff still referenced it, because a dropped seed only WARNS. When on, a
+  // seed absent from its entire bound episode escalates from warning to a blocking miss,
+  // routed to the season-final scene regen (re-plant the seed). STILL OFF: detection runs
+  // regardless (warnings + per-episode incremental contract); promote after one live `=1`
+  // run confirms the regen re-plants rather than aborts. Reversible via =0.
+  GATE_TREATMENT_SEED_REALIZATION: false,
   // 2026-06-09 storytelling-quality audit: unacknowledged time/place jumps between
   // adjacent scenes (bite-me-g10 bookshop-afternoon → 4am-rooftop hard cut). The
   // generative half is live (plan-time SceneBlueprint.timeOfDay/timeJumpFromPrevious,

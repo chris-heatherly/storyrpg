@@ -51,6 +51,7 @@ import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidato
 import type { PlannedScene, RequiredBeat, SeasonScenePlan } from '../../types/scenePlan';
 import type { Beat } from '../../types/content';
 import type { Episode, Scene, Story } from '../../types/story';
+import { isGateEnabledAt } from '../remediation/gateRegistry';
 
 /** Stopwords stripped before keyword overlap (mirrors SignatureDevicePresenceValidator). */
 const STOPWORDS = new Set([
@@ -283,9 +284,14 @@ export class RequiredBeatRealizationValidator extends BaseValidator {
       }
     }
 
-    // Advisory pass: cold-open / consequence-seed / information-ledger plants distributed
-    // from treatmentGuidance. A missing seed is a WARNING (counted, never blocking) — the
-    // detail is finer-grained than a turn and may legitimately land in a sibling scene.
+    // Cold-open / consequence-seed / information-ledger plants distributed from
+    // treatmentGuidance. A missing seed is normally a WARNING (the detail is finer-grained
+    // than a turn and may legitimately land in a sibling scene). bite-me-g16: a dropped
+    // seed whose Episode-3 payoff still references it ships an unearned payoff. When
+    // GATE_TREATMENT_SEED_REALIZATION is on, a seed absent from its entire bound episode
+    // escalates to a blocking miss (routed to the season-final scene regen to re-plant it).
+    // Default-OFF → unchanged warning behavior; promote at M4 after a live run.
+    const blockSeedMiss = isGateEnabledAt('GATE_TREATMENT_SEED_REALIZATION', 'season-final');
     for (const beat of seedBeats) {
       if (
         generatedEpisodeNumbers.size > 0
@@ -299,11 +305,10 @@ export class RequiredBeatRealizationValidator extends BaseValidator {
       const haystack = `${sceneText ?? ''}\n${episodeProseByNumber.get(beat.episodeNumber) ?? ''}`;
       if (haystack.trim().length === 0) continue;
       if (!beatDepicted(beat.text, haystack)) {
-        issues.push(this.warning(
-          `Treatment plant not found on-page in episode ${beat.episodeNumber} (bound to scene "${beat.sceneId}"): "${beat.text}". A cold open, recurring object, or information-ledger tell from the treatment was dropped.`,
-          `seedBeat:ep${beat.episodeNumber}:${beat.sceneId}:${beat.beatId}`,
-          'Plant this seed on-page somewhere in the episode — it sets up a later payoff; advisory, so the scene need not be re-authored if it genuinely cannot carry it.',
-        ));
+        const message = `Treatment plant not found on-page in episode ${beat.episodeNumber} (bound to scene "${beat.sceneId}"): "${beat.text}". A cold open, recurring object, or information-ledger tell from the treatment was dropped.`;
+        const where = `seedBeat:ep${beat.episodeNumber}:${beat.sceneId}:${beat.beatId}`;
+        const suggestion = 'Plant this seed on-page somewhere in the episode — it sets up a later payoff that becomes unearned if the setup is missing.';
+        issues.push(blockSeedMiss ? this.error(message, where, suggestion) : this.warning(message, where, suggestion));
       }
     }
 

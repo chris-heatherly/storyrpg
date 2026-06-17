@@ -55,4 +55,31 @@ describe('SkillPlanConformanceValidator', () => {
     expect(run(story([{ number: 1, checks: [] }])).issues).toHaveLength(0);
     expect(run(story([{ number: 9, checks: [{ perception: 1 }, { perception: 1 }] }])).issues).toHaveLength(0);
   });
+
+  it('counts ENCOUNTER choice primarySkills (bite-me-g16 perception meta lived in encounters)', () => {
+    // ep1 plan does NOT lead with perception; the dominance lives entirely in the encounter
+    // choice tree (primarySkill), which the beats-only walk used to miss.
+    const s = {
+      id: 's', title: 't', genre: 'fantasy', synopsis: '', coverImage: '',
+      initialState: { attributes: {}, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [{
+        id: 'ep-1', number: 1, title: 'E1', synopsis: '', coverImage: '', startingSceneId: 's1-1',
+        scenes: [{
+          id: 's1-enc', name: 'Enc', startingBeatId: 'b1', beats: [],
+          encounter: {
+            phases: [{ id: 'p1', beats: [{ id: 'eb1', choices: [
+              { id: 'c1', primarySkill: 'perception' },
+              { id: 'c2', primarySkill: 'perception' },
+              { id: 'c3', primarySkill: 'perception' },
+              { id: 'c4', primarySkill: 'athletics' },
+            ] }] }],
+            storylets: {},
+          },
+        }],
+      }],
+    } as unknown as Story;
+    const res = run(s);
+    expect(res.issues.some((i) => /leans on "perception"/.test(i.message))).toBe(true);
+  });
 });

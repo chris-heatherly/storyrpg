@@ -100,12 +100,23 @@ export class FlagContractValidator extends BaseValidator {
       map.set(flag, list);
     };
 
+    // Keys that introduce a CONSEQUENCE (side-effect) subtree vs a CONDITION (read)
+    // subtree. `type:'flag'` is ambiguous: in a condition it READS a flag, but inside an
+    // onShow/onSelect consequence list it SETS one. bite-me-g16 authored onShow flag-sets
+    // using the condition form `{type:'flag', value:true}` (a runtime no-op the assembly
+    // pass now rewrites to setFlag); classifying by context keeps the validator accurate on
+    // un-normalized data too, so it reports a write-only residue flag, not a dead condition.
+    const CONSEQUENCE_KEYS = new Set([
+      'onShow', 'onSelect', 'onEnter', 'onExit', 'consequences', 'effects', 'onSuccess', 'onFailure', 'results',
+    ]);
+    const CONDITION_KEYS = new Set(['condition', 'conditions', 'requires', 'showIf', 'displayCondition', 'modifiers']);
+
     // One deep walk per scene so findings carry a scene-level location.
-    const walk = (node: unknown, location: string, seen: Set<object>): void => {
+    const walk = (node: unknown, location: string, seen: Set<object>, inConsequence: boolean): void => {
       if (!node || typeof node !== 'object' || seen.has(node)) return;
       seen.add(node as object);
       if (Array.isArray(node)) {
-        for (const item of node) walk(item, location, seen);
+        for (const item of node) walk(item, location, seen, inConsequence);
         return;
       }
       const obj = node as Record<string, unknown>;
@@ -114,7 +125,8 @@ export class FlagContractValidator extends BaseValidator {
         note(setters, obj.flag, location);
       }
       if (obj.type === 'flag' && typeof obj.flag === 'string') {
-        note(consumers, obj.flag, location);
+        // Setter inside a consequence list; reader otherwise (condition / text-variant gate).
+        note(inConsequence ? setters : consumers, obj.flag, location);
       }
       // Storylet `setsFlags: [{ flag, value }]`
       if (Array.isArray(obj.setsFlags)) {
@@ -128,14 +140,19 @@ export class FlagContractValidator extends BaseValidator {
         if (key === 'condition' && typeof value === 'string') {
           note(consumers, value, location);
         } else if (value && typeof value === 'object') {
-          walk(value, location, seen);
+          const childInConsequence = CONSEQUENCE_KEYS.has(key)
+            ? true
+            : CONDITION_KEYS.has(key)
+              ? false
+              : inConsequence;
+          walk(value, location, seen, childInConsequence);
         }
       }
     };
 
     for (const episode of input.story.episodes || []) {
       for (const scene of episode.scenes || []) {
-        walk(scene, `${episode.id}/${scene.id}`, new Set());
+        walk(scene, `${episode.id}/${scene.id}`, new Set(), false);
       }
     }
 

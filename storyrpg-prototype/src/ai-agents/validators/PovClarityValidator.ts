@@ -28,6 +28,103 @@ export function hasPlayerReference(text: string | undefined | null): boolean {
   return PLAYER_TEMPLATE_RE.test(text) || SECOND_PERSON_RE.test(text);
 }
 
+/**
+ * Classify each character as inside/outside a DIALOGUE span. Characters legitimately
+ * speak in first person ('I'd like that,' Victor says); only unquoted narration using
+ * "I/my" is a POV break. Handles BOTH double quotes (simple toggle — sentence-splitting
+ * may sever the closing mark, so an unclosed opening still counts to end) and single
+ * quotes (boundary-aware so apostrophes in contractions/possessives — I'd, Kylie's — are
+ * NOT treated as delimiters: a `'` opens only when not preceded by a letter and closes
+ * only when not followed by a letter).
+ */
+function dialogueMask(text: string): boolean[] {
+  const mask = new Array<boolean>(text.length).fill(false);
+  let inDouble = false;
+  let inSingle = false;
+  let inStar = false; // markdown-italic spans: quoted messages/DMs (Victor's *…* texts) + emphasis
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const prev = i > 0 ? text[i - 1] : '';
+    const next = i + 1 < text.length ? text[i + 1] : '';
+    if (c === '“' || c === '”' || c === '"') {
+      inDouble = !inDouble;
+      mask[i] = true;
+      continue;
+    }
+    if (c === '*' && !inDouble && !inSingle) {
+      inStar = !inStar;
+      mask[i] = true;
+      continue;
+    }
+    if ((c === "'" || c === '’') && !inDouble && !inStar) {
+      if (!inSingle && !/[A-Za-z]/.test(prev)) { inSingle = true; mask[i] = true; continue; }
+      if (inSingle && !/[A-Za-z]/.test(next)) { inSingle = false; mask[i] = true; continue; }
+    }
+    mask[i] = inDouble || inSingle || inStar;
+  }
+  return mask;
+}
+
+/** Return only the NARRATION (text outside dialogue spans). */
+function stripDoubleQuotedSpans(text: string): string {
+  const mask = dialogueMask(text);
+  let out = '';
+  for (let i = 0; i < text.length; i++) if (!mask[i]) out += text[i];
+  return out;
+}
+
+/** Apply `fn` to maximal runs of NARRATION (outside dialogue); dialogue is preserved verbatim. */
+function transformOutsideQuotes(text: string, fn: (segment: string) => string): string {
+  const mask = dialogueMask(text);
+  let out = '';
+  let buf = '';
+  for (let i = 0; i < text.length; i++) {
+    if (mask[i]) {
+      if (buf) { out += fn(buf); buf = ''; }
+      out += text[i];
+    } else {
+      buf += text[i];
+    }
+  }
+  if (buf) out += fn(buf);
+  return out;
+}
+
+function capitalizeSentenceStarts(text: string): string {
+  return text
+    .replace(/(^|[.!?]\s+)([a-z])/g, (_m, pre: string, ch: string) => pre + ch.toUpperCase());
+}
+
+/**
+ * Deterministically coerce first-person protagonist NARRATION to second person, leaving
+ * quoted dialogue untouched. Safety net for the bite-me-g16 ep2 coda ("my laptop… I have
+ * to choose") so a first-person POV break never ships even when the authoring LLM produced
+ * one. Returns the coerced text and whether anything changed. Conservative: only the
+ * first-person singular forms are mapped; "we/our/us" is left alone.
+ */
+export function coerceFirstPersonNarrationToSecond(text: string): { text: string; changed: boolean } {
+  if (!text) return { text, changed: false };
+  let changed = false;
+  const transformed = transformOutsideQuotes(text, (seg) => {
+    if (!seg) return seg;
+    const before = seg;
+    let s = seg;
+    // Contractions first (longest match wins), then bare I, then object/possessive forms.
+    s = s.replace(/\bI[’']m\b/g, "you're");
+    s = s.replace(/\bI[’']ve\b/g, "you've");
+    s = s.replace(/\bI[’']ll\b/g, "you'll");
+    s = s.replace(/\bI[’']d\b/g, "you'd");
+    s = s.replace(/\bI\b/g, 'you');
+    s = s.replace(/\bmy\b/gi, 'your');
+    s = s.replace(/\bmine\b/gi, 'yours');
+    s = s.replace(/\bmyself\b/gi, 'yourself');
+    s = s.replace(/\bme\b/gi, 'you');
+    if (s !== before) { changed = true; s = capitalizeSentenceStarts(s); }
+    return s;
+  });
+  return { text: transformed, changed };
+}
+
 export class PovClarityValidator {
   validateScene(sceneContent: SceneContent, context: PovClarityContext = {}): PovClarityResult {
     const issues: PovClarityIssue[] = [];
@@ -132,6 +229,56 @@ export class PovClarityValidator {
       }
     }
     return hits;
+  }
+
+  /**
+   * Scan reader-facing texts for FIRST-person protagonist narration ("my laptop… I have
+   * to choose") in a second-person story. The bite-me-g16 ep2 cliffhanger coda slipped
+   * into first person, and nothing detected it: the only POV scans were second-vs-third.
+   * Mirror of {@link findThirdPersonProtagonistTexts}. Returns offending snippets.
+   */
+  findFirstPersonProtagonistTexts(
+    texts: Array<string | undefined | null>,
+    protagonistName?: string,
+  ): string[] {
+    const hits: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of texts) {
+      const text = typeof raw === 'string' ? raw : '';
+      if (!text.trim()) continue;
+      if (this.isFirstPersonProtagonistNarration(text)) {
+        const snippet = text.trim().slice(0, 160);
+        if (!seen.has(snippet)) {
+          seen.add(snippet);
+          hits.push(snippet);
+        }
+      }
+    }
+    return hits;
+  }
+
+  /**
+   * True when narration (not dialogue) uses first-person for the protagonist in a
+   * second-person story. Quoted dialogue is stripped first — characters legitimately say
+   * "I" — then we require a first-person pronoun in the remaining narration AND no
+   * second-person address anywhere (the same load-bearing "no you" signal the third-person
+   * check uses). protagonistName is unused (first-person never names the protagonist) but
+   * kept for signature symmetry. Heuristic + advisory.
+   */
+  isFirstPersonProtagonistNarration(text: string): boolean {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return false;
+    const narration = stripDoubleQuotedSpans(trimmed);
+    // Second-person in NARRATION (not inside a quoted/italic message) → in-register, not a
+    // break. Checking the stripped narration — rather than the whole text — matters when a
+    // first-person coda embeds a quoted message that itself says "you" (bite-me-g16 ep2
+    // coda embeds Victor's DM "*…if you can stand it…*").
+    if (hasPlayerReference(narration)) return false;
+    // First-person singular in narration. "I"/"I'm"/"I'll"/"I've"/"I'd" are matched
+    // case-SENSITIVELY (capital I) so lowercase "i" inside words is never a hit; the
+    // possessive/object forms (me/my/mine/myself) are case-insensitive ("My thumb hovers").
+    // Bare "we/our/us" is excluded (often diegetic group speech) to stay conservative.
+    return /\bI\b|\bI['’](?:m|ll|ve|d)\b/.test(narration) || /\b(?:me|my|mine|myself)\b/i.test(narration);
   }
 
   /**

@@ -28,6 +28,7 @@ import { EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import { WorldBible } from '../agents/WorldBuilder';
 import { CharacterBible } from '../agents/CharacterDesigner';
 import { SceneContent } from '../agents/SceneWriter';
+import { normalizeOnShowFlagConsequences } from './consequenceNormalization';
 import { ChoiceSet } from '../agents/ChoiceAuthor';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import { ImageAgentTeam } from '../agents/image-team/ImageAgentTeam';
@@ -201,7 +202,7 @@ export class Assembly {
           speakerMood: genBeat.speakerMood,
           nextBeatId: genBeat.nextBeatId,
           nextSceneId: genBeat.nextSceneId,
-          onShow: genBeat.onShow,
+          onShow: normalizeOnShowFlagConsequences(genBeat.onShow),
           image: beatImages.get(compositeKey),
           video: beatVideos.get(compositeKey),
           visualMoment: genBeat.visualMoment,
@@ -479,7 +480,7 @@ export class Assembly {
           text: gb.text,
           textVariants: gb.textVariants,
           callbackHookIds: gb.callbackHookIds,
-          onShow: gb.onShow,
+          onShow: normalizeOnShowFlagConsequences(gb.onShow),
           speaker: gb.speaker,
           speakerMood: gb.speakerMood,
           nextBeatId: gb.nextBeatId,

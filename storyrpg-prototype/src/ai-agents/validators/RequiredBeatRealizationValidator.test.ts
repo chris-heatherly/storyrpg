@@ -249,4 +249,20 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
+
+  it('GATE on: a dropped seed escalates from warning to a blocking error (bite-me-g16 dropped plant)', () => {
+    const prev = process.env.GATE_TREATMENT_SEED_REALIZATION;
+    process.env.GATE_TREATMENT_SEED_REALIZATION = '1';
+    try {
+      const result = run({
+        plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', 'The stray dog in the courtyard, watching', 'seed')] })]),
+        story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'She dresses for the club, fastening her grandmother\'s gold chain.')])])]),
+      });
+      expect(result.valid).toBe(false); // now blocks
+      expect(result.issues.some((i) => i.severity === 'error')).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.GATE_TREATMENT_SEED_REALIZATION;
+      else process.env.GATE_TREATMENT_SEED_REALIZATION = prev;
+    }
+  });
 });

@@ -366,6 +366,11 @@
       "message": "Continuity repair gate: seasonCanonOn=true hasQaReport=false"
     },
     {
+      "type": "debug",
+      "phase": "incremental_contract_ep_1",
+      "message": "Episode 1 incremental contract validated (advisory)."
+    },
+    {
       "type": "phase_complete",
       "phase": "episode_1",
       "message": "Episode 1 complete!"
@@ -639,6 +644,11 @@
       "type": "debug",
       "phase": "continuity_repair_ep_2",
       "message": "Continuity repair gate: seasonCanonOn=true hasQaReport=false"
+    },
+    {
+      "type": "debug",
+      "phase": "incremental_contract_ep_2",
+      "message": "Episode 2 incremental contract validated (advisory)."
     },
     {
       "type": "phase_complete",

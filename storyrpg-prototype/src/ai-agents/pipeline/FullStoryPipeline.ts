@@ -143,7 +143,8 @@ import { SeasonCanon } from './seasonCanon';
 import { createRunState, type PipelineRunState } from './runState';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
-import { runPlanTimeFidelityChecks } from '../validators/runFidelityValidators';
+import { runPlanTimeFidelityChecks, runFidelityValidators } from '../validators/runFidelityValidators';
+import { FinalStoryContractValidator } from '../validators/FinalStoryContractValidator';
 import {
   buildChoiceAuthorNpcs,
   buildCompactWorldContext,
@@ -5382,8 +5383,22 @@ export class FullStoryPipeline {
 
       if (episodeQAReports.length > 0) {
         const avgScore = Math.round(episodeQAReports.reduce((sum, r) => sum + r.overallScore, 0) / episodeQAReports.length);
+        // A4 (bite-me-g16): the continuity field previously took the LAST episode only, so
+        // earlier episodes' continuity issues (e.g. ep3's timeline inversion when ep3 was
+        // not last) were dropped before the final-story contract ever saw them. Accumulate
+        // continuity issues across ALL episodes and report the worst (min) score, so nothing
+        // is silently lost. Voice/stakes keep representative (last) summaries.
+        const allContinuityIssues = episodeQAReports.flatMap(r => r.continuity?.issues ?? []);
+        const sevCount = (sev: string) => allContinuityIssues.filter(x => (x as { severity?: string }).severity === sev).length;
+        const mergedContinuity = {
+          overallScore: Math.min(...episodeQAReports.map(r => r.continuity?.overallScore ?? 100)),
+          issueCount: { errors: sevCount('error'), warnings: sevCount('warning'), suggestions: sevCount('suggestion') },
+          issues: allContinuityIssues,
+          passedChecks: [],
+          recommendations: Array.from(new Set(episodeQAReports.flatMap(r => r.continuity?.recommendations ?? []))),
+        } as QAReport['continuity'];
         aggregatedQAReport = {
-          continuity: episodeQAReports[episodeQAReports.length - 1].continuity,
+          continuity: mergedContinuity,
           voice: episodeQAReports[episodeQAReports.length - 1].voice,
           stakes: episodeQAReports[episodeQAReports.length - 1].stakes,
           overallScore: avgScore,
@@ -5793,6 +5808,101 @@ export class FullStoryPipeline {
         error: errorMessage,
         duration: Date.now() - startTime,
       };
+    }
+  }
+
+  /**
+   * WS-A (bite-me-g16): run the final-story contract validators on a SINGLE freshly
+   * generated episode, so POV / treatment-fidelity / flag / pronoun / conformance defects
+   * surface as each episode is produced — not only after the whole season is assembled.
+   * ADVISORY ONLY: gates keep their configured (mostly default-off) severities, this never
+   * blocks or throws, and the authoritative full pass still runs at season-final. Writes
+   * `episode-<n>-incremental-contract.json` for diagnostics. (Promotion to per-episode
+   * blocking + repair is deferred to the M4 live run — see docs/BITE_ME_G16_REMEDIATION.)
+   */
+  private async validateEpisodeIncrementally(params: {
+    episodeNumber: number;
+    episode: Episode;
+    episodeBrief: FullCreativeBrief;
+    characterBible: CharacterBible;
+    qaReport?: QAReport;
+    bestPracticesReport?: ComprehensiveValidationReport;
+    outputDirectory: string;
+  }): Promise<void> {
+    const { episodeNumber: i, episode, episodeBrief, characterBible, qaReport, bestPracticesReport, outputDirectory } = params;
+    try {
+      const protagonistId = episodeBrief.protagonist?.id;
+      const npcs = (characterBible.characters || [])
+        .filter((c: CharacterProfile) => c.id !== protagonistId)
+        .map((c: CharacterProfile) => ({ id: c.id, name: c.name, pronouns: (c as { pronouns?: string }).pronouns }));
+      const oneEpisodeStory = {
+        id: (episodeBrief.story as { id?: string })?.id || 'incremental',
+        title: episodeBrief.story?.title || '',
+        genre: episodeBrief.story?.genre || '',
+        synopsis: '',
+        coverImage: '',
+        initialState: { attributes: {}, skills: Object.fromEntries(DEFAULT_SKILLS.map(s => [s.name, 10])), tags: [], inventory: [] },
+        npcs,
+        episodes: [episode],
+      } as unknown as Story;
+
+      const fidelity = runFidelityValidators({
+        story: oneEpisodeStory,
+        seasonPlan: episodeBrief.seasonPlan,
+        sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
+      });
+
+      const report = await new FinalStoryContractValidator().validate({
+        story: oneEpisodeStory,
+        protagonist: episodeBrief.protagonist
+          ? { name: episodeBrief.protagonist.name, pronouns: episodeBrief.protagonist.pronouns }
+          : undefined,
+        requestedEpisodeNumbers: [i],
+        sourceSeasonPlan: episodeBrief.seasonPlan,
+        incrementalValidationResults: this.allSceneValidationResults.length > 0 ? this.allSceneValidationResults : this.sceneValidationResults,
+        qaReport,
+        bestPracticesReport,
+        validSkills: Object.keys(oneEpisodeStory.initialState?.skills || {}),
+        mode: this.config.validation?.mode,
+        fidelityFindings: fidelity.fidelityFindings,
+        treatmentSourced: fidelity.treatmentSourced,
+        seasonChoicePlan: this.seasonChoicePlan,
+        seasonSkillPlan: this.seasonSkillPlan,
+      });
+
+      const byType: Record<string, number> = {};
+      for (const issue of [...report.blockingIssues, ...report.warnings]) {
+        byType[issue.type] = (byType[issue.type] ?? 0) + 1;
+      }
+      await saveEarlyDiagnostic(outputDirectory, `episode-${i}-incremental-contract.json`, {
+        generatedAt: new Date().toISOString(),
+        episodeNumber: i,
+        advisory: true,
+        passed: report.passed,
+        blockingCount: report.blockingIssues.length,
+        warningCount: report.warnings.length,
+        byType,
+        blockingIssues: report.blockingIssues,
+        warnings: report.warnings,
+      }).catch(() => undefined);
+
+      // Stable, fixture-independent event message (counts/types live in the diagnostic
+      // file, not the event stream, so the progress-contract golden stays deterministic).
+      const total = report.blockingIssues.length + report.warnings.length;
+      if (total > 0) {
+        console.info(`[Pipeline] Episode ${i} incremental contract (advisory): ${total} issue(s) — ${Object.entries(byType).map(([t, n]) => `${t}:${n}`).join(', ')}`);
+      }
+      this.emit({
+        type: 'debug',
+        phase: `incremental_contract_ep_${i}`,
+        message: `Episode ${i} incremental contract validated (advisory).`,
+      });
+    } catch (err) {
+      this.emit({
+        type: 'warning',
+        phase: `incremental_contract_ep_${i}`,
+        message: `Incremental contract validation for Episode ${i} failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
   }
 
@@ -6463,6 +6573,19 @@ export class FullStoryPipeline {
           reason: !this.seasonCanonOn ? 'seasonCanon off' : 'no qaReport at repair site',
         }).catch(() => undefined);
       }
+
+      // WS-A: advisory per-episode contract validation — surface POV / treatment-fidelity /
+      // flag / pronoun / conformance defects as each episode is generated, not only at the
+      // end. Non-blocking (gates keep their configured severities); never throws.
+      await this.validateEpisodeIncrementally({
+        episodeNumber: i,
+        episode,
+        episodeBrief,
+        characterBible,
+        qaReport,
+        bestPracticesReport,
+        outputDirectory,
+      });
 
       this.emit({
         type: 'phase_complete',

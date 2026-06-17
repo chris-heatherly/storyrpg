@@ -31,6 +31,7 @@ import type { PipelineEvent } from './events';
 import type { FullCreativeBrief } from './FullStoryPipeline';
 import type { RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { CliffhangerValidator } from '../validators';
+import { coerceFirstPersonNarrationToSecond } from '../validators/PovClarityValidator';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
@@ -174,6 +175,22 @@ export async function repairWeakCliffhangerBeforeImages(
       });
     }
     return;
+  }
+
+  // POV safety net: the cliffhanger coda is authored AFTER all per-scene POV passes, so a
+  // first-person slip (bite-me-g16 ep2: "my laptop… I have to choose") would ship in a
+  // second-person story. Deterministically coerce first-person narration → second person
+  // (quoted dialogue untouched) before the coda/finalBeat is installed.
+  {
+    const povFix = coerceFirstPersonNarrationToSecond(improvement.data.improvedText);
+    if (povFix.changed) {
+      improvement.data.improvedText = povFix.text;
+      deps.emit({
+        type: 'debug',
+        phase: 'cliffhanger_repair',
+        message: `Cliffhanger coda coerced from first-person to second-person POV on ${finalScene.sceneId}.`,
+      });
+    }
   }
 
   if (sharedTarget) {

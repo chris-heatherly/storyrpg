@@ -67,6 +67,7 @@ export type FinalStoryContractIssueType =
   | 'skill_plan_nonconformance'
   | 'sentence_opener_monotony'
   | 'encounter_pov_break'
+  | 'pov_break'
   | 'protagonist_as_npc'
   | 'encounter_outcome_desync'
   | 'continuity_error'
@@ -281,7 +282,7 @@ export class FinalStoryContractValidator {
     // attribution is too ambiguous to auto-rewrite safely). Advisory; escalated to
     // blocking when GATE_NPC_PRONOUN is on (default-OFF pending a live run).
     {
-      const npcScan = findNpcPronounInconsistencies(input.story, input.story.npcs);
+      const npcScan = findNpcPronounInconsistencies(input.story, input.story.npcs, input.protagonist);
       if (npcScan.findings.length > 0) {
         console.info(
           `[FinalStoryContract] NPC pronoun inconsistencies: ${npcScan.findings.length} (of ${npcScan.fieldsScanned} fields)`,
@@ -302,7 +303,7 @@ export class FinalStoryContractValidator {
       // genders (Bite-Me-G15's Stela drifted they→he→she with no roster entry, so the
       // roster scan above was blind to her). Always advisory (detection only, never
       // blocking) — there is no canon pronoun to rewrite toward.
-      const internalConflicts = findInternalPronounConflicts(input.story);
+      const internalConflicts = findInternalPronounConflicts(input.story, input.protagonist);
       for (const c of internalConflicts) {
         issues.push({
           type: 'npc_pronoun_inconsistency',
@@ -589,32 +590,51 @@ export class FinalStoryContractValidator {
           ? encounterValidator.validateEncounter(scene.encounter as any)
           : undefined;
 
+        // POV-person scan over ALL reader-facing prose in the scene — flat beats (incl.
+        // the cliffhanger-coda beat appended post-assembly), encounter situation beats,
+        // outcome storylets, and encounter meta. These escape the per-scene
+        // PovClarityValidator pass (which only inspects sceneContent.beats during
+        // authoring), which is how bite-me-g16 shipped a 1st-person ep2 coda
+        // ("my laptop… I have to choose") and 3rd-person ep3 maze storylets
+        // ("She smooths the lapel") in a second-person story. Advisory until
+        // GATE_PROTAGONIST_PRONOUN is promoted.
+        if (protagonistName) {
+          const povTexts = [
+            ...collectReaderFacingTexts(scene),
+            ...(scene.encounter ? collectEncounterMetaTexts(scene) : []),
+          ];
+          const povBlocking = isGateEnabledAt('GATE_PROTAGONIST_PRONOUN', 'season-final');
+          const povType = scene.encounter ? 'encounter_pov_break' : 'pov_break';
+          const thirdHits = povValidator.findThirdPersonProtagonistTexts(povTexts, protagonistName);
+          if (thirdHits.length > 0) {
+            issues.push({
+              type: povType,
+              severity: povBlocking ? 'error' : 'warning',
+              message: `Scene "${scene.name || scene.id}" narrates the protagonist in the third person in ${thirdHits.length} place(s) — a POV break in a second-person story. e.g. "${thirdHits[0]}"`,
+              episodeId: episode.id,
+              episodeNumber: episode.number,
+              sceneId: scene.id,
+              validator: 'PovClarityValidator',
+              suggestion: 'Rewrite the prose in second person ("you/your"); reserve third-person + pronoun for NPCs only.',
+            });
+          }
+          const firstHits = povValidator.findFirstPersonProtagonistTexts(povTexts, protagonistName);
+          if (firstHits.length > 0) {
+            issues.push({
+              type: povType,
+              severity: povBlocking ? 'error' : 'warning',
+              message: `Scene "${scene.name || scene.id}" narrates the protagonist in the first person in ${firstHits.length} place(s) — a POV break in a second-person story. e.g. "${firstHits[0]}"`,
+              episodeId: episode.id,
+              episodeNumber: episode.number,
+              sceneId: scene.id,
+              validator: 'PovClarityValidator',
+              suggestion: 'Rewrite the prose in second person ("you/your"); reserve first-person ("I/my") for quoted dialogue only.',
+            });
+          }
+        }
+
         if (scene.encounter) {
           metrics.encounterScenesChecked++;
-
-          // POV-person scan over encounter reader-facing prose (situation beats +
-          // outcome storylets). These never live in `sceneContent.beats`, so the
-          // per-scene PovClarityValidator pass never sees them — which is how G10 Bite
-          // Me ep1/ep2 shipped whole encounter sub-branches narrated in the third person
-          // ("Kylie smiles back…") inside a second-person story. Advisory.
-          if (protagonistName) {
-            const povHits = povValidator.findThirdPersonProtagonistTexts(
-              [...collectReaderFacingTexts(scene), ...collectEncounterMetaTexts(scene)],
-              protagonistName,
-            );
-            if (povHits.length > 0) {
-              issues.push({
-                type: 'encounter_pov_break',
-                severity: isGateEnabledAt('GATE_PROTAGONIST_PRONOUN', 'season-final') ? 'error' : 'warning',
-                message: `Encounter scene "${scene.name || scene.id}" narrates the protagonist in the third person in ${povHits.length} place(s) — a POV break in a second-person story. e.g. "${povHits[0]}"`,
-                episodeId: episode.id,
-                episodeNumber: episode.number,
-                sceneId: scene.id,
-                validator: 'PovClarityValidator',
-                suggestion: 'Rewrite the encounter outcome prose in second person ("you/your"); reserve third-person + pronoun for NPCs only.',
-              });
-            }
-          }
 
           if (encounterResult?.passed) {
             metrics.validEncounterScenes++;

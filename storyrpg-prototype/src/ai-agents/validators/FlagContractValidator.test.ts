@@ -7,6 +7,28 @@ function story(scenes: unknown[]): Story {
 }
 
 describe('FlagContractValidator (G12)', () => {
+  it('treats an onShow type:flag entry as a SETTER, not a dead condition (bite-me-g16)', () => {
+    // bite-me-g16 authored onShow flag sets using the condition form. The engine only
+    // applies setFlag, so it was a no-op AND the validator wrongly read it as a dead
+    // condition. Context-aware classification: onShow type:'flag' is a setter.
+    const s = story([
+      {
+        id: 's1',
+        beats: [
+          {
+            id: 'b1',
+            text: 'base',
+            onShow: [{ type: 'flag', flag: 'kylie_is_hopeful', value: true }],
+            textVariants: [{ condition: 'kylie_is_hopeful', text: 'variant' }],
+          },
+        ],
+      },
+    ]);
+    const r = new FlagContractValidator().validate({ story: s });
+    expect(r.metrics.unsetConditionFlags).toBe(0); // not a dead condition
+    expect(r.issues.some((i) => /never sets/.test(i.message))).toBe(false);
+  });
+
   it('flags a condition reading a never-set flag, with a near-miss suggestion', () => {
     const s = story([
       {

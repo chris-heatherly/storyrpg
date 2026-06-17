@@ -108,6 +108,7 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_REFERENCED_EVENT_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_REQUIRED_BEAT_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
+  { id: 'GATE_TREATMENT_SEED_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
   { id: 'GATE_SCENE_TRANSITION_CONTINUITY', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_CHARACTER_INTRODUCTION', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_CHOICE_TYPE_CONFORMANCE', placement: 'season-final', kind: 'blocking', defaultOn: false },

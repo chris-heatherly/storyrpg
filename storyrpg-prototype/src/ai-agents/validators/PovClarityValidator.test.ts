@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { hasPlayerReference, PovClarityValidator } from './PovClarityValidator';
+import { hasPlayerReference, PovClarityValidator, coerceFirstPersonNarrationToSecond } from './PovClarityValidator';
 import type { SceneContent } from '../agents/SceneWriter';
 
 function scene(text: string, extras: Partial<SceneContent['beats'][number]> = {}): SceneContent {
@@ -129,5 +129,53 @@ describe('PovClarityValidator', () => {
     };
     const result = new PovClarityValidator().validateScene(sc, { protagonistName: 'Kylie' });
     expect(result.issues.some((i) => i.beatId === 'beat-2')).toBe(false);
+  });
+});
+
+// bite-me-g16 ep2 cliffhanger coda shipped in first person — nothing detected it.
+describe('first-person POV detection (bite-me-g16 coda)', () => {
+  const v = new PovClarityValidator();
+
+  it('detects first-person narration', () => {
+    const hits = v.findFirstPersonProtagonistTexts([
+      'The sun glints off the coffee mug beside my laptop. My thumb hovers, and I have to choose which one is real.',
+    ]);
+    expect(hits).toHaveLength(1);
+  });
+
+  it('does NOT flag first-person inside quoted dialogue', () => {
+    const hits = v.findFirstPersonProtagonistTexts([
+      'You hesitate. "I would like that very much," Victor says, and you believe him.',
+    ]);
+    expect(hits).toHaveLength(0);
+  });
+
+  it('does NOT flag clean second-person narration', () => {
+    const hits = v.findFirstPersonProtagonistTexts([
+      'You set down your glass. Your thumb hovers over the keyboard.',
+    ]);
+    expect(hits).toHaveLength(0);
+  });
+});
+
+describe('coerceFirstPersonNarrationToSecond', () => {
+  it('rewrites first-person narration to second person, sentence-capitalized', () => {
+    const { text, changed } = coerceFirstPersonNarrationToSecond(
+      'The light hits my laptop. My thumb hovers, and I have to choose.',
+    );
+    expect(changed).toBe(true);
+    expect(text).toBe('The light hits your laptop. Your thumb hovers, and you have to choose.');
+  });
+
+  it('leaves quoted dialogue untouched', () => {
+    const { text } = coerceFirstPersonNarrationToSecond('You freeze. "I will find you," he says.');
+    expect(text).toContain('"I will find you,"');
+    expect(text.startsWith('You freeze.')).toBe(true);
+  });
+
+  it('is a no-op on clean second-person prose', () => {
+    const { text, changed } = coerceFirstPersonNarrationToSecond('You step into the light.');
+    expect(changed).toBe(false);
+    expect(text).toBe('You step into the light.');
   });
 });

@@ -151,3 +151,86 @@ describe('findInternalPronounConflicts (roster-independent)', () => {
     expect(conflicts.find((c) => c.name === 'Mika')).toBeUndefined();
   });
 });
+
+// Bite-Me-G16: the protagonist (Kylie, she/her) is ALSO a roster entry, which made the
+// scan flag her name and flag male NPCs whose "her/hers" refers to her. These were all
+// false positives; the protagonist-aware + quoted-span + alt-referent guards clear them
+// while leaving genuine NPC misgendering flagged.
+describe('protagonist-aware guards (bite-me-g16 false positives)', () => {
+  const G16_ROSTER = [
+    { id: 'char-kylie', name: 'Kylie Marinescu', pronouns: 'she/her' },
+    { id: 'char-victor', name: 'Victor Vâlcescu', pronouns: 'he/him' },
+    { id: 'char-mika', name: 'Mika Drăgan', pronouns: 'she/her' },
+  ];
+  const PROTAG = { name: 'Kylie Marinescu', aliases: ['Kylie'], pronouns: 'she/her' };
+  function g16(texts: string[]): Story {
+    return {
+      id: 's', title: 't', genre: 'romance', synopsis: '', coverImage: '',
+      initialState: { attributes: {} as never, skills: {} as never, tags: [], inventory: [] },
+      npcs: G16_ROSTER as never,
+      episodes: [{
+        id: 'ep-1', number: 1, title: 'E1', synopsis: '', coverImage: '', startingSceneId: 's1',
+        scenes: [{ id: 's1', name: 'S', startingBeatId: 'b1', beats: texts.map((text, i) => ({ id: `b${i + 1}`, text })) }],
+      }],
+    } as unknown as Story;
+  }
+
+  it('does NOT flag a male rescuer\'s "his" near the protagonist name', () => {
+    const res = findNpcPronounInconsistencies(g16(['The rescuer offers Kylie his hand.']), G16_ROSTER, PROTAG);
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('does NOT flag a male NPC whose "her/hers" refers to the female protagonist', () => {
+    const res = findNpcPronounInconsistencies(
+      g16([
+        'Victor sees her momentary distraction and reads it as captivating her.',
+        'Victor finally pulls back, his dark eyes entirely focused on hers.',
+      ]),
+      G16_ROSTER,
+      PROTAG,
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('does NOT flag a pronoun inside quoted dialogue about an off-screen third party', () => {
+    const res = findNpcPronounInconsistencies(
+      g16(['Mika leans in, whispering, "He’s coming over."']),
+      G16_ROSTER,
+      PROTAG,
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('does NOT flag "between them" (two people, not a singular they)', () => {
+    const res = findNpcPronounInconsistencies(
+      g16(['Victor steps back, putting a polite, impenetrable distance between them.']),
+      G16_ROSTER,
+      PROTAG,
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('does NOT record the protagonist or choice-verb openers as internal conflicts', () => {
+    const conflicts = findInternalPronounConflicts(
+      g16([
+        'Kylie holds her grandmother’s necklace in a ray of sunset light.',
+        'The rescuer offers Kylie his hand.',
+        'Ask if he always watches out for new girls.',
+        'Ask her directly.',
+      ]),
+      PROTAG,
+    );
+    expect(conflicts.find((c) => c.name === 'Kylie')).toBeUndefined();
+    expect(conflicts.find((c) => c.name === 'Ask')).toBeUndefined();
+  });
+
+  it('STILL flags a genuine NPC misgendering even with a protagonist set', () => {
+    const res = findNpcPronounInconsistencies(
+      g16(['Victor tightens her jaw and steps onto the terrace.']),
+      G16_ROSTER,
+      { name: 'Kylie Marinescu', aliases: ['Kylie'], pronouns: 'they/them' }, // protagonist is they/them → no protag-gender masking
+    );
+    expect(res.findings).toHaveLength(1);
+    expect(res.findings[0].npcId).toBe('char-victor');
+  });
+});

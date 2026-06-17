@@ -52,17 +52,39 @@ export class SkillPlanConformanceValidator extends BaseValidator {
       // Aggregate stat-check skill weight across the episode's choices.
       const weights: Record<string, number> = {};
       let total = 0;
+      const addWeight = (skill: string, w: number) => {
+        if (!skill || typeof w !== 'number' || w <= 0) return;
+        const k = skill.toLowerCase();
+        weights[k] = (weights[k] ?? 0) + w;
+        total += w;
+      };
+      // Standard scene choices carry statCheck.skillWeights.
+      const addChoices = (choices: unknown): void => {
+        for (const choice of (choices as Array<Record<string, unknown>>) || []) {
+          const sw = (choice?.statCheck as { skillWeights?: Record<string, number> } | undefined)?.skillWeights;
+          if (sw && Object.keys(sw).length > 0) {
+            for (const [skill, w] of Object.entries(sw)) addWeight(skill, w as number);
+            continue;
+          }
+          // Encounter choices carry a single primarySkill instead of weights — count it as
+          // one slot (bite-me-g16: the perception 58%/48% single-skill meta lives entirely
+          // in encounter choice trees, which this validator previously never walked).
+          const primary = choice?.primarySkill as string | undefined;
+          if (primary) addWeight(primary, 1);
+        }
+      };
       for (const scene of episode.scenes || []) {
-        for (const beat of scene.beats || []) {
-          for (const choice of beat.choices || []) {
-            const sw = choice.statCheck?.skillWeights;
-            if (!sw) continue;
-            for (const [skill, w] of Object.entries(sw)) {
-              if (typeof w !== 'number' || w <= 0) continue;
-              const k = skill.toLowerCase();
-              weights[k] = (weights[k] ?? 0) + w;
-              total += w;
-            }
+        for (const beat of scene.beats || []) addChoices(beat.choices);
+        const enc = scene.encounter as { phases?: Array<{ beats?: Array<{ choices?: unknown }> }>; storylets?: unknown } | undefined;
+        if (enc) {
+          for (const phase of enc.phases || []) {
+            for (const beat of phase.beats || []) addChoices((beat as { choices?: unknown }).choices);
+          }
+          const storyletList = Array.isArray(enc.storylets)
+            ? enc.storylets
+            : Object.values((enc.storylets ?? {}) as Record<string, unknown>);
+          for (const storylet of storyletList as Array<{ beats?: Array<{ choices?: unknown }> }>) {
+            for (const beat of storylet?.beats || []) addChoices((beat as { choices?: unknown }).choices);
           }
         }
       }

@@ -60,7 +60,7 @@ const SECOND_PERSON_RE = /\b(?:you|your|yours|yourself)\b/i;
 // commonly modify non-person nouns ("both hands", "the broken ranks") and would mask a
 // real singular-they misgendering ("Thorne braces both hands … at their shoulder").
 const PLURAL_CUE_RE =
-  /\b(?:they all|them all|both of them|both men|both women|the others|soldiers?|men|women|guards?|people|crowd|group|council|raiders?|troops?|everyone|all of them|the rest of them)\b/i;
+  /\b(?:they all|them all|both of them|both men|both women|the others|soldiers?|men|women|guards?|people|crowd|group|council|raiders?|troops?|everyone|all of them|the rest of them|between them|distance between)\b/i;
 
 const WRONG_BINARY: Record<Gender, RegExp> = {
   // he/him NPC → feminine pronouns are wrong
@@ -76,8 +76,11 @@ const THEY_RE = /\b(they|them|their|theirs|themselves)\b/i;
 // "the way HE smiled" (he = the stranger Kylie recalls). When such a noun is present we
 // cannot attribute the pronoun to the named NPC, so we skip — trading recall for the
 // precision a blocking-candidate gate needs.
+// Independent-actor nouns only — NOT body/attribute nouns like "voice"/"shadow"/"silhouette"
+// which are usually POSSESSED by the named NPC ("her voice is cold") and would mask a real
+// misgendering. Each token here denotes a SEPARATE person who can own the contrary pronoun.
 const ALT_REFERENT_RE =
-  /\b(stranger|commander|captain|figure|attacker|raider|soldier|guard|man|woman|girl|boy|person|someone|somebody|child|speaker|the other|the rest|whoever)\b/i;
+  /\b(stranger|commander|captain|figure|attacker|raider|soldier|guard|man|woman|girl|boy|person|someone|somebody|child|speaker|the other|the rest|whoever|rescuer|protector|driver|caller|host|hostess|gentleman|lady|chef|bartender|barman|waiter|waitress|doorman|valet|bouncer|concierge)\b/i;
 
 // A dialogue speaker tag where the pronoun is the SPEAKER of a quote, not the named NPC
 // who is merely the quote's subject/object — "'Victor something,' SHE offers", "Victor
@@ -93,11 +96,58 @@ function splitSentences(text: string): string[] {
   return text.match(/[^.!?]+[.!?]*/g) ?? [text];
 }
 
+// Double-quoted spans (smart or straight). Used to skip a pronoun that sits INSIDE a
+// quote whose subject is an off-screen third party while the named NPC is OUTSIDE the
+// quote — the canonical FP: `Mika leans in, whispering, "He's coming over."` flags
+// Mika/"He" though "He" is Victor, the quote's subject. We only treat double quotes as
+// dialogue spans; apostrophes are too entangled with contractions/possessives to split on.
+function doubleQuoteSpans(text: string): Array<[number, number]> {
+  // Toggle on each double-quote mark (smart open/close or straight). An UNCLOSED opening
+  // quote runs to end-of-fragment — sentence splitting on terminal "." frequently severs the
+  // closing mark (`… "He's coming over.` + `"`), which is the exact bite-me-g16 shape, so an
+  // open-ended span must still count as dialogue.
+  const spans: Array<[number, number]> = [];
+  let open = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '“' || c === '”' || c === '"') {
+      if (open < 0) open = i;
+      else { spans.push([open, i + 1]); open = -1; }
+    }
+  }
+  if (open >= 0) spans.push([open, text.length]);
+  return spans;
+}
+
+function indexInSpans(idx: number, spans: Array<[number, number]>): boolean {
+  return spans.some(([a, b]) => idx >= a && idx < b);
+}
+
 function genderOf(pronouns: string | undefined): Gender | undefined {
   const p = (pronouns || '').toLowerCase();
   if (p.startsWith('she')) return 'f';
   if (p.startsWith('he')) return 'm';
   return undefined; // they/them or unknown → cannot judge
+}
+
+/** Gender of a single matched pronoun word ("her"/"his"/"she" …); undefined for they/them. */
+function genderOfPronoun(word: string): Gender | undefined {
+  const w = word.toLowerCase();
+  if (/^(she|her|hers|herself)$/.test(w)) return 'f';
+  if (/^(he|him|his|himself)$/.test(w)) return 'm';
+  return undefined;
+}
+
+/** Distinctive name/alias tokens (≥3 letters) for the protagonist, for exclusion matching. */
+function protagonistTokens(p?: { name?: string; aliases?: string[] }): string[] {
+  if (!p) return [];
+  const raw = [p.name, ...(p.aliases ?? [])].filter(Boolean) as string[];
+  const toks = new Set<string>();
+  for (const r of raw) {
+    if (r.replace(/[^a-z]/gi, '').length >= 3) toks.add(r);
+    for (const t of r.split(/\s+/)) if (t.replace(/[^a-z]/gi, '').length >= 3) toks.add(t);
+  }
+  return [...toks];
 }
 
 interface NpcEntry {
@@ -136,11 +186,23 @@ function buildNpcEntries(npcs: Array<{ id?: string; name?: string; pronouns?: st
 export function findNpcPronounInconsistencies(
   story: Story,
   npcRoster?: Array<{ id?: string; name?: string; pronouns?: string }>,
+  protagonist?: { name?: string; aliases?: string[]; pronouns?: string },
 ): NpcPronounScanResult {
   const result: NpcPronounScanResult = { findings: [], fieldsScanned: 0 };
   const roster =
     npcRoster ?? (story as { npcs?: Array<{ id?: string; name?: string; pronouns?: string }> }).npcs ?? [];
-  const entries = buildNpcEntries(roster);
+  // The protagonist is the implicit "you"; wrong-gender pronouns about the protagonist are
+  // governed by canonicalizeProtagonistPronouns, not here. But the protagonist is commonly
+  // ALSO a roster entry (e.g. bite-me's Kylie), so scanning their name is the dominant FP
+  // source: a male NPC + "her" (=the female protagonist), or the protagonist's name + "his"
+  // (=a male in the scene). Exclude the protagonist from the gendered-NPC entries, and
+  // remember their gender so a wrong-binary pronoun matching it is treated as ambiguous.
+  const protagGender = genderOf(protagonist?.pronouns);
+  const protagTokens = protagonistTokens(protagonist);
+  const protagRe = protagTokens.length
+    ? new RegExp(`\\b(?:${protagTokens.map(escapeRegExp).join('|')})\\b`, 'i')
+    : undefined;
+  const entries = buildNpcEntries(roster).filter((e) => !protagRe || !protagRe.test(e.name));
   if (entries.length === 0) return result;
   const seen = new Set<string>();
 
@@ -150,9 +212,14 @@ export function findNpcPronounInconsistencies(
     // refers to someone other than the one named NPC — skip for precision.
     if (ALT_REFERENT_RE.test(sentence)) return;
     if (SPEECH_TAG_RE.test(sentence)) return;
-    // Which gendered NPCs are named here?
+    // Which gendered NPCs are named here? The protagonist is excluded from `entries` (never
+    // a flag target) but still COUNTS as a present person: a sentence naming the protagonist
+    // plus one NPC is multi-person and ambiguous ("Stela … towards Kylie, their fingers
+    // almost touching" — "their" is the two of them), so skip it as the original
+    // multi-person guard would.
     const present = entries.filter((e) => e.nameRe.test(sentence));
     if (present.length !== 1) return; // zero or multiple named persons → skip
+    if (protagRe && protagRe.test(sentence)) return; // protagonist also present → ambiguous
     const npc = present[0];
 
     let wrong: string | undefined;
@@ -169,6 +236,24 @@ export function findNpcPronounInconsistencies(
       }
     }
     if (!wrong) return;
+
+    // Protagonist-referent guard: when the "wrong" pronoun's gender equals the
+    // protagonist's, the (unnamed-here) protagonist is a plausible referent — "Victor …
+    // captivating her" / "his eyes focused on hers" both describe a male NPC acting on the
+    // female protagonist. The NPC's own gender is correct; the contrary pronoun is the
+    // protagonist. Skip rather than mis-flag the NPC.
+    if (protagGender && genderOfPronoun(wrong) === protagGender) return;
+
+    // Quoted-dialogue guard: the offending pronoun sits inside a double-quoted span while
+    // the NPC name is outside it — the quote's subject is some off-screen third party.
+    const spans = doubleQuoteSpans(sentence);
+    const nameProbe = npc.nameRe.exec(sentence);
+    if (
+      indexInSpans(wrongIndex, spans) &&
+      (!nameProbe || !indexInSpans(nameProbe.index, spans))
+    ) {
+      return;
+    }
 
     // Antecedent guard (precision): the matched NPC name must appear BEFORE the offending
     // pronoun, establishing it as the referent. When the pronoun precedes any mention of
@@ -234,6 +319,13 @@ const NAME_STOPWORDS = new Set([
   'How', 'Why', 'Who', 'Where', 'One', 'Two', 'Three', 'Now', 'Yes', 'Maybe', 'Across', 'Inside',
   'Outside', 'Above', 'Below', 'After', 'Before', 'Monday', 'Tuesday', 'Wednesday', 'Thursday',
   'Friday', 'Saturday', 'Sunday', 'Mr', 'Mrs', 'Ms', 'Dr',
+  // Imperative verbs that commonly OPEN a choice-button text ("Ask if he …", "Write
+  // around him") — capitalized, recurring, but never character names.
+  'Ask', 'Tell', 'Say', 'Write', 'Watch', 'Wait', 'Walk', 'Take', 'Give', 'Keep', 'Let',
+  'Leave', 'Look', 'Listen', 'Follow', 'Stay', 'Stop', 'Turn', 'Try', 'Hold', 'Stand',
+  'Sit', 'Show', 'Offer', 'Accept', 'Refuse', 'Demand', 'Press', 'Push', 'Pull', 'Pour',
+  'Lean', 'Smile', 'Nod', 'Reach', 'Step', 'Meet', 'Call', 'Text', 'Post', 'Read', 'Close',
+  'Open', 'Pretend', 'Feign', 'Deflect', 'Change', 'Choose', 'Decline', 'Agree', 'Insist',
 ]);
 
 /**
@@ -245,7 +337,12 @@ const NAME_STOPWORDS = new Set([
  * conflicting genders. Advisory only (detection, never auto-rewrite) — the same precision
  * guards as the roster scan keep multi-person / second-person / speech-tag sentences out.
  */
-export function findInternalPronounConflicts(story: Story): InternalPronounConflict[] {
+export function findInternalPronounConflicts(
+  story: Story,
+  protagonist?: { name?: string; aliases?: string[]; pronouns?: string },
+): InternalPronounConflict[] {
+  const protagGender = genderOf(protagonist?.pronouns);
+  const protagNameSet = new Set(protagonistTokens(protagonist));
   // Pass 1: collect candidate names = capitalized tokens (≥3 letters) that recur in prose.
   const nameCounts = new Map<string, number>();
   const sentences: Array<{ text: string }> = [];
@@ -272,7 +369,13 @@ export function findInternalPronounConflicts(story: Story): InternalPronounConfl
     }
   };
   collect(story);
-  const candidates = new Set([...nameCounts.entries()].filter(([, c]) => c >= 2).map(([n]) => n));
+  // The protagonist is the implicit "you"; exclude their name from candidates so a male
+  // NPC + "her" (= the female protagonist named elsewhere) cannot record the protagonist as
+  // a conflicting gender, and so the protagonist's own name + "his" (= a male in scene) does
+  // not register as a conflict. Protagonist pronoun consistency is a separate concern.
+  const candidates = new Set(
+    [...nameCounts.entries()].filter(([, c]) => c >= 2).map(([n]) => n).filter((n) => !protagNameSet.has(n)),
+  );
   if (candidates.size === 0) return [];
 
   // Pass 2: per candidate name, record the gender of each clean single-referent sentence.
@@ -295,6 +398,15 @@ export function findInternalPronounConflicts(story: Story): InternalPronounConfl
       if (tHit) { gender = 'n'; pronounIdx = tHit.index; }
     }
     if (!gender || nameIdx < 0 || nameIdx >= pronounIdx) continue; // name must precede pronoun
+
+    // Protagonist-referent guard: a binary pronoun matching the protagonist's gender, in a
+    // sentence about a DIFFERENT character, most likely refers to the protagonist — don't
+    // record it as this character's gender (the "Victor … focused on hers" class).
+    if (protagGender && gender === protagGender) continue;
+
+    // Quoted-dialogue guard: pronoun inside a double-quote whose subject is off-screen.
+    const spans = doubleQuoteSpans(sentence);
+    if (indexInSpans(pronounIdx, spans) && !indexInSpans(nameIdx, spans)) continue;
 
     if (!observed.has(name)) observed.set(name, new Map());
     const byGender = observed.get(name)!;

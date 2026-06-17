@@ -107,6 +107,8 @@ export const GATE_REGISTRY: GateSpec[] = [
   // place, so this is blocking + autofix — residue the coercion can't safely clear (same-gender
   // NPC ambiguity) is reported for the EncounterArchitect regen route.
   { id: 'GATE_ENCOUNTER_POV', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  // WS1.4: deterministic in-place reassignment of over-cap dominant-skill slots.
+  { id: 'GATE_ENCOUNTER_SKILL_REBALANCE', placement: 'season-final', kind: 'remediation', defaultOn: false, repair: 'autofix' },
   { id: 'GATE_OUTCOME_TEXT_QUALITY', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_SENTENCE_OPENER_VARIETY', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },

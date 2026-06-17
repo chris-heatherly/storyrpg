@@ -202,6 +202,12 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // false positives can't abort a run. Promoted ON at landing (user: promote the two
   // high-confidence blockers now). Reversible via =0.
   GATE_ENCOUNTER_POV: true,
+  // WS1.4 (bite-me-g17): deterministic encounter skill-rebalance. perception carried 52–55% of
+  // choice slots in all three g17 encounters (a single-skill meta). Reassign the excess dominant-
+  // skill slots to the least-used skill ALREADY present in the encounter until no skill exceeds
+  // ~40%. Default-OFF until a smoke run confirms the reassignments read coherently against the
+  // choice prose; the EncounterArchitect prompt cap is the primary (coherent-at-source) fix. =1 to enable.
+  GATE_ENCOUNTER_SKILL_REBALANCE: false,
   // G10: promote stub/scaffold-leak/echo/duplicate outcomeTexts to blocking. The
   // ChoiceAuthor fallback that produced these is fixed; OutcomeTextQualityValidator is
   // the durable backstop. High-precision (exact scaffold lead-ins + annotation-echo +

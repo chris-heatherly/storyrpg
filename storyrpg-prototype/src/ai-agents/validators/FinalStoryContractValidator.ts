@@ -28,6 +28,7 @@ import { PovClarityValidator } from './PovClarityValidator';
 import { applyEncounterPovBackstop } from '../pipeline/encounterPovBackstop';
 import { applyResidueConsumption } from '../pipeline/residueConsumption';
 import { reconcileFlagVocabulary } from '../pipeline/flagVocabulary';
+import { rebalanceStoryEncounterSkills } from '../utils/encounterSkillRebalance';
 
 /**
  * Scene-target sentinels that mean "the episode/story ends here" rather than a
@@ -289,6 +290,16 @@ export class FinalStoryContractValidator {
           `[FinalStoryContract] residue-consume injected ${residue.injected} flag-gated ` +
           `acknowledgment(s); ${residue.residual.length} flag(s) had no downstream beat (terminal/cross-slice)`,
         );
+      }
+    }
+
+    // WS1.4: even out encounter skill distribution so no single skill is the obvious best path
+    // (g17: perception 52–55% of slots in every encounter). Reassigns excess dominant-skill slots
+    // to under-used present skills in place. Default-OFF (GATE_ENCOUNTER_SKILL_REBALANCE).
+    if (isGateEnabledAt('GATE_ENCOUNTER_SKILL_REBALANCE', 'season-final')) {
+      const reassigned = rebalanceStoryEncounterSkills(input.story);
+      if (reassigned > 0) {
+        console.info(`[FinalStoryContract] encounter skill-rebalance reassigned ${reassigned} slot(s) to cap any one skill at ~40%`);
       }
     }
 

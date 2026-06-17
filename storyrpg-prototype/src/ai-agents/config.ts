@@ -997,19 +997,12 @@ export function loadConfig(): PipelineConfig {
   const defaultConfig: AgentConfig = {
     provider: defaultProvider,
     model: env.EXPO_PUBLIC_LLM_MODEL || env.LLM_MODEL || 'claude-sonnet-4-6',
-    // OpenRouter resolves its key in isolation — its key never falls back to the
-    // legacy providers' shared chain, and theirs never serve OpenRouter. Keeps
-    // OpenRouter a fully separate path that cannot mediate/gate the others.
-    apiKey:
-      defaultProvider === 'openrouter'
-        ? resolveProviderApiKey('openrouter')
-        : env.EXPO_PUBLIC_ANTHROPIC_API_KEY ||
-          env.EXPO_PUBLIC_OPENAI_API_KEY ||
-          env.EXPO_PUBLIC_GEMINI_API_KEY ||
-          env.ANTHROPIC_API_KEY ||
-          env.OPENAI_API_KEY ||
-          env.GEMINI_API_KEY ||
-          '',
+    // Resolve the key for the SELECTED provider. The old code used a fixed fallback
+    // chain (anthropic→openai→gemini keys) regardless of provider, so with multiple
+    // provider keys in .env it sent e.g. the gemini key to the Anthropic endpoint →
+    // "invalid x-api-key" (surfaced by the gemini-vs-claude smoke A/B). resolveProvider
+    // ApiKey already keeps OpenRouter isolated and maps each provider to its own key.
+    apiKey: resolveProviderApiKey(defaultProvider),
     maxTokens: 4096,
     temperature: 0.8,
     openaiReasoningEffort: openaiSettingsFromEnv.reasoningEffort,

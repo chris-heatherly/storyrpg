@@ -193,6 +193,15 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // confirms the pronoun binds to the named NPC (mirror the protagonist PronounDisambiguator
   // regen route), then gate on its confirmed residue. Until then: advisory backstop only.
   GATE_NPC_PRONOUN: false,
+  // WS0.3 (bite-me-g17): encounter outcome storylets + phase outcome prose narrate the
+  // protagonist in third person ("Kylie straightens her collar… she has become it") in a
+  // second-person story — the recurring protagonist_as_npc / encounter-POV break, present on
+  // every encounter climax in g17. Unlike GATE_NPC_PRONOUN this is high-precision: the
+  // detector requires the protagonist NAME + a third-person pronoun + NO "you" anywhere, and
+  // the repair is a deterministic name-anchored coercion with verb agreement (autofix), so
+  // false positives can't abort a run. Promoted ON at landing (user: promote the two
+  // high-confidence blockers now). Reversible via =0.
+  GATE_ENCOUNTER_POV: true,
   // G10: promote stub/scaffold-leak/echo/duplicate outcomeTexts to blocking. The
   // ChoiceAuthor fallback that produced these is fixed; OutcomeTextQualityValidator is
   // the durable backstop. High-precision (exact scaffold lead-ins + annotation-echo +
@@ -300,6 +309,15 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // the SceneWriter/ChoiceAuthor flag-context wiring beds in — findings ship as
   // warnings by default; flip to blocking after one live run shows a clean baseline.
   GATE_FLAG_CONTRACT: false,
+  // WS0.2 (bite-me-g17): residue-consume contract. The flip side of GATE_FLAG_CONTRACT —
+  // ~80% of player-choice flags are SET but never READ (g17: 49 write-only), so decisions
+  // leave no trace. The generative half: for every consequential set-flag no condition reads,
+  // append a flag-gated in-fiction acknowledgment TextVariant to a downstream beat. Drove g17
+  // write-only flags 49 -> 1 (the one residual is set in the final beat → pays off in ep4,
+  // outside the 3-episode slice). Deterministic + idempotent + golden-parity when every flag
+  // is already read. Default-OFF until the corpus + a watched smoke run confirm the injected
+  // prose reads cleanly live (WS0.2b adds LLM-authored, scene-specific reads). Enable via =1.
+  GATE_RESIDUE_CONSUME: false,
   // G12/WS7: bake witness reactions into outcomeTexts at assembly. reactionText /
   // witnessReactions have NO runtime consumer (storyEngine renders outcomeTexts
   // only), so authored witness reactivity silently dropped. Deterministic, additive

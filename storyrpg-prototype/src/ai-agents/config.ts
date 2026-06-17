@@ -1030,6 +1030,12 @@ export function loadConfig(): PipelineConfig {
       sceneWriter: {
         ...defaultConfig,
         model: env.EXPO_PUBLIC_SCENE_LLM_MODEL || env.SCENE_LLM_MODEL || defaultConfig.model,
+        // WS0.4 (bite-me-g17): SceneWriter is the heaviest single-response agent (whole
+        // multi-beat scenes), but inherited the 4096 default and truncated 52/75 calls on the
+        // g17 gemini run. handleTruncation salvages by DROPPING trailing beats — which is how
+        // cold-opens / treatment plants / off-page cast (Sadie) silently fall off. Give it
+        // headroom; env-overridable for per-provider tuning (verbose models may need more).
+        maxTokens: Number.parseInt(env.EXPO_PUBLIC_SCENE_MAX_TOKENS || env.SCENE_MAX_TOKENS || '8192', 10) || 8192,
         temperature: 0.85, // More creative for prose
       },
       choiceAuthor: {

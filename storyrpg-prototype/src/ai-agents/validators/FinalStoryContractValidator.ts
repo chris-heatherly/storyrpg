@@ -25,6 +25,8 @@ import { findBeatIdCollisions } from './beatIdCollisions';
 import { collectReaderFacingTexts, collectEncounterMetaTexts } from './EncounterAnchorContentValidator';
 import { stripProtagonistFromEncounters } from '../utils/encounterProtagonistGuard';
 import { PovClarityValidator } from './PovClarityValidator';
+import { applyEncounterPovBackstop } from '../pipeline/encounterPovBackstop';
+import { applyResidueConsumption } from '../pipeline/residueConsumption';
 
 /**
  * Scene-target sentinels that mean "the episode/story ends here" rather than a
@@ -235,6 +237,42 @@ export class FinalStoryContractValidator {
           validator: 'encounterProtagonistGuard',
           suggestion: 'Regenerate the encounter with protagonist identity + episode-so-far context.',
         });
+      }
+    }
+
+    // WS0.3: deterministic encounter-POV backstop. Coerce third-person protagonist narration
+    // in encounter outcome/phase prose to second person IN PLACE (name-anchored, verb-agreed),
+    // so the recurring encounter-POV break (g17: every encounter climax narrated "Kylie
+    // straightens her collar… she has become it") never ships even on truncated/variant LLM
+    // output. Mutates input.story like the strip/pronoun passes; the per-scene POV scan below
+    // then surfaces only residue the coercion could not safely clear (same-gender NPC
+    // ambiguity) for the EncounterArchitect regen route.
+    if (isGateEnabledAt('GATE_ENCOUNTER_POV', 'season-final') && input.protagonist?.name) {
+      const pov = applyEncounterPovBackstop(input.story, {
+        name: input.protagonist.name,
+        aliases: input.protagonist.aliases,
+        pronouns: input.protagonist.pronouns,
+      });
+      if (pov.coerced > 0) {
+        console.info(
+          `[FinalStoryContract] encounter-POV backstop coerced ${pov.coerced} prose string(s) to ` +
+          `second person; ${pov.residualBreaks.length} residual break(s) left for regen`,
+        );
+      }
+    }
+
+    // WS0.2: residue-consume contract. For every consequential set-flag no condition reads,
+    // append a flag-gated in-fiction acknowledgment to a downstream beat, so player decisions
+    // stop silently dying (g17: 49 write-only flags). Mutates input.story before the
+    // FlagContract / callback checks below, so the injected reads count. Default-OFF
+    // (GATE_RESIDUE_CONSUME) until a watched smoke run confirms the prose reads cleanly live.
+    if (isGateEnabledAt('GATE_RESIDUE_CONSUME', 'season-final')) {
+      const residue = applyResidueConsumption(input.story);
+      if (residue.injected > 0) {
+        console.info(
+          `[FinalStoryContract] residue-consume injected ${residue.injected} flag-gated ` +
+          `acknowledgment(s); ${residue.residual.length} flag(s) had no downstream beat (terminal/cross-slice)`,
+        );
       }
     }
 

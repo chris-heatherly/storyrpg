@@ -103,6 +103,10 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_DUPLICATE_ESTABLISHING_BEAT', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_PROTAGONIST_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
   { id: 'GATE_NPC_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: false },
+  // WS0.3: deterministic name-anchored coercion (with verb agreement) repairs the break in
+  // place, so this is blocking + autofix — residue the coercion can't safely clear (same-gender
+  // NPC ambiguity) is reported for the EncounterArchitect regen route.
+  { id: 'GATE_ENCOUNTER_POV', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_OUTCOME_TEXT_QUALITY', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_SENTENCE_OPENER_VARIETY', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
@@ -114,6 +118,9 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_CHOICE_TYPE_CONFORMANCE', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_SKILL_PLAN_CONFORMANCE', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_FLAG_CONTRACT', placement: 'season-final', kind: 'blocking', defaultOn: false },
+  // WS0.2: deterministic generative half (inject a flag-gated read for every unread
+  // consequential set-flag), so this is remediation + autofix, not a blocking abort.
+  { id: 'GATE_RESIDUE_CONSUME', placement: 'season-final', kind: 'remediation', defaultOn: false, repair: 'autofix' },
   { id: 'GATE_WITNESS_BAKE', placement: 'episode', kind: 'remediation', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_ENCOUNTER_OUTCOME_VARIANT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_CONTINUITY_REMEDIATION', placement: 'episode', kind: 'remediation', defaultOn: false, repair: 'regen' },

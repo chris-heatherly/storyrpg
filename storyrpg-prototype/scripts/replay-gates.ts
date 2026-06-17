@@ -10,6 +10,8 @@ import { RequiredBeatRealizationValidator } from '../src/ai-agents/validators/Re
 import { DuplicateEstablishingBeatValidator } from '../src/ai-agents/validators/DuplicateEstablishingBeatValidator';
 import { EncounterSetPieceDepthValidator } from '../src/ai-agents/validators/EncounterSetPieceDepthValidator';
 import { ReferencedEventPresenceValidator } from '../src/ai-agents/validators/ReferencedEventPresenceValidator';
+import { FlagContractValidator } from '../src/ai-agents/validators/FlagContractValidator';
+import { findEncounterPovBreaks } from '../src/ai-agents/pipeline/encounterPovBackstop';
 
 /**
  * Offline gate replay: run deterministic story validators against ARCHIVED generation
@@ -140,6 +142,30 @@ const REGISTRY: GateEntry[] = [
     blocking: 'any', // advisory validator (valid:true); the gate escalates its findings
     inDefaultSet: false,
     run: (ctx) => fromValidationResult(new ReferencedEventPresenceValidator().validate({ story: ctx.story }).issues),
+  },
+  {
+    // Setter/consumer contract: an unset-condition flag is an error (dead conditioned
+    // content); write-only flags surface as a warning (the dead-residue metric WS0.2 drives down).
+    name: 'FLAG_CONTRACT',
+    validator: 'FlagContractValidator',
+    gateFlag: 'GATE_FLAG_CONTRACT',
+    blocking: 'errors',
+    inDefaultSet: false,
+    run: (ctx) => fromValidationResult(new FlagContractValidator().validate({ story: ctx.story }).issues),
+  },
+  {
+    // WS0.3: third-person protagonist narration in encounter outcome/phase prose. Protagonist
+    // is resolved from the roster (npcs[].role === 'protagonist'); each break is an error.
+    name: 'ENCOUNTER_POV',
+    validator: 'EncounterPovBackstop',
+    gateFlag: 'GATE_ENCOUNTER_POV',
+    blocking: 'any',
+    inDefaultSet: false,
+    run: (ctx) =>
+      findEncounterPovBreaks(ctx.story).map((snippet) => ({
+        severity: 'error' as const,
+        message: `encounter prose narrates the protagonist in third person: "${snippet}"`,
+      })),
   },
 ];
 
@@ -364,4 +390,12 @@ function main(): void {
   console.log(`\nfull report: ${outFile}`);
 }
 
-main();
+// Reusable machinery for the defect-corpus runner (scripts/defect-corpus/), which asserts
+// labeled bad→caught / FP→not-flagged over the same archived runs. Exports are additive;
+// the CLI only runs when this file is the entrypoint.
+export { REGISTRY, loadContext, replayCell, findRunDirs };
+export type { GateEntry, RunContext, CellResult, Finding };
+
+if (require.main === module) {
+  main();
+}

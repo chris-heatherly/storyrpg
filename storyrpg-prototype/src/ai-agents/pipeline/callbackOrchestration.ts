@@ -295,7 +295,7 @@ export interface InjectFallbackCallbacksParams {
 }
 
 /** Every flag / score key a (possibly compound) condition references. */
-function extractConditionKeys(condition: unknown): string[] {
+export function extractConditionKeys(condition: unknown): string[] {
   if (!condition || typeof condition !== 'object') return [];
   const c = condition as Record<string, unknown>;
   const out: string[] = [];
@@ -307,7 +307,7 @@ function extractConditionKeys(condition: unknown): string[] {
 }
 
 /** Build the gating condition for a callback variant from a ledger condition key. */
-function buildCallbackCondition(conditionKey: string): ConditionExpression {
+export function buildCallbackCondition(conditionKey: string): ConditionExpression {
   if (conditionKey.startsWith('score:')) {
     return { type: 'score', score: conditionKey.slice('score:'.length), operator: '>=', value: 1 };
   }
@@ -387,7 +387,7 @@ function stableHash(s: string): number {
  * text is available we still return the first pool entry (better a light beat than a
  * dropped, write-only flag). All pool entries are pre-cleared by the reject filters.
  */
-function deriveChoiceAcknowledgment(choiceText: string | undefined): string {
+export function deriveChoiceAcknowledgment(choiceText: string | undefined): string {
   const text = (choiceText ?? '').replace(/\s+/g, ' ').trim();
   const key = text && !isUnsafeCallbackProse(text) ? text : '';
   return DERIVED_ACK_POOL[stableHash(key) % DERIVED_ACK_POOL.length];

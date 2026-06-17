@@ -125,6 +125,107 @@ export function coerceFirstPersonNarrationToSecond(text: string): { text: string
   return { text: transformed, changed };
 }
 
+function matchCase(original: string, replacement: string): string {
+  if (/^[A-Z][a-z]/.test(original) || /^[A-Z]$/.test(original)) {
+    return replacement.charAt(0).toUpperCase() + replacement.slice(1);
+  }
+  if (original === original.toUpperCase() && /[A-Z]/.test(original)) return replacement.toUpperCase();
+  return replacement;
+}
+
+/** Irregular present-tense 3rd-singular verbs → base form after a "you" subject. */
+const IRREGULAR_DEINFLECT: Record<string, string> = {
+  is: 'are', "isn't": "aren't", "isn’t": "aren’t",
+  was: 'were', "wasn't": "weren't", "wasn’t": "weren’t",
+  has: 'have', "hasn't": "haven't", "hasn’t": "haven’t",
+  does: 'do', "doesn't": "don't", "doesn’t": "don’t",
+  goes: 'go',
+};
+
+/** De-inflect a present 3rd-singular verb ("straightens"→"straighten") for a "you" subject. */
+function deinflectPresentVerb(word: string): string {
+  const lower = word.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(IRREGULAR_DEINFLECT, lower)) {
+    return matchCase(word, IRREGULAR_DEINFLECT[lower]);
+  }
+  if (/(?:ches|shes|sses|xes|zes)$/.test(lower)) return word.slice(0, -2); // touches→touch
+  if (/[^aeiou]ies$/.test(lower)) return `${word.slice(0, -3)}y`;          // carries→carry
+  if (/[^s]s$/.test(lower) && !/(?:us|ss|is)$/.test(lower)) return word.slice(0, -1); // runs→run
+  return word; // past tense / not a 3rd-sing present verb → unchanged
+}
+
+/**
+ * Deterministically coerce THIRD-person protagonist NARRATION to second person, leaving
+ * quoted dialogue untouched. Backstop for the recurring encounter-outcome POV break
+ * ("Kylie straightens her collar… she has become it") so a third-person break never ships
+ * even when the authoring LLM produced one. Mirror of {@link coerceFirstPersonNarrationToSecond},
+ * but third→second needs verb agreement (straightens→straighten, has→have, isn't→aren't).
+ *
+ * Scoping for safety (female/same-gender NPCs share she/her): the protagonist's NAME and the
+ * verb it governs are ALWAYS converted (a name is unambiguous). Subject/possessive/object
+ * pronouns are converted only when `coercePronouns` is true — the caller sets that ONLY when
+ * no same-gender NPC name appears in the text, so a bare "she/her" can only be the protagonist.
+ * When pronouns are left ambiguous, the residual break is still caught by the POV gate and
+ * routed to LLM regen. Conservative + idempotent.
+ */
+export function coerceThirdPersonProtagonistToSecond(
+  text: string,
+  protagonistName?: string,
+  opts: { coercePronouns?: boolean; subjectPronoun?: 'she' | 'he' } = {},
+): { text: string; changed: boolean } {
+  if (!text || !protagonistName) return { text, changed: false };
+  const names = Array.from(new Set([protagonistName, protagonistName.split(/\s+/)[0]].filter(Boolean)));
+  const nameRe = new RegExp(`^(?:${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`, 'i');
+  const subj = opts.subjectPronoun ?? 'she';
+  const poss = subj === 'he' ? 'his' : 'her';
+  const obj = subj === 'he' ? 'him' : 'her';
+  const possS = subj === 'he' ? null : 'hers';
+  const reflexive = subj === 'he' ? 'himself' : 'herself';
+  let changed = false;
+
+  const transformed = transformOutsideQuotes(text, (seg) => {
+    if (!seg) return seg;
+    let s = seg;
+
+    if (opts.coercePronouns) {
+      // Possessive (pronoun + following word) → "your"; standalone object form → "you".
+      const possRe = new RegExp(`\\b${poss}\\b(?=\\s+[A-Za-z])`, 'g');
+      s = s.replace(possRe, (m) => { changed = true; return matchCase(m, 'your'); });
+      if (obj !== poss) {
+        s = s.replace(new RegExp(`\\b${obj}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'you'); });
+      } else {
+        // her: any remaining (object) "her" → "you" (possessive already consumed above)
+        s = s.replace(new RegExp(`\\b${obj}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'you'); });
+      }
+      if (possS) s = s.replace(new RegExp(`\\b${possS}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'yours'); });
+      s = s.replace(new RegExp(`\\b${reflexive}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'yourself'); });
+    }
+
+    // Subject pass: protagonist NAME (always) and subject pronoun (when coercing pronouns)
+    // → "you", de-inflecting the verb it governs.
+    let pending = false;
+    s = s.replace(/[A-Za-z]+(?:['’][A-Za-z]+)?/g, (word) => {
+      const lower = word.toLowerCase();
+      // The protagonist name is always capitalized as a proper noun, so it carries no
+      // sentence-position signal — emit lowercase "you" and let capitalizeSentenceStarts
+      // re-capitalize only the genuinely sentence-initial ones.
+      if (nameRe.test(word)) { changed = true; pending = true; return 'you'; }
+      if (opts.coercePronouns && lower === subj) { changed = true; pending = true; return matchCase(word, 'you'); }
+      if (pending) {
+        pending = false;
+        const v = deinflectPresentVerb(word);
+        if (v !== word) { changed = true; return v; }
+      }
+      return word;
+    });
+
+    return s;
+  });
+
+  const finalText = changed ? capitalizeSentenceStarts(transformed) : transformed;
+  return { text: finalText, changed };
+}
+
 export class PovClarityValidator {
   validateScene(sceneContent: SceneContent, context: PovClarityContext = {}): PovClarityResult {
     const issues: PovClarityIssue[] = [];

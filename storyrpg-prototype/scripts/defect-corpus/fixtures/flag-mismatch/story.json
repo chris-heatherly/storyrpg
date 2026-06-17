@@ -1,0 +1,47 @@
+{
+  "id": "fixture-flag-mismatch",
+  "title": "Fixture: flag mismatch + dead residue",
+  "episodes": [
+    {
+      "id": "ep1",
+      "number": 1,
+      "scenes": [
+        {
+          "id": "s1",
+          "beats": [
+            {
+              "id": "s1-b1",
+              "text": "He extends the invitation.",
+              "choices": [
+                {
+                  "id": "c1",
+                  "text": "Accept his invitation.",
+                  "consequences": [
+                    { "type": "setFlag", "flag": "received_victor_invitation", "value": true },
+                    { "type": "setFlag", "flag": "mika_claimed_kylie", "value": true },
+                    { "type": "setFlag", "flag": "drank_dark_wine", "value": true }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "s2",
+          "beats": [
+            {
+              "id": "s2-b1",
+              "text": "The car pulls away from the city.",
+              "textVariants": [
+                {
+                  "condition": { "type": "flag", "flag": "accepted_victor_invitation", "value": true },
+                  "text": "You remember accepting his invitation."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -93,8 +93,11 @@ export interface RequiredBeat {
   sourceTurn: string;
   /** What the generated prose must depict to honor this beat. */
   mustDepict: string;
-  /** How fixed this beat is — see {@link RequiredBeat}. */
-  tier: 'signature' | 'authored' | 'seed' | 'connective';
+  /** How fixed this beat is — see {@link RequiredBeat}. `coldopen` is the episode-opening
+   * cold open — a high-priority, always-due seed split out from generic `seed` plants so it
+   * can be enforced (low false-positive: an episode opener is reliably present) without the
+   * FP risk of blocking every consequence seed. */
+  tier: 'signature' | 'authored' | 'seed' | 'coldopen' | 'connective';
 }
 
 /**

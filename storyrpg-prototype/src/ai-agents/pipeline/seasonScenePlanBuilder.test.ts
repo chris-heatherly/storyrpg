@@ -305,7 +305,7 @@ describe('buildSeasonScenePlan', () => {
     expect(scenes.find((s) => s.id === 's1-1')?.requiredBeats ?? []).toHaveLength(0);
   });
 
-  it('distributes the cold open and consequence seeds as advisory seed beats', () => {
+  it('binds the cold open as its own enforceable tier and consequence seeds as advisory seeds (WS1.3)', () => {
     const ep = episode(1, ['hook'], {
       estimatedSceneCount: 4,
       treatmentGuidance: {
@@ -319,12 +319,15 @@ describe('buildSeasonScenePlan', () => {
     });
     const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
     const seedBeats = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'seed'));
-    expect(seedBeats).toHaveLength(3); // cold open + 2 consequence seeds
-    expect(seedBeats.some((b) => b.mustDepict.includes('vampires in Romania'))).toBe(true);
+    const coldOpenBeats = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'coldopen'));
+    // Cold open is split out from the generic seeds so it can be enforced on its own (WS1.3).
+    expect(coldOpenBeats).toHaveLength(1);
+    expect(coldOpenBeats[0].mustDepict).toContain('vampires in Romania');
+    expect(seedBeats).toHaveLength(2); // the two consequence seeds
     expect(seedBeats.some((b) => b.mustDepict.includes('negroni'))).toBe(true);
     expect(seedBeats.some((b) => b.mustDepict.includes('stray dog'))).toBe(true);
     // The cold open lands on the opening scene.
-    expect((scenes[0].requiredBeats ?? []).some((b) => b.tier === 'seed' && b.mustDepict.includes('vampires in Romania'))).toBe(true);
+    expect((scenes[0].requiredBeats ?? []).some((b) => b.tier === 'coldopen' && b.mustDepict.includes('vampires in Romania'))).toBe(true);
   });
 
   it('pins a scene setting to the location its authored turn names (no collapse-to-first)', () => {

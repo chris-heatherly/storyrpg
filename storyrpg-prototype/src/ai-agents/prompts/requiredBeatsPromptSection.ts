@@ -43,7 +43,8 @@ export interface RequiredBeatsSource {
 const TIER_FRAMING: Record<RequiredBeat['tier'], string> = {
   signature: 'MUST be depicted on-page, exactly as staged — never invert, soften, or omit it',
   authored: 'must occur, in order — do not drop, re-order, or re-interpret it',
-  seed: 'plant this detail on-page if the scene can carry it (a cold open, a small recurring object, a quiet tell) — advisory, not a fixed turn',
+  seed: 'plant this detail on-page if the scene can carry it (a small recurring object, a quiet tell) — advisory, not a fixed turn',
+  coldopen: 'OPEN the episode on this — dramatize the hook and every named character it introduces on-page before moving on; do not skip or summarize it',
   connective: 'tie the fixed beats together; you may freely author this connective tissue',
 };
 

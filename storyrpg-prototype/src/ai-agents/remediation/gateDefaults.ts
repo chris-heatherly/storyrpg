@@ -208,6 +208,13 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // ~40%. Default-OFF until a smoke run confirms the reassignments read coherently against the
   // choice prose; the EncounterArchitect prompt cap is the primary (coherent-at-source) fix. =1 to enable.
   GATE_ENCOUNTER_SKILL_REBALANCE: false,
+  // WS1.3 (bite-me-g17): enforce the episode COLD OPEN on-page. g17 dropped the entire ep1
+  // cold open (the niece-Sadie FaceTime + grandmother's-chain hook) as an advisory seed, so a
+  // Season-2 anchor and the protagonist's humanity tether never reached a single beat. The cold
+  // open is split out as its own required-beat tier (low-FP: an episode opener is reliably due),
+  // and a miss routes to the season-final scene regen. Default-OFF until a live run confirms a
+  // clean baseline; =1 to enable blocking.
+  GATE_COLD_OPEN_REALIZATION: false,
   // G10: promote stub/scaffold-leak/echo/duplicate outcomeTexts to blocking. The
   // ChoiceAuthor fallback that produced these is fixed; OutcomeTextQualityValidator is
   // the durable backstop. High-precision (exact scaffold lead-ins + annotation-echo +

@@ -250,6 +250,40 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.issues).toHaveLength(0);
   });
 
+  it('WS1.3 ADVISORY: a dropped cold open is a non-blocking warning by default', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', 'A FaceTime to her niece Sadie about vampires in Romania', 'coldopen')] })]),
+      story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'She dresses for the club, fastening her grandmother\'s gold chain.')])])]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues.some((i) => i.severity === 'warning' && /Cold open not found/.test(i.message))).toBe(true);
+  });
+
+  it('WS1.3 GATE on: a dropped cold open escalates to a blocking error (g17 dropped Sadie hook)', () => {
+    const prev = process.env.GATE_COLD_OPEN_REALIZATION;
+    process.env.GATE_COLD_OPEN_REALIZATION = '1';
+    try {
+      const result = run({
+        plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', 'A FaceTime to her niece Sadie about vampires in Romania', 'coldopen')] })]),
+        story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'She arrives at the club, already mid-glamour.')])])]),
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues.some((i) => i.severity === 'error' && /Cold open not found/.test(i.message))).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.GATE_COLD_OPEN_REALIZATION;
+      else process.env.GATE_COLD_OPEN_REALIZATION = prev;
+    }
+  });
+
+  it('WS1.3: a cold open dramatized on-page produces no finding', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', 'A FaceTime to her niece Sadie about vampires in Romania', 'coldopen')] })]),
+      story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'On FaceTime, her niece Sadie asks if there are vampires in Romania.')])])]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
   it('GATE on: a dropped seed escalates from warning to a blocking error (bite-me-g16 dropped plant)', () => {
     const prev = process.env.GATE_TREATMENT_SEED_REALIZATION;
     process.env.GATE_TREATMENT_SEED_REALIZATION = '1';

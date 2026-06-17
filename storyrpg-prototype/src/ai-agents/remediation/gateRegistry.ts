@@ -109,6 +109,8 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_ENCOUNTER_POV', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   // WS1.4: deterministic in-place reassignment of over-cap dominant-skill slots.
   { id: 'GATE_ENCOUNTER_SKILL_REBALANCE', placement: 'season-final', kind: 'remediation', defaultOn: false, repair: 'autofix' },
+  // WS1.3: a dropped cold open routes to the existing season-final scene regen to re-author the opening.
+  { id: 'GATE_COLD_OPEN_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
   { id: 'GATE_OUTCOME_TEXT_QUALITY', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_SENTENCE_OPENER_VARIETY', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },

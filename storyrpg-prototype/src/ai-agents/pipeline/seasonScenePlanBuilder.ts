@@ -432,12 +432,17 @@ export function bindAuthoredTurnsToScenes(
   //    to the opening scene, each consequence seed to its best-match content scene
   //    (round-robin when the deterministic path offers no lexical signal). Gated on
   //    field presence so episodes the treatment is silent on stay byte-identical.
-  const seedSpecs: Array<{ text: string; toOpening: boolean }> = [];
+  const seedSpecs: Array<{ text: string; toOpening: boolean; tier: 'seed' | 'coldopen' }> = [];
   const coldOpen = guidance?.coldOpenFunction?.trim();
-  if (coldOpen) seedSpecs.push({ text: coldOpen, toOpening: true });
+  // The cold open is split out as its own enforceable tier (WS1.3): it is the episode opener,
+  // reliably present, so blocking on it is low-FP — unlike the generic consequence seeds, which
+  // are texture/foreshadow and FP-prone to enforce. g17 dropped the entire ep1 cold open (the
+  // Sadie FaceTime + grandmother's-chain hook) as an advisory seed; this lets a dedicated gate
+  // catch + re-author it instead of shipping a silent warning.
+  if (coldOpen) seedSpecs.push({ text: coldOpen, toOpening: true, tier: 'coldopen' });
   for (const seed of guidance?.consequenceSeeds ?? []) {
     const text = seed?.trim();
-    if (text) seedSpecs.push({ text, toOpening: false });
+    if (text) seedSpecs.push({ text, toOpening: false, tier: 'seed' });
   }
   // Information-ledger plants for THIS episode (WS12L). Each ledger entry the episode
   // introduces or touches (the vampire reveal's "unphotographable" property, a model
@@ -450,7 +455,7 @@ export function bindAuthoredTurnsToScenes(
       || (entry.setupTouchEpisodes ?? []).includes(ep.episodeNumber);
     if (!touches) continue;
     const plant = (entry.label || entry.description?.split(/(?<=[.!?])\s/)[0] || '').trim();
-    if (plant) seedSpecs.push({ text: plant, toOpening: false });
+    if (plant) seedSpecs.push({ text: plant, toOpening: false, tier: 'seed' });
   }
   if (seedSpecs.length > 0) {
     const openingScene = targets.find((s) => s.narrativeRole === 'setup') ?? targets[0];
@@ -470,12 +475,13 @@ export function bindAuthoredTurnsToScenes(
         }
       }
       const beatIndex = scene.requiredBeats?.length ?? 0;
+      const label = spec.tier === 'coldopen' ? 'coldopen' : 'seed';
       appendRequiredBeats(scene, [
         {
-          id: `${scene.id}-seed${beatIndex + 1}`,
+          id: `${scene.id}-${label}${beatIndex + 1}`,
           sourceTurn: spec.text,
           mustDepict: spec.text,
-          tier: 'seed',
+          tier: spec.tier,
         },
       ]);
     }

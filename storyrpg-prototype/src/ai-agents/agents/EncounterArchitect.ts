@@ -166,7 +166,7 @@ export interface EncounterArchitectInput {
    * prose — the architect must receive these texts or it cannot realize them
    * (G12 endsong: the siege's poison/evacuation beat was never passed in).
    */
-  requiredBeats?: Array<{ id: string; mustDepict: string; tier: 'signature' | 'authored' | 'seed' | 'connective' }>;
+  requiredBeats?: Array<{ id: string; mustDepict: string; tier: 'signature' | 'authored' | 'seed' | 'coldopen' | 'connective' }>;
   /** A single staged signature device/image the encounter must show. */
   signatureMoment?: string;
   /**

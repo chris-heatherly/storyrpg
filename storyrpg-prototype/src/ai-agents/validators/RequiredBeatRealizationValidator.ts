@@ -236,8 +236,9 @@ export class RequiredBeatRealizationValidator extends BaseValidator {
     const issues: ValidationIssue[] = [];
     const beats = collectStandardBeats(input.plan, 'authored');
     const seedBeats = collectStandardBeats(input.plan, 'seed');
+    const coldOpenBeats = collectStandardBeats(input.plan, 'coldopen');
 
-    if (beats.length === 0 && seedBeats.length === 0) {
+    if (beats.length === 0 && seedBeats.length === 0 && coldOpenBeats.length === 0) {
       return { valid: true, score: 100, issues: [], suggestions: [] };
     }
 
@@ -309,6 +310,31 @@ export class RequiredBeatRealizationValidator extends BaseValidator {
         const where = `seedBeat:ep${beat.episodeNumber}:${beat.sceneId}:${beat.beatId}`;
         const suggestion = 'Plant this seed on-page somewhere in the episode — it sets up a later payoff that becomes unearned if the setup is missing.';
         issues.push(blockSeedMiss ? this.error(message, where, suggestion) : this.warning(message, where, suggestion));
+      }
+    }
+
+    // Cold open (WS1.3): the episode opener that establishes the protagonist's world and the
+    // relationships a later payoff leans on (g17 dropped the ep1 Sadie-FaceTime + grandmother's-
+    // chain hook entirely). Unlike a generic seed it is reliably due, so blocking on it is
+    // low-FP. Routed to the season-final scene regen to re-author the opening. DEFAULT-OFF behind
+    // GATE_COLD_OPEN_REALIZATION → warning until a live run confirms a clean baseline.
+    const blockColdOpenMiss = isGateEnabledAt('GATE_COLD_OPEN_REALIZATION', 'season-final');
+    for (const beat of coldOpenBeats) {
+      if (
+        generatedEpisodeNumbers.size > 0
+        && typeof beat.episodeNumber === 'number'
+        && !generatedEpisodeNumbers.has(beat.episodeNumber)
+      ) {
+        continue;
+      }
+      const sceneText = sceneProseById.get(beat.sceneId);
+      const haystack = `${sceneText ?? ''}\n${episodeProseByNumber.get(beat.episodeNumber) ?? ''}`;
+      if (haystack.trim().length === 0) continue;
+      if (!beatDepicted(beat.text, haystack)) {
+        const message = `Cold open not found on-page in episode ${beat.episodeNumber} (scene "${beat.sceneId}"): "${beat.text}". The episode-opening hook (and any named cast it introduces) was dropped — later payoffs that lean on it become unearned.`;
+        const where = `coldOpenBeat:ep${beat.episodeNumber}:${beat.sceneId}:${beat.beatId}`;
+        const suggestion = 'Open the episode on the authored cold open; dramatize its hook and named cast on-page before moving on.';
+        issues.push(blockColdOpenMiss ? this.error(message, where, suggestion) : this.warning(message, where, suggestion));
       }
     }
 

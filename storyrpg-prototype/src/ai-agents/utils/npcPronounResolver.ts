@@ -237,6 +237,21 @@ export function findNpcPronounInconsistencies(
     }
     if (!wrong) return;
 
+    // Two-actor guard (precision): when the sentence ALSO contains an opposite-gender SUBJECT
+    // pronoun doing its own action ("Mika tries to block him, but HE simply steps around her"),
+    // a second person of the wrong pronoun's gender is present, so the oblique pronoun refers to
+    // THEM, not the named NPC. Only fires when the second actor's gender matches the wrong
+    // pronoun — narrow enough to leave a genuine self-misgendering ("Thorne adjusted their
+    // armor", no second actor) still flagged. Coreference remains the only complete fix.
+    const wrongGender = genderOfPronoun(wrong);
+    if (wrongGender) {
+      const secondActorRe = wrongGender === 'm'
+        ? /\bhe\b(?:\s+\w+){0,2}\s+[a-z]+s\b/i
+        : /\bshe\b(?:\s+\w+){0,2}\s+[a-z]+s\b/i;
+      const actorHit = secondActorRe.exec(sentence);
+      if (actorHit && actorHit.index !== wrongIndex) return;
+    }
+
     // Protagonist-referent guard: when the "wrong" pronoun's gender equals the
     // protagonist's, the (unnamed-here) protagonist is a plausible referent — "Victor …
     // captivating her" / "his eyes focused on hers" both describe a male NPC acting on the

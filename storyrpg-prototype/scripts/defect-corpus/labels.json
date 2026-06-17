@@ -72,7 +72,7 @@
       "gate": "NPC_PRONOUN",
       "expect": "no-flag",
       "status": "pending",
-      "note": "WS1.8 target: g17 pronoun warnings were 100% false positives (possessive bound to protagonist)"
+      "note": "WS1.8: g17 pronoun warnings are false positives (oblique pronoun = a different person). Deterministic guards (protagonist-referent, two-actor) cut them 17->15 but the residue is coreference-hard — zeroing needs the LLM coreference judge. Stays advisory/pending until that lands."
     },
     {
       "class": "numeric_regression",

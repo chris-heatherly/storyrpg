@@ -1018,6 +1018,13 @@ export function loadConfig(): PipelineConfig {
       storyArchitect: {
         ...defaultConfig,
         model: env.EXPO_PUBLIC_ARCHITECT_LLM_MODEL || env.ARCHITECT_LLM_MODEL || defaultConfig.model,
+        // The gemini-vs-claude smoke A/B (2026-06-17) showed the Season Planner — which reuses
+        // THIS config via getSeasonPlannerConfig — truncating its season plan at the 4096 default
+        // on BOTH providers (it dropped coldOpenFunction, which is why WS1.3's cold open couldn't
+        // be exercised). The big structured plan needs the same headroom the analyzer/architect
+        // already use. maxTokens is a ceiling, not a charge, so this is free unless the output
+        // actually grows. Env-overridable.
+        maxTokens: Number.parseInt(env.EXPO_PUBLIC_ARCHITECT_MAX_TOKENS || env.ARCHITECT_MAX_TOKENS || '32768', 10) || 32768,
         temperature: 0.7, // More focused for structural work
       },
       sceneWriter: {
@@ -1028,7 +1035,11 @@ export function loadConfig(): PipelineConfig {
         // g17 gemini run. handleTruncation salvages by DROPPING trailing beats — which is how
         // cold-opens / treatment plants / off-page cast (Sadie) silently fall off. Give it
         // headroom; env-overridable for per-provider tuning (verbose models may need more).
-        maxTokens: Number.parseInt(env.EXPO_PUBLIC_SCENE_MAX_TOKENS || env.SCENE_MAX_TOKENS || '8192', 10) || 8192,
+        // 2026-06-17 A/B: 8192 still truncates on BOTH providers — gemini-2.5-pro averaged ~6.3K
+        // output (clean at 16384) and claude-sonnet-4-6 EXCEEDED 8192 (hit the cap, truncated).
+        // So this is schema-driven, not provider-specific; default raised to 16384 (gemini-clean,
+        // 2x Claude's observed floor). Ceiling-not-charge → free unless output grows.
+        maxTokens: Number.parseInt(env.EXPO_PUBLIC_SCENE_MAX_TOKENS || env.SCENE_MAX_TOKENS || '16384', 10) || 16384,
         temperature: 0.85, // More creative for prose
       },
       choiceAuthor: {
@@ -1037,8 +1048,9 @@ export function loadConfig(): PipelineConfig {
         // WS0.4 (extended after the g17 watched smoke run): ChoiceAuthor emits dense per-choice
         // JSON (consequences, outcomeTexts, reminderPlan, witnessReactions) and truncated
         // repeatedly on a verbose provider (gemini-2.5-pro) at the 4096 default, failing whole
-        // choice sets. Give it the same env-overridable headroom as SceneWriter.
-        maxTokens: Number.parseInt(env.EXPO_PUBLIC_CHOICE_MAX_TOKENS || env.CHOICE_MAX_TOKENS || '8192', 10) || 8192,
+        // choice sets. Give it the same env-overridable headroom as SceneWriter (16384, per the
+        // 2026-06-17 gemini-vs-claude A/B — schema-driven truncation that hits both providers).
+        maxTokens: Number.parseInt(env.EXPO_PUBLIC_CHOICE_MAX_TOKENS || env.CHOICE_MAX_TOKENS || '16384', 10) || 16384,
         temperature: 0.75, // Balanced for meaningful choices
       },
       qaRunner: {

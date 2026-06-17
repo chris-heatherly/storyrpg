@@ -27,6 +27,7 @@ import { stripProtagonistFromEncounters } from '../utils/encounterProtagonistGua
 import { PovClarityValidator } from './PovClarityValidator';
 import { applyEncounterPovBackstop } from '../pipeline/encounterPovBackstop';
 import { applyResidueConsumption } from '../pipeline/residueConsumption';
+import { reconcileFlagVocabulary } from '../pipeline/flagVocabulary';
 
 /**
  * Scene-target sentinels that mean "the episode/story ends here" rather than a
@@ -259,6 +260,21 @@ export class FinalStoryContractValidator {
           `second person; ${pov.residualBreaks.length} residual break(s) left for regen`,
         );
       }
+    }
+
+    // WS1.1: flag-vocabulary reconciliation. The SET and READ sides are authored independently,
+    // so a condition can read a flag nothing sets — dead content (g17: a variant read
+    // `accepted_victor_invitation` but the setter wrote `received_victor_invitation`). Rewrite
+    // each dead-condition flag to its nearest real setter so the authored content renders. Pure
+    // correctness, run unconditionally like the witness/pronoun canonicalizations above; golden-
+    // parity when every condition already has a setter. Runs BEFORE residue (a reconciled flag
+    // is now read, so residue won't double-inject for its setter).
+    const flagFix = reconcileFlagVocabulary(input.story);
+    if (flagFix.reconciled.length > 0) {
+      console.info(
+        `[FinalStoryContract] flag-vocab reconciled ${flagFix.reconciled.length} dead condition(s): ` +
+        flagFix.reconciled.map((r) => `${r.from}→${r.to}`).slice(0, 4).join(', '),
+      );
     }
 
     // WS0.2: residue-consume contract. For every consequential set-flag no condition reads,

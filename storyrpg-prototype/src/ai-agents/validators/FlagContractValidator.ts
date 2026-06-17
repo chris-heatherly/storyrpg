@@ -56,7 +56,7 @@ function levenshtein(a: string, b: string): number {
 }
 
 /** Shared-token similarity for snake_case flag names (near-miss suggestions). */
-function nearestSetter(flag: string, setters: Set<string>): string | undefined {
+export function nearestSetter(flag: string, setters: Set<string>): string | undefined {
   let best: string | undefined;
   let bestScore = -Infinity;
   const flagTokens = new Set(flag.split(/[_:.]/).filter(Boolean));

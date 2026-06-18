@@ -1595,6 +1595,46 @@ Do not use markdown code blocks around the JSON.
   }
 
   /**
+   * Call the LLM and parse its response as JSON, re-sampling ONCE if the parse
+   * fails. The heaviest structured agents (WorldBuilder, StoryArchitect,
+   * EncounterArchitect — all on the planning tier) occasionally emit a single
+   * malformed JSON value that repairJSON can't salvage: a doubled quote, or a
+   * missing opening quote on an array element (e.g. `["Control",Secrecy"]`). On
+   * an unreliable provider that one bad sample hard-aborted the whole run. A
+   * fresh sample almost always parses, so we retry once with an explicit
+   * "valid JSON only" nudge before giving up.
+   *
+   * Provider-agnostic and golden-safe: the happy path is identical to
+   * callLLM()+parseJSON(), and the retry only fires when the first parse throws
+   * (deterministic-transport tests return valid JSON, so they never hit it).
+   */
+  protected async callLLMForJson<T>(
+    messages: AgentMessage[],
+    options?: { useMemory?: boolean; signal?: AbortSignal; jsonSchema?: StructuredJsonSchema },
+  ): Promise<{ data: T; rawResponse: string }> {
+    const response = await this.callLLM(messages, 4, options);
+    try {
+      return { data: this.parseJSON<T>(response), rawResponse: response };
+    } catch (parseError) {
+      const reason = parseError instanceof Error ? parseError.message : String(parseError);
+      log.warn(`[${this.name}] JSON parse failed; re-sampling once for strictly valid JSON. (${reason.slice(0, 160)})`);
+      const retryMessages: AgentMessage[] = [
+        ...messages,
+        {
+          role: 'user',
+          content:
+            'IMPORTANT: your previous response was not valid JSON (a quoting or bracket error). ' +
+            'Re-send the SAME content as a SINGLE, strictly valid JSON value only — no prose, ' +
+            'no markdown code fences, every property name and string value double-quoted and ' +
+            'properly escaped, and no trailing commas.',
+        },
+      ];
+      const retryResponse = await this.callLLM(retryMessages, 4, options);
+      return { data: this.parseJSON<T>(retryResponse), rawResponse: retryResponse };
+    }
+  }
+
+  /**
    * Return the first balanced top-level JSON object/array in `text` (from its first
    * `{`/`[` to the matching close), ignoring anything after it — or null when no
    * balanced value exists (e.g. the response was truncated mid-object, which the

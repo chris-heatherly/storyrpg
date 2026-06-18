@@ -252,20 +252,23 @@ Before finalizing:
     );
 
     try {
-      const response = await this.callLLM([
-        { role: 'user', content: prompt }
-      ]);
+      // callLLMForJson re-samples once on a parse failure — the world-rules JSON
+      // is heavy and occasionally lands a single quoting error a fresh sample fixes.
+      let response: string;
+      let worldBible: WorldBible;
+      try {
+        const parsed = await this.callLLMForJson<WorldBible>([
+          { role: 'user', content: prompt }
+        ]);
+        worldBible = parsed.data;
+        response = parsed.rawResponse;
+      } catch (parseError) {
+        console.error(`[WorldBuilder] JSON parse failed after re-sample:`, parseError instanceof Error ? parseError.message : String(parseError));
+        throw parseError;
+      }
 
       // Debug: Log raw response length
       console.log(`[WorldBuilder] Received response (${response.length} chars)`);
-
-      let worldBible: WorldBible;
-      try {
-        worldBible = this.parseJSON<WorldBible>(response);
-      } catch (parseError) {
-        console.error(`[WorldBuilder] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
-        throw parseError;
-      }
 
       // Debug: Log output locations before validation
       console.log(`[WorldBuilder] Output locations from LLM:`,

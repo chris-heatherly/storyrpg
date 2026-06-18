@@ -35,6 +35,10 @@ class TestAgent extends BaseAgent {
     return this.callLLM(messages, 0);
   }
 
+  callJson<T>(messages: AgentMessage[]) {
+    return this.callLLMForJson<T>(messages);
+  }
+
   async execute(): Promise<AgentResponse<unknown>> {
     return { success: true };
   }
@@ -394,5 +398,61 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
     expect(body.reasoning_effort).toBeUndefined();
     expect(body.model).toBe('deepseek/deepseek-v4-pro');
     expect(JSON.parse(out)).toEqual({ ok: true });
+  });
+});
+
+describe('BaseAgent callLLMForJson re-sample on parse failure', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setLLMStreamingEnabled(true);
+  });
+
+  const anthropicText = (text: string) => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({
+      content: [{ type: 'text', text }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }),
+  });
+
+  it('re-samples once when the first response is unrepairable JSON, then succeeds', async () => {
+    setLLMStreamingEnabled(false); // buffered path so the stub body is read verbatim
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls++;
+      // First sample mirrors the real WorldBuilder failure: a missing opening
+      // quote on an array element that repairJSON cannot salvage.
+      const text = calls === 1
+        ? '{"worldRules":["Control",Secrecy"]}'
+        : '{"worldRules":["Control","Secrecy"]}';
+      return anthropicText(text) as any;
+    }));
+
+    const out = await new TestAgent().callJson<{ worldRules: string[] }>([{ role: 'user', content: 'go' }]);
+    expect(calls).toBe(2);
+    expect(out.data.worldRules).toEqual(['Control', 'Secrecy']);
+  });
+
+  it('does not re-sample when the first response already parses', async () => {
+    setLLMStreamingEnabled(false);
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls++;
+      return anthropicText('{"ok":true}') as any;
+    }));
+
+    const out = await new TestAgent().callJson<{ ok: boolean }>([{ role: 'user', content: 'go' }]);
+    expect(calls).toBe(1);
+    expect(out.data).toEqual({ ok: true });
+  });
+
+  it('throws when both samples are unparseable', async () => {
+    setLLMStreamingEnabled(false);
+    vi.stubGlobal('fetch', vi.fn(async () => anthropicText('{"worldRules":["Control",Secrecy"]}') as any));
+    await expect(
+      new TestAgent().callJson<{ worldRules: string[] }>([{ role: 'user', content: 'go' }]),
+    ).rejects.toThrow(/Failed to parse JSON/);
   });
 });

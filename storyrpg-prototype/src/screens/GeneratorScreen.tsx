@@ -517,6 +517,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     effectiveTaskAssignments,
     handleModelFamilyChange,
     handleTaskModelChange,
+    handleTaskProviderChange,
     resetTaskModel,
     handleImageLlmProviderChange,
     handleImageLlmModelChange,
@@ -4982,10 +4983,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         overrides={taskModelOverrides}
         availableModels={availableModels}
         onTaskModelChange={handleTaskModelChange}
-        onTaskProviderChange={(task, provider) => {
-          if (task === 'image') handleImageLlmProviderChange(provider);
-          else if (task === 'video') handleVideoLlmProviderChange(provider);
-        }}
+        onTaskProviderChange={handleTaskProviderChange}
         onResetTask={resetTaskModel}
       />
 

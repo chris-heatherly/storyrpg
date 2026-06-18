@@ -60,13 +60,26 @@ describe('resolveTaskAssignments', () => {
     expect(resolved.qa.model).toBe('claude-haiku-4-5');
   });
 
-  it('honors a narrative model override but forces the family provider', () => {
+  it('defaults a narrative override to the family provider when none is given', () => {
     const resolved = resolveTaskAssignments('anthropic', {
-      // Even if an override smuggles a different provider, narrative locks to family.
-      qa: { provider: 'openai', model: 'claude-sonnet-4-6' },
+      // Model-only override (provider matches the family): provider stays the family.
+      qa: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
     });
     expect(resolved.qa.provider).toBe('anthropic');
     expect(resolved.qa.model).toBe('claude-sonnet-4-6');
+  });
+
+  it('honors an explicit cross-provider override on a narrative task', () => {
+    // The heavy structured agents can be routed to a different, more reliable
+    // provider than the family/QA grader (e.g. Gemini family, architect on Claude).
+    const resolved = resolveTaskAssignments('gemini', {
+      architect: { provider: 'anthropic', model: 'claude-opus-4-8' },
+    });
+    expect(resolved.architect.provider).toBe('anthropic');
+    expect(resolved.architect.model).toBe('claude-opus-4-8');
+    // Untouched narrative tasks keep the family provider.
+    expect(resolved.scene.provider).toBe('gemini');
+    expect(resolved.qa.provider).toBe('gemini');
   });
 
   it('honors a cross-provider override for image/video tasks', () => {

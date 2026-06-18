@@ -6,10 +6,13 @@
  * (Anthropic / OpenAI / Gemini) and get a cost/benefit-tuned preset that assigns
  * the best model to each task. Power users can then override individual tasks.
  *
- * Narrative tasks (architect, scene, choice, qa) are locked to the selected
- * family's provider — only the model may be overridden (so QA can still drop to
- * a cheaper, decorrelated model within the family). The image and video
- * prompt-planning tasks keep cross-provider freedom.
+ * Narrative tasks (architect, scene, choice, qa) default to the selected
+ * family's provider, but each task may be individually overridden to a different
+ * provider+model. This lets the heavy structured agents (architect / scene /
+ * choice — which also drive the Season Planner and Encounter Architect) run on a
+ * more reliable provider (e.g. Claude) while a cheaper, decorrelated grader (QA)
+ * stays on another (e.g. Gemini). The image and video prompt-planning tasks have
+ * always had this cross-provider freedom.
  *
  * Generator-only. Never imported by the public reader.
  */
@@ -180,9 +183,10 @@ function isNarrativeTask(task: PipelineTask): boolean {
 /**
  * Resolve the effective per-task model assignments for a family + overrides.
  *
- * Starts from the family preset, then applies overrides. For narrative tasks the
- * provider is forced to the family (only the model is honored from an override);
- * for image/video the override's provider is respected.
+ * Starts from the family preset, then applies overrides. Every task — narrative
+ * or image/video — honors an override's provider (defaulting to the family
+ * provider when the override omits one), so a heavy narrative task can be routed
+ * to a different, more reliable provider than the QA grader.
  */
 export function resolveTaskAssignments(
   family: GeneratorLlmProvider,
@@ -198,15 +202,15 @@ export function resolveTaskAssignments(
       result[task] = { ...base };
       continue;
     }
-    if (isNarrativeTask(task)) {
-      // Provider locked to family; only the model may differ.
-      result[task] = { provider: family, model: override.model || base.model };
-    } else {
-      result[task] = {
-        provider: override.provider || base.provider,
-        model: override.model || base.model,
-      };
-    }
+    // Every task honors an explicit provider override; narrative tasks fall back
+    // to the family provider when the override only changes the model, image/video
+    // fall back to their preset provider. isNarrativeTask is retained for callers
+    // that still want the family as the narrative default.
+    const fallbackProvider = isNarrativeTask(task) ? family : base.provider;
+    result[task] = {
+      provider: override.provider || fallbackProvider,
+      model: override.model || base.model,
+    };
   }
   return result;
 }

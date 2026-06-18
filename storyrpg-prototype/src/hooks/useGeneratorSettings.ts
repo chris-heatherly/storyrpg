@@ -92,8 +92,10 @@ function isGeneratorLlmProvider(value: string | null | undefined): value is Gene
 
 /**
  * Narrative-only override map. Image/video assignments live in their own
- * dedicated image/video state, so we keep only architect/scene/choice/qa here
- * and force each override's provider to the supplied family.
+ * dedicated image/video state, so we keep only architect/scene/choice/qa here.
+ * An override may carry its own provider (to route a heavy task to a different,
+ * more reliable provider than the family); when it omits one we default to the
+ * supplied family so legacy model-only overrides keep working.
  */
 function sanitizeNarrativeOverrides(
   raw: unknown,
@@ -104,8 +106,10 @@ function sanitizeNarrativeOverrides(
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!isPipelineTask(key) || !NARRATIVE_TASKS.includes(key)) continue;
     const model = (value as { model?: unknown })?.model;
+    const rawProvider = (value as { provider?: unknown })?.provider;
+    const provider = isGeneratorLlmProvider(rawProvider as string) ? rawProvider as GeneratorLlmProvider : family;
     if (typeof model === 'string' && model.trim()) {
-      out[key] = { provider: family, model: model.trim() };
+      out[key] = { provider, model: model.trim() };
     }
   }
   return out;
@@ -683,7 +687,8 @@ export function useGeneratorSettings() {
 
   // Change the model for a single task. Image/video delegate to their existing
   // dedicated handlers (cross-provider, own persistence); narrative tasks store
-  // a model-only override with the provider locked to the family.
+  // an override, preserving any per-task provider the user already chose (so
+  // editing the model of a Claude-routed task doesn't snap it back to the family).
   const handleTaskModelChange = useCallback(async (task: PipelineTask, model: string) => {
     if (task === 'image') {
       await handleImageLlmModelChange(model);
@@ -694,11 +699,36 @@ export function useGeneratorSettings() {
       return;
     }
     setTaskModelOverrides((prev) => {
-      const next: TaskModelOverrides = { ...prev, [task]: { provider: modelFamily, model } };
+      const provider = prev[task]?.provider ?? modelFamily;
+      const next: TaskModelOverrides = { ...prev, [task]: { provider, model } };
       void persistTaskOverrides(next);
       return next;
     });
   }, [modelFamily, handleImageLlmModelChange, handleVideoLlmModelChange, persistTaskOverrides]);
+
+  // Route a single task to a specific provider. Image/video delegate to their
+  // dedicated cross-provider handlers; narrative tasks store a provider override
+  // seeded with that provider's preset model so the model id is always valid.
+  // This is what lets the heavy structured agents (architect / scene / choice —
+  // which also drive the Season Planner and Encounter Architect) run on a more
+  // reliable provider (e.g. Claude) while QA stays on a cheaper one.
+  const handleTaskProviderChange = useCallback(async (task: PipelineTask, provider: GeneratorLlmProvider) => {
+    if (task === 'image') {
+      await handleImageLlmProviderChange(provider);
+      return;
+    }
+    if (task === 'video') {
+      await handleVideoLlmProviderChange(provider);
+      return;
+    }
+    const presetModel =
+      MODEL_FAMILY_PRESETS[provider]?.assignments[task]?.model || DEFAULT_LLM_MODELS[provider];
+    setTaskModelOverrides((prev) => {
+      const next: TaskModelOverrides = { ...prev, [task]: { provider, model: presetModel } };
+      void persistTaskOverrides(next);
+      return next;
+    });
+  }, [handleImageLlmProviderChange, handleVideoLlmProviderChange, persistTaskOverrides]);
 
   // Reset a single task back to its family preset.
   const resetTaskModel = useCallback(async (task: PipelineTask) => {
@@ -999,6 +1029,7 @@ export function useGeneratorSettings() {
     handleLlmModelChange,
     handleModelFamilyChange,
     handleTaskModelChange,
+    handleTaskProviderChange,
     resetTaskModel,
     handleImageLlmProviderChange,
     handleImageLlmModelChange,

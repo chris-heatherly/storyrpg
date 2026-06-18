@@ -71,7 +71,7 @@ export function ModelTaskSheet({
             <View style={{ flex: 1 }}>
               <Text style={styles.title}>MODELS BY TASK</Text>
               <Text style={styles.subtitle}>
-                {MODEL_FAMILY_PRESETS[modelFamily].label} family · narrative tasks locked to family · image/video can use any provider
+                {MODEL_FAMILY_PRESETS[modelFamily].label} family preset · override any task's provider + model (e.g. route planning/scene/choice to Claude, keep QA cheap)
               </Text>
             </View>
             <TouchableOpacity onPress={onClose} accessibilityLabel="Close model task sheet" style={styles.closeBtn}>
@@ -117,15 +117,20 @@ export function ModelTaskSheet({
                   </View>
                   <Text style={styles.taskDescription}>{task.description}</Text>
 
-                  {task.crossProvider ? (
-                    <SegmentedControl<GeneratorLlmProvider>
-                      options={PROVIDER_OPTIONS}
-                      value={provider}
-                      onChange={(p) => onTaskProviderChange(task.id, p)}
-                      style={styles.providerControl}
-                      ariaLabel={`${task.label} provider`}
-                    />
-                  ) : null}
+                  {/*
+                    Provider picker for every task. Narrative tasks default to the
+                    family provider but can be routed individually (e.g. the heavy
+                    architect/scene/choice agents to Claude for reliable JSON, while
+                    QA stays on a cheaper, decorrelated provider). image/video have
+                    always been cross-provider.
+                  */}
+                  <SegmentedControl<GeneratorLlmProvider>
+                    options={PROVIDER_OPTIONS}
+                    value={provider}
+                    onChange={(p) => onTaskProviderChange(task.id, p)}
+                    style={styles.providerControl}
+                    ariaLabel={`${task.label} provider`}
+                  />
 
                   <ModelDropdown
                     options={options}

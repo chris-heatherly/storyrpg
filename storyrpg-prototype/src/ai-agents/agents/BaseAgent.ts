@@ -1359,6 +1359,14 @@ Do not use markdown code blocks around the JSON.
           ? { responseMimeType: 'application/json' }
           : {}),
       },
+      // Gemini's DEFAULT safety filters over-block mature creative fiction — a dark
+      // vampire-romance world (blood, predators, hunting, sensuality) trips them and the API
+      // returns a candidate with finishReason=SAFETY and NO parts, surfacing as the opaque
+      // "Gemini returned empty content" abort (bite-me-g18 World Builder). Send permissive
+      // thresholds so legitimate fiction isn't blocked; egregious content still is.
+      // Env-overridable (GEMINI_SAFETY_THRESHOLD) — BLOCK_NONE if a run still over-blocks.
+      safetySettings: ['HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT']
+        .map((category) => ({ category, threshold: process.env.GEMINI_SAFETY_THRESHOLD || 'BLOCK_ONLY_HIGH' })),
     };
 
     if (systemMessage) {
@@ -1436,7 +1444,12 @@ Do not use markdown code blocks around the JSON.
         if (typeof candidatesTokens === 'number') usageOut.outputTokens = candidatesTokens;
       }
       if (!output) {
-        throw new Error('Gemini returned empty content');
+        const finishReason = data?.candidates?.[0]?.finishReason;
+        const blockReason = data?.promptFeedback?.blockReason;
+        throw new Error(
+          `Gemini returned empty content (finishReason=${finishReason ?? 'unknown'}`
+          + `${blockReason ? `, blockReason=${blockReason}` : ''}). Model=${model}.`,
+        );
       }
       return output;
     } catch (parseError) {
@@ -1529,7 +1542,10 @@ Do not use markdown code blocks around the JSON.
         `(first-byte ${result.firstByteMs}ms, total ${result.totalMs}ms)`,
     );
     if (!result.text) {
-      throw new Error('Gemini returned empty content');
+      throw new Error(
+        `Gemini returned empty content (stream, finishReason=${result.finishReason ?? 'unknown'}`
+        + `${result.blockReason ? `, blockReason=${result.blockReason}` : ''}). Model=${model}.`,
+      );
     }
     return result.text;
   }

@@ -63,6 +63,9 @@ export interface StreamResult {
   usage?: StreamUsage;
   cacheRead?: number;
   cacheCreate?: number;
+  /** Provider stop signal (e.g. Gemini SAFETY/MAX_TOKENS) — lets callers diagnose empty output. */
+  finishReason?: string;
+  blockReason?: string;
 }
 
 /**
@@ -80,6 +83,8 @@ export interface StreamAccumulator {
   usage: StreamUsage;
   cacheRead?: number;
   cacheCreate?: number;
+  finishReason?: string;
+  blockReason?: string;
 }
 
 /** Minimal shape of the streaming body we consume (undici ReadableStream). */
@@ -288,6 +293,8 @@ export async function readSSEStream(
     usage: acc.usage,
     cacheRead: acc.cacheRead,
     cacheCreate: acc.cacheCreate,
+    finishReason: acc.finishReason,
+    blockReason: acc.blockReason,
     firstByteMs: firstByteAt === 0 ? 0 : firstByteAt - startedAt,
     totalMs: Date.now() - startedAt,
   };
@@ -355,4 +362,10 @@ export const geminiSseHandler: SseEventHandler = (evt, acc) => {
     if (typeof meta.promptTokenCount === 'number') acc.usage.inputTokens = meta.promptTokenCount;
     if (typeof meta.candidatesTokenCount === 'number') acc.usage.outputTokens = meta.candidatesTokenCount;
   }
+  // Capture the stop signal so an empty stream (e.g. a SAFETY block on dark fiction) is
+  // diagnosable instead of an opaque "empty content" abort.
+  const fr = evt?.candidates?.[0]?.finishReason;
+  if (typeof fr === 'string') acc.finishReason = fr;
+  const br = evt?.promptFeedback?.blockReason;
+  if (typeof br === 'string') acc.blockReason = br;
 };

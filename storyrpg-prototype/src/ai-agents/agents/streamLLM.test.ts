@@ -123,6 +123,16 @@ describe('readSSEStream Gemini handler', () => {
     expect(result.text).toBe('foobar');
     expect(result.usage).toEqual({ inputTokens: 7, outputTokens: 3 });
   });
+
+  it('captures finishReason/blockReason so an empty SAFETY block is diagnosable (bite-me-g18)', async () => {
+    const chunks = [
+      'data: {"candidates":[{"content":{"parts":[]},"finishReason":"SAFETY"}],"promptFeedback":{"blockReason":"SAFETY"}}\n\n',
+    ];
+    const result = await readSSEStream(streamFromChunks(chunks), geminiSseHandler);
+    expect(result.text).toBe('');
+    expect(result.finishReason).toBe('SAFETY');
+    expect(result.blockReason).toBe('SAFETY');
+  });
 });
 
 describe('readSSEStream idle timeout', () => {

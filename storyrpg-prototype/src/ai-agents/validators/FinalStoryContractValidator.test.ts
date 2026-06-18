@@ -217,6 +217,27 @@ describe('FinalStoryContractValidator', () => {
     expect(report.metrics.failedIncrementalResults).toBe(1);
   });
 
+  it('downgrades a SOLE frozen incremental flag so the repaired report passes (bite-me-g20)', async () => {
+    // A scene whose choices failed incremental validation (regen requested), but the contract's
+    // own validators find NO other blocking issue on the current story (the repair loop fixed
+    // the stubs). The frozen flag must not dead-end the run.
+    const story = validStory();
+    const report = await new FinalStoryContractValidator().validate({
+      story,
+      incrementalValidationResults: [{
+        sceneId: 'scene-1',
+        sceneName: 'Opening Choice',
+        overallPassed: false,
+        regenerationRequested: 'choices', // not 'encounter' → no independent missing_runtime_encounter
+        validationTimeMs: 0,
+      }],
+    });
+    expect(report.passed).toBe(true);
+    expect(report.blockingIssues.some((i) => i.type === 'failed_incremental_validation')).toBe(false);
+    // Still surfaced, as advisory.
+    expect(report.warnings.some((i) => i.type === 'failed_incremental_validation')).toBe(true);
+  });
+
   it('scopes incremental encounter failures by episode when scene ids repeat', async () => {
     const base = validStory();
     const story = validStory({

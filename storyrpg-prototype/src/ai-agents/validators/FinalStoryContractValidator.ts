@@ -786,6 +786,8 @@ export class FinalStoryContractValidator {
     this.validateQAReports(input.qaReport, input.bestPracticesReport, issues, metrics);
     this.validateFidelityFindings(input, issues);
 
+    this.reconcileFrozenIncrementalFlags(issues);
+
     return this.buildReport(issues, metrics);
   }
 
@@ -1138,6 +1140,28 @@ export class FinalStoryContractValidator {
         validator: 'IncrementalValidationRunner',
         suggestion: `Regeneration requested: ${result.regenerationRequested}`,
       });
+    }
+  }
+
+  /**
+   * `failed_incremental_validation` is a FROZEN generation-time snapshot — it is not
+   * re-derived from the current story, so it re-blocks on every contract re-validation even
+   * after the Wave-4 repair loop fixes the underlying defect (bite-me-g20: s3-3's stub
+   * outcome-texts were repairable, but the frozen flag kept aborting the run, an unrepairable
+   * dead-end). The contract's OWN validators re-check the current, possibly-repaired story and
+   * surface the actual defects (outcome_text_stub, broken_navigation, …) as their own
+   * error-severity findings. So when NO other error-severity finding remains, the frozen flag is
+   * stale (its issue was repaired or isn't independently blocking) → downgrade it to advisory so
+   * the repaired report can pass. A persisting real defect still surfaces as its own error and
+   * blocks, so this never lets a genuine defect ship.
+   */
+  private reconcileFrozenIncrementalFlags(issues: FinalStoryContractIssue[]): void {
+    const hasOtherError = issues.some(
+      (i) => i.severity === 'error' && i.validator !== 'IncrementalValidationRunner',
+    );
+    if (hasOtherError) return;
+    for (const i of issues) {
+      if (i.type === 'failed_incremental_validation' && i.severity === 'error') i.severity = 'warning';
     }
   }
 

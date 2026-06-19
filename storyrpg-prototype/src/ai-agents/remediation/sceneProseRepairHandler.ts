@@ -53,6 +53,10 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   // encounter-anchor miss now becomes a bounded scene-prose repair instead of a hard abort
   // (bite-me-g18). This retires the GATE_ENCOUNTER_ANCHOR_CONTENT policyException.
   'EncounterAnchorContentValidator',
+  // bite-me-g23: malformed second-person encounter prose is a localized prose
+  // corruption class. Explicit `GATE_ENCOUNTER_PROSE_INTEGRITY=1` runs should
+  // try the existing scene-prose repair path before aborting.
+  'EncounterProseIntegrityValidator',
 ]);
 
 type RepairableIssue = ContractRepairReport['blockingIssues'][number];
@@ -105,6 +109,15 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
   ];
   for (const issue of issues) {
     lines.push(`- ${issue.message ?? 'unspecified finding'}${issue.suggestion ? ` (fix: ${issue.suggestion})` : ''}`);
+    if (issue.validator === 'EncounterProseIntegrityValidator') {
+      lines.push(
+        '  NON-NEGOTIABLE: fix malformed second-person rewrite residue everywhere in this scene. ' +
+        'Phrases such as "you rooftop", "you candle", "you pulse", "you maze", "you kiss you", ' +
+        'or "You kiss takes" are ungrammatical repair artifacts. Rewrite them into natural prose ' +
+        'using "your", "the", or a concrete character/object as appropriate, while preserving events and choices.',
+      );
+      continue;
+    }
     if (sceneProseText !== undefined) {
       const moment = requiredMomentFromMessage(issue.message);
       if (moment) {

@@ -142,6 +142,20 @@ const IRREGULAR_DEINFLECT: Record<string, string> = {
   goes: 'go',
 };
 
+const PROTAGONIST_NAME_MODIFIER_FOLLOWERS = new Set([
+  'rooftop', 'bar', 'stair', 'same', 'charcoal', 'flannel', 'hedge', 'music',
+  'dark', 'threshold', 'room', 'club', 'glass', 'curtain', 'willow', 'attacker',
+  'boulevard', 'first', 'velvet', 'key', 'back', 'door', 'choice', 'candle',
+  'maze', 'lantern', 'inch', 'noticer', 'woman', 'night', 'pulse',
+  'watchfulness', 'grin', 'thing', 'catalogue',
+]);
+
+function nextWordAfter(text: string, offset: number, word: string): string | undefined {
+  const rest = text.slice(offset + word.length);
+  const match = rest.match(/^\s+([A-Za-z]+)/);
+  return match?.[1]?.toLowerCase();
+}
+
 /** De-inflect a present 3rd-singular verb ("straightens"→"straighten") for a "you" subject. */
 function deinflectPresentVerb(word: string): string {
   const lower = word.toLowerCase();
@@ -204,12 +218,21 @@ export function coerceThirdPersonProtagonistToSecond(
     // Subject pass: protagonist NAME (always) and subject pronoun (when coercing pronouns)
     // → "you", de-inflecting the verb it governs.
     let pending = false;
-    s = s.replace(/[A-Za-z]+(?:['’][A-Za-z]+)?/g, (word) => {
+    s = s.replace(/[A-Za-z]+(?:['’][A-Za-z]+)?/g, (word, offset: number, full: string) => {
       const lower = word.toLowerCase();
       // The protagonist name is always capitalized as a proper noun, so it carries no
       // sentence-position signal — emit lowercase "you" and let capitalizeSentenceStarts
       // re-capitalize only the genuinely sentence-initial ones.
-      if (nameRe.test(word)) { changed = true; pending = true; return 'you'; }
+      if (nameRe.test(word)) {
+        changed = true;
+        const next = nextWordAfter(full, offset, word);
+        if (next && PROTAGONIST_NAME_MODIFIER_FOLLOWERS.has(next)) {
+          pending = false;
+          return 'your';
+        }
+        pending = true;
+        return 'you';
+      }
       if (opts.coercePronouns && lower === subj) { changed = true; pending = true; return matchCase(word, 'you'); }
       if (pending) {
         pending = false;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Story } from '../../types';
+import { EncounterProseIntegrityValidator } from './EncounterProseIntegrityValidator';
 import { FinalStoryContractValidator } from './FinalStoryContractValidator';
 
 const skills = {
@@ -329,6 +330,67 @@ describe('FinalStoryContractValidator', () => {
     ]));
   });
 
+  it('fails malformed second-person rewrite residue in encounter prose', async () => {
+    const encounter = validEncounter();
+    (encounter.phases[0].beats[0] as any).setupText = 'Moonlight splits over you rooftop as the threat closes in.';
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        scenes: [{
+          id: 'scene-1',
+          name: 'Corrupted Encounter',
+          startingBeatId: '',
+          beats: [],
+          encounter: encounter as any,
+        }],
+      }],
+    });
+
+    const direct = new EncounterProseIntegrityValidator().validate({ story });
+    expect(direct.valid).toBe(false);
+    expect(direct.findings[0]).toMatchObject({ sceneId: 'scene-1', pattern: 'malformed-you-noun' });
+
+    const defaultReport = await new FinalStoryContractValidator().validate({ story });
+    expect(defaultReport.passed).toBe(true);
+    expect(defaultReport.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'encounter_prose_integrity', sceneId: 'scene-1' }),
+    ]));
+
+    const prev = process.env.GATE_ENCOUNTER_PROSE_INTEGRITY;
+    process.env.GATE_ENCOUNTER_PROSE_INTEGRITY = '1';
+    try {
+      const report = await new FinalStoryContractValidator().validate({ story });
+      expect(report.passed).toBe(false);
+      expect(report.blockingIssues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'encounter_prose_integrity', sceneId: 'scene-1' }),
+      ]));
+    } finally {
+      if (prev === undefined) delete process.env.GATE_ENCOUNTER_PROSE_INTEGRITY;
+      else process.env.GATE_ENCOUNTER_PROSE_INTEGRITY = prev;
+    }
+  });
+
+  it('does not flag ordinary second-person encounter phrasing', () => {
+    const encounter = validEncounter();
+    (encounter.phases[0].beats[0].choices[0].outcomes.success as any).narrativeText =
+      'You kiss him on the cheek and keep your eyes open for the next clue.';
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        scenes: [{
+          id: 'scene-1',
+          name: 'Clean Encounter',
+          startingBeatId: '',
+          beats: [],
+          encounter: encounter as any,
+        }],
+      }],
+    });
+
+    const direct = new EncounterProseIntegrityValidator().validate({ story });
+    expect(direct.valid).toBe(true);
+  });
+
   it('flags a routing contradiction: a choice targets a real scene not in scene.leadsTo', async () => {
     const mkScene = (id: string, leadsTo: string[], choiceTarget?: string) => ({
       id,
@@ -390,6 +452,40 @@ describe('FinalStoryContractValidator', () => {
 
     const report = await new FinalStoryContractValidator().validate({ story });
     expect(report.blockingIssues.filter((i) => i.type === 'routing_contradiction')).toEqual([]);
+  });
+
+  it('blocks a direct choice bridge that skips required setup scenes', async () => {
+    const mkScene = (id: string, leadsTo: string[], choiceTarget?: string) => ({
+      id,
+      name: id,
+      startingBeatId: `${id}-b1`,
+      leadsTo,
+      beats: [{
+        id: `${id}-b1`,
+        text: `Substantive setup for ${id}.`,
+        choices: choiceTarget
+          ? [{ id: `${id}-skip`, text: 'Skip the uncomfortable setup', choiceType: 'expression', nextSceneId: choiceTarget, isChoiceBridge: true }]
+          : [{ id: `${id}-continue`, text: 'Continue...', choiceType: 'expression', nextSceneId: leadsTo[0] }],
+      }],
+    } as any);
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 'scene-1',
+        scenes: [
+          mkScene('scene-1', ['scene-2', 'scene-3'], 'scene-3'),
+          mkScene('scene-2', ['scene-3']),
+          mkScene('scene-3', ['episode-end']),
+        ],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'choice_bridge_skips_required_setup', sceneId: 'scene-1' }),
+    ]));
   });
 
   it('blocks a cross-scene beat-id collision (exact and prefix)', async () => {

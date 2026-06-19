@@ -24,6 +24,18 @@ describe('coerceThirdPersonProtagonistToSecond (WS0.3 encounter-POV backstop)', 
     expect(text).toBe('You touch your own arm, realizing how easily you almost let a beautiful face overwrite your instincts.');
   });
 
+  it('does not turn protagonist-name modifiers into malformed "you noun" prose', () => {
+    const src = 'Kylie rooftop bar is everything she crossed an ocean for.';
+    const { text } = coerceThirdPersonProtagonistToSecond(src, KYLIE, pronouns);
+    expect(text).toBe('Your rooftop bar is everything you crossed an ocean for.');
+  });
+
+  it('uses possessive second person for name-modifier fallout instead of subject you', () => {
+    const src = 'Kylie candle between them dies.';
+    const { text } = coerceThirdPersonProtagonistToSecond(src, KYLIE, pronouns);
+    expect(text).toBe('Your candle between them dies.');
+  });
+
   it('preserves quoted dialogue', () => {
     const src = '"She is mine," Victor says, as Kylie steps back.';
     const { text } = coerceThirdPersonProtagonistToSecond(src, KYLIE, pronouns);

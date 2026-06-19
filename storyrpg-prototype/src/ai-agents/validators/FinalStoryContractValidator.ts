@@ -23,6 +23,7 @@ import { isGateEnabledAt } from '../remediation/gateRegistry';
 import { isTreatmentFidelityFinding } from './treatmentFidelityGate';
 import { findBeatIdCollisions } from './beatIdCollisions';
 import { collectReaderFacingTexts, collectEncounterMetaTexts } from './EncounterAnchorContentValidator';
+import { EncounterProseIntegrityValidator } from './EncounterProseIntegrityValidator';
 import { stripProtagonistFromEncounters } from '../utils/encounterProtagonistGuard';
 import { PovClarityValidator } from './PovClarityValidator';
 import { applyEncounterPovBackstop } from '../pipeline/encounterPovBackstop';
@@ -52,6 +53,7 @@ export type FinalStoryContractIssueType =
   | 'missing_runtime_encounter'
   | 'broken_navigation'
   | 'routing_contradiction'
+  | 'choice_bridge_skips_required_setup'
   | 'beat_id_collision'
   | 'encounter_template_collapse'
   | 'encounter_one_click_win'
@@ -70,6 +72,7 @@ export type FinalStoryContractIssueType =
   | 'choice_type_plan_nonconformance'
   | 'skill_plan_nonconformance'
   | 'sentence_opener_monotony'
+  | 'encounter_prose_integrity'
   | 'encounter_pov_break'
   | 'pov_break'
   | 'protagonist_as_npc'
@@ -300,6 +303,21 @@ export class FinalStoryContractValidator {
       const reassigned = rebalanceStoryEncounterSkills(input.story);
       if (reassigned > 0) {
         console.info(`[FinalStoryContract] encounter skill-rebalance reassigned ${reassigned} slot(s) to cap any one skill at ~40%`);
+      }
+    }
+
+    const encounterProseIntegrity = new EncounterProseIntegrityValidator().validate({ story: input.story });
+    if (encounterProseIntegrity.findings.length > 0) {
+      const blocking = isGateEnabledAt('GATE_ENCOUNTER_PROSE_INTEGRITY', 'season-final');
+      for (const finding of encounterProseIntegrity.findings) {
+        issues.push({
+          type: 'encounter_prose_integrity',
+          severity: blocking ? 'error' : 'warning',
+          message: `Encounter prose contains malformed second-person rewrite residue (${finding.pattern}): "${finding.excerpt}"`,
+          sceneId: finding.sceneId,
+          validator: 'EncounterProseIntegrityValidator',
+          suggestion: 'Regenerate or repair the encounter prose so second-person narration uses grammatical "you/your" phrasing.',
+        });
       }
     }
 
@@ -668,7 +686,9 @@ export class FinalStoryContractValidator {
             ...collectReaderFacingTexts(scene),
             ...(scene.encounter ? collectEncounterMetaTexts(scene) : []),
           ];
-          const povBlocking = isGateEnabledAt('GATE_PROTAGONIST_PRONOUN', 'season-final');
+          const povBlocking = scene.encounter
+            ? isGateEnabledAt('GATE_ENCOUNTER_POV', 'season-final')
+            : isGateEnabledAt('GATE_PROTAGONIST_PRONOUN', 'season-final');
           const povType = scene.encounter ? 'encounter_pov_break' : 'pov_break';
           const thirdHits = povValidator.findThirdPersonProtagonistTexts(povTexts, protagonistName);
           if (thirdHits.length > 0) {
@@ -941,6 +961,7 @@ export class FinalStoryContractValidator {
     }
 
     this.validateRoutingConsistency(episode, scene, sceneMap, issues);
+    this.validateChoiceBridgeContinuity(episode, scene, sceneMap, issues);
   }
 
   /**
@@ -985,6 +1006,57 @@ export class FinalStoryContractValidator {
       if (beat.nextSceneId) flag(beat.nextSceneId, `Beat "${beat.id}"`, beat.id);
       for (const choice of beat.choices || []) {
         if (choice.nextSceneId) flag(choice.nextSceneId, `Choice "${choice.id}"`, beat.id);
+      }
+    }
+  }
+
+  private validateChoiceBridgeContinuity(
+    episode: Episode,
+    scene: Scene,
+    sceneMap: Map<string, Scene>,
+    issues: FinalStoryContractIssue[]
+  ): void {
+    const scenes = episode.scenes || [];
+    const sourceIndex = scenes.findIndex(candidate => candidate.id === scene.id);
+    if (sourceIndex < 0) return;
+
+    const isAllowedSkip = (node: unknown): boolean => {
+      const data = node as Record<string, unknown> | undefined;
+      return Boolean(data?.allowSceneSkip || data?.intentionalSceneSkip || data?.skipAllowed);
+    };
+    const isChoiceBridge = (node: unknown): boolean => {
+      const data = node as Record<string, unknown> | undefined;
+      return Boolean(data?.isChoiceBridge || data?.sourceChoiceId);
+    };
+    const hasRequiredSetup = (candidate: Scene): boolean => {
+      if (candidate.encounter) return true;
+      return (candidate.beats || []).some(beat => (beat.text || '').trim().length > 0 && !PLACEHOLDER_TEXT_PATTERN.test(beat.text || ''));
+    };
+    const flagSkip = (targetSceneId: string | undefined, where: string, beatId: string, node: unknown): void => {
+      if (!isChoiceBridge(node)) return;
+      if (!targetSceneId || isTerminalSceneTarget(targetSceneId) || isAllowedSkip(node)) return;
+      const targetIndex = scenes.findIndex(candidate => candidate.id === targetSceneId);
+      if (targetIndex <= sourceIndex + 1) return;
+      if (!sceneMap.has(targetSceneId)) return;
+
+      const skipped = scenes.slice(sourceIndex + 1, targetIndex).filter(hasRequiredSetup);
+      if (skipped.length === 0) return;
+      issues.push({
+        type: 'choice_bridge_skips_required_setup',
+        severity: 'error',
+        message: `${where} jumps from "${scene.id}" to "${targetSceneId}", skipping required setup scene(s): ${skipped.map(s => s.id).join(', ')}.`,
+        episodeId: episode.id,
+        episodeNumber: episode.number,
+        sceneId: scene.id,
+        beatId,
+        suggestion: 'Route through the setup scene(s), add an explicit bridge that carries their required information, or mark the skip as intentional only when alternate-path continuity has been authored.',
+      });
+    };
+
+    for (const beat of scene.beats || []) {
+      flagSkip(beat.nextSceneId, `Beat "${beat.id}"`, beat.id, beat);
+      for (const choice of beat.choices || []) {
+        flagSkip(choice.nextSceneId, `Choice "${choice.id}"`, beat.id, choice);
       }
     }
   }

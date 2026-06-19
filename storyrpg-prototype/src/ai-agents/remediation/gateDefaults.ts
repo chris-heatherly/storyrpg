@@ -202,6 +202,14 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // false positives can't abort a run. Promoted ON at landing (user: promote the two
   // high-confidence blockers now). Reversible via =0.
   GATE_ENCOUNTER_POV: true,
+  // bite-me-g22/g23: second-person encounter repair residue like "you rooftop",
+  // "you candle", and "You kiss takes" is mechanically generated corruption,
+  // not craft preference. Default-OFF after the g23 live failure-cycle audit:
+  // it correctly detected corruption, but final-contract scene repair was not
+  // yet precise enough to clear every nested encounter outcome, causing a
+  // 74-blocker season-final abort. Keep findings as warnings by default; run
+  // `GATE_ENCOUNTER_PROSE_INTEGRITY=1` for watched repair/promotion tests.
+  GATE_ENCOUNTER_PROSE_INTEGRITY: false,
   // WS1.4 (bite-me-g17): deterministic encounter skill-rebalance. perception carried 52–55% of
   // choice slots in all three g17 encounters (a single-skill meta). Reassign the excess dominant-
   // skill slots to the least-used skill ALREADY present in the encounter until no skill exceeds

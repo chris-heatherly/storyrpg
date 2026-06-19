@@ -461,6 +461,92 @@ describe('SceneGraphBranchValidator', () => {
     expect(result.issues.some(issue => issue.message.includes('episode-end'))).toBe(false);
   });
 
+  it('blocks choice bridges that jump over required setup scenes', () => {
+    const ep = episode([
+      {
+        ...scene('s1-1', ['s1-2', 'treatment-enc-1-1']),
+        beats: [{
+          id: 's1-1-beat',
+          text: 'Opening choice.',
+          choices: [{
+            id: 'decline-keycard',
+            text: 'Decline and go straight to the roof',
+            nextSceneId: 'treatment-enc-1-1',
+            isChoiceBridge: true,
+            consequences: [],
+          }],
+        }],
+      } as any,
+      scene('s1-2', ['s1-3'], [{ id: 'accept-keycard', nextSceneId: 's1-3' }]),
+      scene('s1-3', ['treatment-enc-1-1']),
+      {
+        ...scene('treatment-enc-1-1'),
+        encounter: {
+          phases: [{ beats: [{ id: 'enc-b1', setupText: 'The rooftop encounter starts.', choices: [] }] }],
+          outcomes: {},
+          storylets: {},
+        },
+      } as any,
+    ]);
+    const bp = blueprint([
+      { id: 's1-1', leadsTo: ['s1-2', 'treatment-enc-1-1'], branches: true, type: 'dilemma' },
+      { id: 's1-2', leadsTo: ['s1-3'] },
+      { id: 's1-3', leadsTo: ['treatment-enc-1-1'] },
+      { id: 'treatment-enc-1-1', leadsTo: [] },
+    ]);
+
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, bp, {
+      requireChoiceBridge: false,
+      requireSceneGraphBranching: false,
+      allowLinearBottleneckEpisodes: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'path_missing_required_setup',
+        sceneId: 's1-1',
+        choiceId: 'decline-keycard',
+        targetSceneId: 'treatment-enc-1-1',
+      }),
+    ]));
+  });
+
+  it('allows explicit bridge skips over connective scenes marked intentional', () => {
+    const ep = episode([
+      {
+        ...scene('scene-1', ['connector', 'scene-3']),
+        beats: [{
+          id: 'scene-1-beat',
+          text: 'Opening choice.',
+          choices: [{
+            id: 'skip-connector',
+            text: 'Move ahead',
+            nextSceneId: 'scene-3',
+            isChoiceBridge: true,
+            allowSceneSkip: true,
+            consequences: [],
+          }],
+        }],
+      } as any,
+      scene('connector', ['scene-3']),
+      scene('scene-3'),
+    ]);
+    const bp = blueprint([
+      { id: 'scene-1', leadsTo: ['connector', 'scene-3'], branches: true, type: 'dilemma' },
+      { id: 'connector', leadsTo: ['scene-3'] },
+      { id: 'scene-3', leadsTo: [] },
+    ]);
+
+    const result = new SceneGraphBranchValidator().validateEpisode(ep, bp, {
+      requireChoiceBridge: false,
+      requireSceneGraphBranching: false,
+      allowLinearBottleneckEpisodes: true,
+    });
+
+    expect(result.issues.some(issue => issue.type === 'path_missing_required_setup')).toBe(false);
+  });
+
   describe('branch-fan-out (dead-branch) detection', () => {
     // scene-1 is PLANNED as a multi-target branch (leadsTo: [scene-2, scene-3])
     // but every choice routes to scene-2 — the Endsong s3-1 dead-branch shape.

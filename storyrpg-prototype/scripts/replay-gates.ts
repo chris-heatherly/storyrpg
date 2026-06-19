@@ -11,6 +11,8 @@ import { DuplicateEstablishingBeatValidator } from '../src/ai-agents/validators/
 import { EncounterSetPieceDepthValidator } from '../src/ai-agents/validators/EncounterSetPieceDepthValidator';
 import { ReferencedEventPresenceValidator } from '../src/ai-agents/validators/ReferencedEventPresenceValidator';
 import { FlagContractValidator } from '../src/ai-agents/validators/FlagContractValidator';
+import { EncounterQualityValidator } from '../src/ai-agents/validators/EncounterQualityValidator';
+import { SceneGraphBranchValidator } from '../src/ai-agents/validators/SceneGraphBranchValidator';
 import { findEncounterPovBreaks } from '../src/ai-agents/pipeline/encounterPovBackstop';
 
 /**
@@ -134,6 +136,27 @@ const REGISTRY: GateEntry[] = [
     blocking: 'errors',
     inDefaultSet: false,
     run: (ctx) => fromValidationResult(new EncounterSetPieceDepthValidator().validate({ story: ctx.story, plan: ctx.plan }).issues),
+  },
+  {
+    name: 'ENCOUNTER_QUALITY',
+    validator: 'EncounterQualityValidator',
+    gateFlag: 'GATE_ENCOUNTER_QUALITY',
+    blocking: 'errors',
+    inDefaultSet: false,
+    run: (ctx) => {
+      const report = new EncounterQualityValidator().validate({ story: ctx.story });
+      return fromValidationResult([...report.blockingIssues, ...report.warnings]);
+    },
+  },
+  {
+    name: 'SCENE_GRAPH_BRANCH',
+    validator: 'SceneGraphBranchValidator',
+    gateFlag: 'GATE_SCENE_GRAPH_BRANCH',
+    blocking: 'errors',
+    inDefaultSet: false,
+    run: (ctx) =>
+      perEpisode(ctx, (episode, blueprint) =>
+        fromValidationResult(new SceneGraphBranchValidator().validateEpisode(episode, blueprint).issues)),
   },
   {
     name: 'REFERENCED_EVENT_PRESENCE',

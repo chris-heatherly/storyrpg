@@ -658,6 +658,90 @@ describe('FinalStoryContractValidator', () => {
     expect(report.blockingIssues.some((i) => i.type === 'qa_blocker_present')).toBe(false);
   });
 
+  it('blocks QA failures for treatment-sourced output', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      qaReport: { passesQA: false, overallScore: 61, criticalIssues: ['Encounter prose is malformed.'] } as any,
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'qa_blocker_present', validator: 'QARunner' }),
+    ]));
+  });
+
+  it('blocks callback debt from best-practices reports for treatment-sourced output only', async () => {
+    const bestPracticesReport = {
+      overallPassed: false,
+      overallScore: 72,
+      blockingIssues: [{
+        category: 'callback_opportunities',
+        level: 'error',
+        message: 'Flag stela_herbs_accepted_gracefully is set but never paid off.',
+        location: {},
+        suggestion: 'Add an in-slice payoff or qualify it as future-window debt.',
+      }],
+      warnings: [],
+      suggestions: [],
+      metrics: {} as any,
+      timestamp: new Date(),
+      duration: 0,
+    } as any;
+
+    const freeform = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      bestPracticesReport,
+    });
+    expect(freeform.passed).toBe(true);
+    expect(freeform.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'unrepaired_callback_debt' }),
+    ]));
+
+    const treatment = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      bestPracticesReport,
+    });
+    expect(treatment.passed).toBe(false);
+    expect(treatment.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'unrepaired_callback_debt' }),
+    ]));
+  });
+
+  it('labels fewer generated treatment episodes as a partial slice instead of full completion', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      requestedEpisodeNumbers: [1, 2, 3],
+      sourceSeasonPlan: {
+        totalEpisodes: 8,
+        episodes: Array.from({ length: 8 }, (_, index) => ({ episodeNumber: index + 1, title: `Episode ${index + 1}` })),
+      },
+    });
+
+    expect(report.passed).toBe(false); // requested episodes 2 and 3 are still missing.
+    expect(report.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'partial_season_scope', message: expect.stringContaining('partial slice') }),
+    ]));
+  });
+
+  it('fails full-season treatment mode when planned episodes are missing', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      requestedEpisodeNumbers: [1, 2, 3, 4, 5, 6, 7, 8],
+      sourceSeasonPlan: {
+        totalEpisodes: 8,
+        episodes: Array.from({ length: 8 }, (_, index) => ({ episodeNumber: index + 1, title: `Episode ${index + 1}` })),
+      },
+    });
+
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'partial_season_scope', message: expect.stringContaining('Full-season mode cannot pass') }),
+    ]));
+  });
+
   // §4.6 — treatment-fidelity findings (4.1–4.5) hard-fail when the source is an
   // authored treatment; QA-prose downgrades are unaffected.
   it('hard-fails a treatment-fidelity finding when the source is an authored treatment', async () => {

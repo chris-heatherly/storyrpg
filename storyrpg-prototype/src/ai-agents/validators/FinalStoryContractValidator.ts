@@ -56,12 +56,14 @@ export type FinalStoryContractIssueType =
   | 'choice_bridge_skips_required_setup'
   | 'beat_id_collision'
   | 'encounter_template_collapse'
+  | 'encounter_malformed_prose'
   | 'encounter_one_click_win'
   | 'encounter_clock_coverage_gap'
   | 'missing_requested_episode'
   | 'failed_incremental_validation'
   | 'unrepaired_callback_debt'
   | 'source_role_mismatch'
+  | 'partial_season_scope'
   | 'treatment_fidelity_violation'
   | 'ambiguous_protagonist_pronoun'
   | 'npc_pronoun_inconsistency'
@@ -800,10 +802,10 @@ export class FinalStoryContractValidator {
       }
     }
 
-    await this.validateCallbacks(callbackScenes, callbackChoices, issues, metrics);
+    await this.validateCallbacks(callbackScenes, callbackChoices, issues, metrics, input.treatmentSourced === true);
     this.validateMechanicsLeakage(storyTexts, issues, metrics);
     this.validateIncrementalResults(input.incrementalValidationResults || [], issues, metrics);
-    this.validateQAReports(input.qaReport, input.bestPracticesReport, issues, metrics);
+    this.validateQAReports(input.qaReport, input.bestPracticesReport, issues, metrics, input.treatmentSourced === true);
     this.validateFidelityFindings(input, issues);
 
     this.reconcileFrozenIncrementalFlags(issues);
@@ -839,6 +841,28 @@ export class FinalStoryContractValidator {
   ): void {
     const sourceEpisodes = input.sourceSeasonPlan?.episodes || [];
     if (sourceEpisodes.length === 0) return;
+
+    const sourceEpisodeCount = input.sourceSeasonPlan?.totalEpisodes || sourceEpisodes.length;
+    const generatedEpisodeNumbers = (input.story.episodes || [])
+      .map(episode => episode.number)
+      .filter((episodeNumber): episodeNumber is number => typeof episodeNumber === 'number')
+      .sort((a, b) => a - b);
+    if (input.treatmentSourced && sourceEpisodeCount > generatedEpisodeNumbers.length) {
+      const requestedCount = input.requestedEpisodeNumbers?.length || generatedEpisodeNumbers.length;
+      const fullSeasonRequested = requestedCount >= sourceEpisodeCount;
+      issues.push({
+        type: 'partial_season_scope',
+        severity: fullSeasonRequested ? 'error' : 'warning',
+        message:
+          fullSeasonRequested
+            ? `Treatment-sourced output is missing planned episode(s): generated episode(s) ${generatedEpisodeNumbers.join(', ') || '(none)'} of ${sourceEpisodeCount} source episode(s). Full-season mode cannot pass.`
+            : `Treatment-sourced output is a partial slice: generated episode(s) ${generatedEpisodeNumbers.join(', ') || '(none)'} of ${sourceEpisodeCount} source episode(s). This is not a full treatment completion.`,
+        suggestion:
+          fullSeasonRequested
+            ? 'Regenerate missing planned episodes before marking the treatment complete.'
+            : 'Persist generatedOutputScope as partial-slice and preserve future payoff obligations for continuation.',
+      });
+    }
 
     const sourceByNumber = new Map(sourceEpisodes.map(episode => [episode.episodeNumber, episode]));
     for (const episode of input.story.episodes || []) {
@@ -1129,7 +1153,8 @@ export class FinalStoryContractValidator {
     callbackScenes: Array<{ id: string; beats: Array<{ id: string; text: string; textVariants?: Array<{ condition: unknown; text: string }>; speaker?: string }> }>,
     callbackChoices: Array<{ id: string; sceneId: string; text: string; consequences?: Consequence[]; reminderPlan?: unknown }>,
     issues: FinalStoryContractIssue[],
-    metrics: FinalStoryContractReport['metrics']
+    metrics: FinalStoryContractReport['metrics'],
+    treatmentSourced: boolean
   ): Promise<void> {
     const result = await new CallbackOpportunitiesValidator({ level: 'error' }).validate({
       scenes: callbackScenes,
@@ -1139,11 +1164,11 @@ export class FinalStoryContractValidator {
     for (const issue of result.issues) {
       if (issue.level !== 'error') continue;
       issues.push({
-        // F3: callback debt is a craft/quality issue, not a playability bug —
-        // advisory so the story still ships (recorded as a warning + in the
-        // quality ledger). See docs/PROJECT_AUDIT_2026-05-28.md.
+        // F3: callback debt remains advisory for freeform runs. Treatment-sourced
+        // slices are stricter: visible authored axes cannot leave in-slice debt
+        // while still claiming a passing final contract.
         type: 'unrepaired_callback_debt',
-        severity: 'warning',
+        severity: treatmentSourced ? 'error' : 'warning',
         message: issue.message,
         validator: 'CallbackOpportunitiesValidator',
         suggestion: issue.suggestion,
@@ -1241,7 +1266,8 @@ export class FinalStoryContractValidator {
     qaReport: QAReport | undefined,
     bestPracticesReport: ComprehensiveValidationReport | undefined,
     issues: FinalStoryContractIssue[],
-    metrics: FinalStoryContractReport['metrics']
+    metrics: FinalStoryContractReport['metrics'],
+    treatmentSourced: boolean
   ): void {
     if (qaReport && (!qaReport.passesQA || qaReport.criticalIssues.length > 0)) {
       // F3: QA score is an LLM self-assessment (craft signal), not a hard
@@ -1250,7 +1276,7 @@ export class FinalStoryContractValidator {
       // it to blocking once an auto-repair path exists (default-off ⇒ unchanged).
       issues.push({
         type: 'qa_blocker_present',
-        severity: isGateEnabledAt('GATE_QA_CRITICAL_BLOCK', 'season-final') ? 'error' : 'warning',
+        severity: treatmentSourced || isGateEnabledAt('GATE_QA_CRITICAL_BLOCK', 'season-final') ? 'error' : 'warning',
         message: `QA report did not pass: ${qaReport.criticalIssues.join('; ') || `score ${qaReport.overallScore}`}`,
         validator: 'QARunner',
       });
@@ -1270,7 +1296,7 @@ export class FinalStoryContractValidator {
     if (qaReport?.continuity?.issues?.length) {
       const REMEDIABLE = new Set(['impossible_knowledge', 'contradiction', 'missing_setup', 'timeline_error']);
       const blockContinuity =
-        isGateEnabled('GATE_CONTINUITY_REMEDIATION') || isGateEnabled('GATE_QA_CRITICAL_BLOCK');
+        treatmentSourced || isGateEnabled('GATE_CONTINUITY_REMEDIATION') || isGateEnabled('GATE_QA_CRITICAL_BLOCK');
       for (const issue of qaReport.continuity.issues) {
         if (issue.severity !== 'error' || !REMEDIABLE.has(issue.type)) continue;
         issues.push({
@@ -1292,11 +1318,13 @@ export class FinalStoryContractValidator {
       if (type === 'unrepaired_callback_debt') metrics.callbackIssues++;
       // F3: best-practices craft findings are advisory at the final gate — EXCEPT
       // escalated correctness classes (witness-id integrity) when their rollout
-      // flag is on, which stay blocking. Default-off ⇒ unchanged ('warning').
+      // flag is on, which stay blocking. Callback debt in treatment-sourced
+      // output also blocks because the source axes are authored obligations.
       const escalated = isEscalatedIssue(issue);
+      const treatmentCallbackDebt = treatmentSourced && type === 'unrepaired_callback_debt';
       issues.push({
         type,
-        severity: escalated ? 'error' : 'warning',
+        severity: escalated || treatmentCallbackDebt ? 'error' : 'warning',
         message: issue.message,
         validator: 'IntegratedBestPracticesValidator',
         suggestion: issue.suggestion,

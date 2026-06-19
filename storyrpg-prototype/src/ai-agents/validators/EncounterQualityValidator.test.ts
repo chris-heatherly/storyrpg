@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EncounterQualityValidator, applyEncounterQualityGate, scanEncounterTemplateProse } from './EncounterQualityValidator';
+import { EncounterQualityValidator, applyEncounterQualityGate, scanEncounterTemplateProse, scanMalformedEncounterProse } from './EncounterQualityValidator';
 import { TEMPLATE_SIGNATURES } from '../agents/EncounterArchitect';
 import type { Story } from '../../types';
 
@@ -87,6 +87,41 @@ describe('EncounterQualityValidator', () => {
     const hits = scanEncounterTemplateProse(enc);
     expect(hits).toContain('This is the moment that decides everything');
     expect(hits).toContain('An unexpected solution presents itself');
+  });
+
+  it('BLOCKS malformed second-person replacement residue from the G22 encounter class', () => {
+    const enc = bespokeEncounter(3);
+    enc.phases[0].beats[0].setupText =
+      "Night three. You're on you rooftop as You Dusk Club hums across you bar.";
+    enc.phases[0].beats[0].choices[0].text = 'Hold you charcoal stranger\'s gaze and walk over';
+    (enc.phases[0].beats[0].choices[0].outcomes.success as any).narrativeText =
+      'You kiss takes, and the maze folds around you maze\' exit.';
+
+    const malformed = scanMalformedEncounterProse(enc);
+    expect(malformed).toEqual(expect.arrayContaining([
+      expect.stringContaining('you-rooftop'),
+      expect.stringContaining('imperative-you-adjective-noun'),
+      expect.stringContaining('you-kiss-takes'),
+    ]));
+
+    const report = new EncounterQualityValidator().validate({ story: storyWithEncounter(enc) });
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'encounter_malformed_prose', sceneId: 'scene-3' }),
+    ]));
+  });
+
+  it('does NOT false-positive ordinary second-person prose around a bar', () => {
+    const enc = bespokeEncounter(3);
+    enc.phases[0].beats[0].setupText =
+      'You watch the bar until Victor turns, then keep your charcoal clutch close.';
+    enc.phases[0].beats[0].choices[0].text = 'Hold your nerve and cross the room';
+    (enc.phases[0].beats[0].choices[0].outcomes.success as any).narrativeText =
+      'You kiss him on the cheek and your path stays open.';
+
+    expect(scanMalformedEncounterProse(enc)).toEqual([]);
+    const report = new EncounterQualityValidator().validate({ story: storyWithEncounter(enc) });
+    expect(report.blockingIssues.filter(i => i.type === 'encounter_malformed_prose')).toEqual([]);
   });
 
   it('detects template prose buried DEEP in a nextSituation branch (depth-limit regression)', () => {

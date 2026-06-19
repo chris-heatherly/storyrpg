@@ -146,6 +146,18 @@ export interface Story {
 
   outputDir?: string;
 
+  generatedOutputScope?: {
+    sourceEpisodeCount: number;
+    requestedEpisodeCount: number;
+    generatedEpisodeRange: {
+      startEpisode: number;
+      endEpisode: number;
+    };
+    isPartialSeason: boolean;
+    sourceTreatmentTitle?: string;
+    treatmentCompleteness: 'full-season' | 'partial-slice';
+  };
+
   /**
    * Generation lifecycle for stories whose narrative content is complete before
    * their image batch has finished. `pending` stories are valid drafts but

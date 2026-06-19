@@ -779,6 +779,35 @@ function withPersistedStoryVisualMetadata(story: Story, generator?: Record<strin
   return next;
 }
 
+function withGeneratedOutputScope(story: Story, brief: FullCreativeBrief): Story {
+  const generatedEpisodeNumbers = (story.episodes || [])
+    .map(episode => episode.number)
+    .filter((episodeNumber): episodeNumber is number => typeof episodeNumber === 'number')
+    .sort((a, b) => a - b);
+  const startEpisode = generatedEpisodeNumbers[0] ?? brief.episode?.number ?? 1;
+  const endEpisode = generatedEpisodeNumbers[generatedEpisodeNumbers.length - 1] ?? startEpisode;
+  const requestedEpisodeCount = brief.multiEpisode?.episodeRange
+    ? Math.max(0, brief.multiEpisode.episodeRange.end - brief.multiEpisode.episodeRange.start + 1)
+    : generatedEpisodeNumbers.length || 1;
+  const sourceEpisodeCount =
+    brief.seasonPlan?.totalEpisodes
+    || brief.multiEpisode?.sourceAnalysis?.totalEstimatedEpisodes
+    || Math.max(requestedEpisodeCount, generatedEpisodeNumbers.length || 1);
+  const isPartialSeason = generatedEpisodeNumbers.length < sourceEpisodeCount;
+
+  return {
+    ...story,
+    generatedOutputScope: {
+      sourceEpisodeCount,
+      requestedEpisodeCount,
+      generatedEpisodeRange: { startEpisode, endEpisode },
+      isPartialSeason,
+      sourceTreatmentTitle: brief.seasonPlan?.sourceTitle || brief.story?.title,
+      treatmentCompleteness: isPartialSeason ? 'partial-slice' : 'full-season',
+    },
+  };
+}
+
 /**
  * Write a v3 `story.json` package plus a small `manifest.json` next to
  * it. The manifest records the sha256 of story.json so the catalog
@@ -797,10 +826,13 @@ export async function writeFinalStoryPackage(
   const manifestPath = outputDir + 'manifest.json';
   const legacyPath = outputDir + '08-final-story.json';
   const storyForPackage = withPersistedStoryVisualMetadata(story, options?.generator);
+  const generator = storyForPackage.generatedOutputScope
+    ? { ...(options?.generator ?? {}), generatedOutputScope: storyForPackage.generatedOutputScope }
+    : options?.generator;
 
   const pkg = encodeStory(storyForPackage, {
     targetVersion: STORY_SCHEMA_VERSION,
-    generator: options?.generator,
+    generator,
   });
 
   const storyJson = JSON.stringify(pkg, null, 2);
@@ -840,7 +872,7 @@ export async function writeFinalStoryPackage(
     primaryStoryFile: 'story.json',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    generator: options?.generator ?? {},
+    generator: generator ?? {},
     files: {
       'story.json': { sha256, bytes },
     },
@@ -1514,6 +1546,7 @@ export async function savePipelineOutputs(
   // The legacy 08-final-story.json stays on disk (produced by
   // writeFinalStoryPackage) until every reader has migrated.
   if (outputs.finalStory) {
+    outputs.finalStory = withGeneratedOutputScope(outputs.finalStory, outputs.brief);
     const { storyJsonPath, manifestPath: mPath, storySize } =
       await writeFinalStoryPackage(outputDir, outputs.finalStory, {
         generator: outputs.generator || { pipeline: 'FullStoryPipeline' },

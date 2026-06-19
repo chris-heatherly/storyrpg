@@ -107,6 +107,47 @@ export function scanEncounterTemplateProse(encounter: unknown): string[] {
   return [...found];
 }
 
+const MALFORMED_SECOND_PERSON_PATTERNS: Array<{ id: string; pattern: RegExp }> = [
+  { id: 'you-kiss-takes', pattern: /\bYou kiss takes\b/i },
+  { id: 'you-maze-exit', pattern: /\byou maze' exit\b/i },
+  { id: 'you-rooftop', pattern: /\byou rooftop\b/i },
+  { id: 'you-dusk-club', pattern: /\bYou Dusk Club\b/i },
+  {
+    id: 'you-possessive-noun-after-preposition',
+    pattern:
+      /\b(?:on|in|into|from|across|near|at|under|through|between|behind|before|after|inside|outside|against|over|around|beside)\s+you\s+(?:bar|candle|door|hedge|maze|photograph|pulse|roof|rooftop|stair|stairs|turn|way|window)\b/i,
+  },
+  {
+    id: 'imperative-you-adjective-noun',
+    pattern:
+      /\b(?:Hold|Take|Leave|Follow|Refuse|Drink|Kiss|Touch|Open|Close|Guard|Keep)\s+you\s+(?:charcoal|dark|cold|flannel|warm|wine|dead-end)\b/i,
+  },
+  { id: 'you-verb-fragment', pattern: /\byou\s+(?:freez|ly|crosses|takes)\b/i },
+];
+
+/**
+ * Deterministic scan for malformed second-person replacement residue in encounter
+ * prose. These are not style complaints; they are broken player-facing strings
+ * produced by possessive/protagonist rewrite passes ("you rooftop", "You kiss
+ * takes"). The pattern list is deliberately narrow so valid phrasing such as
+ * "you watch the bar" is not flagged.
+ */
+export function scanMalformedEncounterProse(encounter: unknown): string[] {
+  const found = new Set<string>();
+  for (const raw of collectEncounterProseStrings(encounter)) {
+    const text = raw.replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    for (const { id, pattern } of MALFORMED_SECOND_PERSON_PATTERNS) {
+      const match = text.match(pattern);
+      if (!match) continue;
+      const snippet = text.length > 180 ? `${text.slice(0, 177)}...` : text;
+      found.add(`${id}: ${snippet}`);
+      break;
+    }
+  }
+  return [...found];
+}
+
 export class EncounterQualityValidator {
   validate(input: EncounterQualityInput): EncounterQualityReport {
     const blockingIssues: FinalStoryContractIssue[] = [];
@@ -129,6 +170,20 @@ export class EncounterQualityValidator {
             sceneId: scene.id,
             validator: 'EncounterQualityValidator',
             suggestion: 'Regenerate the encounter (phase reliability) so player-facing prose is bespoke.',
+          });
+        }
+
+        const malformed = scanMalformedEncounterProse(encounter);
+        if (malformed.length > 0) {
+          blockingIssues.push({
+            type: 'encounter_malformed_prose',
+            severity: 'error',
+            message: `Encounter in scene "${scene.id}" contains malformed second-person prose (${malformed.slice(0, 3).join('; ')}).`,
+            episodeId: episode.id,
+            episodeNumber: episode.number,
+            sceneId: scene.id,
+            validator: 'EncounterQualityValidator',
+            suggestion: 'Apply an unambiguous possessive rewrite where possible; otherwise regenerate the affected encounter section.',
           });
         }
 

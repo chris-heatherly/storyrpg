@@ -12,6 +12,7 @@ export type SceneGraphBranchIssueType =
   | 'lost_branch_during_assembly'
   | 'unrealized_blueprint_branch_target'
   | 'missing_branch_residue'
+  | 'path_missing_required_setup'
   | 'premature_npc_visual';
 
 export interface SceneGraphBranchIssue {
@@ -155,6 +156,30 @@ export class SceneGraphBranchValidator {
               choiceId: choice.id,
               targetSceneId: effectiveNextSceneId,
             });
+          } else if (currentIndex !== undefined && targetIndex > currentIndex + 1) {
+            const bridgeBeat = choice.nextBeatId
+              ? (scene.beats || []).find(candidate => candidate.id === choice.nextBeatId)
+              : undefined;
+            const isBridgeRoute = isChoiceBridgeNode(choice) || isChoiceBridgeNode(bridgeBeat);
+            const skipAllowed = isSceneSkipAllowed(choice) || isSceneSkipAllowed(bridgeBeat);
+            if (isBridgeRoute && !skipAllowed) {
+              const skipped = episode.scenes
+                .slice(currentIndex + 1, targetIndex)
+                .filter(sceneRequiresSequentialSetup);
+              if (skipped.length > 0) {
+                issues.push({
+                  type: 'path_missing_required_setup',
+                  severity: 'error',
+                  message:
+                    `Choice ${choice.id} bridges from ${scene.id} to ${effectiveNextSceneId}, ` +
+                    `skipping required setup scene(s): ${skipped.map(s => s.id).join(', ')}.`,
+                  sceneId: scene.id,
+                  beatId: beat.id,
+                  choiceId: choice.id,
+                  targetSceneId: effectiveNextSceneId,
+                });
+              }
+            }
           }
         }
       }
@@ -315,6 +340,36 @@ export class SceneGraphBranchValidator {
         `${encounterSceneCount} encounters, ${encounterChoiceCount} encounter choices, ${storyletCount} storylets`,
     };
   }
+}
+
+function isChoiceBridgeNode(node: unknown): boolean {
+  if (!node || typeof node !== 'object') return false;
+  const data = node as Record<string, unknown>;
+  return Boolean(data.isChoiceBridge || data.sourceChoiceId || data.sourceSceneId);
+}
+
+function isSceneSkipAllowed(node: unknown): boolean {
+  if (!node || typeof node !== 'object') return false;
+  const data = node as Record<string, unknown>;
+  return Boolean(data.allowSceneSkip || data.intentionalSceneSkip || data.skipAllowed);
+}
+
+function sceneRequiresSequentialSetup(scene: Scene): boolean {
+  if (scene.encounter) return true;
+  if (scene.isBottleneck || scene.isConvergencePoint) return true;
+  if (/treatment|encounter|required|anchor/i.test(`${scene.id} ${scene.name || ''}`)) return true;
+  return (scene.beats || []).some((beat) => {
+    const b = beat as unknown as Record<string, unknown>;
+    return Boolean(
+      (Array.isArray(beat.choices) && beat.choices.length > 0)
+        || (Array.isArray(beat.textVariants) && beat.textVariants.length > 0)
+        || (Array.isArray(beat.callbackHookIds) && beat.callbackHookIds.length > 0)
+        || (Array.isArray(b.onShow) && b.onShow.length > 0)
+        || (Array.isArray(b.consequences) && b.consequences.length > 0)
+        || b.coveragePlan
+        || b.visualCast,
+    );
+  });
 }
 
 /** A single choice acknowledges the branch path if it carries any residue signal. */

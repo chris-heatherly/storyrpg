@@ -30,6 +30,33 @@
       "note": "FP guard: clean prose must not trip the scaffold/duplication detector"
     },
     {
+      "class": "clean_encounter_quality",
+      "corpus": "scripts/defect-corpus/fixtures",
+      "runMatch": "clean-residue",
+      "gate": "ENCOUNTER_QUALITY",
+      "expect": "no-flag",
+      "status": "enforced",
+      "note": "FP guard: stories without malformed/template encounter prose must not trip the encounter-quality replay gate"
+    },
+    {
+      "class": "g22_malformed_encounter_prose",
+      "corpus": "scripts/defect-corpus/fixtures",
+      "runMatch": "bite-me-g22-compact",
+      "gate": "ENCOUNTER_QUALITY",
+      "expect": "flag",
+      "status": "enforced",
+      "note": "G22 compact fixture preserves malformed strings: you rooftop, Hold you charcoal, You kiss takes"
+    },
+    {
+      "class": "g22_bridge_skips_required_setup",
+      "corpus": "scripts/defect-corpus/fixtures",
+      "runMatch": "bite-me-g22-compact",
+      "gate": "SCENE_GRAPH_BRANCH",
+      "expect": "flag",
+      "status": "enforced",
+      "note": "G22 compact fixture preserves a choice bridge that jumps over required setup into a treatment encounter"
+    },
+    {
       "class": "dropped_plant",
       "corpus": "generated-stories",
       "runMatch": "bite-me-g17",

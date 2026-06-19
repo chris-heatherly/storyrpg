@@ -34,6 +34,7 @@ const { registerAtlasCloudRoutes } = require('./proxy/atlasCloudRoutes');
 const { registerMidApiRoutes } = require('./proxy/midApiRoutes');
 const { registerImageFeedbackRoutes } = require('./proxy/imageFeedbackRoutes');
 const { registerStyleRoutes } = require('./proxy/styleRoutes');
+const { registerArtifactRoutes } = require('./proxy/artifactRoutes');
 const { createWorkerLifecycle } = require('./proxy/workerLifecycle');
 const { registerGenerationJobRoutes } = require('./proxy/generationJobRoutes');
 const { createRuntimeLayout } = require('./proxy/runtimePaths');
@@ -192,6 +193,7 @@ const { feedbackStore } = registerImageFeedbackRoutes(app, {
   cachedJsonStore: createCachedStore,
 });
 registerStyleRoutes(app, { storiesDir: STORIES_DIR });
+registerArtifactRoutes(app, { storiesDir: STORIES_DIR });
 registerAtlasCloudRoutes(app);
 const { midapiCallbackCache } = registerMidApiRoutes(app, {
   rootDir: ROOT_DIR,

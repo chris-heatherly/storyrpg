@@ -50,6 +50,26 @@ describe('assertValidWorkerPayload', () => {
     expect(() => assertValidWorkerPayload(payload)).not.toThrow();
   });
 
+  it('accepts a valid compile-episode payload', () => {
+    const payload = {
+      mode: 'compile-episode',
+      config: {},
+      resultPath: '/tmp/result.json',
+      compileEpisodeInput: {
+        outputDirectory: '/tmp/generated-story/',
+        request: {
+          storyRunId: 'run',
+          episodeNumber: 3,
+          mode: 'revalidate',
+          contextSource: 'latest',
+          totalEpisodes: 5,
+        },
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).not.toThrow();
+  });
+
   it('rejects malformed spot image-generation target slots', () => {
     const payload = {
       mode: 'image-generation',
@@ -87,5 +107,18 @@ describe('assertValidWorkerPayload', () => {
     };
 
     expect(() => assertValidWorkerPayload(payload)).toThrow(/outputDirectory/i);
+  });
+
+  it('rejects compile-episode without a request', () => {
+    const payload = {
+      mode: 'compile-episode',
+      config: {},
+      resultPath: '/tmp/result.json',
+      compileEpisodeInput: {
+        outputDirectory: '/tmp/generated-story/',
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).toThrow(/request/i);
   });
 });

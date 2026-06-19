@@ -22,6 +22,12 @@ we touch the hard dependency-heavy phases):
 
 1. [x] `SavingPhase` — wraps `savePipelineOutputs` with timeout + warning
    event contract. Wired in at the end of `runEpisodeForStoryBundle`.
+1b. [x] `RunArtifactPhase` — **wired** (2026-06-19): output-directory
+   resume/create + checkpointing, run/story id derivation, and the
+   per-episode completion runtime that writes legacy watermarks plus the new
+   shadow artifact graph. Both single-episode and multi-episode drivers now
+   delegate output setup to this phase; the season loop delegates episode
+   completion writes through the returned runtime.
 2. [x] `WorldBuildingPhase` — **wired** (2026-06-09): faithful port of
    `runWorldBuilding` (memoryContext, locationIntroductions, withTimeout,
    PipelineError) behind a thin delegating wrapper covering all three call

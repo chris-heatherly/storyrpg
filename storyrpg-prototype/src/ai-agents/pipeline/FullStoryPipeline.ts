@@ -128,7 +128,7 @@ import {
   type SeasonChoicePlan,
 } from './seasonChoicePlan';
 import { type SeasonSkillPlan } from './seasonSkillPlan';
-import { writeEpisodeCompletion, partitionResumableEpisodes } from './episodeCheckpoints';
+import { partitionResumableEpisodes } from './episodeCheckpoints';
 import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
 import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
@@ -169,6 +169,7 @@ import { SavingPhase } from './phases/SavingPhase';
 import { WorldBuildingPhase } from './phases/WorldBuildingPhase';
 import { AudioPhase } from './phases/AudioPhase';
 import { BrowserQAPhase } from './phases/BrowserQAPhase';
+import { RunArtifactPhase } from './phases/RunArtifactPhase';
 import { VideoPhase, bindGeneratedVideoToStory } from './phases/VideoPhase';
 import { MasterImagePhase } from './phases/MasterImagePhase';
 import { SceneImagePhase, type SceneImagePhaseDeps } from './phases/SceneImagePhase';
@@ -3557,14 +3558,20 @@ export class FullStoryPipeline {
         const resumedOutputDir = this.getResumeOutput<{ outputDirectory: string }>(
           resumeCheckpoint, 'output_directory'
         )?.outputDirectory;
-        if (resumedOutputDir) {
-          outputDirectory = resumedOutputDir;
-          await ensureDirectory(outputDirectory);
-          console.log(`[Pipeline] Resumed output directory: ${outputDirectory}`);
-        } else {
-          outputDirectory = await createOutputDirectory(brief.story.title);
-        }
-        this.addCheckpoint('Output Directory', { outputDirectory }, false);
+        const artifactRuntime = await new RunArtifactPhase({
+          createOutputDirectory,
+          ensureDirectory,
+          save: saveEarlyDiagnostic,
+          load: loadEarlyDiagnosticSync,
+        }).run(
+          { storyTitle: brief.story.title, resumeOutputDirectory: resumedOutputDir },
+          {
+            config: this.config,
+            emit: this.emit.bind(this),
+            addCheckpoint: this.addCheckpoint.bind(this),
+          },
+        );
+        outputDirectory = artifactRuntime.outputDirectory;
         const savedStoryPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(outputDirectory, 'story.json');
         this.hydrateSeasonImageStyleFromStoryPackage(savedStoryPackage);
         this.applyActiveImageStyleToRuntime();
@@ -5015,16 +5022,21 @@ export class FullStoryPipeline {
       const resumedOutputDir = this.getResumeOutput<{ outputDirectory: string }>(
         resumeCheckpoint, 'output_directory'
       )?.outputDirectory;
-      let outputDirectory: string;
-      if (resumedOutputDir) {
-        outputDirectory = resumedOutputDir;
-        await ensureDirectory(outputDirectory);
-        console.log(`[Pipeline] Resumed output directory: ${outputDirectory}`);
-      } else {
-        outputDirectory = await createOutputDirectory(baseBrief.story.title);
-      }
+      const artifactRuntime = await new RunArtifactPhase({
+        createOutputDirectory,
+        ensureDirectory,
+        save: saveEarlyDiagnostic,
+        load: loadEarlyDiagnosticSync,
+      }).run(
+        { storyTitle: baseBrief.story.title, resumeOutputDirectory: resumedOutputDir },
+        {
+          config: this.config,
+          emit: this.emit.bind(this),
+          addCheckpoint: this.addCheckpoint.bind(this),
+        },
+      );
+      const outputDirectory = artifactRuntime.outputDirectory;
       this._currentOutputDirectory = outputDirectory; // F4: visible to the terminal catch
-      this.addCheckpoint('Output Directory', { outputDirectory }, false);
 
       // Season Canon (P4) resume: rehydrate sealed canon + ledger from disk so a
       // later partial run skips re-sealing already-sealed episodes and reads prior
@@ -5164,11 +5176,10 @@ export class FullStoryPipeline {
               previousSummary: baseBrief.episode.previousSummary,
             });
             if (generatedEpisode.episode) {
-              await writeEpisodeCompletion({
+              await artifactRuntime.writeEpisodeCompletion({
                 episode: generatedEpisode.episode,
                 episodeNumber: spec.episodeNumber,
                 title: spec.outline.title,
-                save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
               });
             }
             completedEpisodeCount += 1;
@@ -5311,11 +5322,10 @@ export class FullStoryPipeline {
           // (In run-graph mode the artifact store writes the same watermark
           // when the step's output persists — same files, same ordering.)
           if (opts.writeWatermark && generated.episode) {
-            await writeEpisodeCompletion({
+            await artifactRuntime.writeEpisodeCompletion({
               episode: generated.episode,
               episodeNumber: i,
               title: spec.outline.title,
-              save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
             });
           }
           completedEpisodeCount += 1;

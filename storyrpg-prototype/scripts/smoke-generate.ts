@@ -56,7 +56,10 @@ async function main(): Promise<void> {
     config,
     brief,
     sourceAnalysis: analysis.sourceAnalysis,
-    episodeRange: { start: 1, end: 1 },
+    episodeRange: {
+      start: Number.parseInt(process.env.SMOKE_EP_START || '1', 10) || 1,
+      end: Number.parseInt(process.env.SMOKE_EP_END || '1', 10) || 1,
+    },
     onEvent,
   });
 

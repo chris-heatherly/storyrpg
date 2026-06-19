@@ -1,6 +1,8 @@
+import type { CompileEpisodeRequest } from '../pipeline/episodeCompiler';
+
 type EndingMode = 'single' | 'multiple';
 
-export type WorkerMode = 'analysis' | 'generation' | 'image-generation';
+export type WorkerMode = 'analysis' | 'generation' | 'image-generation' | 'compile-episode';
 
 export type ResumeCheckpointPayload = {
   steps?: Record<string, { status?: string }>;
@@ -42,6 +44,10 @@ export type WorkerPayload = {
     skipCover?: boolean;
     skipCharacterRefs?: boolean;
     skipVisualContractValidation?: boolean;
+  };
+  compileEpisodeInput?: {
+    outputDirectory: string;
+    request: CompileEpisodeRequest;
   };
 };
 
@@ -93,8 +99,8 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
   if (!isRecord(value)) {
     throw new Error('Worker payload must be an object.');
   }
-  if (value.mode !== 'analysis' && value.mode !== 'generation' && value.mode !== 'image-generation') {
-    throw new Error('Worker payload mode must be "analysis", "generation", or "image-generation".');
+  if (value.mode !== 'analysis' && value.mode !== 'generation' && value.mode !== 'image-generation' && value.mode !== 'compile-episode') {
+    throw new Error('Worker payload mode must be "analysis", "generation", "image-generation", or "compile-episode".');
   }
   if (!isRecord(value.config)) {
     throw new Error('Worker payload is missing a valid config object.');
@@ -158,6 +164,35 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
       if (!value.imageGenerationInput.targetSlots.every(isValidTargetSlot)) {
         throw new Error('imageGenerationInput.targetSlots entries must include positive episodeNumber, sceneId, and beatId.');
       }
+    }
+  }
+
+  if (value.mode === 'compile-episode') {
+    if (!isRecord(value.compileEpisodeInput)) {
+      throw new Error('compileEpisodeInput is required for compile-episode mode.');
+    }
+    if (typeof value.compileEpisodeInput.outputDirectory !== 'string' || value.compileEpisodeInput.outputDirectory.length === 0) {
+      throw new Error('compileEpisodeInput.outputDirectory is required for compile-episode mode.');
+    }
+    if (!isRecord(value.compileEpisodeInput.request)) {
+      throw new Error('compileEpisodeInput.request is required for compile-episode mode.');
+    }
+    if (typeof value.compileEpisodeInput.request.storyRunId !== 'string' || value.compileEpisodeInput.request.storyRunId.length === 0) {
+      throw new Error('compileEpisodeInput.request.storyRunId is required for compile-episode mode.');
+    }
+    if (
+      typeof value.compileEpisodeInput.request.episodeNumber !== 'number'
+      || !Number.isFinite(value.compileEpisodeInput.request.episodeNumber)
+      || value.compileEpisodeInput.request.episodeNumber < 1
+    ) {
+      throw new Error('compileEpisodeInput.request.episodeNumber must be a positive number.');
+    }
+    if (
+      typeof value.compileEpisodeInput.request.totalEpisodes !== 'number'
+      || !Number.isFinite(value.compileEpisodeInput.request.totalEpisodes)
+      || value.compileEpisodeInput.request.totalEpisodes < 1
+    ) {
+      throw new Error('compileEpisodeInput.request.totalEpisodes must be a positive number.');
     }
   }
 }

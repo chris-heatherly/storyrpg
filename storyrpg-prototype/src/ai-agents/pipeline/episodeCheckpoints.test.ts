@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { ArtifactRevisionStore, evaluateArtifactStatus } from './artifacts';
 import {
   episodeCompleteArtifact,
   episodeAssembledArtifact,
@@ -14,7 +15,7 @@ function makeEpisode(number: number, sceneCount = 2): Episode {
   return {
     number,
     title: `Episode ${number}`,
-    scenes: Array.from({ length: sceneCount }, (_, i) => ({ id: `s${number}-${i + 1}` })),
+    scenes: Array.from({ length: sceneCount }, (_, i) => ({ id: `s${number}-${i + 1}`, name: `Scene ${i + 1}` })),
   } as unknown as Episode;
 }
 
@@ -91,5 +92,80 @@ describe('episodeCheckpoints', () => {
     await writeEpisodeCompletion({ episode: makeEpisode(1), episodeNumber: 1, title: 'One', save: store.save });
     await writeEpisodeCompletion({ episode: makeEpisode(3), episodeNumber: 3, title: 'Three', save: store.save });
     expect(detectCompletedEpisodes([1, 2, 3, 4], store.load)).toEqual([1, 3]);
+  });
+
+  it('can shadow-write per-episode artifacts without changing the legacy resume layout', async () => {
+    const store = makeStore();
+    const episode = makeEpisode(2, 1);
+
+    await writeEpisodeCompletion({
+      episode,
+      episodeNumber: 2,
+      title: 'Two',
+      save: store.save,
+      shadowArtifacts: {
+        storyId: 'story',
+        runId: 'run',
+        load: store.load,
+      },
+    });
+
+    expect(loadCompletedEpisode(2, store.load)?.episode.number).toBe(2);
+    const artifactStore = new ArtifactRevisionStore({ save: store.save, load: store.load });
+    expect(artifactStore.loadCurrentRef('context-in', 2)?.path).toBe('artifacts/episodes/002/context-in.rev1.json');
+    expect(artifactStore.loadCurrentRef('runtime-episode', 2)?.path).toBe('artifacts/episodes/002/runtime-episode.rev1.json');
+    expect(artifactStore.loadCurrentRef('validation-report', 2)?.path).toBe('artifacts/episodes/002/validation-report.rev1.json');
+    expect(artifactStore.loadCurrentRef('context-out', 2)?.path).toBe('artifacts/episodes/002/context-out.rev1.json');
+  });
+
+  it('links context-in to the previous episode context-out for forward revalidation', async () => {
+    const store = makeStore();
+    await writeEpisodeCompletion({
+      episode: makeEpisode(1, 1),
+      episodeNumber: 1,
+      title: 'One',
+      save: store.save,
+      shadowArtifacts: {
+        storyId: 'story',
+        runId: 'run',
+        load: store.load,
+      },
+    });
+    await writeEpisodeCompletion({
+      episode: makeEpisode(2, 1),
+      episodeNumber: 2,
+      title: 'Two',
+      save: store.save,
+      shadowArtifacts: {
+        storyId: 'story',
+        runId: 'run',
+        load: store.load,
+      },
+    });
+
+    const artifactStore = new ArtifactRevisionStore({ save: store.save, load: store.load });
+    const contextIn = artifactStore.loadCurrent('context-in', 2);
+    const previousContextOutRef = artifactStore.loadCurrentRef('context-out', 1);
+    expect(contextIn?.upstream).toContainEqual(previousContextOutRef);
+    expect((contextIn?.payload as { canonFacts?: string[] } | undefined)?.canonFacts).toContain('scene:s1-1:Scene 1');
+
+    const previousContextOut = artifactStore.loadCurrent('context-out', 1);
+    expect(previousContextOut).not.toBeNull();
+    await artifactStore.saveRevision({
+      kind: 'context-out',
+      storyId: 'story',
+      runId: 'run',
+      episodeNumber: 1,
+      payload: {
+        ...(previousContextOut!.payload as Record<string, unknown>),
+        canonFactsIntroduced: ['scene:s1-1:Changed'],
+      },
+      status: 'valid',
+      provenance: { phase: 'episode_1_repair', agent: 'test' },
+    });
+
+    const staleReport = evaluateArtifactStatus(artifactStore.loadCurrentRef('context-in', 2)!, artifactStore);
+    expect(staleReport.status).toBe('stale');
+    expect(staleReport.reasons.join(' ')).toContain('context-out:1');
   });
 });

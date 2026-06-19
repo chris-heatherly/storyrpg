@@ -122,9 +122,19 @@ function buildWorkerConfigSnapshot(config) {
   }, 200);
 }
 
+function buildDefaultWorkerStoryTitle(mode) {
+  if (mode === 'generation') return 'Untitled Story';
+  if (mode === 'image-generation') return 'Image Batch';
+  if (mode === 'compile-episode') return 'Episode Compile';
+  return 'Source Analysis';
+}
+
 function buildWorkerRequestSnapshot(mode, payload, explicitStoryTitle) {
   const generationInput = payload?.generationInput;
   const analysisInput = payload?.analysisInput;
+  const imageGenerationInput = payload?.imageGenerationInput;
+  const compileEpisodeInput = payload?.compileEpisodeInput;
+  const compileRequest = compileEpisodeInput?.request;
   const brief = generationInput?.brief;
 
   return stripLargeValues({
@@ -132,6 +142,7 @@ function buildWorkerRequestSnapshot(mode, payload, explicitStoryTitle) {
     storyTitle: explicitStoryTitle
       || brief?.story?.title
       || analysisInput?.title
+      || compileRequest?.storyRunId
       || undefined,
     config: buildWorkerConfigSnapshot(payload?.config),
     input: mode === 'generation'
@@ -142,6 +153,25 @@ function buildWorkerRequestSnapshot(mode, payload, explicitStoryTitle) {
         episode: brief?.episode ? { number: brief.episode.number, title: brief.episode.title } : undefined,
         hasSeasonPlan: !!brief?.seasonPlan,
       }
+      : mode === 'image-generation'
+        ? {
+          outputDirectory: imageGenerationInput?.outputDirectory,
+          targetEpisodeNumber: imageGenerationInput?.targetEpisodeNumber,
+          mode: imageGenerationInput?.mode,
+          targetSlotCount: Array.isArray(imageGenerationInput?.targetSlots)
+            ? imageGenerationInput.targetSlots.length
+            : 0,
+        }
+        : mode === 'compile-episode'
+          ? {
+            outputDirectory: compileEpisodeInput?.outputDirectory,
+            storyRunId: compileRequest?.storyRunId,
+            episodeNumber: compileRequest?.episodeNumber,
+            compileMode: compileRequest?.mode,
+            targetArtifactKind: compileRequest?.targetArtifactKind,
+            contextSource: compileRequest?.contextSource,
+            totalEpisodes: compileRequest?.totalEpisodes,
+          }
       : {
         title: analysisInput?.title,
         hasPrompt: !!analysisInput?.prompt,
@@ -227,7 +257,11 @@ function normalizePipelineOutputDir(cfg, { storiesDir, runtimeRoot, appRoot }) {
   cfg.outputDir = path.resolve(base, raw);
 }
 
-function normalizeImageGenerationOutputDirectory(outputDirectory, { storiesDir, appRoot }) {
+function normalizeImageGenerationOutputDirectory(
+  outputDirectory,
+  { storiesDir, appRoot },
+  inputName = 'imageGenerationInput.outputDirectory',
+) {
   if (!outputDirectory || typeof outputDirectory !== 'string') return outputDirectory;
   const storiesRoot = path.resolve(storiesDir);
   const appRootAbs = path.resolve(appRoot);
@@ -258,7 +292,7 @@ function normalizeImageGenerationOutputDirectory(outputDirectory, { storiesDir, 
 
     const relativeUnderStories = asGeneratedRelative(resolved);
     if (relativeUnderStories) return relativeUnderStories;
-    throw new Error(`imageGenerationInput.outputDirectory path is outside worker filesystem generated-story root: ${raw}`);
+    throw new Error(`${inputName} path is outside worker filesystem generated-story root: ${raw}`);
   }
 
   const normalized = raw.replace(/^\/+/, '').replace(/^\.\//, '');
@@ -266,7 +300,7 @@ function normalizeImageGenerationOutputDirectory(outputDirectory, { storiesDir, 
   const resolved = path.resolve(appRootAbs, normalized);
   const relativeUnderStories = asGeneratedRelative(resolved);
   if (relativeUnderStories) return relativeUnderStories;
-  throw new Error(`imageGenerationInput.outputDirectory path is outside worker filesystem generated-story root: ${raw}`);
+  throw new Error(`${inputName} path is outside worker filesystem generated-story root: ${raw}`);
 }
 
 function createWorkerLifecycle({
@@ -1305,7 +1339,7 @@ function createWorkerLifecycle({
   function registerWorkerLifecycleRoutes(app) {
     app.post('/worker-jobs/start', (req, res) => {
       const { mode, payload, idempotencyKey, storyTitle, episodeCount, resumeFromJobId } = req.body || {};
-      if (!mode || !payload || (mode !== 'analysis' && mode !== 'generation' && mode !== 'image-generation')) {
+      if (!mode || !payload || (mode !== 'analysis' && mode !== 'generation' && mode !== 'image-generation' && mode !== 'compile-episode')) {
         return res.status(400).json({ error: 'Invalid worker start payload' });
       }
 
@@ -1364,6 +1398,17 @@ function createWorkerLifecycle({
           return res.status(400).json({ error: error.message });
         }
       }
+      if (mode === 'compile-episode' && hydratedPayload.compileEpisodeInput?.outputDirectory) {
+        try {
+          hydratedPayload.compileEpisodeInput.outputDirectory = normalizeImageGenerationOutputDirectory(
+            hydratedPayload.compileEpisodeInput.outputDirectory,
+            { storiesDir, appRoot },
+            'compileEpisodeInput.outputDirectory',
+          );
+        } catch (error) {
+          return res.status(400).json({ error: error.message });
+        }
+      }
       const requestSnapshot = buildWorkerRequestSnapshot(mode, hydratedPayload, storyTitle);
       const resumeOutputs = priorOutputDir
         ? { output_directory: { outputDirectory: priorOutputDir } }
@@ -1373,7 +1418,7 @@ function createWorkerLifecycle({
         status: 'pending',
         progress: 0,
         currentPhase: 'queued',
-        storyTitle: storyTitle || (mode === 'generation' ? 'Untitled Story' : 'Source Analysis'),
+        storyTitle: storyTitle || buildDefaultWorkerStoryTitle(mode),
         episodeCount: episodeCount || 1,
         idempotencyKey: idempotencyKey || `${mode}:${Date.now()}`,
         resumeFromJobId: resumeFromJobId || undefined,
@@ -1382,7 +1427,7 @@ function createWorkerLifecycle({
         resumeContext: {
           mode,
           requestPayload: hydratedPayload,
-          storyTitle: storyTitle || (mode === 'generation' ? 'Untitled Story' : mode === 'image-generation' ? 'Image Batch' : 'Source Analysis'),
+          storyTitle: storyTitle || buildDefaultWorkerStoryTitle(mode),
           episodeCount: episodeCount || 1,
           resumeFromJobId: resumeFromJobId || undefined,
           ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),

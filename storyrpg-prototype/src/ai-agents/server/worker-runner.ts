@@ -1,6 +1,8 @@
 #!/usr/bin/env npx ts-node
 // @ts-nocheck — TODO(tech-debt): Phase 4 client/pipeline decoupling.
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
+import * as path from 'path';
 import type { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import { PipelineError } from '../pipeline/FullStoryPipeline';
 import { ValidationError } from '../../types/validation';
@@ -13,6 +15,7 @@ import {
 } from '../codec/storyCodec';
 import { runImageGenerationBatch, runStoryAnalysis, runStoryGeneration } from '../services/storyGenerationService';
 import { WorkerPayload, assertValidWorkerPayload } from './workerPayload';
+import { compileEpisode } from '../pipeline/episodeCompiler';
 import { isProviderQuotaError, PROVIDER_QUOTA_FAILURE_KIND } from '../utils/providerErrors';
 import { anthropicCreditPreflight } from './providerPreflight';
 import { installResilientHttp } from './resilientHttp';
@@ -364,6 +367,47 @@ async function runImageGeneration(payload: WorkerPayload) {
   });
 }
 
+function createArtifactIO(outputDirectory: string) {
+  const root = path.resolve(outputDirectory);
+  const resolveSafe = (name: string) => {
+    const abs = path.resolve(root, name);
+    if (abs !== root && !abs.startsWith(`${root}${path.sep}`)) {
+      throw new Error(`Artifact path escapes output directory: ${name}`);
+    }
+    return abs;
+  };
+  return {
+    async save(name: string, data: unknown) {
+      await atomicWriteJson(resolveSafe(name), data, { pretty: true });
+    },
+    load<T>(name: string): T | null {
+      const abs = resolveSafe(name);
+      if (!fsSync.existsSync(abs)) return null;
+      try {
+        return JSON.parse(fsSync.readFileSync(abs, 'utf8')) as T;
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+async function runCompileEpisode(payload: WorkerPayload) {
+  if (!payload.compileEpisodeInput) throw new Error('compileEpisodeInput is required for compile-episode mode');
+  emit('step_start', { step: 'compile_episode' });
+  const result = await compileEpisode(
+    payload.compileEpisodeInput.request,
+    { io: createArtifactIO(payload.compileEpisodeInput.outputDirectory) },
+  );
+  emit('step_complete', { step: 'compile_episode', success: result.status === 'completed' });
+  await atomicWriteJson(payload.resultPath, {
+    schemaVersion: 3,
+    success: result.status === 'completed',
+    compileEpisodeResult: result,
+    error: result.status === 'failed' ? result.message : undefined,
+  });
+}
+
 async function main() {
   const payloadPath = process.argv[2];
   if (!payloadPath) throw new Error('Missing payload path');
@@ -379,7 +423,7 @@ async function main() {
   // (LLMQuotaError → failureKind 'provider-quota' → job status 'paused').
   const agentConfigs = Object.values(payload.config?.agents ?? {}) as Array<{ provider?: string; apiKey?: string; model?: string }>;
   const anthropicConfig = agentConfigs.find((c) => c?.provider === 'anthropic' && c?.apiKey);
-  if (anthropicConfig) {
+  if (payload.mode !== 'compile-episode' && anthropicConfig) {
     const preflight = await anthropicCreditPreflight({
       apiKey: anthropicConfig.apiKey,
       model: anthropicConfig.model,
@@ -393,6 +437,8 @@ async function main() {
 
   if (payload.mode === 'analysis') {
     await runAnalysis(payload);
+  } else if (payload.mode === 'compile-episode') {
+    await runCompileEpisode(payload);
   } else if (payload.mode === 'image-generation') {
     await runImageGeneration(payload);
   } else {

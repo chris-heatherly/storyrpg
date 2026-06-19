@@ -25,6 +25,8 @@
  *                          asset verification, deterministic scans)
  *   [x] AudioPhase          (wired — preGenerateAudio block + beat binding)
  *   [x] BrowserQAPhase      (wired — Playwright QA retry/remediation loop)
+ *   [x] RunArtifactPhase    (wired — output directory + episode artifact
+ *                            completion runtime for season generation)
  *
  * The monolithic `FullStoryPipeline` keeps `@ts-nocheck` until all phases
  * have moved out. New phases should type cleanly without `@ts-nocheck`.

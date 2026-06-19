@@ -15,6 +15,16 @@
  */
 
 import type { Episode } from '../../types';
+import {
+  ArtifactRevisionStore,
+  type ArtifactRef,
+  type ArtifactValidationSummary,
+  type EpisodeContextIn,
+  type EpisodeContextOut,
+  buildEpisodeContextIn,
+  deriveEpisodeContextOut,
+  defaultValidationSummary,
+} from './artifacts';
 
 export interface EpisodeCompletionWatermark {
   version: 1;
@@ -27,6 +37,16 @@ export interface EpisodeCompletionWatermark {
 
 export type ArtifactSaver = (name: string, data: unknown) => Promise<void>;
 export type ArtifactLoader = <T>(name: string) => T | null;
+
+export interface EpisodeShadowArtifactOptions {
+  storyId: string;
+  runId: string;
+  load: ArtifactLoader;
+  contextIn?: EpisodeContextIn;
+  validation?: ArtifactValidationSummary;
+  upstream?: ArtifactRef[];
+  onError?: (error: Error) => void;
+}
 
 export function episodeCompleteArtifact(episodeNumber: number): string {
   return `checkpoints/episode-${episodeNumber}-complete.json`;
@@ -45,8 +65,9 @@ export async function writeEpisodeCompletion(options: {
   episodeNumber: number;
   title: string;
   save: ArtifactSaver;
+  shadowArtifacts?: EpisodeShadowArtifactOptions;
 }): Promise<EpisodeCompletionWatermark> {
-  const { episode, episodeNumber, title, save } = options;
+  const { episode, episodeNumber, title, save, shadowArtifacts } = options;
   const assembledArtifact = episodeAssembledArtifact(episodeNumber);
   await save(assembledArtifact, episode);
   const watermark: EpisodeCompletionWatermark = {
@@ -58,7 +79,109 @@ export async function writeEpisodeCompletion(options: {
     assembledArtifact,
   };
   await save(episodeCompleteArtifact(episodeNumber), watermark);
+
+  if (shadowArtifacts) {
+    await writeEpisodeShadowArtifacts({
+      episode,
+      episodeNumber,
+      title,
+      save,
+      ...shadowArtifacts,
+    });
+  }
+
   return watermark;
+}
+
+async function writeEpisodeShadowArtifacts(options: {
+  episode: Episode;
+  episodeNumber: number;
+  title: string;
+  save: ArtifactSaver;
+} & EpisodeShadowArtifactOptions): Promise<void> {
+  try {
+    const store = new ArtifactRevisionStore({
+      save: options.save,
+      load: options.load,
+    });
+    const previousContextOut = options.episodeNumber > 1
+      ? store.loadCurrent<EpisodeContextOut>('context-out', options.episodeNumber - 1)
+      : null;
+    const upstream = [
+      ...(options.upstream ?? []),
+      ...(previousContextOut ? [store.refFor(previousContextOut)] : []),
+    ];
+    const contextInPayload = options.contextIn ?? buildEpisodeContextIn({
+      storyId: options.storyId,
+      episodeNumber: options.episodeNumber,
+      previousContextOut: previousContextOut?.payload,
+    });
+    const contextIn = await store.saveRevision({
+      kind: 'context-in',
+      storyId: options.storyId,
+      runId: options.runId,
+      episodeNumber: options.episodeNumber,
+      payload: contextInPayload,
+      status: 'valid',
+      upstream,
+      provenance: { phase: `episode_${options.episodeNumber}`, agent: 'EpisodeContextBuilder' },
+      validation: defaultValidationSummary('context-in'),
+    });
+    const contextInRef = store.refFor(contextIn);
+
+    const runtimeEpisode = await store.saveRevision({
+      kind: 'runtime-episode',
+      storyId: options.storyId,
+      runId: options.runId,
+      episodeNumber: options.episodeNumber,
+      payload: options.episode,
+      status: 'valid',
+      upstream: [contextInRef],
+      provenance: { phase: `episode_${options.episodeNumber}`, agent: 'FullStoryPipeline' },
+      validation: options.validation ?? defaultValidationSummary('runtime-episode'),
+    });
+    const runtimeRef = store.refFor(runtimeEpisode);
+
+    const validationReport = await store.saveRevision({
+      kind: 'validation-report',
+      storyId: options.storyId,
+      runId: options.runId,
+      episodeNumber: options.episodeNumber,
+      payload: {
+        title: options.title,
+        episodeNumber: options.episodeNumber,
+        runtimeEpisode: runtimeRef,
+        validation: options.validation ?? defaultValidationSummary('runtime-episode'),
+      },
+      status: 'valid',
+      upstream: [runtimeRef],
+      provenance: { phase: `episode_${options.episodeNumber}`, agent: 'ArtifactValidationGate' },
+      validation: options.validation ?? defaultValidationSummary('validation-report'),
+    });
+
+    await store.saveRevision({
+      kind: 'context-out',
+      storyId: options.storyId,
+      runId: options.runId,
+      episodeNumber: options.episodeNumber,
+      payload: deriveEpisodeContextOut({
+        storyId: options.storyId,
+        episode: options.episode,
+        contextIn: contextInPayload,
+      }),
+      status: 'valid',
+      upstream: [runtimeRef, store.refFor(validationReport)],
+      provenance: { phase: `episode_${options.episodeNumber}`, agent: 'EpisodeContextBuilder' },
+      validation: defaultValidationSummary('context-out'),
+    });
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    if (options.onError) {
+      options.onError(err);
+    } else {
+      console.warn(`[EpisodeArtifacts] Shadow artifact write failed for episode ${options.episodeNumber}: ${err.message}`);
+    }
+  }
 }
 
 export interface ResumedEpisode {

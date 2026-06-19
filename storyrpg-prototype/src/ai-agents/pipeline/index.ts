@@ -18,3 +18,7 @@ export {
 export {
   type OutputManifest,
 } from '../utils/pipelineOutputWriter';
+
+export * from './artifacts';
+export * from './episodeCompiler';
+export * from './phases/RunArtifactPhase';
